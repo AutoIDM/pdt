@@ -1,0 +1,32 @@
+#!/bin/sh
+# Run pdt straight from a clone of this repository, with no install step.
+# `uv tool install pdt-cli` gives the same command without this script.
+set -eu
+
+PDT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PDT_UV="$PDT_ROOT/.uv/uv"
+if command -v uv >/dev/null 2>&1; then
+    PDT_UV=$(command -v uv)
+elif [ ! -x "$PDT_UV" ]; then
+    echo "uv is not installed; installing uv 0.12.5 for PDT..."
+    PDT_UV_INSTALLER=$(mktemp "${TMPDIR:-/tmp}/pdt-uv.XXXXXX")
+    trap 'rm -f "$PDT_UV_INSTALLER"' EXIT HUP INT TERM
+    if command -v curl >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -LsSf \
+            https://astral.sh/uv/0.12.5/install.sh -o "$PDT_UV_INSTALLER"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$PDT_UV_INSTALLER" https://astral.sh/uv/0.12.5/install.sh
+    else
+        echo "error: PDT needs curl or wget to download uv 0.12.5" >&2
+        exit 1
+    fi
+    UV_UNMANAGED_INSTALL="$PDT_ROOT/.uv" sh "$PDT_UV_INSTALLER"
+    rm -f "$PDT_UV_INSTALLER"
+    trap - EXIT HUP INT TERM
+fi
+
+PATH="$(dirname -- "$PDT_UV"):$PATH"
+export PATH
+# --project resolves dependencies from the clone; the working directory
+# stays where the user called from, so pdt still finds their project.
+exec "$PDT_UV" run --quiet --project "$PDT_ROOT" pdt "$@"

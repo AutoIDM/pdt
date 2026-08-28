@@ -1,0 +1,23 @@
+# Secrets — never commit these
+.env
+.env.*
+*.json.key
+*-key.json
+service-account*.json
+
+# Local state
+.secrets/*
+!.secrets/.gitkeep
+.venv/
+__pycache__/
+.uv/
+dist/
+*.egg-info/
+.pytest_cache/
+.uv-cache/
+
+# OS / editor noise
+.DS_Store
+.vscode/
+.idea/
+.worktrees
