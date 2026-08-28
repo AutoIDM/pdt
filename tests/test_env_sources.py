@@ -5,7 +5,7 @@ import os
 import pytest
 
 from conftest import add_app
-from pdt import config, deploy_common
+from pdt import config, deploy, deploy_common
 from pdt.utils import email_auth
 from pdt.utils.send_email import auth_env_file
 
@@ -129,3 +129,20 @@ def test_saving_authorization_creates_no_file_in_a_ci_checkout(project, monkeypa
     assert not (folder / ".env").exists()
     cached = json.loads(base64.b64decode(os.environ[email_auth.CACHE_ENV]))
     assert cached == {"client_id": "abc"}
+
+
+def test_confirm_returns_false_instead_of_raising_when_stdin_is_closed(monkeypatch, capsys):
+    def raise_eof(prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+    assert deploy.confirm(["do a thing"], assume_yes=False) is False
+    assert "--yes" in capsys.readouterr().out
+
+
+def test_confirm_with_assume_yes_returns_true_without_calling_input(monkeypatch):
+    def raise_eof(prompt):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+    assert deploy.confirm(["do a thing"], assume_yes=True) is True

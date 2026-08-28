@@ -108,5 +108,11 @@ def confirm(actions: list[str], assume_yes: bool,
         print(line)
     if assume_yes:
         return True
-    answer = input("Proceed? [y/N] ").strip().lower()
+    try:
+        answer = input("Proceed? [y/N] ").strip().lower()
+    except EOFError:
+        print()
+        print("there is no one to answer. Run this in a terminal, "
+              "or add --yes to proceed without asking.")
+        return False
     return answer in ("y", "yes")
