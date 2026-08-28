@@ -53,6 +53,16 @@ def test_local_windows_commands_stop_off_windows(
         "system is not Windows. Run this command on the Windows PC.\n")
 
 
+def test_a_remote_host_lets_deploy_run_off_windows(project, monkeypatch):
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n  host: jobs-01\n")
+    windows_app(project)
+    monkeypatch.setattr(deploy_windows.sys, "platform", "darwin")
+    monkeypatch.setattr(deploy_windows.sys, "argv", ["deploy_windows.py", "deploy", "my-report"])
+    monkeypatch.setattr("pdt.windows_remote.deploy_remote", lambda app, host, yes: 13)
+
+    assert deploy_windows.main() == 13
+
+
 def test_app_folders_live_under_the_machine_data_home(project):
     folder = project / "ProgramData" / "pdt" / "my-report"
     assert deploy_windows.app_folder("my-report") == folder

@@ -18,7 +18,7 @@ PROVIDER_CHOICES = [
     ("azure", "Microsoft Azure"),
     ("aws", "Amazon Web Services"),
     ("google-cloud", "Google Cloud"),
-    ("windows", "This Windows PC, using Task Scheduler"),
+    ("windows", "A Windows PC, using Task Scheduler"),
     ("", "Decide later"),
 ]
 
@@ -40,7 +40,9 @@ PROVIDER_QUESTIONS = {
     "google-cloud": [
         ("region", "Which Google Cloud region should hold your jobs?", "us-central1", _needed),
     ],
-    "windows": [],
+    "windows": [
+        ("host", "Address of the Windows PC", "", _needed),
+    ],
     "": [],
 }
 

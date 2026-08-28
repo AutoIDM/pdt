@@ -8,9 +8,10 @@
 #     "backoff",
 #     "fsspec",
 #     "duckdb",
+#     "pypsrp==0.9.1",
 # ]
 # ///
-"""Deploy an app locally as a Windows Task Scheduler task.
+"""Deploy an app as a Windows Task Scheduler task.
 
 Per app on this PC there is one folder, `%ProgramData%\\pdt\\<app>\\`, with
 `storage\\` (the app's files, kept after destroy) and `logs\\` (one log per
@@ -27,12 +28,15 @@ the absolute path deploy found. Either way `uv run` hands the runner the uv
 that started it in `UV`, so the runner never looks uv up again.
 
 The task runs as the SYSTEM account, so it does not depend on a user being
-logged on. Registering or removing it needs administrator rights; a
+logged on. Registering or removing it needs administrator rights; a local,
 non-elevated shell gets one UAC prompt. The same elevated script creates the
 app folder and gives SYSTEM full control and the deploying user modify
 rights, so that user can delete what the task wrote. Deploy always registers
 the complete desired task definition with -Force, so rerunning it safely
 reconciles changes to the schedule or repository path.
+
+With `platform.host` set, deploy and destroy go to that Windows PC over
+WinRM through `pdt.windows_remote` instead, and can run from any OS.
 """
 
 from __future__ import annotations
@@ -404,6 +408,14 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
+    host = str(app["platform"].get("host") or "").strip()
+    if host != "":
+        from pdt.windows_remote import deploy_remote
+        return deploy_remote(app, host, assume_yes)
+    return _deploy_local(app, assume_yes)
+
+
+def _deploy_local(app: dict, assume_yes: bool) -> int:
     try:
         powershell, uv = _preflight()
         assert uv is not None
@@ -450,6 +462,14 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
 
 def destroy(app: dict, assume_yes: bool) -> int:
+    host = str(app["platform"].get("host") or "").strip()
+    if host != "":
+        from pdt.windows_remote import destroy_remote
+        return destroy_remote(app, host, assume_yes)
+    return _destroy_local(app, assume_yes)
+
+
+def _destroy_local(app: dict, assume_yes: bool) -> int:
     try:
         powershell, _uv = _preflight(require_uv=False)
         name = _task_name(app["name"])
@@ -558,7 +578,8 @@ def main() -> int:
     except config.ConfigError as exc:
         console.error(str(exc))
         return 1
-    if sys.platform != "win32":
+    host = str(app["platform"].get("host") or "").strip()
+    if sys.platform != "win32" and host == "":
         console.error(
             "the windows provider targets this computer, but the current operating system "
             "is not Windows. Run this command on the Windows PC.")
