@@ -22,6 +22,9 @@ apps = [
     "pyjwt",
     "boto3",
     "google-cloud-secret-manager",
+    "google-cloud-storage",
+    "azure-storage-blob",
+    "azure-identity",
 ]
 
 [project.scripts]

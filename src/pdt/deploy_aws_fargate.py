@@ -14,12 +14,13 @@ from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, SCHEDULE_GROUP, aws_schedule_expression,
-    aws_settings, clients_for, cost_estimate, delete_log_group, delete_role,
-    delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
-    ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
+    aws_settings, clients_for, cost_estimate, delete_app_state,
+    delete_log_group, delete_role, delete_secret, ensure_log_group, ensure_role,
+    ensure_schedule, ensure_secret, ensure_state_bucket, list_price, log_group_url,
+    recent_stream_seconds, run_basis, state_cost_items, state_object_arn,
     ensure_session, has_managed_tag, iam_tags, not_found,
     delete_schedule_group, other_schedules, preflight, resource_exists,
-    with_role_propagation_retry,
+    state_location, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
     CostEstimate, fail, gather_secrets, image_action, stage_build_context,
@@ -158,8 +159,11 @@ def ensure_roles(iam, names: dict[str, str], account: str, region: str,
             {"Effect": "Allow", "Action": ["secretsmanager:GetSecretValue"],
              "Resource": secret_arn},
         ])
-    # The task role carries no application permissions yet.
-    task = ensure_role(iam, names["task_role"], "ecs-tasks.amazonaws.com", "pdt-task", [])
+    task = ensure_role(iam, names["task_role"], "ecs-tasks.amazonaws.com", "pdt-task", [
+        {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject"],
+         "Resource": state_object_arn(
+             account, region, names["family"].removeprefix("pdt-"))},
+    ])
     task_definition = f"arn:aws:ecs:{region}:{account}:task-definition/{names['family']}:*"
     scheduler = ensure_role(
         iam, names["scheduler_role"], "scheduler.amazonaws.com", "pdt-scheduler", [
@@ -171,7 +175,8 @@ def ensure_roles(iam, names: dict[str, str], account: str, region: str,
 
 
 def desired_task(names: dict[str, str], image: str, region: str,
-                 execution_role: str, task_role: str, secret_arn: str) -> dict:
+                 execution_role: str, task_role: str, secret_arn: str,
+                 state: str) -> dict:
     return {
         "family": names["family"],
         "taskRoleArn": task_role,
@@ -187,6 +192,10 @@ def desired_task(names: dict[str, str], image: str, region: str,
             "image": image,
             "essential": True,
             "secrets": [{"name": "PDT_ENV_JSON", "valueFrom": secret_arn}],
+            "environment": [
+                {"name": "PDT_STATE_LOCATION", "value": state},
+                {"name": "PDT_STATE_APP", "value": names["family"].removeprefix("pdt-")},
+            ],
             "logConfiguration": {
                 "logDriver": "awslogs",
                 "options": {
@@ -203,7 +212,8 @@ def normalized_task(task: dict) -> dict:
     keys = ("family", "taskRoleArn", "executionRoleArn", "networkMode",
             "requiresCompatibilities", "cpu", "memory", "runtimePlatform")
     result = {key: task.get(key) for key in keys}
-    container_keys = ("name", "image", "essential", "secrets", "logConfiguration")
+    container_keys = (
+        "name", "image", "essential", "secrets", "environment", "logConfiguration")
     result["containerDefinitions"] = [
         {key: container.get(key) for key in container_keys}
         for container in task.get("containerDefinitions", [])
@@ -272,6 +282,7 @@ def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
             (f"Fargate (arm64): ~{runs:.0f} runs x {basis} x {vcpu:g} vCPU / {gib:g} GiB", compute),
             ("Secrets Manager: 1 secret", secret),
         ]
+        items += state_cost_items(region, runs)
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
     return cost_estimate(
@@ -307,6 +318,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
     actions = [
         f"reconcile shared ECR repository {REPOSITORY} and ECS cluster {CLUSTER}",
+        "reconcile shared S3 state storage",
         image_action(app, f"build and push Docker image {image} ({DOCKER_PLATFORM})"),
         ("update" if secret_exists else "create")
         + f" Secrets Manager secret {names['secret']}",
@@ -326,6 +338,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     repository_uri = ensure_repository(clients["ecr"])
     cluster_arn = ensure_cluster(clients["ecs"])
     ensure_log_group(clients["logs"], names["log_group"])
+    ensure_state_bucket(clients["s3"], account, region)
     secret_arn = ensure_secret(clients["secretsmanager"], names["secret"], payload)
     execution, task, scheduler_role = ensure_roles(
         clients["iam"], names, account, region, secret_arn)
@@ -333,7 +346,8 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     console.step(f"building and pushing {image}")
     image_digest = build_and_push(app, image, clients["ecr"])
     console.step("reconciling task definition and schedule")
-    desired = desired_task(names, image, region, execution, task, secret_arn)
+    desired = desired_task(names, image, region, execution, task, secret_arn,
+                           state_location(account, region, app["name"]))
     task_arn = ensure_task_definition(clients["ecs"], desired, image_digest)
     target = {
         "Arn": cluster_arn,
@@ -413,6 +427,7 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     others = other_schedules(clients["scheduler"], names["schedule"])
     if others == []:
         actions.append(f"delete schedule group {SCHEDULE_GROUP} (no other apps use it)")
+        actions.append("delete shared S3 state storage if it is empty")
     cluster_unused = cluster_unused_after(clients["ecs"], names["family"])
     if cluster_unused:
         actions.append(f"delete ECS cluster {CLUSTER} (no other apps use it)")
@@ -436,6 +451,7 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     iam = clients["iam"]
     for role in (names["scheduler_role"], names["task_role"], names["execution_role"]):
         delete_role(iam, role)
+    delete_app_state(clients["s3"], account, region, app["name"], others == [])
     try:
         clients["ecr"].batch_delete_image(
             repositoryName=REPOSITORY, imageIds=[{"imageTag": names["image_tag"]}])

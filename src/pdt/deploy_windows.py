@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_common import CostEstimate
+from pdt.utils.state import _delete_local_state, _local_state_exists
 
 
 class WindowsDeployError(Exception):
@@ -336,23 +337,33 @@ def destroy(app: dict, assume_yes: bool) -> int:
     except WindowsDeployError as exc:
         console.error(str(exc))
         return 1
-    if not exists:
+    project = Path(app["dir"]).parent
+    saved_state = _local_state_exists(project, app["name"])
+    if not exists and not saved_state:
         console.done(f"Nothing to remove for {app['name']}; task {name} does not exist.")
         return 0
-    if not confirm([f"delete Windows scheduled task {name}"], assume_yes):
+    actions = []
+    if exists:
+        actions.append(f"delete Windows scheduled task {name}")
+    if saved_state:
+        actions.append(f"delete saved state for {app['name']}")
+    if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 1
-    try:
-        _run(
-            powershell,
-            f"Unregister-ScheduledTask -TaskName {_ps_string(name)} "
-            "-Confirm:$false -ErrorAction Stop",
-            elevate=True,
-        )
-    except WindowsDeployError as exc:
-        console.error(str(exc))
-        return 1
-    console.done(f"Removed Windows task {name}.")
+    if exists:
+        try:
+            _run(
+                powershell,
+                f"Unregister-ScheduledTask -TaskName {_ps_string(name)} "
+                "-Confirm:$false -ErrorAction Stop",
+                elevate=True,
+            )
+        except WindowsDeployError as exc:
+            console.error(str(exc))
+            return 1
+    if saved_state:
+        _delete_local_state(project, app["name"])
+    console.done(f"Removed {app['name']} from this Windows computer.")
     return 0
 
 

@@ -40,6 +40,7 @@ from pdt.config import ConfigError, check_env, load_env, merged_app
 from pdt.utils.entra import graph_pages, graph_token
 from pdt.utils.log import die, log
 from pdt.utils.send_email import pick_transport, send_email
+from pdt.utils.state import read, update
 
 EXIT_OK = 0
 EXIT_CONFIG = 1
@@ -131,7 +132,8 @@ def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * EARTH_KM * math.asin(math.sqrt(a))
 
 
-def find_impossible(logins: list, min_distance_km: float) -> list:
+def find_impossible(logins: list, min_distance_km: float,
+                    after: datetime | None = None) -> list:
     """Sort each user's logins by time; flag consecutive pairs at least min_distance_km apart."""
     by_user = {}
     for login in logins:
@@ -143,6 +145,8 @@ def find_impossible(logins: list, min_distance_km: float) -> list:
         for first, second in zip(rows, rows[1:]):
             km = distance_km(first["lat"], first["lon"], second["lat"], second["lon"])
             if km < min_distance_km:
+                continue
+            if after is not None and second["ts"] <= after:
                 continue
             hours = (second["ts"] - first["ts"]).total_seconds() / 3600
             hits.append({
@@ -202,7 +206,9 @@ def main() -> int:
     email_to = cfg.get("email_to") or ""
     email_from = str(cfg.get("email_from") or "").strip()
 
-    since = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    started_at = datetime.now(timezone.utc)
+    checkpoint = parse_ts(read().get("last_successful_run"))
+    since = started_at - timedelta(hours=lookback_hours)
     log("info", "starting", lookback_hours=lookback_hours, min_distance_km=min_distance_km,
         since=f"{since:%Y-%m-%dT%H:%M:%SZ}", email=transport)
 
@@ -212,9 +218,10 @@ def main() -> int:
     logins = fetch_signins(token, since)
     log("info", "usable logins", count=len(logins))
 
-    hits = find_impossible(logins, min_distance_km)
+    hits = find_impossible(logins, min_distance_km, checkpoint)
     if len(hits) == 0:
         log("info", "no impossible travel found")
+        update(lambda values: {**values, "last_successful_run": started_at.isoformat()})
         return EXIT_OK
     for hit in hits:
         log("warning", "impossible travel", user=hit["upn"], km=hit["km"], hours=hit["hours"],
@@ -225,6 +232,7 @@ def main() -> int:
         log("info", "email not configured; findings printed to stdout", count=len(hits))
     else:
         log("info", "alert sent", transport=transport, to=email_to, count=len(hits))
+    update(lambda values: {**values, "last_successful_run": started_at.isoformat()})
     return EXIT_OK
 
 

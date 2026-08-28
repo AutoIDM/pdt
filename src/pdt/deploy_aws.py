@@ -43,6 +43,7 @@ MANAGED_TAGS = {"managed-by": "pdt"}
 SCHEDULE_GROUP = "pdt"
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
+STATE_DOCUMENT_KIB = 1
 PRICE_LIST_URL = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/{offer}/current/{region}/index.json"
 ROLE_PROPAGATION_DELAYS = (1, 2, 4, 8)
 COMMON_ACTIONS = [
@@ -74,6 +75,12 @@ COMMON_ACTIONS = [
     "scheduler:ListSchedules",
     "scheduler:TagResource",
     "scheduler:UpdateSchedule",
+    "s3:CreateBucket",
+    "s3:DeleteBucket",
+    "s3:DeleteObject",
+    "s3:GetBucketTagging",
+    "s3:ListBucket",
+    "s3:PutBucketTagging",
     "secretsmanager:CreateSecret",
     "secretsmanager:DeleteSecret",
     "secretsmanager:DescribeSecret",
@@ -402,6 +409,17 @@ def list_price(offer: str, region: str, usagetype_suffix: str) -> float:
     raise LookupError(f"no {usagetype_suffix!r} price for {offer} in region {region}")
 
 
+def state_cost_items(region: str, runs: float) -> list[tuple[str, float]]:
+    gib = STATE_DOCUMENT_KIB / 1024 / 1024
+    stored = gib * list_price("AmazonS3", region, "TimedStorage-ByteHrs")
+    writes = runs * list_price("AmazonS3", region, "Requests-Tier1")
+    reads = runs * list_price("AmazonS3", region, "Requests-Tier2")
+    return [
+        ("S3 state: 1 KiB stored", stored),
+        (f"S3 state: ~{runs:.0f} reads and writes", reads + writes),
+    ]
+
+
 def recent_stream_seconds(logs, log_group: str) -> float | None:
     # One log stream per run (Fargate task); its first and last event bound the run.
     try:
@@ -510,7 +528,67 @@ def resource_exists(client, operation: str, **kwargs) -> bool:
 
 def clients_for(session) -> dict:
     return {name: session.client(name) for name in
-            ("sts", "logs", "secretsmanager", "iam", "scheduler")}
+            ("sts", "logs", "secretsmanager", "iam", "scheduler", "s3")}
+
+
+def state_bucket(account: str, region: str) -> str:
+    return f"pdt-state-{account}-{region}"
+
+
+def state_location(account: str, region: str, app_name: str) -> str:
+    return f"s3://{state_bucket(account, region)}/apps/{app_name}.json"
+
+
+def state_object_arn(account: str, region: str, app_name: str) -> str:
+    return f"arn:aws:s3:::{state_bucket(account, region)}/apps/{app_name}.json"
+
+
+def ensure_state_bucket(s3, account: str, region: str) -> None:
+    name = state_bucket(account, region)
+    try:
+        s3.head_bucket(Bucket=name)
+        try:
+            tags = s3.get_bucket_tagging(Bucket=name).get("TagSet", [])
+        except Exception as exc:
+            if error_code(exc) == "NoSuchTagSet":
+                fail(f"S3 bucket {name} exists but is not managed by PDT")
+            raise
+        if not has_managed_tag(tags, "Key", "Value"):
+            fail(f"S3 bucket {name} exists but is not managed by PDT")
+    except Exception as exc:
+        code = error_code(exc)
+        if code in {"403", "AccessDenied"}:
+            fail(f"S3 bucket {name} exists but this AWS login cannot verify its PDT tag")
+        if not not_found(exc) and code not in {"404", "NoSuchBucket"}:
+            raise
+        request = {"Bucket": name}
+        if region != "us-east-1":
+            request["CreateBucketConfiguration"] = {"LocationConstraint": region}
+        s3.create_bucket(**request)
+    s3.put_bucket_tagging(Bucket=name, Tagging={"TagSet": iam_tags()})
+
+
+def delete_app_state(s3, account: str, region: str, app_name: str,
+                     no_other_apps: bool) -> None:
+    name = state_bucket(account, region)
+    key = f"apps/{app_name}.json"
+    try:
+        try:
+            tags = s3.get_bucket_tagging(Bucket=name).get("TagSet", [])
+        except Exception as exc:
+            if error_code(exc) == "NoSuchTagSet":
+                fail(f"S3 bucket {name} exists but is not managed by PDT")
+            raise
+        if not has_managed_tag(tags, "Key", "Value"):
+            fail(f"S3 bucket {name} exists but is not managed by PDT")
+        s3.delete_object(Bucket=name, Key=key)
+        if no_other_apps:
+            items = s3.list_objects_v2(Bucket=name).get("Contents", [])
+            if not items:
+                s3.delete_bucket(Bucket=name)
+    except Exception as exc:
+        if error_code(exc) not in {"404", "NoSuchBucket", "NoSuchKey"}:
+            raise
 
 
 def delete_secret(secrets, name: str) -> None:

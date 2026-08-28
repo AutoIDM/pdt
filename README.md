@@ -212,6 +212,21 @@ Reports active Monday users whose email address does not match the `userPrincipa
 
 Set `PDT_PROJECT` to name the project folder directly, instead of letting pdt search upward. Deployed jobs get it set for them.
 
+## App state
+
+Apps can keep one JSON state document. Import `read` and `update` from `pdt.utils.state`. `read()` returns the document's `values` object. `update()` calls your function with the newest values and retries a conflicting write. The update function can run more than once, so keep external actions outside it.
+
+```python
+from datetime import datetime, timezone
+from pdt.utils.state import read, update
+
+previous = read()
+send_report(previous)
+update(lambda values: {**values, "last_successful_run": datetime.now(timezone.utc).isoformat()})
+```
+
+PDT stores local and Windows state in `.pdt/state.sqlite3`. A deployed app receives an opaque cloud storage location.
+
 ## Writing your own app
 
 An app is a folder with a `run.py` that has a `main()` function. It declares its own dependencies in a script header, and pdt is one of them:

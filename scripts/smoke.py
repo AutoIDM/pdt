@@ -21,6 +21,7 @@ WHEEL_MUST_HOLD = (
     "pdt/scaffold.py",
     "pdt/deploy_azure.py",
     "pdt/utils/send_email.py",
+    "pdt/utils/state.py",
     "pdt/examples/impossible-travel-report/run.py",
     "pdt/examples/impossible-travel-report/config.yml",
     "pdt/examples/impossible-travel-report/env.template",
@@ -131,6 +132,11 @@ def main() -> int:
 
         check(not (project / ".venv").exists() and not (project / "cli").exists(),
               "the tool leaves nothing behind in the project")
+
+        state = run([str(venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")),
+                     "-c", "from pdt.utils.state import read, update; update(lambda v: {**v, 'ok': True}); assert read() == {'ok': True}"],
+                    project / "my-report")
+        check(state.returncode == 0, "the installed state API stores an app document")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

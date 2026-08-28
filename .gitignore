@@ -6,6 +6,7 @@
 service-account*.json
 
 # Local state
+.pdt/
 .secrets/*
 !.secrets/.gitkeep
 .venv/

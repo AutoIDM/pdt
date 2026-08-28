@@ -100,7 +100,8 @@ def cmd_run(args) -> int:
                 console.error(f"{args.app}: {problem}")
             return 1
         prepare_email_auth(auth_env_file(app["dir"]))
-    proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
+    env = dict(os.environ, PDT_PROJECT=str(config.find_project()), PDT_STATE_APP=app["name"])
+    proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"], env=env)
     if (proc.returncode == 0 and args.app == scaffold.STARTER
             and not config.is_deployed(args.app)):
         console.say()

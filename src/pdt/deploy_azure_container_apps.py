@@ -18,18 +18,19 @@ from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
     AZ, RECENT_RUNS, assign_role, az_json, az_tsv, azure_settings, check_shared_names,
-    clean_name, cost_estimate, destroy_group, ensure_group_and_vault, ensure_secret,
-    group_can_be_deleted, key_vault_item, managed_by_pdt, managed_secret,
-    other_pdt_apps, owned_by, preflight, purge_secret, report_shared_kept,
-    require_managed, resource_id, retail_price, run_basis, run_quiet, run_stream,
-    secret_actions, secret_name, secret_state, workspace_resource,
+    clean_name, cost_estimate, delete_app_state, destroy_group,
+    ensure_group_and_vault, ensure_secret, ensure_state_container, group_can_be_deleted,
+    key_vault_item, managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
+    purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
+    run_basis, run_quiet, run_stream, secret_actions, secret_name, secret_state,
+    state_cost_items, state_location, workspace_resource,
 )
 from pdt.deploy_common import (
     CostEstimate, fail, gather_secrets, image_action, stage_build_context,
     write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
-             "Microsoft.OperationalInsights")
+             "Microsoft.OperationalInsights", "Microsoft.Storage")
 CPU = "0.5"
 MEMORY = "1.0Gi"
 
@@ -85,12 +86,15 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             "--registry-server", f"{settings['registry']}.azurecr.io",
             "--registry-identity", identity_id,
         ]
+        env_vars = [f"PDT_STATE_LOCATION={state_location(settings, app_name)}",
+                    f"PDT_STATE_APP={app_name}"]
         if secret_uri:
             args += [
                 "--secrets",
                 f"pdt-env=keyvaultref:{secret_uri},identityref:{identity_id}",
-                "--env-vars", "PDT_ENV_JSON=secretref:pdt-env",
             ]
+            env_vars.insert(0, "PDT_ENV_JSON=secretref:pdt-env")
+        args += ["--env-vars", *env_vars]
         run_quiet(*args, retry_access=True)
         return
 
@@ -106,10 +110,13 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             "--resource-group", rg, "--secrets",
             f"pdt-env=keyvaultref:{secret_uri},identityref:{identity_id}",
             retry_access=True)
-        common += ["--replace-env-vars",
-                   "PDT_ENV_JSON=secretref:pdt-env"]
+        common += ["--replace-env-vars", "PDT_ENV_JSON=secretref:pdt-env",
+                   f"PDT_STATE_LOCATION={state_location(settings, app_name)}",
+                   f"PDT_STATE_APP={app_name}"]
     else:
         common += ["--remove-env-vars", "PDT_ENV_JSON"]
+        common += ["--set-env-vars", f"PDT_STATE_LOCATION={state_location(settings, app_name)}",
+                   f"PDT_STATE_APP={app_name}"]
     run_quiet("containerapp", "job", "update", *common, retry_access=True)
     if not secret_uri:
         # Ignore absence: Azure returns nonzero when there is nothing to remove.
@@ -157,6 +164,7 @@ def cost_estimate_for(region: str, cron: str, job: str, rg: str,
         ]
         if num_secrets:
             items.append(key_vault_item(region, runs))
+        items += state_cost_items(region, runs)
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
     return cost_estimate(
@@ -184,6 +192,10 @@ def deploy(app: dict, assume_yes: bool) -> int:
                        "--resource-group", rg)
     require_managed(registry, f"ACR {settings['registry']}")
     registry_exists = registry is not None
+    storage = az_json("storage", "account", "show", "--name", settings["storage"],
+                      "--resource-group", rg)
+    require_managed(storage, f"Storage account {settings['storage']}")
+    storage_exists = storage is not None
     environment = az_json(
         "containerapp", "env", "show", "--name", settings["environment"],
         "--resource-group", rg)
@@ -209,6 +221,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    + f" resource group {rg}")
     actions.append(("use existing" if registry_exists else "create")
                    + f" ACR {settings['registry']} (Basic)")
+    actions.append(("use existing" if storage_exists else "create")
+                   + f" Storage account {settings['storage']} (Standard_LRS, shared)")
     actions.append(
         ("keep" if arm_auth_enabled else "enable")
         + f" ACR authentication-as-arm on {settings['registry']} "
@@ -221,6 +235,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    + f" managed identity {settings['identity']}")
     actions.append(("use existing" if vault_exists else "create")
                    + f" Key Vault {settings['vault']} (RBAC)")
+    actions.append("reconcile shared Blob Storage state container")
     actions.append("ensure scoped Key Vault secret permissions for the deployer "
                    "and managed identity")
     actions.append(image_action(
@@ -240,6 +255,12 @@ def deploy(app: dict, assume_yes: bool) -> int:
                   "--resource-group", rg, "--location", settings["region"],
                   "--sku", "Basic", "--admin-enabled", "false",
                   "--tags", "managed-by=pdt")
+    if not storage_exists:
+        run_quiet("storage", "account", "create", "--name", settings["storage"],
+                  "--resource-group", rg, "--location", settings["region"],
+                  "--sku", "Standard_LRS", "--allow-blob-public-access", "false",
+                  "--tags", "managed-by=pdt")
+    ensure_state_container(settings)
     if not environment_exists:
         console.step(f"creating Container Apps environment {settings['environment']}")
         logs_id = az_tsv("monitor", "log-analytics", "workspace", "show",
@@ -266,6 +287,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
                          "registries", settings["registry"])
     assign_role(acr_id, principal_id, "AcrPull")
     assign_role(vault_id, principal_id, "Key Vault Secrets User")
+    assign_role(resource_id(settings, "Microsoft.Storage", "storageAccounts",
+                            settings["storage"]),
+                principal_id, "Storage Blob Data Contributor")
     console.step(f"enabling ACR authentication-as-arm on {settings['registry']}")
     enable_acr_arm_auth(settings["registry"])
 
@@ -322,6 +346,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         actions.append(f"delete image repository {name} from ACR {settings['registry']}")
     if secret_owned:
         actions.append(f"delete and purge Key Vault secret {sid}")
+    if not others:
+        actions.append("delete shared Blob Storage state container if it is empty")
     if not actions:
         console.done(f"Nothing owned by {name} to remove in resource group {rg}.")
         return 0
@@ -336,5 +362,6 @@ def destroy(app: dict, assume_yes: bool) -> int:
                   "--repository", name, "--yes")
     if secret_owned:
         purge_secret(settings, sid)
+    delete_app_state(settings, name, not others)
     report_shared_kept(rg, others)
     return 0

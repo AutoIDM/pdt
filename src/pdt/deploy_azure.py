@@ -55,6 +55,7 @@ PLACEHOLDER_SUBSCRIPTION = "00000000-0000-0000-0000-000000000000"
 PRICES_API = "https://prices.azure.com/api/retail/prices"
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
+STATE_DOCUMENT_KIB = 1
 
 
 def run_quiet(*args: str, data: str | None = None, retry_access: bool = False) -> str:
@@ -93,6 +94,71 @@ def az_json(*args: str):
 
 def az_tsv(*args: str) -> str:
     return run_quiet(*args, "--output", "tsv").strip()
+
+
+def state_location(settings: dict[str, str], app_name: str) -> str:
+    return f"azblob://{settings['storage']}/pdt-state/apps/{app_name}.json"
+
+
+def ensure_state_container(settings: dict[str, str]) -> None:
+    scope = resource_id(settings, "Microsoft.Storage", "storageAccounts", settings["storage"])
+    assign_role(scope, settings["deployer_object_id"], "Storage Blob Data Contributor",
+                settings["deployer_principal_type"])
+    exists = json.loads(run_quiet(
+        "storage", "container", "exists", "--account-name", settings["storage"],
+        "--name", "pdt-state", "--auth-mode", "login", "--output", "json",
+        retry_access=True))
+    if exists.get("exists"):
+        container = json.loads(run_quiet(
+            "storage", "container", "show", "--account-name", settings["storage"],
+            "--name", "pdt-state", "--auth-mode", "login", "--output", "json",
+            retry_access=True))
+        metadata = container.get("metadata") or {}
+        if metadata.get("managed-by") != "pdt":
+            fail("Blob Storage container pdt-state exists but is not managed by PDT")
+        return
+    run_quiet("storage", "container", "create", "--account-name", settings["storage"],
+              "--name", "pdt-state", "--auth-mode", "login", "--metadata", "managed-by=pdt",
+              retry_access=True)
+
+
+def delete_app_state(settings: dict[str, str], app_name: str, no_other_apps: bool) -> None:
+    storage = az_json("storage", "account", "show", "--name", settings["storage"],
+                      "--resource-group", settings["resource_group"])
+    if storage is None:
+        return
+    require_managed(storage, f"Storage account {settings['storage']}")
+    scope = resource_id(settings, "Microsoft.Storage", "storageAccounts", settings["storage"])
+    assign_role(scope, settings["deployer_object_id"], "Storage Blob Data Contributor",
+                settings["deployer_principal_type"])
+    exists = json.loads(run_quiet(
+        "storage", "container", "exists", "--account-name", settings["storage"],
+        "--name", "pdt-state", "--auth-mode", "login", "--output", "json",
+        retry_access=True))
+    if not exists.get("exists"):
+        return
+    container = json.loads(run_quiet(
+        "storage", "container", "show", "--account-name", settings["storage"],
+        "--name", "pdt-state", "--auth-mode", "login", "--output", "json",
+        retry_access=True))
+    if (container.get("metadata") or {}).get("managed-by") != "pdt":
+        fail("Blob Storage container pdt-state exists but is not managed by PDT")
+    blob_exists = json.loads(run_quiet(
+        "storage", "blob", "exists", "--account-name", settings["storage"],
+        "--container-name", "pdt-state", "--name", f"apps/{app_name}.json",
+        "--auth-mode", "login", "--output", "json", retry_access=True))
+    if blob_exists.get("exists"):
+        run_quiet("storage", "blob", "delete", "--account-name", settings["storage"],
+                  "--container-name", "pdt-state", "--name", f"apps/{app_name}.json",
+                  "--auth-mode", "login")
+    if no_other_apps:
+        blobs = json.loads(run_quiet(
+            "storage", "blob", "list", "--account-name", settings["storage"],
+            "--container-name", "pdt-state", "--auth-mode", "login", "--output", "json",
+            retry_access=True))
+        if not blobs:
+            run_quiet("storage", "container", "delete", "--account-name", settings["storage"],
+                      "--name", "pdt-state", "--auth-mode", "login")
 
 
 def clean_name(value: str, limit: int = 32) -> str:
@@ -314,16 +380,40 @@ def assign_role(scope: str, principal_id: str, role: str,
               "--scope", scope)
 
 
-def retail_price(region: str, service: str, meter: str, sku: str) -> tuple[float, str]:
+def retail_price(region: str, service: str, meter: str, sku: str,
+                 product: str = "") -> tuple[float, str]:
     query = (f"serviceName eq '{service}' and armRegionName eq '{region}' "
              f"and meterName eq '{meter}' and skuName eq '{sku}' "
              f"and type eq 'Consumption'")
+    if product:
+        query += f" and productName eq '{product}'"
     url = f"{PRICES_API}?$filter={urllib.parse.quote(query)}"
     items = fetch_json(url, timeout=30).get("Items") or []
-    items = [i for i in items if i.get("retailPrice")]
+    items = [i for i in items
+             if i.get("retailPrice") and i.get("tierMinimumUnits", 0) == 0]
     if not items:
         raise LookupError(f"no {meter!r} price for {service} in region {region}")
     return float(items[0]["retailPrice"]), items[0].get("unitOfMeasure", "")
+
+
+def state_cost_items(region: str, runs: float) -> list[tuple[str, float]]:
+    stored_price, stored_unit = retail_price(
+        region, "Storage", "LRS Data Stored", "Standard LRS", "General Block Blob")
+    read_price, read_unit = retail_price(
+        region, "Storage", "Read Operations", "Standard LRS", "General Block Blob")
+    write_price, write_unit = retail_price(
+        region, "Storage", "LRS Write Operations", "Standard LRS", "General Block Blob")
+    if stored_unit not in ("1 GB/Month", "GB/Month"):
+        raise LookupError(f"unexpected Azure Storage unit {stored_unit!r}")
+    units = {"10K": 10000, "10K Operations": 10000}
+    if read_unit not in units or write_unit not in units:
+        raise LookupError(f"unexpected Azure Storage operation unit {read_unit!r}, {write_unit!r}")
+    stored = STATE_DOCUMENT_KIB / 1024 / 1024 * stored_price
+    operations = runs * (read_price / units[read_unit] + write_price / units[write_unit])
+    return [
+        ("Blob state: 1 KiB stored", stored),
+        (f"Blob state: ~{runs:.0f} reads and writes", operations),
+    ]
 
 
 def owned_by(resource: dict | None, app_name: str) -> bool:

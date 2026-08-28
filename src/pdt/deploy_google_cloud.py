@@ -62,6 +62,7 @@ APIS = (
     "iam.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
+    "storage.googleapis.com",
 )
 DESTROY_APIS = (
     "artifactregistry.googleapis.com",
@@ -69,6 +70,7 @@ DESTROY_APIS = (
     "iam.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
+    "storage.googleapis.com",
 )
 
 BILLING_API = "https://cloudbilling.googleapis.com/v1"
@@ -77,6 +79,7 @@ JOB_VCPU = 1.0
 JOB_MEMORY_GIB = 0.5
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
+STATE_DOCUMENT_KIB = 1
 
 
 def run_quiet(*args: str, data: str | None = None) -> str:
@@ -131,6 +134,14 @@ def managed_by_pdt(resource: dict | None) -> bool:
         return False
     labels = resource.get("labels") or (resource.get("metadata") or {}).get("labels") or {}
     return labels.get("managed-by") == "pdt"
+
+
+def state_bucket(project: str) -> str:
+    return f"pdt-state-{project}"
+
+
+def state_location(project: str, app_name: str) -> str:
+    return f"gs://{state_bucket(project)}/apps/{app_name}.json"
 
 
 def require_managed(resource: dict | None, label: str) -> None:
@@ -383,6 +394,29 @@ def sku_price(skus: list, region: str, description: str,
     return price, expr.get("usageUnit", "")
 
 
+def state_sku_price(skus: list, region: str, description: str) -> float:
+    matches = [sku for sku in skus
+               if (sku.get("category") or {}).get("usageType") == "OnDemand"
+               and (region in (sku.get("serviceRegions") or [])
+                    or "global" in (sku.get("serviceRegions") or []))
+               and sku.get("description", "").lower().startswith(description.lower())]
+    if not matches:
+        raise LookupError(f"no {description!r} SKU priced for region {region}")
+    expression = matches[0]["pricingInfo"][0]["pricingExpression"]
+    rate = expression["tieredRates"][-1]["unitPrice"]
+    return int(rate.get("units") or 0) + int(rate.get("nanos") or 0) / 1e9
+
+
+def state_cost_items(skus: list, region: str, runs: float) -> list[tuple[str, float]]:
+    stored = STATE_DOCUMENT_KIB / 1024 / 1024 * state_sku_price(skus, region, "Standard Storage")
+    reads = runs * state_sku_price(skus, region, "Regional Standard Class B Operations")
+    writes = runs * state_sku_price(skus, region, "Regional Standard Class A Operations")
+    return [
+        ("Cloud Storage state: 1 KiB stored", stored),
+        (f"Cloud Storage state: ~{runs:.0f} reads and writes", reads + writes),
+    ]
+
+
 def per_month(usage_unit: str) -> float:
     # "count" is the Cloud Scheduler job-day SKU, priced at 1/31 of the monthly rate
     factors = {"mo": 1.0, "d": 30.44, "h": 730.0, "count": 31.0}
@@ -439,6 +473,7 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
         run_skus = billing_list(f"services/{ids['Cloud Run']}/skus", "skus", project)
         sched_skus = billing_list(f"services/{ids['Cloud Scheduler']}/skus", "skus", project)
         secret_skus = billing_list(f"services/{ids['Secret Manager']}/skus", "skus", project)
+        storage_skus = billing_list(f"services/{ids['Cloud Storage']}/skus", "skus", project)
         cpu_price, _ = sku_price(run_skus, region, "Jobs CPU")
         mem_price, _ = sku_price(run_skus, region, "Jobs Memory")
         run_cost = runs * seconds * (JOB_VCPU * cpu_price + JOB_MEMORY_GIB * mem_price)
@@ -454,6 +489,7 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                                                   "Secret version", prefer="storage")
             secret_cost = num_secrets * secret_price * per_month(secret_unit)
             items.append((f"Secret Manager: {num_secrets} secret version", secret_cost))
+        items += state_cost_items(storage_skus, region, runs)
     except Exception as exc:
         detail = billing_detail(exc)
         disabled = "has not been used" in detail or "SERVICE_DISABLED" in detail
@@ -511,6 +547,11 @@ def deploy(app: dict, assume_yes: bool) -> int:
             and not service_account_owned(service_account)):
         fail(f"service account {sa} exists but is not managed by PDT")
     sa_exists = service_account is not None
+    bucket = state_bucket(project)
+    state_store = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}",
+                                    "--project", project)
+    require_managed(state_store, f"Cloud Storage bucket {bucket}")
+    state_store_exists = state_store is not None
     run_job = read_json_or_none(
         "run", "jobs", "describe", job, "--region", region, "--project", project)
     require_managed(run_job, f"Cloud Run job {job}")
@@ -535,6 +576,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
     actions = [("use existing" if repo_exists else "create")
                + f" Artifact Registry repo {repo}"]
+    actions.append(("use existing" if state_store_exists else "create")
+                   + f" Cloud Storage bucket {bucket} (shared app state)")
     actions.append(image_action(app, f"build and push image {image}"))
     if secret_state:
         actions.append(f"{secret_state} secret {sid} ({len(values)} env vars as one json blob)")
@@ -556,6 +599,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         run_quiet("artifacts", "repositories", "create", repo,
                   "--repository-format", "docker", "--location", region,
                   "--project", project, "--labels", "managed-by=pdt")
+    if not state_store_exists:
+        run_quiet("storage", "buckets", "create", f"gs://{bucket}", "--location", region,
+                  "--uniform-bucket-level-access", "--labels", "managed-by=pdt")
     console.step(f"building image {image}")
     build_image(app, image, project)
     if not sa_exists:
@@ -580,6 +626,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
         run_quiet("secrets", "add-iam-policy-binding", sid, "--project", project,
                   "--member", f"serviceAccount:{sa}",
                   "--role", "roles/secretmanager.secretAccessor")
+    run_quiet("storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
+              "--member", f"serviceAccount:{sa}", "--role", "roles/storage.objectUser")
     if oauth_cache_updates:
         run_quiet("secrets", "add-iam-policy-binding", sid, "--project", project,
                   "--member", f"serviceAccount:{sa}",
@@ -590,9 +638,12 @@ def deploy(app: dict, assume_yes: bool) -> int:
             "--labels", "managed-by=pdt"]
     if values:
         args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"]
+    env_vars = [f"PDT_STATE_LOCATION={state_location(project, name)}",
+                f"PDT_STATE_APP={name}"]
     if oauth_cache_updates:
         resource = f"projects/{project}/secrets/{sid}"
-        args += ["--set-env-vars", f"PDT_ENV_SECRET_RESOURCE={resource}"]
+        env_vars.append(f"PDT_ENV_SECRET_RESOURCE={resource}")
+    args += ["--set-env-vars", *env_vars]
     run_quiet(*args)
     run_quiet("run", "jobs", "add-iam-policy-binding", job, "--region", region,
               "--project", project, "--member", f"serviceAccount:{sa}",
@@ -682,7 +733,11 @@ def destroy(app: dict, assume_yes: bool) -> int:
     delete_image = bool(app_images) and not delete_repo
     delete_sa = (sa == default_sa and service_account_owned(service_account)
                  and not other_project_jobs and not unmanaged_app_resource)
-
+    bucket = state_bucket(project)
+    state_store = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}",
+                                    "--project", project)
+    if state_store is not None and not managed_by_pdt(state_store):
+        console.note(f"Cloud Storage bucket {bucket} is not managed by PDT; keeping it")
     actions = []
     if delete_scheduler:
         actions.append(f"delete Cloud Scheduler job {job}")
@@ -696,6 +751,23 @@ def destroy(app: dict, assume_yes: bool) -> int:
         actions.append(f"delete Artifact Registry repository {repo} (no other apps use it)")
     if delete_sa:
         actions.append(f"delete service account {sa} (no other apps use it)")
+    state_object = None
+    if managed_by_pdt(state_store):
+        state_object = read_json_or_none(
+            "storage", "objects", "describe", state_location(project, name),
+            "--project", project)
+        state_objects = list_json(
+            "storage", "objects", "list", f"gs://{bucket}", "--exhaustive",
+            "--project", project)
+    else:
+        state_objects = []
+    expected_objects = 1 if state_object is not None else 0
+    delete_state_store = (managed_by_pdt(state_store) and not other_project_jobs
+                          and len(state_objects) == expected_objects)
+    if state_object is not None:
+        actions.append(f"delete state object for {name}")
+    if delete_state_store:
+        actions.append(f"delete Cloud Storage bucket {bucket} (no other apps use it)")
     kept = []
     if scheduler is not None and not delete_scheduler:
         kept.append(f"Cloud Scheduler job {job}")
@@ -754,6 +826,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.step(f"deleting service account {sa}")
         run_quiet("iam", "service-accounts", "delete", sa,
                   "--project", project, "--quiet")
+    if state_object is not None:
+        run_quiet("storage", "rm", state_location(project, name), "--quiet")
+    if delete_state_store:
+        run_quiet("storage", "buckets", "delete", f"gs://{bucket}", "--quiet")
     console.done(f"Removed {name} from project {project}.")
     remaining = sorted(set(other_jobs))
     if remaining:
