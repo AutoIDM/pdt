@@ -1,0 +1,30 @@
+version: 2
+
+sources:
+  - name: tap_salesforce
+    tables:
+      - name: "Account"
+      - name: "Contact"
+      - name: "Opportunity"
+      - name: "OpportunityLineItem"
+      - name: "Product2"
+
+  - name: tap_netsuite
+    tables:
+      - name: "customer"
+      - name: "contact"
+      - name: "inventoryitem"
+      - name: "salesorder"
+      - name: "invoice"
+
+  - name: autoidm
+    tables:
+      - name: "python_desired_netsuite_customer"
+      - name: "python_desired_netsuite_contact"
+      - name: "python_desired_netsuite_salesorder"
+      - name: "python_desired_netsuite_invoice"
+      - name: "python_desired_salesforce_opportunity"
+
+  - name: autoidm_state
+    tables:
+      - name: "send_once_notifications"

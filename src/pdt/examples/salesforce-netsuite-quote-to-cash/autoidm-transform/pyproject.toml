@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "autoidm-transform"
+version = "0.1.0"
+description = "Salesforce to NetSuite transformations"
+authors = ["AutoIDM <info@autoidm.com>"]
+
+[tool.poetry.dependencies]
+python = ">=3.9"
+pandas = "2.2.3"
+numpy = "1.26.4" # Keep pinned to maintain wheel compatibility across runners.
+sqlalchemy = "2.0.38"
+psycopg2-binary = "2.9.11"
+
+[tool.poetry.dev-dependencies]
+pytest = "^6.2.5" # https://github.com/pytest-dev/pytest/discussions/9195
+ruff = "~=0.5.3"
+black = "~=24.4.2"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+autoidm-transform = "autoidm_transform.salesforce2netsuite.desired_netsuite:Transformation.run"
+autoidm-persist_state = "autoidm_transform.persist_state:State.run"

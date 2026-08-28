@@ -1,0 +1,329 @@
+version: 1
+send_anonymous_usage_stats: false
+plugins:
+  extractors:
+  - name: tap-salesforce
+    variant: meltano
+    pip_url: git+https://gitlab.com/meltano/tap-salesforce.git
+    config:
+      api_type: REST
+      start_date: '2010-01-01T00:00:00Z'
+    select:
+    - Account.*
+    - Contact.*
+    - Opportunity.*
+    - OpportunityLineItem.*
+    - Product2.*
+    - PricebookEntry.*
+  - name: tap-netsuite
+    namespace: tap_netsuite
+    pip_url: git+ssh://git@gitlab.com/autoidm/tap-netsuite.git
+    capabilities:
+    - state
+    - catalog
+    - discover
+    settings:
+    - name: production
+      kind: boolean
+    - name: account_id
+    - name: client_id
+      sensitive: true
+    - name: certificate_id
+    - name: private_key
+      sensitive: true
+    select:
+    - customer.*
+    - contact.*
+    - inventoryitem.*
+    - salesorder.*
+    - invoice.*
+  - name: tap-postgres
+    variant: meltanolabs
+    pip_url: git+https://github.com/MeltanoLabs/tap-postgres.git
+    config:
+      host: localhost
+      port: 5432
+      user: postgres
+      database: postgres
+    metadata:
+      '*':
+        replication-method: FULL_TABLE
+    select:
+    - autoidm-netsuite_customer_target_create.*
+    - autoidm-netsuite_customer_target_update.*
+    - autoidm-netsuite_contact_target_create.*
+    - autoidm-netsuite_contact_target_update.*
+    - autoidm-netsuite_salesorder_target_create.*
+    - autoidm-netsuite_salesorder_target_update.*
+    - autoidm-netsuite_invoice_target_create.*
+    - autoidm-netsuite_invoice_target_update.*
+  - name: tap-postgres-writeback
+    inherit_from: tap-postgres
+    select:
+    - autoidm-salesforce_opportunity_target_update.*
+  - name: tap-postgres-logs
+    inherit_from: tap-postgres
+    pip_url: meltanolabs-tap-postgres
+    select:
+    - autoidm-notifications.*
+    - autoidm-unsent_send_once_notifications.*
+    - autoidm_state-send_once_notifications.*
+    - autoidm-stg_salesforce_account.*
+    - autoidm-stg_salesforce_contact.*
+    - autoidm-stg_salesforce_opportunity.*
+    - autoidm-stg_salesforce_opportunitylineitem.*
+    - autoidm-stg_salesforce_product2.*
+    - autoidm-stg_netsuite_customer.*
+    - autoidm-stg_netsuite_contact.*
+    - autoidm-stg_netsuite_inventoryitem.*
+    - autoidm-stg_netsuite_salesorder.*
+    - autoidm-stg_netsuite_invoice.*
+    - autoidm-netsuite_customer_match.*
+    - autoidm-netsuite_contact_match.*
+    - autoidm-netsuite_salesorder_match.*
+    - autoidm-netsuite_invoice_match.*
+    - autoidm-salesforce_opportunity_match.*
+    - autoidm-netsuite_customer_target_create.*
+    - autoidm-netsuite_customer_target_update.*
+    - autoidm-netsuite_contact_target_create.*
+    - autoidm-netsuite_contact_target_update.*
+    - autoidm-netsuite_salesorder_target_create.*
+    - autoidm-netsuite_salesorder_target_update.*
+    - autoidm-netsuite_invoice_target_create.*
+    - autoidm-netsuite_invoice_target_update.*
+    - autoidm-salesforce_opportunity_target_update.*
+  - name: tap-postgres-notifications
+    inherit_from: tap-postgres
+    select:
+    - autoidm-notifications.*
+  - name: tap-postgres-send-once-notifications
+    inherit_from: tap-postgres
+    select:
+    - autoidm-unsent_send_once_notifications.*
+  loaders:
+  - name: target-postgres
+    variant: meltanolabs
+    pip_url: meltanolabs-target-postgres
+    config:
+      host: localhost
+      port: 5432
+      user: postgres
+      database: postgres
+      add_metadata_columns: true
+  - name: target-netsuite
+    namespace: target_netsuite
+    pip_url: git+ssh://git@gitlab.com/autoidm/target-netsuite.git
+    settings:
+    - name: production
+      kind: boolean
+    - name: account_id
+    - name: client_id
+      sensitive: true
+    - name: certificate_id
+    - name: private_key
+      sensitive: true
+  - name: target-salesforce
+    variant: dan-ladd
+    pip_url: git+https://github.com/dan-ladd/target-salesforce.git
+    config:
+      action: update
+      stream_maps:
+        autoidm-salesforce_opportunity_target_update:
+          __alias__: Opportunity
+          __else__: __NULL__
+          Id: id
+          NetSuite_Customer_Id__c: netsuite_customer_id
+          NetSuite_Sales_Order_Id__c: netsuite_sales_order_id
+          NetSuite_Invoice_Id__c: netsuite_invoice_id
+  - name: target-csv
+    namespace: target_csv
+    pip_url: git+https://github.com/MeltanoLabs/target-csv.git
+    executable: target-csv
+    config:
+      output_path_prefix: $MELTANO_PROJECT_ROOT/logs/
+      timestamp_format: '%Y-%m-%d.T%H%M%S'
+      file_naming_scheme: '{timestamp}_{stream_name}.csv'
+  - name: target-csv-artifacts
+    inherit_from: target-csv
+    config:
+      output_path_prefix: $MELTANO_PROJECT_ROOT/artifacts/
+      timestamp_format: '%Y-%m-%d.T%H%M%S'
+      file_naming_scheme: '{timestamp}_{stream_name}.csv'
+  - name: target-apprise
+    variant: autoidm
+    pip_url: target-apprise
+  transformers:
+  - name: dbt
+    namespace: dbt_postgres
+    pip_url: dbt-postgres==1.7.13
+    settings:
+    - name: password
+      kind: string
+      sensitive: true
+    commands:
+      clean:
+        args: clean
+        description: Delete all folders in the clean-targets list (usually the dbt_modules
+          and target directories.)
+      compile:
+        args: compile --models $DBT_MODELS
+        description: Generates executable SQL from source model, test, and analysis
+          files. Compiled SQL files are written to the target/ directory.
+      deps:
+        args: deps
+        description: Pull the most recent version of the dependencies listed in packages.yml
+      run:
+        args: run --models $DBT_MODELS
+        description: Compile SQL and execute against the current target database.
+      seed:
+        args: seed
+        description: Load data from csv files into your data warehouse.
+      snapshot:
+        args: snapshot
+        description: Execute snapshots defined in your project.
+      test:
+        args: test
+        description: Runs tests on data in deployed models.
+      pre_python: run -m +stg_salesforce_account +stg_salesforce_contact +stg_salesforce_opportunity +stg_salesforce_opportunitylineitem +stg_salesforce_product2 +stg_netsuite_customer +stg_netsuite_contact +stg_netsuite_inventoryitem +stg_netsuite_salesorder +stg_netsuite_invoice
+      post_python: run -m +unsent_send_once_notifications +netsuite_customer_target_create +netsuite_customer_target_update +netsuite_contact_target_create +netsuite_contact_target_update +netsuite_salesorder_target_create +netsuite_salesorder_target_update +netsuite_invoice_target_create +netsuite_invoice_target_update +salesforce_opportunity_target_update
+      docs generate:
+        args: docs generate
+        description: Generate docs
+      docs serve:
+        args: docs serve
+        description: Serve docs
+      drop_source_salesforce: run-operation autoidm_drop_salesforce
+      drop_source_netsuite: run-operation autoidm_drop_netsuite
+      create_db: run-operation autoidm_create_db
+    config:
+      target: postgres
+      host: localhost
+      port: 5432
+      user: postgres
+      dbname: postgres
+      project_dir: $MELTANO_PROJECT_ROOT/transform
+      PROFILES_DIR: $MELTANO_PROJECT_ROOT/transform/profile
+      source_schema: $MELTANO_LOAD__TARGET_SCHEMA
+      target_schema: autoidm
+  utilities:
+  - name: autoidm-transform
+    namespace: autoidm_transform
+    pip_url: -e ./autoidm-transform
+  - name: autoidm-persist_state
+    namespace: autoidm_transform
+    pip_url: -e ./autoidm-transform
+  - name: alembic
+    namespace: alembic
+    pip_url: alembic>=1.13.1 psycopg2-binary>=2.9.10 # alembic requires psycopg2 to work with Postgres but it doesn't install as a dependency automatically
+    commands:
+      upgrade:
+        args: upgrade head
+        description: Upgrade to the latest version of the database schema.
+      downgrade:
+        args: downgrade base
+        description: Downgrade to the initial version of the database schema.
+environments:
+- name: dev
+  config:
+    plugins:
+      extractors:
+      - name: tap-salesforce
+        config:
+          is_sandbox: true
+      - name: tap-netsuite
+        config:
+          production: false
+      loaders:
+      - name: target-csv
+        config:
+          output_path_prefix: output/
+      - name: target-postgres
+        config:
+          database: postgres
+          user: postgres
+      - name: target-netsuite
+        config:
+          production: false
+      - name: target-salesforce
+        config:
+          domain: test
+  env:
+    SQLALCHEMY_URL: ${POSTGRES_SQLALCHEMY_URL_NO_DB}/postgres
+- name: prod
+  config:
+    plugins:
+      extractors:
+      - name: tap-salesforce
+        config:
+          is_sandbox: false
+      - name: tap-netsuite
+        config:
+          production: true
+      loaders:
+      - name: target-netsuite
+        config:
+          production: true
+      - name: target-salesforce
+        config:
+          domain: login
+  env:
+    CI_DB_NAME: $CI_DB_NAME
+    SQLALCHEMY_URL: ${POSTGRES_SQLALCHEMY_URL_NO_DB}/postgres #For autoidm-transform
+- name: ci
+  config:
+    plugins:
+      extractors:
+      - name: tap-salesforce
+        config:
+          is_sandbox: true
+      - name: tap-netsuite
+        config:
+          production: false
+      - name: tap-postgres
+        config:
+          database: ${CONFIG_CI_DB_NAME}
+      loaders:
+      - name: target-postgres
+        config:
+          database: ${CONFIG_CI_DB_NAME}
+      - name: target-netsuite
+        config:
+          production: false
+      - name: target-salesforce
+        config:
+          domain: test
+      - name: target-csv
+        config:
+          output_path_prefix: $MELTANO_PROJECT_ROOT/logs/
+          timestamp_format: '%Y-%m-%d.T%H%M%S'
+          file_naming_scheme: '{timestamp}_mr_${CI_MERGE_REQUEST_IID}_{stream_name}.csv'
+      transformers:
+      - name: dbt
+        config:
+          dbname: ${CONFIG_CI_DB_NAME}
+  env:
+    SQLALCHEMY_URL: ${POSTGRES_SQLALCHEMY_URL_NO_DB}/${CI_DB_NAME}
+    CONFIG_CI_DB_NAME: postgres_mr_$CI_MERGE_REQUEST_IID #Config values can take env but they don't expand the same as just envs
+env:
+  CI_DB_NAME: postgres_mr_$CI_MERGE_REQUEST_IID
+jobs:
+- name: extract
+  tasks:
+  - alembic:upgrade dbt:drop_source_salesforce dbt:drop_source_netsuite
+    tap-salesforce target-postgres
+    tap-netsuite target-postgres
+- name: transform
+  tasks:
+  - dbt:pre_python autoidm-transform dbt:post_python
+- name: artifacts
+  tasks:
+  - tap-postgres-logs target-csv-artifacts
+- name: load
+  tasks:
+  - tap-postgres target-netsuite
+    tap-postgres-notifications target-apprise
+    tap-postgres-send-once-notifications target-apprise
+    autoidm-persist_state
+    tap-postgres-writeback target-salesforce
+venv:
+  backend: uv
