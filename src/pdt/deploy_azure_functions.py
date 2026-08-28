@@ -31,6 +31,12 @@ from pdt.deploy_common import fail, gather_secrets, run_build, stage_build_conte
 PROVIDERS = ("Microsoft.Web", "Microsoft.Storage")
 INSTANCE_MEMORY_MB = 512
 PYTHON_VERSION = "3.12"
+PORTAL_CORS_ORIGINS = (
+    "https://functions-next.azure.com",
+    "https://functions-staging.azure.com",
+    "https://functions.azure.com",
+    "https://portal.azure.com",
+)
 HOST_JSON = {
     "version": "2.0",
     "functionTimeout": "00:30:00",
@@ -181,6 +187,17 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if current and not owned_by(current, name):
         fail(f"Function App {function_app} already exists but is not owned by "
              f"PDT app {name}; choose another resource group")
+    cors = {}
+    if current:
+        cors = az_json("functionapp", "cors", "show", "--name", function_app,
+                       "--resource-group", rg) or {}
+    allowed_origins = set(cors.get("allowedOrigins") or [])
+    # Azure ignores "*" when any explicit origin is present.
+    if "*" in allowed_origins:
+        missing_origins = []
+    else:
+        missing_origins = [origin for origin in PORTAL_CORS_ORIGINS
+                           if origin not in allowed_origins]
     vault_exists, current_hash = secret_state(settings, sid, name, values)
 
     actions = ["register required Azure resource providers"]
@@ -201,6 +218,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions.append(("update" if current else "create")
                    + f' Function App {function_app}: "{cron}" (UTC, Flex Consumption, '
                    f'{INSTANCE_MEMORY_MB} MB, 30-minute limit)')
+    if missing_origins:
+        actions.append("allow Azure portal Code + Test to run the Function App")
     if not confirm(actions, assume_yes, cost_lines(
             settings["region"], cron, current["id"] if current else None, 1 if values else 0)):
         print("Aborted; nothing was changed.")
@@ -231,6 +250,10 @@ def deploy(app: dict, assume_yes: bool) -> int:
                       "--name", function_app,
                       "--resource-type", "microsoft.insights/components",
                       "--tags", "managed-by=pdt", f"pdt-app={name}")
+        if missing_origins:
+            print(f"==> allowing Azure portal Code + Test for {function_app}")
+            run_quiet("functionapp", "cors", "add", "--name", function_app,
+                      "--resource-group", rg, "--allowed-origins", *missing_origins)
         identity = az_json("functionapp", "identity", "assign", "--name", function_app,
                            "--resource-group", rg)
         if not identity:
