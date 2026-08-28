@@ -200,6 +200,14 @@ Settings for the lookback window, the minimum distance, and the email addresses 
 
 Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user.
 
+### disabled-account-license-cleanup
+
+Removes direct Microsoft Entra licenses from disabled accounts. Group-derived licenses stay, and group membership does not change.
+
+The Entra app registration needs `User.Read.All`, `LicenseAssignment.Read.All`, and `LicenseAssignment.ReadWrite.All` application permissions, with admin consent.
+
+Set the monthly cost for each `skuPartNumber` in the app's `config.yml` from your Microsoft invoice. The sample holds July 2026 US list prices for four common enterprise licenses. The app refuses to change anything until every removable license type has a cost. The report lists each removed license type with its monthly and annual saving. Your bill only drops once you reduce the purchased seat count.
+
 ## Where things live
 
 | Item | Where |
