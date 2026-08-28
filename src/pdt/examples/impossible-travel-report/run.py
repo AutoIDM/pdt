@@ -161,7 +161,7 @@ def format_ts(ts: datetime) -> str:
 
 
 def format_body(hits: list) -> str:
-    lines = ["Impossible login: the same account signed in from two places too far apart.", ""]
+    lines = ["Impossible travel: the same account signed in from two places too far apart.", ""]
     for hit in hits:
         first, second = hit["first"], hit["second"]
         who = hit["upn"]
@@ -198,7 +198,7 @@ def main() -> int:
 
     # `pdt validate|run|deploy` check the email config before this runs.
     transport = pick_transport()
-    email_subject = str(cfg.get("email_subject") or "Impossible login detected").strip()
+    email_subject = str(cfg.get("email_subject") or "Impossible travel detected").strip()
     email_to = cfg.get("email_to") or ""
     email_from = str(cfg.get("email_from") or "").strip()
 
@@ -214,10 +214,10 @@ def main() -> int:
 
     hits = find_impossible(logins, min_distance_km)
     if len(hits) == 0:
-        log("info", "no impossible logins found")
+        log("info", "no impossible travel found")
         return EXIT_OK
     for hit in hits:
-        log("warning", "impossible login", user=hit["upn"], km=hit["km"], hours=hit["hours"],
+        log("warning", "impossible travel", user=hit["upn"], km=hit["km"], hours=hit["hours"],
             from_place=hit["first"]["place"], to_place=hit["second"]["place"])
 
     send_email(email_from, email_to, email_subject, format_body(hits))
