@@ -27,7 +27,7 @@ from pathlib import Path
 
 import backoff
 
-from pdt import config
+from pdt import config, console
 
 DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -45,7 +45,7 @@ BUILD_EXCLUDES = (
 
 
 def fail(message: str) -> None:
-    print(f"error: {message}")
+    console.error(message)
     raise SystemExit(1)
 
 
@@ -115,9 +115,9 @@ def run_build(command: list[str]) -> None:
         command, capture_output=True, text=True, check=False)
     if proc.returncode:
         if proc.stdout.strip():
-            print(proc.stdout.strip())
+            console.say(proc.stdout.strip())
         if proc.stderr.strip():
-            print(proc.stderr.strip())
+            console.say(proc.stderr.strip())
         fail(f"{' '.join(command[:3])} failed")
 
 

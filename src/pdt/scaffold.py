@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pdt import __version__
+from pdt import __version__, console
 from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_project
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
@@ -83,9 +83,8 @@ CLAUDE_TEXT = """\
 
 
 def _ask(question: str, default: str = "") -> str:
-    suffix = f" [{default}]" if default != "" else ""
     try:
-        answer = input(f"{question}{suffix}: ").strip()
+        answer = console.ask(question, default)
     except EOFError:
         raise ConfigError(
             "there is no one to answer the questions. "
@@ -94,17 +93,17 @@ def _ask(question: str, default: str = "") -> str:
 
 
 def _ask_choice(question: str, labels: list[str], default: int = 1) -> int:
-    print()
-    print(question)
-    print()
+    console.say()
+    console.heading(question)
+    console.say()
     for number, label in enumerate(labels, start=1):
-        print(f"  {number}) {label}")
-    print()
+        console.styled(f"  [bold cyan]{number})[/] {label}")
+    console.say()
     while True:
         answer = _ask("Choose", str(default))
         if answer.isdigit() and 1 <= int(answer) <= len(labels):
             return int(answer)
-        print(f"Please type a number from 1 to {len(labels)}.")
+        console.warn(f"Please type a number from 1 to {len(labels)}.")
 
 
 def bad_place(folder: Path) -> str:
@@ -131,10 +130,10 @@ def choose_target(requested: str | None, assume_yes: bool) -> Path:
         return here
 
     warning = bad_place(here)
-    print()
-    print(f"This folder: {here}")
+    console.say()
+    console.styled(f"This folder: [bold]{here}[/]")
     if warning != "":
-        print(f"Careful: {warning}")
+        console.warn(f"Careful: {warning}")
 
     labels = ["Make a new folder inside this one", f"Use this folder ({here.name})", "Cancel"]
     default = 1 if warning != "" else 2
@@ -148,7 +147,7 @@ def choose_target(requested: str | None, assume_yes: bool) -> Path:
         folder = (here / name).resolve()
         if not folder.exists():
             return folder
-        print(f"{folder} already exists. Pick another name.")
+        console.warn(f"{folder} already exists. Pick another name.")
 
 
 def ask_platform(assume_yes: bool) -> dict:
@@ -159,7 +158,7 @@ def ask_platform(assume_yes: bool) -> dict:
     provider = PROVIDER_CHOICES[choice - 1][0]
     if provider == "":
         return {}
-    print()
+    console.say()
     settings = {"provider": provider}
     for key, question, default, check in PROVIDER_QUESTIONS[provider]:
         while True:
@@ -167,7 +166,7 @@ def ask_platform(assume_yes: bool) -> dict:
             problem = check(answer)
             if problem == "":
                 break
-            print(problem)
+            console.warn(problem)
         settings[key] = answer
     return settings
 
@@ -210,7 +209,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
     target = choose_target(directory, assume_yes)
     marker = target / PROJECT_FILE
     if marker.is_file():
-        print(f"{target} is already a pdt project.")
+        console.say(f"{target} is already a pdt project.")
         return 0
     starting_fresh = has_nothing_in_it(target)
 
@@ -225,21 +224,21 @@ def init(directory: str | None, assume_yes: bool) -> int:
     if starting_fresh:
         copy_example(target, STARTER, EXAMPLES / STARTER)
 
-    print()
-    print(f"Your project is ready: {target}")
-    print(f"  {PROJECT_FILE}   settings shared by every app")
-    print("  .env      secrets, never committed")
-    print("  .gitignore")
-    print("  AGENTS.md how an AI agent should work in this project (CLAUDE.md points here)")
+    console.say()
+    console.done(f"Your project is ready: {target}")
+    console.bullet(f"{PROJECT_FILE}   settings shared by every app")
+    console.bullet(".env      secrets, never committed")
+    console.bullet(".gitignore")
+    console.bullet("AGENTS.md how an AI agent should work in this project (CLAUDE.md points here)")
     if starting_fresh:
-        print(f"  {STARTER}/  a working app to run and edit")
-    print()
-    print("Next steps:")
+        console.bullet(f"{STARTER}/  a working app to run and edit")
+    console.say()
+    console.heading("Next steps:")
     if target != Path.cwd().resolve():
-        print(f"  cd {target.name}")
+        console.command(f"cd {target.name}")
     if starting_fresh:
-        print(f"  pdt run {STARTER}")
-    print("  pdt examples    see what else you can start from")
+        console.command(f"pdt run {STARTER}")
+    console.command("pdt examples    see what else you can start from")
     return 0
 
 
@@ -256,15 +255,27 @@ def copy_example(root: Path, name: str, example: Path) -> None:
 
 
 def summary_of(example: Path) -> str:
+    """The comment block at the top of the example's config, as one line."""
+    summary = []
     for line in (example / APP_FILE).read_text().splitlines():
-        if line.startswith("# "):
-            return line[2:].strip()
-    return ""
+        if not line.startswith("#"):
+            break
+        summary.append(line[1:].strip())
+    return " ".join(summary).strip()
+
+
+def print_examples() -> None:
+    for example in examples():
+        console.name(example.name)
+        console.detail(summary_of(example))
+        console.say()
 
 
 def list_examples() -> int:
-    for example in examples():
-        print(f"{example.name}  {summary_of(example)}".rstrip())
+    console.heading("Example apps you can start from:")
+    console.say()
+    print_examples()
+    console.styled("Copy one with:  [bold]pdt new <name> --from <example>[/]")
     return 0
 
 
@@ -274,26 +285,25 @@ def new_app(name: str, source: str | None) -> int:
     if destination.exists():
         raise ConfigError(f"{destination} already exists.")
     if source is None:
-        print("Pick the example to start from:")
-        for example in examples():
-            print(f"  {example.name}  {summary_of(example)}".rstrip())
-        print()
+        console.heading("Pick the example to start from:")
+        console.say()
+        print_examples()
         raise ConfigError(f"say which one, for example `pdt new {name} --from {examples()[0].name}`")
     example = EXAMPLES / source
     if example not in examples():
         raise ConfigError(
             f"there is no example named {source!r}. Run `pdt examples` to see them.")
     copy_example(root, name, example)
-    print(f"Created {name}/ from the {example.name} example.")
-    print(f"  {name}/run.py       the job itself")
-    print(f"  {name}/config.yml   how often it runs and what it needs")
+    console.done(f"Created {name}/ from the {example.name} example.")
+    console.bullet(f"{name}/run.py       the job itself")
+    console.bullet(f"{name}/config.yml   how often it runs and what it needs")
     needs_secrets = (destination / "env.template").is_file()
     if needs_secrets:
-        print(f"  {name}/env.template the secrets to copy into .env")
-    print()
-    print("Next steps:")
+        console.bullet(f"{name}/env.template the secrets to copy into .env")
+    console.say()
+    console.heading("Next steps:")
     if needs_secrets:
-        print(f"  open {name}/env.template and copy the names you need into .env")
-    print("  pdt validate")
-    print(f"  pdt run {name}")
+        console.bullet(f"open {name}/env.template and copy the names you need into .env")
+    console.command("pdt validate")
+    console.command(f"pdt run {name}")
     return 0

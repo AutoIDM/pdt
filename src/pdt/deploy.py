@@ -15,7 +15,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from pdt import config
+from pdt import config, console
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -54,7 +54,7 @@ def deploy(app_name: str, assume_yes: bool = False, profile: str | None = None) 
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        print(f"error: {e}")
+        console.error(str(e))
         return 1
     problems = config.validate_app(app_name)
     config.load_env(app["dir"])
@@ -66,7 +66,7 @@ def deploy(app_name: str, assume_yes: bool = False, profile: str | None = None) 
         problems.extend(email_problems(app["config"], check_oauth=False))
     if problems:
         for problem in problems:
-            print(f"error: {app_name}: {problem}")
+            console.error(f"{app_name}: {problem}")
         return 1
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
@@ -81,7 +81,7 @@ def login(app_name: str, profile: str | None = None) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        print(f"error: {e}")
+        console.error(str(e))
         return 1
     config.load_env(app["dir"])
     return dispatch(provider, "login", app_name, False, profile)
@@ -91,7 +91,7 @@ def destroy(app_name: str, assume_yes: bool = False, profile: str | None = None)
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        print(f"error: {e}")
+        console.error(str(e))
         return 1
     config.load_env(app["dir"])
     code = dispatch(provider, "destroy", app_name, assume_yes, profile)
@@ -102,20 +102,19 @@ def destroy(app_name: str, assume_yes: bool = False, profile: str | None = None)
 
 def confirm(actions: list[str], assume_yes: bool,
             cost_lines: list[str] | None = None) -> bool:
-    print("Plan:")
+    console.heading("Plan:")
     for action in actions:
-        print(f"  {action}")
+        console.bullet(action)
     for line in cost_lines or []:
-        print(line)
+        console.say(line)
     if assume_yes:
         return True
     if not can_prompt(None):
-        print()
-        print("there is no one to answer. Run this in a terminal, "
-              "or add --yes to proceed without asking.")
+        console.say()
+        console.say("there is no one to answer. Run this in a terminal, "
+                    "or add --yes to proceed without asking.")
         return False
     try:
-        answer = input("Proceed? [y/N] ").strip().lower()
+        return console.confirm()
     except EOFError:
         return False
-    return answer in ("y", "yes")

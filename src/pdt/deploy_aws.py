@@ -5,6 +5,7 @@
 #     "awscli",
 #     "boto3",
 #     "pyyaml",
+#     "rich",
 #     "python-dotenv",
 #     "backoff",
 # ]

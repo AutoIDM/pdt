@@ -4,6 +4,7 @@
 # dependencies = [
 #     "azure-cli==2.89.1",
 #     "pyyaml",
+#     "rich",
 #     "python-dotenv",
 #     "backoff",
 # ]
