@@ -28,7 +28,7 @@ from pathlib import Path
 
 from pdt import __version__, config, deploy, scaffold
 from pdt.config import ConfigError
-from pdt.utils.send_email import email_problems, prepare_email_auth
+from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
 CLOUD_CLIS = {
     "aws": "deploy_aws.py",
@@ -103,13 +103,13 @@ def cmd_run(args) -> int:
         print(f"error: {e}")
         return 1
     if config.uses_email(app):
-        env_files = config.load_env(app["dir"])
+        config.load_env(app["dir"])
         problems = email_problems(app["config"], check_oauth=False)
         if problems:
             for problem in problems:
                 print(f"error: {args.app}: {problem}")
             return 1
-        prepare_email_auth(env_files[0] if env_files else app["dir"] / ".env")
+        prepare_email_auth(auth_env_file(app["dir"]))
     proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
     if (proc.returncode == 0 and args.app == scaffold.STARTER
             and not config.is_deployed(args.app)):

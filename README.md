@@ -95,6 +95,14 @@ pdt login my-report
 
 `pdt az` and `pdt gcloud` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
 
+## Running pdt from CI
+
+Every command reads its values from the environment it runs in. A build server sets them as CI variables, and no `.env` file is needed.
+
+- A `.env` file is a convenience for a person working on their own machine. A value that is already in the environment wins over the same name in a `.env` file.
+- `PDT_ENV_JSON` holds every value as one JSON object, for a CI system that keeps one secret instead of many. For example, `PDT_ENV_JSON={"PDT_TOKEN": "abc", "PDT_SMTP_USER": "reports@example.com"}`.
+- With no `.env` file and no terminal, pdt writes no file. Email authorization must already be done: run `pdt run APP` once on a machine with a browser, then copy `PDT_SMTP_OAUTH_CACHE_B64` (or `PDT_GRAPH_MAIL_CACHE_B64` for Microsoft Graph) from your `.env` into the CI variables.
+
 ## Choosing where jobs run
 
 Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins.

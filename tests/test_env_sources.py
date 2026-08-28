@@ -1,0 +1,131 @@
+import base64
+import json
+import os
+
+import pytest
+
+from conftest import add_app
+from pdt import config, deploy_common
+from pdt.utils import email_auth
+from pdt.utils.send_email import auth_env_file
+
+APP_YAML = """\
+env:
+  required: [PDT_TOKEN]
+  one_of:
+    - [PDT_SECRET]
+    - [PDT_KEY_B64]
+  optional: [PDT_NOTE]
+"""
+
+VALUES = {"PDT_TOKEN": "t-1", "PDT_SECRET": "s-1", "PDT_NOTE": "n-1"}
+NAMES = ("PDT_TOKEN", "PDT_SECRET", "PDT_KEY_B64", "PDT_NOTE", "PDT_ENV_JSON")
+
+
+@pytest.fixture(autouse=True)
+def restore_environ():
+    # python-dotenv writes straight into os.environ, past monkeypatch.
+    saved = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
+def clear(monkeypatch):
+    for name in NAMES:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_an_app_with_no_values_set_reports_both_problems(project, monkeypatch):
+    folder = add_app(project, "my-report", APP_YAML)
+    clear(monkeypatch)
+    config.load_env(folder)
+    assert config.check_env(config.merged_app("my-report")["env"]) == [
+        "missing required env var PDT_TOKEN",
+        "set one of: PDT_SECRET or PDT_KEY_B64",
+    ]
+
+
+def test_a_dot_env_file_the_environment_and_env_json_agree(project, monkeypatch):
+    folder = add_app(project, "my-report", APP_YAML)
+    spec = config.merged_app("my-report")["env"]
+
+    clear(monkeypatch)
+    (folder / ".env").write_text("".join(f"{k}={v}\n" for k, v in VALUES.items()))
+    config.load_env(folder)
+    from_file = config.check_env(spec)
+
+    clear(monkeypatch)
+    (folder / ".env").unlink()
+    for name, value in VALUES.items():
+        monkeypatch.setenv(name, value)
+    config.load_env(folder)
+    from_environment = config.check_env(spec)
+
+    clear(monkeypatch)
+    monkeypatch.setenv("PDT_ENV_JSON", json.dumps(VALUES))
+    config.load_env(folder)
+    from_json = config.check_env(spec)
+
+    assert from_file == from_environment == from_json == []
+
+
+def test_the_environment_beats_a_dot_env_file_that_sets_the_same_name(project, monkeypatch):
+    folder = add_app(project, "my-report", APP_YAML)
+    clear(monkeypatch)
+    (folder / ".env").write_text("PDT_TOKEN=from-file\n")
+    monkeypatch.setenv("PDT_TOKEN", "from-environment")
+    config.load_env(folder)
+    assert os.environ["PDT_TOKEN"] == "from-environment"
+
+
+def test_gather_secrets_is_the_same_from_a_file_and_from_the_environment(project, monkeypatch):
+    folder = add_app(project, "my-report", APP_YAML)
+    app = config.merged_app("my-report")
+
+    clear(monkeypatch)
+    (folder / ".env").write_text("".join(f"{k}={v}\n" for k, v in VALUES.items()))
+    config.load_env(folder)
+    from_file = deploy_common.gather_secrets(app)
+
+    clear(monkeypatch)
+    (folder / ".env").unlink()
+    for name, value in VALUES.items():
+        monkeypatch.setenv(name, value)
+    config.load_env(folder)
+    from_environment = deploy_common.gather_secrets(app)
+
+    assert from_file == from_environment == VALUES
+
+
+def test_auth_env_file_uses_an_existing_dot_env_even_without_a_terminal(project):
+    folder = add_app(project, "my-report")
+    (folder / ".env").write_text("PDT_TOKEN=t-1\n")
+    assert auth_env_file(folder, interactive=False) == (folder / ".env").resolve()
+
+
+def test_auth_env_file_names_a_new_dot_env_when_pdt_can_ask(project):
+    folder = add_app(project, "my-report")
+    assert auth_env_file(folder, interactive=True) == folder / ".env"
+
+
+def test_auth_env_file_is_none_with_no_dot_env_and_no_terminal(project):
+    folder = add_app(project, "my-report")
+    assert auth_env_file(folder, interactive=False) is None
+
+
+def test_saving_authorization_creates_no_file_in_a_ci_checkout(project, monkeypatch):
+    folder = add_app(project, "my-report")
+    clear(monkeypatch)
+    monkeypatch.delenv("PDT_ENV_SECRET_RESOURCE", raising=False)
+    monkeypatch.delenv(email_auth.CACHE_ENV, raising=False)
+    before = sorted(path.name for path in folder.iterdir())
+
+    env_file = auth_env_file(folder, interactive=False)
+    assert env_file is None
+    email_auth._save_cache(env_file, {"client_id": "abc"})
+
+    assert sorted(path.name for path in folder.iterdir()) == before
+    assert not (folder / ".env").exists()
+    cached = json.loads(base64.b64decode(os.environ[email_auth.CACHE_ENV]))
+    assert cached == {"client_id": "abc"}
