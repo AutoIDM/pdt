@@ -1,3 +1,5 @@
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -6,12 +8,17 @@ import yaml
 from pdt import scaffold
 from pdt.config import PROJECT_FILE, ConfigError, find_apps, validate_app
 
+POSIX_SYSTEM_FOLDERS = ["/", "/usr", "/usr/local/bin", "/etc"]
+WINDOWS_SYSTEM_FOLDERS = ["C:\\", "C:\\Windows", "C:\\Windows\\System32", "C:\\Program Files"]
+
 
 def test_home_folder_is_flagged():
     assert "home folder" in scaffold.bad_place(Path.home().resolve())
 
 
-@pytest.mark.parametrize("folder", ["/", "/usr", "/usr/local/bin", "/etc"])
+@pytest.mark.parametrize(
+    "folder", WINDOWS_SYSTEM_FOLDERS if os.name == "nt" else POSIX_SYSTEM_FOLDERS
+)
 def test_system_folders_are_flagged(folder):
     assert scaffold.bad_place(Path(folder)) != ""
 
@@ -21,7 +28,7 @@ def test_an_ordinary_folder_is_not_flagged():
 
 
 def test_a_temporary_folder_is_flagged():
-    assert scaffold.bad_place(Path("/private/var/folders/x")) != ""
+    assert scaffold.bad_place(Path(tempfile.gettempdir()) / "x") != ""
 
 
 def test_named_target_must_not_exist(tmp_path, monkeypatch):

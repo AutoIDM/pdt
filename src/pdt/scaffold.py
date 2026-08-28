@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from pdt import __version__
@@ -93,7 +94,7 @@ def bad_place(folder: Path) -> str:
     if folder.parent == folder:
         return "This is the top of the disk."
     text = str(folder)
-    for system in SYSTEM_FOLDERS:
+    for system in (*SYSTEM_FOLDERS, tempfile.gettempdir()):
         if text == system or text.startswith(system + os.sep):
             return "This folder belongs to the operating system."
     return ""
