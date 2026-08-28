@@ -42,7 +42,7 @@ APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account",
-    "subscription", "resource_group",
+    "subscription", "resource_group", "host",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
 # Where each known key belongs, so a key in the wrong section gets told
@@ -515,6 +515,12 @@ def validate_app(name: str) -> list[str]:
         problem = dockerfile_problem(app["platform"])
         if problem != "":
             problems.append(f"{name}/Dockerfile: {problem}")
+    host = app["platform"].get("host")
+    if host is not None and (not isinstance(host, str) or host.strip() == ""):
+        problems.append(f"{name}: platform.host must be a non-empty string")
+    elif host is not None and "://" in host:
+        problems.append(
+            f"{name}: platform.host must be a bare Windows host address, without a URL scheme")
     if app["schedule"] is not None:
         try:
             cron_expression(app["schedule"])

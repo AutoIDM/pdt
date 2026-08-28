@@ -6,15 +6,15 @@
 #     "rich",
 #     "python-dotenv",
 #     "backoff",
+#     "pypsrp==0.9.1",
 # ]
 # ///
-"""Deploy an app locally as a Windows Task Scheduler task.
+"""Deploy an app as a Windows Task Scheduler task.
 
 The task runs as the SYSTEM account, so it does not depend on a user being
-logged on. Registering or removing it needs administrator rights; a
-non-elevated shell gets one UAC prompt. Deploy always registers the complete
-desired task definition with -Force, so rerunning it safely reconciles
-changes to the schedule or repository path.
+logged on. A local, non-elevated shell gets one UAC prompt. Deploy always
+registers the complete desired task definition with -Force, so rerunning it
+safely reconciles changes to the schedule or repository path.
 """
 
 from __future__ import annotations
@@ -279,6 +279,14 @@ def _task_state(powershell: str, name: str) -> str:
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
+    host = str(app["platform"].get("host") or "").strip()
+    if host != "":
+        from pdt.windows_remote import deploy_remote
+        return deploy_remote(app, host, assume_yes)
+    return _deploy_local(app, assume_yes)
+
+
+def _deploy_local(app: dict, assume_yes: bool) -> int:
     try:
         powershell, uv = _preflight()
         assert uv is not None
@@ -325,6 +333,14 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
 
 def destroy(app: dict, assume_yes: bool) -> int:
+    host = str(app["platform"].get("host") or "").strip()
+    if host != "":
+        from pdt.windows_remote import destroy_remote
+        return destroy_remote(app, host, assume_yes)
+    return _destroy_local(app, assume_yes)
+
+
+def _destroy_local(app: dict, assume_yes: bool) -> int:
     try:
         powershell, _uv = _preflight(require_uv=False)
         name = _task_name(app["name"])
@@ -364,7 +380,8 @@ def main() -> int:
     parser.add_argument("--profile", help="not used by Windows")
     args = parser.parse_args()
     if args.command == "login":
-        console.note("the windows provider deploys to this computer, so it needs no login.")
+        console.note("the windows provider uses your configured Windows PC, so it needs "
+                     "no login. Remote deployments request administrator credentials.")
         return 0
     try:
         app = config.merged_app(args.app)

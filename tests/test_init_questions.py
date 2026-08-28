@@ -12,6 +12,10 @@ def test_every_provider_choice_has_questions_defined():
         assert provider in PROVIDER_QUESTIONS
 
 
+def test_windows_choice_names_a_windows_pc():
+    assert ("windows", "A Windows PC, using Task Scheduler") in PROVIDER_CHOICES
+
+
 def test_azure_asks_only_for_the_region():
     assert keys("azure") == ["region"]
 
@@ -29,7 +33,7 @@ def test_azure_does_not_ask_for_the_subscription():
 @pytest.mark.parametrize("provider,expected", [
     ("aws", ["region"]),
     ("google-cloud", ["region"]),
-    ("windows", []),
+    ("windows", ["host"]),
     ("", []),
 ])
 def test_the_other_providers_ask_only_what_pdt_cannot_supply(provider, expected):

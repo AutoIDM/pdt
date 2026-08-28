@@ -165,6 +165,8 @@ The Windows provider never builds an image, so `pdt validate` reports a Dockerfi
 ```yaml
 platform:
   provider: windows
+  # Optional. Without this, pdt schedules the job on this computer.
+  host: jobs-01.example.com
 
 apps:
   - name: my-report

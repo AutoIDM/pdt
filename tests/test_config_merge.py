@@ -34,6 +34,28 @@ def test_root_entry_beats_the_root_platform_defaults(project):
     assert merged_app("my-report")["platform"]["region"] == "westus2"
 
 
+def test_app_host_beats_the_root_platform_default(project):
+    (project / "pdt.yml").write_text(
+        "platform:\n  provider: windows\n  host: jobs-01\n")
+    add_app(project, "my-report", "platform:\n  host: jobs-02\n")
+    assert merged_app("my-report")["platform"]["host"] == "jobs-02"
+
+
+def test_an_empty_host_is_rejected(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n  host: ''\n")
+    add_app(project, "my-report")
+    assert any("platform.host must be a non-empty string" in problem
+               for problem in validate_app("my-report"))
+
+
+def test_a_host_url_is_rejected(project):
+    (project / "pdt.yml").write_text(
+        "platform:\n  provider: windows\n  host: http://jobs-01\n")
+    add_app(project, "my-report")
+    assert any("without a URL scheme" in problem
+               for problem in validate_app("my-report"))
+
+
 def test_environment_variable_beats_every_file(project, monkeypatch):
     (project / "pdt.yml").write_text(ROOT_YAML)
     add_app(project, "my-report", "config:\n  lookback_hours: 72\n")
