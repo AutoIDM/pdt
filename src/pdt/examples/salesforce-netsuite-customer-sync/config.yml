@@ -1,0 +1,55 @@
+# Copies Salesforce accounts and contacts into NetSuite customers and contacts.
+
+# How often this app runs.
+# Shorthand: hourly, daily, weekly, monthly, yearly.
+# Or a 5-field cron expression, for example "0 * * * *".
+schedule: "*/5 * * * *"
+
+config:
+  # Which Meltano environment run.py uses. `dev` points at a sandbox
+  # Salesforce org and a NetSuite sandbox account. `prod` points at both
+  # production systems. `ci` is for merge request testing.
+  meltano_environment: prod
+
+# Env vars the app needs. `pdt validate` checks them against your .env,
+# and `pdt deploy` uploads the ones that are set as cloud secrets.
+# Every name here is the name Meltano already looks for, so run.py hands
+# the environment to Meltano unchanged.
+env:
+  required:
+    # NetSuite read. The integration record needs REST Web Services and
+    # OAuth 2.0 client credentials with a certificate.
+    - TAP_NETSUITE_ACCOUNT_ID
+    - TAP_NETSUITE_CLIENT_ID
+    - TAP_NETSUITE_CERTIFICATE_ID
+    - TAP_NETSUITE_PRIVATE_KEY
+    # NetSuite write. The same integration record works for both.
+    - TARGET_NETSUITE_ACCOUNT_ID
+    - TARGET_NETSUITE_CLIENT_ID
+    - TARGET_NETSUITE_CERTIFICATE_ID
+    - TARGET_NETSUITE_PRIVATE_KEY
+    # Postgres holds the staging tables between Salesforce and NetSuite.
+    # Example: postgresql://postgres:PASSWORD@localhost:5432
+    - POSTGRES_SQLALCHEMY_URL_NO_DB
+  # Salesforce accepts either sign-in mode.
+  one_of:
+    - [TAP_SALESFORCE_USERNAME, TAP_SALESFORCE_PASSWORD, TAP_SALESFORCE_SECURITY_TOKEN]
+    - [TAP_SALESFORCE_CLIENT_ID, TAP_SALESFORCE_CLIENT_SECRET, TAP_SALESFORCE_REFRESH_TOKEN]
+  optional:
+    - TAP_SALESFORCE_START_DATE
+    - TAP_POSTGRES_HOST
+    - TAP_POSTGRES_PORT
+    - TAP_POSTGRES_USER
+    - TAP_POSTGRES_PASSWORD
+    - TAP_POSTGRES_DATABASE
+    - TARGET_POSTGRES_HOST
+    - TARGET_POSTGRES_PORT
+    - TARGET_POSTGRES_USER
+    - TARGET_POSTGRES_PASSWORD
+    - TARGET_POSTGRES_DATABASE
+    - DBT_HOST
+    - DBT_PORT
+    - DBT_USER
+    - DBT_PASSWORD
+    - DBT_DBNAME
+    - TARGET_APPRISE_URIS

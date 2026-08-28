@@ -1,0 +1,21 @@
+version: 2
+
+sources:
+  - name: tap_salesforce
+    tables:
+      - name: "Account"
+      - name: "Contact"
+
+  - name: tap_netsuite
+    tables:
+      - name: "customer"
+      - name: "contact"
+
+  - name: autoidm
+    tables:
+      - name: "python_desired_netsuite_customer"
+      - name: "python_desired_netsuite_contact"
+
+  - name: autoidm_state
+    tables:
+      - name: "send_once_notifications"
