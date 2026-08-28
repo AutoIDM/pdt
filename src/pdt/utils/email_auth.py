@@ -216,6 +216,9 @@ def can_prompt(interactive: bool | None) -> bool:
         return interactive
     if os.environ.get("CLOUD_RUN_JOB", "").strip() != "":
         return False
+    # A build server can give the job a terminal, so isatty alone is not enough.
+    if os.environ.get("CI", "").strip() != "":
+        return False
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 

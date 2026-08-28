@@ -146,3 +146,11 @@ def test_confirm_with_assume_yes_returns_true_without_calling_input(monkeypatch)
 
     monkeypatch.setattr("builtins.input", raise_eof)
     assert deploy.confirm(["do a thing"], assume_yes=True) is True
+
+
+def test_a_build_server_with_a_terminal_still_gets_no_dot_env(project, monkeypatch):
+    folder = add_app(project, "my-report")
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    assert auth_env_file(folder) is None
