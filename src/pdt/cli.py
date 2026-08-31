@@ -10,10 +10,11 @@ Commands:
   deploy <app> [--yes] [--profile NAME]   deploy an app to its configured platform
   destroy <app> [--yes] [--profile NAME]  tear down everything deploy created for an app
   login <app> [--profile NAME]            sign in again to the app's cloud provider
+  aws <args...>          run the AWS CLI that pdt installs
   az <args...>           run the Azure CLI that pdt installs
   gcloud <args...>       run the Google Cloud CLI that pdt installs
 
-Every command except `init`, `examples`, `az`, and `gcloud` needs a project.
+Every command except `init`, `examples`, `aws`, `az`, and `gcloud` needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
 """
 
@@ -29,7 +30,11 @@ from pdt import __version__, config, deploy, scaffold
 from pdt.config import ConfigError
 from pdt.utils.send_email import email_problems, prepare_email_auth
 
-CLOUD_CLIS = {"az": "deploy_azure.py", "gcloud": "deploy_google_cloud.py"}
+CLOUD_CLIS = {
+    "aws": "deploy_aws.py",
+    "az": "deploy_azure.py",
+    "gcloud": "deploy_google_cloud.py",
+}
 
 
 def cmd_init(args) -> int:
@@ -112,7 +117,26 @@ def cmd_run(args) -> int:
     return proc.returncode
 
 
+def ask_which_app(command: str) -> int:
+    apps = config.find_apps()
+    if not apps:
+        print("This project has no apps yet.")
+        print("Run `pdt examples` to see what you can start from,")
+        print("then `pdt new my-report --from <example>`.")
+        return 1
+    shown = apps[:5]
+    print(f"Which app do you want to {command}? This project has:")
+    for name in shown:
+        print(f"  {name}")
+    if len(apps) > len(shown):
+        print(f"  ... and {len(apps) - len(shown)} more")
+    print(f"Run `pdt list` to see every app, then `pdt {command} <app>`.")
+    return 1
+
+
 def cmd_deploy(args) -> int:
+    if args.app is None:
+        return ask_which_app("deploy")
     return deploy.deploy(args.app, assume_yes=args.yes, profile=args.profile)
 
 
@@ -152,7 +176,7 @@ def main() -> int:
     p.add_argument("app")
     p.set_defaults(func=cmd_run)
     p = sub.add_parser("deploy", help="deploy an app")
-    p.add_argument("app")
+    p.add_argument("app", nargs="?")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--profile", help="AWS profile name (AWS only)")
     p.set_defaults(func=cmd_deploy)
