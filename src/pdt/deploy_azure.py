@@ -31,6 +31,7 @@ Azure through a protected temporary file, never on the command line.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -170,18 +171,29 @@ def preflight(app: dict, settings: dict[str, str], assume_yes: bool) -> dict[str
     is_user = str(user.get("type", "")).lower() == "user"
     deployer_id = os.environ.get("PDT_AZURE_DEPLOYER_OBJECT_ID", "").strip()
     if not deployer_id:
-        if is_user:
-            deployer_id = az_tsv("ad", "signed-in-user", "show", "--query", "id")
-        else:
-            deployer_id = az_tsv(
-                "ad", "sp", "show", "--id", str(user.get("name") or ""),
-                "--query", "id")
+        deployer_id = object_id_from_token(access_token())
     if not deployer_id:
         fail("cannot determine the signed-in Azure principal; set "
              "PDT_AZURE_DEPLOYER_OBJECT_ID")
     settings["deployer_object_id"] = deployer_id
     settings["deployer_principal_type"] = "User" if is_user else "ServicePrincipal"
     return settings
+
+
+def object_id_from_token(token: str) -> str:
+    parts = token.split(".")
+    if len(parts) != 3:
+        return ""
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except ValueError:
+        return ""
+    return str(claims.get("oid") or "")
+
+
+def access_token() -> str:
+    return az_tsv("account", "get-access-token", "--query", "accessToken")
 
 
 def save_subscription(app: dict, sub: dict) -> None:
