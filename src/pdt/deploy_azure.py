@@ -143,13 +143,17 @@ def azure_settings(app: dict) -> dict[str, str]:
     }
 
 
-def preflight(app: dict, settings: dict[str, str], assume_yes: bool) -> dict[str, str]:
+def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
     requested = settings["subscription"]
     if requested == PLACEHOLDER_SUBSCRIPTION:
         requested = ""
-    can_ask = not assume_yes and can_prompt(None)
+    can_ask = can_prompt(None)
     account = az_json("account", "show")
     if not account:
+        if not can_ask:
+            fail("no Azure sign-in on this computer; run `az login "
+                 "--service-principal -u <id> -p <secret> --tenant <tenant>` "
+                 "before this command")
         print("You are not logged in to Azure yet.")
         try:
             answer = input("Log in now (opens a browser)? [y/N] ").strip().lower()
