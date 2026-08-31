@@ -312,6 +312,8 @@ def run_job_identity(run_job: dict) -> tuple[str, str]:
 
 
 def needs_oauth_cache_updates(values: dict) -> bool:
+    if values.get("PDT_GRAPH_MAIL_CACHE_B64", "") != "":
+        return True
     host = values.get("PDT_SMTP_HOST", "").lower().rstrip(".")
     return (
         host in ("smtp.office365.com", "smtp-mail.outlook.com")
