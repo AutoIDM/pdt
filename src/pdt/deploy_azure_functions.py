@@ -32,7 +32,8 @@ from pdt.deploy_azure import (
 )
 from pdt.deploy_common import fail, gather_secrets, run_build, stage_build_context
 
-PROVIDERS = ("Microsoft.Web", "Microsoft.Storage")
+PROVIDERS = ("Microsoft.Web", "Microsoft.Storage", "Microsoft.OperationalInsights",
+             "Microsoft.Insights")
 INSTANCE_MEMORY_MB = 512
 PYTHON_VERSION = "3.12"
 PORTAL_CORS_ORIGINS = (
