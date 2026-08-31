@@ -106,6 +106,9 @@ def cmd_run(args) -> int:
             return 1
         prepare_email_auth(env_files[0] if env_files else app["dir"] / ".env")
     proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
+    if (proc.returncode == 0 and args.app == scaffold.STARTER
+            and not config.is_deployed(args.app)):
+        print(f"\nTry deploying this job! Type: pdt deploy {scaffold.STARTER}")
     return proc.returncode
 
 

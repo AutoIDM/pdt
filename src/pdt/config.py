@@ -176,6 +176,43 @@ def _indent(line: str) -> str:
     return line[:len(line) - len(line.lstrip())]
 
 
+STATE_DIR = ".pdt"
+
+
+def _state_path() -> Path:
+    return find_project() / STATE_DIR / "state"
+
+
+def read_state() -> dict:
+    path = _state_path()
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text() or "{}")
+
+
+def write_state(state: dict) -> None:
+    path = _state_path()
+    path.parent.mkdir(exist_ok=True)
+    # Self-ignoring, so projects created before this dir existed stay clean.
+    (path.parent / ".gitignore").write_text("*\n")
+    path.write_text(json.dumps(state, indent=2) + "\n")
+
+
+def mark_deployed(name: str, deployed: bool) -> None:
+    state = read_state()
+    apps = set(state.get("deployed") or [])
+    if deployed:
+        apps.add(name)
+    else:
+        apps.discard(name)
+    state["deployed"] = sorted(apps)
+    write_state(state)
+
+
+def is_deployed(name: str) -> bool:
+    return name in (read_state().get("deployed") or [])
+
+
 def aws_account_problem(account: str) -> str:
     # Deploy reads the account from the credentials and writes it back, so
     # validate only judges a value the user already set.
