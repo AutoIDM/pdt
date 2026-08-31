@@ -49,6 +49,7 @@ from pdt import gcloud_sdk
 from pdt.deploy import confirm
 from pdt.deploy_common import (
     DOCKERFILE, fail, fetch_json, gather_secrets, stage_build_context)
+from pdt.utils import email_auth
 
 GCLOUD = "gcloud"
 
@@ -136,32 +137,62 @@ def require_managed(resource: dict | None, label: str) -> None:
         fail(f"{label} exists but is not managed by PDT")
 
 
+def can_ask(assume_yes: bool) -> bool:
+    return not assume_yes and email_auth.can_prompt(None)
+
+
+def have_credentials() -> bool:
+    proc = subprocess.run([GCLOUD, "auth", "print-access-token"],
+                          stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    return proc.returncode == 0 and proc.stdout.strip() != ""
+
+
+def login_with_key_file() -> bool:
+    key_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if key_file == "" or not Path(key_file).is_file():
+        return False
+    print(f"Signing in to Google Cloud with {key_file}...")
+    subprocess.run([GCLOUD, "--quiet", "auth", "login", "--cred-file", key_file],
+                   stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    return have_credentials()
+
+
+def ensure_credentials(assume_yes: bool) -> None:
+    if have_credentials():
+        return
+    if login_with_key_file():
+        return
+    if not can_ask(assume_yes):
+        fail("no Google Cloud sign-in on this computer; set GOOGLE_APPLICATION_CREDENTIALS "
+             f"to a service account key file, or run {GCLOUD} auth login")
+    print("gcloud has no active Google account yet.")
+    try:
+        answer = input("Log in now (opens a browser)? [y/N] ").strip().lower()
+    except EOFError:
+        answer = ""
+    if answer not in ("y", "yes"):
+        fail(f"log in first: {GCLOUD} auth login")
+    login = subprocess.run([GCLOUD, "auth", "login"])
+    if login.returncode != 0:
+        fail("gcloud auth login failed")
+
+
 def preflight(app: dict, project: str, assume_yes: bool) -> str:
     global GCLOUD
     try:
         GCLOUD = gcloud_sdk.ensure_gcloud(assume_yes)
     except gcloud_sdk.GcloudError as e:
         fail(str(e))
-    proc = subprocess.run(
-        [GCLOUD, "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    if proc.returncode != 0 or proc.stdout.strip() == "":
-        console.warn("gcloud has no active Google account yet.")
-        try:
-            answer = input("Log in now (opens a browser)? [y/N] ").strip().lower()
-        except EOFError:
-            answer = ""
-        if answer not in ("y", "yes"):
-            fail("log in first: pdt gcloud auth login")
-        login = subprocess.run([GCLOUD, "auth", "login"])
-        if login.returncode != 0:
-            fail("pdt gcloud auth login failed")
+    ensure_credentials(assume_yes)
     if project in ("", "my-project"):
-        project = choose_project(app, project)
+        project = choose_project(app, project, assume_yes)
     return project
 
 
-def choose_project(app: dict, requested: str) -> str:
+def choose_project(app: dict, requested: str, assume_yes: bool) -> str:
+    if not can_ask(assume_yes):
+        fail("no Google Cloud project to deploy to; set platform.project in pdt.yml, "
+             "or set the PDT_GOOGLE_CLOUD_PROJECT environment variable")
     available = [line.split("\t") for line in
                  run_quiet("projects", "list", "--format=value(projectId,name)").splitlines()
                  if line.strip()]
