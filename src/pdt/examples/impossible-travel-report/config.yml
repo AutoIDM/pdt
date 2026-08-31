@@ -7,7 +7,7 @@ schedule: "hourly"
 
 config:
   # How far back to read Entra sign-in logs. Two far logins inside
-  # this window count as impossible; wider window, more Graph data.
+  # this window count as impossible travel; wider window, more Graph data.
   lookback_hours: 72
 
   # Ignore short hops. IP geolocation jitters tens of km.
@@ -17,7 +17,7 @@ config:
   # If none of those env blocks is set, findings print to stdout instead.
   email_to: recipient@example.com
   email_from: notifications@example.com
-  email_subject: Impossible login detected
+  email_subject: Impossible travel detected
 
 # Env vars the app needs. `pdt validate` checks them against your
 # .env; `pdt deploy` uploads the ones that are set as cloud secrets.
