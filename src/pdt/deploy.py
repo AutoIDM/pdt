@@ -17,6 +17,7 @@ from pathlib import Path
 
 from pdt import config
 from pdt.config import ConfigError
+from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
 PROVIDERS = {
@@ -108,11 +109,13 @@ def confirm(actions: list[str], assume_yes: bool,
         print(line)
     if assume_yes:
         return True
-    try:
-        answer = input("Proceed? [y/N] ").strip().lower()
-    except EOFError:
+    if not can_prompt(None):
         print()
         print("there is no one to answer. Run this in a terminal, "
               "or add --yes to proceed without asking.")
+        return False
+    try:
+        answer = input("Proceed? [y/N] ").strip().lower()
+    except EOFError:
         return False
     return answer in ("y", "yes")

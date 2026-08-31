@@ -131,20 +131,40 @@ def test_saving_authorization_creates_no_file_in_a_ci_checkout(project, monkeypa
     assert cached == {"client_id": "abc"}
 
 
-def test_confirm_returns_false_instead_of_raising_when_stdin_is_closed(monkeypatch, capsys):
-    def raise_eof(prompt):
-        raise EOFError
+def refuse_input(prompt):
+    raise AssertionError("confirm asked a question with no one to answer")
 
-    monkeypatch.setattr("builtins.input", raise_eof)
+
+def test_confirm_says_how_to_proceed_when_there_is_no_terminal(monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", refuse_input)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     assert deploy.confirm(["do a thing"], assume_yes=False) is False
     assert "--yes" in capsys.readouterr().out
 
 
-def test_confirm_with_assume_yes_returns_true_without_calling_input(monkeypatch):
+def test_confirm_asks_nothing_on_a_build_server_with_a_terminal(monkeypatch, capsys):
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setattr("builtins.input", refuse_input)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    assert deploy.confirm(["do a thing"], assume_yes=False) is False
+    assert "--yes" in capsys.readouterr().out
+
+
+def test_confirm_treats_a_person_pressing_ctrl_d_as_no_without_advice(monkeypatch, capsys):
     def raise_eof(prompt):
         raise EOFError
 
+    monkeypatch.delenv("CI", raising=False)
     monkeypatch.setattr("builtins.input", raise_eof)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    assert deploy.confirm(["do a thing"], assume_yes=False) is False
+    assert "--yes" not in capsys.readouterr().out
+
+
+def test_confirm_with_assume_yes_returns_true_without_calling_input(monkeypatch):
+    monkeypatch.setattr("builtins.input", refuse_input)
     assert deploy.confirm(["do a thing"], assume_yes=True) is True
 
 
