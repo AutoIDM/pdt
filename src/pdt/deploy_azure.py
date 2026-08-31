@@ -45,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config
 from pdt.deploy_common import fail, fetch_json
+from pdt.utils.email_auth import can_prompt
 
 AZ = [sys.executable, "-m", "azure.cli"]
 COMMON_PROVIDERS = ("Microsoft.KeyVault", "Microsoft.ManagedIdentity")
@@ -141,10 +142,11 @@ def azure_settings(app: dict) -> dict[str, str]:
     }
 
 
-def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
+def preflight(app: dict, settings: dict[str, str], assume_yes: bool) -> dict[str, str]:
     requested = settings["subscription"]
     if requested == PLACEHOLDER_SUBSCRIPTION:
         requested = ""
+    can_ask = not assume_yes and can_prompt(None)
     account = az_json("account", "show")
     if not account:
         print("You are not logged in to Azure yet.")
@@ -158,9 +160,11 @@ def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
         account = az_json("account", "show")
         if not account:
             fail("Azure login failed")
-    if requested not in (account.get("id"), account.get("name")):
-        account = choose_subscription(app, requested)
+    if requested and requested not in (account.get("id"), account.get("name")):
+        account = choose_subscription(app, requested, can_ask)
         run_quiet("account", "set", "--subscription", account["id"])
+    elif not requested and can_ask:
+        save_subscription(app, account)
     settings["subscription"] = str(account["id"])
     user = account.get("user") or {}
     is_user = str(user.get("type", "")).lower() == "user"
@@ -180,7 +184,12 @@ def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
     return settings
 
 
-def choose_subscription(app: dict, requested: str) -> dict:
+def save_subscription(app: dict, sub: dict) -> None:
+    saved = config.save_platform_key(app, "subscription", sub["id"])
+    print(f"Saved subscription: {sub['id']} to {saved.relative_to(config.find_project())}.")
+
+
+def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
     available = az_json("account", "list", "--all") or []
     if not available:
         fail("your Azure account has no subscription yet; create one at "
@@ -188,8 +197,11 @@ def choose_subscription(app: dict, requested: str) -> dict:
     for sub in available:
         if requested in (sub.get("id"), sub.get("name")):
             return sub
-    if requested:
-        print(f"platform.subscription {requested!r} in pdt.yml is not one of your subscriptions.")
+    print(f"platform.subscription {requested!r} in pdt.yml is not one of your subscriptions.")
+    if not can_ask:
+        fail("no Azure subscription selected; set platform.subscription in "
+             "pdt.yml, or set PDT_AZURE_SUBSCRIPTION, to a subscription id "
+             "this login can use")
     print("Your Azure subscriptions:")
     for index, sub in enumerate(available, 1):
         print(f"  {index}. {sub.get('name')}  {sub.get('id')}")
@@ -200,8 +212,7 @@ def choose_subscription(app: dict, requested: str) -> dict:
     if not answer.isdigit() or not 1 <= int(answer) <= len(available):
         fail("no Azure subscription selected")
     sub = available[int(answer) - 1]
-    saved = config.save_platform_key(app, "subscription", sub["id"])
-    print(f"Saved subscription: {sub['id']} to {saved.relative_to(config.find_project())}.")
+    save_subscription(app, sub)
     return sub
 
 

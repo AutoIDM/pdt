@@ -224,7 +224,7 @@ def cost_lines(region: str, cron: str, function_id: str | None,
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
-    settings = preflight(app, azure_settings(app))
+    settings = preflight(app, azure_settings(app), assume_yes)
     name = app["name"]
     function_app = function_app_name(settings, name)
     cron = config.cron_expression(app["schedule"])
@@ -344,7 +344,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
 
 def destroy(app: dict, assume_yes: bool) -> int:
-    settings = preflight(app, azure_settings(app))
+    settings = preflight(app, azure_settings(app), assume_yes)
     name = app["name"]
     function_app = function_app_name(settings, name)
     sid = secret_name(name)
