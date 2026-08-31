@@ -153,7 +153,7 @@ def download_sdk(key: str) -> None:
                 tar.extractall(stage, filter="data")
         if SDK_DIR.exists():
             shutil.rmtree(SDK_DIR)
-        SDK_DIR.mkdir()
+        SDK_DIR.mkdir(parents=True)
         shutil.move(str(stage / "google-cloud-sdk"), str(SDK_DIR / "google-cloud-sdk"))
     except urllib.error.URLError as e:
         raise GcloudError(f"download failed: {e.reason}")
