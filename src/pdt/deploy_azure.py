@@ -431,7 +431,7 @@ def managed_secret(settings: dict[str, str], sid: str, app_name: str) -> bool:
 
 def delete_secret(settings: dict[str, str], sid: str) -> None:
     run_quiet("keyvault", "secret", "delete", "--vault-name",
-              settings["vault"], "--name", sid)
+              settings["vault"], "--name", sid, retry_access=True)
 
 
 def other_pdt_apps(rg: str, exclude_app: str) -> list[str]:
@@ -467,7 +467,7 @@ def purge_secret(settings: dict[str, str], sid: str) -> None:
             break
         time.sleep(2)
     run_quiet("keyvault", "secret", "purge", "--vault-name",
-              settings["vault"], "--name", sid)
+              settings["vault"], "--name", sid, retry_access=True)
 
 
 def destroy_group(settings: dict[str, str]) -> None:
