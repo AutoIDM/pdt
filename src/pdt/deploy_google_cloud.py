@@ -4,6 +4,7 @@
 # dependencies = [
 #     "pyyaml",
 #     "python-dotenv",
+#     "backoff",
 # ]
 # ///
 """Deploy an app to Google Cloud as a scheduled Cloud Run job.
@@ -44,7 +45,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config
 from pdt import gcloud_sdk
 from pdt.deploy import confirm
-from pdt.deploy_common import DOCKERFILE, fail, gather_secrets, stage_build_context
+from pdt.deploy_common import (
+    DOCKERFILE, fail, fetch_json, gather_secrets, stage_build_context)
 
 GCLOUD = "gcloud"
 
@@ -309,8 +311,7 @@ def billing_list(path: str, key: str, project: str) -> list:
             f"{BILLING_API}/{path}?{urllib.parse.urlencode(query)}",
             headers={"Authorization": f"Bearer {token}",
                      "X-Goog-User-Project": project})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read())
+        data = fetch_json(req, timeout=60)
         items.extend(data.get(key) or [])
         page_token = data.get("nextPageToken") or ""
         if not page_token:
@@ -367,9 +368,12 @@ def average_run_seconds(job: str, region: str, project: str) -> float | None:
 
 
 def billing_detail(exc: Exception) -> str:
-    if isinstance(exc, urllib.error.HTTPError):
+    # fetch_json wraps an HTTP error response in an API error; the body
+    # still names the reason ("Cloud Billing API has not been used...").
+    response = getattr(exc, "response", None) or exc
+    if isinstance(response, urllib.error.HTTPError):
         try:
-            return json.loads(exc.read()).get("error", {}).get("message", "")
+            return json.loads(response.read()).get("error", {}).get("message", "")
         except (ValueError, OSError):
             return ""
     return ""

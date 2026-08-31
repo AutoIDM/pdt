@@ -15,11 +15,17 @@ PDT_PROJECT names the project directory, so no job depends on its cwd.
 from __future__ import annotations
 
 import base64
+import json
 import os
 import shutil
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
+from http import HTTPStatus
 from pathlib import Path
+
+import backoff
 
 from pdt import config
 
@@ -41,6 +47,67 @@ BUILD_EXCLUDES = (
 def fail(message: str) -> None:
     print(f"error: {message}")
     raise SystemExit(1)
+
+
+# HTTP fetching follows the Meltano SDK's RESTStream pattern:
+# validate_response splits responses into retriable (429 and every 5xx)
+# and fatal (any other 4xx), and backoff retries the retriable ones plus
+# connection errors and timeouts with an exponential wait.
+EXTRA_RETRY_STATUSES = (HTTPStatus.TOO_MANY_REQUESTS,)
+BACKOFF_MAX_TRIES = 5
+
+
+class FatalAPIError(Exception):
+    """The server rejected the request; sending it again cannot help."""
+
+    def __init__(self, message: str, response=None):
+        super().__init__(message)
+        self.response = response
+
+
+class RetriableAPIError(Exception):
+    """The server is busy or failing; sending the request again can work."""
+
+    def __init__(self, message: str, response=None):
+        super().__init__(message)
+        self.response = response
+
+
+def response_error_message(response) -> str:
+    error_type = ("Client" if HTTPStatus.BAD_REQUEST <= response.status
+                  < HTTPStatus.INTERNAL_SERVER_ERROR else "Server")
+    return (f"{response.status} {error_type} Error: {response.reason} "
+            f"for url: {response.url}")
+
+
+def validate_response(response) -> None:
+    if (response.status in EXTRA_RETRY_STATUSES
+            or response.status >= HTTPStatus.INTERNAL_SERVER_ERROR):
+        raise RetriableAPIError(response_error_message(response), response)
+    if HTTPStatus.BAD_REQUEST <= response.status < HTTPStatus.INTERNAL_SERVER_ERROR:
+        raise FatalAPIError(response_error_message(response), response)
+
+
+def backoff_handler(details) -> None:
+    print(f"    the server did not answer (try {details['tries']} of "
+          f"{BACKOFF_MAX_TRIES}); backing off {details['wait']:.1f}s...")
+
+
+@backoff.on_exception(
+    backoff.expo,
+    (RetriableAPIError, ConnectionError, TimeoutError, urllib.error.URLError),
+    max_tries=BACKOFF_MAX_TRIES,
+    factor=2,
+    on_backoff=backoff_handler,
+)
+def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
+    """GET a JSON document, backing off and retrying whatever can pass."""
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        validate_response(error)
+        raise
 
 
 def run_build(command: list[str]) -> None:
