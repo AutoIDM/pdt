@@ -300,7 +300,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         clients["scheduler"], names["schedule"], expression, app["timezone"],
         scheduler_role, {"Arn": function_arn})
     print(f"Deployed {app['name']}.")
-    print(f"Run it once: aws lambda invoke --function-name {names['function']} "
+    print(f"Run it once: pdt aws lambda invoke --function-name {names['function']} "
           f"--region {region} response.json")
     return 0
 

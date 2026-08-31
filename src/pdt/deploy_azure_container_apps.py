@@ -266,7 +266,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     reconcile_job(settings, job, image, cron, identity_id, secret_uri,
                   current_job is not None, name)
     print(f"Deployed {name}.")
-    print(f"Run it once now: az containerapp job start --name {job} --resource-group {rg}")
+    print(f"Run it once now: pdt az containerapp job start --name {job} --resource-group {rg}")
     return 0
 
 

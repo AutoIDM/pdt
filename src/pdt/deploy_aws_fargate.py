@@ -351,7 +351,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, target)
     print(f"Deployed {app['name']}.")
-    print(f"Run it once: aws ecs run-task --cluster {CLUSTER} "
+    print(f"Run it once: pdt aws ecs run-task --cluster {CLUSTER} "
           f"--task-definition {names['family']} --launch-type FARGATE "
           f"--network-configuration 'awsvpcConfiguration={{subnets=[{subnets[0]}],"
           f"securityGroups=[{security_group}],assignPublicIp=ENABLED}}' --region {region}")

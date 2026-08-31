@@ -2,6 +2,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
+#     "awscli",
 #     "boto3",
 #     "pyyaml",
 #     "python-dotenv",
@@ -12,6 +13,11 @@
 
 Shared login, IAM, secret, log, and schedule code lives here. The
 runtime-specific parts are in deploy_aws_lambda.py and deploy_aws_fargate.py.
+
+The deploy itself talks to AWS through boto3. The AWS CLI is a Python
+package, so the script header installs it too, and `pdt aws` plus the SSO
+login here run it as `python -m awscli`. No system install is needed.
+Credentials live in ~/.aws either way.
 """
 
 from __future__ import annotations
@@ -19,7 +25,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -32,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config
 from pdt.deploy_common import fail, fetch_json
 
+AWS_CLI = [sys.executable, "-m", "awscli"]
 MANAGED_TAGS = {"managed-by": "pdt"}
 SCHEDULE_GROUP = "pdt"
 ASSUMED_RUN_MINUTES = 5.0
@@ -186,7 +192,7 @@ def choose_profile(session) -> str:
     profiles = session.available_profiles
     if not profiles:
         print("No AWS credentials or profiles were found on this computer.")
-        print("Create a profile first:  aws configure sso   (or: aws configure)")
+        print("Create a profile first:  pdt aws configure sso   (or: pdt aws configure)")
         print("Then select it:          export AWS_PROFILE=<profile-name>")
         fail("run the same command again after you set AWS_PROFILE")
     if len(profiles) == 1:
@@ -209,14 +215,12 @@ def choose_profile(session) -> str:
 
 
 def sso_login(profile: str | None) -> bool:
-    aws_cli = shutil.which("aws")
-    if not aws_cli:
-        return False
-    command = [aws_cli, "sso", "login"]
+    command = [*AWS_CLI, "sso", "login"]
+    shown = "pdt aws sso login"
     if profile:
         command += ["--profile", profile]
+        shown += f" --profile {profile}"
     print("Your AWS login has expired or is missing.")
-    shown = " ".join(["aws", *command[1:]])
     answer = ask(f"Log in now with `{shown}` (opens a browser)? [y/N] ")
     if answer.lower() not in ("y", "yes"):
         return False
@@ -228,17 +232,11 @@ def relogin(profile: str | None) -> int:
     name = profile or os.environ.get("AWS_PROFILE") or ""
     if name not in session.available_profiles:
         name = choose_profile(session)
-    aws_cli = shutil.which("aws")
-    if not aws_cli:
-        print("The AWS CLI is not installed, so pdt cannot refresh an SSO login here.")
-        print("Install it from https://docs.aws.amazon.com/cli/latest/"
-              "userguide/getting-started-install.html")
-        fail(f"then run: aws sso login --profile {name}")
     print(f"Logging in to AWS profile {name}...")
-    if subprocess.run([aws_cli, "sso", "login", "--profile", name]).returncode != 0:
+    if subprocess.run([*AWS_CLI, "sso", "login", "--profile", name]).returncode != 0:
         print(f"If {name} uses access keys instead of SSO there is no login to "
-              f"refresh; run `aws configure --profile {name}` to replace the keys.")
-        fail("aws sso login failed")
+              f"refresh; run `pdt aws configure --profile {name}` to replace the keys.")
+        fail("pdt aws sso login failed")
     identity = boto3.Session(profile_name=name).client("sts").get_caller_identity()
     print(f"Signed in as {identity['Arn']}")
     print(f"Account {identity['Account']}")
@@ -266,7 +264,7 @@ def ensure_session(app: dict, profile: str | None = None):
         if not login_error(exc) or not sso_login(session.profile_name):
             profile = session.profile_name or "<profile-name>"
             fail(f"AWS credentials are unavailable or invalid: {exc}\n"
-                 f"Log in first (for example: aws sso login --profile {profile}), "
+                 f"Log in first (for example: pdt aws sso login --profile {profile}), "
                  f"then run the same command again.")
         session = boto3.Session(region_name=region, profile_name=session.profile_name)
     return session
@@ -578,6 +576,8 @@ def load_app(app_name: str) -> dict:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "aws":
+        return subprocess.run([*AWS_CLI, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("deploy", "destroy", "login"))
     parser.add_argument("app")

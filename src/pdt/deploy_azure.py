@@ -70,13 +70,13 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False) -
         print(f"    Azure RBAC is still propagating; retrying in {wait}s...")
         time.sleep(wait)
     print(proc.stderr.strip())
-    fail(f"az {' '.join(args[:4])} failed; fix the problem above and re-run")
+    fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
 
 
 def run_stream(*args: str) -> None:
     proc = subprocess.run([*AZ, *args])
     if proc.returncode != 0:
-        fail(f"az {' '.join(args[:3])} failed; fix the problem above and re-run")
+        fail(f"pdt az {' '.join(args[:3])} failed; fix the problem above and re-run")
 
 
 def az_json(*args: str):
@@ -213,7 +213,7 @@ def login(requested: str) -> None:
     output = proc.stdout + proc.stderr
     if "No subscriptions found" not in output:
         print(output.strip())
-        fail("az login failed; fix the problem above and re-run")
+        fail("pdt az login failed; fix the problem above and re-run")
     user = re.search(r"No subscriptions found for (\S+)\.", output)
     who = user.group(1) if user else "your Azure account"
     print(f"The login worked, but {who} has no Azure subscription.")

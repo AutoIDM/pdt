@@ -87,13 +87,13 @@ def run_quiet(*args: str, data: str | None = None) -> str:
         print(f"    API not ready yet; retrying in {wait}s...")
         time.sleep(wait)
     print(proc.stderr.strip())
-    fail(f"gcloud {' '.join(args[:4])} failed; fix the problem above and re-run the deploy")
+    fail(f"pdt gcloud {' '.join(args[:4])} failed; fix the problem above and re-run the deploy")
 
 
 def run_stream(*args: str) -> None:
     proc = subprocess.run([GCLOUD, *args])
     if proc.returncode != 0:
-        fail(f"gcloud {' '.join(args[:2])} failed; fix the problem above and re-run the deploy")
+        fail(f"pdt gcloud {' '.join(args[:2])} failed; fix the problem above and re-run the deploy")
 
 
 def describe_json(*args: str):
@@ -115,7 +115,7 @@ def read_json_or_none(*args: str):
         return None
     if detail:
         print(detail)
-    fail(f"gcloud {' '.join(args[:4])} failed while checking resource ownership")
+    fail(f"pdt gcloud {' '.join(args[:4])} failed while checking resource ownership")
 
 
 def list_json(*args: str) -> list:
@@ -150,10 +150,10 @@ def preflight(app: dict, project: str, assume_yes: bool) -> str:
         except EOFError:
             answer = ""
         if answer not in ("y", "yes"):
-            fail(f"log in first: {GCLOUD} auth login")
+            fail("log in first: pdt gcloud auth login")
         login = subprocess.run([GCLOUD, "auth", "login"])
         if login.returncode != 0:
-            fail("gcloud auth login failed")
+            fail("pdt gcloud auth login failed")
     if project in ("", "my-project"):
         project = choose_project(app, project)
     return project
@@ -193,7 +193,7 @@ def relogin(assume_yes: bool) -> int:
     subprocess.run([GCLOUD, "auth", "revoke", "--all"], stdin=subprocess.DEVNULL,
                    capture_output=True, text=True)
     if subprocess.run([GCLOUD, "auth", "login"]).returncode != 0:
-        fail("gcloud auth login failed")
+        fail("pdt gcloud auth login failed")
     account = subprocess.run(
         [GCLOUD, "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
         stdin=subprocess.DEVNULL, capture_output=True, text=True).stdout.strip()
@@ -573,7 +573,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
               "--uri", uri, "--http-method", "POST",
               "--oauth-service-account-email", sa)
     print(f"Deployed {name}.")
-    print(f"Run it once now: gcloud run jobs execute {job} --region {region} --project {project}")
+    print(f"Run it once now: pdt gcloud run jobs execute {job} --region {region} --project {project}")
     return 0
 
 
