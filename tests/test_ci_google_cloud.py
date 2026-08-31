@@ -55,7 +55,7 @@ def test_an_app_with_neither_token_cache_needs_no_cache_updates():
 def test_an_existing_access_token_is_enough_and_nothing_else_runs(monkeypatch):
     refuse_prompt(monkeypatch)
     calls = record_gcloud(monkeypatch, [(["auth", "print-access-token"], Result(0, "ya29.a0\n"))])
-    deploy_google_cloud.ensure_credentials(True)
+    deploy_google_cloud.ensure_credentials()
     assert calls == [[deploy_google_cloud.GCLOUD, "auth", "print-access-token"]]
 
 
@@ -69,7 +69,7 @@ def test_a_service_account_key_file_signs_in_without_a_question(monkeypatch, tmp
         (["auth", "print-access-token"], lambda: next(tokens)),
         (["--quiet", "auth", "login"], Result(0)),
     ])
-    deploy_google_cloud.ensure_credentials(True)
+    deploy_google_cloud.ensure_credentials()
     assert [deploy_google_cloud.GCLOUD, "--quiet", "auth", "login",
             "--cred-file", str(key_file)] in calls
 
@@ -79,7 +79,7 @@ def test_no_credential_and_no_key_file_names_both_ways_to_fix_it(monkeypatch, ca
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
     record_gcloud(monkeypatch, [])
     with pytest.raises(SystemExit):
-        deploy_google_cloud.ensure_credentials(True)
+        deploy_google_cloud.ensure_credentials()
     message = capsys.readouterr().out
     assert "GOOGLE_APPLICATION_CREDENTIALS" in message
     assert "auth login" in message
@@ -90,7 +90,7 @@ def test_a_person_at_a_terminal_is_still_offered_the_browser_login(monkeypatch):
     monkeypatch.setattr(email_auth, "can_prompt", lambda interactive: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
     calls = record_gcloud(monkeypatch, [(["auth", "login"], Result(0))])
-    deploy_google_cloud.ensure_credentials(False)
+    deploy_google_cloud.ensure_credentials()
     assert [deploy_google_cloud.GCLOUD, "auth", "login"] in calls
 
 
@@ -104,7 +104,7 @@ def test_an_unattended_run_with_no_project_names_the_key_to_set(project, monkeyp
     monkeypatch.setattr(config, "save_platform_key", refuse_save)
     record_gcloud(monkeypatch, [])
     with pytest.raises(SystemExit):
-        deploy_google_cloud.choose_project({"name": "my-report"}, "", True)
+        deploy_google_cloud.choose_project({"name": "my-report"}, "")
     message = capsys.readouterr().out
     assert "platform.project" in message
     assert "PDT_GOOGLE_CLOUD_PROJECT" in message

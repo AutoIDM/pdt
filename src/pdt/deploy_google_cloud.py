@@ -137,8 +137,8 @@ def require_managed(resource: dict | None, label: str) -> None:
         fail(f"{label} exists but is not managed by PDT")
 
 
-def can_ask(assume_yes: bool) -> bool:
-    return not assume_yes and email_auth.can_prompt(None)
+def can_ask() -> bool:
+    return email_auth.can_prompt(None)
 
 
 def have_credentials() -> bool:
@@ -157,12 +157,12 @@ def login_with_key_file() -> bool:
     return have_credentials()
 
 
-def ensure_credentials(assume_yes: bool) -> None:
+def ensure_credentials() -> None:
     if have_credentials():
         return
     if login_with_key_file():
         return
-    if not can_ask(assume_yes):
+    if not can_ask():
         fail("no Google Cloud sign-in on this computer; set GOOGLE_APPLICATION_CREDENTIALS "
              f"to a service account key file, or run {GCLOUD} auth login")
     print("gcloud has no active Google account yet.")
@@ -183,14 +183,14 @@ def preflight(app: dict, project: str, assume_yes: bool) -> str:
         GCLOUD = gcloud_sdk.ensure_gcloud(assume_yes)
     except gcloud_sdk.GcloudError as e:
         fail(str(e))
-    ensure_credentials(assume_yes)
+    ensure_credentials()
     if project in ("", "my-project"):
-        project = choose_project(app, project, assume_yes)
+        project = choose_project(app, project)
     return project
 
 
-def choose_project(app: dict, requested: str, assume_yes: bool) -> str:
-    if not can_ask(assume_yes):
+def choose_project(app: dict, requested: str) -> str:
+    if not can_ask():
         fail("no Google Cloud project to deploy to; set platform.project in pdt.yml, "
              "or set the PDT_GOOGLE_CLOUD_PROJECT environment variable")
     available = [line.split("\t") for line in
