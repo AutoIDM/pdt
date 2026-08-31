@@ -1,6 +1,9 @@
+import shutil
+from types import SimpleNamespace
+
 import yaml
 
-from pdt import __version__, scaffold
+from pdt import __version__, cli, config, scaffold
 from pdt.config import find_apps, validate_app
 
 
@@ -57,3 +60,43 @@ def test_the_starter_needs_no_env_vars(tmp_path, monkeypatch):
 
 def test_the_starter_is_also_offered_as_an_example():
     assert scaffold.STARTER in [example.name for example in scaffold.examples()]
+
+
+def run_app(monkeypatch, name, returncode=0):
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=returncode))
+    return cli.cmd_run(SimpleNamespace(app=name))
+
+
+def test_running_the_starter_suggests_deploying_it(tmp_path, monkeypatch, capsys):
+    init_into(tmp_path, monkeypatch)
+    assert run_app(monkeypatch, scaffold.STARTER) == 0
+    assert f"pdt deploy {scaffold.STARTER}" in capsys.readouterr().out
+
+
+def test_other_apps_get_no_deploy_nudge(tmp_path, monkeypatch, capsys):
+    root = init_into(tmp_path, monkeypatch)
+    shutil.copytree(root / scaffold.STARTER, root / "myjob")
+    assert run_app(monkeypatch, "myjob") == 0
+    assert "pdt deploy" not in capsys.readouterr().out
+
+
+def test_a_failed_starter_run_gets_no_deploy_nudge(tmp_path, monkeypatch, capsys):
+    init_into(tmp_path, monkeypatch)
+    assert run_app(monkeypatch, scaffold.STARTER, returncode=1) == 1
+    assert "pdt deploy" not in capsys.readouterr().out
+
+
+def test_an_already_deployed_starter_gets_no_nudge(tmp_path, monkeypatch, capsys):
+    init_into(tmp_path, monkeypatch)
+    config.mark_deployed(scaffold.STARTER, True)
+    assert run_app(monkeypatch, scaffold.STARTER) == 0
+    assert "pdt deploy" not in capsys.readouterr().out
+
+
+def test_a_destroyed_starter_gets_the_nudge_again(tmp_path, monkeypatch, capsys):
+    init_into(tmp_path, monkeypatch)
+    config.mark_deployed(scaffold.STARTER, True)
+    config.mark_deployed(scaffold.STARTER, False)
+    assert run_app(monkeypatch, scaffold.STARTER) == 0
+    assert f"pdt deploy {scaffold.STARTER}" in capsys.readouterr().out

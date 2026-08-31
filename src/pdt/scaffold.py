@@ -52,6 +52,7 @@ GITIGNORE_TEXT = """\
 .env
 .env.*
 .secrets/
+.pdt/
 __pycache__/
 .venv/
 .DS_Store

@@ -70,7 +70,11 @@ def deploy(app_name: str, assume_yes: bool = False, profile: str | None = None) 
     if config.uses_email(app):
         env_file = env_files[0] if env_files else app["dir"] / ".env"
         prepare_email_auth(env_file)
-    return dispatch(provider, "deploy", app_name, assume_yes, profile)
+    code = dispatch(provider, "deploy", app_name, assume_yes, profile)
+    if code == 0:
+        # A declined plan exits nonzero, so 0 means the deploy completed.
+        config.mark_deployed(app_name, True)
+    return code
 
 
 def login(app_name: str, profile: str | None = None) -> int:
@@ -90,7 +94,10 @@ def destroy(app_name: str, assume_yes: bool = False, profile: str | None = None)
         print(f"error: {e}")
         return 1
     config.load_env(app["dir"])
-    return dispatch(provider, "destroy", app_name, assume_yes, profile)
+    code = dispatch(provider, "destroy", app_name, assume_yes, profile)
+    if code == 0:
+        config.mark_deployed(app_name, False)
+    return code
 
 
 def confirm(actions: list[str], assume_yes: bool,
