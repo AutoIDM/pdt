@@ -5,6 +5,7 @@
 #     "boto3",
 #     "pyyaml",
 #     "python-dotenv",
+#     "backoff",
 # ]
 # ///
 """Deploy an app to AWS.
@@ -22,7 +23,6 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.request
 from pathlib import Path
 
 import boto3
@@ -30,7 +30,7 @@ from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config
-from pdt.deploy_common import fail
+from pdt.deploy_common import fail, fetch_json
 
 MANAGED_TAGS = {"managed-by": "pdt"}
 SCHEDULE_GROUP = "pdt"
@@ -385,8 +385,7 @@ def ensure_secret(secrets, name: str, payload: str) -> str:
 
 def list_price(offer: str, region: str, usagetype_suffix: str) -> float:
     url = PRICE_LIST_URL.format(offer=offer, region=region)
-    with urllib.request.urlopen(url, timeout=60) as resp:
-        data = json.load(resp)
+    data = fetch_json(url, timeout=60)
     for sku, product in data["products"].items():
         if not product["attributes"].get("usagetype", "").endswith(usagetype_suffix):
             continue

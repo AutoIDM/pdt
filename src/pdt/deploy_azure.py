@@ -5,6 +5,7 @@
 #     "azure-cli==2.89.1",
 #     "pyyaml",
 #     "python-dotenv",
+#     "backoff",
 # ]
 #
 # [tool.uv]
@@ -39,12 +40,11 @@ import sys
 import tempfile
 import time
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config
-from pdt.deploy_common import fail
+from pdt.deploy_common import fail, fetch_json
 
 AZ = [sys.executable, "-m", "azure.cli"]
 COMMON_PROVIDERS = ("Microsoft.KeyVault", "Microsoft.ManagedIdentity")
@@ -284,8 +284,7 @@ def retail_price(region: str, service: str, meter: str, sku: str) -> tuple[float
              f"and meterName eq '{meter}' and skuName eq '{sku}' "
              f"and type eq 'Consumption'")
     url = f"{PRICES_API}?$filter={urllib.parse.quote(query)}"
-    with urllib.request.urlopen(url, timeout=30) as resp:
-        items = json.load(resp).get("Items") or []
+    items = fetch_json(url, timeout=30).get("Items") or []
     items = [i for i in items if i.get("retailPrice")]
     if not items:
         raise LookupError(f"no {meter!r} price for {service} in region {region}")
