@@ -15,7 +15,10 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
+import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
@@ -23,12 +26,12 @@ from urllib.parse import quote
 from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
-    ACTION_GROUP_TYPE, INSIGHTS_TYPE, RECENT_RUNS, SMART_ACTION_GROUP, SMART_RULE_TYPE,
+    ACTION_GROUP_TYPE, AZ, INSIGHTS_TYPE, RECENT_RUNS, SMART_ACTION_GROUP, SMART_RULE_TYPE,
     assign_role, az_json, azure_settings, check_shared_names, clean_name,
     cost_estimate, destroy_group, ensure_group_and_vault, ensure_secret,
     failure_rule_name, group_can_be_deleted, key_vault_item, managed_secret,
     other_pdt_apps, owned_by, preflight, purge_secret, report_shared_kept,
-    require_managed, retail_price, run_basis, run_quiet, run_stream, secret_actions,
+    require_managed, retail_price, run_basis, run_quiet, secret_actions,
     secret_name, secret_state, side_resource, tag_side_resource, workspace_resource,
 )
 from pdt.deploy_common import CostEstimate, fail, gather_secrets, run_build, stage_build_context
@@ -179,6 +182,44 @@ def build_package(app: dict) -> Path:
         return archive
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+
+
+# The app settings pdt owns; every other setting belongs to Azure or the user.
+MANAGED_SETTINGS = ("PDT_SCHEDULE", "PDT_ENV_JSON")
+
+
+def settings_changes(existing: dict, desired: dict) -> tuple[bool, list[str]]:
+    # Writing app settings restarts the app and its Kudu deployment service,
+    # even when the values are unchanged, and that restart kills an upload
+    # that starts right after. Report what actually needs writing.
+    write = any(existing.get(key) != value for key, value in desired.items())
+    stale = [key for key in MANAGED_SETTINGS
+             if key not in desired and key in existing]
+    return write, stale
+
+
+def upload_package(function_app: str, rg: str, archive: Path) -> None:
+    # Flex Consumption restarts Kudu after a settings change and sometimes on
+    # its own; a deployment in flight when that happens dies with "Kudu has
+    # been restarted during deployment". Waiting out the restart and uploading
+    # again succeeds, so retry that failure and no other.
+    args = ("functionapp", "deployment", "source", "config-zip", "--name",
+            function_app, "--resource-group", rg, "--src", str(archive),
+            "--build-remote", "true")
+    for wait in (30, 60, 0):
+        proc = subprocess.Popen([*AZ, *args], stderr=subprocess.PIPE, text=True)
+        captured = []
+        for line in proc.stderr:
+            sys.stderr.write(line)
+            captured.append(line)
+        if proc.wait() == 0:
+            return
+        if wait == 0 or "kudu has been restarted" not in "".join(captured).lower():
+            fail("pdt az functionapp deployment source failed; "
+                 "fix the problem above and re-run")
+        console.bullet(f"Azure restarted its deployment service mid-upload; "
+                       f"retrying in {wait}s...", indent=4)
+        time.sleep(wait)
 
 
 def average_run_seconds(function_id: str) -> float | None:
@@ -351,19 +392,24 @@ def deploy(app: dict, assume_yes: bool) -> int:
         if not identity:
             fail(f"could not assign an identity to Function App {function_app}")
         assign_role(vault_id, identity["principalId"], "Key Vault Secrets User")
-        app_settings = [f"PDT_SCHEDULE={ncrontab(cron)}", "LOG_FORMAT=json"]
+        desired = {"PDT_SCHEDULE": ncrontab(cron), "LOG_FORMAT": "json"}
         if secret_uri:
-            app_settings.append(f"PDT_ENV_JSON=@Microsoft.KeyVault(SecretUri={secret_uri})")
-        console.step(f"configuring Function App {function_app}")
-        run_quiet("functionapp", "config", "appsettings", "set", "--name", function_app,
-                  "--resource-group", rg, "--settings", *app_settings)
-        if not secret_uri:
+            desired["PDT_ENV_JSON"] = f"@Microsoft.KeyVault(SecretUri={secret_uri})"
+        existing = {item["name"]: item["value"] for item in az_json(
+            "functionapp", "config", "appsettings", "list", "--name", function_app,
+            "--resource-group", rg) or []}
+        write, stale = settings_changes(existing, desired)
+        if write or stale:
+            console.step(f"configuring Function App {function_app}")
+        if write:
+            run_quiet("functionapp", "config", "appsettings", "set", "--name",
+                      function_app, "--resource-group", rg, "--settings",
+                      *(f"{key}={value}" for key, value in desired.items()))
+        if stale:
             run_quiet("functionapp", "config", "appsettings", "delete", "--name",
-                      function_app, "--resource-group", rg, "--setting-names", "PDT_ENV_JSON")
+                      function_app, "--resource-group", rg, "--setting-names", *stale)
         console.step(f"uploading code to {function_app} (Azure builds the packages)")
-        run_stream("functionapp", "deployment", "source", "config-zip", "--name",
-                   function_app, "--resource-group", rg, "--src", str(archive),
-                   "--build-remote", "true")
+        upload_package(function_app, rg, archive)
     finally:
         shutil.rmtree(archive.parent, ignore_errors=True)
     console.done(f"Deployed {name}.")
