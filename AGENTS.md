@@ -37,7 +37,7 @@ Both install routes must keep working, and a change is not done until both do:
 - `pdt` and `pdt.bat` are clone shims only. They hold no logic.
 - `src/pdt/cli.py` parses arguments and delegates. It holds no provider logic.
 - `src/pdt/config.py` finds the project, then loads, merges, and validates config. A rule that both a prompt and validation need lives here once, as a function returning a message or `""` (see `aws_account_problem`). `save_platform_key` is the one way to write a value back into a config file; it edits text so comments survive, and quotes the value so an id with a leading zero does not become a number.
-- `src/pdt/scaffold.py` owns `init`, `examples`, and `new`. `STARTER` names the example that `init` copies into an empty project.
+- `src/pdt/scaffold.py` owns `init`, `examples`, and `new`. `STARTER` names the example that `init` copies into an empty project. `init` also writes `AGENTS.md` (and a `CLAUDE.md` pointing at it) into the user's project.
 - `src/pdt/deploy.py` is provider-neutral deploy and destroy. It validates, then dispatches to one module per provider.
 - `src/pdt/deploy_<provider>.py` is one module per provider. Provider runtimes get their own module under the provider (`deploy_aws_lambda.py`, `deploy_azure_functions.py`). Code shared by the runtimes of one provider stays in that provider module.
 - `src/pdt/deploy_common.py` holds code shared by every provider: `fail`, the `DOCKERFILE`, `gather_secrets`, and `stage_build_context`. A provider module imports from here. A provider module never imports from another provider module.

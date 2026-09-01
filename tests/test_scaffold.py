@@ -67,6 +67,24 @@ def test_init_creates_a_usable_project(tmp_path, monkeypatch):
     assert find_apps() == [scaffold.STARTER]
 
 
+def test_init_writes_agent_docs(tmp_path, monkeypatch):
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert scaffold.init(None, assume_yes=True) == 0
+    agents = (tmp_path / "AGENTS.md").read_text()
+    assert "pdt validate" in agents
+    assert (tmp_path / "CLAUDE.md").read_text().strip() == "@AGENTS.md"
+
+
+def test_init_keeps_the_users_own_agent_docs(tmp_path, monkeypatch):
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("mine\n")
+    assert scaffold.init(None, assume_yes=True) == 0
+    assert (tmp_path / "AGENTS.md").read_text() == "mine\n"
+    assert (tmp_path / "CLAUDE.md").read_text().strip() == "@AGENTS.md"
+
+
 def test_init_on_an_existing_project_changes_nothing(project):
     before = (project / PROJECT_FILE).read_text()
     assert scaffold.init(None, assume_yes=True) == 0

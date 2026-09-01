@@ -4,7 +4,10 @@ Selected with platform.runtime: functions (the default). Entered through
 deploy_azure.py, which owns the uv script header, login, and Key Vault.
 The resource group, Storage account, and Key Vault are shared. Each app
 owns one tagged Function App on the Flex Consumption plan, built remotely
-from a zip of the app plus a generated function_app.py.
+from a zip of the app plus a generated function_app.py. The generated
+file forwards the app's stdout and stderr through Python's logging
+library, because Azure Functions only makes logging easy to view if you
+use it (see LogStream in FUNCTION_APP).
 """
 
 from __future__ import annotations
@@ -49,8 +52,11 @@ HOST_JSON = {
 FUNCTION_APP = """\
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -62,6 +68,10 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("PDT_PROJECT", str(ROOT))
 app = func.FunctionApp()
 _APP = None
+_LOGGER = logging.getLogger("pdt.app")
+_LOGGER.setLevel(logging.DEBUG)
+_LEVELS = {{"DEBUG": logging.DEBUG, "INFO": logging.INFO,
+           "WARNING": logging.WARNING, "ERROR": logging.ERROR}}
 
 
 def _app():
@@ -74,11 +84,54 @@ def _app():
     return _APP
 
 
+class LogStream(io.TextIOBase):
+    # Azure Functions only shows a line with its run when the line goes
+    # through Python's logging library, so the app's output is forwarded
+    # there. Deploy sets LOG_FORMAT=json; a JSON line keeps its severity.
+
+    def __init__(self, level: int) -> None:
+        self.level = level
+        self.rest = ""
+
+    def write(self, text: str) -> int:
+        self.rest += text
+        while "\\n" in self.rest:
+            line, self.rest = self.rest.split("\\n", 1)
+            self.emit(line)
+        return len(text)
+
+    def flush(self) -> None:
+        self.emit(self.rest)
+        self.rest = ""
+
+    def emit(self, line: str) -> None:
+        if line.strip() == "":
+            return
+        level, message = self.level, line
+        try:
+            record = json.loads(line)
+            severity = str(record.pop("severity"))
+            body = str(record.pop("message"))
+        except (TypeError, ValueError, KeyError, AttributeError):
+            pass
+        else:
+            level = _LEVELS.get(severity, level)
+            pairs = " ".join(f"{{k}}={{v}}" for k, v in record.items())
+            message = f"{{body}}  {{pairs}}" if pairs != "" else body
+        _LOGGER.log(level, message)
+
+
 @app.timer_trigger(schedule="%PDT_SCHEDULE%", arg_name="timer", run_on_startup=False)
 def run(timer: func.TimerRequest) -> None:
     for name, value in json.loads(os.environ.get("PDT_ENV_JSON") or "{{}}").items():
         os.environ.setdefault(name, str(value))
-    status = _app().main()
+    out, err = LogStream(logging.INFO), LogStream(logging.ERROR)
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            status = _app().main()
+    finally:
+        out.flush()
+        err.flush()
     if status:
         raise RuntimeError(f"app exited with status {{status}}")
 """
@@ -270,7 +323,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         if not identity:
             fail(f"could not assign an identity to Function App {function_app}")
         assign_role(vault_id, identity["principalId"], "Key Vault Secrets User")
-        app_settings = [f"PDT_SCHEDULE={ncrontab(cron)}"]
+        app_settings = [f"PDT_SCHEDULE={ncrontab(cron)}", "LOG_FORMAT=json"]
         if secret_uri:
             app_settings.append(f"PDT_ENV_JSON=@Microsoft.KeyVault(SecretUri={secret_uri})")
         print(f"==> configuring Function App {function_app}")

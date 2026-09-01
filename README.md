@@ -305,3 +305,19 @@ Leave the two SES key variables empty to use the standard AWS credential chain (
 Required environment variables:
 
 - PDT_RESEND_API_KEY
+
+## Logging
+
+`pdt.utils.log` writes one log line per event:
+
+```python
+from pdt.utils.log import die, log
+
+log("info", "processed", rows=42)
+```
+
+Levels are `debug`, `info`, `warning`, and `error`. Locally a line is human-readable text on stdout; with `LOG_FORMAT=json` it is one JSON object per line, which is also the default on Cloud Run.
+
+### Azure Functions
+
+Azure Functions only makes logging easy to view if you use Python's logging library, so the `function_app.py` that pdt deploys captures everything the app writes to stdout and stderr and forwards it through that library, line by line. Deploys set `LOG_FORMAT=json` so each forwarded line keeps its severity; a plain `print()` arrives too, as info. Every run then lists its own lines in the portal's Invocations view — the link `pdt deploy` prints.
