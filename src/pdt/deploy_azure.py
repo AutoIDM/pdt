@@ -188,6 +188,27 @@ def az(*args: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args, code, out.getvalue(), err.getvalue())
 
 
+def no_role_on_subscription(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return ("authorizationfailed" in lowered
+            or "does not have authorization" in lowered)
+
+
+def explain_missing_role() -> None:
+    console.say()
+    console.say("Azure refused this because your account holds no role, or too small a role, on the subscription.")
+    console.say("Microsoft 365 and Entra ID admin roles do not count; Azure grants subscription roles separately.")
+    console.say("pdt needs the Owner role, assigned as Active and Permanent:")
+    console.bullet("1. Someone who already has Owner grants it: portal.azure.com > Subscriptions > the subscription >")
+    console.bullet("Access control (IAM) > Add > Add role assignment > Privileged administrator roles > Owner >", indent=5)
+    console.bullet("your account. On the Assignment type step: Active, Permanent.", indent=5)
+    console.bullet("2. Nobody has Owner but you are the Global Administrator: portal.azure.com >")
+    console.bullet('Microsoft Entra ID > Properties > set "Access management for Azure resources" to Yes > Save,', indent=5)
+    console.bullet("grant yourself Owner as in step 1, then set the toggle back to No.", indent=5)
+    console.bullet("3. Run `pdt login <app>` to sign in fresh, and deploy again.")
+    console.say('The "If Azure says AuthorizationFailed" section of docs/platforms.md in the pdt repository walks through the same steps.')
+
+
 def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = False,
               hints: dict[str, str] | None = None, slow: str = "") -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
@@ -198,10 +219,9 @@ def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = Fal
             if proc.returncode == 0:
                 return proc.stdout
             output = proc.stderr.lower()
-            access_error = retry_access and any(text in output for text in (
-                "unable to fetch secret", "forbidden", "authorizationfailed",
-                "does not have authorization",
-            ))
+            access_error = retry_access and (
+                "unable to fetch secret" in output or "forbidden" in output
+                or no_role_on_subscription(proc.stderr))
             internal_error = retry_internal and "internalservererror" in output
             retried = seconds != 0 and (access_error or internal_error)
             if proc.stderr.strip():
@@ -214,6 +234,9 @@ def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = Fal
         for text, hint in (hints or {}).items():
             if text.lower() in output:
                 console.say(console.escape(hint))
+        if no_role_on_subscription(proc.stderr):
+            explain_missing_role()
+            fail(f"{console.value(command)} failed; grant the role above and re-run")
         fail(f"{console.value(command)} failed; fix the problem above and re-run")
 
 
