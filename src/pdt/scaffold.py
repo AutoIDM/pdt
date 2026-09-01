@@ -63,6 +63,24 @@ ENV_TEXT = """\
 # Each app folder has an env.template listing the names it needs.
 """
 
+AGENTS_TEXT = """\
+# AGENTS.md
+
+This folder is a pdt project: a set of small scheduled jobs. Every folder holding a `run.py` and a `config.yml` is one app. `pdt.yml` holds the settings shared by every app.
+
+## Working here
+
+- Start a new app with `pdt new <name> --from <example>`; `pdt examples` lists the starting points. Do not copy an app folder by hand.
+- An app declares its dependencies in the script header at the top of its `run.py`. The pinned `pdt-cli` version is the version a deployed job keeps running, so leave it alone unless the app is being redeployed.
+- List the env vars an app reads under `env:` in its `config.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets.
+- Check work with `pdt validate`, try it with `pdt run <name>`, ship it with `pdt deploy <name>`.
+- Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
+"""
+
+CLAUDE_TEXT = """\
+@AGENTS.md
+"""
+
 
 def _ask(question: str, default: str = "") -> str:
     suffix = f" [{default}]" if default != "" else ""
@@ -199,7 +217,8 @@ def init(directory: str | None, assume_yes: bool) -> int:
     platform = ask_platform(assume_yes)
     target.mkdir(parents=True, exist_ok=True)
     marker.write_text(project_yaml(platform))
-    for name, body in ((".gitignore", GITIGNORE_TEXT), (".env", ENV_TEXT)):
+    for name, body in ((".gitignore", GITIGNORE_TEXT), (".env", ENV_TEXT),
+                       ("AGENTS.md", AGENTS_TEXT), ("CLAUDE.md", CLAUDE_TEXT)):
         path = target / name
         if not path.exists():
             path.write_text(body)
@@ -211,6 +230,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
     print(f"  {PROJECT_FILE}   settings shared by every app")
     print("  .env      secrets, never committed")
     print("  .gitignore")
+    print("  AGENTS.md how an AI agent should work in this project (CLAUDE.md points here)")
     if starting_fresh:
         print(f"  {STARTER}/  a working app to run and edit")
     print()
