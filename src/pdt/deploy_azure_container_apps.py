@@ -56,6 +56,13 @@ def enable_acr_arm_auth(registry: str) -> None:
               "--registry", registry, "--status", "enabled")
 
 
+def job_history_url(settings: dict[str, str], job: str) -> str:
+    # The job's portal page; its Execution history tab lists every run, and
+    # each run's Console link opens that run's logs. No deeper deep link exists.
+    return ("https://portal.azure.com/#resource"
+            + resource_id(settings, "Microsoft.App", "jobs", job))
+
+
 def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                   identity_id: str, secret_uri: str | None,
                   exists: bool, app_name: str) -> None:
@@ -267,6 +274,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                   current_job is not None, name)
     print(f"Deployed {name}.")
     print(f"Run it once now: pdt az containerapp job start --name {job} --resource-group {rg}")
+    print(f"Run logs: {job_history_url(settings, job)} (Execution history tab)")
     return 0
 
 

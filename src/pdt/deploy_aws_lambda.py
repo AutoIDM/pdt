@@ -23,7 +23,7 @@ from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, MANAGED_TAGS, RECENT_RUNS, SCHEDULE_GROUP,
     aws_schedule_expression, aws_settings, clients_for, cost_estimate_lines,
-    delete_log_group, list_price, run_basis,
+    delete_log_group, list_price, log_group_url, run_basis,
     delete_role, delete_secret, ensure_log_group, ensure_role, ensure_schedule,
     ensure_secret, ensure_session, not_found, preflight,
     resource_exists, other_schedules, delete_schedule_group,
@@ -302,6 +302,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     print(f"Deployed {app['name']}.")
     print(f"Run it once: pdt aws lambda invoke --function-name {names['function']} "
           f"--region {region} response.json")
+    print(f"Run logs: {log_group_url(region, names['log_group'])}")
     return 0
 
 

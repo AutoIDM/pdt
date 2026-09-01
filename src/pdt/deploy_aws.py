@@ -340,6 +340,12 @@ def ensure_role(iam, name: str, service: str, policy_name: str,
     return role["Arn"]
 
 
+def log_group_url(region: str, log_group: str) -> str:
+    # The CloudWatch console double-encodes names in its URLs: "/" -> "%2F" -> "$252F".
+    return (f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
+            f"#logsV2:log-groups/log-group/{log_group.replace('/', '$252F')}")
+
+
 def ensure_log_group(logs, name: str) -> None:
     groups = logs.describe_log_groups(logGroupNamePrefix=name).get("logGroups", [])
     exists = any(group["logGroupName"] == name for group in groups)

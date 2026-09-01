@@ -16,7 +16,7 @@ from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, SCHEDULE_GROUP, aws_schedule_expression,
     aws_settings, clients_for, cost_estimate_lines, delete_log_group, delete_role,
-    delete_secret, list_price, recent_stream_seconds, run_basis,
+    delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     ensure_session, has_managed_tag, iam_tags, not_found,
     delete_schedule_group, other_schedules, preflight, resource_exists,
@@ -355,6 +355,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
           f"--task-definition {names['family']} --launch-type FARGATE "
           f"--network-configuration 'awsvpcConfiguration={{subnets=[{subnets[0]}],"
           f"securityGroups=[{security_group}],assignPublicIp=ENABLED}}' --region {region}")
+    print(f"Run logs: {log_group_url(region, names['log_group'])}")
     return 0
 
 
