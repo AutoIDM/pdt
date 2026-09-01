@@ -15,6 +15,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 from pdt import config
 from pdt.deploy import confirm
@@ -86,6 +87,16 @@ def run(timer: func.TimerRequest) -> None:
 def function_app_name(settings: dict[str, str], app_name: str) -> str:
     # A Function App name is a public hostname, so it carries the subscription suffix.
     return clean_name(f"pdt-{app_name}-{settings['suffix'][:6]}", 60)
+
+
+def invocations_url(settings: dict[str, str], function_app: str) -> str:
+    # The portal page listing every run of the timer function; each row opens
+    # that run's logs. FUNCTION_APP names the one function "run".
+    resource = (f"/subscriptions/{settings['subscription']}"
+                f"/resourceGroups/{settings['resource_group']}"
+                f"/providers/Microsoft.Web/sites/{function_app}/functions/run")
+    return ("https://portal.azure.com/#view/WebsitesExtension/FunctionTabMenuBlade"
+            f"/~/invocations/resourceId/{quote(resource, safe='')}")
 
 
 def ncrontab(cron: str) -> str:
@@ -275,7 +286,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     finally:
         shutil.rmtree(archive.parent, ignore_errors=True)
     print(f"Deployed {name}.")
-    print(f"Logs: https://portal.azure.com/#resource{current['id'] if current else ''}")
+    print(f"Run logs: {invocations_url(settings, function_app)}")
     return 0
 
 

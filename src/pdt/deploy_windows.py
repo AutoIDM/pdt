@@ -316,6 +316,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
         return 1
     print(f"Deployed {app['name']} as Windows task {name}.")
     print(f"Run it once now: Start-ScheduledTask -TaskName {_ps_string(name)}")
+    print("Run history: Get-ScheduledTaskInfo -TaskName "
+          f"{_ps_string(name)} (or Task Scheduler > Task Scheduler Library)")
     return 0
 
 

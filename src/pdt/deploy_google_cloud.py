@@ -235,6 +235,12 @@ def scheduler_description(app_name: str) -> str:
     return f"Managed by PDT app {app_name}"
 
 
+def job_logs_url(project: str, region: str, job: str) -> str:
+    # The Logs tab on the Cloud Run job page: every execution's output, newest first.
+    return (f"https://console.cloud.google.com/run/jobs/details/{region}/{job}"
+            f"/logs?project={project}")
+
+
 def scheduler_owned(resource: dict | None, app_name: str, project: str,
                     region: str, service_account: str) -> bool:
     if resource is None:
@@ -574,6 +580,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
               "--oauth-service-account-email", sa)
     print(f"Deployed {name}.")
     print(f"Run it once now: pdt gcloud run jobs execute {job} --region {region} --project {project}")
+    print(f"Run logs: {job_logs_url(project, region, job)}")
     return 0
 
 
