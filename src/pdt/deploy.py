@@ -12,6 +12,7 @@ child agrees with the parent about which project it is working on.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -30,8 +31,25 @@ PROVIDERS = {
 }
 
 
-def _load(app_name: str):
+def recorded_platform(app_name: str) -> dict:
+    path = config.find_project() / ".pdt" / "terraform" / "deployments" / (app_name + ".json")
+    if not path.is_file():
+        return {}
+    try:
+        record = json.loads(path.read_text())
+        platform = {key: value for key, value in record["identity"].items() if key in config.PLATFORM_KEYS}
+        platform["provider"] = record["provider"]
+        return platform
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ConfigError(f"{path}: invalid deployment record; restore this file from its backup") from exc
+
+
+def _load(app_name: str, deployed: bool = False):
+    if Path(app_name).name != app_name or app_name in (".", ".."):
+        raise ConfigError("the app name must be one folder name")
     app = config.merged_app(app_name)
+    if deployed:
+        app["platform"].update(recorded_platform(app_name))
     provider = app["platform"].get("provider")
     if provider not in PROVIDERS:
         raise ConfigError(
@@ -50,6 +68,14 @@ def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
         args += ["--profile", profile]
     args += extra or []
     env = dict(os.environ, PDT_PROJECT=str(config.find_project()))
+    if command == "destroy":
+        recorded = recorded_platform(app_name)
+        if recorded:
+            env["PDT_DEPLOYMENT_APP"] = app_name
+            env["PDT_DEPLOYMENT_PLATFORM"] = json.dumps(recorded)
+            path = config.find_project() / ".pdt" / "terraform" / "deployments" / (app_name + ".json")
+            record = json.loads(path.read_text())
+            env["PDT_DEPLOYMENT_CONTEXT"] = json.dumps({key: record[key] for key in ("schedule", "timezone") if key in record})
     return subprocess.run(args, check=False, env=env).returncode
 
 
@@ -59,6 +85,16 @@ def deploy(app_name: str, assume_yes: bool = False, profile: str | None = None) 
     except ConfigError as e:
         console.error(str(e))
         return 1
+    recorded = recorded_platform(app_name)
+    defaults = {"aws": "fargate", "azure": "container_apps", "google-cloud": "cloud-run-job", "windows": "task_scheduler"}
+    for key, previous in recorded.items():
+        current = app["platform"].get(key)
+        if key == "runtime" and current is None:
+            current = defaults.get(provider)
+        if current is not None and current != previous:
+            console.error(f"{app_name}/config.yml: platform.{key} differs from the deployed value; "
+                          f"run pdt destroy {app_name} before moving it")
+            return 1
     problems = config.validate_app(app_name)
     config.load_env(app["dir"])
     for problem in config.check_env(app["env"]):
@@ -102,7 +138,7 @@ def storage(app_name: str, rest: list[str], profile: str | None = None) -> int:
 
 def destroy(app_name: str, assume_yes: bool = False, profile: str | None = None) -> int:
     try:
-        app, provider = _load(app_name)
+        app, provider = _load(app_name, deployed=True)
     except ConfigError as e:
         console.error(str(e))
         return 1

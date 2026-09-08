@@ -73,6 +73,12 @@ The command prints a resource plan and a monthly cost estimate before it changes
 pdt destroy my-report
 ```
 
+PDT downloads its pinned Terraform version when it needs it. You do not write Terraform files or manage Terraform state. AWS, Azure, and Google Cloud deployments create protected remote state storage and a deployment lock automatically. PDT removes that storage after the last PDT deployment uses it. Windows keeps its state under `.pdt/terraform` in the project because it deploys only to this computer.
+
+If a stopped deployment leaves a cloud lock behind, repeat the command with `--unlock`. PDT asks before it removes the old lock.
+
+PDT keeps application secret payloads out of Terraform plans and state. It writes those payloads through each provider's secret service. Generated infrastructure credentials can still appear in Terraform state, so PDT restricts access to state storage.
+
 To sign in again, or to switch to a different cloud account:
 
 ```
@@ -222,6 +228,8 @@ The job runs as the SYSTEM account. Windows accepts these schedules:
 
 Other cron forms are rejected, because they do not translate to Windows Task Scheduler.
 
+Windows uses Terraform's shell provider to track the task. It cannot test scheduler changes or elevation on a non-Windows computer.
+
 ## The bundled examples
 
 Run `pdt examples` to list them, then `pdt new <name> --from <example>` to copy one.
@@ -249,6 +257,7 @@ Reports active Monday users whose email address does not match the `userPrincipa
 | your apps, `pdt.yml`, `.env` | your project folder, under version control |
 | the Google Cloud CLI pdt downloads | `~/.local/share/pdt/gcloud`, or `%LOCALAPPDATA%\pdt\gcloud` |
 | cloud sign-in state | `~/.azure` and `~/.config/gcloud`, as usual |
+| Terraform files and Windows state | `.pdt/terraform` in the project, ignored by Git |
 
 Set `PDT_PROJECT` to name the project folder directly, instead of letting pdt search upward. Deployed jobs get it set for them.
 

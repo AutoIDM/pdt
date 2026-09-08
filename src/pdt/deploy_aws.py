@@ -18,7 +18,8 @@
 Shared login, IAM, secret, log, and schedule code lives here. The job
 itself, a scheduled ECS task on Fargate, is in deploy_aws_fargate.py.
 
-The deploy itself talks to AWS through boto3. The AWS CLI is a Python
+Terraform reconciles infrastructure. Boto3 handles discovery, prices,
+artifacts, and secret payloads. The AWS CLI is a Python
 package, so the script header installs it too, and `pdt aws` plus the SSO
 login here run it as `python -m awscli`. No system install is needed.
 Credentials live in ~/.aws either way.
@@ -49,12 +50,15 @@ SCHEDULE_GROUP = "pdt"
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 PRICE_LIST_URL = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/{offer}/current/{region}/index.json"
-ROLE_PROPAGATION_DELAYS = (1, 2, 4, 8)
 COMMON_ACTIONS = [
     "iam:CreateRole",
     "iam:DeleteRole",
     "iam:DeleteRolePolicy",
     "iam:GetRole",
+    "iam:GetRolePolicy",
+    "iam:ListAttachedRolePolicies",
+    "iam:UpdateRole",
+    "iam:UntagRole",
     "iam:ListRolePolicies",
     "iam:ListRoleTags",
     "iam:PassRole",
@@ -70,6 +74,37 @@ COMMON_ACTIONS = [
     "logs:ListTagsForResource",
     "logs:PutRetentionPolicy",
     "logs:TagResource",
+    "logs:UntagResource",
+    "s3:CreateBucket",
+    "s3:DeleteBucket",
+    "s3:DeleteObject",
+    "s3:DeleteObjectVersion",
+    "s3:GetAccelerateConfiguration",
+    "s3:GetBucketAcl",
+    "s3:GetBucketCORS",
+    "s3:GetBucketLocation",
+    "s3:GetBucketLogging",
+    "s3:GetBucketObjectLockConfiguration",
+    "s3:GetBucketOwnershipControls",
+    "s3:GetBucketPolicy",
+    "s3:GetBucketPolicyStatus",
+    "s3:GetBucketPublicAccessBlock",
+    "s3:GetBucketRequestPayment",
+    "s3:GetBucketTagging",
+    "s3:GetBucketVersioning",
+    "s3:GetBucketWebsite",
+    "s3:GetEncryptionConfiguration",
+    "s3:GetLifecycleConfiguration",
+    "s3:GetObject",
+    "s3:GetObjectVersion",
+    "s3:GetReplicationConfiguration",
+    "s3:ListBucket",
+    "s3:ListBucketVersions",
+    "s3:PutBucketPublicAccessBlock",
+    "s3:PutBucketTagging",
+    "s3:PutBucketVersioning",
+    "s3:PutEncryptionConfiguration",
+    "s3:PutObject",
     "scheduler:CreateSchedule",
     "scheduler:CreateScheduleGroup",
     "scheduler:DeleteSchedule",
@@ -77,6 +112,8 @@ COMMON_ACTIONS = [
     "scheduler:GetSchedule",
     "scheduler:GetScheduleGroup",
     "scheduler:ListSchedules",
+    "scheduler:ListTagsForResource",
+    "scheduler:UntagResource",
     "scheduler:TagResource",
     "scheduler:UpdateSchedule",
     "secretsmanager:CreateSecret",
@@ -86,49 +123,24 @@ COMMON_ACTIONS = [
     "secretsmanager:PutSecretValue",
     "secretsmanager:RestoreSecret",
     "secretsmanager:TagResource",
-    "s3:CreateBucket",
-    "s3:GetBucketTagging",
-    "s3:GetObject",
-    "s3:ListBucket",
-    "s3:PutBucketPublicAccessBlock",
-    "s3:PutBucketTagging",
+    "secretsmanager:UntagResource",
+    "secretsmanager:UpdateSecret",
+    "secretsmanager:GetResourcePolicy",
 ]
+
+
 def error_code(exc: Exception) -> str:
     return getattr(exc, "response", {}).get("Error", {}).get("Code", "")
 
 
 def not_found(exc: Exception) -> bool:
+    if error_code(exc) == "ClientException":
+        message = getattr(exc, "response", {}).get("Error", {}).get("Message", "")
+        return message.startswith("Unable to describe task definition")
     return error_code(exc) in {
         "NoSuchEntity", "ResourceNotFoundException", "ResourceNotFound",
         "ClusterNotFoundException", "RepositoryNotFoundException",
     }
-
-
-def role_propagation_error(exc: Exception) -> bool:
-    code = error_code(exc)
-    response_message = getattr(exc, "response", {}).get("Error", {}).get("Message", "")
-    message = f"{exc} {response_message}".lower()
-    return (
-        code in {"InvalidParameterValueException", "ValidationException",
-                 "ClientException", "InvalidParameterException"}
-        and "role" in message
-        and any(fragment in message for fragment in (
-            "cannot be assumed", "could not be assumed", "does not exist",
-            "not valid", "unable to assume", "assume the role", "pass role",
-        ))
-    )
-
-
-def with_role_propagation_retry(operation, sleep=time.sleep):
-    for delay in (*ROLE_PROPAGATION_DELAYS, None):
-        try:
-            return operation()
-        except Exception as exc:
-            if delay is None or not role_propagation_error(exc):
-                raise
-            console.bullet(f"IAM role is not visible yet; retrying in {delay}s...", indent=4)
-            sleep(delay)
-    raise AssertionError("unreachable")
 
 
 def adopt_account(app: dict, session) -> str:
@@ -322,37 +334,6 @@ def trust_policy(service: str) -> str:
     }, sort_keys=True)
 
 
-def ensure_role(iam, name: str, service: str, policy_name: str,
-                statements: list[dict]) -> str:
-    try:
-        role = iam.get_role(RoleName=name)["Role"]
-        if not has_managed_tag(role.get("Tags", []), "Key", "Value"):
-            fail(f"IAM role {name} exists but is not managed by PDT")
-        iam.update_assume_role_policy(
-            RoleName=name, PolicyDocument=trust_policy(service))
-        iam.tag_role(RoleName=name, Tags=iam_tags())
-    except Exception as exc:
-        if not not_found(exc):
-            raise
-        role = iam.create_role(
-            RoleName=name,
-            AssumeRolePolicyDocument=trust_policy(service),
-            Description="Managed by PDT",
-            Tags=iam_tags(),
-        )["Role"]
-    for existing in iam.list_role_policies(RoleName=name).get("PolicyNames", []):
-        if existing != policy_name or not statements:
-            iam.delete_role_policy(RoleName=name, PolicyName=existing)
-    if not statements:
-        return role["Arn"]
-    document = json.dumps({
-        "Version": "2012-10-17", "Statement": statements,
-    }, sort_keys=True)
-    iam.put_role_policy(
-        RoleName=name, PolicyName=policy_name, PolicyDocument=document)
-    return role["Arn"]
-
-
 def store_url(bucket: str, app_name: str) -> str:
     return f"s3://{bucket}/{app_name}/"
 
@@ -413,47 +394,6 @@ def log_group_url(region: str, log_group: str) -> str:
     # The CloudWatch console double-encodes names in its URLs: "/" -> "%2F" -> "$252F".
     return (f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
             f"#logsV2:log-groups/log-group/{log_group.replace('/', '$252F')}")
-
-
-def ensure_log_group(logs, name: str) -> None:
-    groups = logs.describe_log_groups(logGroupNamePrefix=name).get("logGroups", [])
-    exists = any(group["logGroupName"] == name for group in groups)
-    if exists:
-        group = next(group for group in groups if group["logGroupName"] == name)
-        arn = group.get("logGroupArn") or group["arn"].removesuffix(":*")
-        tags = logs.list_tags_for_resource(resourceArn=arn).get("tags", {})
-        if tags.get("managed-by") != "pdt":
-            fail(f"CloudWatch log group {name} exists but is not managed by PDT")
-    else:
-        logs.create_log_group(logGroupName=name, tags=MANAGED_TAGS)
-    logs.put_retention_policy(logGroupName=name, retentionInDays=30)
-
-
-def ensure_secret(secrets, name: str, payload: str) -> str:
-    try:
-        current = secrets.describe_secret(SecretId=name)
-        arn = current["ARN"]
-        if not has_managed_tag(current.get("Tags", []), "Key", "Value"):
-            fail(f"Secrets Manager secret {name} exists but is not managed by PDT")
-        if current.get("DeletedDate"):
-            secrets.restore_secret(SecretId=name)
-        try:
-            value = secrets.get_secret_value(SecretId=name).get("SecretString", "")
-        except Exception:  # noqa: BLE001 - a missing or inaccessible value is replaced
-            value = None
-        if value != payload:
-            secrets.put_secret_value(SecretId=name, SecretString=payload)
-        secrets.tag_resource(SecretId=arn, Tags=iam_tags())
-        return arn
-    except Exception as exc:
-        if not not_found(exc):
-            raise
-    return secrets.create_secret(
-        Name=name,
-        SecretString=payload,
-        Tags=iam_tags(),
-        Description="PDT_ENV_JSON for a pdt job",
-    )["ARN"]
 
 
 def list_price(offer: str, region: str, usagetype_suffix: str, **attributes: str) -> float:
@@ -530,43 +470,6 @@ def aws_schedule_expression(cron: str) -> str:
     return f"cron({minute} {hour} {dom} {month} {dow} *)"
 
 
-def ensure_schedule_group(scheduler) -> None:
-    try:
-        scheduler.get_schedule_group(Name=SCHEDULE_GROUP)
-    except Exception as exc:
-        if not not_found(exc):
-            raise
-        scheduler.create_schedule_group(Name=SCHEDULE_GROUP, Tags=iam_tags())
-
-
-def ensure_schedule(scheduler, name: str, expression: str, timezone: str,
-                    role_arn: str, target: dict) -> None:
-    # Scheduler tags live on groups, not schedules: membership in the
-    # tagged pdt group is the ownership marker.
-    ensure_schedule_group(scheduler)
-    request = {
-        "Name": name,
-        "GroupName": SCHEDULE_GROUP,
-        "ScheduleExpression": expression,
-        "ScheduleExpressionTimezone": timezone,
-        "FlexibleTimeWindow": {"Mode": "OFF"},
-        "State": "ENABLED",
-        "Target": {
-            **target,
-            "RoleArn": role_arn,
-            "RetryPolicy": {"MaximumRetryAttempts": 1},
-        },
-    }
-    try:
-        scheduler.get_schedule(Name=name, GroupName=SCHEDULE_GROUP)
-        with_role_propagation_retry(lambda: scheduler.update_schedule(**request))
-    except Exception as exc:
-        if not not_found(exc):
-            raise
-        with_role_propagation_retry(lambda: scheduler.create_schedule(
-            **request, Description="Managed by PDT", ActionAfterCompletion="NONE"))
-
-
 def resource_exists(client, operation: str, **kwargs) -> bool:
     try:
         getattr(client, operation)(**kwargs)
@@ -582,58 +485,21 @@ def clients_for(session) -> dict:
             ("sts", "logs", "secretsmanager", "iam", "scheduler", "s3")}
 
 
-def delete_secret(secrets, name: str) -> None:
-    try:
-        current = secrets.describe_secret(SecretId=name)
-    except Exception as exc:
-        if not not_found(exc):
-            raise
-        return
-    if has_managed_tag(current.get("Tags", []), "Key", "Value"):
-        secrets.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
-
-
-def delete_log_group(logs, name: str) -> None:
-    groups = logs.describe_log_groups(logGroupNamePrefix=name).get("logGroups", [])
-    for group in groups:
-        if group["logGroupName"] != name:
-            continue
-        arn = group.get("logGroupArn") or group["arn"].removesuffix(":*")
-        tags = logs.list_tags_for_resource(resourceArn=arn).get("tags", {})
-        if tags.get("managed-by") == "pdt":
-            logs.delete_log_group(logGroupName=name)
-
-
 def other_schedules(scheduler, name: str) -> list[str] | None:
     """Names of other schedules in the pdt group; None when the group is absent."""
-    try:
-        schedules = scheduler.list_schedules(GroupName=SCHEDULE_GROUP).get("Schedules", [])
-    except Exception as exc:
-        if not not_found(exc):
-            raise
-        return None
-    return [item["Name"] for item in schedules if item["Name"] != name]
-
-
-def delete_schedule_group(scheduler) -> None:
-    try:
-        scheduler.delete_schedule_group(Name=SCHEDULE_GROUP)
-    except Exception as exc:
-        if not not_found(exc):
-            raise
-
-
-def delete_role(iam, name: str) -> None:
-    try:
-        role = iam.get_role(RoleName=name)["Role"]
-        if not has_managed_tag(role.get("Tags", []), "Key", "Value"):
-            return
-        for policy in iam.list_role_policies(RoleName=name).get("PolicyNames", []):
-            iam.delete_role_policy(RoleName=name, PolicyName=policy)
-        iam.delete_role(RoleName=name)
-    except Exception as exc:
-        if not not_found(exc):
-            raise
+    schedules = []
+    request = {"GroupName": SCHEDULE_GROUP}
+    while True:
+        try:
+            page = scheduler.list_schedules(**request)
+        except Exception as exc:
+            if not not_found(exc):
+                raise
+            return None
+        schedules += [item["Name"] for item in page.get("Schedules", []) if item["Name"] != name]
+        if not page.get("NextToken"):
+            return schedules
+        request["NextToken"] = page["NextToken"]
 
 
 def load_app(app_name: str) -> dict:
@@ -667,6 +533,8 @@ def main() -> int:
         if args.command == "deploy":
             return fargate.deploy(app, args.yes, args.profile)
         return fargate.destroy(app, args.yes, args.profile)
+    except config.ConfigError as exc:
+        fail(str(exc))
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",
                                "UnauthorizedOperation"}:

@@ -53,6 +53,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config
 from pdt import console
 from pdt import gcloud_sdk
+from pdt import terraform
+from pdt import terraform_google
 from pdt.deploy import confirm
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action,
@@ -248,24 +250,6 @@ def relogin(assume_yes: bool) -> int:
     return 0
 
 
-def ensure_apis(project: str, assume_yes: bool,
-                required: tuple[str, ...] = APIS) -> bool:
-    output = run_quiet(
-        "services", "list", "--enabled", "--project", project,
-        "--format=value(config.name)")
-    enabled = set(output.splitlines())
-    missing = [api for api in required if api not in enabled]
-    if not missing:
-        return False
-    actions = [f"enable {api} in project {project}" for api in missing]
-    if not confirm(actions, assume_yes):
-        console.warn("Aborted; nothing was changed.")
-        raise SystemExit(1)
-    console.step("enabling required Google Cloud APIs")
-    run_quiet("services", "enable", *missing, "--project", project)
-    return "cloudbilling.googleapis.com" in missing
-
-
 def project_region(app: dict) -> tuple[str, str]:
     project = str(app["platform"].get("project")
                   or os.environ.get("PDT_GOOGLE_CLOUD_PROJECT") or "")
@@ -276,6 +260,11 @@ def project_region(app: dict) -> tuple[str, str]:
 
 def secret_id(app_name: str) -> str:
     return f"pdt-{app_name}-env"
+
+
+def enabled_services(project: str) -> set[str]:
+    return set(run_quiet("services", "list", "--enabled", "--project", project,
+                         "--format=value(config.name)").splitlines())
 
 
 def store_bucket(project: str) -> str:
@@ -340,7 +329,7 @@ def service_account_owned(resource: dict | None) -> bool:
 
 def image_name(image: dict) -> str:
     value = str(image.get("package") or image.get("name") or "").rstrip("/")
-    return value.rsplit("/", 1)[-1]
+    return value.rsplit("/", 1)[-1].split("@", 1)[0]
 
 
 def run_job_identity(run_job: dict) -> tuple[str, str]:
@@ -507,14 +496,19 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
         detail = billing_detail(exc)
         disabled = "has not been used" in detail or "SERVICE_DISABLED" in detail
         if disabled and not billing_confirmed:
-            actions = [f"enable the Cloud Billing API in project {project} "
-                       "to calculate the required cost estimate"]
+            actions = ["prepare protected Terraform state for the required cost estimate",
+                       f"enable the Cloud Billing API in project {project} to calculate the estimate"]
             if not confirm(actions, assume_yes):
                 console.warn("Aborted; nothing was changed.")
                 raise SystemExit(1)
             console.step("enabling the Cloud Billing API")
-            run_quiet("services", "enable", "cloudbilling.googleapis.com",
-                      "--project", project)
+            with deployment_context({"name": job.removeprefix("pdt-")}, project, region, True) as deployment:
+                resources = {"google_project_service": {"billing": {
+                    "project": project, "service": "cloudbilling.googleapis.com", "disable_on_destroy": False,
+                }}}
+                workspace = deployment.workspace(
+                    "global", terraform.configuration("google", provider_settings(project, region), resources), retain=True)
+                workspace.apply(workspace.plan())
             billing_confirmed = True
         waits = (10, 20, 40, 60)
         if disabled and attempt < len(waits):
@@ -531,332 +525,330 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                         "excludes Cloud Build image builds and Artifact Registry storage")
 
 
+def imports_for_deploy(app_name: str, project: str, region: str, repository: str,
+                       service_account: str, has_secret: bool,
+                       oauth_cache_updates: bool, require_account: bool = True) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """Return imports after verifying that every collision belongs to PDT."""
+    job = f"pdt-{app_name}"
+    global_imports = {}
+    shared_imports = {}
+    app_imports = {}
+    enabled = set(run_quiet("services", "list", "--enabled", "--project", project,
+                            "--format=value(config.name)").splitlines())
+    for service in terraform_google.api_resources(project)["google_project_service"]["pdt"]["for_each"]:
+        if service in enabled:
+            global_imports[f'google_project_service.pdt["{service}"]'] = f"{project}/{service}"
+    default_account = f"pdt-runner@{project}.iam.gserviceaccount.com"
+    if "iam.googleapis.com" in enabled:
+        account = read_json_or_none("iam", "service-accounts", "describe", service_account,
+                                    "--project", project)
+        if service_account == default_account:
+            if account is not None:
+                if not service_account_owned(account):
+                    fail(f"service account {service_account} exists but is not managed by PDT")
+                global_imports["google_service_account.runner"] = (
+                    f"projects/{project}/serviceAccounts/{service_account}")
+        elif account is None and require_account:
+            fail(f"service account {service_account} does not exist in project {project}")
+    if "artifactregistry.googleapis.com" in enabled:
+        repository_state = read_json_or_none("artifacts", "repositories", "describe", repository,
+                                             "--location", region, "--project", project)
+        if repository_state is not None:
+            require_managed(repository_state, f"Artifact Registry repository {repository}")
+            shared_imports["google_artifact_registry_repository.images"] = (
+                f"projects/{project}/locations/{region}/repositories/{repository}")
+    member = f"serviceAccount:{service_account}"
+    if "run.googleapis.com" in enabled:
+        job_state = read_json_or_none("run", "jobs", "describe", job, "--region", region,
+                                      "--project", project)
+        if job_state is not None:
+            require_managed(job_state, f"Cloud Run job {job}")
+            job_id = f"projects/{project}/locations/{region}/jobs/{job}"
+            app_imports["google_cloud_run_v2_job.job"] = job_id
+            policy = read_json_or_none("run", "jobs", "get-iam-policy", job,
+                                       "--region", region, "--project", project) or {}
+            if any(binding.get("role") == "roles/run.invoker" and member in binding.get("members", [])
+                   and not binding.get("condition") for binding in policy.get("bindings", [])):
+                app_imports["google_cloud_run_v2_job_iam_member.invoker"] = (
+                    f"{job_id} roles/run.invoker {member}")
+    if "cloudscheduler.googleapis.com" in enabled:
+        schedule = read_json_or_none("scheduler", "jobs", "describe", job, "--location", region,
+                                     "--project", project)
+        if schedule is not None:
+            if not scheduler_owned(schedule, app_name, project, region, service_account):
+                fail(f"Cloud Scheduler job {job} exists but is not managed by PDT")
+            app_imports["google_cloud_scheduler_job.schedule"] = (
+                f"projects/{project}/locations/{region}/jobs/{job}")
+    if has_secret and "secretmanager.googleapis.com" in enabled:
+        secret = secret_id(app_name)
+        secret_state = read_json_or_none("secrets", "describe", secret, "--project", project)
+        if secret_state is not None:
+            require_managed(secret_state, f"Secret Manager secret {secret}")
+            sid = f"projects/{project}/secrets/{secret}"
+            app_imports["google_secret_manager_secret.env"] = sid
+            roles = ["roles/secretmanager.secretAccessor"]
+            if oauth_cache_updates:
+                roles.append("roles/secretmanager.secretVersionAdder")
+            policy = read_json_or_none("secrets", "get-iam-policy", secret, "--project", project) or {}
+            for index, role in enumerate(roles):
+                if any(binding.get("role") == role and member in binding.get("members", [])
+                       and not binding.get("condition") for binding in policy.get("bindings", [])):
+                    app_imports[f"google_secret_manager_secret_iam_member.runner_{index}"] = (
+                        f"{sid} {role} {member}")
+    return global_imports, shared_imports, app_imports
+
+
+def provider_settings(project: str, region: str) -> dict[str, str]:
+    return {"project": project, "region": region}
+
+
+def deployment_context(app: dict, project: str, region: str, assume_yes: bool):
+    token = run_quiet("auth", "print-access-token").strip()
+    return terraform.Deployment(
+        app, provider="google-cloud", identity={"project": project, "region": region,
+                                                  "runtime": "cloud-run-job"},
+        env={"GOOGLE_OAUTH_ACCESS_TOKEN": token}, assume_yes=assume_yes)
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     name = app["name"]
     project, region = project_region(app)
     project = preflight(app, project, assume_yes)
-    billing_confirmed = ensure_apis(project, assume_yes)
-
     cron = config.cron_expression(app["schedule"])
-    timezone = app["timezone"]
     values = gather_secrets(app)
-    oauth_cache_updates = needs_oauth_cache_updates(values)
     job = f"pdt-{name}"
-    repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
-    image = f"{region}-docker.pkg.dev/{project}/{repo}/{name}:latest"
-    sa = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() \
-        or f"pdt-runner@{project}.iam.gserviceaccount.com"
+    repository = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
+    service_account = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() or (
+        f"pdt-runner@{project}.iam.gserviceaccount.com")
+    oauth_cache_updates = needs_oauth_cache_updates(values)
+    global_imports, shared_imports, app_imports = imports_for_deploy(
+        name, project, region, repository, service_account, bool(values), oauth_cache_updates)
     bucket = store_bucket(project)
     store = deployer_store(project, name) if app["storage"] else None
-
-    console.status(f"Checking current state in project {project} ({region})...")
-    repository = read_json_or_none(
-        "artifacts", "repositories", "describe", repo,
-        "--location", region, "--project", project)
-    require_managed(repository, f"Artifact Registry repository {repo}")
-    repo_exists = repository is not None
-    service_account = read_json_or_none(
-        "iam", "service-accounts", "describe", sa, "--project", project)
-    default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
-    if (service_account is not None and sa == default_sa
-            and not service_account_owned(service_account)):
-        fail(f"service account {sa} exists but is not managed by PDT")
-    sa_exists = service_account is not None
     bucket_exists = False
-    if store:
+    # Terraform enables the storage API below, so a first deploy cannot read the bucket yet.
+    if store and "storage.googleapis.com" in enabled_services(project):
         described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
         require_managed(described, f"bucket {bucket}")
         bucket_exists = described is not None
     usage = (store.usage() if bucket_exists else (0, 0)) if store else None
-    run_job = read_json_or_none(
-        "run", "jobs", "describe", job, "--region", region, "--project", project)
-    require_managed(run_job, f"Cloud Run job {job}")
-    job_exists = run_job is not None
-    scheduler = read_json_or_none(
-        "scheduler", "jobs", "describe", job,
-        "--location", region, "--project", project)
-    if scheduler is not None and not scheduler_owned(scheduler, name, project, region, sa):
-        fail(f"Cloud Scheduler job {job} exists but is not managed by PDT")
-    sched_exists = scheduler is not None
-    sid = secret_id(name)
-    secret = read_json_or_none("secrets", "describe", sid, "--project", project)
-    require_managed(secret, f"Secret Manager secret {sid}")
-    payload = json.dumps(values, sort_keys=True)
-    secret_state = None
+    billing_confirmed = False
+    cost = cost_estimate(project, region, cron, job, bool(
+        terraform_google.address("cloud_run_v2_job", "job") in app_imports),
+        1 if values else 0, assume_yes, billing_confirmed, store_usage=usage)
+    actions = ["set up protected Terraform state",
+               f"reconcile Google Cloud infrastructure for {name}",
+               image_action(app, f"build and push image for {name}")]
     if values:
-        if secret is None:
-            secret_state = "create"
-        else:
-            current = secret_value(project, sid)
-            secret_state = "unchanged" if current == payload else "update"
-
-    actions = [("use existing" if repo_exists else "create")
-               + f" Artifact Registry repo {repo}"]
-    actions.append(image_action(app, f"build and push image {image}"))
-    if secret_state:
-        actions.append(f"{secret_state} secret {sid} ({len(values)} env vars as one json blob)")
-    if oauth_cache_updates:
-        actions.append(f"allow {job} to update its OAuth cache in secret {sid}")
-    actions.append(("use existing" if sa_exists else "create") + f" service account {sa}")
+        actions.append(f"write the current env values to secret {secret_id(name)}")
     if store:
-        actions += store_plan_lines(f"bucket {bucket}", bucket_exists, sa, name)
-    actions.append(("update" if job_exists else "create") + f" Cloud Run job {job}")
-    actions.append(("update" if sched_exists else "create")
-                   + f' Cloud Scheduler job {job}: "{cron}" ({timezone})')
-    cost = cost_estimate(project, region, cron, job, job_exists,
-                         1 if values else 0, assume_yes, billing_confirmed,
-                         store_usage=usage)
-
+        actions += store_plan_lines(f"bucket {bucket}", bucket_exists, service_account, name)
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return 1
-
-    if not repo_exists:
-        console.step(f"creating Artifact Registry repo {repo}")
-        run_quiet("artifacts", "repositories", "create", repo,
-                  "--repository-format", "docker", "--location", region,
-                  "--project", project, "--labels", "managed-by=pdt")
-    console.step(f"building image {image}")
-    build_image(app, image, project)
-    if not sa_exists:
-        if not sa.startswith("pdt-runner@"):
-            fail(f"CLOUD_RUN_SERVICE_ACCOUNT {sa} does not exist in project {project}")
-        console.step(f"creating service account {sa}")
-        run_quiet("iam", "service-accounts", "create", "pdt-runner",
-                  "--project", project, "--display-name", "pdt job runner",
-                  "--description", "Managed by PDT")
-    if store:
-        if not bucket_exists:
-            console.step(f"creating bucket {bucket}")
-            run_quiet("storage", "buckets", "create", f"gs://{bucket}",
-                      "--location", region, "--project", project,
-                      "--uniform-bucket-level-access", "--public-access-prevention")
-            run_quiet("storage", "buckets", "update", f"gs://{bucket}", "--update-labels",
-                      ",".join(f"{key}={value}" for key, value in STORE_TAGS.items()))
-        console.step(f"granting {sa} write access to {bucket}/{name}/")
-        run_quiet("storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
-                  "--member", f"serviceAccount:{sa}", "--role", STORE_ROLE,
-                  "--condition", store_condition(bucket, name))
-    if secret_state:
-        if secret_state == "create":
-            console.step(f"creating secret {sid}")
-            run_quiet("secrets", "create", sid, "--project", project,
-                      "--replication-policy", "automatic",
-                      "--labels", "managed-by=pdt",
-                      "--data-file", "-", data=payload)
-        elif secret_state == "update":
-            console.step(f"updating secret {sid}")
-            run_quiet("secrets", "versions", "add", sid, "--project", project,
-                      "--data-file", "-", data=payload)
-    if values:
-        run_quiet("secrets", "add-iam-policy-binding", sid, "--project", project,
-                  "--member", f"serviceAccount:{sa}",
-                  "--role", "roles/secretmanager.secretAccessor")
-    if oauth_cache_updates:
-        run_quiet("secrets", "add-iam-policy-binding", sid, "--project", project,
-                  "--member", f"serviceAccount:{sa}",
-                  "--role", "roles/secretmanager.secretVersionAdder")
-    console.step(f"deploying Cloud Run job {job}")
-    args = ["run", "jobs", "deploy", job, "--image", image, "--region", region,
-            "--project", project, "--service-account", sa, "--max-retries", "1",
-            "--labels", "managed-by=pdt"]
-    if values:
-        args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"]
-    env_vars = []
-    if oauth_cache_updates:
-        resource = f"projects/{project}/secrets/{sid}"
-        env_vars.append(f"PDT_ENV_SECRET_RESOURCE={resource}")
-    if store:
-        env_vars.append(f"PDT_STORAGE_URL={store.url}")
-    if env_vars:
-        args += ["--set-env-vars", ",".join(env_vars)]
-    run_quiet(*args)
-    run_quiet("run", "jobs", "add-iam-policy-binding", job, "--region", region,
-              "--project", project, "--member", f"serviceAccount:{sa}",
-              "--role", "roles/run.invoker")
-    console.step(f'scheduling {job}: "{cron}" ({timezone})')
-    uri = (f"https://{region}-run.googleapis.com/apis/run.googleapis.com"
-           f"/v1/namespaces/{project}/jobs/{job}:run")
-    verb = "update" if sched_exists else "create"
-    run_quiet("scheduler", "jobs", verb, "http", job,
-              "--location", region, "--project", project,
-              "--description", scheduler_description(name),
-              "--schedule", cron, "--time-zone", timezone,
-              "--uri", uri, "--http-method", "POST",
-              "--oauth-service-account-email", sa)
+    settings = provider_settings(project, region)
+    with deployment_context(app, project, region, assume_yes) as deployment:
+        deployment.save()
+        api_imports = {key: value for key, value in global_imports.items()
+                       if key.startswith("google_project_service.")}
+        global_workspace = deployment.workspace(
+            "global", terraform.configuration("google", settings, terraform_google.api_resources(project)),
+            imports=api_imports, retain=True)
+        global_workspace.apply(global_workspace.plan())
+        global_imports, shared_imports, app_imports = imports_for_deploy(
+            name, project, region, repository, service_account, bool(values), oauth_cache_updates)
+        global_workspace = deployment.workspace(
+            "global", terraform.configuration("google", settings,
+                                               terraform_google.global_resources(project, service_account)),
+            imports=global_imports, retain=True)
+        global_workspace.apply(global_workspace.plan())
+        shared_workspace = deployment.workspace(
+            "shared", terraform.configuration("google", settings,
+                                               terraform_google.shared_resources(project, region, repository)),
+            imports=shared_imports, retain=True)
+        shared_workspace.apply(shared_workspace.plan())
+        if store:
+            # The bucket is kept after destroy, so it stays outside Terraform's state.
+            if not bucket_exists:
+                console.step(f"creating bucket {bucket}")
+                run_quiet("storage", "buckets", "create", f"gs://{bucket}",
+                          "--location", region, "--project", project,
+                          "--uniform-bucket-level-access", "--public-access-prevention")
+                run_quiet("storage", "buckets", "update", f"gs://{bucket}", "--update-labels",
+                          ",".join(f"{key}={value}" for key, value in STORE_TAGS.items()))
+            console.step(f"granting {service_account} write access to {bucket}/{name}/")
+            run_quiet("storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
+                      "--member", f"serviceAccount:{service_account}", "--role", STORE_ROLE,
+                      "--condition", store_condition(bucket, name))
+        image_tag = f"{region}-docker.pkg.dev/{project}/{repository}/{name}:{int(time.time())}"
+        console.step(f"building image {image_tag}")
+        build_image(app, image_tag, project)
+        digest = run_quiet("artifacts", "docker", "images", "describe", image_tag,
+                           "--project", project, "--format=value(image_summary.digest)").strip()
+        if not digest.startswith("sha256:"):
+            fail(f"Artifact Registry did not return a digest for {image_tag}")
+        image = f"{image_tag.rsplit(':', 1)[0]}@{digest}"
+        data = None
+        account_reference = service_account
+        if service_account != f"pdt-runner@{project}.iam.gserviceaccount.com":
+            data = {"google_service_account": {"runner": {
+                "project": project, "account_id": service_account,
+            }}}
+            account_reference = "${data.google_service_account.runner.email}"
+        resources = terraform_google.app_resources(
+            name, project, region, cron, app["timezone"], image, account_reference,
+            secret_id(name), bool(values), oauth_cache_updates,
+            store.url if store else None)
+        if values:
+            prerequisites = {key: value for key, value in resources.items()
+                             if key in ("google_secret_manager_secret", "google_secret_manager_secret_iam_member")}
+            prerequisite_imports = {key: value for key, value in app_imports.items()
+                                    if key.startswith(("google_secret_manager_secret.", "google_secret_manager_secret_iam_member."))}
+            app_workspace = deployment.workspace(
+                "app", terraform.configuration("google", settings, prerequisites, data=data),
+                imports=prerequisite_imports, retain=True)
+            app_workspace.apply(app_workspace.plan())
+            run_quiet("secrets", "versions", "add", secret_id(name), "--project", project,
+                      "--data-file", "-", data=json.dumps(values, sort_keys=True))
+        app_workspace = deployment.workspace(
+            "app", terraform.configuration("google", settings, resources, data=data), imports=app_imports)
+        app_workspace.apply(app_workspace.plan())
+        deployment.save()
     console.done(f"Deployed {name}.")
     console.field("Run it once", f"pdt gcloud run jobs execute {job} --region {region} --project {project}")
     console.field("Run logs", job_logs_url(project, region, job))
     return 0
 
 
+
+
 def destroy(app: dict, assume_yes: bool) -> int:
+    """Adopt owned resources, then remove the app and unused shared resources."""
     name = app["name"]
     project, region = project_region(app)
     project = preflight(app, project, assume_yes)
-    ensure_apis(project, assume_yes, DESTROY_APIS)
     job = f"pdt-{name}"
-    repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
-    image = f"{region}-docker.pkg.dev/{project}/{repo}/{name}"
-    sa = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() \
-        or f"pdt-runner@{project}.iam.gserviceaccount.com"
-    default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
-
-    console.status(f"Checking current state in project {project} ({region})...")
-    scheduler = read_json_or_none(
-        "scheduler", "jobs", "describe", job,
-        "--location", region, "--project", project)
-    delete_scheduler = scheduler_owned(scheduler, name, project, region, sa)
-    if scheduler is not None and not delete_scheduler:
-        console.note(f"Cloud Scheduler job {job} is not managed by PDT; keeping it")
-    run_job = read_json_or_none(
-        "run", "jobs", "describe", job,
-        "--region", region, "--project", project)
-    delete_job = managed_by_pdt(run_job)
-    if run_job is not None and not delete_job:
-        console.note(f"Cloud Run job {job} is not managed by PDT; keeping it")
-    sid = secret_id(name)
-    secret = read_json_or_none("secrets", "describe", sid, "--project", project)
-    delete_secret = managed_by_pdt(secret)
-    if secret is not None and not delete_secret:
-        console.note(f"Secret Manager secret {sid} is not managed by PDT; keeping it")
-    repository = read_json_or_none(
-        "artifacts", "repositories", "describe", repo,
-        "--location", region, "--project", project)
-    repository_owned = managed_by_pdt(repository)
-    if repository is not None and not repository_owned:
-        console.note(f"Artifact Registry repository {repo} is not managed by PDT; keeping it")
-    images = []
-    if repository_owned:
-        images = list_json("artifacts", "docker", "images", "list",
-                           f"{region}-docker.pkg.dev/{project}/{repo}",
-                           "--include-tags", "--project", project)
-    app_images = [item for item in images if image_name(item) == name]
-    other_images = [item for item in images if image_name(item) != name]
-    regional_jobs = list_json("run", "jobs", "list", "--region", region,
-                              "--project", project)
-    other_regional_jobs = [
-        item for item in regional_jobs if run_job_identity(item)[0] != job
-    ]
-    project_jobs = list_json("run", "jobs", "list", "--project", project)
-    other_project_jobs = []
-    for item in project_jobs:
-        item_name, item_region = run_job_identity(item)
-        if item_name == job and item_region == region:
-            continue
-        other_project_jobs.append(item)
-    other_jobs = [
-        run_job_identity(item)[0]
-        for item in other_project_jobs
-        if managed_by_pdt(item) and run_job_identity(item)[0]
-    ]
-    service_account = read_json_or_none(
-        "iam", "service-accounts", "describe", sa, "--project", project)
+    repository = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
+    service_account = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() or (
+        f"pdt-runner@{project}.iam.gserviceaccount.com")
+    enabled = set(run_quiet("services", "list", "--enabled", "--project", project,
+                            "--format=value(config.name)").splitlines())
+    current = None
+    if "run.googleapis.com" in enabled:
+        current = read_json_or_none("run", "jobs", "describe", job, "--region", region, "--project", project)
+    require_managed(current, f"Cloud Run job {job}")
+    template = current or {}
+    while "containers" not in template:
+        if isinstance(template.get("template"), dict):
+            template = template["template"]
+        elif isinstance(template.get("spec"), dict):
+            template = template["spec"]
+        else:
+            break
+    containers = template.get("containers") or []
+    image = containers[0].get("image", "unused") if containers else "unused"
+    service_account = template.get("serviceAccountName") or template.get("serviceAccount") or (
+        template.get("service_account") or service_account)
+    image_parts = image.split("/")
+    if len(image_parts) >= 4 and image_parts[:2] == [f"{region}-docker.pkg.dev", project]:
+        repository = image_parts[2]
+    secret = None
+    if "secretmanager.googleapis.com" in enabled:
+        secret = read_json_or_none("secrets", "describe", secret_id(name), "--project", project)
+    require_managed(secret, f"Secret Manager secret {secret_id(name)}")
+    oauth_cache_updates = any(item.get("name") == "PDT_ENV_SECRET_RESOURCE"
+                              for container in containers for item in container.get("env", []))
+    global_imports, shared_imports, app_imports = imports_for_deploy(
+        name, project, region, repository, service_account, secret is not None, oauth_cache_updates, require_account=False)
     bucket = store_bucket(project)
     store = deployer_store(project, name) if app["storage"] else None
-    store_present = store is not None and read_json_or_none(
-        "storage", "buckets", "describe", f"gs://{bucket}") is not None
-    revoke_grant = store_present and store_grant_exists(bucket, name, sa)
-    unmanaged_app_resource = ((scheduler is not None and not delete_scheduler)
-                              or (run_job is not None and not delete_job))
-    delete_repo = (repository_owned and not other_regional_jobs and not other_images
-                   and not unmanaged_app_resource)
-    delete_image = bool(app_images) and not delete_repo
-    delete_sa = (sa == default_sa and service_account_owned(service_account)
-                 and not other_project_jobs and not unmanaged_app_resource)
-
-    actions = []
+    store_present = (store is not None and "storage.googleapis.com" in enabled
+                     and read_json_or_none("storage", "buckets", "describe",
+                                           f"gs://{bucket}") is not None)
+    revoke_grant = store_present and store_grant_exists(bucket, name, service_account)
+    actions = ["prepare protected Terraform state for the removal",
+               f"adopt and delete owned Cloud Run job, schedule, IAM grants, and secret for {name}",
+               f"delete app images from Artifact Registry repository {repository}",
+               "delete the registry and PDT service account when no other app uses them"]
     if revoke_grant:
-        actions.append(f"remove {sa} write access to {bucket}/{name}/")
-    if delete_scheduler:
-        actions.append(f"delete Cloud Scheduler job {job}")
-    if delete_job:
-        actions.append(f"delete Cloud Run job {job}")
-    if delete_secret:
-        actions.append(f"delete secret {sid}")
-    if delete_image:
-        actions.append(f"delete Artifact Registry image {image}")
-    if delete_repo:
-        actions.append(f"delete Artifact Registry repository {repo} (no other apps use it)")
-    if delete_sa:
-        actions.append(f"delete service account {sa} (no other apps use it)")
-    kept = []
-    if scheduler is not None and not delete_scheduler:
-        kept.append(f"Cloud Scheduler job {job}")
-    if run_job is not None and not delete_job:
-        kept.append(f"Cloud Run job {job}")
-    if secret is not None and not delete_secret:
-        kept.append(f"Secret Manager secret {sid}")
-    if repository is not None and not delete_repo:
-        kept.append(f"Artifact Registry repository {repo}")
-    if service_account is not None and not delete_sa:
-        kept.append(f"service account {sa}")
-    if store_present:
-        kept.append(store_kept_line(f"bucket {bucket}", store.usage()[0], name))
-    for item in other_project_jobs:
-        if managed_by_pdt(item):
-            continue
-        item_name, item_region = run_job_identity(item)
-        if not item_name:
-            continue
-        label = f"Cloud Run job {item_name}"
-        if item_region:
-            label += f" ({item_region})"
-        kept.append(label)
-    if not actions:
-        console.done(f"Nothing to remove for {name} in project {project}.")
-        remaining = sorted(set(other_jobs))
-        if remaining:
-            console.note(f"PDT apps still deployed: {', '.join(remaining)}.")
-        if kept:
-            console.heading("Still present:")
-            for resource in kept:
-                console.bullet(f"{resource}")
-        return 0
-    if revoke_grant:
+        actions.insert(0, f"remove {service_account} write access to {bucket}/{name}/")
         warn_if_locked(store, name)
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 1
-
     if revoke_grant:
-        console.step(f"removing {sa} write access to {bucket}/{name}/")
+        console.step(f"removing {service_account} write access to {bucket}/{name}/")
         run_quiet("storage", "buckets", "remove-iam-policy-binding", f"gs://{bucket}",
-                  "--member", f"serviceAccount:{sa}", "--role", STORE_ROLE,
+                  "--member", f"serviceAccount:{service_account}", "--role", STORE_ROLE,
                   "--condition", store_condition(bucket, name))
-    if delete_scheduler:
-        console.step(f"deleting Cloud Scheduler job {job}")
-        run_quiet("scheduler", "jobs", "delete", job,
-                  "--location", region, "--project", project, "--quiet")
-    if delete_job:
-        console.step(f"deleting Cloud Run job {job}")
-        run_quiet("run", "jobs", "delete", job,
-                  "--region", region, "--project", project, "--quiet")
-    if delete_secret:
-        console.step(f"deleting secret {sid}")
-        run_quiet("secrets", "delete", sid, "--project", project, "--quiet")
-    if delete_image:
-        console.step(f"deleting Artifact Registry image {image}")
-        run_quiet("artifacts", "docker", "images", "delete", image,
-                  "--delete-tags", "--project", project, "--quiet")
-    if delete_repo:
-        console.step(f"deleting Artifact Registry repository {repo}")
-        run_quiet("artifacts", "repositories", "delete", repo,
-                  "--location", region, "--project", project, "--quiet")
-    if delete_sa:
-        console.step(f"deleting service account {sa}")
-        run_quiet("iam", "service-accounts", "delete", sa,
-                  "--project", project, "--quiet")
+    settings = provider_settings(project, region)
+    with deployment_context(app, project, region, assume_yes) as deployment:
+        deployment.save()
+        global_imports, shared_imports, app_imports = imports_for_deploy(
+            name, project, region, repository, service_account, secret is not None, oauth_cache_updates, require_account=False)
+        resources = terraform_google.app_resources(
+            name, project, region, config.cron_expression(app["schedule"]), app["timezone"],
+            image, service_account, secret_id(name), secret is not None, oauth_cache_updates)
+        for kind, instances in resources.items():
+            for resource_name in list(instances):
+                if f"{kind}.{resource_name}" not in app_imports:
+                    del instances[resource_name]
+                    continue
+                item = instances[resource_name]
+                item.pop("depends_on", None)
+                if kind == "google_cloud_run_v2_job":
+                    item["lifecycle"] = {"ignore_changes": ["project", "location", "name", "labels", "template"]}
+                else:
+                    item["lifecycle"] = {"ignore_changes": "all"}
+        workspace = deployment.workspace("app", terraform.configuration("google", settings, resources), imports=app_imports)
+        if "google_cloud_run_v2_job.job" in app_imports:
+            plan = workspace.plan()
+            if any(action.startswith(("create ", "replace ")) for action in plan.actions):
+                fail("the resources changed during removal; run the same destroy command again")
+            workspace.apply(plan)
+        workspace.apply(workspace.plan(destroy=True))
+        regional_jobs = []
+        project_jobs = []
+        if "run.googleapis.com" in enabled:
+            regional_jobs = list_json("run", "jobs", "list", "--region", region, "--project", project)
+            project_jobs = list_json("run", "jobs", "list", "--project", project)
+        other_regional_jobs = [item for item in regional_jobs if run_job_identity(item)[0] != job]
+        other_project_jobs = [item for item in project_jobs
+                              if run_job_identity(item) != (job, region)]
+        other_images = []
+        if shared_imports:
+            images = list_json("artifacts", "docker", "images", "list",
+                               f"{region}-docker.pkg.dev/{project}/{repository}",
+                               "--include-tags", "--project", project)
+            app_images = [item for item in images if image_name(item) == name]
+            other_images = [item for item in images if image_name(item) != name]
+            if app_images:
+                run_quiet("artifacts", "docker", "images", "delete",
+                          f"{region}-docker.pkg.dev/{project}/{repository}/{name}",
+                          "--delete-tags", "--project", project, "--quiet")
+        if not other_regional_jobs and not other_images and shared_imports:
+            shared = deployment.existing_workspace("shared")
+            if shared is None:
+                shared = deployment.workspace(
+                    "shared", terraform.configuration("google", settings,
+                                                       terraform_google.shared_resources(project, region, repository)),
+                    imports=shared_imports)
+            shared.apply(shared.plan(destroy=True))
+        if not other_project_jobs:
+            global_workspace = deployment.existing_workspace("global")
+            if global_workspace is None:
+                resources = terraform_google.global_resources(project, service_account)
+                if "google_service_account.runner" not in global_imports:
+                    resources.pop("google_service_account", None)
+                global_workspace = deployment.workspace(
+                    "global", terraform.configuration("google", settings, resources), imports=global_imports)
+            global_workspace.apply(global_workspace.plan(destroy=True))
+        deployment.finish_destroy()
     console.done(f"Removed {name} from project {project}.")
-    remaining = sorted(set(other_jobs))
-    if remaining:
-        console.note(f"PDT apps still deployed: {', '.join(remaining)}.")
-    if kept:
-        console.heading("Still present:")
-        for resource in kept:
-            console.bullet(f"{resource}")
-    elif not remaining:
-        console.done("Nothing remains.")
+    if other_regional_jobs or other_project_jobs or other_images:
+        console.note("shared resources remain because other jobs or images still use them.")
+    if store_present:
+        console.say(store_kept_line(f"bucket {bucket}", store.usage()[0], name))
     return 0
 
 
@@ -889,9 +881,12 @@ def main() -> int:
         return relogin(args.yes)
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
-    if args.command == "deploy":
-        return deploy(app, args.yes)
-    return destroy(app, args.yes)
+    try:
+        if args.command == "deploy":
+            return deploy(app, args.yes)
+        return destroy(app, args.yes)
+    except config.ConfigError as exc:
+        fail(str(exc))
 
 
 if __name__ == "__main__":

@@ -142,6 +142,8 @@ def cmd_run(args) -> int:
 
 
 def cmd_deploy(args) -> int:
+    if getattr(args, "unlock", False):
+        os.environ["PDT_TF_UNLOCK"] = "1"
     name = choose_app(args.app, "deploy")
     if name is None:
         return 1
@@ -156,6 +158,8 @@ def cmd_login(args) -> int:
 
 
 def cmd_destroy(args) -> int:
+    if getattr(args, "unlock", False):
+        os.environ["PDT_TF_UNLOCK"] = "1"
     name = choose_app(args.app, "destroy")
     if name is None:
         return 1
@@ -210,6 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     profile = p.add_argument("--profile", help="AWS profile name (AWS only)")
     profile.completer = completion.profiles
+    p.add_argument("--unlock", action="store_true",
+                   help="recover a deployment lock after its previous operation stopped")
     p.set_defaults(func=cmd_deploy)
     p = add_parser("login", help="sign in again to an app's cloud provider")
     app = p.add_argument("app", nargs="?",
@@ -225,6 +231,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     profile = p.add_argument("--profile", help="AWS profile name (AWS only)")
     profile.completer = completion.profiles
+    p.add_argument("--unlock", action="store_true",
+                   help="recover a deployment lock after its previous operation stopped")
     p.set_defaults(func=cmd_destroy)
     p = add_parser("storage", help="read or manage an app's data store")
     app = p.add_argument("app", help="the app's folder name")

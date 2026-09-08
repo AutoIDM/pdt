@@ -167,15 +167,21 @@ def merged_app(name: str) -> dict:
     own = load_yaml(app_dir / APP_FILE)
     entry_where = f"{PROJECT_FILE}: apps entry {name!r}"
     own_where = f"{name}/{APP_FILE}"
+    deployed_platform = {}
+    deployed_context = {}
+    if os.environ.get("PDT_DEPLOYMENT_APP") == name:
+        deployed_platform = json.loads(os.environ.get("PDT_DEPLOYMENT_PLATFORM", "{}"))
+        deployed_context = json.loads(os.environ.get("PDT_DEPLOYMENT_CONTEXT", "{}"))
     return {
         "name": name,
         "dir": app_dir,
-        "schedule": own.get("schedule", entry.get("schedule")),
-        "timezone": own.get("timezone", entry.get("timezone", "Etc/UTC")),
+        "schedule": deployed_context.get("schedule", own.get("schedule", entry.get("schedule"))),
+        "timezone": deployed_context.get("timezone", own.get("timezone", entry.get("timezone", "Etc/UTC"))),
         "platform": {
             **mapping(root_cfg, "platform", PROJECT_FILE),
             **mapping(entry, "platform", entry_where),
             **mapping(own, "platform", own_where),
+            **deployed_platform,
         },
         "config": {
             **mapping(entry, "config", entry_where),

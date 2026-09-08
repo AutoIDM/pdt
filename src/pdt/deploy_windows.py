@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import argparse
 import base64
-import ctypes
 import html
+import platform
 import shutil
 import subprocess
 import sys
@@ -32,6 +32,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console
+from pdt import terraform
+from pdt import terraform_windows
 from pdt.deploy import confirm
 from pdt.deploy_common import CostEstimate
 
@@ -229,33 +231,6 @@ def _encoded(script: str) -> str:
     return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
 
 
-def _is_admin() -> bool:
-    return bool(ctypes.windll.shell32.IsUserAnAdmin())
-
-
-def _run(powershell: str, script: str, *, not_found_ok: bool = False,
-         elevate: bool = False) -> bool:
-    if elevate and not _is_admin():
-        script = (
-            "$p = Start-Process powershell -Verb RunAs -Wait -PassThru "
-            "-WindowStyle Hidden -ArgumentList '-NoLogo','-NoProfile',"
-            "'-NonInteractive','-ExecutionPolicy','Bypass',"
-            f"'-EncodedCommand','{_encoded(script)}'; exit $p.ExitCode"
-        )
-    proc = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
-         "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    if proc.returncode == 0:
-        return True
-    if not_found_ok and proc.returncode == 3:
-        return False
-    detail = (proc.stderr or proc.stdout).strip()
-    raise WindowsDeployError(
-        f"Windows Task Scheduler command failed"
-        + (f": {detail}" if detail else f" (exit {proc.returncode})"))
-
-
 def _ps_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -284,49 +259,54 @@ def _task_state(powershell: str, name: str) -> str:
         + (f": {detail}" if detail else f" (exit {proc.returncode})"))
 
 
+def _task_xml(powershell: str, name: str) -> str:
+    proc = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-Command",
+         f"Export-ScheduledTask -TaskName {_ps_string(name)} -TaskPath '\\'"],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if proc.returncode:
+        detail = (proc.stderr or proc.stdout).strip()
+        raise WindowsDeployError(
+            "Windows could not export the scheduled task"
+            + (f": {detail}" if detail else ""))
+    return proc.stdout
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     try:
-        powershell, uv = _preflight()
+        _powershell, uv = _preflight()
         assert uv is not None
         name = _task_name(app["name"])
         description, xml = task_xml(app, uv)
-        state = _task_state(powershell, name)
-        if state == "unmanaged":
-            raise WindowsDeployError(
-                f"Windows scheduled task {name} exists but is not managed by PDT")
-        exists = state == "managed"
     except (config.ConfigError, WindowsDeployError) as exc:
         console.error(str(exc))
         return 1
-
-    verb = "update" if exists else "create"
+    resources = terraform_windows.configuration(name, xml)
+    identity = {"machine": platform.node(), "runtime": "task_scheduler"}
     folder = storage_folder(app["name"])
-    actions = [
-        f"{verb} Windows scheduled task {name} (runs as SYSTEM)",
-        f"run {app['name']} {description} (machine local time)",
-        f"working directory: {app['dir']}",
-    ]
-    if app["storage"]:
-        actions.append(f"use folder {folder} for the app's files (kept after destroy)")
-    cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
-                        "no cloud charges")
-    if not confirm(actions, assume_yes, cost):
-        console.warn("Aborted; nothing was changed.")
-        return 1
-
-    if app["storage"]:
-        folder.mkdir(parents=True, exist_ok=True)
-
-    payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
-    script = (
-        f"$name = {_ps_string(name)}; "
-        f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
-        "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
-        "-ErrorAction Stop | Out-Null"
-    )
     try:
-        _run(powershell, script, elevate=True)
-    except WindowsDeployError as exc:
+        with terraform.Deployment(app, "windows", identity, assume_yes=assume_yes) as deployment:
+            workspace = deployment.workspace(
+                "app", terraform.configuration("shell", {}, resources))
+            plan = workspace.plan()
+            actions = [f"{action.split(' ', 1)[0]} Windows scheduled task {name} (runs as SYSTEM)" for action in plan.actions]
+            if not actions:
+                actions = [f"keep Windows scheduled task {name} (runs as SYSTEM)"]
+            actions.extend([f"run {app['name']} {description} (machine local time)",
+                            f"working directory: {app['dir']}"])
+            if app["storage"]:
+                actions.append(f"use folder {folder} for the app's files (kept after destroy)")
+            cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
+                                "no cloud charges")
+            if not confirm(actions, assume_yes, cost):
+                console.warn("Aborted; nothing was changed.")
+                return 1
+            if app["storage"]:
+                folder.mkdir(parents=True, exist_ok=True)
+            deployment.save()
+            workspace.apply(plan)
+    except (terraform.TerraformError, WindowsDeployError) as exc:
         console.error(str(exc))
         return 1
     console.done(f"Deployed {app['name']} as Windows task {name}.")
@@ -338,32 +318,50 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
 def destroy(app: dict, assume_yes: bool) -> int:
     try:
-        powershell, _uv = _preflight(require_uv=False)
+        powershell, uv = _preflight(require_uv=False)
         name = _task_name(app["name"])
         state = _task_state(powershell, name)
         if state == "unmanaged":
-            raise WindowsDeployError(
-                f"Windows scheduled task {name} exists but is not managed by PDT")
-        exists = state == "managed"
-    except WindowsDeployError as exc:
+            raise WindowsDeployError(f"Windows scheduled task {name} exists but is not managed by PDT")
+        if state == "absent":
+            xml = ""
+        else:
+            xml = _task_xml(powershell, name)
+    except (config.ConfigError, WindowsDeployError) as exc:
         console.error(str(exc))
         return 1
-    if not exists:
-        console.done(f"Nothing to remove for {app['name']}; task {name} does not exist.")
-        if app["storage"]:
-            console.say(_kept_storage_line(app["name"]))
-        return 0
-    if not confirm([f"delete Windows scheduled task {name}"], assume_yes):
-        console.warn("Aborted; nothing was changed.")
-        return 1
+    identity = {"machine": platform.node(), "runtime": "task_scheduler"}
     try:
-        _run(
-            powershell,
-            f"Unregister-ScheduledTask -TaskName {_ps_string(name)} "
-            "-Confirm:$false -ErrorAction Stop",
-            elevate=True,
-        )
-    except WindowsDeployError as exc:
+        with terraform.Deployment(app, "windows", identity, assume_yes=assume_yes) as deployment:
+            if state == "absent":
+                workspace = deployment.existing_workspace("app")
+                if workspace:
+                    workspace.apply(workspace.plan(destroy=True))
+                deployment.finish_destroy()
+                console.done(f"Nothing to remove for {app['name']}; task {name} does not exist.")
+                if app["storage"]:
+                    console.say(_kept_storage_line(app["name"]))
+                return 0
+            workspace = deployment.existing_workspace("app")
+            if workspace is None:
+                resources = terraform_windows.configuration(name, xml, adopt=True)
+                workspace = deployment.workspace("app", terraform.configuration("shell", {}, resources))
+                adoption = workspace.plan()
+                actions = [f"adopt managed Windows scheduled task {name}",
+                           f"delete Windows scheduled task {name}"]
+                if not confirm(actions, assume_yes):
+                    console.warn("Aborted; nothing was changed.")
+                    return 1
+                workspace.apply(adoption)
+                plan = workspace.plan(destroy=True)
+            else:
+                plan = workspace.plan(destroy=True)
+                if not confirm([f"delete Windows scheduled task {name}"], assume_yes):
+                    console.warn("Aborted; nothing was changed.")
+                    return 1
+            workspace.apply(plan)
+            deployment.finish_destroy()
+    except (terraform.TerraformError, WindowsDeployError) as exc:
         console.error(str(exc))
         return 1
     console.done(f"Removed Windows task {name}.")

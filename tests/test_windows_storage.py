@@ -1,7 +1,9 @@
+from pathlib import Path
+
 import pytest
 
 from conftest import add_app
-from pdt import config, deploy_windows
+from pdt import config, deploy_windows, terraform
 
 
 @pytest.fixture
@@ -20,8 +22,37 @@ def windows_app(project, monkeypatch):
     return config.merged_app("my-report")
 
 
+def stub_terraform(monkeypatch):
+    """Show the plan without downloading Terraform or touching the machine."""
+    class Workspace:
+        def plan(self, destroy=False):
+            return terraform.Plan(Path("operation.tfplan"), ["create shell_script.task"])
+
+        def apply(self, plan):
+            pass
+
+    class Deployment:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def workspace(self, *_args, **_kwargs):
+            return Workspace()
+
+        def save(self):
+            pass
+
+    monkeypatch.setattr(deploy_windows.terraform, "Deployment", Deployment)
+
+
 def test_deploy_plans_the_storage_folder(project, monkeypatch, capsys):
     app = windows_app(project, monkeypatch)
+    stub_terraform(monkeypatch)
     assert deploy_windows.deploy(app, assume_yes=False) == 1
     folder = project / ".pdt" / "storage" / "my-report"
     out = capsys.readouterr().out

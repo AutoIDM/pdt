@@ -201,6 +201,7 @@ def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
         save_subscription(app, account)
     settings["subscription"] = str(account["id"])
     settings.update(shared_names(settings["subscription"]))
+    settings["tenant_id"] = str(account.get("tenantId") or "")
     user = account.get("user") or {}
     is_user = str(user.get("type", "")).lower() == "user"
     deployer_id = os.environ.get("PDT_AZURE_DEPLOYER_OBJECT_ID", "").strip()
@@ -432,61 +433,85 @@ def secret_actions(sid: str, values: dict, current_hash: str | None,
     return [f"{state} Key Vault secret {sid} ({len(values)} env vars)"]
 
 
-def register_providers(names: tuple[str, ...]) -> None:
-    pending = [name for name in names
-               if az_tsv("provider", "show", "--namespace", name,
-                         "--query", "registrationState") != "Registered"]
-    if not pending:
-        return
-    console.step(f"registering Azure providers: {', '.join(pending)}")
-    console.bullet("(a new subscription can take several minutes for this)", indent=4)
-    for name in pending:
-        run_quiet("provider", "register", "--namespace", name)
-    waited = 0
-    while pending:
-        time.sleep(10)
-        waited += 10
-        pending = [name for name in pending
-                   if az_tsv("provider", "show", "--namespace", name,
-                             "--query", "registrationState") != "Registered"]
-        if pending:
-            console.bullet(f"still waiting after {waited}s for: {', '.join(pending)}", indent=4)
-
-
-def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
-                           vault_exists: bool) -> str:
-    rg = settings["resource_group"]
-    group = az_json("group", "show", "--name", rg)
-    require_managed(group, f"resource group {rg}")
-    register_providers((*COMMON_PROVIDERS, *providers))
-    console.step(f"reconciling resource group {rg}")
-    run_quiet("group", "create", "--name", rg, "--location", settings["region"],
-              "--tags", "managed-by=pdt")
-    if not vault_exists:
-        console.step(f"creating Key Vault {settings['vault']}")
-        run_quiet("keyvault", "create", "--name", settings["vault"],
-                  "--resource-group", rg, "--location", settings["region"],
-                  "--enable-rbac-authorization", "true",
-                  "--tags", "managed-by=pdt")
-    if not workspace_exists(settings):
-        console.step(f"creating Log Analytics workspace {settings['workspace']}")
-        run_quiet("monitor", "log-analytics", "workspace", "create",
-                  "--resource-group", rg, "--workspace-name", settings["workspace"],
-                  "--location", settings["region"], "--tags", "managed-by=pdt")
-    vault_id = resource_id(settings, "Microsoft.KeyVault", "vaults", settings["vault"])
-    assign_role(vault_id, settings["deployer_object_id"], "Key Vault Secrets Officer",
-                settings["deployer_principal_type"])
-    return vault_id
-
-
 def workspace_resource(settings: dict[str, str]) -> dict | None:
     return az_json("monitor", "log-analytics", "workspace", "show",
                    "--resource-group", settings["resource_group"],
                    "--workspace-name", settings["workspace"])
 
 
-def workspace_exists(settings: dict[str, str]) -> bool:
-    return workspace_resource(settings) is not None
+def terraform_shared_imports(settings: dict[str, str], runtime: str) -> dict[str, str]:
+    from pdt import terraform_azure
+    imports = {}
+    checks = {
+        "azurerm_resource_group.pdt": (az_json("group", "show", "--name", settings["resource_group"]), f"resource group {settings['resource_group']}"),
+        "azurerm_key_vault.pdt": (az_json("keyvault", "show", "--name", settings["vault"], "--resource-group", settings["resource_group"]), f"Key Vault {settings['vault']}"),
+        "azurerm_log_analytics_workspace.pdt": (workspace_resource(settings), f"Log Analytics workspace {settings['workspace']}"),
+    }
+    if runtime == "functions":
+        checks["azurerm_storage_account.pdt"] = (az_json("storage", "account", "show", "--name", settings["storage"], "--resource-group", settings["resource_group"]), f"Storage account {settings['storage']}")
+    if runtime == "container_apps":
+        checks.update({
+            "azurerm_container_registry.pdt": (az_json("acr", "show", "--name", settings["registry"], "--resource-group", settings["resource_group"]), f"ACR {settings['registry']}"),
+            "azurerm_user_assigned_identity.runner": (az_json("identity", "show", "--name", settings["identity"], "--resource-group", settings["resource_group"]), f"managed identity {settings['identity']}"),
+            "azurerm_container_app_environment.pdt": (az_json("containerapp", "env", "show", "--name", settings["environment"], "--resource-group", settings["resource_group"]), f"Container Apps environment {settings['environment']}"),
+        })
+    known = terraform_azure.shared_imports(settings, runtime)
+    for address, (resource, label) in checks.items():
+        require_managed(resource, label)
+        if resource:
+            location = resource.get("location", "").replace(" ", "").lower()
+            if location and location != settings["region"].replace(" ", "").lower():
+                fail(f"{label} is in {location}; set platform.region to {location}, or use a different platform.resource_group")
+            imports[address] = known[address]
+    deployer_role = az_json("role", "assignment", "list", "--assignee", settings["deployer_object_id"],
+                            "--role", "Key Vault Secrets Officer", "--scope", known["azurerm_key_vault.pdt"]) or []
+    if deployer_role:
+        imports["azurerm_role_assignment." + terraform_azure.deployer_role_name(settings)] = deployer_role[0]["id"]
+    if runtime == "container_apps" and checks["azurerm_user_assigned_identity.runner"][0]:
+        principal = checks["azurerm_user_assigned_identity.runner"][0]["principalId"]
+        for address, scope, role in (
+                ("azurerm_role_assignment.runner_acr_pull", known["azurerm_container_registry.pdt"], "AcrPull"),
+                ("azurerm_role_assignment.runner_key_vault_user", known["azurerm_key_vault.pdt"], "Key Vault Secrets User")):
+            assignments = az_json("role", "assignment", "list", "--assignee", principal, "--role", role, "--scope", scope) or []
+            if assignments:
+                imports[address] = assignments[0]["id"]
+    return imports
+
+
+def terraform_function_imports(settings: dict[str, str], app: dict,
+                               current: dict | None) -> dict[str, str]:
+    from pdt import terraform_azure
+    if not current:
+        return {}
+    imports = terraform_azure.function_imports(app, settings)
+    imports.pop("azurerm_application_insights.function", None)
+    plan_id = ((current.get("properties") or {}).get("serverFarmId") or "")
+    if plan_id:
+        plan = az_json("resource", "show", "--ids", plan_id)
+        require_managed(plan, f"Function service plan {plan_id}")
+        imports["azurerm_service_plan.function"] = plan_id
+    insights = az_json("resource", "show", "--resource-group", settings["resource_group"],
+                       "--name", app["function_app"],
+                       "--resource-type", "Microsoft.Insights/components")
+    if insights and not owned_by(insights, app["name"]):
+        fail(f"Application Insights {app['function_app']} is not owned by this PDT app")
+    if insights:
+        imports["azurerm_application_insights.function"] = insights["id"]
+    identity = (current.get("identity") or {}).get("principalId")
+    if not identity:
+        return imports
+    for address, scope, role in (
+            ("azurerm_role_assignment.function_key_vault_user",
+             resource_id(settings, "Microsoft.KeyVault", "vaults", settings["vault"]),
+             "Key Vault Secrets User"),
+            ("azurerm_role_assignment.function_storage_blob",
+             resource_id(settings, "Microsoft.Storage", "storageAccounts", settings["storage"]),
+             "Storage Blob Data Contributor")):
+        assignments = az_json("role", "assignment", "list", "--assignee", identity,
+                              "--role", role, "--scope", scope) or []
+        if assignments:
+            imports[address] = assignments[0]["id"]
+    return imports
 
 
 def ensure_secret(settings: dict[str, str], sid: str, values: dict,
@@ -582,18 +607,10 @@ def purge_secret(settings: dict[str, str], sid: str) -> None:
               settings["vault"], "--name", sid, retry_access=True)
 
 
-def destroy_group(settings: dict[str, str]) -> None:
-    rg = settings["resource_group"]
-    console.step(f"deleting resource group {rg} (takes a few minutes)")
-    run_quiet("group", "delete", "--name", rg, "--yes")
-    if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
-        console.step(f"purging soft-deleted Key Vault {settings['vault']}")
-        run_quiet("keyvault", "purge", "--name", settings["vault"])
-    if az_tsv("group", "exists", "--name", rg) == "false":
-        console.done(f"Nothing remains in resource group {rg}.")
-
-
 def report_shared_kept(rg: str, others: list[str]) -> None:
+    if az_json("group", "exists", "--name", rg) is False:
+        console.done("Nothing remains.")
+        return
     if others:
         console.note(f"apps still deployed in resource group {rg}: {', '.join(others)}. "
                      "Shared resources stay until the last app is destroyed.")
@@ -670,6 +687,29 @@ def store_plan(store: dict[str, str], exists: bool, app_name: str,
         f"grant the signed-in Azure account write access to {store['container']} "
         "(for pdt storage)",
     ]
+
+
+def register_providers(names: tuple[str, ...]) -> None:
+    # Terraform registers the providers it needs; the data store is created
+    # outside Terraform, so it registers its own.
+    pending = [name for name in names
+               if az_tsv("provider", "show", "--namespace", name,
+                         "--query", "registrationState") != "Registered"]
+    if not pending:
+        return
+    console.step(f"registering Azure providers: {', '.join(pending)}")
+    console.bullet("(a new subscription can take several minutes for this)", indent=4)
+    for name in pending:
+        run_quiet("provider", "register", "--namespace", name)
+    waited = 0
+    while pending:
+        time.sleep(10)
+        waited += 10
+        pending = [name for name in pending
+                   if az_tsv("provider", "show", "--namespace", name,
+                             "--query", "registrationState") != "Registered"]
+        if pending:
+            console.bullet(f"still waiting after {waited}s for: {', '.join(pending)}", indent=4)
 
 
 def ensure_store(settings: dict[str, str], store: dict[str, str], exists: bool) -> None:
@@ -755,9 +795,12 @@ def main() -> int:
     if app["timezone"] not in ("Etc/UTC", "UTC"):
         fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
     from pdt import deploy_azure_container_apps as module
-    if args.command == "deploy":
-        return module.deploy(app, args.yes)
-    return module.destroy(app, args.yes)
+    try:
+        if args.command == "deploy":
+            return module.deploy(app, args.yes)
+        return module.destroy(app, args.yes)
+    except config.ConfigError as exc:
+        fail(str(exc))
 
 
 if __name__ == "__main__":
