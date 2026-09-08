@@ -46,6 +46,7 @@ FARGATE_ACTIONS = [
     "ecr:InitiateLayerUpload",
     "ecr:ListImages",
     "ecr:PutImage",
+    "ecr:TagResource",
     "ecr:UploadLayerPart",
     "ecs:CreateCluster",
     "ecs:DeleteCluster",

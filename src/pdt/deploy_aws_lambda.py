@@ -42,6 +42,7 @@ LAMBDA_ACTIONS = [
     "lambda:CreateFunction",
     "lambda:DeleteFunction",
     "lambda:GetFunction",
+    "lambda:GetFunctionConfiguration",
     "lambda:ListTags",
     "lambda:TagResource",
     "lambda:UpdateFunctionCode",
