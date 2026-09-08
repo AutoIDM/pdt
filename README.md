@@ -235,6 +235,21 @@ def main() -> int:
 
 The pinned version matters. A deployed job keeps using the version in its header, so upgrading pdt on your machine does not change a job already running in the cloud.
 
+## Photo sync
+
+Copy BambooHR employee photos onto Entra ID accounts. The app matches BambooHR `workEmail` to Entra `mail` and `userPrincipalName`. A unique match is required. BambooHR is the source of truth. The app does not clear an Entra photo when BambooHR has none.
+
+This sample uses BambooHR. `tap-bamboohr` already extracts photos. `target-azuread` already writes them with `PUT /users/{id}/photo/$value`. Other HRIS sources can use the same match-and-put steps.
+
+Create the app in your project, then run it:
+
+```
+pdt new photo-sync --from photo-sync
+pdt run photo-sync
+```
+
+Set `bamboohr_subdomain` and `photo_size` in `photo-sync/config.yml`. Set `dry_run: true` to log matches without writing photos. Credentials are documented in `photo-sync/config.yml` and `photo-sync/env.template`.
+
 # Utilities
 
 `pdt.utils` provides built-in support for common functionality:

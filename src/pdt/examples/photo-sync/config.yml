@@ -1,0 +1,26 @@
+schedule: "daily"
+
+config:
+  # BambooHR company subdomain (the first label in company.bamboohr.com).
+  bamboohr_subdomain: example
+
+  # BambooHR photo size. One of: original, large, medium, small, xs, tiny.
+  # large matches the customer photo pipelines that use tap-bamboohr.
+  photo_size: large
+
+  # When true, log matches and skip Graph photo writes.
+  dry_run: false
+
+# Entra app needs User.Read.All and ProfilePhoto.ReadWrite.All (application)
+# plus admin consent. BambooHR needs a company API key.
+env:
+  required:
+    - PDT_BAMBOOHR_API_KEY
+    - PDT_AZURE_TENANT_ID
+    - PDT_AZURE_CLIENT_ID
+  one_of:
+    - [PDT_AZURE_CLIENT_SECRET]
+    - [PDT_AZURE_PRIVATE_KEY_B64]
+    - [PDT_AZURE_PRIVATE_KEY_PATH]
+  optional:
+    - PDT_AZURE_PRIVATE_KEY_PASSWORD
