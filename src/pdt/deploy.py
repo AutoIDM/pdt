@@ -17,7 +17,8 @@ from pathlib import Path
 
 from pdt import config
 from pdt.config import ConfigError
-from pdt.utils.send_email import email_problems, prepare_email_auth
+from pdt.utils.email_auth import can_prompt
+from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
 PROVIDERS = {
     "google-cloud": "deploy_google_cloud.py",
@@ -56,7 +57,7 @@ def deploy(app_name: str, assume_yes: bool = False, profile: str | None = None) 
         print(f"error: {e}")
         return 1
     problems = config.validate_app(app_name)
-    env_files = config.load_env(app["dir"])
+    config.load_env(app["dir"])
     for problem in config.check_env(app["env"]):
         problems.append(f"env: {problem}")
     if app["schedule"] is None:
@@ -68,8 +69,7 @@ def deploy(app_name: str, assume_yes: bool = False, profile: str | None = None) 
             print(f"error: {app_name}: {problem}")
         return 1
     if config.uses_email(app):
-        env_file = env_files[0] if env_files else app["dir"] / ".env"
-        prepare_email_auth(env_file)
+        prepare_email_auth(auth_env_file(app["dir"]))
     code = dispatch(provider, "deploy", app_name, assume_yes, profile)
     if code == 0:
         # A declined plan exits nonzero, so 0 means the deploy completed.
@@ -109,5 +109,13 @@ def confirm(actions: list[str], assume_yes: bool,
         print(line)
     if assume_yes:
         return True
-    answer = input("Proceed? [y/N] ").strip().lower()
+    if not can_prompt(None):
+        print()
+        print("there is no one to answer. Run this in a terminal, "
+              "or add --yes to proceed without asking.")
+        return False
+    try:
+        answer = input("Proceed? [y/N] ").strip().lower()
+    except EOFError:
+        return False
     return answer in ("y", "yes")
