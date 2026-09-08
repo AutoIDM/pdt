@@ -230,6 +230,20 @@ def _oauth_access_token(env_file: Path | None = None,
         die(EXIT_CONFIG, "smtp oauth failed", error=str(e))
 
 
+def auth_env_file(start: Path, interactive: bool | None = None) -> Path | None:
+    """The .env file that email authorization is saved in, or None for no file.
+
+    None keeps a refreshed token in the environment alone. Without a .env and
+    without a terminal, as in CI, pdt must not create one.
+    """
+    files = config.find_env_files(start)
+    if files:
+        return files[0]
+    if email_auth.can_prompt(interactive):
+        return start / ".env"
+    return None
+
+
 def prepare_email_auth(env_file: Path | None = None,
                        interactive: bool | None = None) -> None:
     """Complete configured OAuth before the app performs other work."""
@@ -440,7 +454,7 @@ def send_email(from_addr: str, to_addrs, subject: str, body: str, html: str = ""
 
 
 def main() -> int:
-    env_files = config.load_env(Path.cwd())
+    config.load_env(Path.cwd())
     parser = argparse.ArgumentParser(
         description="Send a plain-text email (smtp / ses / resend / graph / stdout).")
     parser.add_argument("--from", dest="from_addr", default=optional_env("PDT_EMAIL_FROM"))
@@ -448,8 +462,7 @@ def main() -> int:
     parser.add_argument("--subject", default="Notification")
     args = parser.parse_args()
     body = sys.stdin.read()
-    env_file = env_files[0] if env_files else Path.cwd() / ".env"
-    prepare_email_auth(env_file)
+    prepare_email_auth(auth_env_file(Path.cwd()))
     transport = pick_transport()
     if transport != "stdout" and args.from_addr == "":
         die(EXIT_CONFIG, "need --from or PDT_EMAIL_FROM")
