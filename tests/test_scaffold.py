@@ -31,11 +31,22 @@ def test_a_temporary_folder_is_flagged():
     assert scaffold.bad_place(Path(tempfile.gettempdir()) / "x") != ""
 
 
-def test_named_target_must_not_exist(tmp_path, monkeypatch):
+def test_named_target_may_already_be_a_folder(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "taken").mkdir()
+    assert scaffold.choose_target("taken", assume_yes=True) == tmp_path / "taken"
+
+
+def test_the_current_folder_is_a_valid_named_target(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert scaffold.choose_target(".", assume_yes=True) == tmp_path
+
+
+def test_named_target_must_not_be_a_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "notes.txt").write_text("")
     with pytest.raises(ConfigError):
-        scaffold.choose_target("taken", assume_yes=True)
+        scaffold.choose_target("notes.txt", assume_yes=True)
 
 
 def test_named_target_is_resolved_against_the_working_folder(tmp_path, monkeypatch):
