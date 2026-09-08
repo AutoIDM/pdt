@@ -122,8 +122,8 @@ def bad_place(folder: Path) -> str:
 def choose_target(requested: str | None, assume_yes: bool) -> Path:
     if requested is not None:
         folder = Path(requested).expanduser().resolve()
-        if folder.exists():
-            raise ConfigError(f"{folder} already exists. Pick a name that is not taken.")
+        if folder.exists() and not folder.is_dir():
+            raise ConfigError(f"{folder} is a file, not a folder.")
         return folder
 
     here = Path.cwd().resolve()

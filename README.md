@@ -20,7 +20,7 @@ A project is a folder holding `pdt.yml`. Each app is a folder inside it that con
 pdt init my-jobs
 ```
 
-`pdt init` asks where the project should live, which cloud you want, and which region. It warns you if you are about to create a project somewhere unwise, such as your home folder. Run `pdt init` with no folder name to use the current folder, or add `--yes` to take the defaults and answer nothing.
+`pdt init` asks where the project should live, which cloud you want, and which region. It warns you if you are about to create a project somewhere unwise, such as your home folder. The folder name is optional: `pdt init` with no name uses the current folder, and `pdt init DIR` uses `DIR`, creating it if it is not there yet. Add `--yes` to take the defaults and answer nothing.
 
 Region is the only setting it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it.
 
