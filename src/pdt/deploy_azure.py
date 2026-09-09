@@ -134,9 +134,7 @@ def azure_settings(app: dict) -> dict[str, str]:
 
 def shared_names(subscription: str) -> dict[str, str]:
     # Storage account and Key Vault names are global across Azure, so they
-    # carry a hash of the subscription. Seed from the resolved subscription
-    # only; seeding from the config before preflight saved it gave the first
-    # deploy one set of names and every later command another.
+    # carry a hash of the subscription.
     suffix = hashlib.sha256(subscription.encode()).hexdigest()[:10]
     return {
         "suffix": suffix,
