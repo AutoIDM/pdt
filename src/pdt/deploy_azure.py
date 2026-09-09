@@ -114,16 +114,32 @@ def azure_settings(app: dict) -> dict[str, str]:
     resource_group = str(
         platform.get("resource_group")
         or os.environ.get("PDT_AZURE_RESOURCE_GROUP") or "pdt")
-    seed = subscription or resource_group
-    suffix = hashlib.sha256(seed.encode()).hexdigest()[:10]
     return {
         "subscription": subscription,
         "region": region,
         "resource_group": resource_group,
-        "suffix": suffix,
         "environment": str(
             os.environ.get("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT")
             or "pdt"),
+        "identity": str(
+            os.environ.get("PDT_AZURE_MANAGED_IDENTITY")
+            or "pdt-runner"),
+        # Log Analytics workspace names must be 4 to 63 characters, so this
+        # default cannot be the bare "pdt" the other shared names start from.
+        "workspace": str(
+            os.environ.get("PDT_AZURE_LOG_WORKSPACE")
+            or "pdt-logs"),
+    }
+
+
+def shared_names(subscription: str) -> dict[str, str]:
+    # Storage account and Key Vault names are global across Azure, so they
+    # carry a hash of the subscription. Seed from the resolved subscription
+    # only; seeding from the config before preflight saved it gave the first
+    # deploy one set of names and every later command another.
+    suffix = hashlib.sha256(subscription.encode()).hexdigest()[:10]
+    return {
+        "suffix": suffix,
         "registry": str(
             os.environ.get("PDT_AZURE_CONTAINER_REGISTRY")
             or f"pdt{suffix}")[:50].replace("-", ""),
@@ -133,14 +149,6 @@ def azure_settings(app: dict) -> dict[str, str]:
         "vault": str(
             os.environ.get("PDT_AZURE_KEY_VAULT")
             or f"pdt-{suffix}")[:24].strip("-"),
-        "identity": str(
-            os.environ.get("PDT_AZURE_MANAGED_IDENTITY")
-            or "pdt-runner"),
-        # Log Analytics workspace names must be 4 to 63 characters, so this
-        # default cannot be the bare "pdt" the other shared names start from.
-        "workspace": str(
-            os.environ.get("PDT_AZURE_LOG_WORKSPACE")
-            or "pdt-logs"),
     }
 
 
@@ -172,6 +180,7 @@ def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
     elif not requested and can_ask:
         save_subscription(app, account)
     settings["subscription"] = str(account["id"])
+    settings.update(shared_names(settings["subscription"]))
     user = account.get("user") or {}
     is_user = str(user.get("type", "")).lower() == "user"
     deployer_id = os.environ.get("PDT_AZURE_DEPLOYER_OBJECT_ID", "").strip()
@@ -333,6 +342,30 @@ def require_managed(resource: dict | None, label: str) -> None:
         fail(f"{label} exists but is not managed by PDT")
 
 
+SHARED_TYPES = {
+    "microsoft.storage/storageaccounts": ("Storage account", "storage"),
+    "microsoft.keyvault/vaults": ("Key Vault", "vault"),
+    "microsoft.containerregistry/registries": ("Container Registry", "registry"),
+}
+
+
+def check_shared_names(settings: dict[str, str]) -> None:
+    rg = settings["resource_group"]
+    for resource in az_json("resource", "list", "--resource-group", rg) or []:
+        shared = SHARED_TYPES.get(str(resource.get("type", "")).lower())
+        if shared is None or not managed_by_pdt(resource):
+            continue
+        label, key = shared
+        if resource.get("name") != settings[key]:
+            fail(f"resource group {rg} already holds a pdt {label} named "
+                 f"{resource['name']}, but this deploy would create {settings[key]}. "
+                 f"The names come from platform.subscription ({settings['subscription']}) "
+                 f"and platform.resource_group ({rg}) in {config.PROJECT_FILE}. "
+                 f"If apps still run next to {resource['name']}, put back the values "
+                 f"the earlier deploy used. If not, delete it with "
+                 f"`pdt az resource delete --ids {resource.get('id')}` and re-run")
+
+
 def secret_state(settings: dict[str, str], sid: str, app_name: str,
                  values: dict) -> tuple[bool, str | None]:
     vault = az_json("keyvault", "show", "--name", settings["vault"],
@@ -450,6 +483,37 @@ def other_pdt_apps(rg: str, exclude_app: str) -> list[str]:
     return sorted(names)
 
 
+PLAN_TYPE = "microsoft.web/serverfarms"
+INSIGHTS_TYPE = "microsoft.insights/components"
+SMART_RULE_TYPE = "microsoft.alertsmanagement/smartDetectorAlertRules"
+ACTION_GROUP_TYPE = "microsoft.insights/actionGroups"
+SMART_ACTION_GROUP = "Application Insights Smart Detection"
+
+
+def failure_rule_name(function_app: str) -> str:
+    return f"Failure Anomalies - {function_app}"
+
+
+def side_resource(rg: str, name: str, kind: str) -> dict | None:
+    return az_json("resource", "show", "--resource-group", rg,
+                   "--name", name, "--resource-type", kind)
+
+
+def tag_side_resource(rg: str, name: str, kind: str, *tags: str) -> None:
+    # Azure creates these next to a Function App; tag them so destroy owns them.
+    if side_resource(rg, name, kind):
+        run_quiet("resource", "tag", "--resource-group", rg, "--name", name,
+                  "--resource-type", kind, "--tags", *tags)
+
+
+def platform_side_resource(resource: dict) -> bool:
+    kind = str(resource.get("type", "")).lower()
+    name = str(resource.get("name", ""))
+    return (kind == PLAN_TYPE
+            or (kind == SMART_RULE_TYPE.lower() and name.startswith("Failure Anomalies - "))
+            or (kind == ACTION_GROUP_TYPE.lower() and name == SMART_ACTION_GROUP))
+
+
 def group_can_be_deleted(settings: dict[str, str], others: list[str]) -> bool:
     if others:
         return False
@@ -460,7 +524,10 @@ def group_can_be_deleted(settings: dict[str, str], others: list[str]) -> bool:
     resources = az_json("resource", "list", "--resource-group", rg)
     if resources is None:
         return False
-    return all(managed_by_pdt(resource) for resource in resources)
+    # Older pdt versions left the plans, alert rules, and action group that
+    # Azure creates beside a Function App untagged; they go with the group.
+    return all(managed_by_pdt(resource) or platform_side_resource(resource)
+               for resource in resources)
 
 
 def purge_secret(settings: dict[str, str], sid: str) -> None:

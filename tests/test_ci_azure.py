@@ -178,3 +178,83 @@ def test_an_unattended_run_with_no_azure_login_names_the_command_to_run(
     with pytest.raises(SystemExit):
         deploy_azure.preflight(azure_app, deploy_azure.azure_settings(azure_app))
     assert "az login --service-principal" in capsys.readouterr().out
+
+
+def test_shared_names_do_not_change_once_the_subscription_is_written_back(
+        project, azure_app, monkeypatch):
+    chosen(monkeypatch)
+    first = deploy_azure.preflight(azure_app, deploy_azure.azure_settings(azure_app))
+    (project / "pdt.yml").write_text(
+        f"platform:\n  provider: azure\n  subscription: \"{ACCOUNT['id']}\"\n")
+    app = config.merged_app("my-report")
+    later = deploy_azure.preflight(app, deploy_azure.azure_settings(app))
+    assert first["suffix"] == later["suffix"]
+    assert first["storage"] == later["storage"]
+    assert first["vault"] == later["vault"]
+    assert deploy_azure_functions.function_app_name(first, "my-report") == \
+        deploy_azure_functions.function_app_name(later, "my-report")
+
+
+SETTINGS = {"subscription": ACCOUNT["id"], "resource_group": "pdt",
+            "storage": "pdt32bc31109c", "vault": "pdt-32bc31109c",
+            "registry": "pdt32bc31109c"}
+
+
+def shared(kind: str, name: str) -> dict:
+    return {"type": kind, "name": name, "id": f"/rg/pdt/{name}",
+            "tags": {"managed-by": "pdt"}}
+
+
+def test_a_deploy_stops_when_the_group_holds_a_pdt_vault_under_another_name(
+        monkeypatch, capsys):
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: [
+        shared("Microsoft.KeyVault/vaults", "pdt-1aee26cd68")])
+    with pytest.raises(SystemExit):
+        deploy_azure.check_shared_names(dict(SETTINGS))
+    out = capsys.readouterr().out
+    assert "pdt-1aee26cd68" in out
+    assert "pdt-32bc31109c" in out
+    assert "platform.subscription" in out
+    assert "pdt.yml" in out
+
+
+def test_a_deploy_continues_when_the_group_holds_only_the_expected_names(monkeypatch):
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: [
+        shared("Microsoft.KeyVault/vaults", "pdt-32bc31109c"),
+        shared("Microsoft.Storage/storageAccounts", "pdt32bc31109c"),
+        dict(shared("Microsoft.KeyVault/vaults", "theirs"), tags={}),
+    ])
+    deploy_azure.check_shared_names(dict(SETTINGS))
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: [])
+    deploy_azure.check_shared_names(dict(SETTINGS))
+
+
+def test_destroy_plans_the_plan_alert_rule_and_action_group(azure_app, monkeypatch):
+    function_app = deploy_azure_functions.function_app_name(SETTINGS | {"suffix": "32bc31"},
+                                                            "my-report")
+    owner = {"managed-by": "pdt", "pdt-app": "my-report"}
+    plan_id = "/rg/pdt/serverfarms/ASP-pdt-8c1a"
+
+    def fake_az(*args):
+        if args[:2] == ("functionapp", "show"):
+            return {"tags": owner, "serverFarmId": plan_id}
+        if args[:3] == ("appservice", "plan", "show"):
+            return {"id": plan_id, "name": "ASP-pdt-8c1a", "numberOfSites": 1}
+        if args[:2] == ("resource", "show"):
+            name = args[args.index("--name") + 1]
+            return {"id": f"/rg/pdt/{name}", "name": name, "tags": owner}
+        return None
+
+    planned = []
+    monkeypatch.setattr(deploy_azure, "az_json", fake_az)
+    monkeypatch.setattr(deploy_azure_functions, "az_json", fake_az)
+    monkeypatch.setattr(deploy_azure_functions, "preflight",
+                        lambda app, settings: dict(SETTINGS, suffix="32bc31"))
+    monkeypatch.setattr(deploy_azure_functions, "confirm",
+                        lambda actions, assume_yes, *rest: planned.extend(actions))
+    assert deploy_azure_functions.destroy(azure_app, False) == 1
+    assert f"delete Function App {function_app}" in planned
+    assert "delete App Service plan ASP-pdt-8c1a" in planned
+    assert f"delete alert rule Failure Anomalies - {function_app}" in planned
+    assert ("delete action group Application Insights Smart Detection "
+            "(no pdt app remains)") in planned

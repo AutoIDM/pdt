@@ -23,12 +23,13 @@ from urllib.parse import quote
 from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
-    RECENT_RUNS, assign_role, az_json, azure_settings, clean_name, cost_estimate_lines,
-    destroy_group, ensure_group_and_vault, ensure_secret, group_can_be_deleted,
-    key_vault_item, managed_secret, other_pdt_apps, owned_by, preflight,
-    purge_secret, report_shared_kept, require_managed,
-    retail_price, run_basis, run_quiet, run_stream, secret_actions,
-    secret_name, secret_state, workspace_resource,
+    ACTION_GROUP_TYPE, INSIGHTS_TYPE, RECENT_RUNS, SMART_ACTION_GROUP, SMART_RULE_TYPE,
+    assign_role, az_json, azure_settings, check_shared_names, clean_name,
+    cost_estimate_lines, destroy_group, ensure_group_and_vault, ensure_secret,
+    failure_rule_name, group_can_be_deleted, key_vault_item, managed_secret,
+    other_pdt_apps, owned_by, preflight, purge_secret, report_shared_kept,
+    require_managed, retail_price, run_basis, run_quiet, run_stream, secret_actions,
+    secret_name, secret_state, side_resource, tag_side_resource, workspace_resource,
 )
 from pdt.deploy_common import fail, gather_secrets, run_build, stage_build_context
 
@@ -224,6 +225,31 @@ def cost_lines(region: str, cron: str, function_id: str | None,
         region, items, "excludes the shared Storage account, usually under $1/month")
 
 
+def adopt_side_resources(settings: dict[str, str], function_app: str, app_name: str) -> None:
+    # az functionapp create also makes the plan, the App Insights component,
+    # its Failure Anomalies rule, and one Smart Detection action group per
+    # resource group. None of them can be created or suppressed up front.
+    rg = settings["resource_group"]
+    owner = ("managed-by=pdt", f"pdt-app={app_name}")
+    plan_id = (az_json("functionapp", "show", "--name", function_app,
+                       "--resource-group", rg) or {}).get("serverFarmId")
+    if plan_id:
+        run_quiet("resource", "tag", "--ids", plan_id, "--tags", *owner)
+    tag_side_resource(rg, function_app, INSIGHTS_TYPE, *owner)
+    tag_side_resource(rg, failure_rule_name(function_app), SMART_RULE_TYPE, *owner)
+    tag_side_resource(rg, SMART_ACTION_GROUP, ACTION_GROUP_TYPE, "managed-by=pdt")
+
+
+def app_plan(current: dict | None) -> dict | None:
+    plan_id = (current or {}).get("serverFarmId")
+    if not plan_id:
+        return None
+    plan = az_json("appservice", "plan", "show", "--ids", plan_id)
+    if not plan or (plan.get("numberOfSites") or 0) > 1:
+        return None
+    return plan
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
@@ -237,6 +263,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
     console.say(f"Checking current state in Azure subscription {settings['subscription']} "
           f"({settings['region']})...")
+    check_shared_names(settings)
     group = az_json("group", "show", "--name", rg)
     require_managed(group, f"resource group {rg}")
     group_exists = group is not None
@@ -274,6 +301,10 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    + f" Log Analytics workspace {settings['workspace']} (shared)")
     actions.append(("use existing" if current else "create")
                    + f" Application Insights {function_app} (run logs)")
+    actions.append(("use existing" if current else "create")
+                   + " App Service plan for the Function App (Flex Consumption, named by Azure)")
+    actions.append("tag the plan, Application Insights, its Failure Anomalies alert rule, "
+                   f"and the {SMART_ACTION_GROUP} action group as managed by pdt")
     actions.append(("use existing" if vault_exists else "create")
                    + f" Key Vault {settings['vault']} (RBAC)")
     actions.append("ensure scoped Key Vault secret permissions for the deployer "
@@ -310,11 +341,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                       "--instance-memory", str(INSTANCE_MEMORY_MB),
                       "--workspace", settings["workspace"],
                       "--tags", "managed-by=pdt", f"pdt-app={name}")
-            # az created the App Insights component; tag it so destroy owns it.
-            run_quiet("resource", "tag", "--resource-group", rg,
-                      "--name", function_app,
-                      "--resource-type", "microsoft.insights/components",
-                      "--tags", "managed-by=pdt", f"pdt-app={name}")
+        adopt_side_resources(settings, function_app, name)
         if missing_origins:
             console.step(f"allowing Azure portal Code + Test for {function_app}")
             run_quiet("functionapp", "cors", "add", "--name", function_app,
@@ -352,18 +379,21 @@ def destroy(app: dict, assume_yes: bool) -> int:
     rg = settings["resource_group"]
     current = az_json("functionapp", "show", "--name", function_app, "--resource-group", rg)
     managed_app = owned_by(current, name)
-    insights = az_json("resource", "show", "--resource-group", rg, "--name", function_app,
-                       "--resource-type", "microsoft.insights/components")
+    plan = app_plan(current) if managed_app else None
+    insights = side_resource(rg, function_app, INSIGHTS_TYPE)
     managed_insights = owned_by(insights, name)
+    rule = side_resource(rg, failure_rule_name(function_app), SMART_RULE_TYPE)
     secret_owned = managed_secret(settings, sid, name)
     if current and not managed_app:
         console.note(f"Function App {function_app} is not owned by this app; keeping it")
     others = other_pdt_apps(rg, name)
+    action_group = None if others else side_resource(rg, SMART_ACTION_GROUP, ACTION_GROUP_TYPE)
     if group_can_be_deleted(settings, others):
         actions = [
             f"delete resource group {rg} and everything in it: the Function App, "
-            "its Application Insights, and the shared Storage account, Key Vault, "
-            "and Log Analytics workspace",
+            "its plan, Application Insights, and alert rule, the Smart Detection "
+            "action group, and the shared Storage account, Key Vault, and Log "
+            "Analytics workspace",
             f"purge the soft-deleted Key Vault {settings['vault']}",
         ]
         if not confirm(actions, assume_yes):
@@ -374,10 +404,16 @@ def destroy(app: dict, assume_yes: bool) -> int:
     actions = []
     if managed_app:
         actions.append(f"delete Function App {function_app}")
+    if plan:
+        actions.append(f"delete App Service plan {plan['name']}")
     if managed_insights:
         actions.append(f"delete Application Insights {function_app}")
+    if rule:
+        actions.append(f"delete alert rule {rule['name']}")
     if secret_owned:
         actions.append(f"delete and purge Key Vault secret {sid}")
+    if action_group:
+        actions.append(f"delete action group {SMART_ACTION_GROUP} (no pdt app remains)")
     if not actions:
         console.done(f"Nothing owned by {name} to remove in resource group {rg}.")
         return 0
@@ -386,10 +422,17 @@ def destroy(app: dict, assume_yes: bool) -> int:
         return 1
     if managed_app:
         run_quiet("functionapp", "delete", "--name", function_app, "--resource-group", rg)
+    # az functionapp delete drops an empty plan itself; only an orphan remains.
+    if plan and az_json("resource", "show", "--ids", plan["id"]):
+        run_quiet("resource", "delete", "--ids", plan["id"])
     if managed_insights:
         run_quiet("resource", "delete", "--resource-group", rg, "--name", function_app,
-                  "--resource-type", "microsoft.insights/components")
+                  "--resource-type", INSIGHTS_TYPE)
+    if rule:
+        run_quiet("resource", "delete", "--ids", rule["id"])
     if secret_owned:
         purge_secret(settings, sid)
+    if action_group:
+        run_quiet("resource", "delete", "--ids", action_group["id"])
     report_shared_kept(rg, others)
     return 0
