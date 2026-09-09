@@ -10,6 +10,8 @@ uv tool install pdt-cli
 
 That puts a `pdt` command on your PATH. To update it later, run `uv tool upgrade pdt-cli`.
 
+The first interactive `pdt` command enables tab completion without a prompt. Completion starts in new terminal sessions.
+
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
 
 ## Set up a project

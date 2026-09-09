@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pdt import __version__, config, deploy, scaffold
+from pdt import __version__, completion, config, deploy, scaffold
 from pdt.config import ConfigError
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -148,47 +148,65 @@ def cmd_destroy(args) -> int:
     return deploy.destroy(args.app, assume_yes=args.yes, profile=args.profile)
 
 
-def main() -> int:
-    if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
-        # Before argparse, so the cloud CLI parses its own flags.
-        script = Path(__file__).with_name(CLOUD_CLIS[sys.argv[1]])
-        return subprocess.run(
-            ["uv", "run", "--script", str(script), *sys.argv[1:]]).returncode
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pdt", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("init", help="create a project here, or in DIR")
-    p.add_argument("directory", nargs="?")
+    directory = p.add_argument("directory", nargs="?")
+    directory.completer = completion.directories
     p.add_argument("--yes", action="store_true", help="accept the defaults, ask nothing")
     p.set_defaults(func=cmd_init)
     sub.add_parser("examples", help="list the bundled example apps").set_defaults(
         func=cmd_examples)
     p = sub.add_parser("new", help="add an app to the project")
     p.add_argument("app")
-    p.add_argument("--from", dest="source",
-                   help="which example to copy; run `pdt examples` to see them")
+    source = p.add_argument("--from", dest="source",
+                            help="which example to copy; run `pdt examples` to see them")
+    source.completer = completion.examples
     p.set_defaults(func=cmd_new)
     sub.add_parser("list", help="show every app").set_defaults(func=cmd_list)
     sub.add_parser("validate", help="check config and env").set_defaults(func=cmd_validate)
     p = sub.add_parser("run", help="run an app locally")
-    p.add_argument("app")
+    app = p.add_argument("app")
+    app.completer = completion.apps
     p.set_defaults(func=cmd_run)
     p = sub.add_parser("deploy", help="deploy an app")
-    p.add_argument("app", nargs="?")
+    app = p.add_argument("app", nargs="?")
+    app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    p.add_argument("--profile", help="AWS profile name (AWS only)")
+    profile = p.add_argument("--profile", help="AWS profile name (AWS only)")
+    profile.completer = completion.profiles
     p.set_defaults(func=cmd_deploy)
     p = sub.add_parser("login", help="sign in again to an app's cloud provider")
-    p.add_argument("app")
-    p.add_argument("--profile", help="AWS profile name (AWS only)")
+    app = p.add_argument("app")
+    app.completer = completion.apps
+    profile = p.add_argument("--profile", help="AWS profile name (AWS only)")
+    profile.completer = completion.profiles
     p.set_defaults(func=cmd_login)
     p = sub.add_parser("destroy", help="tear down an app's deployed resources")
-    p.add_argument("app")
+    app = p.add_argument("app")
+    app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    p.add_argument("--profile", help="AWS profile name (AWS only)")
+    profile = p.add_argument("--profile", help="AWS profile name (AWS only)")
+    profile.completer = completion.profiles
     p.set_defaults(func=cmd_destroy)
+    for provider in CLOUD_CLIS:
+        p = sub.add_parser(provider, help=f"run the {provider} CLI")
+        p.add_argument("args", nargs=argparse.REMAINDER)
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    completion.configure(parser)
+    if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
+        # Before argparse, so the cloud CLI parses its own flags.
+        script = Path(__file__).with_name(CLOUD_CLIS[sys.argv[1]])
+        return subprocess.run(
+            ["uv", "run", "--script", str(script), *sys.argv[1:]]).returncode
     args = parser.parse_args()
     try:
         return args.func(args)
