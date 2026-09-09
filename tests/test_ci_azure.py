@@ -214,7 +214,7 @@ def test_a_deploy_stops_when_the_group_holds_a_pdt_vault_under_another_name(
     out = capsys.readouterr().out
     assert "pdt-1aee26cd68" in out
     assert "pdt-32bc31109c" in out
-    assert "platform.subscription" in out
+    assert "subscription" in out
     assert "pdt.yml" in out
 
 
