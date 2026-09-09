@@ -357,13 +357,14 @@ def check_shared_names(settings: dict[str, str]) -> None:
             continue
         label, key = shared
         if resource.get("name") != settings[key]:
-            fail(f"resource group {rg} already holds a pdt {label} named "
-                 f"{resource['name']}, but this deploy would create {settings[key]}. "
-                 f"The names come from platform.subscription ({settings['subscription']}) "
-                 f"and platform.resource_group ({rg}) in {config.PROJECT_FILE}. "
-                 f"If apps still run next to {resource['name']}, put back the values "
-                 f"the earlier deploy used. If not, delete it with "
-                 f"`pdt az resource delete --ids {resource.get('id')}` and re-run")
+            fail(f"an earlier deploy created the {label} {resource['name']} in Azure. "
+                 f"This deploy would create a second one, {settings[key]}, and leave "
+                 f"the first one unused. This happens when the subscription or the "
+                 f"resource group in {config.PROJECT_FILE} changed after that deploy.\n"
+                 f"If other apps still use {resource['name']}, put the earlier "
+                 f"subscription and resource group back in {config.PROJECT_FILE}.\n"
+                 f"If nothing uses it, remove it and deploy again:\n"
+                 f"  pdt az resource delete --ids {resource.get('id')}")
 
 
 def secret_state(settings: dict[str, str], sid: str, app_name: str,
