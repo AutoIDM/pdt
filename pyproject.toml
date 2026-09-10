@@ -37,7 +37,18 @@ packages = ["src/pdt"]
 include = ["src/pdt", "README.md", "tests"]
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "ruff"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+include = ["src/**/*.py"]
+extend-exclude = ["src/pdt/examples"]
+
+[tool.ruff.lint]
+select = ["T20"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/pdt/utils/log.py" = ["T20"]
+"src/pdt/utils/send_email.py" = ["T20"]
