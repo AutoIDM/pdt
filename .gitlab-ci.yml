@@ -20,6 +20,7 @@ variables:
 # build and test jobs skip such a pipeline.
 stages:
   - test
+  - verify
   - tasks
 
 # The score-mrs webhook calls the pipeline trigger API for every merge
@@ -34,6 +35,22 @@ workflow:
     - if: $MR_ACTION == "open"
     - if: $MR_ACTION == "reopen"
     - if: $MR_ACTION == "update" && $MR_DRAFT_BEFORE == "true" && $MR_DRAFT_AFTER == "false"
+
+include:
+  - local: verify/.gitlab-ci.yml
+
+build:
+  stage: test
+  script:
+    - uv build --wheel
+  artifacts:
+    paths:
+      - dist/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_TAG
 
 test:
   stage: test
