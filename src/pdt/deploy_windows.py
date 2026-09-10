@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config
+from pdt import config, console
 from pdt.deploy import confirm
 
 
@@ -288,7 +288,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                 f"Windows scheduled task {name} exists but is not managed by PDT")
         exists = state == "managed"
     except (config.ConfigError, WindowsDeployError) as exc:
-        print(f"error: {exc}")
+        console.error(str(exc))
         return 1
 
     verb = "update" if exists else "create"
@@ -300,7 +300,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     cost_lines = ["Estimated monthly platform cost: $0.00 "
                   "(uses this Windows computer)"]
     if not confirm(actions, assume_yes, cost_lines):
-        print("Aborted; nothing was changed.")
+        console.warn("Aborted; nothing was changed.")
         return 1
 
     payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
@@ -313,12 +313,12 @@ def deploy(app: dict, assume_yes: bool) -> int:
     try:
         _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
-        print(f"error: {exc}")
+        console.error(str(exc))
         return 1
-    print(f"Deployed {app['name']} as Windows task {name}.")
-    print(f"Run it once now: Start-ScheduledTask -TaskName {_ps_string(name)}")
-    print("Run history: Get-ScheduledTaskInfo -TaskName "
-          f"{_ps_string(name)} (or Task Scheduler > Task Scheduler Library)")
+    console.done(f"Deployed {app['name']} as Windows task {name}.")
+    console.say(f"Run it once now: Start-ScheduledTask -TaskName {_ps_string(name)}")
+    console.say("Run history: Get-ScheduledTaskInfo -TaskName "
+                f"{_ps_string(name)} (or Task Scheduler > Task Scheduler Library)")
     return 0
 
 
@@ -332,13 +332,13 @@ def destroy(app: dict, assume_yes: bool) -> int:
                 f"Windows scheduled task {name} exists but is not managed by PDT")
         exists = state == "managed"
     except WindowsDeployError as exc:
-        print(f"error: {exc}")
+        console.error(str(exc))
         return 1
     if not exists:
-        print(f"Nothing to remove for {app['name']}; task {name} does not exist.")
+        console.done(f"Nothing to remove for {app['name']}; task {name} does not exist.")
         return 0
     if not confirm([f"delete Windows scheduled task {name}"], assume_yes):
-        print("Aborted; nothing was changed.")
+        console.warn("Aborted; nothing was changed.")
         return 1
     try:
         _run(
@@ -348,9 +348,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
             elevate=True,
         )
     except WindowsDeployError as exc:
-        print(f"error: {exc}")
+        console.error(str(exc))
         return 1
-    print(f"Removed Windows task {name}.")
+    console.done(f"Removed Windows task {name}.")
     return 0
 
 
@@ -362,12 +362,12 @@ def main() -> int:
     parser.add_argument("--profile", help="not used by Windows")
     args = parser.parse_args()
     if args.command == "login":
-        print("The windows provider deploys to this computer, so it needs no login.")
+        console.say("The windows provider deploys to this computer, so it needs no login.")
         return 0
     try:
         app = config.merged_app(args.app)
     except config.ConfigError as exc:
-        print(f"error: {exc}")
+        console.error(str(exc))
         return 1
     config.load_env(app["dir"])
     if args.command == "deploy":

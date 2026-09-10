@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+from pdt import console
 
 GOOGLE_HOSTS = {"smtp.gmail.com"}
 MICROSOFT_HOSTS = {"smtp.office365.com", "smtp-mail.outlook.com"}
@@ -120,15 +121,15 @@ def prompt_oauth_client(host: str, configured_auth: str, client_id: str,
                         client_secret: str, env_file: Path) -> bool:
     """Ask for the missing OAuth client values and save them in env_file."""
     provider = provider_for_host(host)
-    print()
-    print(f"Email provider: {_provider_name(provider)}")
-    print("Authentication: OAuth 2.0")
-    print("Status: OAuth client setup required")
-    print()
+    console.say()
+    console.say(f"Email provider: {_provider_name(provider)}")
+    console.say("Authentication: OAuth 2.0")
+    console.say("Status: OAuth client setup required")
+    console.say()
     for line in oauth_setup_help(host, configured_auth, env_file):
-        print(line)
-    print()
-    print("Paste the values now, or press Enter to stop.")
+        console.say(line)
+    console.say()
+    console.say("Paste the values now, or press Enter to stop.")
     values = {}
     if client_id == "":
         values["PDT_SMTP_OAUTH_CLIENT_ID"] = _ask("OAuth client ID: ")
@@ -139,7 +140,7 @@ def prompt_oauth_client(host: str, configured_auth: str, client_id: str,
     for name, value in values.items():
         _write_env(env_file, name, value)
         os.environ[name] = value
-    print(f"Saved {', '.join(values)} in {env_file}.")
+    console.done(f"Saved {', '.join(values)} in {env_file}.")
     return True
 
 
@@ -177,7 +178,7 @@ def _save_cache(env_file: Path | None, data: dict,
         _save_cloud_cache(value, cache_env)
         return
     _write_env(env_file, cache_env, value)
-    print(f"Saved email authorization in {env_file}.")
+    console.done(f"Saved email authorization in {env_file}.")
 
 
 def _write_env(env_file: Path, name: str, value: str) -> None:
@@ -224,19 +225,19 @@ def can_prompt(interactive: bool | None) -> bool:
 
 def _confirm(provider: str, user: str) -> None:
     name = "Google Gmail" if provider == "google" else "Microsoft"
-    print()
-    print(f"Email provider: {name}")
-    print(f"Account: {user}")
-    print("Authentication: OAuth 2.0")
-    print("Status: Authorization required")
-    print()
+    console.say()
+    console.say(f"Email provider: {name}")
+    console.say(f"Account: {user}")
+    console.say("Authentication: OAuth 2.0")
+    console.say("Status: Authorization required")
+    console.say()
     if provider == "google":
-        print("Google requires full Gmail permission for SMTP OAuth.")
-        print("PDT will use this permission only to send notification email.")
+        console.say("Google requires full Gmail permission for SMTP OAuth.")
+        console.say("PDT will use this permission only to send notification email.")
     else:
-        print("PDT will request permission to send email through SMTP.")
-        print("PDT will not request permission to read email.")
-    print()
+        console.say("PDT will request permission to send email through SMTP.")
+        console.say("PDT will not request permission to read email.")
+    console.say()
     try:
         answer = input(f"Open {name} sign-in now? [Y/n] ").strip().lower()
     except EOFError:
@@ -306,7 +307,7 @@ def _google_access_token(user: str, client_id: str, client_secret: str,
             if not interactive:
                 raise OAuthError(
                     "Google authorization expired; run or deploy the app from a terminal") from e
-            print("Google authorization has expired. PDT will reconnect the account.")
+            console.warn("Google authorization has expired. PDT will reconnect the account.")
         except GoogleAuthError as e:
             raise OAuthError(f"Google token refresh failed: {e}")
     if not interactive:
@@ -321,7 +322,7 @@ def _google_access_token(user: str, client_id: str, client_secret: str,
         "refresh_token": refresh_token,
         "user": user,
     })
-    print(f"Connected Google Gmail for {user}.")
+    console.done(f"Connected Google Gmail for {user}.")
     return access_token
 
 
@@ -381,7 +382,7 @@ def _microsoft_access_token(user: str, client_id: str, tenant_id: str,
         "user": user,
     })
     account = (result.get("id_token_claims") or {}).get("preferred_username") or user
-    print(f"Connected Microsoft for {account}.")
+    console.done(f"Connected Microsoft for {account}.")
     return result["access_token"]
 
 

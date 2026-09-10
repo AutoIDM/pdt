@@ -45,7 +45,7 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config
+from pdt import config, console
 from pdt.deploy_common import fail, fetch_json
 from pdt.utils.email_auth import can_prompt
 
@@ -70,9 +70,9 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False) -
         ))
         if wait == 0 or not transient:
             break
-        print(f"    Azure RBAC is still propagating; retrying in {wait}s...")
+        console.bullet(f"Azure RBAC is still propagating; retrying in {wait}s...", indent=4)
         time.sleep(wait)
-    print(proc.stderr.strip())
+    console.say(proc.stderr.strip())
     fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
 
 
@@ -155,7 +155,7 @@ def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
             fail("no Azure sign-in on this computer; run `az login "
                  "--service-principal -u <id> -p <secret> --tenant <tenant>` "
                  "before this command")
-        print("You are not logged in to Azure yet.")
+        console.warn("You are not logged in to Azure yet.")
         try:
             answer = input("Log in now (opens a browser)? [y/N] ").strip().lower()
         except EOFError:
@@ -203,7 +203,7 @@ def access_token() -> str:
 
 def save_subscription(app: dict, sub: dict) -> None:
     saved = config.save_platform_key(app, "subscription", sub["id"])
-    print(f"Saved subscription: {sub['id']} to {saved.relative_to(config.find_project())}.")
+    console.done(f"Saved subscription: {sub['id']} to {saved.relative_to(config.find_project())}.")
 
 
 def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
@@ -214,14 +214,14 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
     for sub in available:
         if requested in (sub.get("id"), sub.get("name")):
             return sub
-    print(f"platform.subscription {requested!r} in pdt.yml is not one of your subscriptions.")
+    console.warn(f"platform.subscription {requested!r} in pdt.yml is not one of your subscriptions.")
     if not can_ask:
         fail("no Azure subscription selected; set platform.subscription in "
              "pdt.yml, or set PDT_AZURE_SUBSCRIPTION, to a subscription id "
              "this login can use")
-    print("Your Azure subscriptions:")
+    console.heading("Your Azure subscriptions:")
     for index, sub in enumerate(available, 1):
-        print(f"  {index}. {sub.get('name')}  {sub.get('id')}")
+        console.bullet(f"{index}. {sub.get('name')}  {sub.get('id')}")
     try:
         answer = input(f"Deploy to which one? [1-{len(available)}] ").strip()
     except EOFError:
@@ -234,38 +234,38 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
 
 
 def login(requested: str) -> None:
-    print("Opening your browser for the Azure login...")
+    console.say("Opening your browser for the Azure login...")
     proc = subprocess.run([*AZ, "login"], capture_output=True, text=True)
     if proc.returncode == 0:
         return
     output = proc.stdout + proc.stderr
     if "No subscriptions found" not in output:
-        print(output.strip())
+        console.say(output.strip())
         fail("pdt az login failed; fix the problem above and re-run")
     user = re.search(r"No subscriptions found for (\S+)\.", output)
     who = user.group(1) if user else "your Azure account"
-    print(f"The login worked, but {who} has no Azure subscription.")
-    print("Azure bills every resource to a subscription, so deploy cannot continue without one.")
-    print("  1. Create one at https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2")
-    print("     (an Azure free account also works: https://azure.microsoft.com/free).")
-    print("  2. Put its Subscription ID in platform.subscription in pdt.yml.")
-    print("  3. Run the same command again.")
+    console.warn(f"The login worked, but {who} has no Azure subscription.")
+    console.say("Azure bills every resource to a subscription, so deploy cannot continue without one.")
+    console.bullet("1. Create one at https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2")
+    console.bullet("(an Azure free account also works: https://azure.microsoft.com/free).", indent=5)
+    console.bullet("2. Put its Subscription ID in platform.subscription in pdt.yml.")
+    console.bullet("3. Run the same command again.")
     if requested in output:
-        print(f"Note: {requested} in pdt.yml is your tenant (directory) id, not a subscription id.")
+        console.note(f"{requested} in pdt.yml is your tenant (directory) id, not a subscription id.")
     raise SystemExit(1)
 
 
 def relogin(requested: str) -> int:
-    print("Clearing the cached Azure login on this computer...")
+    console.say("Clearing the cached Azure login on this computer...")
     subprocess.run([*AZ, "account", "clear"], stdin=subprocess.DEVNULL,
                    capture_output=True, text=True)
-    print("Choose a different account in the browser to sign in as someone else.")
+    console.say("Choose a different account in the browser to sign in as someone else.")
     login(requested)
     account = az_json("account", "show")
     if not account:
         fail("Azure login failed")
-    print(f"Signed in as {(account.get('user') or {}).get('name') or 'unknown'}")
-    print(f"Subscription {account.get('name')} ({account.get('id')})")
+    console.done(f"Signed in as {(account.get('user') or {}).get('name') or 'unknown'}")
+    console.say(f"Subscription {account.get('name')} ({account.get('id')})")
     return 0
 
 
@@ -365,8 +365,8 @@ def register_providers(names: tuple[str, ...]) -> None:
                          "--query", "registrationState") != "Registered"]
     if not pending:
         return
-    print(f"==> registering Azure providers: {', '.join(pending)}")
-    print("    (a new subscription can take several minutes for this)")
+    console.step(f"registering Azure providers: {', '.join(pending)}")
+    console.bullet("(a new subscription can take several minutes for this)", indent=4)
     for name in pending:
         run_quiet("provider", "register", "--namespace", name)
     waited = 0
@@ -377,7 +377,7 @@ def register_providers(names: tuple[str, ...]) -> None:
                    if az_tsv("provider", "show", "--namespace", name,
                              "--query", "registrationState") != "Registered"]
         if pending:
-            print(f"    still waiting after {waited}s for: {', '.join(pending)}")
+            console.bullet(f"still waiting after {waited}s for: {', '.join(pending)}", indent=4)
 
 
 def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
@@ -386,17 +386,17 @@ def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
     group = az_json("group", "show", "--name", rg)
     require_managed(group, f"resource group {rg}")
     register_providers((*COMMON_PROVIDERS, *providers))
-    print(f"==> reconciling resource group {rg}")
+    console.step(f"reconciling resource group {rg}")
     run_quiet("group", "create", "--name", rg, "--location", settings["region"],
               "--tags", "managed-by=pdt")
     if not vault_exists:
-        print(f"==> creating Key Vault {settings['vault']}")
+        console.step(f"creating Key Vault {settings['vault']}")
         run_quiet("keyvault", "create", "--name", settings["vault"],
                   "--resource-group", rg, "--location", settings["region"],
                   "--enable-rbac-authorization", "true",
                   "--tags", "managed-by=pdt")
     if not workspace_exists(settings):
-        print(f"==> creating Log Analytics workspace {settings['workspace']}")
+        console.step(f"creating Log Analytics workspace {settings['workspace']}")
         run_quiet("monitor", "log-analytics", "workspace", "create",
                   "--resource-group", rg, "--workspace-name", settings["workspace"],
                   "--location", settings["region"], "--tags", "managed-by=pdt")
@@ -422,7 +422,7 @@ def ensure_secret(settings: dict[str, str], sid: str, values: dict,
     if not values:
         return None
     if current_hash != digest:
-        print(f"==> writing Key Vault secret {sid}")
+        console.step(f"writing Key Vault secret {sid}")
         return set_key_vault_secret(settings["vault"], sid, payload, digest, app_name)
     return az_tsv("keyvault", "secret", "show", "--vault-name", settings["vault"],
                   "--name", sid, "--query", "id")
@@ -477,24 +477,24 @@ def purge_secret(settings: dict[str, str], sid: str) -> None:
 
 def destroy_group(settings: dict[str, str]) -> None:
     rg = settings["resource_group"]
-    print(f"==> deleting resource group {rg} (takes a few minutes)")
+    console.step(f"deleting resource group {rg} (takes a few minutes)")
     run_quiet("group", "delete", "--name", rg, "--yes")
     if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
-        print(f"==> purging soft-deleted Key Vault {settings['vault']}")
+        console.step(f"purging soft-deleted Key Vault {settings['vault']}")
         run_quiet("keyvault", "purge", "--name", settings["vault"])
     if az_tsv("group", "exists", "--name", rg) == "false":
-        print("Nothing remains.")
+        console.done("Nothing remains.")
 
 
 def report_shared_kept(rg: str, others: list[str]) -> None:
     if others:
-        print(f"Apps still deployed in resource group {rg}: {', '.join(others)}.")
-        print("Shared resources stay until the last app is destroyed.")
+        console.say(f"Apps still deployed in resource group {rg}: {', '.join(others)}.")
+        console.say("Shared resources stay until the last app is destroyed.")
     else:
-        print(f"Resource group {rg} is not fully owned by PDT, so PDT kept it.")
-    print("Still present:")
+        console.say(f"Resource group {rg} is not fully owned by PDT, so PDT kept it.")
+    console.heading("Still present:")
     for resource in az_json("resource", "list", "--resource-group", rg) or []:
-        print(f"  {resource.get('name')}  ({resource.get('type')})")
+        console.bullet(f"{resource.get('name')}  ({resource.get('type')})")
 
 
 def run_basis(seconds: float | None) -> tuple[float, str]:

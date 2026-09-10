@@ -89,8 +89,8 @@ def validate_response(response) -> None:
 
 
 def backoff_handler(details) -> None:
-    print(f"    the server did not answer (try {details['tries']} of "
-          f"{BACKOFF_MAX_TRIES}); backing off {details['wait']:.1f}s...")
+    console.bullet(f"the server did not answer (try {details['tries']} of "
+                   f"{BACKOFF_MAX_TRIES}); backing off {details['wait']:.1f}s...", indent=4)
 
 
 @backoff.on_exception(

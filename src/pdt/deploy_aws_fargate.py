@@ -11,7 +11,7 @@ import json
 import shutil
 import subprocess
 
-from pdt import config
+from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, SCHEDULE_GROUP, aws_schedule_expression,
@@ -255,7 +255,7 @@ def build_and_push(app: dict, image: str, ecr) -> str:
 
 def cost_lines(logs, names: dict[str, str], region: str, cron: str,
                schedule_exists: bool) -> list[str]:
-    print("Fetching list prices from the AWS price list...")
+    console.say("Fetching list prices from the AWS price list...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(
@@ -297,7 +297,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     payload = json.dumps(gather_secrets(app), sort_keys=True)
     image = f"{account}.dkr.ecr.{region}.amazonaws.com/{REPOSITORY}:{names['image_tag']}"
 
-    print(f"Checking current state in account {account} ({region})...")
+    console.say(f"Checking current state in account {account} ({region})...")
     subnets, security_group = default_network(clients["ec2"])
     schedule_exists = resource_exists(
         clients["scheduler"], "get_schedule",
@@ -318,10 +318,10 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     ]
     if not confirm(actions, assume_yes, cost_lines(
             clients["logs"], names, region, cron, schedule_exists)):
-        print("Aborted; nothing was changed.")
+        console.warn("Aborted; nothing was changed.")
         return 1
 
-    print(f"==> reconciling AWS resources in {account} ({region})")
+    console.step(f"reconciling AWS resources in {account} ({region})")
     repository_uri = ensure_repository(clients["ecr"])
     cluster_arn = ensure_cluster(clients["ecs"])
     ensure_log_group(clients["logs"], names["log_group"])
@@ -329,9 +329,9 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     execution, task, scheduler_role = ensure_roles(
         clients["iam"], names, account, region, secret_arn)
     image = f"{repository_uri}:{names['image_tag']}"
-    print(f"==> building and pushing {image}")
+    console.step(f"building and pushing {image}")
     image_digest = build_and_push(app, image, clients["ecr"])
-    print("==> reconciling task definition and schedule")
+    console.step("reconciling task definition and schedule")
     desired = desired_task(names, image, region, execution, task, secret_arn)
     task_arn = ensure_task_definition(clients["ecs"], desired, image_digest)
     target = {
@@ -351,12 +351,12 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     }
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, target)
-    print(f"Deployed {app['name']}.")
-    print(f"Run it once: pdt aws ecs run-task --cluster {CLUSTER} "
-          f"--task-definition {names['family']} --launch-type FARGATE "
-          f"--network-configuration 'awsvpcConfiguration={{subnets=[{subnets[0]}],"
-          f"securityGroups=[{security_group}],assignPublicIp=ENABLED}}' --region {region}")
-    print(f"Run logs: {log_group_url(region, names['log_group'])}")
+    console.done(f"Deployed {app['name']}.")
+    console.say(f"Run it once: pdt aws ecs run-task --cluster {CLUSTER} "
+                f"--task-definition {names['family']} --launch-type FARGATE "
+                f"--network-configuration 'awsvpcConfiguration={{subnets=[{subnets[0]}],"
+                f"securityGroups=[{security_group}],assignPublicIp=ENABLED}}' --region {region}")
+    console.say(f"Run logs: {log_group_url(region, names['log_group'])}")
     return 0
 
 
@@ -419,7 +419,7 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     if repository_unused:
         actions.append(f"delete ECR repository {REPOSITORY} (no other apps use it)")
     if not confirm(actions, assume_yes):
-        print("Aborted; nothing was changed.")
+        console.warn("Aborted; nothing was changed.")
         return 1
 
     if schedule_exists:
@@ -447,5 +447,5 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         ecs.delete_cluster(cluster=CLUSTER)
     if repository_unused:
         clients["ecr"].delete_repository(repositoryName=REPOSITORY, force=True)
-    print(f"Removed {app['name']} from account {account} ({region}).")
+    console.done(f"Removed {app['name']} from account {account} ({region}).")
     return 0

@@ -115,24 +115,25 @@ def cmd_run(args) -> int:
     proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
     if (proc.returncode == 0 and args.app == scaffold.STARTER
             and not config.is_deployed(args.app)):
-        print(f"\nTry deploying this job! Type: pdt deploy {scaffold.STARTER}")
+        console.say()
+        console.say(f"Try deploying this job! Type: pdt deploy {scaffold.STARTER}")
     return proc.returncode
 
 
 def ask_which_app(command: str) -> int:
     apps = config.find_apps()
     if not apps:
-        print("This project has no apps yet.")
-        print("Run `pdt examples` to see what you can start from,")
-        print("then `pdt new my-report --from <example>`.")
+        console.say("This project has no apps yet.")
+        console.say("Run `pdt examples` to see what you can start from,")
+        console.say("then `pdt new my-report --from <example>`.")
         return 1
     shown = apps[:5]
-    print(f"Which app do you want to {command}? This project has:")
+    console.heading(f"Which app do you want to {command}? This project has:")
     for name in shown:
-        print(f"  {name}")
+        console.name(name)
     if len(apps) > len(shown):
-        print(f"  ... and {len(apps) - len(shown)} more")
-    print(f"Run `pdt list` to see every app, then `pdt {command} <app>`.")
+        console.bullet(f"... and {len(apps) - len(shown)} more")
+    console.say(f"Run `pdt list` to see every app, then `pdt {command} <app>`.")
     return 1
 
 

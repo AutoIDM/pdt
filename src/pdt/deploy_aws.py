@@ -35,7 +35,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config
+from pdt import config, console
 from pdt.deploy_common import fail, fetch_json
 
 AWS_CLI = [sys.executable, "-m", "awscli"]
@@ -115,7 +115,7 @@ def with_role_propagation_retry(operation, sleep=time.sleep):
         except Exception as exc:
             if delay is None or not role_propagation_error(exc):
                 raise
-            print(f"    IAM role is not visible yet; retrying in {delay}s...")
+            console.bullet(f"IAM role is not visible yet; retrying in {delay}s...", indent=4)
             sleep(delay)
     raise AssertionError("unreachable")
 
@@ -124,10 +124,10 @@ def adopt_account(app: dict, session) -> str:
     # AWS gives one account per credential set, so there is nothing to pick.
     identity = session.client("sts").get_caller_identity()
     account = identity["Account"]
-    print(f"These credentials belong to AWS account {account}.")
-    print(f"  {identity['Arn']}")
+    console.say(f"These credentials belong to AWS account {account}.")
+    console.bullet(f"{identity['Arn']}")
     saved = config.save_platform_key(app, "account", account)
-    print(f"Saved account {account} to {saved.relative_to(config.find_project())}.")
+    console.done(f"Saved account {account} to {saved.relative_to(config.find_project())}.")
     return account
 
 
@@ -165,13 +165,13 @@ def deployer_policy(actions: list[str]) -> dict:
 
 
 def print_permission_help(identity: str, detail: str, actions: list[str]) -> None:
-    print("AWS blocked this deployment because the current login lacks a permission.")
+    console.warn("AWS blocked this deployment because the current login lacks a permission.")
     if detail:
-        print(f"AWS said: {detail}")
-    print(f"Current AWS login: {identity}")
-    print("Send the policy below to the person who manages your AWS account.")
-    print("Ask them to add it to this login, then run the same command again.")
-    print(json.dumps(deployer_policy(actions), indent=2))
+        console.say(f"AWS said: {detail}")
+    console.say(f"Current AWS login: {identity}")
+    console.say("Send the policy below to the person who manages your AWS account.")
+    console.say("Ask them to add it to this login, then run the same command again.")
+    console.say(json.dumps(deployer_policy(actions), indent=2))
 
 
 def principal_arn(identity_arn: str, account: str) -> str:
@@ -192,16 +192,16 @@ def ask(prompt: str) -> str:
 def choose_profile(session) -> str:
     profiles = session.available_profiles
     if not profiles:
-        print("No AWS credentials or profiles were found on this computer.")
-        print("Create a profile first:  pdt aws configure sso   (or: pdt aws configure)")
-        print("Then select it:          export AWS_PROFILE=<profile-name>")
+        console.warn("No AWS credentials or profiles were found on this computer.")
+        console.say("Create a profile first:  pdt aws configure sso   (or: pdt aws configure)")
+        console.say("Then select it:          export AWS_PROFILE=<profile-name>")
         fail("run the same command again after you set AWS_PROFILE")
     if len(profiles) == 1:
-        print(f"Using the only AWS profile on this computer: {profiles[0]}")
+        console.say(f"Using the only AWS profile on this computer: {profiles[0]}")
         return profiles[0]
-    print("No AWS profile is selected. Profiles on this computer:")
+    console.heading("No AWS profile is selected. Profiles on this computer:")
     for number, profile in enumerate(profiles, start=1):
-        print(f"  {number}) {profile}")
+        console.bullet(f"{number}) {profile}")
     answer = ask(f"Which profile do you want to use? [1-{len(profiles)}] ")
     if answer.isdigit() and 1 <= int(answer) <= len(profiles):
         profile = profiles[int(answer) - 1]
@@ -210,8 +210,8 @@ def choose_profile(session) -> str:
     else:
         fail("no AWS profile selected; run again with --profile <name> "
              "or set AWS_PROFILE=<name>")
-    print(f"To skip this question next time:  --profile {profile}  "
-          f"or  export AWS_PROFILE={profile}")
+    console.say(f"To skip this question next time:  --profile {profile}  "
+                f"or  export AWS_PROFILE={profile}")
     return profile
 
 
@@ -221,7 +221,7 @@ def sso_login(profile: str | None) -> bool:
     if profile:
         command += ["--profile", profile]
         shown += f" --profile {profile}"
-    print("Your AWS login has expired or is missing.")
+    console.warn("Your AWS login has expired or is missing.")
     answer = ask(f"Log in now with `{shown}` (opens a browser)? [y/N] ")
     if answer.lower() not in ("y", "yes"):
         return False
@@ -233,14 +233,14 @@ def relogin(profile: str | None) -> int:
     name = profile or os.environ.get("AWS_PROFILE") or ""
     if name not in session.available_profiles:
         name = choose_profile(session)
-    print(f"Logging in to AWS profile {name}...")
+    console.say(f"Logging in to AWS profile {name}...")
     if subprocess.run([*AWS_CLI, "sso", "login", "--profile", name]).returncode != 0:
-        print(f"If {name} uses access keys instead of SSO there is no login to "
-              f"refresh; run `pdt aws configure --profile {name}` to replace the keys.")
+        console.warn(f"If {name} uses access keys instead of SSO there is no login to "
+                     f"refresh; run `pdt aws configure --profile {name}` to replace the keys.")
         fail("pdt aws sso login failed")
     identity = boto3.Session(profile_name=name).client("sts").get_caller_identity()
-    print(f"Signed in as {identity['Arn']}")
-    print(f"Account {identity['Account']}")
+    console.done(f"Signed in as {identity['Arn']}")
+    console.say(f"Account {identity['Account']}")
     return 0
 
 
