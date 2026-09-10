@@ -1,0 +1,75 @@
+# One row per deploy target under test. Two apps per provider and runtime, so
+# every shared resource is used by more than one app while one is destroyed.
+apps:
+  - name: aws-lambda-a
+    schedule: daily
+    platform:
+      provider: aws
+      region: us-east-1
+      runtime: lambda
+  - name: aws-lambda-b
+    schedule: daily
+    platform:
+      provider: aws
+      region: us-east-1
+      runtime: lambda
+  - name: aws-fargate-a
+    schedule: daily
+    platform:
+      provider: aws
+      region: us-east-1
+      runtime: fargate
+  - name: aws-fargate-b
+    schedule: daily
+    platform:
+      provider: aws
+      region: us-east-1
+      runtime: fargate
+  - name: azure-functions-a
+    schedule: daily
+    platform:
+      provider: azure
+      region: eastus2
+      resource_group: pdt-verify
+      runtime: functions
+  - name: azure-functions-b
+    schedule: daily
+    platform:
+      provider: azure
+      region: eastus2
+      resource_group: pdt-verify
+      runtime: functions
+  - name: azure-container-apps-a
+    schedule: daily
+    platform:
+      provider: azure
+      region: eastus2
+      resource_group: pdt-verify
+      runtime: container_apps
+  - name: azure-container-apps-b
+    schedule: daily
+    platform:
+      provider: azure
+      region: eastus2
+      resource_group: pdt-verify
+      runtime: container_apps
+  - name: google-cloud-a
+    schedule: daily
+    platform:
+      provider: google-cloud
+      region: us-central1
+  - name: google-cloud-b
+    schedule: daily
+    platform:
+      provider: google-cloud
+      region: us-central1
+  - name: windows-a
+    schedule: daily
+    timezone: local
+    platform:
+      provider: windows
+  - name: windows-b
+    schedule: daily
+    timezone: local
+    platform:
+      provider: windows
