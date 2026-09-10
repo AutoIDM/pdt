@@ -17,6 +17,7 @@ from __future__ import annotations
 import textwrap
 
 from rich.console import Console
+from rich.markup import escape
 from rich.text import Text
 
 # soft_wrap keeps a long path or command on one logical line: the terminal
@@ -35,41 +36,46 @@ def say(message: str = "") -> None:
     _console.print(message, markup=False)
 
 
+def progress(text: str) -> None:
+    """A counter that ticks in place. Call say() to end the line."""
+    _console.print(text, markup=False, end="\r")
+
+
 def styled(message: str) -> None:
     """A line the caller has already marked up."""
     _console.print(message)
 
 
 def error(message: str) -> None:
-    _console.print(f"[bold red]error:[/] {message}", markup=True)
+    _console.print(f"[bold red]error:[/] {escape(message)}")
 
 
 def note(message: str) -> None:
     """Something pdt did not do, and why."""
-    _console.print(f"[yellow]note:[/] {message}")
+    _console.print(f"[yellow]note:[/] {escape(message)}")
 
 
 def warn(message: str) -> None:
     """A caution with no label, such as a re-prompt after a bad answer."""
-    _console.print(f"[yellow]{message}[/]")
+    _console.print(f"[yellow]{escape(message)}[/]")
 
 
 def step(message: str) -> None:
     """One reconcile action, printed as it happens."""
-    _console.print(f"[bold cyan]==>[/] {message}")
+    _console.print(f"[bold cyan]==>[/] {escape(message)}")
 
 
 def done(message: str) -> None:
-    _console.print(f"[bold green]{message}[/]")
+    _console.print(f"[bold green]{escape(message)}[/]")
 
 
 def heading(message: str) -> None:
-    _console.print(f"[bold]{message}[/]")
+    _console.print(f"[bold]{escape(message)}[/]")
 
 
 def name(text: str) -> None:
     """A thing the user can type back to pdt: an app, an example."""
-    _console.print(f"  [bold cyan]{text}[/]")
+    _console.print(f"  [bold cyan]{escape(text)}[/]")
 
 
 def detail(text: str, indent: int = INDENT) -> None:
@@ -86,7 +92,7 @@ def bullet(text: str, indent: int = 2) -> None:
 
 def command(text: str, indent: int = 2) -> None:
     """A command line the user can copy."""
-    _console.print(f"{' ' * indent}[bold]{text}[/]")
+    _console.print(f"{' ' * indent}[bold]{escape(text)}[/]")
 
 
 def ask(question: str, default: str = "") -> str:
@@ -95,7 +101,7 @@ def ask(question: str, default: str = "") -> str:
 
 
 def confirm(question: str = "Proceed?") -> bool:
-    return _console.input(f"[bold]{question}[/] \\[y/N] ").strip().lower() in ("y", "yes")
+    return _console.input(f"[bold]{escape(question)}[/] \\[y/N] ").strip().lower() in ("y", "yes")
 
 
 def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:
