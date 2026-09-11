@@ -463,6 +463,7 @@ def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
     run_quiet("group", "create", "--name", rg, "--location", settings["region"],
               "--tags", "managed-by=pdt")
     if not vault_exists:
+        purge_deleted_vault(settings)
         console.step(f"creating Key Vault {settings['vault']}")
         run_quiet("keyvault", "create", "--name", settings["vault"],
                   "--resource-group", rg, "--location", settings["region"],
@@ -477,6 +478,19 @@ def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
     assign_role(vault_id, settings["deployer_object_id"], "Key Vault Secrets Officer",
                 settings["deployer_principal_type"])
     return vault_id
+
+
+def purge_deleted_vault(settings: dict[str, str]) -> None:
+    """A soft-deleted vault still owns its name, so create fails until it is purged."""
+    deleted = az_json("keyvault", "show-deleted", "--name", settings["vault"])
+    if not deleted:
+        return
+    tags = (deleted.get("properties") or {}).get("tags") or {}
+    if tags.get("managed-by") != "pdt":
+        fail(f"a soft-deleted Key Vault named {settings['vault']} exists but is not "
+             "managed by PDT; purge it or deploy to another subscription")
+    console.step(f"purging soft-deleted Key Vault {settings['vault']}")
+    run_quiet("keyvault", "purge", "--name", settings["vault"])
 
 
 def workspace_resource(settings: dict[str, str]) -> dict | None:
