@@ -116,7 +116,7 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
         return record(steps, report, f"{verb} {app}",
                       [] if code == 0 else [f"pdt {verb} {app} exited {code}"])
 
-    if not check("account is empty", empty_check):
+    if not check("account is empty before deploy", empty_check):
         return
     for app in apps:
         if not command("deploy", app):
@@ -132,10 +132,10 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
             return
         if not check(f"{app} resources are gone", gone_check(owned[app])):
             return
-        if not check("other apps are untouched",
+        if not check(f"other apps are untouched after destroy {app}",
                      untouched_check(owned, shared, apps[index + 1:])):
             return
-    check("account is empty", empty_check)
+    check("account is empty after destroy", empty_check)
 
 
 def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
