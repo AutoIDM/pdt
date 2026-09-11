@@ -132,12 +132,17 @@ def azure_settings(app: dict) -> dict[str, str]:
     }
 
 
-def shared_names(subscription: str) -> dict[str, str]:
-    # Storage account and Key Vault names are global across Azure, so they
-    # carry a hash of the subscription.
-    suffix = hashlib.sha256(subscription.encode()).hexdigest()[:10]
+def shared_names(subscription: str, resource_group: str) -> dict[str, str]:
+    # Storage, registry, vault, and Function App names are global, and the
+    # resources live in one resource group, so two projects in one
+    # subscription need different names.
+    seed = f"{subscription}/{resource_group}" if subscription else resource_group
+    suffix = hashlib.sha256(seed.encode()).hexdigest()[:10]
+    legacy_suffix = hashlib.sha256((subscription or resource_group).encode()).hexdigest()[:10]
     return {
         "suffix": suffix,
+        # Older deploys seeded the names on the subscription alone.
+        "legacy_vault": f"pdt-{legacy_suffix}",
         "registry": str(
             os.environ.get("PDT_AZURE_CONTAINER_REGISTRY")
             or f"pdt{suffix}")[:50].replace("-", ""),
@@ -178,7 +183,7 @@ def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
     elif not requested and can_ask:
         save_subscription(app, account)
     settings["subscription"] = str(account["id"])
-    settings.update(shared_names(settings["subscription"]))
+    settings.update(shared_names(settings["subscription"], settings["resource_group"]))
     user = account.get("user") or {}
     is_user = str(user.get("type", "")).lower() == "user"
     deployer_id = os.environ.get("PDT_AZURE_DEPLOYER_OBJECT_ID", "").strip()
@@ -559,9 +564,10 @@ def destroy_group(settings: dict[str, str]) -> None:
     rg = settings["resource_group"]
     console.step(f"deleting resource group {rg} (takes a few minutes)")
     run_quiet("group", "delete", "--name", rg, "--yes")
-    if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
-        console.step(f"purging soft-deleted Key Vault {settings['vault']}")
-        run_quiet("keyvault", "purge", "--name", settings["vault"])
+    for vault in dict.fromkeys((settings["vault"], settings["legacy_vault"])):
+        if az_json("keyvault", "show-deleted", "--name", vault):
+            console.step(f"purging soft-deleted Key Vault {vault}")
+            run_quiet("keyvault", "purge", "--name", vault)
     if az_tsv("group", "exists", "--name", rg) == "false":
         console.done("Nothing remains.")
 
