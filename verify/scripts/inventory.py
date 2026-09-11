@@ -228,13 +228,26 @@ def aws_inventory(settings: dict[str, str]) -> Inventory:
     return sorted(found.values(), key=lambda resource: resource.id)
 
 
+def azure_deleted_vaults() -> Inventory:
+    # A soft-deleted vault still owns its global name and blocks the next
+    # deploy, so it counts as a leftover.
+    found = []
+    for item in az("keyvault", "list-deleted", "--resource-type", "vault") or []:
+        if not item["name"].startswith("pdt-"):
+            continue
+        tags = (item.get("properties") or {}).get("tags") or {}
+        found.append(Resource("soft-deleted key vault", item["id"], tags, item["name"]))
+    return found
+
+
 def azure_inventory(settings: dict[str, str]) -> Inventory:
     group_name = settings["resource_group"]
+    found = azure_deleted_vaults()
     if az("group", "exists", "--name", group_name) is not True:
-        return []
+        return found
     group = az("group", "show", "--name", group_name)
-    found = [Resource("resource group", group["id"], group.get("tags") or {},
-                      group["name"])]
+    found.append(Resource("resource group", group["id"], group.get("tags") or {},
+                          group["name"]))
     for item in az("resource", "list", "--resource-group", group_name) or []:
         found.append(Resource(item["type"], item["id"], item.get("tags") or {},
                               item["name"]))
