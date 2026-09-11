@@ -37,9 +37,7 @@ Set these in the project's CI/CD settings.
 
 | Variable | Job | Value | Setting |
 | --- | --- | --- | --- |
-| `AWS_ACCESS_KEY_ID` | verify:aws | AWS access key ID | Masked; protected |
-| `AWS_SECRET_ACCESS_KEY` | verify:aws | AWS secret access key | Masked; protected |
-| `AWS_DEFAULT_REGION` | verify:aws | `us-east-1` | Protected |
+| `AWS_ROLE_ARN` | verify:aws | ARN of an IAM role that trusts this project's GitLab OIDC token | Not protected |
 | `AZURE_CLIENT_ID` | verify:azure | Service principal client ID | Masked; protected |
 | `AZURE_CLIENT_SECRET` | verify:azure | Service principal secret | Masked; protected |
 | `AZURE_TENANT_ID` | verify:azure | Azure tenant ID | Masked; protected |
@@ -47,6 +45,8 @@ Set these in the project's CI/CD settings.
 | `GOOGLE_CLOUD_PROJECT` | verify:google-cloud | Google Cloud project ID | Protected |
 
 A cloud job whose variables are absent becomes a manual job that is allowed to fail. The pipeline stays green and shows the job as not run, so a project without an account for that provider still merges. Add the variables and the job runs on every merge request.
+
+The AWS job stores no key. It sends the job's OIDC token to `sts assume-role-with-web-identity` and receives credentials that expire after one hour. The role's trust policy must allow `sts:AssumeRoleWithWebIdentity` from the `gitlab.com` identity provider when `gitlab.com:sub` matches `project_path:autoidm/pdt:ref_type:branch:ref:*`, and its permission policy needs the actions pdt prints in `deployer_policy` plus the read actions the inventory uses: `tag:GetResources`, `lambda:ListFunctions`, `iam:ListRoles`, `secretsmanager:ListSecrets`, `scheduler:ListScheduleGroups`, `scheduler:ListTagsForResource`, `ecs:ListClusters`, `ecr:ListTagsForResource`, `sts:GetCallerIdentity`.
 
 `PDT_SMOKE_TOKEN` is set in `verify/.gitlab-ci.yml`, so it needs no CI/CD variable. Each app declares it as required, so a deployed job fails unless pdt delivered it through `PDT_ENV_JSON`.
 
