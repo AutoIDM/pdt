@@ -1,3 +1,5 @@
+# Copies BambooHR employee photos onto matching Entra ID accounts.
+
 schedule: "daily"
 
 config:
