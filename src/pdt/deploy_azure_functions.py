@@ -20,7 +20,7 @@ import zipfile
 from pathlib import Path
 from urllib.parse import quote
 
-from pdt import config
+from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
     RECENT_RUNS, assign_role, az_json, azure_settings, clean_name, cost_estimate_lines,
@@ -204,7 +204,7 @@ def average_run_seconds(function_id: str) -> float | None:
 
 def cost_lines(region: str, cron: str, function_id: str | None,
                num_secrets: int) -> list[str]:
-    print("Fetching list prices from the Azure Retail Prices API...")
+    console.say("Fetching list prices from the Azure Retail Prices API...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(average_run_seconds(function_id) if function_id else None)
@@ -235,7 +235,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     sid = secret_name(name)
     rg = settings["resource_group"]
 
-    print(f"Checking current state in Azure subscription {settings['subscription']} "
+    console.say(f"Checking current state in Azure subscription {settings['subscription']} "
           f"({settings['region']})...")
     group = az_json("group", "show", "--name", rg)
     require_managed(group, f"resource group {rg}")
@@ -287,22 +287,22 @@ def deploy(app: dict, assume_yes: bool) -> int:
         actions.append("allow Azure portal Code + Test to run the Function App")
     if not confirm(actions, assume_yes, cost_lines(
             settings["region"], cron, current["id"] if current else None, 1 if values else 0)):
-        print("Aborted; nothing was changed.")
+        console.warn("Aborted; nothing was changed.")
         return 1
 
     vault_id = ensure_group_and_vault(settings, PROVIDERS, vault_exists)
     if not storage_exists:
-        print(f"==> creating Storage account {settings['storage']}")
+        console.step(f"creating Storage account {settings['storage']}")
         run_quiet("storage", "account", "create", "--name", settings["storage"],
                   "--resource-group", rg, "--location", settings["region"],
                   "--sku", "Standard_LRS", "--allow-blob-public-access", "false",
                   "--tags", "managed-by=pdt")
-    print("==> building zip")
+    console.step("building zip")
     archive = build_package(app)
     try:
         secret_uri = ensure_secret(settings, sid, values, payload, digest, current_hash, name)
         if not current:
-            print(f"==> creating Function App {function_app}")
+            console.step(f"creating Function App {function_app}")
             run_quiet("functionapp", "create", "--name", function_app,
                       "--resource-group", rg, "--storage-account", settings["storage"],
                       "--flexconsumption-location", settings["region"],
@@ -316,7 +316,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                       "--resource-type", "microsoft.insights/components",
                       "--tags", "managed-by=pdt", f"pdt-app={name}")
         if missing_origins:
-            print(f"==> allowing Azure portal Code + Test for {function_app}")
+            console.step(f"allowing Azure portal Code + Test for {function_app}")
             run_quiet("functionapp", "cors", "add", "--name", function_app,
                       "--resource-group", rg, "--allowed-origins", *missing_origins)
         identity = az_json("functionapp", "identity", "assign", "--name", function_app,
@@ -327,20 +327,20 @@ def deploy(app: dict, assume_yes: bool) -> int:
         app_settings = [f"PDT_SCHEDULE={ncrontab(cron)}", "LOG_FORMAT=json"]
         if secret_uri:
             app_settings.append(f"PDT_ENV_JSON=@Microsoft.KeyVault(SecretUri={secret_uri})")
-        print(f"==> configuring Function App {function_app}")
+        console.step(f"configuring Function App {function_app}")
         run_quiet("functionapp", "config", "appsettings", "set", "--name", function_app,
                   "--resource-group", rg, "--settings", *app_settings)
         if not secret_uri:
             run_quiet("functionapp", "config", "appsettings", "delete", "--name",
                       function_app, "--resource-group", rg, "--setting-names", "PDT_ENV_JSON")
-        print(f"==> uploading code to {function_app} (Azure builds the packages)")
+        console.step(f"uploading code to {function_app} (Azure builds the packages)")
         run_stream("functionapp", "deployment", "source", "config-zip", "--name",
                    function_app, "--resource-group", rg, "--src", str(archive),
                    "--build-remote", "true")
     finally:
         shutil.rmtree(archive.parent, ignore_errors=True)
-    print(f"Deployed {name}.")
-    print(f"Run logs: {invocations_url(settings, function_app)}")
+    console.done(f"Deployed {name}.")
+    console.say(f"Run logs: {invocations_url(settings, function_app)}")
     return 0
 
 
@@ -357,7 +357,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     managed_insights = owned_by(insights, name)
     secret_owned = managed_secret(settings, sid, name)
     if current and not managed_app:
-        print(f"note: Function App {function_app} is not owned by this app; keeping it")
+        console.note(f"Function App {function_app} is not owned by this app; keeping it")
     others = other_pdt_apps(rg, name)
     if group_can_be_deleted(settings, others):
         actions = [
@@ -367,7 +367,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             f"purge the soft-deleted Key Vault {settings['vault']}",
         ]
         if not confirm(actions, assume_yes):
-            print("Aborted; nothing was changed.")
+            console.warn("Aborted; nothing was changed.")
             return 1
         destroy_group(settings)
         return 0
@@ -379,10 +379,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if secret_owned:
         actions.append(f"delete and purge Key Vault secret {sid}")
     if not actions:
-        print(f"Nothing owned by {name} to remove in resource group {rg}.")
+        console.done(f"Nothing owned by {name} to remove in resource group {rg}.")
         return 0
     if not confirm(actions, assume_yes):
-        print("Aborted; nothing was changed.")
+        console.warn("Aborted; nothing was changed.")
         return 1
     if managed_app:
         run_quiet("functionapp", "delete", "--name", function_app, "--resource-group", rg)

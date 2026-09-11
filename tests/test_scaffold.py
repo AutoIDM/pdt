@@ -6,7 +6,7 @@ import pytest
 import yaml
 
 from pdt import scaffold
-from pdt.config import PROJECT_FILE, ConfigError, find_apps, validate_app
+from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_apps, validate_app
 
 POSIX_SYSTEM_FOLDERS = ["/", "/usr", "/usr/local/bin", "/etc"]
 WINDOWS_SYSTEM_FOLDERS = ["C:\\", "C:\\Windows", "C:\\Windows\\System32", "C:\\Program Files"]
@@ -110,6 +110,17 @@ def test_every_bundled_example_is_complete():
         config = yaml.safe_load((example / "config.yml").read_text())
         assert config["schedule"], f"{example.name} has no schedule"
         assert "name" not in config, f"{example.name} pins a name, so it cannot be renamed"
+
+
+def test_every_example_summary_is_whole(tmp_path):
+    # The summary is the whole comment block at the top of config.yml, not
+    # only its first line, so a summary that wraps is not cut short.
+    for example in scaffold.examples():
+        assert scaffold.summary_of(example).endswith("."), example.name
+    app = tmp_path / "wrapped"
+    app.mkdir()
+    (app / APP_FILE).write_text("# One line.\n# And a second.\n\nschedule: daily\n")
+    assert scaffold.summary_of(app) == "One line. And a second."
 
 
 def test_new_app_copies_an_example_under_a_new_name(project):
