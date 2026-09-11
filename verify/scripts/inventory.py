@@ -93,11 +93,22 @@ def aws_functions(region: str) -> Inventory:
     return found
 
 
+def aws_caller_role(region: str) -> str:
+    arn = (aws(region, "sts", "get-caller-identity") or {}).get("Arn") or ""
+    marker = ":assumed-role/"
+    if marker not in arn:
+        return ""
+    return arn.split(marker, 1)[1].split("/", 1)[0]
+
+
 def aws_roles(region: str) -> Inventory:
+    # The role this run signs in with may share the pdt- prefix, and it is
+    # not something deploy made.
+    own = aws_caller_role(region)
     found = []
     for item in (aws(region, "iam", "list-roles") or {}).get("Roles") or []:
         name = item["RoleName"]
-        if not name.startswith("pdt-"):
+        if not name.startswith("pdt-") or name == own:
             continue
         listed = aws(region, "iam", "list-role-tags", "--role-name", name) or {}
         tags = {tag["Key"]: tag["Value"] for tag in listed.get("Tags") or []}

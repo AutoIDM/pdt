@@ -95,9 +95,9 @@ def owner_problems(owned, apps):
 
 
 def print_step(step):
-    print(f"{'PASS' if step.ok else 'FAIL'}  {step.name}")
+    print(f"{'PASS' if step.ok else 'FAIL'}  {step.name}", flush=True)
     for line in step.detail.splitlines():
-        print(f"      {line}")
+        print(f"      {line}", flush=True)
 
 
 def record(steps, report, name, problems):
