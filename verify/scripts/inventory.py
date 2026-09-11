@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 MANAGED = {"managed-by": "pdt"}
 UNTAGGED = "untagged"
 SHARED = "shared"
-AWS_LOG_PREFIXES = ("/aws/lambda/pdt-", "/pdt/")
+AWS_LOG_PREFIXES = ("/aws/lambda/pdt-", "/ecs/pdt-", "/pdt/")
 GOOGLE_ASSET_TYPES = (
     "run.googleapis.com/Job",
     "secretmanager.googleapis.com/Secret",
