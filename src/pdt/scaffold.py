@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pdt import __version__, console
+from pdt import __version__, completion, console
 from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_project
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
@@ -240,6 +240,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
     if starting_fresh:
         console.command(f"pdt run {STARTER}")
     console.command("pdt examples", "see what else you can start from")
+    completion.offer(assume_yes)
     return 0
 
 

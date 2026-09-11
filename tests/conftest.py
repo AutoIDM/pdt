@@ -1,5 +1,15 @@
 import pytest
 
+from pdt import completion
+
+
+@pytest.fixture(autouse=True)
+def no_completion_offer(monkeypatch, tmp_path):
+    """Commands offer tab completion after they finish; tests opt in explicitly."""
+    monkeypatch.setattr(completion, "can_ask", lambda: False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
+
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):

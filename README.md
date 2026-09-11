@@ -12,6 +12,16 @@ That puts a `pdt` command on your PATH. To update it later, run `uv tool upgrade
 
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
 
+### Tab completion
+
+```
+pdt completion
+```
+
+You will not usually need this command. The first time `pdt init`, `pdt run`, or `pdt deploy` finishes in a terminal, pdt asks once whether to turn tab completion on, and remembers your answer. Run `pdt completion` if you said no then and want it after all, or if you use more than one shell.
+
+Once it is on, pressing Tab finishes pdt commands, their options, and your app names. `pdt run bam<Tab>` becomes `pdt run bamboohr2azure`, and `pdt deploy <Tab>` lists every app in the project. It works in bash, zsh, fish, and PowerShell. pdt works out which shell you use and adds a few lines to its startup file (`~/.bashrc`, `~/.zshrc`, `~/.config/fish/completions/pdt.fish`, or your PowerShell `$PROFILE`). Name the shell if you want a different one, for example `pdt completion zsh`. New terminals pick it up; the command prints the one line that turns it on in the terminal you are already in. `pdt completion --script bash` prints the lines instead of writing them, if you keep your own dotfiles.
+
 ## Set up a project
 
 A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`. Every command except `init` finds the project by looking in the current folder, then each folder above it.
@@ -92,6 +102,9 @@ pdt login my-report
 | `pdt login APP` | sign in again to the app's cloud provider |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
+| `pdt completion [SHELL]` | turn on tab completion for commands and app names |
+
+Leave `APP` off `run`, `deploy`, `destroy`, or `login`, or mistype it, and pdt lists the apps in the project so you can pick one.
 
 `pdt az` and `pdt gcloud` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
 
@@ -140,6 +153,8 @@ platform:
 ```
 
 `project` is optional. When it is missing or wrong, the deploy lists your projects and asks you to choose one, then writes your answer here.
+
+Google Cloud has one runtime: each app runs as a Cloud Run job, and a Cloud Scheduler job triggers it on the app's schedule.
 
 ### Bringing your own Dockerfile
 
