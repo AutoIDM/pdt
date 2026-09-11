@@ -105,18 +105,18 @@ def test_happy_path_leaves_the_account_empty():
     assert failed(steps) == []
     assert cloud.resources == {}
     assert [step.name for step in steps] == [
-        "account is empty",
+        "account is empty before deploy",
         "deploy app-one",
         "deploy app-two",
         "every resource is tagged",
         "every resource has an owner",
         "destroy app-one",
         "app-one resources are gone",
-        "other apps are untouched",
+        "other apps are untouched after destroy app-one",
         "destroy app-two",
         "app-two resources are gone",
-        "other apps are untouched",
-        "account is empty",
+        "other apps are untouched after destroy app-two",
+        "account is empty after destroy",
     ]
 
 
@@ -132,7 +132,7 @@ def test_destroying_one_app_must_not_remove_another():
     cloud = FakeCloud()
     cloud.also_removes = {"app-one": ["pdt-app-two"]}
     steps = run(cloud)
-    assert [step.name for step in failed(steps)] == ["other apps are untouched"]
+    assert [step.name for step in failed(steps)] == ["other apps are untouched after destroy app-one"]
     assert "pdt-app-two" in failed(steps)[0].detail
 
 
@@ -140,7 +140,7 @@ def test_a_shared_resource_left_behind_fails():
     cloud = FakeCloud()
     cloud.keep_shared = True
     steps = run(cloud)
-    assert [step.name for step in failed(steps)] == ["account is empty"]
+    assert [step.name for step in failed(steps)] == ["account is empty after destroy"]
     assert "pdt-registry" in failed(steps)[0].detail
 
 
