@@ -35,6 +35,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from pdt import console
+
 VERSION = "581.0.0"
 CHECKSUMS = {
     "linux-x86_64": "deffdbe82ca6e3d19ffb291d063a651488e04e1b33799b5a238e4b5c6784e3c6",
@@ -87,9 +89,9 @@ def ensure_gcloud(assume_yes: bool = False) -> str:
         set_sdk_python()
         return str(LOCAL_GCLOUD)
     key = sdk_platform()
-    print(f"gcloud is not installed. pdt can download the Google Cloud CLI "
-          f"{VERSION} (~150 MB) to {SDK_DIR}.")
-    print("Deleting that folder uninstalls it again.")
+    console.warn(f"gcloud is not installed. pdt can download the Google Cloud CLI "
+                 f"{VERSION} (~150 MB) to {SDK_DIR}.")
+    console.say("Deleting that folder uninstalls it again.")
     if not assume_yes:
         try:
             answer = input("Download now? [y/N] ").strip().lower()
@@ -116,7 +118,7 @@ def set_sdk_python() -> None:
 def download_sdk(key: str) -> None:
     url = (f"https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/"
            f"{archive_name(key)}")
-    print(f"downloading {url}")
+    console.say(f"downloading {url}")
     digest = hashlib.sha256()
     tmp = tempfile.NamedTemporaryFile(suffix=Path(url).suffix, delete=False)
     tmp_path = Path(tmp.name)
@@ -133,8 +135,8 @@ def download_sdk(key: str) -> None:
                 tmp.write(chunk)
                 done += len(chunk)
                 if total:
-                    print(f"\r  {done // 2**20} / {total // 2**20} MB", end="", flush=True)
-        print()
+                    console.progress(f"  {done // 2**20} / {total // 2**20} MB")
+        console.say()
         if digest.hexdigest() != CHECKSUMS[key]:
             raise GcloudError(
                 f"checksum mismatch for {url}\n"
@@ -142,7 +144,7 @@ def download_sdk(key: str) -> None:
                 f"  got      {digest.hexdigest()}\n"
                 f"A newer release may have replaced the pinned one; update VERSION "
                 f"and CHECKSUMS in pdt/gcloud_sdk.py from {INSTALL_DOCS}")
-        print(f"unpacking to {SDK_DIR}")
+        console.say(f"unpacking to {SDK_DIR}")
         if url.endswith(".zip"):
             with zipfile.ZipFile(tmp_path) as archive:
                 archive.extractall(stage)
@@ -164,7 +166,7 @@ if __name__ == "__main__":
     try:
         path = ensure_gcloud()
     except GcloudError as e:
-        print(f"error: {e}")
+        console.error(str(e))
         sys.exit(1)
-    print(path)
+    console.say(path)
     subprocess.run([path, "--version"])

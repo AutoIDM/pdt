@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pdt import __version__, config, deploy, scaffold
+from pdt import __version__, config, console, deploy, scaffold
 from pdt.config import ConfigError
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -52,18 +52,20 @@ def cmd_new(args) -> int:
 def cmd_list(_args) -> int:
     apps = config.find_apps()
     if not apps:
-        print("This project has no apps yet.")
-        print("Run `pdt examples` to see what you can start from,")
-        print("then `pdt new my-report --from <example>`.")
+        console.say("This project has no apps yet.")
+        console.say("Start from an example:")
+        console.command("pdt examples")
+        console.command("pdt new my-report --from <example>")
         return 0
+    rows = []
     for name in apps:
         try:
             app = config.merged_app(name)
-            schedule = app["schedule"] or "-"
-            provider = app["platform"].get("provider", "-")
-            print(f"{name}  schedule={schedule}  provider={provider}")
+            rows.append([name, app["schedule"] or "-",
+                         app["platform"].get("provider", "-")])
         except ConfigError as e:
-            print(f"{name}  config error: {e}")
+            rows.append([name, "-", f"config error: {e}"])
+    console.table(["App", "Schedule", "Provider"], rows, ["bold cyan"])
     return 0
 
 
@@ -89,10 +91,10 @@ def cmd_validate(_args) -> int:
         os.environ.update(original_env)
     if problems:
         for problem in problems:
-            print(f"error: {problem}")
-        print(f"{len(problems)} problem(s) found.")
+            console.error(problem)
+        console.say(f"{len(problems)} problem(s) found.")
         return 1
-    print("Configuration is valid.")
+    console.done("Configuration is valid.")
     return 0
 
 
@@ -100,37 +102,38 @@ def cmd_run(args) -> int:
     try:
         app = config.merged_app(args.app)
     except ConfigError as e:
-        print(f"error: {e}")
+        console.error(str(e))
         return 1
     if config.uses_email(app):
         config.load_env(app["dir"])
         problems = email_problems(app["config"], check_oauth=False)
         if problems:
             for problem in problems:
-                print(f"error: {args.app}: {problem}")
+                console.error(f"{args.app}: {problem}")
             return 1
         prepare_email_auth(auth_env_file(app["dir"]))
     proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
     if (proc.returncode == 0 and args.app == scaffold.STARTER
             and not config.is_deployed(args.app)):
-        print(f"\nTry deploying this job! Type: pdt deploy {scaffold.STARTER}")
+        console.say()
+        console.say(f"Try deploying this job! Type: pdt deploy {scaffold.STARTER}")
     return proc.returncode
 
 
 def ask_which_app(command: str) -> int:
     apps = config.find_apps()
     if not apps:
-        print("This project has no apps yet.")
-        print("Run `pdt examples` to see what you can start from,")
-        print("then `pdt new my-report --from <example>`.")
+        console.say("This project has no apps yet.")
+        console.say("Run `pdt examples` to see what you can start from,")
+        console.say("then `pdt new my-report --from <example>`.")
         return 1
     shown = apps[:5]
-    print(f"Which app do you want to {command}? This project has:")
+    console.heading(f"Which app do you want to {command}? This project has:")
     for name in shown:
-        print(f"  {name}")
+        console.name(name)
     if len(apps) > len(shown):
-        print(f"  ... and {len(apps) - len(shown)} more")
-    print(f"Run `pdt list` to see every app, then `pdt {command} <app>`.")
+        console.bullet(f"... and {len(apps) - len(shown)} more")
+    console.say(f"Run `pdt list` to see every app, then `pdt {command} <app>`.")
     return 1
 
 
@@ -193,10 +196,10 @@ def main() -> int:
     try:
         return args.func(args)
     except ConfigError as e:
-        print(f"error: {e}")
+        console.error(str(e))
         return 1
     except KeyboardInterrupt:
-        print()
+        console.say()
         return 130
 
 

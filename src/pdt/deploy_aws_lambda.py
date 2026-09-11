@@ -18,7 +18,7 @@ from pathlib import Path
 
 from botocore.exceptions import ClientError
 
-from pdt import config
+from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, MANAGED_TAGS, RECENT_RUNS, SCHEDULE_GROUP,
@@ -232,7 +232,7 @@ def recent_report_seconds(logs, log_group: str) -> float | None:
 
 def cost_lines(logs, names: dict[str, str], region: str, cron: str,
                function_exists: bool) -> list[str]:
-    print("Fetching list prices from the AWS price list...")
+    console.say("Fetching list prices from the AWS price list...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(
@@ -261,7 +261,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     expression = aws_schedule_expression(cron)
     payload = json.dumps(gather_secrets(app), sort_keys=True)
 
-    print(f"Checking current state in account {account} ({region})...")
+    console.say(f"Checking current state in account {account} ({region})...")
     function_exists = resource_exists(
         clients["lambda"], "get_function", FunctionName=names["function"])
     schedule_exists = resource_exists(
@@ -282,14 +282,14 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     ]
     if not confirm(actions, assume_yes, cost_lines(
             clients["logs"], names, region, cron, function_exists)):
-        print("Aborted; nothing was changed.")
+        console.warn("Aborted; nothing was changed.")
         return 1
 
-    print("==> building Lambda zip")
+    console.step("building Lambda zip")
     package, digest, uncompressed = build_package(app)
-    print(f"    {len(package) / 1024 / 1024:.1f} MB compressed; "
-          f"{uncompressed / 1024 / 1024:.1f} MB uncompressed")
-    print(f"==> reconciling AWS resources in {account} ({region})")
+    console.bullet(f"{len(package) / 1024 / 1024:.1f} MB compressed; "
+                   f"{uncompressed / 1024 / 1024:.1f} MB uncompressed", indent=4)
+    console.step(f"reconciling AWS resources in {account} ({region})")
     ensure_log_group(clients["logs"], names["log_group"])
     secret_arn = ensure_secret(
         clients["secretsmanager"], names["secret"], payload)
@@ -300,10 +300,10 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     ensure_schedule(
         clients["scheduler"], names["schedule"], expression, app["timezone"],
         scheduler_role, {"Arn": function_arn})
-    print(f"Deployed {app['name']}.")
-    print(f"Run it once: pdt aws lambda invoke --function-name {names['function']} "
-          f"--region {region} response.json")
-    print(f"Run logs: {log_group_url(region, names['log_group'])}")
+    console.done(f"Deployed {app['name']}.")
+    console.say(f"Run it once: pdt aws lambda invoke --function-name {names['function']} "
+                f"--region {region} response.json")
+    console.say(f"Run logs: {log_group_url(region, names['log_group'])}")
     return 0
 
 
@@ -336,7 +336,7 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     if others == []:
         actions.append(f"delete schedule group {SCHEDULE_GROUP} (no other apps use it)")
     if not confirm(actions, assume_yes):
-        print("Aborted; nothing was changed.")
+        console.warn("Aborted; nothing was changed.")
         return 1
 
     scheduler = clients["scheduler"]
@@ -357,5 +357,5 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     delete_role(iam, names["function_role"])
     if others == []:
         delete_schedule_group(clients["scheduler"])
-    print(f"Removed {app['name']} from account {account} ({region}).")
+    console.done(f"Removed {app['name']} from account {account} ({region}).")
     return 0

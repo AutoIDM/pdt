@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from pdt import console
 from pdt.utils import email_auth
 from pdt.utils.log import die, log
 
@@ -65,21 +66,21 @@ def setup_help(env_file: Path | None) -> list[str]:
 
 
 def prompt_client(env_file: Path) -> bool:
-    print()
-    print("Email provider: Microsoft Graph")
-    print("Authentication: OAuth 2.0")
-    print("Status: OAuth client setup required")
-    print()
+    console.say()
+    console.say("Email provider: Microsoft Graph")
+    console.say("Authentication: OAuth 2.0")
+    console.say("Status: OAuth client setup required")
+    console.say()
     for line in setup_help(env_file):
-        print(line)
-    print()
-    print("Paste the value now, or press Enter to stop.")
+        console.say(line)
+    console.say()
+    console.say("Paste the value now, or press Enter to stop.")
     value = email_auth._ask(f"{CLIENT_ID_ENV}: ")
     if value == "":
         return False
     email_auth._write_env(env_file, CLIENT_ID_ENV, value)
     os.environ[CLIENT_ID_ENV] = value
-    print(f"Saved {CLIENT_ID_ENV} in {env_file}.")
+    console.done(f"Saved {CLIENT_ID_ENV} in {env_file}.")
     return True
 
 
@@ -115,15 +116,15 @@ def mail_json(subject: str, body: str, html: str, to_addrs: list) -> dict:
 
 
 def _confirm(user: str) -> None:
-    print()
-    print("Email provider: Microsoft Graph")
-    print(f"Account: {user}")
-    print("Authentication: OAuth 2.0")
-    print("Status: Authorization required")
-    print()
-    print("PDT will request Microsoft Graph delegated Mail.Send permission.")
-    print("PDT will not request permission to read email.")
-    print()
+    console.say()
+    console.say("Email provider: Microsoft Graph")
+    console.say(f"Account: {user}")
+    console.say("Authentication: OAuth 2.0")
+    console.say("Status: Authorization required")
+    console.say()
+    console.say("PDT will request Microsoft Graph delegated Mail.Send permission.")
+    console.say("PDT will not request permission to read email.")
+    console.say()
     try:
         answer = input("Open Microsoft sign-in now? [Y/n] ").strip().lower()
     except EOFError:
@@ -213,7 +214,7 @@ def _microsoft_access_token(user: str, client_id: str, tenant_id: str,
         "user": user,
     }, CACHE_ENV)
     account = (result.get("id_token_claims") or {}).get("preferred_username") or user
-    print(f"Connected Microsoft Graph for {account}.")
+    console.done(f"Connected Microsoft Graph for {account}.")
     return result["access_token"]
 
 

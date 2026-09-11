@@ -131,7 +131,7 @@ def test_saving_authorization_creates_no_file_in_a_ci_checkout(project, monkeypa
     assert cached == {"client_id": "abc"}
 
 
-def refuse_input(prompt):
+def refuse_input(prompt=""):
     raise AssertionError("confirm asked a question with no one to answer")
 
 
@@ -152,7 +152,7 @@ def test_confirm_asks_nothing_on_a_build_server_with_a_terminal(monkeypatch, cap
 
 
 def test_confirm_treats_a_person_pressing_ctrl_d_as_no_without_advice(monkeypatch, capsys):
-    def raise_eof(prompt):
+    def raise_eof(prompt=""):
         raise EOFError
 
     monkeypatch.delenv("CI", raising=False)

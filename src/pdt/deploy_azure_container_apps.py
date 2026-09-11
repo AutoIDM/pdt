@@ -14,7 +14,7 @@ import json
 import shutil
 import subprocess
 
-from pdt import config
+from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
     AZ, RECENT_RUNS, assign_role, az_json, az_tsv, azure_settings, clean_name,
@@ -136,7 +136,7 @@ def average_run_seconds(job: str, rg: str) -> float | None:
 
 def cost_lines(region: str, cron: str, job: str, rg: str,
                job_exists: bool, num_secrets: int) -> list[str]:
-    print("Fetching list prices from the Azure Retail Prices API...")
+    console.say("Fetching list prices from the Azure Retail Prices API...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(average_run_seconds(job, rg) if job_exists else None)
@@ -172,7 +172,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     sid = secret_name(name)
     rg = settings["resource_group"]
 
-    print(f"Checking current state in Azure subscription {settings['subscription']} "
+    console.say(f"Checking current state in Azure subscription {settings['subscription']} "
           f"({settings['region']})...")
     group = az_json("group", "show", "--name", rg)
     require_managed(group, f"resource group {rg}")
@@ -226,18 +226,18 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    + f' Container Apps Job {job}: "{cron}" (UTC)')
     if not confirm(actions, assume_yes, cost_lines(
             settings["region"], cron, job, rg, current_job is not None, 1 if values else 0)):
-        print("Aborted; nothing was changed.")
+        console.warn("Aborted; nothing was changed.")
         return 1
 
     vault_id = ensure_group_and_vault(settings, PROVIDERS, vault_exists)
     if not registry_exists:
-        print(f"==> creating ACR {settings['registry']}")
+        console.step(f"creating ACR {settings['registry']}")
         run_quiet("acr", "create", "--name", settings["registry"],
                   "--resource-group", rg, "--location", settings["region"],
                   "--sku", "Basic", "--admin-enabled", "false",
                   "--tags", "managed-by=pdt")
     if not environment_exists:
-        print(f"==> creating Container Apps environment {settings['environment']}")
+        console.step(f"creating Container Apps environment {settings['environment']}")
         logs_id = az_tsv("monitor", "log-analytics", "workspace", "show",
                          "--resource-group", rg, "--workspace-name",
                          settings["workspace"], "--query", "customerId")
@@ -249,7 +249,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                   "--logs-workspace-id", logs_id, "--logs-workspace-key", logs_key,
                   "--tags", "managed-by=pdt")
     if not identity:
-        print(f"==> creating managed identity {settings['identity']}")
+        console.step(f"creating managed identity {settings['identity']}")
         identity = az_json("identity", "create", "--name", settings["identity"],
                            "--resource-group", rg, "--location", settings["region"],
                            "--tags", "managed-by=pdt")
@@ -262,19 +262,19 @@ def deploy(app: dict, assume_yes: bool) -> int:
                          "registries", settings["registry"])
     assign_role(acr_id, principal_id, "AcrPull")
     assign_role(vault_id, principal_id, "Key Vault Secrets User")
-    print(f"==> enabling ACR authentication-as-arm on {settings['registry']}")
+    console.step(f"enabling ACR authentication-as-arm on {settings['registry']}")
     enable_acr_arm_auth(settings["registry"])
 
-    print(f"==> building image {settings['registry']}.azurecr.io/{name}:latest")
+    console.step(f"building image {settings['registry']}.azurecr.io/{name}:latest")
     build_image(app, settings["registry"], name)
     secret_uri = ensure_secret(settings, sid, values, payload, digest, current_hash, name)
-    print(f"==> reconciling Container Apps Job {job}")
+    console.step(f"reconciling Container Apps Job {job}")
     image = f"{settings['registry']}.azurecr.io/{name}:latest"
     reconcile_job(settings, job, image, cron, identity_id, secret_uri,
                   current_job is not None, name)
-    print(f"Deployed {name}.")
-    print(f"Run it once now: pdt az containerapp job start --name {job} --resource-group {rg}")
-    print(f"Run logs: {job_history_url(settings, job)} (Execution history tab)")
+    console.done(f"Deployed {name}.")
+    console.say(f"Run it once now: pdt az containerapp job start --name {job} --resource-group {rg}")
+    console.say(f"Run logs: {job_history_url(settings, job)} (Execution history tab)")
     return 0
 
 
@@ -289,7 +289,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     managed_job = owned_by(current_job, name)
     secret_owned = managed_secret(settings, sid, name)
     if current_job and not managed_job:
-        print(f"note: Container Apps Job {job} is not owned by this app; keeping it")
+        console.note(f"Container Apps Job {job} is not owned by this app; keeping it")
     others = other_pdt_apps(rg, name)
     if group_can_be_deleted(settings, others):
         actions = [
@@ -299,7 +299,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             f"purge the soft-deleted Key Vault {settings['vault']}",
         ]
         if not confirm(actions, assume_yes):
-            print("Aborted; nothing was changed.")
+            console.warn("Aborted; nothing was changed.")
             return 1
         destroy_group(settings)
         return 0
@@ -307,7 +307,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
                        "--resource-group", rg)
     registry_owned = managed_by_pdt(registry)
     if registry is not None and not registry_owned:
-        print(f"note: ACR {settings['registry']} is not managed by PDT; keeping its images")
+        console.note(f"ACR {settings['registry']} is not managed by PDT; keeping its images")
     image_exists = registry_owned and az_json(
         "acr", "repository", "show", "--name", settings["registry"],
         "--repository", name) is not None
@@ -319,10 +319,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if secret_owned:
         actions.append(f"delete and purge Key Vault secret {sid}")
     if not actions:
-        print(f"Nothing owned by {name} to remove in resource group {rg}.")
+        console.done(f"Nothing owned by {name} to remove in resource group {rg}.")
         return 0
     if not confirm(actions, assume_yes):
-        print("Aborted; nothing was changed.")
+        console.warn("Aborted; nothing was changed.")
         return 1
     if managed_job:
         run_quiet("containerapp", "job", "delete", "--name", job,
