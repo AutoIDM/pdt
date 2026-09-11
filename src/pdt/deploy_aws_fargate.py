@@ -69,7 +69,8 @@ def resource_names(app_name: str) -> dict[str, str]:
         "family": base,
         "schedule": base,
         "secret": f"{base}-env",
-        "log_group": f"/pdt/{app_name}",
+        "log_group": f"/ecs/{base}",
+        "legacy_log_group": f"/pdt/{app_name}",
         "execution_role": f"{base}-execution",
         "task_role": f"{base}-task",
         "scheduler_role": f"{base}-scheduler",
@@ -409,6 +410,12 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         "delete tagged per-app IAM roles",
         f"delete image tag {names['image_tag']} from ECR repository {REPOSITORY}",
     ]
+    legacy_groups = clients["logs"].describe_log_groups(
+        logGroupNamePrefix=names["legacy_log_group"]).get("logGroups", [])
+    legacy_exists = any(group["logGroupName"] == names["legacy_log_group"]
+                        for group in legacy_groups)
+    if legacy_exists:
+        actions.append(f"delete tagged log group {names['legacy_log_group']} (older name)")
     others = other_schedules(clients["scheduler"], names["schedule"])
     if others == []:
         actions.append(f"delete schedule group {SCHEDULE_GROUP} (no other apps use it)")
@@ -432,6 +439,8 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
             ecs.deregister_task_definition(taskDefinition=arn)
     delete_secret(clients["secretsmanager"], names["secret"])
     delete_log_group(clients["logs"], names["log_group"])
+    if legacy_exists:
+        delete_log_group(clients["logs"], names["legacy_log_group"])
     iam = clients["iam"]
     for role in (names["scheduler_role"], names["task_role"], names["execution_role"]):
         delete_role(iam, role)
