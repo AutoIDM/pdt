@@ -34,6 +34,13 @@ variables:
 verify:aws:
   extends: .verify:unix
   resource_group: aws
+  # Without the account's variables the job cannot log in. It then waits as a
+  # manual job, so the pipeline shows the gap instead of failing at login.
+  rules:
+    - if: $AWS_ACCESS_KEY_ID == null
+      when: manual
+      allow_failure: true
+    - !reference [.verify, rules]
   tags:
     - saas-linux-medium-arm64
   services:
@@ -50,6 +57,13 @@ verify:aws:
 verify:azure:
   extends: .verify:unix
   resource_group: azure
+  # Without the account's variables the job cannot log in. It then waits as a
+  # manual job, so the pipeline shows the gap instead of failing at login.
+  rules:
+    - if: $AZURE_CLIENT_ID == null
+      when: manual
+      allow_failure: true
+    - !reference [.verify, rules]
   before_script:
     - !reference [".verify:unix", before_script]
     - pdt az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
@@ -59,6 +73,13 @@ verify:azure:
 verify:google-cloud:
   extends: .verify:unix
   resource_group: google-cloud
+  # Without the account's variables the job cannot log in. It then waits as a
+  # manual job, so the pipeline shows the gap instead of failing at login.
+  rules:
+    - if: $GOOGLE_CLOUD_PROJECT == null
+      when: manual
+      allow_failure: true
+    - !reference [.verify, rules]
   variables:
     PDT_GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
   before_script:

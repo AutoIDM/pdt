@@ -46,6 +46,8 @@ Set these in the project's CI/CD settings.
 | `GOOGLE_APPLICATION_CREDENTIALS` | verify:google-cloud | Service account key | Masked; protected; file type |
 | `GOOGLE_CLOUD_PROJECT` | verify:google-cloud | Google Cloud project ID | Protected |
 
+A cloud job whose variables are absent becomes a manual job that is allowed to fail. The pipeline stays green and shows the job as not run, so a project without an account for that provider still merges. Add the variables and the job runs on every merge request.
+
 `PDT_SMOKE_TOKEN` is set in `verify/.gitlab-ci.yml`, so it needs no CI/CD variable. Each app declares it as required, so a deployed job fails unless pdt delivered it through `PDT_ENV_JSON`.
 
 `PDT_INSTALL` is optional. Each job installs the wheel the `build` job produced. Set `PDT_INSTALL` to a git ref or to `pdt-cli` to verify a different build instead.
