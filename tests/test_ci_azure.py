@@ -225,3 +225,11 @@ def test_a_deploy_continues_when_the_group_holds_only_the_expected_names(monkeyp
     deploy_azure.check_shared_names(dict(SETTINGS))
     monkeypatch.setattr(deploy_azure, "az_json", lambda *args: [])
     deploy_azure.check_shared_names(dict(SETTINGS))
+
+
+def test_a_discovered_subscription_names_the_vault_like_a_saved_one(azure_app, monkeypatch):
+    chosen(monkeypatch)
+    settings = deploy_azure.preflight(azure_app, deploy_azure.azure_settings(azure_app))
+    saved = deploy_azure.shared_names(ACCOUNT["id"], settings["resource_group"])
+    assert settings["vault"] == saved["vault"]
+    assert settings["storage"] == saved["storage"]
