@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from pdt import __version__, console
+from rich.markup import escape
 from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_project
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
@@ -97,7 +98,7 @@ def _ask_choice(question: str, labels: list[str], default: int = 1) -> int:
     console.heading(question)
     console.say()
     for number, label in enumerate(labels, start=1):
-        console.styled(f"  [bold cyan]{number})[/] {label}")
+        console.styled(f"  [bold cyan]{number})[/] {escape(label)}")
     console.say()
     while True:
         answer = _ask("Choose", str(default))
@@ -131,7 +132,7 @@ def choose_target(requested: str | None, assume_yes: bool) -> Path:
 
     warning = bad_place(here)
     console.say()
-    console.styled(f"This folder: [bold]{here}[/]")
+    console.styled(f"This folder: [bold]{escape(str(here))}[/]")
     if warning != "":
         console.warn(f"Careful: {warning}")
 
