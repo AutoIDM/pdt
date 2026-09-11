@@ -129,6 +129,7 @@ def azure_settings(app: dict) -> dict[str, str]:
         "workspace": str(
             os.environ.get("PDT_AZURE_LOG_WORKSPACE")
             or "pdt-logs"),
+        **shared_names(subscription, resource_group),
     }
 
 
@@ -183,6 +184,8 @@ def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
     elif not requested and can_ask:
         save_subscription(app, account)
     settings["subscription"] = str(account["id"])
+    # A first deploy learns the subscription here, and its names must match
+    # every later deploy that reads the saved one.
     settings.update(shared_names(settings["subscription"], settings["resource_group"]))
     user = account.get("user") or {}
     is_user = str(user.get("type", "")).lower() == "user"

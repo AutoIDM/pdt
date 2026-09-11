@@ -258,3 +258,11 @@ def test_destroy_plans_the_plan_alert_rule_and_action_group(azure_app, monkeypat
     assert f"delete alert rule Failure Anomalies - {function_app}" in planned
     assert ("delete action group Application Insights Smart Detection "
             "(no pdt app remains)") in planned
+
+
+def test_a_discovered_subscription_names_the_vault_like_a_saved_one(azure_app, monkeypatch):
+    chosen(monkeypatch)
+    settings = deploy_azure.preflight(azure_app, deploy_azure.azure_settings(azure_app))
+    saved = deploy_azure.shared_names(ACCOUNT["id"], settings["resource_group"])
+    assert settings["vault"] == saved["vault"]
+    assert settings["storage"] == saved["storage"]
