@@ -87,10 +87,14 @@ def error_code(exc: Exception) -> str:
 
 
 def not_found(exc: Exception) -> bool:
-    return error_code(exc) in {
+    if error_code(exc) in {
         "NoSuchEntity", "ResourceNotFoundException", "ResourceNotFound",
         "ClusterNotFoundException", "RepositoryNotFoundException",
-    }
+    }:
+        return True
+    # ECS reports a missing task definition family as a generic ClientException.
+    message = getattr(exc, "response", {}).get("Error", {}).get("Message", "")
+    return error_code(exc) == "ClientException" and "Unable to describe task definition" in message
 
 
 def role_propagation_error(exc: Exception) -> bool:

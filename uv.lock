@@ -583,6 +583,7 @@ apps = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "boto3" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -606,6 +607,7 @@ provides-extras = ["apps"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "boto3" },
     { name = "pytest" },
     { name = "ruff" },
 ]

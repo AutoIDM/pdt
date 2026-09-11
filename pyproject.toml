@@ -38,7 +38,7 @@ packages = ["src/pdt"]
 include = ["src/pdt", "README.md", "tests"]
 
 [dependency-groups]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "ruff", "boto3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "ci/tests"]
