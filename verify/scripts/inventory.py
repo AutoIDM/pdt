@@ -163,10 +163,14 @@ def aws_ecs_tags(region: str, arn: str) -> dict[str, str]:
 
 
 def aws_clusters(region: str) -> Inventory:
+    arns = (aws(region, "ecs", "list-clusters") or {}).get("clusterArns") or []
+    if not arns:
+        return []
+    described = aws(region, "ecs", "describe-clusters", "--clusters", *arns) or {}
     found = []
-    for arn in (aws(region, "ecs", "list-clusters") or {}).get("clusterArns") or []:
-        name = arn.rsplit("/", 1)[-1]
-        if name != "pdt":
+    for item in described.get("clusters") or []:
+        arn, name = item["clusterArn"], item["clusterName"]
+        if name != "pdt" or item.get("status") != "ACTIVE":
             continue
         found.append(Resource("ecs cluster", arn, aws_ecs_tags(region, arn), name))
     return found
@@ -199,6 +203,10 @@ def aws_tagged(region: str) -> Inventory:
     found = []
     for item in listed.get("ResourceTagMappingList") or []:
         arn = item["ResourceARN"]
+        # ECS keeps a deleted cluster or task definition visible as INACTIVE,
+        # and this API still returns it. The ECS listings above decide those.
+        if arn.split(":")[2] == "ecs":
+            continue
         tags = {tag["Key"]: tag["Value"] for tag in item.get("Tags") or []}
         found.append(Resource(arn.split(":")[2], arn, tags, arn.rsplit("/", 1)[-1]))
     return found
