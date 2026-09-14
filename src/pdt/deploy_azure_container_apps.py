@@ -17,8 +17,8 @@ import subprocess
 from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
-    AZ, RECENT_RUNS, assign_role, az_json, az_tsv, azure_settings, clean_name,
-    cost_estimate_lines, destroy_group, ensure_group_and_vault, ensure_secret,
+    AZ, RECENT_RUNS, assign_role, az_json, az_tsv, azure_settings, check_shared_names,
+    clean_name, cost_estimate_lines, destroy_group, ensure_group_and_vault, ensure_secret,
     group_can_be_deleted, key_vault_item, managed_by_pdt, managed_secret,
     other_pdt_apps, owned_by, preflight, purge_secret, report_shared_kept,
     require_managed, resource_id, retail_price, run_basis, run_quiet, run_stream,
@@ -174,6 +174,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
     console.say(f"Checking current state in Azure subscription {settings['subscription']} "
           f"({settings['region']})...")
+    check_shared_names(settings)
     group = az_json("group", "show", "--name", rg)
     require_managed(group, f"resource group {rg}")
     group_exists = group is not None
