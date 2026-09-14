@@ -10,6 +10,7 @@
 #     "fsspec",
 #     "s3fs",
 #     "duckdb",
+#     "httpx",
 # ]
 # ///
 """Deploy an app to AWS.

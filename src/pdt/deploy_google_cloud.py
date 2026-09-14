@@ -11,6 +11,7 @@
 #     "google-cloud-storage",
 #     "google-auth",
 #     "duckdb",
+#     "httpx",
 # ]
 # ///
 """Deploy an app to Google Cloud as a scheduled Cloud Run job.
@@ -44,9 +45,7 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -401,11 +400,11 @@ def billing_list(path: str, key: str, project: str) -> list:
         query = {"pageSize": "5000"}
         if page_token:
             query["pageToken"] = page_token
-        req = urllib.request.Request(
+        data = fetch_json(
             f"{BILLING_API}/{path}?{urllib.parse.urlencode(query)}",
+            timeout=60,
             headers={"Authorization": f"Bearer {token}",
                      "X-Goog-User-Project": project})
-        data = fetch_json(req, timeout=60)
         items.extend(data.get(key) or [])
         page_token = data.get("nextPageToken") or ""
         if not page_token:
@@ -464,13 +463,13 @@ def average_run_seconds(job: str, region: str, project: str) -> float | None:
 def billing_detail(exc: Exception) -> str:
     # fetch_json wraps an HTTP error response in an API error; the body
     # still names the reason ("Cloud Billing API has not been used...").
-    response = getattr(exc, "response", None) or exc
-    if isinstance(response, urllib.error.HTTPError):
-        try:
-            return json.loads(response.read()).get("error", {}).get("message", "")
-        except (ValueError, OSError):
-            return ""
-    return ""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return ""
+    try:
+        return response.json().get("error", {}).get("message", "")
+    except (ValueError, AttributeError):
+        return ""
 
 
 def cost_estimate(project: str, region: str, cron: str, job: str,

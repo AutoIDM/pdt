@@ -12,6 +12,7 @@
 #     "rich",
 #     "python-dotenv",
 #     "backoff",
+#     "httpx",
 # ]
 #
 # [tool.uv]

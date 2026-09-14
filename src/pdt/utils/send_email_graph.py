@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from pdt import console
 from pdt.utils import email_auth
 from pdt.utils.log import die, log
+from pdt.utils.web import RETRIABLE_ERRORS, APIError, Client, FatalAPIError
 
 EXIT_CONFIG = 1
 EXIT_EMAIL = 3
@@ -250,18 +249,16 @@ def send_mail(from_addr: str, to_addrs: list, subject: str, body: str,
         "Content-Type": "application/json",
         "User-Agent": "pdt/1.0",
     }
-    req = urllib.request.Request(
-        SEND_URL, data=payload, method="POST", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            if resp.status != 202:
-                die(EXIT_EMAIL, "graph send failed", status=resp.status)
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")[:800]
-        if e.code == 403 or "ErrorAccessDenied" in detail:
+        with Client() as client:
+            resp = client.post(SEND_URL, headers=headers, content=payload)
+    except FatalAPIError as e:
+        if e.response.status_code == 403 or "ErrorAccessDenied" in e.response.text:
             for line in _mail_send_fix():
                 log("error", line)
-            die(EXIT_EMAIL, "graph send denied", status=e.code, detail=detail)
-        die(EXIT_EMAIL, "graph send failed", status=e.code, detail=detail)
-    except urllib.error.URLError as e:
-        die(EXIT_EMAIL, "graph connection failed", error=str(e.reason))
+            die(EXIT_EMAIL, "graph send denied", status=e.response.status_code)
+        die(EXIT_EMAIL, "graph send failed", status=e.response.status_code)
+    except (APIError, *RETRIABLE_ERRORS):
+        die(EXIT_EMAIL, "graph send failed")
+    if resp.status_code != 202:
+        die(EXIT_EMAIL, "graph send failed", status=resp.status_code)

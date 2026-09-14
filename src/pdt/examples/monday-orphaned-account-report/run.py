@@ -29,7 +29,6 @@ Exit codes: 0 ok, 1 bad config, 2 Entra/Graph failure, 3 email failure,
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import urllib.parse
@@ -41,7 +40,7 @@ from pdt.config import ConfigError, check_env, load_env, merged_app
 from pdt.utils.entra import graph_pages, graph_token
 from pdt.utils.log import die, log
 from pdt.utils.send_email import pick_transport, send_email
-from pdt.utils.web import http_json
+from pdt.utils.web import Client
 
 EXIT_OK = 0
 EXIT_CONFIG = 1
@@ -89,25 +88,17 @@ def cfg_int(cfg: dict, key: str, minimum: int, maximum: int) -> int:
 
 
 def fetch_monday_users(token: str, page_size: int) -> list[dict]:
+    monday = Client(MONDAY_API, exit_code=EXIT_MONDAY, headers={
+        "Authorization": token,
+        "API-Version": MONDAY_API_VERSION,
+    })
     users = []
     page = 1
     while True:
-        request_body = json.dumps({
+        payload = monday.post("", json={
             "query": MONDAY_USERS_QUERY,
             "variables": {"limit": page_size, "page": page},
-        }).encode()
-        payload = http_json(
-            MONDAY_API,
-            EXIT_MONDAY,
-            method="POST",
-            headers={
-                "Authorization": token,
-                "API-Version": MONDAY_API_VERSION,
-                "Content-Type": "application/json",
-                "User-Agent": "pdt/1.0",
-            },
-            data=request_body,
-        )
+        }).json()
         errors = payload.get("errors")
         if errors:
             messages = []

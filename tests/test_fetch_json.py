@@ -1,111 +1,65 @@
-import io
-import json
-import time
-import urllib.error
-import urllib.request
+"""deploy_common.fetch_json is pdt.utils.web.Client with console output."""
 
+from __future__ import annotations
+
+import time
+
+import httpx
 import pytest
 
 from pdt import deploy_common
-from pdt.deploy_common import (
-    FatalAPIError, RetriableAPIError, fetch_json, validate_response)
+from pdt.deploy_common import FatalAPIError, RetriableAPIError, fetch_json
 
 URL = "https://prices.example.com/api/prices"
 
 
-def http_error(code: int) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(URL, code, "boom", None, io.BytesIO(b"{}"))
-
-
-class FakeResponse(io.BytesIO):
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
+def response(status: int, body=None) -> httpx.Response:
+    return httpx.Response(status, json=body if body is not None else {},
+                          request=httpx.Request("GET", URL))
 
 
 def install(monkeypatch, outcomes):
-    """urlopen pops one outcome per call: an exception to raise or a payload."""
-    calls = []
-    waits = []
+    calls, waits = [], []
 
-    def fake_urlopen(request, timeout=0):
+    def handle_request(self, request):
         calls.append(request)
         outcome = outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
-        return FakeResponse(json.dumps(outcome).encode())
+        return outcome
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle_request)
     monkeypatch.setattr(time, "sleep", waits.append)
+    monkeypatch.setattr(deploy_common, "_client", None)
     return calls, waits
 
 
-def test_validate_response_splits_retriable_from_fatal():
-    validate_response(http_error(302))
-    with pytest.raises(RetriableAPIError):
-        validate_response(http_error(429))
-    with pytest.raises(RetriableAPIError):
-        validate_response(http_error(503))
-    with pytest.raises(FatalAPIError) as raised:
-        validate_response(http_error(404))
-    assert "404 Client Error" in str(raised.value)
-    assert raised.value.response.status == 404
-
-
-def test_returns_parsed_json(monkeypatch):
-    calls, waits = install(monkeypatch, [{"Items": [1]}])
-    assert fetch_json(URL) == {"Items": [1]}
-    assert len(calls) == 1
+def test_returns_parsed_json_with_headers(monkeypatch):
+    calls, waits = install(monkeypatch, [response(200, {"Items": [1]})])
+    assert fetch_json(URL, timeout=30, headers={"Authorization": "Bearer x"}) == {"Items": [1]}
+    assert calls[0].headers["Authorization"] == "Bearer x"
     assert waits == []
 
 
-def test_retries_rate_limit_then_succeeds(monkeypatch):
-    calls, waits = install(
-        monkeypatch, [http_error(429), http_error(429), {"ok": True}])
-    assert fetch_json(URL) == {"ok": True}
-    assert len(calls) == 3
-    assert len(waits) == 2
-
-
-def test_retries_server_error(monkeypatch):
-    calls, waits = install(monkeypatch, [http_error(500), {"ok": True}])
+def test_retries_server_error_and_prints_backoff(monkeypatch, capsys):
+    calls, waits = install(monkeypatch, [response(503), response(200, {"ok": True})])
     assert fetch_json(URL) == {"ok": True}
     assert len(calls) == 2
+    assert "try 1 of" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("error", [
-    urllib.error.URLError(ConnectionRefusedError(111)),
-    TimeoutError("timed out"),
-    ConnectionResetError(104),
-])
-def test_retries_connection_errors_and_timeouts(monkeypatch, error):
-    calls, waits = install(monkeypatch, [error, {"ok": True}])
-    assert fetch_json(URL) == {"ok": True}
-    assert len(calls) == 2
-    assert len(waits) == 1
-
-
-def test_client_error_is_fatal_at_once(monkeypatch):
-    calls, waits = install(monkeypatch, [http_error(404)])
+def test_client_error_is_fatal_and_prints_the_body(monkeypatch, capsys):
+    calls, waits = install(monkeypatch, [response(404, {"error": "gone"})])
     with pytest.raises(FatalAPIError):
         fetch_json(URL)
-    assert len(calls) == 1
-    assert waits == []
+    assert len(calls) == 1 and waits == []
+    out = capsys.readouterr().out
+    assert "404" in out and "gone" in out
 
 
 def test_gives_up_after_max_tries(monkeypatch):
-    attempts = deploy_common.BACKOFF_MAX_TRIES
-    calls, waits = install(monkeypatch, [http_error(429) for _ in range(attempts)])
+    calls, waits = install(monkeypatch, [response(429)] * 5)
     with pytest.raises(RetriableAPIError):
         fetch_json(URL)
-    assert len(calls) == attempts
-    assert len(waits) == attempts - 1
-
-
-def test_accepts_request_object(monkeypatch):
-    calls, waits = install(monkeypatch, [http_error(503), {"ok": True}])
-    req = urllib.request.Request(URL, headers={"Authorization": "Bearer x"})
-    assert fetch_json(req) == {"ok": True}
-    assert calls == [req, req]
+    assert len(calls) == 5
+    assert len(waits) == 4

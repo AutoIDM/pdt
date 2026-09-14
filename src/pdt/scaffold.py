@@ -76,6 +76,7 @@ This folder is a pdt project: a set of small scheduled jobs. Every folder holdin
 - Check work with `pdt validate`, try it with `pdt run <name>`, ship it with `pdt deploy <name>`.
 - Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all); add `--json` to any of them for machine-readable output.
 - Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
+- Call a web API with `Client` from `pdt.utils.web`: `api = Client(base_url, exit_code=EXIT_API, headers={...})`, then `api.get(path).json()` or `api.post(path, json=...)`. It retries 429, 5xx, timeouts, and connection failures with backoff, and logs the full response when it gives up. Do not import `httpx`, `requests`, or `urllib.request`, and do not write a retry loop or a try/except around a request.
 - An app folder holding a `Dockerfile` is built from that file instead of the generated one when it deploys to a cloud provider. The build context is the app folder under its own name next to `pdt.yml`; a `.dockerignore` in the app folder, with patterns relative to it, keeps files out of the image.
 """
 

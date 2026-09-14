@@ -40,16 +40,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.error
-import urllib.request
-from http import HTTPStatus
 from pathlib import Path
 from typing import Callable
 
-import backoff
-
 from pdt import config, console
 from pdt.utils.email_auth import can_prompt
+from pdt.utils.web import Client, FatalAPIError, RetriableAPIError  # noqa: F401
 
 DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -161,65 +157,36 @@ def warn_if_locked(store, app_name: str) -> None:
                      "still holds the state; destroying now loses that run's state")
 
 
-# HTTP fetching follows the Meltano SDK's RESTStream pattern:
-# validate_response splits responses into retriable (429 and every 5xx)
-# and fatal (any other 4xx), and backoff retries the retriable ones plus
-# connection errors and timeouts with an exponential wait.
-EXTRA_RETRY_STATUSES = (HTTPStatus.TOO_MANY_REQUESTS,)
-BACKOFF_MAX_TRIES = 5
+# HTTP fetching goes through pdt.utils.web.Client, the one client every
+# API call in this repo uses. It retries 429, 5xx, connection errors, and
+# timeouts with an exponential wait, and reports a failure with the
+# response body. The CLI only swaps the app-style log line for console
+# output.
+def _console_log(level: str, message: str, **fields) -> None:
+    if level == "warning":
+        console.bullet(f"the server did not answer (try {fields['try']} of "
+                       f"{fields['of']}); backing off {fields['wait']}s...", indent=4)
+        return
+    detail = fields.get("status") or fields.get("error", "")
+    console.error(f"{message}: {fields['method']} {fields['url']} ({detail})")
+    body = fields.get("body", "")
+    if body:
+        console.say(body)
 
 
-class FatalAPIError(Exception):
-    """The server rejected the request; sending it again cannot help."""
-
-    def __init__(self, message: str, response=None):
-        super().__init__(message)
-        self.response = response
+_client: Client | None = None
 
 
-class RetriableAPIError(Exception):
-    """The server is busy or failing; sending the request again can work."""
-
-    def __init__(self, message: str, response=None):
-        super().__init__(message)
-        self.response = response
-
-
-def response_error_message(response) -> str:
-    error_type = ("Client" if HTTPStatus.BAD_REQUEST <= response.status
-                  < HTTPStatus.INTERNAL_SERVER_ERROR else "Server")
-    return (f"{response.status} {error_type} Error: {response.reason} "
-            f"for url: {response.url}")
+def http_client() -> Client:
+    global _client
+    if _client is None:
+        _client = Client(log=_console_log)
+    return _client
 
 
-def validate_response(response) -> None:
-    if (response.status in EXTRA_RETRY_STATUSES
-            or response.status >= HTTPStatus.INTERNAL_SERVER_ERROR):
-        raise RetriableAPIError(response_error_message(response), response)
-    if HTTPStatus.BAD_REQUEST <= response.status < HTTPStatus.INTERNAL_SERVER_ERROR:
-        raise FatalAPIError(response_error_message(response), response)
-
-
-def backoff_handler(details) -> None:
-    console.bullet(f"the server did not answer (try {details['tries']} of "
-                   f"{BACKOFF_MAX_TRIES}); backing off {details['wait']:.1f}s...", indent=4)
-
-
-@backoff.on_exception(
-    backoff.expo,
-    (RetriableAPIError, ConnectionError, TimeoutError, urllib.error.URLError),
-    max_tries=BACKOFF_MAX_TRIES,
-    factor=2,
-    on_backoff=backoff_handler,
-)
-def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
+def fetch_json(url: str, timeout: int = 60, headers: dict | None = None):
     """GET a JSON document, backing off and retrying whatever can pass."""
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as error:
-        validate_response(error)
-        raise
+    return http_client().get(url, timeout=timeout, headers=headers).json()
 
 
 def run_build(command: list[str]) -> None:
