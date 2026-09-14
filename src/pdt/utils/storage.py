@@ -19,6 +19,7 @@ the lock that pull takes and push releases.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import uuid
@@ -130,7 +131,7 @@ class Local(Backend):
         for file in self.folder.rglob("*"):
             rel = file.relative_to(self.folder).as_posix()
             if file.is_file() and rel.startswith(prefix):
-                out[rel] = str(file.stat().st_mtime_ns)
+                out[rel] = hashlib.sha256(file.read_bytes()).hexdigest()
         return out
 
     def put_if_version(self, path: str, data: bytes, version: str | None) -> None:
@@ -138,7 +139,8 @@ class Local(Backend):
             if not self.create_if_absent(path, data):
                 raise StorageConflict(f"{path} was created by another run")
             return
-        if not self.file(path).is_file() or str(self.file(path).stat().st_mtime_ns) != version:
+        file = self.file(path)
+        if not file.is_file() or hashlib.sha256(file.read_bytes()).hexdigest() != version:
             raise StorageConflict(f"{path} changed since it was pulled")
         self.file(path).write_bytes(data)
 
