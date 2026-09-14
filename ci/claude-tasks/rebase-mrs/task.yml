@@ -2,7 +2,7 @@
 # Claude does the rebase, resolves conflicts, runs the tests, and pushes.
 # select_mrs.py lists the stale MRs; check_mrs.py verifies each push and comments.
 model: opus
-budget_usd: 10
+budget_usd: 20
 timeout_minutes: 30
 permission_mode: acceptEdits
 select: select_mrs.py
