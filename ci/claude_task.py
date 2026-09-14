@@ -50,7 +50,7 @@ import yaml
 
 TASKS_DIR = Path(__file__).resolve().parent / "claude-tasks"
 REPORT_DIR = Path("claude-task-report")
-HANDBOOK = "see the handbook: developer.md > Gitlab > CI > Claude Code in CI"
+HANDBOOK = "steps are in the handbook (developer.md, Claude Code in CI)"
 PROBE_PROMPT = "Reply with the single word OK and nothing else."
 PROBE_BUDGET_USD = 0.10
 PROBE_TIMEOUT_SECONDS = 120
@@ -181,8 +181,7 @@ def token_from(env) -> str:
 def missing_token_problem(env) -> str:
     if token_from(env):
         return ""
-    return ("CLAUDE_TOKEN is not set. Add it as a masked, protected CI variable "
-            f"holding the output of `claude setup-token`; {HANDBOOK}.")
+    return f"CLAUDE_TOKEN is not set; {HANDBOOK}."
 
 
 def auth_status_problem(output: str) -> str:
