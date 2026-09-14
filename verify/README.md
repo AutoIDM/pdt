@@ -27,9 +27,11 @@ export PDT_SMOKE_TOKEN=pdt-verify
 uv run --no-project --with pyyaml python verify/scripts/verify.py aws
 ```
 
-Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one `PASS` or `FAIL` line per step and stops at the first failure. Any failure or exception destroys every app again before the run exits 1, so a failed run leaves nothing behind.
+Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one `PASS` or `FAIL` line per step and stops at the first failure. If the initial check fails, the run exits without changing resources. After that check passes, a failure attempts to destroy every app and exits 1.
 
 The `windows` provider deploys to the computer you run it on, so run it only on a Windows machine you are willing to add scheduled tasks to.
+
+The Azure job builds container images with Docker on the GitLab runner and uploads them to Azure Container Registry. It does not use ACR Tasks.
 
 ## CI/CD variables
 

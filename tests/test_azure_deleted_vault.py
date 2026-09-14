@@ -30,3 +30,25 @@ def test_someone_elses_deleted_vault_is_left_alone(monkeypatch):
     with pytest.raises(SystemExit):
         deploy_azure.purge_deleted_vault(SETTINGS)
     assert calls == []
+
+
+def test_destroy_does_not_purge_another_groups_legacy_vault(monkeypatch):
+    settings = {"resource_group": "pdt-verify", "vault": "pdt-current",
+                "legacy_vault": "pdt-other-group"}
+    reads = []
+    calls = []
+
+    def deleted(*args):
+        reads.append(args)
+        return {"name": args[-1]}
+
+    monkeypatch.setattr(deploy_azure, "az_json", deleted)
+    monkeypatch.setattr(deploy_azure, "az_tsv", lambda *args: "false")
+    monkeypatch.setattr(deploy_azure, "run_quiet",
+                        lambda *args: calls.append(args))
+    deploy_azure.destroy_group(settings)
+    assert reads == [("keyvault", "show-deleted", "--name", "pdt-current")]
+    assert calls == [
+        ("group", "delete", "--name", "pdt-verify", "--yes"),
+        ("keyvault", "purge", "--name", "pdt-current"),
+    ]
