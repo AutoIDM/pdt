@@ -15,6 +15,7 @@ variables:
 
 stages:
   - test
+  - tasks
 
 test:
   stage: test
@@ -45,3 +46,41 @@ smoke:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+
+# Runs one Claude Code task from ci/claude-tasks/<CLAUDE_TASK>/ on the team's
+# Claude subscription. A job extends this and sets CLAUDE_TASK plus its own
+# rules. Needs the masked, protected variables CLAUDE_TOKEN (from
+# `claude setup-token`) and GITLAB_TOKEN (project access token, api +
+# write_repository). How to create them is in the handbook, developer.md,
+# "Claude Code in CI". Exit code 2 means an item needs a person: the job
+# shows a warning, not a failure. A bad token exits 1 and fails the job.
+.claude-task:
+  stage: tasks
+  interruptible: false
+  variables:
+    GIT_DEPTH: 0
+    GIT_EDITOR: "true"
+  allow_failure:
+    exit_codes: [2]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl ca-certificates
+    - curl -fsSL https://claude.ai/install.sh | bash -s 2.1.266
+    - export PATH="$HOME/.local/bin:$PATH"
+    - export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN"
+  script:
+    - uv run --python 3.13 python ci/claude_task.py "$CLAUDE_TASK"
+  artifacts:
+    when: always
+    paths:
+      - claude-task-report/
+    expire_in: 30 days
+
+# After every merge to the default branch, Claude rebases each open MR onto
+# it. Label an MR `no-autorebase` to leave it alone.
+rebase-mrs:
+  extends: .claude-task
+  resource_group: rebase-mrs
+  variables:
+    CLAUDE_TASK: rebase-mrs
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

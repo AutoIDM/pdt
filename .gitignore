@@ -15,6 +15,7 @@ dist/
 *.egg-info/
 .pytest_cache/
 .uv-cache/
+claude-task-report/
 
 # OS / editor noise
 .DS_Store

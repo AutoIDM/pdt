@@ -40,7 +40,7 @@ include = ["src/pdt", "README.md", "tests"]
 dev = ["pytest", "ruff"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "ci/tests"]
 
 [tool.ruff]
 include = ["src/**/*.py"]
