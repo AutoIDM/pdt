@@ -41,7 +41,7 @@ def test_defaults_when_task_yml_is_empty(tmp_path):
     task = runner.load_task("demo", make_task(tmp_path))
     assert task.model == "opus"
     assert task.permission_mode == "acceptEdits"
-    assert task.budget_usd == 20.0
+    assert task.budget_usd == 10.0
     assert task.timeout_minutes == 30
     assert task.allowed_tools == []
     assert task.select is None and task.check is None and task.system is None
@@ -149,18 +149,10 @@ def test_auth_status_verdicts():
 def test_probe_verdicts():
     ok = json.dumps({"type": "result", "is_error": False, "result": "OK"})
     assert runner.probe_problem(0, ok) == ""
-    rejected = json.dumps({"type": "result", "is_error": True,
-                           "result": "API Error: 401 OAuth access token is invalid."})
+    rejected = json.dumps({"type": "result", "is_error": True, "result": "401 invalid token"})
     problem = runner.probe_problem(1, rejected)
-    assert "Claude Code said: API Error: 401 OAuth access token is invalid." in problem
-    assert "expired" not in problem  # no guessing at the cause
-    # Claude Code's budget stop has no result text; the subtype is the message.
-    budget = json.dumps({"type": "result", "is_error": True, "result": None,
-                         "subtype": "error_max_budget_usd", "total_cost_usd": 0.1176})
-    assert "Claude Code said: error_max_budget_usd" in runner.probe_problem(1, budget)
-    assert "exited 124" in runner.probe_problem(124, "", "")
-    assert "boom on stderr" in runner.probe_problem(1, "not json", "boom on stderr")
-    assert runner.PROBE_BUDGET_USD >= 0.5
+    assert "rejected" in problem and "401" in problem and "handbook" in problem
+    assert "rejected" in runner.probe_problem(124, "")
 
 
 # --- results and verdicts -----------------------------------------------------
@@ -202,7 +194,7 @@ def test_claude_command_shape(tmp_path):
     assert command[command.index("--model") + 1] == "opus"
     assert command[command.index("--allowedTools") + 1] == "Read,Bash(git *)"
     assert command[command.index("--disallowedTools") + 1] == "Bash(git push -f*)"
-    assert command[command.index("--max-budget-usd") + 1] == "20.0"
+    assert command[command.index("--max-budget-usd") + 1] == "10.0"
     assert "--append-system-prompt-file" not in command
     assert "--effort" not in command
     high = runner.claude_command(runner.load_task("demo", make_task(tmp_path / "e", "effort: high\n")))

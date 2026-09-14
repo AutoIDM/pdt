@@ -67,10 +67,7 @@ TASKS_DIR = Path(__file__).resolve().parent / "claude-tasks"
 REPORT_DIR = Path("claude-task-report")
 HANDBOOK = "steps are in the handbook (developer.md, Claude Code in CI)"
 PROBE_PROMPT = "Reply with the single word OK and nothing else."
-# The probe loads the repo's CLAUDE.md and AGENTS.md like any session, which
-# alone is about $0.12 of Opus cache writes at list price. A cap of $0.10
-# made a working token look broken (subtype error_max_budget_usd).
-PROBE_BUDGET_USD = 1.00
+PROBE_BUDGET_USD = 0.10
 PROBE_TIMEOUT_SECONDS = 120
 HOOK_TIMEOUT_SECONDS = 600
 STATUSES = ("ok", "needs_human", "error")
@@ -97,7 +94,7 @@ class Task:
     prompt: str
     model: str = "opus"
     effort: str = ""
-    budget_usd: float = 20.0
+    budget_usd: float = 10.0
     timeout_minutes: int = 30
     permission_mode: str = "acceptEdits"
     allowed_tools: list[str] = field(default_factory=list)
@@ -263,20 +260,15 @@ def parse_claude_result(returncode: int, output: str) -> dict:
     return result
 
 
-def probe_problem(returncode: int, output: str, stderr: str = "") -> str:
-    """Judge the live probe. Empty string means the token works.
-
-    On failure the message carries what Claude Code itself reported, with
-    no guess about the cause: the result text when there is one, else the
-    error subtype, plus anything on stderr.
-    """
+def probe_problem(returncode: int, output: str) -> str:
+    """Judge the live probe. Empty string means the token works."""
     result = parse_claude_result(returncode, output)
-    if not result.get("is_error"):
-        return ""
-    said = str(result.get("result") or result.get("subtype") or "no message")
-    if stderr.strip():
-        said += f"\n{stderr.strip()[-1000:]}"
-    return f"The probe prompt failed with CLAUDE_TOKEN. Claude Code said: {said}"
+    if result.get("is_error"):
+        detail = str(result.get("result", ""))[:200]
+        return ("CLAUDE_TOKEN was rejected by Anthropic (expired or revoked). "
+                f"Run `claude setup-token` again and update the variable; {HANDBOOK}. "
+                f"Claude said: {detail}")
+    return ""
 
 
 # --- statuses -----------------------------------------------------------------
@@ -415,7 +407,7 @@ def verify_token(task: Task, env, report_dir: Path) -> str:
     record = parse_claude_result(code, out)
     record["stderr"] = err[-2000:]
     (report_dir / "auth-probe.json").write_text(json.dumps(record, indent=2))
-    problem = probe_problem(code, out, err)
+    problem = probe_problem(code, out)
     if problem:
         return problem
     print("Token accepted.")

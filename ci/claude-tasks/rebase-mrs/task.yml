@@ -5,7 +5,7 @@
 # parallel is kept small: every session draws on the one subscription's
 # rate limit, and a conflict session runs two to four minutes.
 model: opus
-budget_usd: 20
+budget_usd: 10
 timeout_minutes: 30
 parallel: 4
 permission_mode: acceptEdits
