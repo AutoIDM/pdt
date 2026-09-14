@@ -145,12 +145,18 @@ def aws_schedules(region: str) -> Inventory:
     for group in listed.get("ScheduleGroups") or []:
         if group["Name"] != "pdt":
             continue
-        tagged = aws(region, "scheduler", "list-tags-for-resource",
-                     "--resource-arn", group["Arn"]) or {}
+        try:
+            tagged = aws(region, "scheduler", "list-tags-for-resource",
+                         "--resource-arn", group["Arn"]) or {}
+            schedules = aws(region, "scheduler", "list-schedules",
+                            "--group-name", group["Name"]) or {}
+        except InventoryError as error:
+            if "(ResourceNotFoundException)" not in str(error):
+                raise
+            found.append(Resource("schedule group", group["Arn"], {}, group["Name"]))
+            continue
         tags = {tag["Key"]: tag["Value"] for tag in tagged.get("Tags") or []}
         found.append(Resource("schedule group", group["Arn"], tags, group["Name"]))
-        schedules = aws(region, "scheduler", "list-schedules",
-                        "--group-name", group["Name"]) or {}
         for item in schedules.get("Schedules") or []:
             # pdt tags the group, not the schedule; membership is the marker.
             found.append(Resource("schedule", item["Arn"], dict(MANAGED), item["Name"]))
