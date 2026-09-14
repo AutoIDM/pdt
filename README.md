@@ -90,10 +90,15 @@ pdt login my-report
 | `pdt deploy APP` | deploy an app to its configured platform |
 | `pdt destroy APP` | remove everything deploy created |
 | `pdt login APP` | sign in again to the app's cloud provider |
+| `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
 
 `pdt az` and `pdt gcloud` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
+
+## Keeping files between runs
+
+Every app gets a folder in a store that pdt creates in your cloud account, named `pdt-data-` plus a short code. Deploy, destroy, and deploy again: the folder is still there. Only `pdt storage APP destroy` deletes files, and it asks first. See [docs/storage.md](docs/storage.md) for how an app writes files, keeps state between runs, and how to look at the files from your machine. An app that needs none of this sets `storage: false` in its `config.yml`.
 
 ## Running pdt from CI
 
