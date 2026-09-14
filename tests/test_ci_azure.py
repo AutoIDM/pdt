@@ -229,17 +229,24 @@ def test_a_deploy_continues_when_the_group_holds_only_the_expected_names(monkeyp
     deploy_azure.check_shared_names(dict(SETTINGS))
 
 
-def test_destroy_plans_the_plan_alert_rule_and_action_group(azure_app, monkeypatch):
+@pytest.mark.parametrize("flex", [False, True])
+def test_destroy_plans_the_plan_alert_rule_and_action_group(azure_app, monkeypatch, flex):
     function_app = deploy_azure_functions.function_app_name(SETTINGS | {"suffix": "32bc31"},
                                                             "my-report")
+    site_id = f"/rg/pdt/sites/{function_app}"
     owner = {"managed-by": "pdt", "pdt-app": "my-report"}
     plan_id = "/rg/pdt/serverfarms/ASP-pdt-8c1a"
 
     def fake_az(*args):
         if args[:2] == ("functionapp", "show"):
-            return {"tags": owner, "serverFarmId": plan_id}
-        if args[:3] == ("appservice", "plan", "show"):
-            return {"id": plan_id, "name": "ASP-pdt-8c1a", "numberOfSites": 1}
+            # Flex Consumption answers without the plan; the resource read has it.
+            site = {"tags": owner, "id": site_id}
+            return site if flex else site | {"serverFarmId": plan_id}
+        if args[:2] == ("resource", "show") and "--ids" in args:
+            if args[args.index("--ids") + 1] == site_id:
+                return plan_id
+            return {"id": plan_id, "name": "ASP-pdt-8c1a",
+                    "properties": {"numberOfSites": 1}}
         if args[:2] == ("resource", "show"):
             name = args[args.index("--name") + 1]
             return {"id": f"/rg/pdt/{name}", "name": name, "tags": owner}

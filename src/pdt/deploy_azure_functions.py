@@ -25,8 +25,8 @@ from pdt.deploy import confirm
 from pdt.deploy_azure import (
     ACTION_GROUP_TYPE, INSIGHTS_TYPE, RECENT_RUNS, SMART_ACTION_GROUP, SMART_RULE_TYPE,
     assign_role, az_json, azure_settings, check_shared_names, clean_name,
-    cost_estimate_lines, destroy_group, ensure_group_and_vault, ensure_secret,
-    failure_rule_name, group_can_be_deleted, key_vault_item, managed_secret,
+    cost_estimate_lines, destroy_group, ensure_action_group, ensure_group_and_vault,
+    ensure_secret, failure_rule_name, group_can_be_deleted, key_vault_item, managed_secret,
     other_pdt_apps, owned_by, preflight, purge_secret, report_shared_kept,
     require_managed, retail_price, run_basis, run_quiet, run_stream, secret_actions,
     secret_name, secret_state, side_resource, tag_side_resource, workspace_resource,
@@ -225,29 +225,48 @@ def cost_lines(region: str, cron: str, function_id: str | None,
         region, items, "excludes the shared Storage account, usually under $1/month")
 
 
+def plan_id(rg: str, function_app: str, site: dict | None = None) -> str:
+    site = site or az_json("functionapp", "show", "--name", function_app,
+                           "--resource-group", rg)
+    if not site:
+        return ""
+    # On Flex Consumption az functionapp show leaves serverFarmId out of its
+    # answer. The generic resource read still carries it.
+    return str(site.get("serverFarmId")
+               or az_json("resource", "show", "--ids", site["id"],
+                          "--query", "properties.serverFarmId") or "")
+
+
 def adopt_side_resources(settings: dict[str, str], function_app: str, app_name: str) -> None:
     # az functionapp create also makes the plan, the App Insights component,
-    # its Failure Anomalies rule, and one Smart Detection action group per
-    # resource group. None of them can be created or suppressed up front.
+    # and its Failure Anomalies rule. None of them can be created up front.
     rg = settings["resource_group"]
     owner = ("managed-by=pdt", f"pdt-app={app_name}")
-    plan_id = (az_json("functionapp", "show", "--name", function_app,
-                       "--resource-group", rg) or {}).get("serverFarmId")
-    if plan_id:
-        run_quiet("resource", "tag", "--ids", plan_id, "--tags", *owner)
+    plan = plan_id(rg, function_app)
+    if not plan:
+        fail(f"Azure did not say which App Service plan holds Function App "
+             f"{function_app}, so this deploy cannot mark the plan as its own and "
+             "a later destroy would leave it behind. The Function App itself is "
+             "there; run the same command again to finish.")
+    run_quiet("resource", "tag", "--ids", plan, "--tags", *owner)
     tag_side_resource(rg, function_app, INSIGHTS_TYPE, *owner)
     tag_side_resource(rg, failure_rule_name(function_app), SMART_RULE_TYPE, *owner)
+    # An action group an older pdt left untagged still becomes pdt's here.
     tag_side_resource(rg, SMART_ACTION_GROUP, ACTION_GROUP_TYPE, "managed-by=pdt")
 
 
-def app_plan(current: dict | None) -> dict | None:
-    plan_id = (current or {}).get("serverFarmId")
-    if not plan_id:
+def app_plan(rg: str, function_app: str, site: dict | None) -> dict | None:
+    plan = plan_id(rg, function_app, site)
+    if not plan:
         return None
-    plan = az_json("appservice", "plan", "show", "--ids", plan_id)
-    if not plan or (plan.get("numberOfSites") or 0) > 1:
+    # A Flex Consumption plan reads back through the generic resource commands
+    # only, so numberOfSites arrives nested under properties.
+    resource = az_json("resource", "show", "--ids", plan)
+    if not resource:
         return None
-    return plan
+    if ((resource.get("properties") or {}).get("numberOfSites") or 0) > 1:
+        return None
+    return resource
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
@@ -283,6 +302,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if current:
         cors = az_json("functionapp", "cors", "show", "--name", function_app,
                        "--resource-group", rg) or {}
+    action_group_exists = side_resource(rg, SMART_ACTION_GROUP, ACTION_GROUP_TYPE) is not None
     allowed_origins = set(cors.get("allowedOrigins") or [])
     # Azure ignores "*" when any explicit origin is present.
     if "*" in allowed_origins:
@@ -303,8 +323,10 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    + f" Application Insights {function_app} (run logs)")
     actions.append(("use existing" if current else "create")
                    + " App Service plan for the Function App (Flex Consumption, named by Azure)")
-    actions.append("tag the plan, Application Insights, its Failure Anomalies alert rule, "
-                   f"and the {SMART_ACTION_GROUP} action group as managed by pdt")
+    actions.append(("use existing" if action_group_exists else "create")
+                   + f" action group {SMART_ACTION_GROUP} (Application Insights alerts, shared)")
+    actions.append("tag the plan, Application Insights, and its Failure Anomalies "
+                   "alert rule as managed by pdt")
     actions.append(("use existing" if vault_exists else "create")
                    + f" Key Vault {settings['vault']} (RBAC)")
     actions.append("ensure scoped Key Vault secret permissions for the deployer "
@@ -322,6 +344,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         return 1
 
     vault_id = ensure_group_and_vault(settings, PROVIDERS, vault_exists)
+    # Before the Function App, so the App Insights component Azure makes with
+    # it finds this group instead of adding its own untagged one.
+    ensure_action_group(rg)
     if not storage_exists:
         console.step(f"creating Storage account {settings['storage']}")
         run_quiet("storage", "account", "create", "--name", settings["storage"],
@@ -379,7 +404,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     rg = settings["resource_group"]
     current = az_json("functionapp", "show", "--name", function_app, "--resource-group", rg)
     managed_app = owned_by(current, name)
-    plan = app_plan(current) if managed_app else None
+    plan = app_plan(rg, function_app, current) if managed_app else None
     insights = side_resource(rg, function_app, INSIGHTS_TYPE)
     managed_insights = owned_by(insights, name)
     rule = side_resource(rg, failure_rule_name(function_app), SMART_RULE_TYPE)
