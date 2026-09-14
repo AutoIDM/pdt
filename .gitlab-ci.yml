@@ -79,6 +79,7 @@ smoke:
 # it. Label an MR `no-autorebase` to leave it alone.
 rebase-mrs:
   extends: .claude-task
+  needs: []
   resource_group: rebase-mrs
   variables:
     CLAUDE_TASK: rebase-mrs
