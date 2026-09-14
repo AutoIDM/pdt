@@ -28,9 +28,7 @@ variables:
     - uv tool install "$PDT_INSTALL"
     - export PATH="$HOME/.local/bin:$PATH"
 
-# fargate is the only target that builds its image on the runner. It builds
-# for linux/arm64, so the AWS job runs on an arm64 runner instead of
-# emulating one, with a Docker service.
+# Fargate builds for linux/arm64, so the AWS job uses an arm64 runner.
 verify:aws:
   extends: .verify:unix
   resource_group: aws
@@ -70,6 +68,11 @@ verify:aws:
 verify:azure:
   extends: .verify:unix
   resource_group: azure
+  services:
+    - docker:28-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
   # Without the account's variables the job cannot log in. It then waits as a
   # manual job, so the pipeline shows the gap instead of failing at login.
   rules:
@@ -78,6 +81,7 @@ verify:azure:
       allow_failure: true
     - !reference [.verify, rules]
   before_script:
+    - apt-get update && apt-get install -y --no-install-recommends docker.io
     - !reference [".verify:unix", before_script]
     - pdt az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
   script:

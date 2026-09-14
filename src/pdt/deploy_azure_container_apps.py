@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 
@@ -32,8 +33,8 @@ from pdt.deploy_azure import (
     store_exists, store_plan, store_settings, store_url, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, stage_build_context,
-    store_kept_line, warn_if_locked, write_dockerfile)
+    CostEstimate, fail, gather_secrets, image_action, run_build,
+    stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -45,8 +46,15 @@ def build_image(app: dict, registry: str, image_name: str) -> None:
     stage = stage_build_context(app)
     try:
         write_dockerfile(stage, app)
-        run_stream("acr", "build", "--registry", registry, "--image",
-                   f"{image_name}:latest", str(stage))
+        if os.environ.get("GITLAB_CI") == "true":
+            image = f"{registry}.azurecr.io/{image_name}:latest"
+            run_quiet("acr", "login", "--name", registry)
+            run_build(["docker", "build", "--platform", "linux/amd64",
+                       "-t", image, str(stage)])
+            run_build(["docker", "push", image])
+        else:
+            run_stream("acr", "build", "--registry", registry, "--image",
+                       f"{image_name}:latest", str(stage))
     finally:
         shutil.rmtree(stage, ignore_errors=True)
 

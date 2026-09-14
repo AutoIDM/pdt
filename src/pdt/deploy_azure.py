@@ -161,11 +161,8 @@ def shared_names(subscription: str, resource_group: str) -> dict[str, str]:
     # subscription need different names.
     seed = f"{subscription}/{resource_group}" if subscription else resource_group
     suffix = hashlib.sha256(seed.encode()).hexdigest()[:10]
-    legacy_suffix = hashlib.sha256((subscription or resource_group).encode()).hexdigest()[:10]
     return {
         "suffix": suffix,
-        # Older deploys seeded the names on the subscription alone.
-        "legacy_vault": f"pdt-{legacy_suffix}",
         "registry": str(
             os.environ.get("PDT_AZURE_CONTAINER_REGISTRY")
             or f"pdt{suffix}")[:50].replace("-", ""),
@@ -608,10 +605,9 @@ def destroy_group(settings: dict[str, str]) -> None:
     rg = settings["resource_group"]
     console.step(f"deleting resource group {rg} (takes a few minutes)")
     run_quiet("group", "delete", "--name", rg, "--yes")
-    for vault in dict.fromkeys((settings["vault"], settings["legacy_vault"])):
-        if az_json("keyvault", "show-deleted", "--name", vault):
-            console.step(f"purging soft-deleted Key Vault {vault}")
-            run_quiet("keyvault", "purge", "--name", vault)
+    if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
+        console.step(f"purging soft-deleted Key Vault {settings['vault']}")
+        run_quiet("keyvault", "purge", "--name", settings["vault"])
     if az_tsv("group", "exists", "--name", rg) == "false":
         console.done(f"Nothing remains in resource group {rg}.")
 

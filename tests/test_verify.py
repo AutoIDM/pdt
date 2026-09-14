@@ -153,8 +153,39 @@ def test_a_failure_destroys_every_app():
     assert cloud.resources == {}
 
 
-def test_an_exception_destroys_every_app():
+def test_an_exception_after_deploy_destroys_every_app():
     cloud = FakeCloud()
+
+    def explode():
+        if cloud.deployed:
+            raise RuntimeError("the cloud said no")
+        return []
+
+    steps = verify(cloud.apps, cloud.run_pdt, explode,
+                   report=lambda step: None, wait=now)
+    assert [step.name for step in failed(steps)] == ["unexpected error"]
+    assert "the cloud said no" in failed(steps)[0].detail
+    assert cloud.calls == [
+        ("deploy", "app-one"), ("deploy", "app-two"),
+        ("destroy", "app-one"), ("destroy", "app-two"),
+    ]
+    assert cloud.resources == {}
+
+
+def test_a_nonempty_account_is_left_untouched():
+    cloud = FakeCloud()
+    cloud.deploy("app-one")
+    before = dict(cloud.resources)
+    steps = run(cloud)
+    assert [step.name for step in failed(steps)] == ["account is empty before deploy"]
+    assert cloud.calls == []
+    assert cloud.resources == before
+
+
+def test_an_initial_inventory_exception_leaves_the_account_untouched():
+    cloud = FakeCloud()
+    cloud.deploy("app-one")
+    before = dict(cloud.resources)
 
     def explode():
         raise RuntimeError("the cloud said no")
@@ -162,8 +193,8 @@ def test_an_exception_destroys_every_app():
     steps = verify(cloud.apps, cloud.run_pdt, explode,
                    report=lambda step: None, wait=now)
     assert [step.name for step in failed(steps)] == ["unexpected error"]
-    assert "the cloud said no" in steps[0].detail
-    assert cloud.calls == [("destroy", "app-one"), ("destroy", "app-two")]
+    assert cloud.calls == []
+    assert cloud.resources == before
 
 
 def test_wait_for_retries_until_the_listing_catches_up():

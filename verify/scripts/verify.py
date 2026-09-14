@@ -6,8 +6,8 @@ The scenario is fixed. It asserts the account is empty, deploys every app
 in verify/pdt.yml order, records which resource each app owns and which
 resources the apps share, then destroys the apps one at a time and checks
 after each one that the destroyed app is gone and that nothing else moved.
-Any failure destroys every app again and exits 1, so a failed run leaves
-no resource behind.
+If the initial check fails, the run exits without changing resources.
+After that check passes, a failure attempts to destroy every app and exits 1.
 """
 
 from __future__ import annotations
@@ -116,8 +116,6 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
         return record(steps, report, f"{verb} {app}",
                       [] if code == 0 else [f"pdt {verb} {app} exited {code}"])
 
-    if not check("account is empty before deploy", empty_check):
-        return
     for app in apps:
         if not command("deploy", app):
             return
@@ -140,14 +138,19 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
 
 def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
     steps: list[Step] = []
+    cleanup = False
     try:
         try:
+            problems = wait(inventory, empty_check)
+            if not record(steps, report, "account is empty before deploy", problems):
+                return steps
+            cleanup = True
             scenario(steps, apps, run_pdt, inventory, report, wait)
-        except Exception as exc:  # noqa: BLE001 - any failure must still tear down
+        except Exception as exc:
             record(steps, report, "unexpected error",
                    [f"{type(exc).__name__}: {exc}"])
     finally:
-        if any(not step.ok for step in steps):
+        if cleanup and any(not step.ok for step in steps):
             for app in apps:
                 run_pdt("destroy", app, "--yes")
     return steps
