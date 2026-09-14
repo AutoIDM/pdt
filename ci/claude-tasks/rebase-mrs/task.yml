@@ -1,0 +1,30 @@
+# Rebase every open merge request onto the default branch after a merge.
+# Claude does the rebase, resolves conflicts, runs the tests, and pushes.
+# select_mrs.py lists the stale MRs; check_mrs.py verifies each push and comments.
+model: opus
+budget_usd: 10
+timeout_minutes: 30
+permission_mode: acceptEdits
+select: select_mrs.py
+check: check_mrs.py
+allowed_tools:
+  - Read
+  - Edit
+  - Write
+  - Grep
+  - Glob
+  - "Bash(git status*)"
+  - "Bash(git diff*)"
+  - "Bash(git log*)"
+  - "Bash(git show*)"
+  - "Bash(git fetch*)"
+  - "Bash(git checkout*)"
+  - "Bash(git rebase*)"
+  - "Bash(git add *)"
+  - "Bash(git push --force-with-lease*)"
+  - "Bash(uv run *)"
+disallowed_tools:
+  - "Bash(git reset*)"
+  - "Bash(git commit --amend*)"
+  - "Bash(git push -f*)"
+  - "Bash(git push --force origin*)"
