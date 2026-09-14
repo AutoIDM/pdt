@@ -157,11 +157,6 @@ def warn_if_locked(store, app_name: str) -> None:
                      "still holds the state; destroying now loses that run's state")
 
 
-# HTTP fetching goes through pdt.utils.web.Client, the one client every
-# API call in this repo uses. It retries 429, 5xx, connection errors, and
-# timeouts with an exponential wait, and reports a failure with the
-# response body. The CLI only swaps the app-style log line for console
-# output.
 def _console_log(level: str, message: str, **fields) -> None:
     if level == "warning":
         console.bullet(f"the server did not answer (try {fields['try']} of "

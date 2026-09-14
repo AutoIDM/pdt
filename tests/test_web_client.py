@@ -1,9 +1,3 @@
-"""pdt.utils.web.Client: retry, back off, and report the response.
-
-httpx.MockTransport stands in for the network; time.sleep is patched so
-the waits are recorded, not slept.
-"""
-
 from __future__ import annotations
 
 import time
@@ -25,7 +19,6 @@ def response(status: int, body=None, headers=None) -> httpx.Response:
 
 
 def install(monkeypatch, outcomes, **client_kwargs):
-    """Each request pops one outcome: an exception to raise or a Response."""
     calls, waits, logs = [], [], []
 
     def handler(request):
@@ -177,7 +170,6 @@ def test_default_timeouts():
 
 
 def install_transport(monkeypatch, outcomes):
-    """Patch the real transport so code that builds its own Client is offline."""
     calls, waits = [], []
 
     def handle_request(self, request):

@@ -81,11 +81,6 @@ class RetriableAPIError(APIError):
     """The server is busy or failing; sending the request again can work."""
 
 
-# httpx groups its transport errors: TimeoutException covers connect,
-# read, write, and pool timeouts; NetworkError covers a refused, reset, or
-# dropped connection; ProtocolError covers a server that stops mid-reply.
-# UnsupportedProtocol and InvalidURL are the caller's mistake and are not
-# in this list, so they fail at once.
 RETRIABLE_ERRORS = (
     RetriableAPIError,
     httpx.TimeoutException,
@@ -140,13 +135,9 @@ def retry_after_seconds(error: BaseException) -> float | None:
 
 
 def retry_wait():
-    """Exponential wait, replaced by Retry-After when the server sent one.
-
-    backoff primes the generator, then sends it the exception before each
-    wait, so the wait can read the failed response.
-    """
+    """Exponential wait, replaced by Retry-After when the server sent one."""
     expo = backoff.expo(factor=BACKOFF_FACTOR)
-    next(expo)  # backoff's own generators also start with a priming yield
+    next(expo)
     error = yield
     while True:
         wait = next(expo)
@@ -155,12 +146,7 @@ def retry_wait():
 
 
 class Client(httpx.Client):
-    """An httpx.Client that retries, backs off, and logs failures.
-
-    `exit_code`: exit the process with this code after logging a failure,
-    instead of raising. `log`: where retry warnings and the failure go;
-    the default is `pdt.utils.log.log`, the CLI passes its own.
-    """
+    """An httpx.Client that retries, backs off, and logs failures."""
 
     def __init__(self, base_url: str = "", *, exit_code: int | None = None,
                  max_tries: int = MAX_TRIES, log: Logger = log,
@@ -227,11 +213,7 @@ class Client(httpx.Client):
 
 def http_json(url: str, exit_code: int, method: str = "GET",
               headers: dict | None = None, data: bytes | None = None) -> dict:
-    """Request url and return the decoded json body; die with exit_code on failure.
-
-    A one-call convenience over `Client`. An app that makes more than one
-    call to the same API should hold a `Client` instead.
-    """
+    """Request url and return the decoded json body; die with exit_code on failure."""
     with Client(exit_code=exit_code) as client:
         response = client.request(method, url, headers=headers, content=data)
     if response.content == b"":

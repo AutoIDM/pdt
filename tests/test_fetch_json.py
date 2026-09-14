@@ -1,5 +1,3 @@
-"""deploy_common.fetch_json is pdt.utils.web.Client with console output."""
-
 from __future__ import annotations
 
 import time
