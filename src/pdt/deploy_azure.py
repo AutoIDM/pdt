@@ -547,6 +547,13 @@ INSIGHTS_TYPE = "microsoft.insights/components"
 SMART_RULE_TYPE = "microsoft.alertsmanagement/smartDetectorAlertRules"
 ACTION_GROUP_TYPE = "microsoft.insights/actionGroups"
 SMART_ACTION_GROUP = "Application Insights Smart Detection"
+SMART_ACTION_SHORT_NAME = "SmartDetect"
+# Azure's own copy of the action group emails these two built-in roles, so
+# pdt's copy names them too and nobody loses a notification.
+SMART_ACTION_ROLES = (
+    ("MonitoringContributor", "749f88d5-cbae-40b8-bcfc-e573ddc772fa"),
+    ("MonitoringReader", "43d0d8ad-25c7-4714-9337-8ba259a9fe05"),
+)
 
 
 def failure_rule_name(function_app: str) -> str:
@@ -563,6 +570,26 @@ def tag_side_resource(rg: str, name: str, kind: str, *tags: str) -> None:
     if side_resource(rg, name, kind):
         run_quiet("resource", "tag", "--resource-group", rg, "--name", name,
                   "--resource-type", kind, "--tags", *tags)
+
+
+def ensure_action_group(rg: str) -> None:
+    """Create the Smart Detection action group before Azure gets to it.
+
+    Azure adds this group beside the first Application Insights component in
+    the subscription, minutes after the component and never on request. A
+    deploy that only tagged what it found had nothing to tag yet, so the group
+    stayed untagged and destroy could not claim it. Creating it first, under
+    the name Azure looks for, leaves one tagged group both sides use.
+    """
+    if side_resource(rg, SMART_ACTION_GROUP, ACTION_GROUP_TYPE):
+        return
+    receivers = []
+    for name, role in SMART_ACTION_ROLES:
+        receivers += ["--action", "armrole", name, role]
+    console.step(f"creating action group {SMART_ACTION_GROUP}")
+    run_quiet("monitor", "action-group", "create", "--name", SMART_ACTION_GROUP,
+              "--resource-group", rg, "--short-name", SMART_ACTION_SHORT_NAME,
+              *receivers, "--tags", "managed-by=pdt")
 
 
 def platform_side_resource(resource: dict) -> bool:
