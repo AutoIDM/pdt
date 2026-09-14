@@ -151,7 +151,7 @@ def login_with_key_file() -> bool:
     key_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
     if key_file == "" or not Path(key_file).is_file():
         return False
-    print(f"Signing in to Google Cloud with {key_file}...")
+    console.say(f"Signing in to Google Cloud with {key_file}...")
     subprocess.run([GCLOUD, "--quiet", "auth", "login", "--cred-file", key_file],
                    stdin=subprocess.DEVNULL, capture_output=True, text=True)
     return have_credentials()
@@ -165,7 +165,7 @@ def ensure_credentials() -> None:
     if not can_ask():
         fail("no Google Cloud sign-in on this computer; set GOOGLE_APPLICATION_CREDENTIALS "
              f"to a service account key file, or run {GCLOUD} auth login")
-    print("gcloud has no active Google account yet.")
+    console.warn("gcloud has no active Google account yet.")
     try:
         answer = input("Log in now (opens a browser)? [y/N] ").strip().lower()
     except EOFError:
