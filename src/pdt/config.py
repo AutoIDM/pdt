@@ -37,7 +37,7 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
-APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env"}
+APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account",
@@ -142,6 +142,7 @@ def merged_app(name: str) -> dict:
             **env_overrides(name),
         },
         "env": own.get("env", entry.get("env")) or {},
+        "storage": own.get("storage", entry.get("storage", True)),
     }
 
 
@@ -441,6 +442,8 @@ def validate_app(name: str) -> list[str]:
             cron_expression(app["schedule"])
         except ConfigError as e:
             problems.append(f"{name}: {e}")
+    if not isinstance(app["storage"], bool):
+        problems.append(f"{where}: storage must be true or false")
     for key in app["env"]:
         if key not in ENV_KEYS:
             problems.append(f"{name}: env: unknown key {key!r}")

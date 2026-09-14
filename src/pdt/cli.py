@@ -142,6 +142,10 @@ def cmd_destroy(args) -> int:
     return deploy.destroy(args.app, assume_yes=args.yes, profile=args.profile)
 
 
+def cmd_storage(args) -> int:
+    return deploy.storage(args.app, args.rest)
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
         # Before argparse, so the cloud CLI parses its own flags.
@@ -190,6 +194,10 @@ def main() -> int:
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--profile", help="AWS profile name (AWS only)")
     p.set_defaults(func=cmd_destroy)
+    p = add_parser("storage", help="read or manage an app's data store")
+    p.add_argument("app", help="the app's folder name")
+    p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|destroy [args...]")
+    p.set_defaults(func=cmd_storage)
     for name, label in (("aws", "AWS"), ("az", "Azure"), ("gcloud", "Google Cloud")):
         add_parser(name, help=f"run the {label} CLI that pdt installs")
     args = parser.parse_args()

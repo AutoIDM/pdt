@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from conftest import add_app
-from pdt import cli
+from pdt import cli, deploy
 
 
 def run_cli(monkeypatch, *argv):
@@ -39,6 +39,15 @@ def test_deploy_without_app_in_empty_project(project, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "no apps yet" in out
     assert "pdt new" in out
+
+
+def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
+    add_app(project, "hello-world", "schedule: daily\n")
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append((a, k)) or 0)
+    assert run_cli(monkeypatch, "storage", "hello-world", "ls", "state/") == 0
+    assert calls == [(("azure", "storage", "hello-world", False, None,
+                        ["ls", "state/"]), {})]
 
 
 def test_cloud_cli_passthroughs_are_registered():

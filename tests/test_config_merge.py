@@ -73,3 +73,18 @@ def test_a_complete_project_validates_clean(project):
     (project / "pdt.yml").write_text(ROOT_YAML)
     add_app(project, "my-report")
     assert validate() == []
+
+
+def test_storage_defaults_to_true(project):
+    add_app(project, "my-report", "schedule: daily\n")
+    assert merged_app("my-report")["storage"] is True
+
+
+def test_storage_can_be_turned_off(project):
+    add_app(project, "my-report", "schedule: daily\nstorage: false\n")
+    assert merged_app("my-report")["storage"] is False
+
+
+def test_storage_must_be_a_bool(project):
+    add_app(project, "my-report", "schedule: daily\nstorage: yes-please\n")
+    assert any("storage must be true or false" in p for p in validate_app("my-report"))
