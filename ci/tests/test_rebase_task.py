@@ -4,6 +4,7 @@ import importlib.util
 import shutil
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,30 @@ def test_comment_only_when_someone_must_look():
     assert "review" in reviewed and "http://j" in reviewed
     failed = check.comment_for("needs_human", "did not push", "gave up", "http://j")
     assert "could not rebase" in failed and "http://j" in failed and "gave up" in failed
+
+
+def test_note_problem_names_what_to_fix():
+    assert "api scope" in check.note_problem(403, "Forbidden")
+    assert "api scope" in check.note_problem(401, "Unauthorized")
+    assert "500" in check.note_problem(500, "Internal Server Error")
+    assert "timed out" in check.note_problem(None, "timed out")
+
+
+def test_a_comment_that_did_not_post_never_errors_the_job():
+    status, message = check.with_note_problem("ok", "rebased", "GitLab refused the comment")
+    assert status == "needs_human" and "rebased" in message and "refused" in message
+    status, message = check.with_note_problem("needs_human", "did not push", "refused")
+    assert status == "needs_human" and "did not push" in message
+    assert check.with_note_problem("ok", "rebased", "") == ("ok", "rebased")
+
+
+def test_post_note_returns_the_refusal_instead_of_raising(monkeypatch):
+    def refuse(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(check.urllib.request, "urlopen", refuse)
+    env = {"GITLAB_TOKEN": "t", "CI_PROJECT_ID": "1"}
+    assert "403" in check.post_note(env, 5, "hello")
 
 
 def test_mentions_conflicts():
