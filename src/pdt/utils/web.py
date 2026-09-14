@@ -23,10 +23,10 @@ Usage in an app:
 
     from pdt.utils.web import Client
 
-    ynab = Client("https://api.ynab.com/v1", exit_code=EXIT_YNAB,
-                  headers={"Authorization": f"Bearer {key}"})
-    budgets = ynab.get("/budgets").json()["data"]["budgets"]
-    ynab.patch(f"/budgets/{budget_id}/transactions", json={"transactions": updates})
+    graph = Client("https://graph.microsoft.com/v1.0", exit_code=EXIT_ENTRA,
+                   headers={"Authorization": f"Bearer {token}"})
+    users = graph.get("/users", params={"$top": 999}).json()["value"]
+    graph.post("/users/{id}/sendMail", json=message)
 
 With `exit_code`, a request that fails for good logs the response and
 exits the app with that code, the same way `pdt.utils.log.die` does.

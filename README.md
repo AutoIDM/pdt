@@ -308,14 +308,14 @@ The pinned version matters. A deployed job keeps using the version in its header
 `pdt.utils.web.Client` is an `httpx.Client` that retries, backs off, and reports failures, so an app never writes that code itself:
 
 ```python
+from pdt.utils.entra import graph_token
 from pdt.utils.web import Client
 
-EXIT_YNAB = 2
+EXIT_ENTRA = 2
 
-ynab = Client("https://api.ynab.com/v1", exit_code=EXIT_YNAB,
-              headers={"Authorization": f"Bearer {os.environ['YNAB_API_KEY']}"})
-budgets = ynab.get("/budgets").json()["data"]["budgets"]
-ynab.patch(f"/budgets/{budget_id}/transactions", json={"transactions": updates})
+graph = Client("https://graph.microsoft.com/v1.0", exit_code=EXIT_ENTRA,
+               headers={"Authorization": f"Bearer {graph_token(EXIT_ENTRA)}"})
+users = graph.get("/users", params={"$top": 999}).json()["value"]
 ```
 
 A 429 or any 5xx, a timeout, or a connection failure is retried up to 5 times, waiting 2, 4, 8, then 16 seconds plus jitter, or whatever `Retry-After` the server asks for. Any other 4xx fails at once. Each retry logs a warning, and giving up logs an error with the method, the url, the status, and the first 2000 characters of the response body. With `exit_code` set, the app then exits with that code; without it, `FatalAPIError` or `RetriableAPIError` is raised with the response attached. Connecting waits 10 seconds and reading waits 60; pass `timeout=` to change either. Every other httpx argument (`params=`, `json=`, `content=`, `headers=`) works as usual.
