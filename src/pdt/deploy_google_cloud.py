@@ -6,6 +6,11 @@
 #     "rich",
 #     "python-dotenv",
 #     "backoff",
+#     "gcsfs",
+#     "fsspec",
+#     "google-cloud-storage",
+#     "google-auth",
+#     "duckdb",
 # ]
 # ///
 """Deploy an app to Google Cloud as a scheduled Cloud Run job.
@@ -18,6 +23,8 @@ Shared across apps:
   Artifact Registry repo PDT_ARTIFACT_REGISTRY_REPO env var, default "pdt"
   Service account        PDT_CLOUD_RUN_SERVICE_ACCOUNT env var, default
                          pdt-runner@<project> (created if missing)
+  Storage bucket         pdt-data-<suffix> (kept after destroy; one folder
+                         per app, the runner may write only its own)
 
 If gcloud is not installed, pdt/gcloud_sdk.py offers to download a
 pinned copy to the pdt data folder and every call here uses that copy.
@@ -48,9 +55,12 @@ from pdt import console
 from pdt import gcloud_sdk
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    CostEstimate, fail, fetch_json, gather_secrets, image_action,
-    stage_build_context, write_dockerfile)
+    STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action,
+    stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
+    warn_if_locked, write_dockerfile)
+from pdt import storage_cli
 from pdt.utils import email_auth
+from pdt.utils.storage import Store
 
 GCLOUD = "gcloud"
 
@@ -62,6 +72,7 @@ APIS = (
     "iam.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
+    "storage.googleapis.com",
 )
 DESTROY_APIS = (
     "artifactregistry.googleapis.com",
@@ -69,7 +80,9 @@ DESTROY_APIS = (
     "iam.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
+    "storage.googleapis.com",
 )
+STORE_ROLE = "roles/storage.objectUser"
 
 BILLING_API = "https://cloudbilling.googleapis.com/v1"
 # Cloud Run job defaults; the deploy below does not override them.
@@ -265,6 +278,37 @@ def secret_id(app_name: str) -> str:
     return f"pdt-{app_name}-env"
 
 
+def store_bucket(project: str) -> str:
+    return store_name(project)
+
+
+def store_url(bucket: str, app_name: str) -> str:
+    return f"gs://{bucket}/{app_name}/"
+
+
+def store_condition(bucket: str, app_name: str) -> str:
+    expression = f'resource.name.startsWith("projects/_/buckets/{bucket}/objects/{app_name}/")'
+    return f"expression={expression},title=pdt-{app_name}"
+
+
+def deployer_store(project: str, app_name: str) -> Store:
+    from google.oauth2.credentials import Credentials
+
+    token = run_quiet("auth", "print-access-token").strip()
+    return Store(store_url(store_bucket(project), app_name), Credentials(token))
+
+
+def store_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
+    policy = describe_json("storage", "buckets", "get-iam-policy", f"gs://{bucket}") or {}
+    for binding in policy.get("bindings") or []:
+        condition = binding.get("condition") or {}
+        if (binding.get("role") == STORE_ROLE
+                and condition.get("title") == f"pdt-{app_name}"
+                and f"serviceAccount:{sa}" in (binding.get("members") or [])):
+            return True
+    return False
+
+
 def scheduler_description(app_name: str) -> str:
     return f"Managed by PDT app {app_name}"
 
@@ -424,7 +468,7 @@ def billing_detail(exc: Exception) -> str:
 def cost_estimate(project: str, region: str, cron: str, job: str,
                         job_exists: bool, num_secrets: int,
                         assume_yes: bool, billing_confirmed: bool = False,
-                        attempt: int = 0) -> CostEstimate:
+                        attempt: int = 0, store_usage: tuple[int, int] | None = None) -> CostEstimate:
     console.status("Fetching list prices from the Cloud Billing catalog...")
     try:
         runs = config.runs_per_month(cron)
@@ -454,6 +498,11 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                                                   "Secret version", prefer="storage")
             secret_cost = num_secrets * secret_price * per_month(secret_unit)
             items.append((f"Secret Manager: {num_secrets} secret version", secret_cost))
+        if store_usage is not None:
+            storage_skus = billing_list(f"services/{ids['Cloud Storage']}/skus", "skus", project)
+            storage_price, _ = sku_price(storage_skus, region, "Standard Storage")
+            count, size = store_usage
+            items.append((store_cost_label(count, size), size / 1024 ** 3 * storage_price))
     except Exception as exc:
         detail = billing_detail(exc)
         disabled = "has not been used" in detail or "SERVICE_DISABLED" in detail
@@ -475,7 +524,7 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
             return cost_estimate(project, region, cron, job,
                                  job_exists, num_secrets, assume_yes,
                                  billing_confirmed,
-                                 attempt + 1)
+                                 attempt + 1, store_usage)
         fail(f"could not calculate the required monthly cost estimate: "
              f"{detail or str(exc)}")
     return CostEstimate(items, f"{region} list prices, before free tiers",
@@ -497,6 +546,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     image = f"{region}-docker.pkg.dev/{project}/{repo}/{name}:latest"
     sa = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() \
         or f"pdt-runner@{project}.iam.gserviceaccount.com"
+    bucket = store_bucket(project)
+    store = deployer_store(project, name) if app["storage"] else None
 
     console.status(f"Checking current state in project {project} ({region})...")
     repository = read_json_or_none(
@@ -511,6 +562,12 @@ def deploy(app: dict, assume_yes: bool) -> int:
             and not service_account_owned(service_account)):
         fail(f"service account {sa} exists but is not managed by PDT")
     sa_exists = service_account is not None
+    bucket_exists = False
+    if store:
+        described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
+        require_managed(described, f"bucket {bucket}")
+        bucket_exists = described is not None
+    usage = (store.usage() if bucket_exists else (0, 0)) if store else None
     run_job = read_json_or_none(
         "run", "jobs", "describe", job, "--region", region, "--project", project)
     require_managed(run_job, f"Cloud Run job {job}")
@@ -541,11 +598,14 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if oauth_cache_updates:
         actions.append(f"allow {job} to update its OAuth cache in secret {sid}")
     actions.append(("use existing" if sa_exists else "create") + f" service account {sa}")
+    if store:
+        actions += store_plan_lines(f"bucket {bucket}", bucket_exists, sa, name)
     actions.append(("update" if job_exists else "create") + f" Cloud Run job {job}")
     actions.append(("update" if sched_exists else "create")
                    + f' Cloud Scheduler job {job}: "{cron}" ({timezone})')
     cost = cost_estimate(project, region, cron, job, job_exists,
-                         1 if values else 0, assume_yes, billing_confirmed)
+                         1 if values else 0, assume_yes, billing_confirmed,
+                         store_usage=usage)
 
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
@@ -565,6 +625,18 @@ def deploy(app: dict, assume_yes: bool) -> int:
         run_quiet("iam", "service-accounts", "create", "pdt-runner",
                   "--project", project, "--display-name", "pdt job runner",
                   "--description", "Managed by PDT")
+    if store:
+        if not bucket_exists:
+            console.step(f"creating bucket {bucket}")
+            run_quiet("storage", "buckets", "create", f"gs://{bucket}",
+                      "--location", region, "--project", project,
+                      "--uniform-bucket-level-access", "--public-access-prevention")
+            run_quiet("storage", "buckets", "update", f"gs://{bucket}", "--update-labels",
+                      ",".join(f"{key}={value}" for key, value in STORE_TAGS.items()))
+        console.step(f"granting {sa} write access to {bucket}/{name}/")
+        run_quiet("storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
+                  "--member", f"serviceAccount:{sa}", "--role", STORE_ROLE,
+                  "--condition", store_condition(bucket, name))
     if secret_state:
         if secret_state == "create":
             console.step(f"creating secret {sid}")
@@ -590,9 +662,14 @@ def deploy(app: dict, assume_yes: bool) -> int:
             "--labels", "managed-by=pdt"]
     if values:
         args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"]
+    env_vars = []
     if oauth_cache_updates:
         resource = f"projects/{project}/secrets/{sid}"
-        args += ["--set-env-vars", f"PDT_ENV_SECRET_RESOURCE={resource}"]
+        env_vars.append(f"PDT_ENV_SECRET_RESOURCE={resource}")
+    if store:
+        env_vars.append(f"PDT_STORAGE_URL={store.url}")
+    if env_vars:
+        args += ["--set-env-vars", ",".join(env_vars)]
     run_quiet(*args)
     run_quiet("run", "jobs", "add-iam-policy-binding", job, "--region", region,
               "--project", project, "--member", f"serviceAccount:{sa}",
@@ -675,6 +752,11 @@ def destroy(app: dict, assume_yes: bool) -> int:
     ]
     service_account = read_json_or_none(
         "iam", "service-accounts", "describe", sa, "--project", project)
+    bucket = store_bucket(project)
+    store = deployer_store(project, name) if app["storage"] else None
+    store_present = store is not None and read_json_or_none(
+        "storage", "buckets", "describe", f"gs://{bucket}") is not None
+    revoke_grant = store_present and store_grant_exists(bucket, name, sa)
     unmanaged_app_resource = ((scheduler is not None and not delete_scheduler)
                               or (run_job is not None and not delete_job))
     delete_repo = (repository_owned and not other_regional_jobs and not other_images
@@ -684,6 +766,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
                  and not other_project_jobs and not unmanaged_app_resource)
 
     actions = []
+    if revoke_grant:
+        actions.append(f"remove {sa} write access to {bucket}/{name}/")
     if delete_scheduler:
         actions.append(f"delete Cloud Scheduler job {job}")
     if delete_job:
@@ -707,6 +791,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         kept.append(f"Artifact Registry repository {repo}")
     if service_account is not None and not delete_sa:
         kept.append(f"service account {sa}")
+    if store_present:
+        kept.append(store_kept_line(f"bucket {bucket}", store.usage()[0], name))
     for item in other_project_jobs:
         if managed_by_pdt(item):
             continue
@@ -727,10 +813,17 @@ def destroy(app: dict, assume_yes: bool) -> int:
             for resource in kept:
                 console.bullet(f"{resource}")
         return 0
+    if revoke_grant:
+        warn_if_locked(store, name)
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 1
 
+    if revoke_grant:
+        console.step(f"removing {sa} write access to {bucket}/{name}/")
+        run_quiet("storage", "buckets", "remove-iam-policy-binding", f"gs://{bucket}",
+                  "--member", f"serviceAccount:{sa}", "--role", STORE_ROLE,
+                  "--condition", store_condition(bucket, name))
     if delete_scheduler:
         console.step(f"deleting Cloud Scheduler job {job}")
         run_quiet("scheduler", "jobs", "delete", job,
@@ -767,6 +860,12 @@ def destroy(app: dict, assume_yes: bool) -> int:
     return 0
 
 
+def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
+    project, _ = project_region(app)
+    project = preflight(app, project, assume_yes)
+    return storage_cli.run(deployer_store(project, app["name"]), app, rest, assume_yes)
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "gcloud":
         try:
@@ -775,11 +874,12 @@ def main() -> int:
             fail(str(e))
         return subprocess.run([binary, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login"))
+    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage"))
     parser.add_argument("app")
+    parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--profile", help="not used by Google Cloud")
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
     try:
         app = config.merged_app(args.app)
     except config.ConfigError as exc:
@@ -787,6 +887,8 @@ def main() -> int:
     config.load_env(app["dir"])
     if args.command == "login":
         return relogin(args.yes)
+    if args.command == "storage":
+        return storage(app, args.rest, args.yes)
     if args.command == "deploy":
         return deploy(app, args.yes)
     return destroy(app, args.yes)
