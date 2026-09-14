@@ -22,7 +22,6 @@ def write(store, path, text):
     file = Path(store.url.removeprefix("file://")) / path
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(text)
-    os.utime(file, ns=(0, file.stat().st_mtime_ns + 1_000_000))
     return file
 
 
@@ -65,6 +64,16 @@ def test_push_refuses_a_file_changed_after_the_pull(store, tmp_path):
     with pytest.raises(StorageConflict) as caught:
         store.push(local, "state/", lease)
     assert "state/meltano.db" in str(caught.value)
+
+
+def test_push_refuses_a_change_that_kept_the_modification_time(store, tmp_path):
+    remote = write(store, "state/meltano.db", "v1")
+    stamp = remote.stat().st_mtime_ns
+    lease = store.pull("state/", tmp_path / "local")
+    remote.write_text("someone else")
+    os.utime(remote, ns=(stamp, stamp))
+    with pytest.raises(StorageConflict):
+        store.push(tmp_path / "local", "state/", lease)
 
 
 def test_done_is_written_last(store, tmp_path, monkeypatch):
