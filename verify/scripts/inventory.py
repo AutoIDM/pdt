@@ -20,6 +20,8 @@ MANAGED = {"managed-by": "pdt"}
 UNTAGGED = "untagged"
 SHARED = "shared"
 AWS_LOG_PREFIXES = ("/aws/lambda/pdt-", "/ecs/pdt-", "/pdt/")
+# The Container Apps environment every pdt project in a subscription shares.
+AZURE_SHARED_GROUP = "pdt-shared"
 GOOGLE_ASSET_TYPES = (
     "run.googleapis.com/Job",
     "secretmanager.googleapis.com/Secret",
@@ -247,16 +249,16 @@ def azure_deleted_vaults() -> Inventory:
 
 
 def azure_inventory(settings: dict[str, str]) -> Inventory:
-    group_name = settings["resource_group"]
     found = azure_deleted_vaults()
-    if az("group", "exists", "--name", group_name) is not True:
-        return found
-    group = az("group", "show", "--name", group_name)
-    found.append(Resource("resource group", group["id"], group.get("tags") or {},
-                          group["name"]))
-    for item in az("resource", "list", "--resource-group", group_name) or []:
-        found.append(Resource(item["type"], item["id"], item.get("tags") or {},
-                              item["name"]))
+    for group_name in (settings["resource_group"], AZURE_SHARED_GROUP):
+        if az("group", "exists", "--name", group_name) is not True:
+            continue
+        group = az("group", "show", "--name", group_name)
+        found.append(Resource("resource group", group["id"], group.get("tags") or {},
+                              group["name"]))
+        for item in az("resource", "list", "--resource-group", group_name) or []:
+            found.append(Resource(item["type"], item["id"], item.get("tags") or {},
+                                  item["name"]))
     return found
 
 

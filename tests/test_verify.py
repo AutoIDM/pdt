@@ -242,3 +242,25 @@ def test_the_junit_report_marks_a_clean_run(tmp_path):
     suite = junit_tree("azure", steps).getroot()
     assert suite.get("failures") == "0"
     assert suite.findall("testcase/failure") == []
+
+
+def test_the_azure_inventory_covers_the_shared_environment_group(monkeypatch):
+    import inventory
+
+    groups = {"pdt-verify": [{"type": "Microsoft.App/jobs", "id": "/job", "name": "pdt-app-one"}],
+              "pdt-shared": [{"type": "Microsoft.App/managedEnvironments", "id": "/env",
+                              "name": "pdt-eastus2", "tags": tagged()}]}
+
+    def az(*args):
+        if args[0] == "group" and args[1] == "exists":
+            return args[3] in groups
+        if args[0] == "group":
+            return {"id": f"/{args[3]}", "name": args[3], "tags": tagged()}
+        return groups[args[3]]
+
+    monkeypatch.setattr(inventory, "az", az)
+    monkeypatch.setattr(inventory, "azure_deleted_vaults", list)
+    found = inventory.azure_inventory({"resource_group": "pdt-verify"})
+    assert [resource.name for resource in found] == [
+        "pdt-verify", "pdt-app-one", "pdt-shared", "pdt-eastus2"]
+    assert classify(found[3], APPS) == "shared"
