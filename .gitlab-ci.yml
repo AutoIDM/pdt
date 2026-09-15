@@ -16,6 +16,8 @@ variables:
   # running job would show nothing. This makes every job log live.
   PYTHONUNBUFFERED: "1"
 
+# A schedule or web run sets the `mode` variable to pick one task job; the
+# build and test jobs skip such a pipeline.
 stages:
   - test
   - tasks
@@ -29,7 +31,7 @@ test:
     - uv run --python "$PYTHON_VERSION" --group dev pytest -q
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
     - if: $CI_COMMIT_TAG
 
 lint:
@@ -38,7 +40,7 @@ lint:
     - uv run --group dev ruff check
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
     - if: $CI_COMMIT_TAG
 
 smoke:
@@ -47,7 +49,7 @@ smoke:
     - uv run --python 3.12 python scripts/smoke.py
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
     - if: $CI_COMMIT_TAG
 
 # Runs one Claude Code task from ci/claude-tasks/<CLAUDE_TASK>/ on the team's
@@ -93,20 +95,19 @@ rebase-mrs:
 
 # Scores every open MR into tier::simple / tier::review / tier::architectural,
 # comments the reasons, and merges a tier::simple MR once its pipeline passes.
-# Runs after each merge to master (after rebase-mrs) and on a daily schedule
-# whose `mode` variable is score_mrs. A web run with mode=score_mrs runs this
-# job alone; it lists what it would do and changes nothing unless the form
-# also sets DRY_RUN=false.
+# Runs on a master pipeline whose `mode` variable is score_mrs: a project
+# webhook on merge request events triggers one when an MR is opened, edited,
+# or marked ready (see the handbook, "Claude Code in CI"), and a daily schedule
+# sweeps everything. A web run with mode=score_mrs lists what it would do and
+# changes nothing unless the form also sets DRY_RUN=false.
 score-mrs:
   extends: .claude-task
+  needs: []
   resource_group: score-mrs
-  needs:
-    - job: rebase-mrs
-      optional: true
   variables:
     CLAUDE_TASK: score-mrs
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+    - if: $CI_PIPELINE_SOURCE == "trigger" && $mode == "score_mrs"
       variables:
         DRY_RUN: "false"
     - if: $CI_PIPELINE_SOURCE == "schedule" && $mode == "score_mrs"

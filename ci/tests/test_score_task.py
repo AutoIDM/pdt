@@ -204,10 +204,20 @@ def test_merge_blockers_name_each_gate():
     assert select.merge_blockers(mr(source_project_id=7)) == ["comes from a fork"]
 
 
-def test_wanted_drops_drafts_and_forks():
+def test_wanted_keeps_drafts_and_drops_forks():
     assert select.wanted(mr(), "42")
-    assert not select.wanted(mr(draft=True), "42")
+    assert select.wanted(mr(draft=True), "42")
     assert not select.wanted(mr(source_project_id=7), "42")
+
+
+def test_a_draft_is_scored_once_and_again_only_when_ready_with_a_new_diff():
+    scored_old = {"diff": "old", "floor": "simple", "tier": "simple", "claude": "agree"}
+    unavailable = {**scored_old, "claude": "unavailable"}
+    assert not select.already_scored(mr(draft=True), None, "new")
+    assert select.already_scored(mr(draft=True), scored_old, "new")
+    assert not select.already_scored(mr(draft=True), unavailable, "new")
+    assert not select.already_scored(mr(draft=False), scored_old, "new")
+    assert select.already_scored(mr(draft=False), scored_old, "old")
 
 
 # --- Claude's verdict ---------------------------------------------------------
@@ -299,13 +309,17 @@ def test_select_merges_scored_simple_mrs_and_emits_the_rest(monkeypatch, capsys)
            2: {**mr(2, head_pipeline={"status": "failed", "sha": "sha2"}), "_files": docs},
            3: {**mr(3), "_files": [change("docs/new.md")]},
            4: {**mr(4), "_files": [change("src/pdt/deploy_aws.py")]},
-           5: {**mr(5), "_files": docs}}
+           5: {**mr(5), "_files": docs},
+           6: {**mr(6, draft=True), "_files": docs},
+           7: {**mr(7, draft=True), "_files": [change("docs/changed.md")]}}
     notes = {1: scored(docs, "simple"), 2: scored(docs, "simple"),
              4: scored([change("src/pdt/deploy_aws.py")], "review"),
-             5: scored(docs, "review", claude="unavailable")}
+             5: scored(docs, "review", claude="unavailable"),
+             6: scored(docs, "simple"), 7: scored(docs, "simple")}
     items, err, calls, fetches = run_select(monkeypatch, capsys, mrs, notes)
 
     assert [item["iid"] for item in items] == [3, 5]
+    assert "draft       !6" in err and "draft       !7" in err and "not merged" in err
     assert items[0]["floor"] == "simple" and items[0]["floor_reason_list"] == [
         "only documentation, tests, or example apps changed"]
     assert items[0]["files"] == "docs/new.md" and items[0]["previous"] is None
@@ -465,16 +479,17 @@ def test_shipped_score_task_loads_and_is_read_only():
     assert '{"tier": "simple" | "review" | "architectural"' in prompt
 
 
-def test_score_mrs_job_runs_on_master_and_its_schedule():
+def test_score_mrs_job_runs_on_a_webhook_trigger_and_its_schedule():
     ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
     assert "$CLAUDE_TASK_ARGS" in ci[".claude-task"]["script"][0]
     job = ci["score-mrs"]
     assert job["extends"] == ".claude-task"
     assert job["variables"]["CLAUDE_TASK"] == "score-mrs"
-    assert job["needs"] == [{"job": "rebase-mrs", "optional": True}]
+    assert job["needs"] == []
     rules = {rule["if"]: rule.get("variables", {}) for rule in job["rules"]}
-    master = [v for k, v in rules.items() if "CI_DEFAULT_BRANCH" in k]
-    assert master == [{"DRY_RUN": "false"}]
+    assert not [k for k in rules if "CI_DEFAULT_BRANCH" in k], "no run on every merge"
+    trigger = [v for k, v in rules.items() if '"trigger"' in k and "score_mrs" in k]
+    assert trigger == [{"DRY_RUN": "false"}]
     schedule = [v for k, v in rules.items() if '"schedule"' in k and "score_mrs" in k]
     assert schedule == [{"DRY_RUN": "false"}]
     web = [(k, v) for k, v in rules.items() if '"web"' in k and "score_mrs" in k]
@@ -484,5 +499,11 @@ def test_score_mrs_job_runs_on_master_and_its_schedule():
 
 def test_a_mode_pipeline_runs_only_its_own_task():
     ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
-    for rule in ci["rebase-mrs"]["rules"]:
-        assert "$mode == null" in rule["if"]
+    for name, job in ci.items():
+        if not isinstance(job, dict) or "rules" not in job:
+            continue
+        for rule in job["rules"]:
+            if "$mode ==" in rule["if"] and "$mode == null" not in rule["if"]:
+                continue  # the job a mode pipeline is for
+            if "CI_DEFAULT_BRANCH" in rule["if"]:
+                assert "$mode == null" in rule["if"], name
