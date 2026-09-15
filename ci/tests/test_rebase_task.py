@@ -4,6 +4,7 @@ import importlib.util
 import shutil
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -72,10 +73,81 @@ def test_comment_only_when_someone_must_look():
     assert "could not rebase" in failed and "http://j" in failed and "gave up" in failed
 
 
+def test_comment_says_nothing_about_a_branch_it_never_compared():
+    assert check.comment_for("ok", "the MR was merged", "Resolved a conflict in cli.py.",
+                             "http://j", checked=False) == ""
+
+
 def test_mentions_conflicts():
     assert check.mentions_conflicts("There was a conflict in a.py")
     assert not check.mentions_conflicts("Rebased cleanly, no conflicts.")
     assert not check.mentions_conflicts("")
+
+
+# --- a fetch that fails after Claude has already done the work ----------------
+
+MISSING = "fatal: couldn't find remote ref refs/heads/score-mrs"
+UNREACHABLE = "fatal: unable to access 'https://gitlab.com/autoidm/pdt.git/': Could not resolve host"
+
+
+def test_is_missing_ref_only_for_a_branch_that_is_gone():
+    assert check.is_missing_ref(MISSING)
+    assert not check.is_missing_ref(UNREACHABLE)
+    assert not check.is_missing_ref("")
+
+
+def test_branch_gone_with_a_merged_mr_is_the_normal_race():
+    status, message = check.fetch_verdict("score-mrs", MISSING, "merged")
+    assert status == "ok" and "merged" in message
+    assert check.fetch_verdict("score-mrs", MISSING, "closed")[0] == "ok"
+
+
+def test_branch_gone_from_an_open_mr_needs_a_person():
+    status, message = check.fetch_verdict("score-mrs", MISSING, "opened")
+    assert status == "needs_human" and "score-mrs" in message
+    assert check.fetch_verdict("score-mrs", MISSING, "")[0] == "needs_human"
+
+
+def test_an_unreachable_origin_needs_a_person_not_an_error():
+    status, message = check.fetch_verdict("score-mrs", UNREACHABLE, "merged")
+    assert status == "needs_human" and "Could not resolve host" in message
+
+
+def test_fetch_retries_an_unreachable_origin(monkeypatch):
+    answers = iter([(128, UNREACHABLE), (128, UNREACHABLE), (0, "")])
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        code, error = next(answers)
+        return types.SimpleNamespace(returncode=code, stdout="", stderr=error)
+
+    monkeypatch.setattr(check.subprocess, "run", run)
+    pauses = []
+    assert check.fetch_branch("score-mrs", pause=pauses.append) == ""
+    assert len(calls) == 3 and pauses == [5, 10]
+
+
+def test_fetch_gives_up_after_the_last_try(monkeypatch):
+    monkeypatch.setattr(check.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(returncode=128, stdout="",
+                                                              stderr=UNREACHABLE))
+    pauses = []
+    assert check.fetch_branch("score-mrs", pause=pauses.append) == UNREACHABLE
+    assert len(pauses) == check.FETCH_ATTEMPTS - 1
+
+
+def test_fetch_does_not_retry_a_branch_that_is_gone(monkeypatch):
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        return types.SimpleNamespace(returncode=128, stdout="", stderr=MISSING)
+
+    monkeypatch.setattr(check.subprocess, "run", run)
+    pauses = []
+    assert check.fetch_branch("score-mrs", pause=pauses.append) == MISSING
+    assert len(calls) == 1 and pauses == []
 
 
 # --- clean rebases with git alone --------------------------------------------
@@ -186,3 +258,52 @@ def test_moved_branch_is_not_overwritten(repo):
     repo.git("push", "-q", "origin", "moved")
     repo.advance_master("base.txt", "base changed")
     assert not select.rebase_with_git("master", "moved", stale_sha, 1, push=True)
+
+
+# --- the check hook against a real origin ------------------------------------
+
+@needs_git
+def test_fetch_reports_a_branch_that_origin_does_not_have(repo):
+    assert check.fetch_branch("master", pause=lambda seconds: None) == ""
+    problem = check.fetch_branch("ghost", pause=lambda seconds: None)
+    assert check.is_missing_ref(problem)
+
+
+@needs_git
+def test_branch_deleted_by_a_merge_ends_the_item_quietly(repo, monkeypatch):
+    repo.branch("gone", {"a.txt": "a"})
+    before = repo.sha("origin/gone")
+    repo.git("push", "-q", "origin", "--delete", "gone")  # the MR was merged meanwhile
+    monkeypatch.setattr(check, "mr_state", lambda env, iid: "merged")
+    monkeypatch.setattr(check.time, "sleep", lambda seconds: None)
+    item = {"iid": 64, "source_branch": "gone", "target_branch": "master",
+            "before_sha": before, "ahead": 1}
+    status, message, checked = check.verdict({}, item, "master", "gone")
+    assert status == "ok" and not checked and "merged" in message
+    assert check.comment_for(status, message, "Resolved a conflict.", "http://j", checked) == ""
+
+
+@needs_git
+def test_branch_deleted_while_the_mr_is_open_asks_for_a_person(repo, monkeypatch):
+    repo.branch("gone", {"a.txt": "a"})
+    before = repo.sha("origin/gone")
+    repo.git("push", "-q", "origin", "--delete", "gone")
+    monkeypatch.setattr(check, "mr_state", lambda env, iid: "opened")
+    monkeypatch.setattr(check.time, "sleep", lambda seconds: None)
+    item = {"iid": 64, "source_branch": "gone", "target_branch": "master",
+            "before_sha": before, "ahead": 1}
+    status, message, checked = check.verdict({}, item, "master", "gone")
+    assert status == "needs_human" and not checked and "gone" in message
+
+
+@needs_git
+def test_a_pushed_rebase_is_still_judged(repo, monkeypatch):
+    repo.branch("clean", {"a.txt": "a"})
+    before = repo.sha("origin/clean")
+    repo.advance_master("base.txt", "base changed")
+    assert select.rebase_with_git("master", "clean", before, 1, push=True)
+    monkeypatch.setattr(check.time, "sleep", lambda seconds: None)
+    item = {"iid": 64, "source_branch": "clean", "target_branch": "master",
+            "before_sha": before, "ahead": 1}
+    assert check.verdict({}, item, "master", "clean") == (
+        "ok", "rebased onto the default branch (1 commit(s))", True)
