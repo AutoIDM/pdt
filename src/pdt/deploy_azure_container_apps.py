@@ -182,7 +182,7 @@ def set_job_secret(job: str, rg: str, secret_uri: str, identity_id: str) -> None
         "containerapp", "job", "secret", "set", "--name", job,
         "--resource-group", rg, "--secrets",
         f"pdt-env=keyvaultref:{secret_uri},identityref:{identity_id}",
-        retry_access=True)
+        retry_access=True, retry_internal=True)
 
 
 def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
@@ -218,22 +218,27 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             ]
         if env_vars:
             args += ["--env-vars", *env_vars]
-        run_quiet(*args, retry_access=True, retry_internal=True)
-        return
+        run_quiet(
+            *args, retry_access=True, retry_internal=True,
+            recovered=lambda: az_json(
+                "containerapp", "job", "show", "--name", job,
+                "--resource-group", rg) is not None)
 
     run_quiet("containerapp", "job", "identity", "assign", "--name", job,
-              "--resource-group", rg, "--system-assigned", "--user-assigned", identity_id)
+              "--resource-group", rg, "--system-assigned", "--user-assigned", identity_id,
+              retry_internal=True)
     run_quiet("containerapp", "job", "registry", "set", "--name", job,
               "--resource-group", rg,
               "--server", f"{settings['registry']}.azurecr.io",
-              "--identity", identity_id)
+              "--identity", identity_id, retry_internal=True)
     if secret_uri:
         set_job_secret(job, rg, secret_uri, identity_id)
     if env_vars:
         common += ["--replace-env-vars", *env_vars]
     else:
         common += ["--remove-env-vars", "PDT_ENV_JSON", "PDT_ENV_SECRET_RESOURCE", "PDT_STORAGE_URL"]
-    run_quiet("containerapp", "job", "update", *common, retry_access=True)
+    run_quiet("containerapp", "job", "update", *common, retry_access=True,
+              retry_internal=True)
     if not secret_uri:
         # Ignore absence: Azure returns nonzero when there is nothing to remove.
         subprocess.run(

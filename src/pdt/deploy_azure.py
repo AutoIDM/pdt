@@ -55,6 +55,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,21 +88,27 @@ BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
 
 
 def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
-              retry_internal: bool = False, hints: dict[str, str] | None = None) -> str:
+              retry_internal: bool = False, hints: dict[str, str] | None = None,
+              recovered: Callable[[], bool] | None = None) -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
     for wait in waits:
         proc = subprocess.run(
             [*AZ, *args], input=data, capture_output=True, text=True)
         if proc.returncode == 0:
             return proc.stdout
-        output = proc.stderr.lower()
+        output = f"{proc.stdout}\n{proc.stderr}".lower()
         access_error = retry_access and any(text in output for text in (
             "unable to fetch secret", "forbidden", "authorizationfailed",
             "does not have authorization",
         ))
-        internal_error = retry_internal and "internalservererror" in output
+        internal_error = retry_internal and (
+            "internalservererror" in output or "internal server error" in output)
         if proc.stderr.strip():
             console.say(proc.stderr.strip())
+        if internal_error and recovered and recovered():
+            console.bullet("Azure created the resource despite the temporary error; "
+                           "finishing its configuration...", indent=4)
+            return proc.stdout
         if wait == 0 or not (access_error or internal_error):
             break
         reason = ("Azure returned an access error" if access_error
@@ -111,6 +118,9 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
     for text, hint in (hints or {}).items():
         if text.lower() in output:
             console.say(hint)
+    if internal_error:
+        fail(f"pdt az {' '.join(args[:4])} failed after 4 attempts; "
+             "Azure's last error and correlation ID are above")
     fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
 
 
