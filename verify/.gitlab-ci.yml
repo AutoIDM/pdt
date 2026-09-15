@@ -17,7 +17,7 @@ variables:
       junit: verify-*.xml
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
     - if: $CI_PIPELINE_SOURCE == "schedule"
 
 .verify:unix:
@@ -131,5 +131,5 @@ verify:check:
     - PDT_PROJECT=verify uv run pdt validate
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
     - if: $CI_COMMIT_TAG

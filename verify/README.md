@@ -4,14 +4,12 @@ A pdt project used to prove that deploy and destroy do what they say on a real c
 
 One run covers one provider. It asserts the account is empty, deploys every app the provider owns, lists the account through the provider's own API, and checks two things: every resource pdt made carries `managed-by=pdt`, and every resource belongs either to one app or to the set the apps share. It then destroys the apps one at a time. After each destroy it checks that the destroyed app's resources are gone and that every other app's resources, and the shared ones, are still there. The last destroy must leave the account empty again.
 
-The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Every provider and runtime gets two apps, so a shared resource always has a second owner while the first one is destroyed.
+The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Every provider gets two apps, so a shared resource always has a second owner while the first one is destroyed.
 
-| App | Provider | Runtime |
+| App | Provider | Runs on |
 | --- | --- | --- |
-| `aws-lambda-a`, `aws-lambda-b` | aws | lambda |
-| `aws-fargate-a`, `aws-fargate-b` | aws | fargate |
-| `azure-functions-a`, `azure-functions-b` | azure | functions |
-| `azure-container-apps-a`, `azure-container-apps-b` | azure | container_apps |
+| `aws-fargate-a`, `aws-fargate-b` | aws | Fargate |
+| `azure-container-apps-a`, `azure-container-apps-b` | azure | Container Apps job |
 | `google-cloud-a`, `google-cloud-b` | google-cloud | Cloud Run job |
 | `windows-a`, `windows-b` | windows | Task Scheduler |
 
