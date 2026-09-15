@@ -156,9 +156,13 @@ platform:
   subscription: 00000000-0000-0000-0000-000000000000
   region: eastus
   resource_group: pdt
+  # Optional. An environment you already own, as <resource-group>/<name>.
+  # environment: my-group/my-environment
 ```
 
 `subscription` is optional. When it is missing or wrong, the deploy asks you to choose one.
+
+Every pdt project in a subscription runs its jobs in one shared Container Apps environment per region, `pdt-<region>` in the resource group `pdt-shared`, because a subscription allows only a few environments. Destroying the last app that uses the environment removes it, and removes `pdt-shared` once it holds no environment. Set `environment` to use an environment you already have; pdt then never creates, changes, or deletes it.
 
 ### AWS
 
