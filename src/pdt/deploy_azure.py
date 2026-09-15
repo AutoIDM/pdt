@@ -79,22 +79,28 @@ STORE_METADATA_ARGS = tuple(
 BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
 
 
-def run_quiet(*args: str, data: str | None = None, retry_access: bool = False) -> str:
-    waits = (10, 20, 40, 0) if retry_access else (0,)
+def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
+              retry_internal: bool = False) -> str:
+    waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
     for wait in waits:
         proc = subprocess.run(
             [*AZ, *args], input=data, capture_output=True, text=True)
         if proc.returncode == 0:
             return proc.stdout
-        transient = any(text in proc.stderr.lower() for text in (
+        output = proc.stderr.lower()
+        access_error = retry_access and any(text in output for text in (
             "unable to fetch secret", "forbidden", "authorizationfailed",
             "does not have authorization",
         ))
-        if wait == 0 or not transient:
+        internal_error = retry_internal and "internalservererror" in output
+        if proc.stderr.strip():
+            console.say(proc.stderr.strip())
+        if wait == 0 or not (access_error or internal_error):
             break
-        console.bullet(f"Azure RBAC is still propagating; retrying in {wait}s...", indent=4)
+        reason = ("Azure returned an access error" if access_error
+                  else "Azure returned InternalServerError")
+        console.bullet(f"{reason}; retrying in {wait}s...", indent=4)
         time.sleep(wait)
-    console.say(proc.stderr.strip())
     fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
 
 
