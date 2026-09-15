@@ -40,7 +40,7 @@ DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 COPY . /workspace
 WORKDIR /workspace/{app}
-ENV PDT_PROJECT=/workspace
+ENV PDT_PROJECT=/workspace NO_COLOR=1
 RUN uv sync --script run.py
 ENTRYPOINT ["uv", "run", "--script", "run.py"]
 """
