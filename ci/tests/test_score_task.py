@@ -16,6 +16,14 @@ REPO = CI.parent
 TASK = CI / "claude-tasks" / "score-mrs"
 
 
+class CILoader(yaml.SafeLoader):
+    """Reads a pipeline file, including GitLab's own !reference tag."""
+
+
+CILoader.add_constructor(
+    "!reference", lambda loader, node: loader.construct_sequence(node))
+
+
 def load_script(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -628,16 +636,15 @@ def test_score_mrs_job_runs_on_a_webhook_trigger_and_its_schedule():
 
 
 def test_a_mode_pipeline_runs_only_its_own_task():
-    loader = type("GitLabLoader", (yaml.SafeLoader,), {})
-    loader.add_constructor("!reference", lambda load, node: load.construct_sequence(node))
-    for path in (".gitlab-ci.yml", "verify/.gitlab-ci.yml"):
-        ci = yaml.load((REPO / path).read_text(), Loader=loader)
-        for name, job in ci.items():
+    for path in (REPO / ".gitlab-ci.yml", REPO / "verify" / ".gitlab-ci.yml"):
+        for name, job in yaml.load(path.read_text(), CILoader).items():
             if not isinstance(job, dict) or "rules" not in job:
                 continue
             for rule in job["rules"]:
-                condition = rule.get("if", "") if isinstance(rule, dict) else ""
+                if not isinstance(rule, dict):
+                    continue  # a !reference to the rules of another job
+                condition = rule.get("if", "")
                 if "$mode ==" in condition and "$mode == null" not in condition:
                     continue  # the job a mode pipeline is for
                 if "CI_DEFAULT_BRANCH" in condition or '"schedule"' in condition:
-                    assert "$mode == null" in condition, f"{path}: {name}"
+                    assert "$mode == null" in condition, f"{path.name}: {name}"
