@@ -1,9 +1,17 @@
 """Close Draft merge requests that nobody has touched for a while.
 
 A scheduled GitLab pipeline runs this once a day. It lists the project's open
-Draft merge requests, and any one whose last activity is more than
-STALE_BUSINESS_DAYS business days old gets the comment CLOSE_COMMENT, is
-closed, and is listed in one message to Slack.
+Draft merge requests, and any one that no person has touched for more than
+STALE_BUSINESS_DAYS business days gets the comment CLOSE_COMMENT, is closed,
+and is listed in one message to Slack.
+
+"Touched by a person" means the MR was opened, a commit was authored, or a
+note (comment or system note such as a push) was written by anyone other than
+the user behind GITLAB_TOKEN. Every CI job in this project writes through that
+token, so a rebase by ``rebase-mrs``, a label or comment from ``score-mrs``,
+or any other automated change does not keep a Draft alive. A rebase keeps each
+commit's author date, so pushed-again commits do not count either. The MR's
+``updated_at`` is not used, because GitLab bumps it for those changes too.
 
 Environment:
   GITLAB_TOKEN        project access token with the ``api`` scope, sent as a
@@ -62,17 +70,29 @@ def business_days_since(then: date, today: date) -> int:
     return count
 
 
-def updated_on(mr: dict) -> date:
-    return datetime.fromisoformat(mr["updated_at"]).astimezone(timezone.utc).date()
+def utc_date(stamp: str) -> date:
+    return datetime.fromisoformat(stamp).astimezone(timezone.utc).date()
 
 
-def is_stale(mr: dict, today: date) -> bool:
+def last_person_activity(mr: dict, commits: list[dict], notes: list[dict],
+                         bot_id: int) -> date:
+    """The latest date a person touched the MR.
+
+    Counts the MR being opened, each commit's author date (a rebase rewrites
+    the committer date but keeps the author date), and each note whose author
+    is not the bot behind GITLAB_TOKEN. System notes count too: a person's
+    push, retitle, or mark-as-ready shows up as one.
+    """
+    stamps = [mr["created_at"]]
+    stamps += [commit["authored_date"] for commit in commits]
+    stamps += [note["updated_at"] for note in notes
+               if note.get("author", {}).get("id") != bot_id]
+    return max(utc_date(stamp) for stamp in stamps)
+
+
+def is_stale(mr: dict, last_active: date, today: date) -> bool:
     return bool(mr.get("draft")) and (
-        business_days_since(updated_on(mr), today) > STALE_BUSINESS_DAYS)
-
-
-def stale_drafts(mrs: list[dict], today: date) -> list[dict]:
-    return [mr for mr in mrs if is_stale(mr, today)]
+        business_days_since(last_active, today) > STALE_BUSINESS_DAYS)
 
 
 def http(method: str, url: str, headers: dict, payload: dict | None = None):
@@ -96,17 +116,33 @@ def api(settings: Settings, method: str, path: str, payload: dict | None = None)
                 {"Authorization": f"Bearer {settings.token}"}, payload)
 
 
-def list_open_drafts(settings: Settings) -> list[dict]:
-    mrs: list[dict] = []
+def list_all(settings: Settings, path: str) -> list[dict]:
+    """Every item of a paged GET. ``path`` carries its own query string."""
+    items: list[dict] = []
     page = "1"
     while page:
-        found, headers = api(
-            settings, "GET",
-            f"/projects/{settings.project_id}/merge_requests"
-            f"?state=opened&wip=yes&per_page=100&page={page}")
-        mrs.extend(found)
+        found, headers = api(settings, "GET", f"{path}&per_page=100&page={page}")
+        items.extend(found)
         page = headers.get("X-Next-Page", "") or ""
-    return mrs
+    return items
+
+
+def list_open_drafts(settings: Settings) -> list[dict]:
+    return list_all(settings,
+                    f"/projects/{settings.project_id}/merge_requests?state=opened&wip=yes")
+
+
+def bot_user_id(settings: Settings) -> int:
+    """The id of the user behind GITLAB_TOKEN, whose activity never counts."""
+    user, _ = api(settings, "GET", "/user")
+    return user["id"]
+
+
+def person_activity(settings: Settings, mr: dict, bot_id: int) -> date:
+    base = f"/projects/{settings.project_id}/merge_requests/{mr['iid']}"
+    commits = list_all(settings, f"{base}/commits?")
+    notes = list_all(settings, f"{base}/notes?")
+    return last_person_activity(mr, commits, notes, bot_id)
 
 
 def close_mr(settings: Settings, iid: int) -> None:
@@ -117,7 +153,7 @@ def close_mr(settings: Settings, iid: int) -> None:
 
 def slack_text(project_path: str, closed: list[dict]) -> str:
     lines = [f"Closed {len(closed)} stale Draft MR(s) in {project_path} "
-             f"(no activity for more than {STALE_BUSINESS_DAYS} business days):"]
+             f"(nobody touched them for more than {STALE_BUSINESS_DAYS} business days):"]
     for mr in closed:
         lines.append(f"• !{mr['iid']} {mr['title']} {mr['web_url']}")
     return "\n".join(lines)
@@ -157,14 +193,20 @@ def main() -> int:
     if settings is None:
         return 1
     today = datetime.now(timezone.utc).date()
+    bot_id = bot_user_id(settings)
     drafts = list_open_drafts(settings)
     print(f"{len(drafts)} open Draft MR(s) in {settings.project_path}")
+    stale = []
     for mr in drafts:
-        age = business_days_since(updated_on(mr), today)
-        flag = "STALE" if is_stale(mr, today) else "ok"
-        print(f"  {flag:5} !{mr['iid']} {age} business day(s) idle  {mr['title']}")
+        last_active = person_activity(settings, mr, bot_id)
+        age = business_days_since(last_active, today)
+        flag = "ok"
+        if is_stale(mr, last_active, today):
+            stale.append(mr)
+            flag = "STALE"
+        print(f"  {flag:5} !{mr['iid']} {age} business day(s) since a person "
+              f"touched it  {mr['title']}")
 
-    stale = stale_drafts(drafts, today)
     if not stale:
         print("nothing to close")
         return 0
