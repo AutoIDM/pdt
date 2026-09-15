@@ -10,8 +10,8 @@ This is the ``check`` hook of the rebase-mrs task. It reads
                 The MR gets a comment with the job link and, when the branch
                 changed, the commit to restore.
 
-It also resets the checkout to the default branch so the next item starts
-clean. Stdlib only.
+It runs in the item's own worktree, which the runner deletes afterwards,
+so it leaves the checkout as it finds it. Stdlib only.
 
 Environment:
   GITLAB_TOKEN, CI_API_V4_URL, CI_PROJECT_ID, CI_DEFAULT_BRANCH   as in select_mrs.py.
@@ -27,7 +27,6 @@ import urllib.request
 
 TIMEOUT = 60
 DEFAULT_API = "https://gitlab.com/api/v4"
-REPORT_DIR = "claude-task-report"
 
 
 def classify(before_sha: str, after_sha: str, default_sha: str, merge_base: str,
@@ -66,10 +65,6 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def git_quiet(*args: str) -> None:
-    subprocess.run(["git", *args], capture_output=True, text=True, check=False)
-
-
 def post_note(env, iid: int, body: str) -> None:
     api_url = env.get("CI_API_V4_URL", DEFAULT_API).rstrip("/")
     request = urllib.request.Request(
@@ -78,12 +73,6 @@ def post_note(env, iid: int, body: str) -> None:
         headers={"PRIVATE-TOKEN": env["GITLAB_TOKEN"], "Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=TIMEOUT):
         pass
-
-
-def reset_checkout(target: str) -> None:
-    git_quiet("rebase", "--abort")
-    git_quiet("checkout", "-f", "--detach", f"origin/{target}")
-    git_quiet("clean", "-fd", "-e", REPORT_DIR)
 
 
 def main() -> int:
@@ -102,7 +91,6 @@ def main() -> int:
     after_count = int(git("rev-list", "--count", f"origin/{target}..origin/{branch}"))
     status, message = classify(item["before_sha"], after_sha, default_sha, merge_base,
                                int(item["ahead"]), after_count)
-    reset_checkout(target)
 
     note = comment_for(status, message, str(result.get("result", "")), job_url)
     if note and env.get("GITLAB_TOKEN") and env.get("CI_PROJECT_ID"):

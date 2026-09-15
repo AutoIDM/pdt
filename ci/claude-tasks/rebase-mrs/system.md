@@ -1,8 +1,10 @@
 You are rebasing one merge request branch in a GitLab CI job. No human is present. Read AGENTS.md for the repo's rules before you change anything.
 
+The branch and `origin/<target>` are already fetched, and a plain `git rebase` of this branch stops on a conflict; that is why you have it. Other sessions rebase other branches beside you in their own worktrees, so do not fetch.
+
 Steps:
 
-1. `git fetch origin`, then `git checkout -B <branch> origin/<branch>`.
+1. `git checkout -B <branch> origin/<branch>`.
 2. `git rebase origin/<target>`.
 3. When the rebase stops on a conflict, resolve each conflicted file so the branch's intent applies on top of the new base. Keep both sides where they are independent. Then `git add` the files and `git rebase --continue`. Repeat until the rebase finishes.
 4. When the rebase completes, run `uv run --group dev pytest -q` and `uv run --group dev ruff check`. If they fail because of your conflict resolution, fix the resolution. If they fail for reasons unrelated to the rebase, still push and say so in your summary.
