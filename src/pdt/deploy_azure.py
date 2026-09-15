@@ -36,7 +36,8 @@ Azure through a protected temporary file, never on the command line.
 The data store is storage account pdtdata<suffix> in its own resource
 group pdt-data, so it survives destroy of resource group pdt. Blob
 containers carry no ARM tags, so the container holds STORE_TAGS as
-metadata instead. RBAC scope stops at the container, so store_condition
+metadata instead, with underscores in the keys because metadata keys
+must be C# identifiers. RBAC scope stops at the container, so store_condition
 adds an attribute-based access control condition that holds the job
 inside its own <app>/ folder.
 """
@@ -73,6 +74,8 @@ RECENT_RUNS = 3
 STORE_GROUP = "pdt-data"
 STORE_ROLE = "Storage Blob Data Contributor"
 STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
+STORE_METADATA_ARGS = tuple(
+    f"{key.replace('-', '_')}={value}" for key, value in STORE_TAGS.items())
 BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
 
 
@@ -638,7 +641,7 @@ def store_exists(store: dict[str, str]) -> bool:
                         "--resource-group", store["group"], "--name", store["container"])
     if container is None:
         return False
-    if (container.get("metadata") or {}).get("managed-by") != "pdt":
+    if (container.get("metadata") or {}).get("managed_by") != "pdt":
         fail(f"container {store['container']} exists but is not managed by PDT")
     return True
 
@@ -681,7 +684,7 @@ def ensure_store(settings: dict[str, str], store: dict[str, str], exists: bool) 
         run_quiet("storage", "container-rm", "create",
                   "--storage-account", store["account"],
                   "--resource-group", store["group"], "--name", store["container"],
-                  "--metadata", *STORE_TAG_ARGS)
+                  "--metadata", *STORE_METADATA_ARGS)
     assign_role(store["container_id"], settings["deployer_object_id"], STORE_ROLE,
                 settings["deployer_principal_type"])
 
