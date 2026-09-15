@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from pdt import deploy_azure_container_apps
+from pdt import deploy_azure, deploy_azure_container_apps
 
 
 SETTINGS = {
@@ -96,7 +96,8 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
     monkeypatch.setattr(deploy_azure_container_apps, "report_job_failure",
                         lambda settings, job: reported.append((settings, job)))
     settings = SETTINGS | {
-        "region": "eastus", "registry": "pdtregistry", "environment": "pdtenv",
+        "region": "eastus", "registry": "pdtregistry",
+        "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
         "identity": "pdt-runner", "workspace": "pdt-logs", "vault": "pdt-vault",
     }
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",
@@ -117,7 +118,7 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
     monkeypatch.setattr(deploy_azure_container_apps, "cost_estimate_for", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "ensure_group_and_vault", lambda *args: "/vault")
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet", lambda *args, **kwargs: "")
-    monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "")
+    monkeypatch.setattr(deploy_azure_container_apps, "ensure_environment", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "assign_role", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "enable_acr_arm_auth", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "build_image", lambda *args: None)

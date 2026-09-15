@@ -55,6 +55,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -68,6 +69,11 @@ from pdt.utils.storage import Store
 AZ = [sys.executable, "-m", "azure.cli"]
 COMMON_PROVIDERS = ("Microsoft.KeyVault", "Microsoft.ManagedIdentity")
 PLACEHOLDER_SUBSCRIPTION = "00000000-0000-0000-0000-000000000000"
+# A subscription allows a fixed number of Container Apps environments, so
+# every pdt project in a subscription shares one per region, kept in a
+# resource group of its own that outlives any one project.
+SHARED_GROUP = "pdt-shared"
+ENVIRONMENT_TYPE = "Microsoft.App/managedEnvironments"
 PRICES_API = "https://prices.azure.com/api/retail/prices"
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
@@ -80,7 +86,7 @@ BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
 
 
 def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
-              retry_internal: bool = False) -> str:
+              retry_internal: bool = False, hints: dict[str, str] | None = None) -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
     for wait in waits:
         proc = subprocess.run(
@@ -101,6 +107,9 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
                   else "Azure returned InternalServerError")
         console.bullet(f"{reason}; retrying in {wait}s...", indent=4)
         time.sleep(wait)
+    for text, hint in (hints or {}).items():
+        if text.lower() in output:
+            console.say(hint)
     fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
 
 
@@ -131,7 +140,34 @@ def clean_name(value: str, limit: int = 32) -> str:
     return f"{name[:limit - 8].rstrip('-')}-{suffix}"
 
 
-def azure_settings(app: dict) -> dict[str, str]:
+@dataclass(frozen=True)
+class Environment:
+    """The Container Apps environment a job runs in.
+
+    `managed` means pdt created it and may delete it. A user-supplied one is
+    only used: never created, tagged, checked for the tag, or deleted.
+    """
+
+    resource_group: str
+    name: str
+    managed: bool
+
+    def resource_id(self, subscription: str) -> str:
+        return (f"/subscriptions/{subscription}/resourceGroups/{self.resource_group}"
+                f"/providers/{ENVIRONMENT_TYPE}/{self.name}")
+
+    def __str__(self) -> str:
+        return f"{self.resource_group}/{self.name}"
+
+
+def parse_environment(value: str, region: str) -> Environment:
+    if not value:
+        return Environment(SHARED_GROUP, f"pdt-{region}", True)
+    group, _, name = value.partition("/")
+    return Environment(group, name, False)
+
+
+def azure_settings(app: dict) -> dict:
     platform = app["platform"]
     subscription = str(
         platform.get("subscription")
@@ -146,9 +182,9 @@ def azure_settings(app: dict) -> dict[str, str]:
         "subscription": subscription,
         "region": region,
         "resource_group": resource_group,
-        "environment": str(
-            os.environ.get("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT")
-            or "pdt"),
+        "environment": parse_environment(str(
+            platform.get("environment")
+            or os.environ.get("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT") or ""), region),
         "identity": str(
             os.environ.get("PDT_AZURE_MANAGED_IDENTITY")
             or "pdt-runner"),
@@ -181,7 +217,7 @@ def shared_names(subscription: str, resource_group: str) -> dict[str, str]:
     }
 
 
-def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
+def preflight(app: dict, settings: dict) -> dict:
     requested = settings["subscription"]
     if requested == PLACEHOLDER_SUBSCRIPTION:
         requested = ""
@@ -480,11 +516,6 @@ def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
                   "--resource-group", rg, "--location", settings["region"],
                   "--enable-rbac-authorization", "true",
                   "--tags", "managed-by=pdt")
-    if not workspace_exists(settings):
-        console.step(f"creating Log Analytics workspace {settings['workspace']}")
-        run_quiet("monitor", "log-analytics", "workspace", "create",
-                  "--resource-group", rg, "--workspace-name", settings["workspace"],
-                  "--location", settings["region"], "--tags", "managed-by=pdt")
     vault_id = resource_id(settings, "Microsoft.KeyVault", "vaults", settings["vault"])
     assign_role(vault_id, settings["deployer_object_id"], "Key Vault Secrets Officer",
                 settings["deployer_principal_type"])
@@ -504,14 +535,34 @@ def purge_deleted_vault(settings: dict[str, str]) -> None:
     run_quiet("keyvault", "purge", "--name", settings["vault"])
 
 
-def workspace_resource(settings: dict[str, str]) -> dict | None:
+def workspace_resource(settings: dict) -> dict | None:
     return az_json("monitor", "log-analytics", "workspace", "show",
-                   "--resource-group", settings["resource_group"],
+                   "--resource-group", settings["environment"].resource_group,
                    "--workspace-name", settings["workspace"])
 
 
-def workspace_exists(settings: dict[str, str]) -> bool:
-    return workspace_resource(settings) is not None
+def ensure_workspace(settings: dict, exists: bool) -> tuple[str, str]:
+    group = settings["environment"].resource_group
+    if not exists:
+        console.step(f"creating Log Analytics workspace {settings['workspace']}")
+        run_quiet("monitor", "log-analytics", "workspace", "create",
+                  "--resource-group", group, "--workspace-name", settings["workspace"],
+                  "--location", settings["region"], "--tags", "managed-by=pdt")
+    logs_id = az_tsv("monitor", "log-analytics", "workspace", "show",
+                     "--resource-group", group, "--workspace-name",
+                     settings["workspace"], "--query", "customerId")
+    logs_key = az_tsv("monitor", "log-analytics", "workspace", "get-shared-keys",
+                      "--resource-group", group, "--workspace-name",
+                      settings["workspace"], "--query", "primarySharedKey")
+    return logs_id, logs_key
+
+
+def ensure_shared_group(settings: dict) -> None:
+    group = settings["environment"].resource_group
+    require_managed(az_json("group", "show", "--name", group), f"resource group {group}")
+    console.step(f"reconciling resource group {group}")
+    run_quiet("group", "create", "--name", group, "--location", settings["region"],
+              "--tags", "managed-by=pdt")
 
 
 def ensure_secret(settings: dict[str, str], sid: str, values: dict,

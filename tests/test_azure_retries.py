@@ -103,7 +103,8 @@ def test_job_create_retries_an_internal_error(monkeypatch):
     monkeypatch.setattr(deploy_azure.time, "sleep", lambda seconds: None)
 
     deploy_azure_container_apps.reconcile_job(
-        {"resource_group": "pdt", "environment": "pdt", "registry": "pdtregistry"},
+        {"resource_group": "pdt", "subscription": "sub-1", "registry": "pdtregistry",
+         "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True)},
         "pdt-report", "pdtregistry.azurecr.io/report:latest", "0 0 * * *",
         "/identity/pdt-runner", "https://vault.vault.azure.net/secrets/env", None,
         False, "report")
