@@ -47,5 +47,4 @@ def test_cloud_cli_passthroughs_are_registered():
         assert path.exists(), f"pdt {name} points at a missing script"
         assert f'sys.argv[1] == "{name}"' in path.read_text(), (
             f"{script} has no `{name}` passthrough branch")
-        assert f"\n  {name} <args...>" in cli.__doc__, (
-            f"pdt {name} is missing from the CLI help")
+        assert name in cli.CLOUD_CLIS

@@ -239,7 +239,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
         console.command(f"cd {target.name}")
     if starting_fresh:
         console.command(f"pdt run {STARTER}")
-    console.command("pdt examples    see what else you can start from")
+    console.command("pdt examples", "see what else you can start from")
     return 0
 
 
