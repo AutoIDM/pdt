@@ -22,6 +22,19 @@ stages:
   - test
   - tasks
 
+# The score-mrs webhook calls the pipeline trigger API for every merge
+# request event, and its custom template passes the event's action and
+# Draft change as variables. These rules let a trigger pipeline exist only
+# when the MR opens or leaves Draft; for any other event (a push, a rebase,
+# a label, an edit, a close) no pipeline is created at all. Every other
+# pipeline source is untouched.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE != "trigger"
+    - if: $MR_ACTION == "open"
+    - if: $MR_ACTION == "reopen"
+    - if: $MR_ACTION == "update" && $MR_DRAFT_BEFORE == "true" && $MR_DRAFT_AFTER == "false"
+
 test:
   stage: test
   parallel:
@@ -59,9 +72,7 @@ smoke:
 # write_repository). How to create them is in the handbook, developer.md,
 # "Claude Code in CI". Exit code 2 means an item needs a person: the job
 # shows a warning, not a failure. A bad token exits 1 and fails the job.
-# A rule may set CLAUDE_TASK_ARGS, for example "--dry-run". A job may set
-# CLAUDE_TASK_GATE to a command that prints `skip` when this run has nothing
-# to do; the job then ends at once, before it installs anything.
+# A rule may set CLAUDE_TASK_ARGS, for example "--dry-run".
 .claude-task:
   stage: tasks
   interruptible: false
@@ -71,7 +82,6 @@ smoke:
   allow_failure:
     exit_codes: [2]
   before_script:
-    - if [ -n "$CLAUDE_TASK_GATE" ] && [ "$($CLAUDE_TASK_GATE)" = skip ]; then echo "nothing to do for this event"; exit 0; fi
     - apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl ca-certificates
     - curl -fsSL https://claude.ai/install.sh | bash -s 2.1.266
     - export PATH="$HOME/.local/bin:$PATH"
@@ -100,18 +110,17 @@ rebase-mrs:
 # comments the reasons, and merges a tier::simple MR once its pipeline passes.
 # Runs on a master pipeline whose `mode` variable is score_mrs: a project
 # webhook on merge request events triggers one (see the handbook, "Claude
-# Code in CI"), and a daily schedule sweeps everything. A webhook run reads
-# the event from TRIGGER_PAYLOAD and scores only the MR in it, and only when
-# the event is the MR opening or leaving Draft; the gate ends the job at once
-# for every other event. A web run with mode=score_mrs lists what it would do
-# and changes nothing unless the form also sets DRY_RUN=false.
+# Code in CI"), and a daily schedule sweeps everything. The webhook's template
+# sets MR_IID, so a webhook run scores that MR alone; the `workflow` rules at
+# the top decide which events get a pipeline. A web run with mode=score_mrs
+# lists what it would do and changes nothing unless the form also sets
+# DRY_RUN=false.
 score-mrs:
   extends: .claude-task
   needs: []
   resource_group: score-mrs
   variables:
     CLAUDE_TASK: score-mrs
-    CLAUDE_TASK_GATE: python ci/claude-tasks/score-mrs/select_mrs.py --gate
   rules:
     - if: $CI_PIPELINE_SOURCE == "trigger" && $mode == "score_mrs"
       variables:
