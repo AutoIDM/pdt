@@ -31,7 +31,7 @@ def log(level: str, msg: str, **kv) -> None:
     else:
         timestamp = f"{datetime.now():%H:%M:%S}"
         level_field = f"{level.upper():<7}"
-        if sys.stdout.isatty():
+        if sys.stdout.isatty() and os.environ.get("NO_COLOR", "") == "":
             colour = LEVEL_COLOURS.get(level.upper(), "")
             timestamp = f"\x1b[2m{timestamp}\x1b[0m"
             if colour != "":
