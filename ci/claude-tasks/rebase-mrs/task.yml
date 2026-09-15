@@ -1,7 +1,7 @@
-# Rebase every open merge request onto the default branch after a merge.
-# select_mrs.py rebases and pushes the clean ones with git alone and lists
-# the rest; Claude resolves the conflicts, runs the tests, and pushes;
-# check_mrs.py verifies each push and comments.
+# Resolve the open merge requests that conflict with the default branch
+# after a merge. select_mrs.py tries each rebase with git alone, pushes
+# nothing, and lists only the ones that conflict; Claude resolves those,
+# runs the tests, and pushes; check_mrs.py verifies each push and comments.
 # parallel is kept small: every session draws on the one subscription's
 # rate limit, and a conflict session runs two to four minutes.
 model: opus

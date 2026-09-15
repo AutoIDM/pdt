@@ -78,7 +78,7 @@ def test_mentions_conflicts():
     assert not check.mentions_conflicts("")
 
 
-# --- clean rebases with git alone --------------------------------------------
+# --- conflict detection with git alone ---------------------------------------
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -137,26 +137,17 @@ def repo(tmp_path, monkeypatch):
 
 
 @needs_git
-def test_clean_branch_is_rebased_and_pushed_without_claude(repo):
+def test_clean_branch_is_left_alone(repo):
+    """A branch that still merges is not pushed: a push to an open MR's
+    branch notifies everyone on the MR, and nothing about it needs a person."""
     repo.branch("clean", {"a.txt": "a", "b.txt": "b"})
     before = repo.sha("origin/clean")
     repo.advance_master("base.txt", "base changed")
-    assert select.rebase_with_git("master", "clean", before, 2, push=True)
-    repo.git("fetch", "-q", "origin")
-    assert repo.git("merge-base", "origin/master", "origin/clean") == repo.sha("origin/master")
-    assert repo.git("rev-list", "--count", "origin/master..origin/clean") == "2"
-    assert repo.git("status", "--porcelain") == ""  # the clone itself was not touched
-    assert "pdt-rebase-" not in repo.git("worktree", "list")
-
-
-@needs_git
-def test_dry_run_reports_a_clean_rebase_but_pushes_nothing(repo):
-    repo.branch("clean", {"a.txt": "a"})
-    before = repo.sha("origin/clean")
-    repo.advance_master("base.txt", "base changed")
-    assert select.rebase_with_git("master", "clean", before, 1, push=False)
+    assert select.rebases_cleanly("master", "clean", 2)
     repo.git("fetch", "-q", "origin")
     assert repo.sha("origin/clean") == before
+    assert repo.git("status", "--porcelain") == ""  # the clone itself was not touched
+    assert "pdt-rebase-" not in repo.git("worktree", "list")
 
 
 @needs_git
@@ -164,7 +155,7 @@ def test_conflict_goes_to_claude_and_leaves_no_worktree(repo):
     repo.branch("clash", {"base.txt": "branch side"})
     before = repo.sha("origin/clash")
     repo.advance_master("base.txt", "master side")
-    assert not select.rebase_with_git("master", "clash", before, 1, push=True)
+    assert not select.rebases_cleanly("master", "clash", 1)
     repo.git("fetch", "-q", "origin")
     assert repo.sha("origin/clash") == before
     assert "pdt-rebase-" not in repo.git("worktree", "list")
@@ -173,16 +164,5 @@ def test_conflict_goes_to_claude_and_leaves_no_worktree(repo):
 @needs_git
 def test_branch_already_merged_in_substance_goes_to_claude(repo):
     repo.branch("dup", {"same.txt": "same"})
-    before = repo.sha("origin/dup")
     repo.advance_master("same.txt", "same")
-    assert not select.rebase_with_git("master", "dup", before, 1, push=True)
-
-
-@needs_git
-def test_moved_branch_is_not_overwritten(repo):
-    repo.branch("moved", {"a.txt": "a"})
-    stale_sha = repo.sha("origin/moved")
-    repo.commit("a2.txt", "a2", "moved: a2")  # the author pushed again meanwhile
-    repo.git("push", "-q", "origin", "moved")
-    repo.advance_master("base.txt", "base changed")
-    assert not select.rebase_with_git("master", "moved", stale_sha, 1, push=True)
+    assert not select.rebases_cleanly("master", "dup", 1)

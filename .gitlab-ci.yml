@@ -81,8 +81,10 @@ smoke:
       - claude-task-report/
     expire_in: 30 days
 
-# After every merge to the default branch, Claude rebases each open MR onto
-# it. Label an MR `no-autorebase` to leave it alone. A pipeline that sets the
+# After every merge to the default branch, Claude rebases each open MR that
+# now conflicts with it. An MR that still merges is not touched, so the job
+# pushes nothing for it and no one gets a "pushed new commits" notification.
+# Label an MR `no-autorebase` to leave it alone. A pipeline that sets the
 # `mode` variable (a schedule or web run picking one job) does not rebase.
 rebase-mrs:
   extends: .claude-task

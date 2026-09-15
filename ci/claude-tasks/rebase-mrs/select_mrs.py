@@ -1,4 +1,4 @@
-"""Rebase the open merge requests that git can rebase alone; list the rest.
+"""List the open merge requests whose rebase onto the default branch conflicts.
 
 This is the ``select`` hook of the rebase-mrs task. It prints a JSON list to
 stdout, one item per MR that needs Claude, and progress lines to stderr.
@@ -8,22 +8,23 @@ An MR is skipped when it comes from a fork, or carries the label
 ``no-autorebase``. Drafts are included. An MR whose branch already contains
 the default branch's tip is up to date and is not listed.
 
-A stale MR is first rebased with plain git in a throwaway worktree. When
-that finishes with no conflict and the same number of commits, the branch
-is pushed with ``--force-with-lease`` and Claude never sees it; the MR's own
-pipeline tests the result. Only an MR whose rebase stops on a conflict
-becomes an item. Most rebases are clean, and a Claude session for a clean
-rebase costs about a minute and half a dollar for what git does in a second.
+A stale MR is rebased with plain git in a throwaway worktree, and the result
+is thrown away. When that finishes with no conflict the MR still merges, so
+it is left exactly as it is. Only an MR whose rebase stops on a conflict
+becomes an item; Claude resolves it and pushes once. This hook never pushes:
+every push to a branch with an open MR sends "pushed new commits to merge
+request" to everyone on that MR, so the only pushes left are the conflict
+resolutions the author has to look at anyway.
 
 It also points ``origin`` at an HTTPS URL that carries GITLAB_TOKEN and sets
-the bot's git identity, so it and Claude can fetch and push.
+the bot's git identity, so Claude and the check hook can fetch and push.
 
 Environment:
   GITLAB_TOKEN   project access token with ``api`` and ``write_repository``.
   CI_API_V4_URL, CI_PROJECT_ID, CI_SERVER_HOST, CI_PROJECT_PATH,
   CI_DEFAULT_BRANCH   set by GitLab CI.
-  CLAUDE_TASK_DRY_RUN   set by the runner's --dry-run: report which MRs git
-                 would rebase, push nothing, and still list the conflicts.
+  CLAUDE_TASK_DRY_RUN   set by the runner's --dry-run. This hook changes
+                 nothing either way; the runner then stops before Claude.
 
 Stdlib only.
 """
@@ -111,12 +112,12 @@ def keeps_commits(after: int, ahead: int) -> bool:
     return 1 <= after <= ahead
 
 
-def rebase_with_git(target: str, branch: str, before_sha: str, ahead: int, push: bool) -> bool:
-    """Try the rebase in a throwaway worktree. True when git did it alone.
+def rebases_cleanly(target: str, branch: str, ahead: int) -> bool:
+    """Try the rebase in a throwaway worktree and discard the result.
 
-    ``push`` False (a dry run) still says whether git could have done it.
-    A push that fails (the branch moved, or the token cannot write) also
-    returns False so Claude retries and the check hook reports.
+    True when git finishes with no conflict and the branch keeps its
+    commits, so the MR still merges and needs no one. Nothing is pushed: a
+    push to an open MR's branch notifies everyone on the MR.
     """
     with tempfile.TemporaryDirectory(prefix="pdt-rebase-") as tmp:
         path = os.path.join(tmp, "repo")
@@ -126,13 +127,7 @@ def rebase_with_git(target: str, branch: str, before_sha: str, ahead: int, push:
                 git_ok("-C", path, "rebase", "--abort")
                 return False
             after = int(git("-C", path, "rev-list", "--count", f"origin/{target}..HEAD"))
-            if not keeps_commits(after, ahead):
-                return False
-            if push:
-                return git_ok("-C", path, "push", "--quiet",
-                              f"--force-with-lease=refs/heads/{branch}:{before_sha}",
-                              "origin", f"HEAD:refs/heads/{branch}")
-            return True
+            return keeps_commits(after, ahead)
         finally:
             git_ok("worktree", "remove", "--force", path)
 
@@ -156,7 +151,7 @@ def main() -> int:
 
     mrs = [mr for mr in list_open_mrs(api_url, token, project_id, target) if wanted(mr, project_id)]
     log(f"{len(mrs)} open MR(s) targeting {target} qualify"
-        + (" (dry run: nothing is pushed)" if dry_run else ""))
+        + (" (dry run: Claude does not run)" if dry_run else ""))
     if not mrs:
         print("[]")
         return 0
@@ -173,9 +168,8 @@ def main() -> int:
             continue
         before_sha = git("rev-parse", f"origin/{branch}")
         ahead = int(git("rev-list", "--count", f"origin/{target}..origin/{branch}"))
-        if rebase_with_git(target, branch, before_sha, ahead, push=not dry_run):
-            word = "would rebase" if dry_run else "rebased    "
-            log(f"  {word} !{mr['iid']} {mr['title']} (git alone, {ahead} commit(s))")
+        if rebases_cleanly(target, branch, ahead):
+            log(f"  clean       !{mr['iid']} {mr['title']} (still merges; left alone)")
             continue
         log(f"  conflicts   !{mr['iid']} {mr['title']} ({ahead} commit(s) ahead)")
         items.append(item_for(mr, before_sha, ahead))

@@ -27,7 +27,7 @@ because they fetch into the shared .git.
 Usage: ci/claude_task.py <task-name> [--dry-run] [--only ID]
 
 A dry run sets CLAUDE_TASK_DRY_RUN=1 for the select hook, so a hook with
-side effects (the rebase-mrs hook pushes clean rebases) can only report.
+side effects can only report.
 
 Exit codes: 0 every item ok, 2 an item needs a person (the CI job shows a
 warning), 1 the token is bad, the task is misconfigured, or an item errored.
