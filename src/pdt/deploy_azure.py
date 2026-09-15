@@ -15,8 +15,8 @@
 """Deploy an app to Azure.
 
 Shared login, subscription, resource group, Key Vault, price, and cost code
-lives here. The runtime-specific parts are in deploy_azure_functions.py
-(platform.runtime: functions, the default) and deploy_azure_container_apps.py.
+lives here. The job itself, a scheduled Container Apps Job, is in
+deploy_azure_container_apps.py.
 
 The Azure CLI is a Python package, so the script header installs it and
 every call here runs it as `python -m azure.cli`. No system install is
@@ -603,11 +603,7 @@ def main() -> int:
         return relogin("" if requested == PLACEHOLDER_SUBSCRIPTION else requested)
     if app["timezone"] not in ("Etc/UTC", "UTC"):
         fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
-    runtime = app["platform"].get("runtime", "functions")
-    if runtime == "container_apps":
-        from pdt import deploy_azure_container_apps as module
-    else:
-        from pdt import deploy_azure_functions as module
+    from pdt import deploy_azure_container_apps as module
     if args.command == "deploy":
         return module.deploy(app, args.yes)
     return module.destroy(app, args.yes)

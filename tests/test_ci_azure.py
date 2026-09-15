@@ -4,7 +4,7 @@ import json
 import pytest
 
 from conftest import add_app
-from pdt import config, deploy_azure, deploy_azure_functions
+from pdt import config, deploy_azure, deploy_azure_container_apps
 
 ACCOUNT = {
     "id": "11111111-1111-1111-1111-111111111111",
@@ -163,9 +163,8 @@ def test_a_service_principal_login_is_recorded_as_a_service_principal(azure_app,
     assert settings["deployer_principal_type"] == "ServicePrincipal"
 
 
-def test_the_functions_runtime_registers_the_log_and_insights_providers():
-    assert "Microsoft.OperationalInsights" in deploy_azure_functions.PROVIDERS
-    assert "Microsoft.Insights" in deploy_azure_functions.PROVIDERS
+def test_the_job_registers_the_log_provider_it_creates_a_workspace_in():
+    assert "Microsoft.OperationalInsights" in deploy_azure_container_apps.PROVIDERS
 
 
 def test_an_unattended_run_with_no_azure_login_names_the_command_to_run(
@@ -191,8 +190,7 @@ def test_shared_names_do_not_change_once_the_subscription_is_written_back(
     assert first["suffix"] == later["suffix"]
     assert first["storage"] == later["storage"]
     assert first["vault"] == later["vault"]
-    assert deploy_azure_functions.function_app_name(first, "my-report") == \
-        deploy_azure_functions.function_app_name(later, "my-report")
+    assert first["registry"] == later["registry"]
 
 
 SETTINGS = {"subscription": ACCOUNT["id"], "resource_group": "pdt",
@@ -227,34 +225,3 @@ def test_a_deploy_continues_when_the_group_holds_only_the_expected_names(monkeyp
     deploy_azure.check_shared_names(dict(SETTINGS))
     monkeypatch.setattr(deploy_azure, "az_json", lambda *args: [])
     deploy_azure.check_shared_names(dict(SETTINGS))
-
-
-def test_destroy_plans_the_plan_alert_rule_and_action_group(azure_app, monkeypatch):
-    function_app = deploy_azure_functions.function_app_name(SETTINGS | {"suffix": "32bc31"},
-                                                            "my-report")
-    owner = {"managed-by": "pdt", "pdt-app": "my-report"}
-    plan_id = "/rg/pdt/serverfarms/ASP-pdt-8c1a"
-
-    def fake_az(*args):
-        if args[:2] == ("functionapp", "show"):
-            return {"tags": owner, "serverFarmId": plan_id}
-        if args[:3] == ("appservice", "plan", "show"):
-            return {"id": plan_id, "name": "ASP-pdt-8c1a", "numberOfSites": 1}
-        if args[:2] == ("resource", "show"):
-            name = args[args.index("--name") + 1]
-            return {"id": f"/rg/pdt/{name}", "name": name, "tags": owner}
-        return None
-
-    planned = []
-    monkeypatch.setattr(deploy_azure, "az_json", fake_az)
-    monkeypatch.setattr(deploy_azure_functions, "az_json", fake_az)
-    monkeypatch.setattr(deploy_azure_functions, "preflight",
-                        lambda app, settings: dict(SETTINGS, suffix="32bc31"))
-    monkeypatch.setattr(deploy_azure_functions, "confirm",
-                        lambda actions, assume_yes, *rest: planned.extend(actions))
-    assert deploy_azure_functions.destroy(azure_app, False) == 1
-    assert f"delete Function App {function_app}" in planned
-    assert "delete App Service plan ASP-pdt-8c1a" in planned
-    assert f"delete alert rule Failure Anomalies - {function_app}" in planned
-    assert ("delete action group Application Insights Smart Detection "
-            "(no pdt app remains)") in planned

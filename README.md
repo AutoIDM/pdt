@@ -116,8 +116,6 @@ platform:
   subscription: 00000000-0000-0000-0000-000000000000
   region: eastus
   resource_group: pdt
-  # Options: functions (default), container_apps
-  runtime: functions
 ```
 
 `subscription` is optional. When it is missing or wrong, the deploy asks you to choose one.
@@ -130,8 +128,6 @@ platform:
   region: us-east-1
   # Written for you on the first deploy, from your credentials.
   account: "123456789012"
-  # lambda (default) or fargate
-  runtime: lambda
 ```
 
 ### Google Cloud
@@ -144,6 +140,25 @@ platform:
 ```
 
 `project` is optional. When it is missing or wrong, the deploy lists your projects and asks you to choose one, then writes your answer here.
+
+### Bringing your own Dockerfile
+
+Every cloud provider runs a job as a container: AWS on Fargate, Azure on Container Apps Jobs, Google Cloud on Cloud Run Jobs. The deploy builds an image for each app from a generated Dockerfile. It copies the app folder and `pdt.yml` into `/workspace`, installs the script-header dependencies of `run.py` with `uv sync --script`, and runs `run.py` as the entrypoint.
+
+Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
+
+```dockerfile
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+COPY . /workspace
+WORKDIR /workspace/my-app
+ENV PDT_PROJECT=/workspace
+RUN uv sync --script run.py
+ENTRYPOINT ["uv", "run", "--script", "run.py"]
+```
+
+A `.dockerignore` in the app folder keeps files out of the image. Write its patterns relative to the app folder (`.meltano`, `output`, `*.csv`); pdt moves them to the root of the build context for you. `.env` and the other secret files never reach the context, with or without a `.dockerignore`.
+
+The Windows provider never builds an image, so `pdt validate` reports a Dockerfile in an app that uses it.
 
 ### Windows Task Scheduler
 
@@ -326,7 +341,3 @@ log("info", "processed", rows=42)
 ```
 
 Levels are `debug`, `info`, `warning`, and `error`. Locally a line is human-readable text on stdout; with `LOG_FORMAT=json` it is one JSON object per line, which is also the default on Cloud Run.
-
-### Azure Functions
-
-Azure Functions only makes logging easy to view if you use Python's logging library, so the `function_app.py` that pdt deploys captures everything the app writes to stdout and stderr and forwards it through that library, line by line. Deploys set `LOG_FORMAT=json` so each forwarded line keeps its severity; a plain `print()` arrives too, as info. Every run then lists its own lines in the portal's Invocations view — the link `pdt deploy` prints.

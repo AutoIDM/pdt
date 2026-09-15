@@ -48,7 +48,8 @@ from pdt import console
 from pdt import gcloud_sdk
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    DOCKERFILE, CostEstimate, fail, fetch_json, gather_secrets, stage_build_context)
+    CostEstimate, fail, fetch_json, gather_secrets, image_action,
+    stage_build_context, write_dockerfile)
 from pdt.utils import email_auth
 
 GCLOUD = "gcloud"
@@ -334,7 +335,7 @@ def secret_value(project: str, sid: str) -> str | None:
 def build_image(app: dict, image: str, project: str) -> None:
     stage = stage_build_context(app)
     try:
-        (stage / "Dockerfile").write_text(DOCKERFILE.format(app=app["name"]))
+        write_dockerfile(stage, app)
         run_stream("builds", "submit", str(stage), "--tag", image, "--project", project)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
@@ -534,7 +535,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
     actions = [("use existing" if repo_exists else "create")
                + f" Artifact Registry repo {repo}"]
-    actions.append(f"build and push image {image}")
+    actions.append(image_action(app, f"build and push image {image}"))
     if secret_state:
         actions.append(f"{secret_state} secret {sid} ({len(values)} env vars as one json blob)")
     if oauth_cache_updates:

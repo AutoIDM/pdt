@@ -26,8 +26,10 @@ PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
 
 PROVIDERS = ("google-cloud", "azure", "aws", "windows")
-AWS_RUNTIMES = ("lambda", "fargate")
-AZURE_RUNTIMES = ("functions", "container_apps")
+# Every cloud provider runs a job as a container image built from the app
+# folder: AWS on Fargate, Azure on Container Apps Jobs, Google Cloud on
+# Cloud Run Jobs. The windows provider runs the app directly.
+CONTAINER_PROVIDERS = ("google-cloud", "aws", "azure")
 SCHEDULE_SHORTHAND = {
     "hourly": "0 * * * *",
     "daily": "0 0 * * *",
@@ -38,7 +40,7 @@ SCHEDULE_SHORTHAND = {
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
-    "account", "runtime",
+    "account",
     "subscription", "resource_group",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
@@ -382,6 +384,18 @@ def validate() -> list[str]:
     return problems
 
 
+def builds_image(platform: dict) -> bool:
+    """True when deploying with this platform builds a container image."""
+    return platform.get("provider") in CONTAINER_PROVIDERS
+
+
+def dockerfile_problem(platform: dict) -> str:
+    """Why an app's own Dockerfile would be ignored, or "" when it is used."""
+    if builds_image(platform):
+        return ""
+    return f"not used by the {platform.get('provider')} provider; remove the file"
+
+
 def validate_app(name: str) -> list[str]:
     problems = []
     where = f"{name}/config.yml"
@@ -402,7 +416,11 @@ def validate_app(name: str) -> list[str]:
     except ConfigError as e:
         return problems + [str(e)]
     for key in app["platform"]:
-        if key not in PLATFORM_KEYS:
+        if key == "runtime":
+            problems.append(
+                f"{name}: platform.runtime is no longer a setting: AWS always runs "
+                "jobs on Fargate and Azure on Container Apps Jobs; remove the key")
+        elif key not in PLATFORM_KEYS:
             problems.append(f"{name}: platform: unknown key {key!r}")
     provider = app["platform"].get("provider")
     if provider not in PROVIDERS:
@@ -413,13 +431,11 @@ def validate_app(name: str) -> list[str]:
         problem = aws_account_problem(str(app["platform"].get("account") or ""))
         if problem != "":
             problems.append(f"{name}: platform.account: {problem}")
-        runtime = app["platform"].get("runtime", "lambda")
-        if runtime not in AWS_RUNTIMES:
-            problems.append(f"{name}: platform.runtime must be one of: {', '.join(AWS_RUNTIMES)}")
-    if provider == "azure":
-        runtime = app["platform"].get("runtime", "functions")
-        if runtime not in AZURE_RUNTIMES:
-            problems.append(f"{name}: platform.runtime must be one of: {', '.join(AZURE_RUNTIMES)}")
+    dockerfile = find_project() / name / "Dockerfile"
+    if dockerfile.is_file():
+        problem = dockerfile_problem(app["platform"])
+        if problem != "":
+            problems.append(f"{name}/Dockerfile: {problem}")
     if app["schedule"] is not None:
         try:
             cron_expression(app["schedule"])
