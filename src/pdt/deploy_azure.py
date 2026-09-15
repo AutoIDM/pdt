@@ -96,23 +96,44 @@ STORE_METADATA_ARGS = tuple(
 BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
 
 
-def no_role_on_subscription(stderr: str) -> bool:
+ROLE_GRANT_ACTION = "microsoft.authorization/roleassignments/write"
+GRANT_ROLE = "Role Based Access Control Administrator"
+
+
+def authorization_failed(stderr: str) -> bool:
     lowered = stderr.lower()
     return ("authorizationfailed" in lowered
             or "does not have authorization" in lowered)
 
 
-def explain_missing_role() -> None:
+def denied_action(stderr: str) -> str:
+    match = re.search(r"perform action '([^']+)'", stderr)
+    return match.group(1) if match else ""
+
+
+def explain_missing_role(stderr: str) -> None:
     console.say()
-    console.say("Azure refused this because your account holds no role, or too small a role, on the subscription.")
-    console.say("Microsoft 365 and Entra ID admin roles do not count; Azure grants subscription roles separately.")
-    console.say("pdt needs the Owner role, assigned as Active and Permanent:")
-    console.bullet("1. Someone who already has Owner grants it: portal.azure.com > Subscriptions > the subscription >")
-    console.bullet("Access control (IAM) > Add > Add role assignment > Privileged administrator roles > Owner >", indent=5)
-    console.bullet("your account. On the Assignment type step: Active, Permanent.", indent=5)
-    console.bullet("2. Nobody has Owner but you are the Global Administrator: portal.azure.com >")
+    if denied_action(stderr).lower() == ROLE_GRANT_ACTION:
+        console.say("Azure refused this because your account can create resources but cannot grant roles.")
+        console.say("Deploy grants the job's identity access to the Key Vault and the container registry, "
+                    "so your account needs one more role on the subscription:")
+        roles = GRANT_ROLE
+        owner = "Owner also works, but it grants more than pdt needs."
+    else:
+        console.say("Azure refused this because your account holds no role on the subscription.")
+        console.say("Microsoft 365 and Entra ID admin roles do not count; Azure grants subscription roles separately.")
+        console.say("Your account needs two roles on the subscription:")
+        roles = f"Contributor and {GRANT_ROLE}"
+        owner = "Owner also works, as one role instead of two, but it grants more than pdt needs."
+    console.say(f"  {roles}.")
+    console.say(owner)
+    console.bullet("1. Someone who can grant roles adds them: portal.azure.com > Subscriptions > the subscription >")
+    console.bullet("Access control (IAM) > Add > Add role assignment > Privileged administrator roles >", indent=5)
+    console.bullet("the role > your account. If the wizard shows an Assignment type step, choose", indent=5)
+    console.bullet("Active and Permanent.", indent=5)
+    console.bullet("2. Nobody can grant roles but you are the Global Administrator: portal.azure.com >")
     console.bullet('Microsoft Entra ID > Properties > set "Access management for Azure resources" to Yes > Save,', indent=5)
-    console.bullet("grant yourself Owner as in step 1, then set the toggle back to No.", indent=5)
+    console.bullet("run `pdt login <app>`, grant yourself the roles as in step 1, then set the toggle back to No.", indent=5)
     console.bullet("3. Run `pdt login <app>` to sign in fresh, and deploy again.")
     console.say('The "If Azure says AuthorizationFailed" section of the pdt README walks through the same steps.')
 
@@ -128,7 +149,7 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
         output = proc.stderr.lower()
         access_error = retry_access and (
             "unable to fetch secret" in output or "forbidden" in output
-            or no_role_on_subscription(proc.stderr))
+            or authorization_failed(proc.stderr))
         internal_error = retry_internal and "internalservererror" in output
         if proc.stderr.strip():
             console.say(proc.stderr.strip())
@@ -141,9 +162,9 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
     for text, hint in (hints or {}).items():
         if text.lower() in output:
             console.say(hint)
-    if no_role_on_subscription(proc.stderr):
-        explain_missing_role()
-        fail(f"pdt az {' '.join(args[:4])} failed; grant the role above and re-run")
+    if authorization_failed(proc.stderr):
+        explain_missing_role(proc.stderr)
+        fail(f"pdt az {' '.join(args[:4])} failed; grant the roles above and re-run")
     fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
 
 
