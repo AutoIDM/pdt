@@ -98,8 +98,9 @@ rebase-mrs:
 # Runs on a master pipeline whose `mode` variable is score_mrs: a project
 # webhook on merge request events triggers one when an MR is opened, edited,
 # or marked ready (see the handbook, "Claude Code in CI"), and a daily schedule
-# sweeps everything. A web run with mode=score_mrs lists what it would do and
-# changes nothing unless the form also sets DRY_RUN=false.
+# sweeps everything. A webhook run scores only the MR in the event, which the
+# select hook reads from TRIGGER_PAYLOAD. A web run with mode=score_mrs lists
+# what it would do and changes nothing unless the form also sets DRY_RUN=false.
 score-mrs:
   extends: .claude-task
   needs: []

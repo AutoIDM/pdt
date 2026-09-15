@@ -20,11 +20,21 @@ The floor is deterministic and default-deny: a path no rule names is
 It also fetches every source branch into the checkout, so Claude's session
 can run ``git diff origin/<target>...origin/<branch>`` without fetching.
 
+A pipeline the project webhook started (through the trigger API) is about
+one merge request: the one in the webhook payload that GitLab hands over as
+the file variable TRIGGER_PAYLOAD. Such a run looks at that MR alone, and
+does nothing at all for an event that cannot change a score (the MR was
+closed or merged, or only its labels changed, which is what this task's own
+labelling raises). A schedule or web run has no payload and sweeps every
+open MR.
+
 Environment:
   GITLAB_TOKEN   project access token with ``api``. Merging into the default
                  branch needs the token's role to be allowed to merge there.
   DRY_RUN        anything but the exact word ``false`` means list and change
                  nothing; the CI job sets it to false on master and schedules.
+  TRIGGER_PAYLOAD  path to the webhook payload, set by GitLab on a pipeline
+                 the trigger API started from a webhook. Absent otherwise.
   CI_API_V4_URL, CI_PROJECT_ID, CI_DEFAULT_BRANCH   set by GitLab CI.
 
 Stdlib only.
@@ -51,6 +61,10 @@ DEFAULT_API = "https://gitlab.com/api/v4"
 REQUIRED = ("GITLAB_TOKEN", "CI_PROJECT_ID")
 MERGE_NOTE = ("Auto-merged as `tier::simple` by pdt CI: the rules and Claude both scored "
               "it simple, and its pipeline passed with no conflicts and no open discussions.")
+# Webhook actions after which the MR is no longer open, so there is nothing to score.
+CLOSING_ACTIONS = ("close", "merge")
+# Keys GitLab reports in an update event's ``changes`` when only labels moved.
+LABEL_ONLY_CHANGES = {"labels", "updated_at", "updated_by_id"}
 
 # Path rules, first match wins, checked in this order after the pyproject rule.
 ARCHITECTURAL = (
@@ -353,6 +367,41 @@ def fetch_branches(branches: list[str]) -> None:
 
 # --- orchestration ------------------------------------------------------------
 
+def webhook_payload(env) -> dict | None:
+    """The webhook payload GitLab hands a pipeline the trigger API started."""
+    path = env.get("TRIGGER_PAYLOAD", "")
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as problem:
+        log(f"TRIGGER_PAYLOAD is not a JSON file ({problem}); sweeping every open MR")
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def event_scope(payload: dict | None) -> tuple[str, int | None]:
+    """What a run should look at, from the webhook event that started it.
+
+    Returns ("all", None) for a sweep, ("one", iid) for the MR the event
+    names, or ("none", iid) when the event cannot change a score.
+    """
+    if not payload or payload.get("object_kind") != "merge_request":
+        return "all", None
+    attrs = payload.get("object_attributes") or {}
+    iid = attrs.get("iid")
+    if not isinstance(iid, int):
+        return "all", None
+    action = attrs.get("action") or ""
+    if action in CLOSING_ACTIONS:
+        return "none", iid
+    changes = set(payload.get("changes") or {})
+    if action == "update" and changes and changes <= LABEL_ONLY_CHANGES:
+        return "none", iid
+    return "one", iid
+
+
 def main() -> int:
     env = os.environ
     missing = [name for name in REQUIRED if not env.get(name)]
@@ -362,7 +411,16 @@ def main() -> int:
     dry_run = env.get("DRY_RUN", "true").strip().lower() != "false"
     target = env.get("CI_DEFAULT_BRANCH", "master")
 
+    scope, event_iid = event_scope(webhook_payload(env))
+    if scope == "none":
+        log(f"webhook event for !{event_iid} cannot change its score; nothing to do")
+        print(json.dumps([]))
+        return 0
     mrs = [mr for mr in list_open_mrs(env, target) if wanted(mr, env["CI_PROJECT_ID"])]
+    if scope == "one":
+        mrs = [mr for mr in mrs if mr["iid"] == event_iid]
+        log(f"webhook event for !{event_iid}: looking at that MR only"
+            + ("" if mrs else " (it is not an open MR of this project)"))
     log(f"{len(mrs)} open MR(s) targeting {target} qualify"
         + (" (dry run: nothing is merged)" if dry_run else ""))
     if mrs:
