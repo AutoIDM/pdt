@@ -276,6 +276,16 @@ def test_label_change_leaves_exactly_one_tier_label():
 
 # --- select hook end to end ---------------------------------------------------
 
+def webhook_event(tmp_path, monkeypatch, iid, action="open", changes=None) -> None:
+    """Point TRIGGER_PAYLOAD at a merge request webhook payload for ``iid``."""
+    payload = {"object_kind": "merge_request", "event_type": "merge_request",
+               "object_attributes": {"iid": iid, "action": action},
+               "changes": changes or {}}
+    path = tmp_path / "payload.json"
+    path.write_text(json.dumps(payload))
+    monkeypatch.setenv("TRIGGER_PAYLOAD", str(path))
+
+
 def run_select(monkeypatch, capsys, mrs, notes, dry_run="false"):
     arm(monkeypatch, dry_run)
     fetches = []
@@ -375,6 +385,120 @@ def test_select_names_missing_variables(monkeypatch, capsys):
     monkeypatch.setenv("CI_PROJECT_ID", "42")
     assert select.main() == 1
     assert "GITLAB_TOKEN" in capsys.readouterr().err
+
+
+# --- a webhook run looks at one MR --------------------------------------------
+
+def test_event_scope_names_the_mr_or_says_there_is_nothing_to_do():
+    def event(action, changes=None, **attrs):
+        return {"object_kind": "merge_request",
+                "object_attributes": {"iid": 5, "action": action, **attrs},
+                "changes": changes or {}}
+
+    assert select.event_scope(None) == ("all", None)
+    assert select.event_scope({"object_kind": "push"}) == ("all", None)
+    assert select.event_scope({"object_kind": "merge_request", "object_attributes": {}}) == (
+        "all", None)
+    ready = {"draft": {"previous": True, "current": False}, "title": {}, "updated_at": {}}
+    assert select.event_scope(event("open")) == ("one", 5)
+    assert select.event_scope(event("reopen")) == ("one", 5)
+    assert select.event_scope(event("update", ready)) == ("one", 5)
+    assert select.event_scope(event("update", {"work_in_progress": ready["draft"]})) == ("one", 5)
+    # Everything else does nothing: pushes, rebases, labels, edits, going to Draft, closing.
+    assert select.event_scope(event("update", {"last_commit": {}, "updated_at": {}})) == ("none", 5)
+    assert select.event_scope(event("update", {"labels": {}, "updated_at": {}})) == ("none", 5)
+    assert select.event_scope(event("update", {"draft": {"previous": False, "current": True}})) == (
+        "none", 5)
+    assert select.event_scope(event("update", {"description": {}})) == ("none", 5)
+    assert select.event_scope(event("update")) == ("none", 5)
+    assert select.event_scope(event("approved")) == ("none", 5)
+    assert select.event_scope(event("close")) == ("none", 5)
+    assert select.event_scope(event("merge")) == ("none", 5)
+
+
+def test_gate_says_skip_for_an_event_that_does_nothing_and_run_otherwise(monkeypatch, capsys, tmp_path):
+    monkeypatch.delenv("TRIGGER_PAYLOAD", raising=False)
+    assert select.main(["--gate"]) == 0
+    assert capsys.readouterr().out.strip() == "run"
+    webhook_event(tmp_path, monkeypatch, 4, action="update", changes={"last_commit": {}})
+    assert select.main(["--gate"]) == 0
+    out, err = capsys.readouterr()
+    assert out.strip() == "skip" and "webhook event for !4 is 'update'" in err
+    webhook_event(tmp_path, monkeypatch, 4, action="update",
+                  changes={"draft": {"previous": True, "current": False}})
+    assert select.main(["--gate"]) == 0
+    assert capsys.readouterr().out.strip() == "run"
+    webhook_event(tmp_path, monkeypatch, 4)
+    assert select.main(["--gate"]) == 0
+    assert capsys.readouterr().out.strip() == "run"
+
+
+def test_the_ci_job_gates_on_the_event_before_installing_anything():
+    ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
+    gate = ci[".claude-task"]["before_script"][0]
+    assert gate.startswith("if [ -n \"$CLAUDE_TASK_GATE\" ]") and "= skip" in gate and "exit 0" in gate
+    assert ci["score-mrs"]["variables"]["CLAUDE_TASK_GATE"] == \
+        "python ci/claude-tasks/score-mrs/select_mrs.py --gate"
+    assert "CLAUDE_TASK_GATE" not in ci["rebase-mrs"].get("variables", {})
+
+
+def test_a_webhook_run_scores_only_the_mr_in_the_event(monkeypatch, capsys, tmp_path):
+    webhook_event(tmp_path, monkeypatch, 2)
+    mrs = {1: {**mr(1), "_files": [change("docs/a.md")]},
+           2: {**mr(2), "_files": [change("docs/b.md")]},
+           3: {**mr(3), "_files": [change("docs/c.md")]}}
+    items, err, calls, fetches = run_select(monkeypatch, capsys, mrs, {})
+    assert [item["iid"] for item in items] == [2]
+    assert "webhook event for !2: looking at that MR only" in err
+    assert "1 open MR(s)" in err
+    touched = {p for _, p, _ in calls if "/merge_requests/" in p}
+    assert touched == {"/projects/42/merge_requests/2", "/projects/42/merge_requests/2/diffs?per_page=100&page=1",
+                       "/projects/42/merge_requests/2/notes?sort=desc&order_by=created_at&per_page=100&page=1"}
+    assert fetches == [["git", "fetch", "--quiet", "origin",
+                        "+refs/heads/master:refs/remotes/origin/master",
+                        "+refs/heads/branch-2:refs/remotes/origin/branch-2"]]
+
+
+def test_a_webhook_run_for_an_mr_leaving_draft_scores_it(monkeypatch, capsys, tmp_path):
+    webhook_event(tmp_path, monkeypatch, 2, action="update",
+                  changes={"draft": {"previous": True, "current": False},
+                           "title": {"previous": "Draft: x", "current": "x"}})
+    mrs = {1: {**mr(1), "_files": [change("docs/a.md")]},
+           2: {**mr(2), "_files": [change("docs/b.md")]}}
+    items, err, _, _ = run_select(monkeypatch, capsys, mrs, {})
+    assert [item["iid"] for item in items] == [2]
+    assert "looking at that MR only" in err
+
+
+def test_a_webhook_run_for_any_other_event_does_nothing(monkeypatch, capsys, tmp_path):
+    for action, changes in (("close", None),
+                            ("update", {"last_commit": {"previous": {}, "current": {}}}),
+                            ("update", {"labels": {"previous": [], "current": [{"title": "tier::review"}]},
+                                        "updated_at": {"previous": "a", "current": "b"}})):
+        webhook_event(tmp_path, monkeypatch, 2, action=action, changes=changes)
+        items, err, calls, fetches = run_select(monkeypatch, capsys,
+                                                {2: {**mr(2), "_files": []}}, {})
+        assert items == [] and calls == [] and fetches == [], action
+        assert f"webhook event for !2 is '{action}'" in err and "nothing to do" in err
+
+
+def test_a_webhook_run_for_an_mr_that_is_no_longer_open_lists_nothing(monkeypatch, capsys, tmp_path):
+    webhook_event(tmp_path, monkeypatch, 9)
+    items, err, calls, fetches = run_select(monkeypatch, capsys, {1: {**mr(1), "_files": []}}, {})
+    assert items == [] and fetches == []
+    assert "not an open MR of this project" in err
+    assert [p for _, p, _ in calls] == ["/projects/42/merge_requests?state=opened&target_branch=master&per_page=100&page=1"]
+
+
+def test_a_bad_payload_falls_back_to_a_sweep(monkeypatch, capsys, tmp_path):
+    (tmp_path / "payload.json").write_text("not json")
+    monkeypatch.setenv("TRIGGER_PAYLOAD", str(tmp_path / "payload.json"))
+    items, err, _, _ = run_select(monkeypatch, capsys, {1: {**mr(1), "_files": [change("a.md")]}}, {})
+    assert [item["iid"] for item in items] == [1]
+    assert "sweeping every open MR" in err
+    monkeypatch.setenv("TRIGGER_PAYLOAD", str(tmp_path / "missing.json"))
+    items, err, _, _ = run_select(monkeypatch, capsys, {1: {**mr(1), "_files": [change("a.md")]}}, {})
+    assert [item["iid"] for item in items] == [1]
 
 
 # --- check hook end to end ----------------------------------------------------

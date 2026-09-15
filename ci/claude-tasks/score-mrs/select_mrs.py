@@ -20,11 +20,25 @@ The floor is deterministic and default-deny: a path no rule names is
 It also fetches every source branch into the checkout, so Claude's session
 can run ``git diff origin/<target>...origin/<branch>`` without fetching.
 
+A pipeline the project webhook started (through the trigger API) is about
+one merge request: the one in the webhook payload that GitLab hands over as
+the file variable TRIGGER_PAYLOAD. Such a run looks at that MR alone, and
+only when the event is the MR being opened or leaving Draft. Every other
+event (a push, a rebase, a label, a comment, a close) does nothing; the
+daily sweep picks up a changed diff. A schedule or web run has no payload
+and sweeps every open MR.
+
+Run with ``--gate`` it prints ``skip`` when the event is one of those that
+do nothing, so the CI job can end before it installs anything (see
+CLAUDE_TASK_GATE in .gitlab-ci.yml), and ``run`` otherwise.
+
 Environment:
   GITLAB_TOKEN   project access token with ``api``. Merging into the default
                  branch needs the token's role to be allowed to merge there.
   DRY_RUN        anything but the exact word ``false`` means list and change
                  nothing; the CI job sets it to false on master and schedules.
+  TRIGGER_PAYLOAD  path to the webhook payload, set by GitLab on a pipeline
+                 the trigger API started from a webhook. Absent otherwise.
   CI_API_V4_URL, CI_PROJECT_ID, CI_DEFAULT_BRANCH   set by GitLab CI.
 
 Stdlib only.
@@ -51,6 +65,10 @@ DEFAULT_API = "https://gitlab.com/api/v4"
 REQUIRED = ("GITLAB_TOKEN", "CI_PROJECT_ID")
 MERGE_NOTE = ("Auto-merged as `tier::simple` by pdt CI: the rules and Claude both scored "
               "it simple, and its pipeline passed with no conflicts and no open discussions.")
+# Webhook actions that mean a merge request just became open.
+OPENING_ACTIONS = ("open", "reopen")
+# Keys under which an update event reports the Draft flag (the second is the old name).
+DRAFT_KEYS = ("draft", "work_in_progress")
 
 # Path rules, first match wins, checked in this order after the pyproject rule.
 ARCHITECTURAL = (
@@ -353,8 +371,65 @@ def fetch_branches(branches: list[str]) -> None:
 
 # --- orchestration ------------------------------------------------------------
 
-def main() -> int:
+def webhook_payload(env) -> dict | None:
+    """The webhook payload GitLab hands a pipeline the trigger API started."""
+    path = env.get("TRIGGER_PAYLOAD", "")
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as problem:
+        log(f"TRIGGER_PAYLOAD is not a JSON file ({problem}); sweeping every open MR")
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def left_draft(changes: dict) -> bool:
+    """An update event in which the MR went from Draft to ready."""
+    for key in DRAFT_KEYS:
+        change = changes.get(key) or {}
+        if change.get("previous") is True and change.get("current") is False:
+            return True
+    return False
+
+
+def event_scope(payload: dict | None) -> tuple[str, int | None]:
+    """What a run should look at, from the webhook event that started it.
+
+    Returns ("all", None) for a sweep, ("one", iid) when the event is the MR
+    opening or leaving Draft, or ("none", iid) for any other event.
+    """
+    if not payload or payload.get("object_kind") != "merge_request":
+        return "all", None
+    attrs = payload.get("object_attributes") or {}
+    iid = attrs.get("iid")
+    if not isinstance(iid, int):
+        return "all", None
+    action = attrs.get("action") or ""
+    if action in OPENING_ACTIONS:
+        return "one", iid
+    if action == "update" and left_draft(payload.get("changes") or {}):
+        return "one", iid
+    return "none", iid
+
+
+def skip_reason(payload: dict, iid: int) -> str:
+    action = (payload.get("object_attributes") or {}).get("action") or "unknown"
+    return (f"webhook event for !{iid} is '{action}', not the MR opening or leaving Draft; "
+            "nothing to do (the daily sweep scores a changed diff)")
+
+
+def main(argv: list[str] | None = None) -> int:
     env = os.environ
+    gate = (argv if argv is not None else sys.argv[1:]) == ["--gate"]
+    if gate:
+        payload = webhook_payload(env)
+        scope, event_iid = event_scope(payload)
+        if scope == "none":
+            log(skip_reason(payload, event_iid))
+        print("skip" if scope == "none" else "run")
+        return 0
     missing = [name for name in REQUIRED if not env.get(name)]
     if missing:
         log(f"set {', '.join(missing)} before running the score-mrs task")
@@ -362,7 +437,17 @@ def main() -> int:
     dry_run = env.get("DRY_RUN", "true").strip().lower() != "false"
     target = env.get("CI_DEFAULT_BRANCH", "master")
 
+    payload = webhook_payload(env)
+    scope, event_iid = event_scope(payload)
+    if scope == "none":
+        log(skip_reason(payload, event_iid))
+        print(json.dumps([]))
+        return 0
     mrs = [mr for mr in list_open_mrs(env, target) if wanted(mr, env["CI_PROJECT_ID"])]
+    if scope == "one":
+        mrs = [mr for mr in mrs if mr["iid"] == event_iid]
+        log(f"webhook event for !{event_iid}: looking at that MR only"
+            + ("" if mrs else " (it is not an open MR of this project)"))
     log(f"{len(mrs)} open MR(s) targeting {target} qualify"
         + (" (dry run: nothing is merged)" if dry_run else ""))
     if mrs:
