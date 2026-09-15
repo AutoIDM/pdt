@@ -641,9 +641,10 @@ def store_exists(store: dict[str, str]) -> bool:
                         "--resource-group", store["group"], "--name", store["container"])
     if container is None:
         return False
-    if (container.get("metadata") or {}).get("managed_by") != "pdt":
+    metadata = container.get("metadata") or {}
+    if metadata and metadata.get("managed_by") != "pdt":
         fail(f"container {store['container']} exists but is not managed by PDT")
-    return True
+    return bool(metadata)
 
 
 def store_condition(app_name: str) -> str:
@@ -681,7 +682,10 @@ def ensure_store(settings: dict[str, str], store: dict[str, str], exists: bool) 
                   "--resource-group", store["group"], "--location", settings["region"],
                   "--sku", "Standard_LRS", "--allow-blob-public-access", "false",
                   "--min-tls-version", "TLS1_2", "--tags", *STORE_TAG_ARGS)
-        run_quiet("storage", "container-rm", "create",
+        container = az_json("storage", "container-rm", "show",
+                            "--storage-account", store["account"],
+                            "--resource-group", store["group"], "--name", store["container"])
+        run_quiet("storage", "container-rm", "update" if container else "create",
                   "--storage-account", store["account"],
                   "--resource-group", store["group"], "--name", store["container"],
                   "--metadata", *STORE_METADATA_ARGS)
