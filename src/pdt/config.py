@@ -93,6 +93,13 @@ def load_yaml(path: Path) -> dict:
     return data
 
 
+def data_home() -> Path:
+    """The user's data folder, where pdt keeps what it writes outside a project."""
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+
+
 def find_project(start: Path | None = None) -> Path:
     override = os.environ.get("PDT_PROJECT", "").strip()
     if override != "":
