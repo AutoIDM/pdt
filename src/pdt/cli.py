@@ -26,6 +26,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import rich_argparse
+
 from pdt import __version__, config, console, deploy, scaffold
 from pdt.config import ConfigError
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -92,7 +94,7 @@ def cmd_validate(_args) -> int:
     if problems:
         for problem in problems:
             console.error(problem)
-        console.say(f"{len(problems)} problem(s) found.")
+        console.failed(f"{len(problems)} problem(s) found.")
         return 1
     console.done("Configuration is valid.")
     return 0
@@ -159,36 +161,41 @@ def main() -> int:
             ["uv", "run", "--script", str(script), *sys.argv[1:]]).returncode
     parser = argparse.ArgumentParser(
         prog="pdt", description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+        formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
     parser.add_argument("--version", action="version", version=__version__)
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("init", help="create a project here, or in DIR")
-    p.add_argument("directory", nargs="?")
+
+    def add_parser(name: str, **kwargs):
+        return sub.add_parser(
+            name, formatter_class=rich_argparse.RawDescriptionRichHelpFormatter, **kwargs)
+
+    p = add_parser("init", help="create a project here, or in DIR")
+    p.add_argument("directory", nargs="?", help="where to create the project (default: here)")
     p.add_argument("--yes", action="store_true", help="accept the defaults, ask nothing")
     p.set_defaults(func=cmd_init)
-    sub.add_parser("examples", help="list the bundled example apps").set_defaults(
+    add_parser("examples", help="list the bundled example apps").set_defaults(
         func=cmd_examples)
-    p = sub.add_parser("new", help="add an app to the project")
-    p.add_argument("app")
+    p = add_parser("new", help="add an app to the project")
+    p.add_argument("app", help="the app's folder name")
     p.add_argument("--from", dest="source",
                    help="which example to copy; run `pdt examples` to see them")
     p.set_defaults(func=cmd_new)
-    sub.add_parser("list", help="show every app").set_defaults(func=cmd_list)
-    sub.add_parser("validate", help="check config and env").set_defaults(func=cmd_validate)
-    p = sub.add_parser("run", help="run an app locally")
-    p.add_argument("app")
+    add_parser("list", help="show every app").set_defaults(func=cmd_list)
+    add_parser("validate", help="check config and env").set_defaults(func=cmd_validate)
+    p = add_parser("run", help="run an app locally")
+    p.add_argument("app", help="the app's folder name")
     p.set_defaults(func=cmd_run)
-    p = sub.add_parser("deploy", help="deploy an app")
-    p.add_argument("app", nargs="?")
+    p = add_parser("deploy", help="deploy an app")
+    p.add_argument("app", nargs="?", help="the app's folder name; omit to see the choices")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--profile", help="AWS profile name (AWS only)")
     p.set_defaults(func=cmd_deploy)
-    p = sub.add_parser("login", help="sign in again to an app's cloud provider")
-    p.add_argument("app")
+    p = add_parser("login", help="sign in again to an app's cloud provider")
+    p.add_argument("app", help="the app's folder name")
     p.add_argument("--profile", help="AWS profile name (AWS only)")
     p.set_defaults(func=cmd_login)
-    p = sub.add_parser("destroy", help="tear down an app's deployed resources")
-    p.add_argument("app")
+    p = add_parser("destroy", help="tear down an app's deployed resources")
+    p.add_argument("app", help="the app's folder name")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--profile", help="AWS profile name (AWS only)")
     p.set_defaults(func=cmd_destroy)

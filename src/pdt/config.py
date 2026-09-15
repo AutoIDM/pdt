@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
 
-PROVIDERS = ("google-cloud", "azure", "aws", "snowflake", "windows")
+PROVIDERS = ("google-cloud", "azure", "aws", "windows")
 AWS_RUNTIMES = ("lambda", "fargate")
 AZURE_RUNTIMES = ("functions", "container_apps")
 SCHEDULE_SHORTHAND = {
