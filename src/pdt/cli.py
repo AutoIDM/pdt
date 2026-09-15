@@ -1,20 +1,6 @@
 """pdt — set up, run, and deploy scheduled jobs.
 
-Commands:
-  init [DIR]             create a project here, or in DIR
-  examples               list the example apps bundled with pdt
-  new <app> --from EXAMPLE   add an app to the project
-  list                   show every app with its schedule and provider
-  validate               check config files and required env vars
-  run <app>              run an app locally
-  deploy <app> [--yes] [--profile NAME]   deploy an app to its configured platform
-  destroy <app> [--yes] [--profile NAME]  tear down everything deploy created for an app
-  login <app> [--profile NAME]            sign in again to the app's cloud provider
-  aws <args...>          run the AWS CLI that pdt installs
-  az <args...>           run the Azure CLI that pdt installs
-  gcloud <args...>       run the Google Cloud CLI that pdt installs
-
-Every command except `init`, `examples`, `aws`, `az`, and `gcloud` needs a project.
+Every command except init, examples, aws, az, and gcloud needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
 """
 
@@ -159,11 +145,13 @@ def main() -> int:
         script = Path(__file__).with_name(CLOUD_CLIS[sys.argv[1]])
         return subprocess.run(
             ["uv", "run", "--script", str(script), *sys.argv[1:]]).returncode
+    summary, _, note = __doc__.strip().partition("\n\n")
     parser = argparse.ArgumentParser(
-        prog="pdt", description=__doc__,
+        prog="pdt", description=summary, epilog=note,
         formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
     parser.add_argument("--version", action="version", version=__version__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=True, title="commands",
+                                metavar="<command>")
 
     def add_parser(name: str, **kwargs):
         return sub.add_parser(
@@ -199,6 +187,8 @@ def main() -> int:
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--profile", help="AWS profile name (AWS only)")
     p.set_defaults(func=cmd_destroy)
+    for name, label in (("aws", "AWS"), ("az", "Azure"), ("gcloud", "Google Cloud")):
+        add_parser(name, help=f"run the {label} CLI that pdt installs")
     args = parser.parse_args()
     try:
         return args.func(args)
