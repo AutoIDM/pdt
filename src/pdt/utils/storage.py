@@ -103,6 +103,11 @@ class Backend:
     def delete(self, path: str) -> None:
         raise NotImplementedError
 
+    def rclone_remote(self) -> tuple[str, dict[str, str]]:
+        """The rclone connection string for the app folder, and the
+        environment that carries the sign-in to rclone."""
+        raise NotImplementedError
+
 
 class Local(Backend):
     def __init__(self, url: str, credentials):
@@ -147,6 +152,9 @@ class Local(Backend):
     def delete(self, path: str) -> None:
         self.file(path).unlink(missing_ok=True)
 
+    def rclone_remote(self) -> tuple[str, dict[str, str]]:
+        return f":local:{self.folder}", {}
+
 
 class S3(Backend):
     @cached_property
@@ -184,6 +192,17 @@ class S3(Backend):
     def delete(self, path: str) -> None:
         self.client.delete_object(Bucket=self.host, Key=self.key(path))
 
+    def rclone_remote(self) -> tuple[str, dict[str, str]]:
+        region = self.client.get_bucket_location(Bucket=self.host)["LocationConstraint"]
+        env = {}
+        if self.credentials is not None:
+            creds = self.credentials.get_credentials().get_frozen_credentials()
+            env = {"AWS_ACCESS_KEY_ID": creds.access_key,
+                   "AWS_SECRET_ACCESS_KEY": creds.secret_key,
+                   "AWS_SESSION_TOKEN": creds.token or ""}
+        remote = f":s3,provider=AWS,env_auth=true,region={region or 'us-east-1'}:{self.host}/{self.prefix}"
+        return remote, env
+
 
 class GCS(Backend):
     @cached_property
@@ -210,6 +229,11 @@ class GCS(Backend):
 
     def delete(self, path: str) -> None:
         self.bucket.blob(self.key(path)).delete()
+
+    def rclone_remote(self) -> tuple[str, dict[str, str]]:
+        token = getattr(self.credentials, "token", None)
+        auth = f"access_token={token}" if token else "env_auth=true"
+        return f":gcs,{auth}:{self.host}/{self.prefix}", {}
 
 
 class Azure(Backend):
@@ -254,6 +278,10 @@ class Azure(Backend):
 
     def delete(self, path: str) -> None:
         self.client.delete_blob(self.key(path))
+
+    def rclone_remote(self) -> tuple[str, dict[str, str]]:
+        account = self.account_host.split(".", 1)[0]
+        return f":azureblob,account={account},env_auth=true:{self.container}/{self.prefix}", {}
 
 
 BACKENDS: dict[str, type[Backend]] = {
@@ -305,7 +333,7 @@ class Store:
 
     def pull(self, remote: str, local: Path, lock_ttl: timedelta = LOCK_TTL) -> Lease:
         backend = self.backend()
-        lock = self._take_lock(backend, lock_ttl) if remote.startswith("state") else {}
+        lock = self.take_lock(lock_ttl) if remote.startswith("state") else {}
         versions = backend.versions(remote)
         versions.pop(LOCK, None)
         local.mkdir(parents=True, exist_ok=True)
@@ -331,8 +359,11 @@ class Store:
         if lease is not None and lease.lock:
             backend.delete(LOCK)
 
-    def _take_lock(self, backend: Backend, ttl: timedelta) -> dict:
-        lock = {"run": RUN_ID, "started": datetime.now(timezone.utc).isoformat()}
+    def take_lock(self, ttl: timedelta = LOCK_TTL, owner: str | None = None) -> dict:
+        """Hold `state/` until release_lock. A run younger than ttl that still
+        holds it raises StorageLocked; an older one is taken over."""
+        backend = self.backend()
+        lock = {"run": owner or RUN_ID, "started": datetime.now(timezone.utc).isoformat()}
         data = json.dumps(lock).encode()
         if backend.create_if_absent(LOCK, data):
             return lock
@@ -340,6 +371,21 @@ class Store:
         if held is not None:
             app = self.url.rstrip("/").rsplit("/", 1)[-1]
             raise StorageLocked(
-                f"another run of {app} started at {held['started']} still holds the state")
+                f"another run of {app} ({held['run']}) started at {held['started']} "
+                f"still holds the state")
         backend.put_if_version(LOCK, data, backend.versions(LOCK)[LOCK])
         return lock
+
+    def renew_lock(self, lock: dict) -> dict:
+        """Restart the ttl of a lock this process holds."""
+        backend = self.backend()
+        current = backend.versions(LOCK).get(LOCK)
+        if current is None or self.held_lock(timedelta.max) != lock:
+            raise StorageConflict("the lock was taken over by another run")
+        renewed = dict(lock, started=datetime.now(timezone.utc).isoformat())
+        backend.put_if_version(LOCK, json.dumps(renewed).encode(), current)
+        return renewed
+
+    def release_lock(self, lock: dict) -> None:
+        if self.held_lock(timedelta.max) == lock:
+            self.backend().delete(LOCK)

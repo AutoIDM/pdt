@@ -96,7 +96,7 @@ pdt login my-report
 | `pdt secrets APP get` | copy the deployed values into a `.env.<provider>` file |
 | `pdt secrets APP set NAME` | put one value, read from stdin, into the deployed app's secrets |
 | `pdt login APP` | sign in again to the app's cloud provider |
-| `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files |
+| `pdt storage APP ls|get|query|mount|destroy` | look at, fetch, query, open as a folder, or delete the app's stored files |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
 | `pdt completion [SHELL]` | turn on tab completion for a shell |
@@ -137,7 +137,11 @@ store.push(Path(".pdt-state"), "state/", lease)
 
 `pull` locks the folder, so a second copy of your app cannot run at the same time and mix up the files. `push` checks that nobody else changed them, saves them, and unlocks. If a run crashes, the next one takes over the lock after 30 minutes.
 
-From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
+`store.open` and `store.fs()` read a file only when your code opens it, and write one only when your code closes it. Nothing copies the whole folder. `pull` and `push` copy only the folder you name, and you use them only for files a program needs on disk, such as a database.
+
+From your own computer, `pdt storage APP mount` opens the same folder as a folder on your computer, at `.pdt/mount/APP/` in your project or a folder you name. Open, list, and edit the files with any program. A file downloads the first time you open it, and uploads when you close it. `mount` takes the same lock as `pull`, so a run cannot change `state/` while you have the folder open, and you cannot open it for writing while a run holds it; then pdt mounts it read-only and says so. `pdt storage APP mount --read-only` never takes the lock. Press Ctrl-C to unmount. pdt downloads [rclone](https://rclone.org/) for this the first time, after asking; on Windows it also installs WinFsp.
+
+`pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
 
 An app that is not ready sets `enabled: false` in its `config.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it.
 

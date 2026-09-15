@@ -5,13 +5,22 @@ Each function takes a `pdt.utils.storage.Store` already scoped to one app.
 
 from __future__ import annotations
 
+import os
+import platform
 import re
+import socket
+import subprocess
 import tempfile
+import threading
+from datetime import timedelta
 from pathlib import Path
 
-from pdt import console
+from pdt import config, console
+from pdt.utils.storage import Local, StorageConflict, StorageLocked
 
-USAGE = "usage: pdt storage <app> ls [path] | get <path> [dest] | query <sql> | destroy [--yes]"
+USAGE = ("usage: pdt storage <app> ls [path] | get <path> [dest] | query <sql> "
+         "| mount [dir] [--read-only] | destroy [--yes]")
+LOCK_RENEW = timedelta(minutes=10)
 
 
 def ls(store, path) -> int:
@@ -54,6 +63,81 @@ def query(store, sql) -> int:
     return 0
 
 
+def mount(store, app, args, assume_yes) -> int:
+    from pdt import rclone
+
+    read_only = "--read-only" in args
+    words = [arg for arg in args if arg != "--read-only"]
+    backend = store.backend()
+    if isinstance(backend, Local):
+        console.done(f"{app}'s files are already a folder on this computer: {backend.folder}")
+        return 0
+    target = Path(words[0]) if words else find_mount_folder(app)
+    try:
+        binary = rclone.ensure_rclone(assume_yes)
+        rclone.ensure_winfsp(assume_yes)
+    except rclone.RcloneError as e:
+        console.error(str(e))
+        return 1
+    lock = None
+    if not read_only:
+        try:
+            lock = store.take_lock(owner=f"mount on {socket.gethostname()}")
+        except StorageLocked as e:
+            console.warn(f"{e}; mounting read-only")
+            read_only = True
+    remote, env = backend.rclone_remote()
+    command = mount_command(binary, remote, target, read_only)
+    stop = threading.Event()
+    renewer = threading.Thread(target=renew, args=(store, lock, stop), daemon=True)
+    renewer.start()
+    if os.name != "nt":
+        target.mkdir(parents=True, exist_ok=True)
+    console.status(f"mounting {app} at {target}" + (" (read-only)" if read_only else ""))
+    console.say("Press Ctrl-C to unmount.")
+    proc = subprocess.Popen(command, env=dict(os.environ, **env))
+    interrupted = False
+    try:
+        proc.wait()
+    except KeyboardInterrupt:
+        interrupted = True
+        proc.terminate()
+        proc.wait()
+    finally:
+        stop.set()
+        if lock is not None:
+            store.release_lock(lock)
+    if proc.returncode and not interrupted:
+        console.error(f"rclone ended with code {proc.returncode}")
+        return 1
+    console.done(f"unmounted {target}")
+    return 0
+
+
+def find_mount_folder(app: str) -> Path:
+    return config.find_project() / ".pdt" / "mount" / app
+
+
+def mount_command(binary: str, remote: str, target: Path, read_only: bool) -> list[str]:
+    # macOS mounts through its own NFS client, so no kernel extension is
+    # needed. Linux and Windows use FUSE (fuse3 and WinFsp).
+    verb = "nfsmount" if platform.system() == "Darwin" else "mount"
+    command = [binary, verb, remote, str(target),
+               "--vfs-cache-mode", "full", "--dir-cache-time", "10s"]
+    if read_only:
+        command.append("--read-only")
+    return command
+
+
+def renew(store, lock, stop: threading.Event) -> None:
+    while lock is not None and not stop.wait(LOCK_RENEW.total_seconds()):
+        try:
+            lock.update(store.renew_lock(lock))
+        except StorageConflict as e:
+            console.warn(f"{e}; a run may change state/ while it is mounted")
+            return
+
+
 def destroy(store, app, assume_yes) -> int:
     from pdt import deploy
 
@@ -80,6 +164,7 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
         "get": (1, lambda args: get(store, args[0],
                                     Path(args[1] if len(args) > 1 else Path(args[0]).name))),
         "query": (1, lambda args: query(store, args[0])),
+        "mount": (0, lambda args: mount(store, name, args, assume_yes)),
         "destroy": (0, lambda args: destroy(store, name, assume_yes)),
     }
     subcommand, *args = rest or [""]

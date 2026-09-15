@@ -44,7 +44,8 @@ def test_a_second_pull_within_the_ttl_is_refused(store, tmp_path, monkeypatch):
     store.pull("state/", tmp_path / "a")
     with pytest.raises(StorageLocked) as caught:
         store.pull("state/", tmp_path / "b")
-    assert "another run of my-report started at" in str(caught.value)
+    assert "another run of my-report (" in str(caught.value)
+    assert ") started at" in str(caught.value)
 
 
 def test_a_stale_lock_is_taken_over(store, tmp_path, monkeypatch):
@@ -148,3 +149,40 @@ def test_usage_counts_files_and_bytes(store):
     write(store, "runs/a/report.csv", "abc")
     write(store, "state/count.txt", "12")
     assert store.usage() == (2, 5)
+
+
+def test_a_named_owner_holds_renews_and_releases_the_lock(store):
+    lock = store.take_lock(owner="mount on laptop")
+    assert lock["run"] == "mount on laptop"
+    renewed = store.renew_lock(lock)
+    assert renewed["started"] >= lock["started"]
+    assert store.held_lock()["run"] == "mount on laptop"
+    with pytest.raises(StorageLocked):
+        store.take_lock()
+    store.release_lock(renewed)
+    assert store.held_lock() is None
+
+
+def test_renewing_a_lock_another_run_took_over_is_refused(store):
+    lock = store.take_lock(owner="one")
+    store.backend().delete(LOCK)
+    store.take_lock(owner="two")
+    with pytest.raises(StorageConflict):
+        store.renew_lock(lock)
+    store.release_lock(lock)
+    assert store.held_lock()["run"] == "two"
+
+
+def test_rclone_remotes_name_the_app_folder():
+    from pdt.utils.storage import GCS, S3, Azure
+    s3 = S3("s3://pdt-data-abc/my-report/", None)
+    s3.__dict__["client"] = type("C", (), {"get_bucket_location": staticmethod(
+        lambda Bucket: {"LocationConstraint": "eu-west-1"})})()
+    remote, env = s3.rclone_remote()
+    assert remote == ":s3,provider=AWS,env_auth=true,region=eu-west-1:pdt-data-abc/my-report/"
+    assert env == {}
+    gcs = GCS("gs://pdt-data-abc/my-report/", None)
+    assert gcs.rclone_remote() == (":gcs,env_auth=true:pdt-data-abc/my-report/", {})
+    azure = Azure("abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/my-report/", None)
+    assert azure.rclone_remote() == (
+        ":azureblob,account=pdtdataabc,env_auth=true:pdt-data-abc/my-report/", {})

@@ -85,6 +85,7 @@ Both install routes must keep working, and a change is not done until both do:
 - Destroy prints what it will delete before it deletes anything, and asks to proceed.
 - Guide the user. If a required tool is missing, install it (see the guiding principle above). If a login or profile is missing, list the choices and ask. If a permission is missing, print the exact policy the user must add.
 - Schedules are cron expressions in config. Each provider translates them to its own scheduler format.
+- The app data store is a bucket on every provider, and the job reaches it through `pdt.utils.storage`, never through a mount. AWS Fargate and Azure Container Apps allow no FUSE, so a bucket mount inside the job exists only on Google Cloud Run; a mount on one provider would break parity. The person at the CLI mounts the same folder with `pdt storage <app> mount`, which runs rclone. The `state/lock` object in the bucket is the only thing that stops two writers, because no mount and no scheduler does; anything that writes `state/` takes that lock first.
 
 ## Anything written to disk outside the project
 
