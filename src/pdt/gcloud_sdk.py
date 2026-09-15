@@ -36,6 +36,7 @@ import zipfile
 from pathlib import Path
 
 from pdt import console
+from pdt.config import data_home
 
 VERSION = "581.0.0"
 CHECKSUMS = {
@@ -46,11 +47,7 @@ CHECKSUMS = {
     "windows-x86_64": "4ba8775a6fef8e09f9013c711e5a816fd6ce68c8f17da642141f24fd92891530",
 }
 
-if os.name == "nt":
-    _DATA_HOME = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
-else:
-    _DATA_HOME = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-SDK_DIR = _DATA_HOME / "pdt" / "gcloud"
+SDK_DIR = data_home() / "pdt" / "gcloud"
 GCLOUD_BIN = "gcloud.cmd" if os.name == "nt" else "gcloud"
 LOCAL_GCLOUD = SDK_DIR / "google-cloud-sdk" / "bin" / GCLOUD_BIN
 INSTALL_DOCS = "https://cloud.google.com/sdk/docs/install"

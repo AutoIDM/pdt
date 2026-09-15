@@ -14,6 +14,8 @@ dependencies = [
     "google-auth-oauthlib",
     "backoff",
     "rich-argparse>=1.8.0",
+    "argcomplete",
+    "shellingham",
 ]
 
 [project.optional-dependencies]

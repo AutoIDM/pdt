@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,9 @@ def run_cli(monkeypatch, *argv):
     return cli.main()
 
 
+APP_COMMANDS = ["run", "deploy", "login", "destroy"]
+
+
 def test_no_command_prints_help(monkeypatch, capsys):
     assert run_cli(monkeypatch) == 0
     out = capsys.readouterr().out
@@ -18,22 +22,36 @@ def test_no_command_prints_help(monkeypatch, capsys):
     assert "deploy" in out
 
 
-def test_deploy_without_app_lists_apps(project, monkeypatch, capsys):
+@pytest.mark.parametrize("command", APP_COMMANDS)
+def test_command_without_app_lists_apps(project, monkeypatch, capsys, command):
     add_app(project, "hello-world")
     add_app(project, "daily-report")
-    assert run_cli(monkeypatch, "deploy") == 1
+    assert run_cli(monkeypatch, command) == 1
     out = capsys.readouterr().out
-    assert "Which app do you want to deploy?" in out
+    assert f"Which app do you want to {command}?" in out
     assert "hello-world" in out
     assert "daily-report" in out
     assert "pdt list" in out
-    assert "pdt deploy <app>" in out
+    assert f"pdt {command} <app>" in out
 
 
-def test_deploy_without_app_caps_the_list_at_five(project, monkeypatch, capsys):
+@pytest.mark.parametrize("command", APP_COMMANDS)
+def test_command_with_unknown_app_lists_apps(project, monkeypatch, capsys, command):
+    add_app(project, "hello-world")
+    add_app(project, "daily-report")
+    assert run_cli(monkeypatch, command, "hello-wrld") == 1
+    out = capsys.readouterr().out
+    assert "error: no app named 'hello-wrld'" in out
+    assert "hello-world" in out
+    assert "daily-report" in out
+    assert f"pdt {command} <app>" in out
+
+
+@pytest.mark.parametrize("command", APP_COMMANDS)
+def test_command_without_app_caps_the_list_at_five(project, monkeypatch, capsys, command):
     for i in range(7):
         add_app(project, f"app-{i}")
-    assert run_cli(monkeypatch, "deploy") == 1
+    assert run_cli(monkeypatch, command) == 1
     out = capsys.readouterr().out
     assert "app-4" in out
     assert "app-5" not in out
@@ -41,11 +59,20 @@ def test_deploy_without_app_caps_the_list_at_five(project, monkeypatch, capsys):
     assert "pdt list" in out
 
 
-def test_deploy_without_app_in_empty_project(project, monkeypatch, capsys):
-    assert run_cli(monkeypatch, "deploy") == 1
+@pytest.mark.parametrize("command", APP_COMMANDS)
+def test_command_without_app_in_empty_project(project, monkeypatch, capsys, command):
+    assert run_cli(monkeypatch, command) == 1
     out = capsys.readouterr().out
     assert "no apps yet" in out
     assert "pdt new" in out
+
+
+def test_every_app_command_goes_through_choose_app():
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    for command in APP_COMMANDS:
+        app_arg = next(a for a in sub.choices[command]._actions if a.dest == "app")
+        assert app_arg.nargs == "?", f"pdt {command} must accept a missing app name"
 
 
 def test_cloud_cli_passthroughs_are_registered():
