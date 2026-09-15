@@ -33,8 +33,8 @@ def _load(app_name: str):
     provider = app["platform"].get("provider")
     if provider not in PROVIDERS:
         raise ConfigError(
-            f"provider {provider!r} is not supported yet "
-            f"(supported: {', '.join(PROVIDERS)})")
+            f"platform.provider must be one of: {', '.join(PROVIDERS)}. "
+            f"Set it under platform: in {config.PROJECT_FILE}, or in {app_name}/{config.APP_FILE}.")
     return app, provider
 
 
@@ -105,8 +105,10 @@ def confirm(actions: list[str], assume_yes: bool,
     console.heading("Plan:")
     for action in actions:
         console.bullet(action)
-    for line in cost_lines or []:
-        console.say(line)
+    if cost_lines:
+        console.heading(cost_lines[0])
+        for line in cost_lines[1:]:
+            console.say(line)
     if assume_yes:
         return True
     if not can_prompt(None):

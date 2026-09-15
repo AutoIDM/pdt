@@ -69,6 +69,10 @@ def done(message: str) -> None:
     _console.print(f"[bold green]{escape(message)}[/]")
 
 
+def failed(message: str) -> None:
+    _console.print(f"[bold red]{escape(message)}[/]")
+
+
 def heading(message: str) -> None:
     _console.print(f"[bold]{escape(message)}[/]")
 
@@ -90,9 +94,12 @@ def bullet(text: str, indent: int = 2) -> None:
     _console.print(f"{' ' * indent}{text}", markup=False)
 
 
-def command(text: str, indent: int = 2) -> None:
+def command(text: str, note: str = "", indent: int = 2) -> None:
     """A command line the user can copy."""
-    _console.print(f"{' ' * indent}[bold]{escape(text)}[/]")
+    if note != "":
+        _console.print(f"{' ' * indent}[bold]{escape(text)}[/]  [dim]{escape(note)}[/]")
+    else:
+        _console.print(f"{' ' * indent}[bold]{escape(text)}[/]")
 
 
 def ask(question: str, default: str = "") -> str:
