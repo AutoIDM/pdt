@@ -91,6 +91,10 @@ The tool downloads the Google Cloud CLI to the user's data folder (`~/.local/sha
 
 Do not hard-wrap prose at a column. Write each paragraph and each list item as one long line and let the editor wrap it. A line break exists only where the document needs one: between blocks, inside a fenced code block, or between table rows. This keeps a one-word edit from reflowing a whole paragraph in the diff.
 
+## Making a change
+
+Never commit on `master`. Start every change in a git worktree on its own branch (in a Claude Code session, use EnterWorktree before editing), push the branch, and open a merge request with `glab mr create`. Changes land through the MR.
+
 ## Tests and CI
 
 - `tests/` covers project discovery, config merge order, cron parsing and `runs_per_month`, and the scaffolding guards. Add a test with the rule it covers, in the same change.
