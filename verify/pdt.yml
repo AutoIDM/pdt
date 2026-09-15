@@ -11,19 +11,17 @@ apps:
     platform:
       provider: aws
       region: us-east-1
-  # The subscription allows one Container Apps environment per region, and
-  # eastus2 already holds one from another project.
   - name: azure-container-apps-a
     schedule: daily
     platform:
       provider: azure
-      region: centralus
+      region: eastus2
       resource_group: pdt-verify
   - name: azure-container-apps-b
     schedule: daily
     platform:
       provider: azure
-      region: centralus
+      region: eastus2
       resource_group: pdt-verify
   - name: google-cloud-a
     schedule: daily
