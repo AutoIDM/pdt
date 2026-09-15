@@ -1,7 +1,8 @@
 # Score every open merge request into tier::simple, tier::review, or
 # tier::architectural. select_mrs.py sets a floor from path rules and merges
 # simple MRs scored on an earlier run; Claude reads the diff and may raise the
-# floor; check_mrs.py labels the MR and comments the reasons.
+# floor; check_mrs.py labels the MR, comments the reasons, and merges a
+# simple MR right away when its pipeline passed.
 model: opus
 budget_usd: 2
 timeout_minutes: 10

@@ -552,18 +552,83 @@ def test_check_creates_the_label_sets_it_and_comments(monkeypatch, capsys):
 def test_check_is_quiet_when_nothing_changed(monkeypatch, capsys):
     item = item_for_check(labels=["tier::simple"], previous={
         "diff": "abc123def456", "floor": "simple", "tier": "simple", "claude": "agree"})
-    status, err, calls = run_check(monkeypatch, capsys, item, verdict("simple", "agree with floor"))
-    assert status["status"] == "ok" and calls == []
+    status, err, calls = run_check(monkeypatch, capsys, item, verdict("simple", "agree with floor"),
+                                   merge_routes())
+    # Nothing to label or comment, but a simple MR is still merged.
+    assert status["status"] == "ok"
+    assert [(m, p) for m, p, _ in calls] == [("GET", "/projects/42/merge_requests/3"),
+                                             ("PUT", "/projects/42/merge_requests/3/merge"),
+                                             ("POST", "/projects/42/merge_requests/3/notes")]
 
 
 def test_check_swaps_a_stale_tier_label(monkeypatch, capsys):
     item = item_for_check(labels=["tier::review", "bug"], previous={
         "diff": "old", "floor": "simple", "tier": "review", "claude": "raised"})
     routes = [(("GET", "/labels?search=tier::"), [{"name": "tier::simple"}]),
-              (("PUT", "/merge_requests/3"), {}), (("POST", "/merge_requests/3/notes"), {})]
+              *merge_routes(), (("PUT", "/merge_requests/3"), {}),
+              (("POST", "/merge_requests/3/notes"), {})]
     _, _, calls = run_check(monkeypatch, capsys, item, verdict("simple", "agree with floor"), routes)
-    assert [m for m, _, _ in calls] == ["GET", "PUT", "POST"]
+    assert [m for m, _, _ in calls] == ["GET", "PUT", "POST", "GET", "PUT", "POST"]
     assert calls[1][2] == {"add_labels": "tier::simple", "remove_labels": "tier::review"}
+
+
+def merge_routes(**mr_overrides):
+    """The MR read and the merge call check_mrs makes for a simple score. The
+    merge route sits before any plain ``/merge_requests/3`` route, because
+    routes match on a substring."""
+    return [(("GET", "/merge_requests/3"), mr(3, **mr_overrides)),
+            (("PUT", "/merge_requests/3/merge"), {"state": "merged"}),
+            (("POST", "/merge_requests/3/notes"), {"id": 1})]
+
+
+def test_check_merges_a_simple_mr_right_after_scoring_it(monkeypatch, capsys):
+    routes = [(("GET", "/labels?search=tier::"), [{"name": "tier::simple"}]),
+              *merge_routes(), (("PUT", "/merge_requests/3"), {})]
+    status, err, calls = run_check(monkeypatch, capsys, item_for_check(),
+                                   verdict("simple", "agree with floor"), routes)
+    assert status == {"status": "ok", "message": "tier::simple, merged"}
+    assert [(m, p) for m, p, _ in calls] == [
+        ("GET", "/projects/42/labels?search=tier::&per_page=100"),
+        ("PUT", "/projects/42/merge_requests/3"),
+        ("POST", "/projects/42/merge_requests/3/notes"),
+        ("GET", "/projects/42/merge_requests/3"),
+        ("PUT", "/projects/42/merge_requests/3/merge"),
+        ("POST", "/projects/42/merge_requests/3/notes"),
+    ]
+    assert calls[4][2] == {"sha": "sha3", "should_remove_source_branch": True, "squash": False}
+    assert calls[5][2] == {"body": select.MERGE_NOTE}
+    assert "merged" in err.splitlines()[-1]
+
+
+def test_check_says_why_a_simple_mr_waits_for_the_sweep(monkeypatch, capsys):
+    routes = [(("GET", "/labels?search=tier::"), [{"name": "tier::simple"}]),
+              *merge_routes(head_pipeline={"status": "running", "sha": "sha3"}),
+              (("PUT", "/merge_requests/3"), {})]
+    status, err, calls = run_check(monkeypatch, capsys, item_for_check(),
+                                   verdict("simple", "agree with floor"), routes)
+    assert status == {"status": "ok", "message": "tier::simple, not merged: pipeline running"}
+    assert "/merge" not in [p for _, p, _ in calls if p.endswith("/merge")]
+    assert "not merged: pipeline running" in err
+
+
+def test_check_reports_a_refused_merge_and_still_scores(monkeypatch, capsys):
+    def refuse(request, timeout=0):
+        if request.full_url.endswith("/merge"):
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {},
+                                         io.BytesIO(b'{"message":"403 Forbidden"}'))
+        return FakeResponse(mr(3)) if request.get_method() == "GET" else FakeResponse({})
+
+    arm(monkeypatch)
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    item = item_for_check(labels=["tier::simple"], previous={
+        "diff": "abc123def456", "floor": "simple", "tier": "simple", "claude": "agree"})
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
+        {"item": item, "result": verdict("simple", "agree with floor"), "job_url": ""})))
+    assert check.main() == 0
+    out, err = capsys.readouterr()
+    status = json.loads(out)
+    assert status["status"] == "ok" and status["message"].startswith("tier::simple, not merged")
+    assert "403" in status["message"] and "GITLAB_TOKEN may not be allowed" in status["message"]
 
 
 def test_check_reports_architectural_as_needs_human(monkeypatch, capsys):
@@ -591,6 +656,10 @@ def test_check_dry_run_writes_nothing_but_still_reports(monkeypatch, capsys):
                                    verdict("review", "x"), dry_run="true")
     assert status["status"] == "ok" and calls == []
     assert "would set label tier::review" in err and "would post" in err
+    status, err, calls = run_check(monkeypatch, capsys, item_for_check(),
+                                   verdict("simple", "agree with floor"), dry_run="true")
+    assert status == {"status": "ok", "message": "tier::simple"} and calls == []
+    assert "would merge" in err
 
 
 # --- task folder and CI -------------------------------------------------------

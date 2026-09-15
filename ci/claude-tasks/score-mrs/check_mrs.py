@@ -15,6 +15,10 @@ Writes, unless DRY_RUN is anything but the exact word ``false``:
   missing label is created), and one note whose first line is a marker
   select_mrs.py reads next time. The note is posted only when the marker
   would differ from the previous score's.
+  A simple MR is then merged in the same run, through the gates and the
+  merge call select_mrs.py uses for an MR scored earlier, so the MR does not
+  wait for the next sweep. A gate that fails (pipeline still running, a
+  conflict, an open discussion) is logged and the MR waits for the sweep.
 
 Verdict printed for the runner: ``ok`` for simple and review; ``needs_human``
 for architectural, so the pipeline shows a warning and the summary lists the
@@ -35,6 +39,10 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import select_mrs  # noqa: E402  the merge gates live there, once
 
 TIERS = ("simple", "review", "architectural")
 MARKER_PREFIX = "<!-- pdt-mr-score v1 "
@@ -131,14 +139,15 @@ def note_body(diff: str, score: Score, job_url: str) -> str:
     return "\n".join(lines)
 
 
-def status_for(score: Score) -> dict:
+def status_for(score: Score, merge_outcome: str = "") -> dict:
     if score.claude == "unavailable":
         return {"status": "needs_human",
                 "message": f"{NO_VERDICT}; scored {score.tier} from the rules alone"}
     if score.tier == "architectural":
         first = score.reasons[0] if score.reasons else "see the MR comment"
         return {"status": "needs_human", "message": f"needs discussion: {first}"}
-    return {"status": "ok", "message": f"tier::{score.tier}"}
+    message = f"tier::{score.tier}" + (f", {merge_outcome}" if merge_outcome else "")
+    return {"status": "ok", "message": message}
 
 
 def label_change(current: list[str], tier: str) -> tuple[list[str], list[str]]:
@@ -190,6 +199,26 @@ def post_note(env, iid: int, body: str) -> None:
     api(env, "POST", f"/projects/{env['CI_PROJECT_ID']}/merge_requests/{iid}/notes", {"body": body})
 
 
+def merge_after_score(env, iid: int) -> str:
+    """Merge a simple MR right after scoring it, when the merge gates pass.
+
+    Reads the MR again, because the label write and the pipeline may have
+    changed it since select ran. Returns one phrase for the log and the
+    runner's summary: ``merged``, or why it waits for the daily sweep.
+    """
+    mr = select_mrs.get_mr(env, iid)
+    blockers = select_mrs.merge_blockers(mr)
+    if blockers:
+        return f"not merged: {', '.join(blockers)}"
+    try:
+        select_mrs.merge_mr(env, mr)
+    except select_mrs.HttpFailure as failure:
+        hint = " (GITLAB_TOKEN may not be allowed to merge into the default branch)" \
+            if failure.code in (401, 403) else ""
+        return f"not merged: {failure}{hint}"
+    return "merged"
+
+
 # --- orchestration ------------------------------------------------------------
 
 def main() -> int:
@@ -207,11 +236,15 @@ def main() -> int:
     changed = any(previous.get(key) != value for key, value in fields.items())
     log(f"!{iid} tier {score.tier} (floor {score.floor}, Claude {score.claude})")
 
+    merge_outcome = ""
     if dry_run:
         if add or remove:
             log(f"dry run: would set label tier::{score.tier}")
         if changed:
             log("dry run: would post the score comment")
+        if score.tier == "simple":
+            log("dry run: would merge if the pipeline passed with no conflicts "
+                "and no open discussions")
     elif env.get("GITLAB_TOKEN") and env.get("CI_PROJECT_ID"):
         if add:
             ensure_label(env, score.tier)
@@ -221,10 +254,13 @@ def main() -> int:
         if changed:
             post_note(env, iid, note_body(item["diff_id"], score, job_url))
             log("posted the score comment")
+        if score.tier == "simple":
+            merge_outcome = merge_after_score(env, iid)
+            log(merge_outcome)
     else:
         log("GITLAB_TOKEN or CI_PROJECT_ID is not set; nothing written")
 
-    print(json.dumps(status_for(score)))
+    print(json.dumps(status_for(score, merge_outcome)))
     return 0
 
 

@@ -5,7 +5,9 @@ request from this project it reads the diff from the GitLab API, sets a floor
 tier from path rules, and looks for the score note a previous run left.
 
   Not scored yet, or the diff changed since: the MR becomes one item, so
-  Claude reads it and may raise the floor (see check_mrs.py).
+  Claude reads it and may raise the floor (see check_mrs.py, which also
+  merges the MR in the same run when the score is simple and the gates
+  below pass).
   Already scored for this diff: nothing for Claude. When the tier is
   ``simple`` and the MR is mergeable (pipeline passed on the head commit, no
   conflicts, no unresolved discussions) it is merged right here, so a green
