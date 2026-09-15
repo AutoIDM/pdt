@@ -92,6 +92,7 @@ pdt login my-report
 | `pdt deploy APP` | deploy an app to its configured platform |
 | `pdt destroy APP` | remove everything deploy created |
 | `pdt login APP` | sign in again to the app's cloud provider |
+| `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
 | `pdt completion [SHELL]` | turn on tab completion for a shell |
@@ -99,6 +100,40 @@ pdt login my-report
 Leave `APP` off `run`, `deploy`, `destroy`, or `login`, or mistype it, and pdt lists the apps in the project so you can pick one.
 
 `pdt az` and `pdt gcloud` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
+
+## Keeping files between runs
+
+Your app runs, writes some files, and stops. Then the computer it ran on is thrown away, and the files go with it. So pdt gives every app a folder in your cloud account that stays. Deploy the app, destroy it, deploy it again: the folder and everything in it is still there.
+
+pdt creates one bucket per cloud account, named `pdt-data-` plus a short code, and gives each app its own folder inside it. When your app runs in the cloud, `PDT_STORAGE_URL` points at that folder. When you run `pdt run APP` on your own computer, it points at `.pdt/storage/APP/` inside your project instead. The app code is the same in both places.
+
+Write and read files with `pdt.utils.storage`:
+
+```python
+from pdt.utils import storage
+
+store = storage.store()
+with store.open("report.csv", "wb") as f:
+    f.write(b"name,count\n")
+```
+
+`store.fs()` gives you the full [fsspec](https://filesystem-spec.readthedocs.io/) filesystem, rooted at your app's folder. Output from one run goes under `store.run_folder()`, which names a new `runs/<time>-<id>/` folder each run.
+
+Some apps need files from the last run: a Meltano bookmark, a database. Keep those in one local folder, and copy it down before the work and up after:
+
+```python
+from pathlib import Path
+from pdt.utils import storage
+
+store = storage.store()
+lease = store.pull("state/", Path(".pdt-state"))
+# do the work; keep anything the next run needs inside .pdt-state/
+store.push(Path(".pdt-state"), "state/", lease)
+```
+
+`pull` locks the folder, so a second copy of your app cannot run at the same time and mix up the files. `push` checks that nobody else changed them, saves them, and unlocks. If a run crashes, the next one takes over the lock after 30 minutes.
+
+From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
 
 ## Running pdt from CI
 

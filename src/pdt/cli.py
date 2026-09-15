@@ -162,6 +162,10 @@ def cmd_destroy(args) -> int:
     return deploy.destroy(name, assume_yes=args.yes, profile=args.profile)
 
 
+def cmd_storage(args) -> int:
+    return deploy.storage(args.app, args.rest)
+
+
 def cmd_completion(args) -> int:
     return completion.install(args.shell, print_only=args.script)
 
@@ -222,6 +226,11 @@ def build_parser() -> argparse.ArgumentParser:
     profile = p.add_argument("--profile", help="AWS profile name (AWS only)")
     profile.completer = completion.profiles
     p.set_defaults(func=cmd_destroy)
+    p = add_parser("storage", help="read or manage an app's data store")
+    app = p.add_argument("app", help="the app's folder name")
+    app.completer = completion.apps
+    p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|destroy [args...]")
+    p.set_defaults(func=cmd_storage)
     p = add_parser("completion", help="turn on tab completion in your shell")
     p.add_argument("shell", nargs="?", choices=completion.SHELLS,
                    help="which shell; pdt works it out when left off")

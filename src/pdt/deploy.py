@@ -3,7 +3,8 @@
 Validates the app, then dispatches to one script per provider
 (pdt/deploy_<provider>.py) with `uv run --script`, so each provider
 installs its own SDK packages. Every provider script accepts
-`deploy|destroy|login <app> [--yes] [--profile NAME]`.
+`deploy|destroy|login <app> [--yes] [--profile NAME]`, and also
+`storage <app> <ls|get|query|destroy> [args...]`.
 
 PDT_PROJECT reaches the provider script through the environment, so the
 child agrees with the parent about which project it is working on.
@@ -40,13 +41,14 @@ def _load(app_name: str):
 
 
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
-             profile: str | None = None) -> int:
+             profile: str | None = None, extra: list[str] | None = None) -> int:
     script = Path(__file__).with_name(PROVIDERS[provider])
     args = ["uv", "run", "--script", str(script), command, app_name]
     if assume_yes:
         args.append("--yes")
     if profile:
         args += ["--profile", profile]
+    args += extra or []
     env = dict(os.environ, PDT_PROJECT=str(config.find_project()))
     return subprocess.run(args, check=False, env=env).returncode
 
@@ -86,6 +88,16 @@ def login(app_name: str, profile: str | None = None) -> int:
         return 1
     config.load_env(app["dir"])
     return dispatch(provider, "login", app_name, False, profile)
+
+
+def storage(app_name: str, rest: list[str], profile: str | None = None) -> int:
+    try:
+        app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(str(e))
+        return 1
+    config.load_env(app["dir"])
+    return dispatch(provider, "storage", app_name, False, profile, rest)
 
 
 def destroy(app_name: str, assume_yes: bool = False, profile: str | None = None) -> int:

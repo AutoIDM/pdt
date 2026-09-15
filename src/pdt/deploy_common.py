@@ -17,12 +17,17 @@ context, so every cloud provider builds the same way. An app's own
 .dockerignore is rewritten to the context root too (and as .gcloudignore,
 which Cloud Build reads instead), so its patterns keep meaning paths
 inside the app directory.
+
+Every provider also shares one data store per account, named
+`pdt-data-<suffix>` by `store_name` and tagged with `STORE_TAGS`; it
+outlives any single app's deploy/destroy cycle.
 """
 
 from __future__ import annotations
 
 import base64
 import dataclasses
+import hashlib
 import json
 import os
 import shutil
@@ -49,6 +54,16 @@ BUILD_EXCLUDES = (
     ".DS_Store", ".gcloud", "*.json.key", "*-key.json",
     "service-account*.json",
 )
+STORE_PREFIX = "pdt-data"
+STORE_TAGS = {"managed-by": "pdt", "pdt-lifecycle": "retain"}
+
+
+def store_suffix(seed: str) -> str:
+    return hashlib.sha256(seed.encode()).hexdigest()[:10]
+
+
+def store_name(seed: str) -> str:
+    return f"{STORE_PREFIX}-{store_suffix(seed)}"
 
 
 def own_dockerfile(app: dict) -> Path | None:
@@ -116,6 +131,24 @@ class CostEstimate:
 
     def show(self) -> None:
         console.cost(self.items, self.prices, self.excludes)
+def store_plan_lines(description: str, exists: bool, identity: str, app_name: str) -> list[str]:
+    return [("use existing" if exists else "create") + f" {description} (kept after destroy)",
+            f"grant {identity} write access to {app_name}/ in {description}"]
+
+
+def store_kept_line(description: str, count: int, app_name: str) -> str:
+    return f"kept: {description} ({count} objects under {app_name}/)"
+
+
+def store_cost_label(count: int, size_bytes: int) -> str:
+    return f"storage: {count} objects ({size_bytes / 1024 ** 3:.2f} GB)"
+
+
+def warn_if_locked(store, app_name: str) -> None:
+    held = store.held_lock()
+    if held is not None:
+        console.warn(f"run {held['run']} of {app_name} started at {held['started']} "
+                     "still holds the state; destroying now loses that run's state")
 
 
 # HTTP fetching follows the Meltano SDK's RESTStream pattern:

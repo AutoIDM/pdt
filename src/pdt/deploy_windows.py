@@ -6,6 +6,8 @@
 #     "rich",
 #     "python-dotenv",
 #     "backoff",
+#     "fsspec",
+#     "duckdb",
 # ]
 # ///
 """Deploy an app locally as a Windows Task Scheduler task.
@@ -151,6 +153,10 @@ def schedule_trigger(cron: str) -> tuple[str, str]:
         "or a fixed-time cron restricted by either day-of-week or day-of-month")
 
 
+def storage_folder(app_name: str) -> Path:
+    return config.find_project() / ".pdt" / "storage" / app_name
+
+
 def _task_name(app_name: str) -> str:
     name = f"pdt-{app_name}"
     if any(char in FORBIDDEN_TASK_NAME_CHARS or ord(char) < 32 for char in name):
@@ -294,16 +300,22 @@ def deploy(app: dict, assume_yes: bool) -> int:
         return 1
 
     verb = "update" if exists else "create"
+    folder = storage_folder(app["name"])
     actions = [
         f"{verb} Windows scheduled task {name} (runs as SYSTEM)",
         f"run {app['name']} {description} (machine local time)",
         f"working directory: {app['dir']}",
     ]
+    if app["storage"]:
+        actions.append(f"use folder {folder} for the app's files (kept after destroy)")
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges")
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return 1
+
+    if app["storage"]:
+        folder.mkdir(parents=True, exist_ok=True)
 
     payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     script = (
@@ -338,6 +350,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         return 1
     if not exists:
         console.done(f"Nothing to remove for {app['name']}; task {name} does not exist.")
+        if app["storage"]:
+            console.say(_kept_storage_line(app["name"]))
         return 0
     if not confirm([f"delete Windows scheduled task {name}"], assume_yes):
         console.warn("Aborted; nothing was changed.")
@@ -353,16 +367,34 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.error(str(exc))
         return 1
     console.done(f"Removed Windows task {name}.")
+    if app["storage"]:
+        console.say(_kept_storage_line(app["name"]))
     return 0
+
+
+def _kept_storage_line(app_name: str) -> str:
+    folder = storage_folder(app_name)
+    count = sum(1 for file in folder.rglob("*") if file.is_file()) if folder.is_dir() else 0
+    return f"kept: folder {folder} ({count} files)"
+
+
+def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
+    from pdt import storage_cli
+    from pdt.utils.storage import Store
+
+    folder = storage_folder(app["name"])
+    store = Store(folder.as_uri() + "/", None)
+    return storage_cli.run(store, app, rest, assume_yes)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login"))
+    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage"))
     parser.add_argument("app")
+    parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--profile", help="not used by Windows")
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
     if args.command == "login":
         console.note("the windows provider deploys to this computer, so it needs no login.")
         return 0
@@ -372,6 +404,8 @@ def main() -> int:
         console.error(str(exc))
         return 1
     config.load_env(app["dir"])
+    if args.command == "storage":
+        return storage(app, args.rest, args.yes)
     if args.command == "deploy":
         return deploy(app, args.yes)
     return destroy(app, args.yes)

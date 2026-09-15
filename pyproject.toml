@@ -24,6 +24,13 @@ apps = [
     "pyjwt",
     "boto3",
     "google-cloud-secret-manager",
+    "fsspec",
+    "s3fs",
+    "gcsfs",
+    "adlfs",
+    "google-cloud-storage",
+    "azure-storage-blob",
+    "azure-identity",
 ]
 
 [project.scripts]
@@ -40,7 +47,7 @@ packages = ["src/pdt"]
 include = ["src/pdt", "README.md", "tests"]
 
 [dependency-groups]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "ruff", "fsspec"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "ci/tests"]
