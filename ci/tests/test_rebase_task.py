@@ -108,9 +108,16 @@ def test_branch_gone_from_an_open_mr_needs_a_person():
     assert check.fetch_verdict("score-mrs", MISSING, "")[0] == "needs_human"
 
 
-def test_an_unreachable_origin_needs_a_person_not_an_error():
+def test_an_unreachable_origin_fails_the_job():
     status, message = check.fetch_verdict("score-mrs", UNREACHABLE, "merged")
-    assert status == "needs_human" and "Could not resolve host" in message
+    assert status == "error" and "Could not resolve host" in message
+    assert check.comment_for(status, message, "Resolved a conflict.", "http://j", False) == ""
+
+
+def test_an_unreachable_target_branch_fails_the_job(monkeypatch):
+    monkeypatch.setattr(check, "fetch_branch", lambda name, pause=None: UNREACHABLE)
+    status, message, checked = check.verdict({}, {"iid": 64}, "master", "score-mrs")
+    assert status == "error" and not checked and "origin/master" in message
 
 
 def test_fetch_retries_an_unreachable_origin(monkeypatch):
@@ -294,6 +301,23 @@ def test_branch_deleted_while_the_mr_is_open_asks_for_a_person(repo, monkeypatch
             "before_sha": before, "ahead": 1}
     status, message, checked = check.verdict({}, item, "master", "gone")
     assert status == "needs_human" and not checked and "gone" in message
+
+
+@needs_git
+def test_branch_gone_and_gitlab_down_fails_the_job(repo, monkeypatch):
+    repo.branch("gone", {"a.txt": "a"})
+    before = repo.sha("origin/gone")
+    repo.git("push", "-q", "origin", "--delete", "gone")
+
+    def no_answer(env, iid):
+        raise LookupError("GitLab did not answer for merge request !64: timed out")
+
+    monkeypatch.setattr(check, "mr_state", no_answer)
+    monkeypatch.setattr(check.time, "sleep", lambda seconds: None)
+    item = {"iid": 64, "source_branch": "gone", "target_branch": "master",
+            "before_sha": before, "ahead": 1}
+    status, message, checked = check.verdict({}, item, "master", "gone")
+    assert status == "error" and not checked and "did not answer" in message
 
 
 @needs_git

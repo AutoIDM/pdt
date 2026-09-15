@@ -7,14 +7,17 @@ This is the ``check`` hook of the rebase-mrs task. It reads
                 commits than before. No comment unless conflicts were
                 resolved, in which case the author is asked to review.
   needs_human   nothing was pushed, what was pushed is not a plain rebase, or
-                the branch could not be read at all.
+                origin no longer has the branch while the MR is still open.
                 The MR gets a comment with the job link and, when the branch
                 changed, the commit to restore.
+  error         origin or GitLab did not answer, so the push could not be
+                checked at all. The job fails and no comment is posted,
+                because nothing is known about the branch.
 
-Claude has already done the work by the time this runs, so nothing here ends
-the job as an error. A branch that has vanished because the MR was merged
-while Claude rebased it is a normal race and counts as ok; a fetch that fails
-for any other reason is retried, then handed to a person.
+A branch that has vanished because the MR was merged while Claude rebased it
+is a normal race and counts as ok. An origin that does not answer is retried a
+few times and then fails the job; a warning would hide that the check never
+ran.
 
 It runs in the item's own worktree, which the runner deletes afterwards,
 so it leaves the checkout as it finds it. Stdlib only.
@@ -66,9 +69,12 @@ def comment_for(status: str, message: str, result_text: str, job_url: str,
     """The MR note to post, or "" for a quiet success.
 
     ``checked`` False means the branch was never compared, so the note must
-    not claim a rebase happened.
+    not claim a rebase happened. An error means nothing is known about the
+    branch, so there is nothing to tell the author; the failed job says it.
     """
     link = f" Job log: {job_url}" if job_url else ""
+    if status == "error":
+        return ""
     if status == "ok":
         if not checked or not mentions_conflicts(result_text):
             return ""
@@ -87,13 +93,14 @@ def is_missing_ref(problem: str) -> bool:
 def fetch_verdict(branch: str, problem: str, state: str) -> tuple[str, str]:
     """Pure verdict when origin/<branch> could not be fetched.
 
-    ``state`` is the merge request's state, or "" when GitLab could not be
-    asked. A branch that is gone from a merged or closed MR is the race that
-    happens when someone merges while Claude rebases, and needs nobody.
+    ``state`` is the merge request's state, or "" when no token was given to
+    ask GitLab. A branch that is gone from a merged or closed MR is the race
+    that happens when someone merges while Claude rebases, and needs nobody.
+    An origin that did not answer is an error: the check never ran.
     """
     if not is_missing_ref(problem):
-        return "needs_human", (f"could not read origin/{branch} after {FETCH_ATTEMPTS} tries, so "
-                               f"Claude's push was not checked: {problem}")
+        return "error", (f"could not read origin/{branch} after {FETCH_ATTEMPTS} tries, so "
+                         f"Claude's push was not checked: {problem}")
     if state in GONE_STATES:
         return "ok", (f"the merge request was {state} while the rebase ran, so origin/{branch} "
                       f"is gone and there is nothing left to check")
@@ -126,7 +133,10 @@ def fetch_branch(name: str, pause=time.sleep) -> str:
 
 
 def mr_state(env, iid: int) -> str:
-    """The merge request's state, or "" when GitLab cannot be asked."""
+    """The merge request's state, or "" when there is no token to ask with.
+
+    Raises LookupError when GitLab does not answer.
+    """
     if not env.get("GITLAB_TOKEN") or not env.get("CI_PROJECT_ID"):
         return ""
     api_url = env.get("CI_API_V4_URL", DEFAULT_API).rstrip("/")
@@ -136,8 +146,8 @@ def mr_state(env, iid: int) -> str:
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
             return str(json.loads(response.read()).get("state", ""))
-    except (OSError, ValueError):
-        return ""
+    except (OSError, ValueError) as trouble:
+        raise LookupError(f"GitLab did not answer for merge request !{iid}: {trouble}") from trouble
 
 
 def post_note(env, iid: int, body: str) -> None:
@@ -153,24 +163,30 @@ def post_note(env, iid: int, body: str) -> None:
 def verdict(env, item: dict, target: str, branch: str) -> tuple[str, str, bool]:
     """Judge what origin holds now: (status, message, branch was compared).
 
-    It reports a problem instead of raising, so a git that cannot reach
-    origin does not fail a job in which Claude already did the work.
+    It returns a verdict instead of raising, so the runner always gets JSON.
+    Origin or GitLab not answering is an error and fails the job; only a
+    branch that is gone is judged further.
     """
     problem = fetch_branch(target)
     if problem:
-        return "needs_human", (f"could not read origin/{target} after {FETCH_ATTEMPTS} tries, so "
-                               f"Claude's push was not checked: {problem}"), False
+        return "error", (f"could not read origin/{target} after {FETCH_ATTEMPTS} tries, so "
+                         f"Claude's push was not checked: {problem}"), False
     problem = fetch_branch(branch)
     if problem:
-        return (*fetch_verdict(branch, problem, mr_state(env, int(item["iid"]))), False)
+        try:
+            state = mr_state(env, int(item["iid"]))
+        except LookupError as trouble:
+            return "error", (f"origin has no branch {branch} and {trouble}, so Claude's push "
+                             f"was not checked"), False
+        return (*fetch_verdict(branch, problem, state), False)
     try:
         after_sha = git("rev-parse", f"origin/{branch}")
         default_sha = git("rev-parse", f"origin/{target}")
         merge_base = git("merge-base", f"origin/{target}", f"origin/{branch}")
         after_count = int(git("rev-list", "--count", f"origin/{target}..origin/{branch}"))
     except (subprocess.CalledProcessError, ValueError) as trouble:
-        return "needs_human", (f"could not compare origin/{branch} with origin/{target}, so "
-                               f"Claude's push was not checked: {trouble}"), False
+        return "error", (f"could not compare origin/{branch} with origin/{target}, so "
+                         f"Claude's push was not checked: {trouble}"), False
     return (*classify(item["before_sha"], after_sha, default_sha, merge_base,
                       int(item["ahead"]), after_count), True)
 
