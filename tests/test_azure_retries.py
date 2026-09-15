@@ -90,6 +90,28 @@ def test_four_internal_errors_are_printed_and_fail(monkeypatch, capsys):
     assert sleeps == [10, 20, 40]
 
 
+def test_a_resource_that_appears_during_backoff_is_not_created_twice(monkeypatch):
+    attempts = []
+    visible = False
+
+    def fail(*args, **kwargs):
+        attempts.append(args)
+        return result(1, "ERROR: (InternalServerError) correlation ID: delayed")
+
+    def finish_sleep(seconds):
+        nonlocal visible
+        visible = True
+
+    monkeypatch.setattr(deploy_azure.subprocess, "run", fail)
+    monkeypatch.setattr(deploy_azure.time, "sleep", finish_sleep)
+
+    deploy_azure.run_quiet(
+        "containerapp", "job", "create", retry_internal=True,
+        recovered=lambda: visible)
+
+    assert len(attempts) == 1
+
+
 def test_the_last_azure_internal_error_and_correlation_id_are_shown(monkeypatch, capsys):
     attempts = []
 

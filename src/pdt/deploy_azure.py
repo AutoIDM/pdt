@@ -91,7 +91,12 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
               retry_internal: bool = False, hints: dict[str, str] | None = None,
               recovered: Callable[[], bool] | None = None) -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
+    waiting_for_recovery = False
     for wait in waits:
+        if waiting_for_recovery and recovered and recovered():
+            console.bullet("Azure created the resource despite the temporary error; "
+                           "finishing its configuration...", indent=4)
+            return ""
         proc = subprocess.run(
             [*AZ, *args], input=data, capture_output=True, text=True)
         if proc.returncode == 0:
@@ -103,12 +108,13 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
         ))
         internal_error = retry_internal and (
             "internalservererror" in output or "internal server error" in output)
-        if proc.stderr.strip():
-            console.say(proc.stderr.strip())
+        if output.strip():
+            console.say(f"{proc.stdout}\n{proc.stderr}".strip())
         if internal_error and recovered and recovered():
             console.bullet("Azure created the resource despite the temporary error; "
                            "finishing its configuration...", indent=4)
             return proc.stdout
+        waiting_for_recovery = waiting_for_recovery or internal_error
         if wait == 0 or not (access_error or internal_error):
             break
         reason = ("Azure returned an access error" if access_error
