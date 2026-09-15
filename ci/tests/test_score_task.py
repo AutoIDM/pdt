@@ -477,5 +477,12 @@ def test_score_mrs_job_runs_on_master_and_its_schedule():
     assert master == [{"DRY_RUN": "false"}]
     schedule = [v for k, v in rules.items() if '"schedule"' in k and "score_mrs" in k]
     assert schedule == [{"DRY_RUN": "false"}]
-    web = [v for k, v in rules.items() if '"web"' in k and "score_mrs" in k]
-    assert web == [{"CLAUDE_TASK_ARGS": "--dry-run"}]
+    web = [(k, v) for k, v in rules.items() if '"web"' in k and "score_mrs" in k]
+    assert [v for k, v in web if 'DRY_RUN == "false"' in k] == [{}]
+    assert [v for k, v in web if "DRY_RUN" not in k] == [{"CLAUDE_TASK_ARGS": "--dry-run"}]
+
+
+def test_a_mode_pipeline_runs_only_its_own_task():
+    ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
+    for rule in ci["rebase-mrs"]["rules"]:
+        assert "$mode == null" in rule["if"]

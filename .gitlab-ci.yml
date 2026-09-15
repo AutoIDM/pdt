@@ -77,7 +77,8 @@ smoke:
     expire_in: 30 days
 
 # After every merge to the default branch, Claude rebases each open MR onto
-# it. Label an MR `no-autorebase` to leave it alone.
+# it. Label an MR `no-autorebase` to leave it alone. A pipeline that sets the
+# `mode` variable (a schedule or web run picking one job) does not rebase.
 rebase-mrs:
   extends: .claude-task
   needs: []
@@ -85,13 +86,14 @@ rebase-mrs:
   variables:
     CLAUDE_TASK: rebase-mrs
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
 
 # Scores every open MR into tier::simple / tier::review / tier::architectural,
 # comments the reasons, and merges a tier::simple MR once its pipeline passes.
 # Runs after each merge to master (after rebase-mrs) and on a daily schedule
-# whose `mode` variable is score_mrs. A web run with mode=score_mrs lists what
-# it would do and changes nothing.
+# whose `mode` variable is score_mrs. A web run with mode=score_mrs runs this
+# job alone; it lists what it would do and changes nothing unless the form
+# also sets DRY_RUN=false.
 score-mrs:
   extends: .claude-task
   resource_group: score-mrs
@@ -107,6 +109,7 @@ score-mrs:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $mode == "score_mrs"
       variables:
         DRY_RUN: "false"
+    - if: $CI_PIPELINE_SOURCE == "web" && $mode == "score_mrs" && $DRY_RUN == "false"
     - if: $CI_PIPELINE_SOURCE == "web" && $mode == "score_mrs"
       variables:
         CLAUDE_TASK_ARGS: "--dry-run"
