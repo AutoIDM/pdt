@@ -3,8 +3,9 @@
 A task is a folder under ci/claude-tasks/<name>/:
 
   task.yml    model, budget_usd, timeout_minutes, permission_mode,
-              allowed_tools, disallowed_tools, and the optional hook
-              filenames ``select`` and ``check``.
+              allowed_tools, disallowed_tools, parallel (how many items run
+              at once, default 1), and the optional hook filenames
+              ``select`` and ``check``.
   prompt.md   the prompt Claude gets. ``{field}`` placeholders are filled
               from the item the select hook produced.
   system.md   optional text appended to Claude's system prompt.
@@ -16,7 +17,17 @@ A task is a folder under ci/claude-tasks/<name>/:
               "message": "..."}``. It may have side effects, for example an
               MR comment. Absent means ``ok`` unless Claude reported an error.
 
+Each item runs in its own git worktree, a detached copy of the checkout at
+HEAD, so items can run side by side without stepping on each other's
+branches. Claude and the check hook get that worktree as their working
+folder; it is deleted when the item is done. The select hook runs once in
+the main checkout before any item starts, and check hooks run one at a time
+because they fetch into the shared .git.
+
 Usage: ci/claude_task.py <task-name> [--dry-run] [--only ID]
+
+A dry run sets CLAUDE_TASK_DRY_RUN=1 for the select hook, so a hook with
+side effects (the rebase-mrs hook pushes clean rebases) can only report.
 
 Exit codes: 0 every item ok, 2 an item needs a person (the CI job shows a
 warning), 1 the token is bad, the task is misconfigured, or an item errored.
@@ -41,8 +52,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,7 +80,10 @@ TOKEN_NAMES = ("CLAUDE_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
 # environment (the CI case); "claude.ai" is an interactive login on a laptop.
 SUBSCRIPTION_AUTH_METHODS = ("oauth_token", "claude.ai")
 KNOWN_KEYS = {"model", "budget_usd", "timeout_minutes", "permission_mode",
-              "allowed_tools", "disallowed_tools", "select", "check"}
+              "allowed_tools", "disallowed_tools", "parallel", "select", "check"}
+# Hooks fetch into the shared .git, and two fetches of the same ref at once
+# fail with "cannot lock ref". Worktree add/remove edits .git too.
+GIT_LOCK = threading.Lock()
 
 
 class TaskError(Exception):
@@ -83,6 +101,7 @@ class Task:
     permission_mode: str = "acceptEdits"
     allowed_tools: list[str] = field(default_factory=list)
     disallowed_tools: list[str] = field(default_factory=list)
+    parallel: int = 1
     select: Path | None = None
     check: Path | None = None
     system: Path | None = None
@@ -117,6 +136,8 @@ def load_task(name: str, tasks_dir: Path = TASKS_DIR) -> Task:
         task.allowed_tools = _strings(config, "allowed_tools", raw["allowed_tools"])
     if "disallowed_tools" in raw:
         task.disallowed_tools = _strings(config, "disallowed_tools", raw["disallowed_tools"])
+    if "parallel" in raw:
+        task.parallel = int(_number(config, "parallel", raw["parallel"]))
     if raw.get("select"):
         task.select = _hook(config, folder, "select", raw["select"])
     if raw.get("check"):
@@ -302,12 +323,13 @@ def claude_command(task: Task, budget_usd: float | None = None) -> list[str]:
     return command
 
 
-def run_claude(command: list[str], prompt: str, timeout: float, env) -> tuple[int, str, str]:
+def run_claude(command: list[str], prompt: str, timeout: float, env,
+               cwd: Path | None = None) -> tuple[int, str, str]:
     """Run claude with the prompt on stdin. Returns (returncode, stdout, stderr)."""
     try:
         done = subprocess.run(
             command, input=prompt, capture_output=True, text=True,
-            timeout=timeout, env=env, check=False)
+            timeout=timeout, env=env, cwd=cwd, check=False)
     except FileNotFoundError:
         return 127, "", "claude is not installed or not on PATH"
     except subprocess.TimeoutExpired as expired:
@@ -318,20 +340,50 @@ def run_claude(command: list[str], prompt: str, timeout: float, env) -> tuple[in
     return done.returncode, done.stdout, done.stderr
 
 
-def run_hook(script: Path, stdin: str, env) -> tuple[int, str, str]:
-    done = subprocess.run(
-        [sys.executable, str(script)], input=stdin, capture_output=True, text=True,
-        timeout=HOOK_TIMEOUT_SECONDS, env=env, check=False)
+def run_hook(script: Path, stdin: str, env, cwd: Path | None = None) -> tuple[int, str, str]:
+    with GIT_LOCK:
+        done = subprocess.run(
+            [sys.executable, str(script)], input=stdin, capture_output=True, text=True,
+            timeout=HOOK_TIMEOUT_SECONDS, env=env, cwd=cwd, check=False)
     return done.returncode, done.stdout, done.stderr
 
 
-def claude_env(env) -> dict:
-    """The environment Claude runs with: CLAUDE_TOKEN mapped to the name it reads."""
+def claude_env(env, cwd: Path | None = None) -> dict:
+    """The environment Claude and the hooks run with.
+
+    CLAUDE_TOKEN is mapped to the name Claude Code reads. A relative
+    UV_CACHE_DIR (the CI job sets .uv-cache) is made absolute against ``cwd``
+    so `uv run` inside a per-item worktree still hits the job's cache.
+    """
     out = dict(env)
     token = token_from(env)
     if token:
         out["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    cache = out.get("UV_CACHE_DIR", "")
+    if cache and not os.path.isabs(cache):
+        out["UV_CACHE_DIR"] = str((Path(cwd) if cwd else Path.cwd()).resolve() / cache)
     return out
+
+
+# --- per-item worktrees -------------------------------------------------------
+
+def add_worktree(key: str) -> Path:
+    """A detached copy of the checkout at HEAD, in a temp folder, for one item."""
+    path = Path(tempfile.mkdtemp(prefix=f"claude-task-{key}-")) / "repo"
+    with GIT_LOCK:
+        done = subprocess.run(["git", "worktree", "add", "--quiet", "--detach", str(path), "HEAD"],
+                              capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        shutil.rmtree(path.parent, ignore_errors=True)
+        raise TaskError(f"git worktree add failed for item {key}: {done.stderr.strip()}")
+    return path
+
+
+def remove_worktree(path: Path) -> None:
+    with GIT_LOCK:
+        subprocess.run(["git", "worktree", "remove", "--force", str(path)],
+                       capture_output=True, text=True, check=False)
+    shutil.rmtree(path.parent, ignore_errors=True)
 
 
 # --- orchestration ------------------------------------------------------------
@@ -382,11 +434,11 @@ def select_items(task: Task, env) -> list[dict]:
     return items
 
 
-def check_item(task: Task, item: dict, result: dict, env) -> dict:
+def check_item(task: Task, item: dict, result: dict, env, cwd: Path | None = None) -> dict:
     if task.check is None:
         return default_status(result)
     payload = json.dumps({"item": item, "result": result, "job_url": env.get("CI_JOB_URL", "")})
-    code, out, err = run_hook(task.check, payload, env)
+    code, out, err = run_hook(task.check, payload, env, cwd)
     if err.strip():
         print(err.strip())
     if code != 0:
@@ -395,21 +447,42 @@ def check_item(task: Task, item: dict, result: dict, env) -> dict:
 
 
 def run_item(task: Task, item: dict, key: str, env, report_dir: Path) -> dict:
+    """One Claude session plus its check, in a worktree of its own.
+
+    Items run side by side, so every line names the item.
+    """
     prompt = render_prompt(task.prompt, item)
     print(f"--- {task.name} item {key}: starting claude ({task.model}, "
           f"budget ${task.budget_usd:g}, {task.timeout_minutes} min)")
-    code, out, err = run_claude(claude_command(task), prompt, task.timeout_minutes * 60, env)
-    result = parse_claude_result(code, out)
-    if err.strip():
-        result["stderr"] = err.strip()[-4000:]
-    (report_dir / f"{key}.json").write_text(json.dumps({"item": item, "result": result}, indent=2))
-    cost = result.get("total_cost_usd")
-    turns = result.get("num_turns")
-    print(f"    claude finished: exit {code}, cost ${cost if cost is not None else '?'}, "
-          f"turns {turns if turns is not None else '?'}")
-    verdict = check_item(task, item, result, env)
-    print(f"    {verdict['status']}: {verdict['message'] or 'no message'}")
+    worktree = add_worktree(key)
+    try:
+        item_env = claude_env(env)
+        code, out, err = run_claude(claude_command(task), prompt, task.timeout_minutes * 60,
+                                    item_env, worktree)
+        result = parse_claude_result(code, out)
+        if err.strip():
+            result["stderr"] = err.strip()[-4000:]
+        (report_dir / f"{key}.json").write_text(
+            json.dumps({"item": item, "result": result}, indent=2))
+        cost = result.get("total_cost_usd")
+        turns = result.get("num_turns")
+        seconds = int(result.get("duration_ms") or 0) // 1000
+        print(f"--- {task.name} item {key}: claude finished in {seconds} s, exit {code}, "
+              f"cost ${cost if cost is not None else '?'}, "
+              f"turns {turns if turns is not None else '?'}")
+        verdict = check_item(task, item, result, item_env, worktree)
+    finally:
+        remove_worktree(worktree)
+    print(f"--- {task.name} item {key}: {verdict['status']}: {verdict['message'] or 'no message'}")
     return {"id": key, "item": item, **verdict, "cost_usd": cost, "turns": turns}
+
+
+def run_items(task: Task, items: list[dict], env, report_dir: Path) -> list[dict]:
+    """Run every item, ``task.parallel`` at a time. Outcomes keep the item order."""
+    keys = [item_id(item, n) for n, item in enumerate(items)]
+    with ThreadPoolExecutor(max_workers=max(1, task.parallel)) as pool:
+        return list(pool.map(lambda pair: run_item(task, pair[0], pair[1], env, report_dir),
+                             zip(items, keys)))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -420,6 +493,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--only", help="run just the item whose id matches")
     args = parser.parse_args(argv)
 
+    # The job log is a pipe, so without this Python holds output back until
+    # the job ends and a running job shows nothing.
+    sys.stdout.reconfigure(line_buffering=True)
     env = claude_env(os.environ)
     report_dir = REPORT_DIR / args.task
     try:
@@ -428,12 +504,13 @@ def main(argv: list[str] | None = None) -> int:
         if problem:
             print(problem)
             return EXIT_ERROR
-        items = select_items(task, env)
+        hook_env = {**env, "CLAUDE_TASK_DRY_RUN": "1"} if args.dry_run else env
+        items = select_items(task, hook_env)
         if args.only is not None:
             items = [i for n, i in enumerate(items) if item_id(i, n) == args.only]
             if not items:
                 raise TaskError(f"no item with id {args.only!r}")
-        print(f"{len(items)} item(s) for task {task.name}")
+        print(f"{len(items)} item(s) for task {task.name}, up to {task.parallel} at a time")
         for n, item in enumerate(items):
             print(f"  {item_id(item, n)}: {json.dumps(item)[:200]}")
         if args.dry_run:
@@ -442,8 +519,7 @@ def main(argv: list[str] | None = None) -> int:
         if not items:
             return EXIT_OK
         report_dir.mkdir(parents=True, exist_ok=True)
-        outcomes = [run_item(task, item, item_id(item, n), env, report_dir)
-                    for n, item in enumerate(items)]
+        outcomes = run_items(task, items, env, report_dir)
     except TaskError as problem:
         print(str(problem))
         return EXIT_ERROR

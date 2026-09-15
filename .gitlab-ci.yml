@@ -12,6 +12,9 @@ default:
 
 variables:
   UV_CACHE_DIR: .uv-cache
+  # Job logs are pipes, so Python would hold output until a job ends and a
+  # running job would show nothing. This makes every job log live.
+  PYTHONUNBUFFERED: "1"
 
 stages:
   - test

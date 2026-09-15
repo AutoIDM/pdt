@@ -2,7 +2,11 @@
 
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -23,7 +27,7 @@ runner = load_script(CI / "claude_task.py", "claude_task")
 
 def make_task(tmp_path, config="", prompt="Do {thing}.", hooks=()):
     folder = tmp_path / "demo"
-    folder.mkdir()
+    folder.mkdir(parents=True)
     (folder / "task.yml").write_text(config)
     (folder / "prompt.md").write_text(prompt)
     for hook in hooks:
@@ -202,3 +206,88 @@ def test_claude_command_shape(tmp_path):
     assert "--append-system-prompt-file" not in command
     assert runner.claude_command(task, 0.1)[runner.claude_command(task, 0.1).index(
         "--max-budget-usd") + 1] == "0.1"
+
+
+# --- parallel items and per-item worktrees ------------------------------------
+
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+
+
+def test_parallel_parses_and_defaults_to_one(tmp_path):
+    assert runner.load_task("demo", make_task(tmp_path / "one")).parallel == 1
+    assert runner.load_task("demo", make_task(tmp_path / "four", "parallel: 4\n")).parallel == 4
+    with pytest.raises(runner.TaskError, match="parallel"):
+        runner.load_task("demo", make_task(tmp_path / "zero", "parallel: 0\n"))
+
+
+def test_claude_env_makes_a_relative_uv_cache_absolute(tmp_path):
+    env = runner.claude_env({"UV_CACHE_DIR": ".uv-cache"}, cwd=tmp_path)
+    assert env["UV_CACHE_DIR"] == str(tmp_path.resolve() / ".uv-cache")
+    assert runner.claude_env({"UV_CACHE_DIR": "/abs/cache"})["UV_CACHE_DIR"] == "/abs/cache"
+    assert "UV_CACHE_DIR" not in runner.claude_env({})
+
+
+def test_items_run_side_by_side_and_outcomes_keep_order(tmp_path, monkeypatch):
+    task = runner.load_task("demo", make_task(tmp_path, "parallel: 3\n"))
+    started = threading.Barrier(3, timeout=5)
+    seen_cwds = []
+
+    def fake_claude(command, prompt, timeout, env, cwd=None):
+        seen_cwds.append(cwd)
+        started.wait()  # only passes when all three sessions are running at once
+        return 0, json.dumps({"result": prompt, "num_turns": 1}), ""
+
+    monkeypatch.setattr(runner, "run_claude", fake_claude)
+    monkeypatch.setattr(runner, "add_worktree", lambda key: tmp_path / f"wt-{key}")
+    monkeypatch.setattr(runner, "remove_worktree", lambda path: None)
+    items = [{"id": "a", "thing": "x"}, {"id": "b", "thing": "y"}, {"id": "c", "thing": "z"}]
+    report = tmp_path / "report"
+    report.mkdir()
+    outcomes = runner.run_items(task, items, {}, report)
+    assert [o["id"] for o in outcomes] == ["a", "b", "c"]
+    assert all(o["status"] == "ok" for o in outcomes)
+    assert sorted(seen_cwds) == [tmp_path / "wt-a", tmp_path / "wt-b", tmp_path / "wt-c"]
+    assert json.loads((report / "b.json").read_text())["result"]["result"] == "Do y."
+
+
+def test_a_failed_item_still_removes_its_worktree(tmp_path, monkeypatch):
+    task = runner.load_task("demo", make_task(tmp_path))
+    removed = []
+    monkeypatch.setattr(runner, "add_worktree", lambda key: tmp_path / "wt")
+    monkeypatch.setattr(runner, "remove_worktree", removed.append)
+    monkeypatch.setattr(runner, "run_claude", lambda *a, **k: (1, "not json", "boom"))
+    (tmp_path / "report").mkdir()
+    outcome = runner.run_item(task, {"thing": "x"}, "0", {}, tmp_path / "report")
+    assert outcome["status"] == "error" and removed == [tmp_path / "wt"]
+
+
+def test_dry_run_tells_the_select_hook(tmp_path, monkeypatch, capsys):
+    hook = "import json, os; print(json.dumps([{'id': os.environ.get('CLAUDE_TASK_DRY_RUN', 'unset')}]))\n"
+    make_task(tmp_path, "select: pick_items.py\n")
+    (tmp_path / "demo" / "pick_items.py").write_text(hook)
+    load = runner.load_task
+    monkeypatch.setattr(runner, "load_task", lambda name: load(name, tmp_path))
+    monkeypatch.setattr(runner, "verify_token", lambda task, env, report_dir: "")
+    monkeypatch.setattr(runner, "run_items", lambda *a: pytest.fail("dry run must not start items"))
+    assert runner.main(["demo", "--dry-run"]) == 0
+    assert '"id": "1"' in capsys.readouterr().out
+
+
+@needs_git
+def test_worktree_is_a_copy_of_head_and_is_removed(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = lambda *args: subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)  # noqa: E731
+    git("init", "-q", "-b", "main")
+    git("-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "one")
+    (repo / "note.txt").write_text("hello")
+    git("add", "note.txt")
+    git("-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "-m", "two")
+    monkeypatch.chdir(repo)
+    worktree = runner.add_worktree("7")
+    assert (worktree / "note.txt").read_text() == "hello"
+    assert "7" in worktree.parent.name
+    runner.remove_worktree(worktree)
+    assert not worktree.parent.exists()
+    listed = subprocess.run(["git", "worktree", "list"], cwd=repo, capture_output=True, text=True).stdout
+    assert str(worktree) not in listed
