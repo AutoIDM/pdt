@@ -10,6 +10,13 @@ A build context holds the app directory and pdt.yml, nothing else. The
 app's run.py declares pdt in its script header, so every deployment
 installs the package from the index the same way a local run does.
 PDT_PROJECT names the project directory, so no job depends on its cwd.
+
+The image is built from DOCKERFILE unless the app directory holds its own
+Dockerfile; write_dockerfile puts whichever applies at the root of the
+context, so every cloud provider builds the same way. An app's own
+.dockerignore is rewritten to the context root too (and as .gcloudignore,
+which Cloud Build reads instead), so its patterns keep meaning paths
+inside the app directory.
 """
 
 from __future__ import annotations
@@ -19,7 +26,6 @@ import dataclasses
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 import urllib.error
 import urllib.request
@@ -43,6 +49,52 @@ BUILD_EXCLUDES = (
     ".DS_Store", ".gcloud", "*.json.key", "*-key.json",
     "service-account*.json",
 )
+
+
+def own_dockerfile(app: dict) -> Path | None:
+    """The app's own Dockerfile, when it ships one."""
+    path = Path(app["dir"]) / "Dockerfile"
+    return path if path.is_file() else None
+
+
+def write_dockerfile(stage: Path, app: dict) -> None:
+    """Put the Dockerfile to build at the root of the staged build context.
+
+    An app's own Dockerfile is used as is. Any other app gets DOCKERFILE.
+    The context is the same either way: the app directory under its own
+    name next to pdt.yml, so a custom file starts from the generated one.
+    """
+    own = own_dockerfile(app)
+    if own is not None:
+        shutil.copy(own, stage / "Dockerfile")
+    else:
+        (stage / "Dockerfile").write_text(DOCKERFILE.format(app=app["name"]))
+    ignore = Path(app["dir"]) / ".dockerignore"
+    if ignore.is_file():
+        text = context_ignore_text(ignore.read_text(), app["name"])
+        (stage / ".dockerignore").write_text(text)
+        (stage / ".gcloudignore").write_text(text)
+
+
+def context_ignore_text(text: str, app_name: str) -> str:
+    """Move .dockerignore patterns written for the app directory to the context root."""
+    lines = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            lines.append(raw)
+            continue
+        negated = line.startswith("!")
+        pattern = (line[1:] if negated else line).lstrip("/")
+        lines.append(("!" if negated else "") + f"{app_name}/{pattern}")
+    return "\n".join(lines) + "\n"
+
+
+def image_action(app: dict, what: str) -> str:
+    """One plan line for the image build, naming a custom Dockerfile."""
+    if own_dockerfile(app) is not None:
+        return f"{what} (from {app['name']}/Dockerfile)"
+    return what
 
 
 def fail(message: str) -> None:
@@ -125,17 +177,6 @@ def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
     except urllib.error.HTTPError as error:
         validate_response(error)
         raise
-
-
-def run_build(command: list[str]) -> None:
-    proc = subprocess.run(
-        command, capture_output=True, text=True, check=False)
-    if proc.returncode:
-        if proc.stdout.strip():
-            console.say(proc.stdout.strip())
-        if proc.stderr.strip():
-            console.say(proc.stderr.strip())
-        fail(f"{' '.join(command[:3])} failed")
 
 
 def gather_secrets(app: dict) -> dict[str, str]:

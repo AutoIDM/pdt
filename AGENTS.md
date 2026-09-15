@@ -39,7 +39,7 @@ Both install routes must keep working, and a change is not done until both do:
 - `src/pdt/config.py` finds the project, then loads, merges, and validates config. A rule that both a prompt and validation need lives here once, as a function returning a message or `""` (see `aws_account_problem`). `save_platform_key` is the one way to write a value back into a config file; it edits text so comments survive, and quotes the value so an id with a leading zero does not become a number.
 - `src/pdt/scaffold.py` owns `init`, `examples`, and `new`. `STARTER` names the example that `init` copies into an empty project. `init` also writes `AGENTS.md` (and a `CLAUDE.md` pointing at it) into the user's project.
 - `src/pdt/deploy.py` is provider-neutral deploy and destroy. It validates, then dispatches to one module per provider.
-- `src/pdt/deploy_<provider>.py` is one module per provider. Provider runtimes get their own module under the provider (`deploy_aws_lambda.py`, `deploy_azure_functions.py`). Code shared by the runtimes of one provider stays in that provider module.
+- `src/pdt/deploy_<provider>.py` is one module per provider. AWS and Azure keep the job itself in a module under the provider (`deploy_aws_fargate.py`, `deploy_azure_container_apps.py`); login, secrets, prices, and everything else the job shares with `login` and `destroy` stay in the provider module.
 - `src/pdt/deploy_common.py` holds code shared by every provider: `fail`, the `DOCKERFILE`, `gather_secrets`, and `stage_build_context`. A provider module imports from here. A provider module never imports from another provider module.
 - `src/pdt/utils/` is code the user's apps import. It is public API. Changing it breaks every deployed app, so treat a change here as breaking.
 - `src/pdt/examples/<name>/` ships inside the wheel. `pdt new` copies one into the user's project. An example never sets `name:` in its `config.yml`, because the copy takes the new folder's name.
@@ -52,7 +52,7 @@ Both install routes must keep working, and a change is not done until both do:
 - Merge order, lowest to highest: `pdt.yml` `platform:` defaults, the app's entry in the `pdt.yml` `apps:` list, the app directory's `config.yml`, environment variables. The app directory is more specific than the project.
 - `schedule` and `timezone` exist only per app. They never exist in `pdt.yml`.
 - Every config file passes the same validation.
-- `platform.provider` selects the provider module. `platform.runtime` selects the runtime inside a provider (AWS: `lambda` default, `fargate`; Azure: `functions` default, `container_apps`). Both can be set in `pdt.yml` and overridden per app. Each provider with more than one runtime offers the same two shapes: a zip upload with no Docker as the default (AWS `lambda`, Azure `functions`) and a container (AWS `fargate`, Azure `container_apps`).
+- `platform.provider` selects the provider module. Every cloud provider runs a job the same way: a container image built from the app folder, on AWS Fargate, Azure Container Apps Jobs, or Google Cloud Run Jobs. There is no zip runtime and no `platform.runtime` key; validation tells a user who still sets one to remove it. Do not add a second way to run a job on a provider.
 
 ## CLI rules
 
@@ -74,6 +74,7 @@ Both install routes must keep working, and a change is not done until both do:
 - Cost estimates use real price data from the provider's pricing API. Use the same assumptions on every provider (`ASSUMED_RUN_MINUTES` per run, the schedule's runs per month) so estimates compare one to one. Use past run data when it exists. If an API needed for the estimate is disabled, enable it and retry in the same deploy. Do not make the user deploy once without an estimate.
 - Pick the cheapest adequate option by default (for example arm64 on AWS).
 - Never copy package source into a build context. The `deploy_common.py` docstring describes the context and the secret layout every provider shares.
+- An app folder may hold its own `Dockerfile`. Every cloud provider builds from it through `deploy_common.write_dockerfile`, which puts it (or the generated `DOCKERFILE`) at the root of the staged context; `config.dockerfile_problem` is the one rule for when the file would be ignored. Do not read the Dockerfile in a provider module.
 - The version pinned in a scaffolded `run.py` is the version that stays deployed. Upgrading pdt locally must not change a job already running.
 - Name per-app resources `pdt-<app>`. Tag or label every created resource `managed-by=pdt`. The string `autoidm` appears nowhere in code, names, tags, or defaults. Only delete resources that carry that tag.
 - Destroy removes everything deploy created for the app. When no other app still uses a shared resource (schedule group, cluster, image repository, service account), destroy removes that too. Do not leave resources behind. Do not use recovery windows or soft deletes; on Azure that means delete plus purge for Key Vaults and their secrets.

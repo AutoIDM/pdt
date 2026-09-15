@@ -1,7 +1,6 @@
 """Deploy an app as an ECS Fargate task run by EventBridge Scheduler.
 
-Selected with platform.runtime: fargate. Entered through deploy_aws.py,
-which owns the uv script header, login, and permission handling.
+Entered through deploy_aws.py, which owns the uv script header, login, and permission handling.
 """
 
 from __future__ import annotations
@@ -22,7 +21,9 @@ from pdt.deploy_aws import (
     delete_schedule_group, other_schedules, preflight, resource_exists,
     with_role_propagation_retry,
 )
-from pdt.deploy_common import CostEstimate, DOCKERFILE, fail, gather_secrets, stage_build_context
+from pdt.deploy_common import (
+    CostEstimate, fail, gather_secrets, image_action, stage_build_context,
+    write_dockerfile)
 
 CLUSTER = "pdt"
 REPOSITORY = "pdt"
@@ -83,8 +84,8 @@ def tags_list(extra: dict[str, str] | None = None) -> list[dict[str, str]]:
 
 def docker_preflight() -> None:
     if not shutil.which("docker"):
-        fail("Docker is required for platform.runtime: fargate; install Docker Desktop "
-             "or set platform.runtime: lambda")
+        fail("Docker is required to deploy to AWS; install Docker Desktop "
+             "and run the same command again")
     proc = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False)
     if proc.returncode:
         fail("Docker is installed but not running; start Docker and run the same command again")
@@ -233,7 +234,7 @@ def ensure_task_definition(ecs, desired: dict, image_digest: str) -> str:
 def build_and_push(app: dict, image: str, ecr) -> str:
     stage = stage_build_context(app)
     try:
-        (stage / "Dockerfile").write_text(DOCKERFILE.format(app=app["name"]))
+        write_dockerfile(stage, app)
         auth = ecr.get_authorization_token()["authorizationData"][0]
         username, password = base64.b64decode(auth["authorizationToken"]).decode().split(":", 1)
         registry = auth["proxyEndpoint"]
@@ -306,7 +307,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
     actions = [
         f"reconcile shared ECR repository {REPOSITORY} and ECS cluster {CLUSTER}",
-        f"build and push Docker image {image} ({DOCKER_PLATFORM})",
+        image_action(app, f"build and push Docker image {image} ({DOCKER_PLATFORM})"),
         ("update" if secret_exists else "create")
         + f" Secrets Manager secret {names['secret']}",
         "reconcile the execution, task, and scheduler IAM roles",

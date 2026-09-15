@@ -1,6 +1,6 @@
 """Deploy an app as a scheduled Azure Container Apps Job.
 
-Selected with platform.runtime: container_apps. Entered through
+Entered through
 deploy_azure.py, which owns the uv script header, login, and Key Vault.
 The resource group, Container Apps environment, ACR, Key Vault, and
 user-assigned identity are shared. Each app owns one tagged job.
@@ -24,7 +24,9 @@ from pdt.deploy_azure import (
     require_managed, resource_id, retail_price, run_basis, run_quiet, run_stream,
     secret_actions, secret_name, secret_state, workspace_resource,
 )
-from pdt.deploy_common import CostEstimate, DOCKERFILE, fail, gather_secrets, stage_build_context
+from pdt.deploy_common import (
+    CostEstimate, fail, gather_secrets, image_action, stage_build_context,
+    write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -35,7 +37,7 @@ MEMORY = "1.0Gi"
 def build_image(app: dict, registry: str, image_name: str) -> None:
     stage = stage_build_context(app)
     try:
-        (stage / "Dockerfile").write_text(DOCKERFILE.format(app=app["name"]))
+        write_dockerfile(stage, app)
         run_stream("acr", "build", "--registry", registry, "--image",
                    f"{image_name}:latest", str(stage))
     finally:
@@ -221,7 +223,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    + f" Key Vault {settings['vault']} (RBAC)")
     actions.append("ensure scoped Key Vault secret permissions for the deployer "
                    "and managed identity")
-    actions.append(f"build and push image {settings['registry']}.azurecr.io/{name}:latest")
+    actions.append(image_action(
+        app, f"build and push image {settings['registry']}.azurecr.io/{name}:latest"))
     actions += secret_actions(sid, values, current_hash, digest)
     actions.append(("update" if current_job else "create")
                    + f' Container Apps Job {job}: "{cron}" (UTC)')

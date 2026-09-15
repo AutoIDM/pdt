@@ -12,8 +12,8 @@
 # ///
 """Deploy an app to AWS.
 
-Shared login, IAM, secret, log, and schedule code lives here. The
-runtime-specific parts are in deploy_aws_lambda.py and deploy_aws_fargate.py.
+Shared login, IAM, secret, log, and schedule code lives here. The job
+itself, a scheduled ECS task on Fargate, is in deploy_aws_fargate.py.
 
 The deploy itself talks to AWS through boto3. The AWS CLI is a Python
 package, so the script header installs it too, and `pdt aws` plus the SSO
@@ -385,7 +385,7 @@ def ensure_secret(secrets, name: str, payload: str) -> str:
         Name=name,
         SecretString=payload,
         Tags=iam_tags(),
-        Description="PDT_ENV_JSON for a PDT Lambda function",
+        Description="PDT_ENV_JSON for a pdt job",
     )["ARN"]
 
 
@@ -510,7 +510,7 @@ def resource_exists(client, operation: str, **kwargs) -> bool:
 
 def clients_for(session) -> dict:
     return {name: session.client(name) for name in
-            ("sts", "lambda", "logs", "secretsmanager", "iam", "scheduler")}
+            ("sts", "logs", "secretsmanager", "iam", "scheduler")}
 
 
 def delete_secret(secrets, name: str) -> None:
@@ -588,14 +588,11 @@ def main() -> int:
     if args.command == "login":
         return relogin(args.profile)
     app = load_app(args.app)
-    if app["platform"].get("runtime", "lambda") == "fargate":
-        from pdt import deploy_aws_fargate as runtime
-    else:
-        from pdt import deploy_aws_lambda as runtime
+    from pdt import deploy_aws_fargate as fargate
     try:
         if args.command == "deploy":
-            return runtime.deploy(app, args.yes, args.profile)
-        return runtime.destroy(app, args.yes, args.profile)
+            return fargate.deploy(app, args.yes, args.profile)
+        return fargate.destroy(app, args.yes, args.profile)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",
                                "UnauthorizedOperation"}:
@@ -604,7 +601,7 @@ def main() -> int:
                 identity = boto3.client("sts").get_caller_identity()["Arn"]
             except Exception:  # noqa: BLE001,S110 - retain the original permission error
                 pass
-            print_permission_help(identity, str(exc), runtime.DEPLOYER_ACTIONS)
+            print_permission_help(identity, str(exc), fargate.DEPLOYER_ACTIONS)
             return 1
         fail(f"AWS returned {error_code(exc) or 'an error'}: {exc}")
 
