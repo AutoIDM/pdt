@@ -3,10 +3,13 @@
 Rich drops the colour when output is not a terminal, so a redirected or
 piped run stays plain text and every command stays readable in a log.
 
-The vocabulary is small on purpose. Bold marks a name or a command.
-Colour marks state and nothing else: red for a failure, green for a
-success, yellow for something the user should read but need not act on.
-Everything else prints unstyled.
+The vocabulary is small on purpose. Bold marks a value the user may
+type back or copy: a name, a command, a path, an id. Cyan marks a value
+pdt worked out for the user to weigh: a numbered choice, a dollar
+amount, the `==>` of a step. Dim marks text the user may skip: a
+progress line, a side note. Colour otherwise marks state and nothing
+else: red for a failure, green for a success, yellow for something the
+user should read but need not act on. Everything else prints unstyled.
 
 Import the module, not its functions: `from pdt import console`, then
 `console.error(...)`. The names here are short and would collide.
@@ -44,6 +47,24 @@ def progress(text: str) -> None:
 def styled(message: str) -> None:
     """A line the caller has already marked up."""
     _console.print(message)
+
+
+def status(message: str) -> None:
+    """A line about work in progress, such as a fetch or a login."""
+    _console.print(f"[dim]{escape(message)}[/]")
+
+
+def field(label: str, value: str) -> None:
+    """A label and the value pdt found for it: an account, a URL, a path."""
+    _console.print(f"{escape(label)}: [bold]{escape(value)}[/]")
+
+
+def choice(number: int, label: str, detail: str = "") -> None:
+    """One numbered option the user picks with `number`."""
+    line = f"  [bold cyan]{number})[/] {escape(label)}"
+    if detail != "":
+        line += f"  [dim]{escape(detail)}[/]"
+    _console.print(line)
 
 
 def error(message: str) -> None:
@@ -95,7 +116,7 @@ def bullet(text: str, indent: int = 2) -> None:
 
 
 def command(text: str, note: str = "", indent: int = 2) -> None:
-    """A command line the user can copy."""
+    """A command line or a path the user can copy, with an optional note."""
     if note != "":
         _console.print(f"{' ' * indent}[bold]{escape(text)}[/]  [dim]{escape(note)}[/]")
     else:
@@ -119,6 +140,18 @@ def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:
         if index < len(cells) - 1:
             line.append(" " * (widths[index] - len(cell) + 2))
     return line
+
+
+def cost(items: list[tuple[str, float]], prices: str, excludes: str = "") -> None:
+    """A monthly cost estimate: one line per item, then the total."""
+    width = max(len(label) for label, _ in items)
+    _console.print(f"[bold]Estimated monthly cost[/] ({escape(prices)}):")
+    for label, amount in items:
+        _console.print(f"  {escape(label):<{width}}  [cyan]${amount:>7.2f}[/]")
+    total = sum(amount for _, amount in items)
+    _console.print(f"  [bold]{'total':<{width}}  [cyan]${total:>7.2f}[/][/]")
+    if excludes != "":
+        _console.print(f"  [dim]{escape(excludes)}[/]")
 
 
 def table(headers: list[str], rows: list[list[str]],

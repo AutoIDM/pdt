@@ -18,13 +18,13 @@ from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
     AZ, RECENT_RUNS, assign_role, az_json, az_tsv, azure_settings, check_shared_names,
-    clean_name, cost_estimate_lines, destroy_group, ensure_group_and_vault, ensure_secret,
+    clean_name, cost_estimate, destroy_group, ensure_group_and_vault, ensure_secret,
     group_can_be_deleted, key_vault_item, managed_by_pdt, managed_secret,
     other_pdt_apps, owned_by, preflight, purge_secret, report_shared_kept,
     require_managed, resource_id, retail_price, run_basis, run_quiet, run_stream,
     secret_actions, secret_name, secret_state, workspace_resource,
 )
-from pdt.deploy_common import DOCKERFILE, fail, gather_secrets, stage_build_context
+from pdt.deploy_common import CostEstimate, DOCKERFILE, fail, gather_secrets, stage_build_context
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -134,9 +134,9 @@ def average_run_seconds(job: str, rg: str) -> float | None:
     return sum(durations) / len(durations)
 
 
-def cost_lines(region: str, cron: str, job: str, rg: str,
-               job_exists: bool, num_secrets: int) -> list[str]:
-    console.say("Fetching list prices from the Azure Retail Prices API...")
+def cost_estimate_for(region: str, cron: str, job: str, rg: str,
+               job_exists: bool, num_secrets: int) -> CostEstimate:
+    console.status("Fetching list prices from the Azure Retail Prices API...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(average_run_seconds(job, rg) if job_exists else None)
@@ -157,7 +157,7 @@ def cost_lines(region: str, cron: str, job: str, rg: str,
             items.append(key_vault_item(region, runs))
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
-    return cost_estimate_lines(
+    return cost_estimate(
         region, items, "excludes ACR image builds/storage and Log Analytics ingestion")
 
 
@@ -172,7 +172,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     sid = secret_name(name)
     rg = settings["resource_group"]
 
-    console.say(f"Checking current state in Azure subscription {settings['subscription']} "
+    console.status(f"Checking current state in Azure subscription {settings['subscription']} "
           f"({settings['region']})...")
     check_shared_names(settings)
     group = az_json("group", "show", "--name", rg)
@@ -225,7 +225,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions += secret_actions(sid, values, current_hash, digest)
     actions.append(("update" if current_job else "create")
                    + f' Container Apps Job {job}: "{cron}" (UTC)')
-    if not confirm(actions, assume_yes, cost_lines(
+    if not confirm(actions, assume_yes, cost_estimate_for(
             settings["region"], cron, job, rg, current_job is not None, 1 if values else 0)):
         console.warn("Aborted; nothing was changed.")
         return 1
@@ -274,8 +274,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     reconcile_job(settings, job, image, cron, identity_id, secret_uri,
                   current_job is not None, name)
     console.done(f"Deployed {name}.")
-    console.say(f"Run it once now: pdt az containerapp job start --name {job} --resource-group {rg}")
-    console.say(f"Run logs: {job_history_url(settings, job)} (Execution history tab)")
+    console.field("Run it once", f"pdt az containerapp job start --name {job} --resource-group {rg}")
+    console.field("Run logs (Execution history tab)", job_history_url(settings, job))
     return 0
 
 

@@ -25,13 +25,13 @@ from pdt.deploy import confirm
 from pdt.deploy_azure import (
     ACTION_GROUP_TYPE, INSIGHTS_TYPE, RECENT_RUNS, SMART_ACTION_GROUP, SMART_RULE_TYPE,
     assign_role, az_json, azure_settings, check_shared_names, clean_name,
-    cost_estimate_lines, destroy_group, ensure_group_and_vault, ensure_secret,
+    cost_estimate, destroy_group, ensure_group_and_vault, ensure_secret,
     failure_rule_name, group_can_be_deleted, key_vault_item, managed_secret,
     other_pdt_apps, owned_by, preflight, purge_secret, report_shared_kept,
     require_managed, retail_price, run_basis, run_quiet, run_stream, secret_actions,
     secret_name, secret_state, side_resource, tag_side_resource, workspace_resource,
 )
-from pdt.deploy_common import fail, gather_secrets, run_build, stage_build_context
+from pdt.deploy_common import CostEstimate, fail, gather_secrets, run_build, stage_build_context
 
 PROVIDERS = ("Microsoft.Web", "Microsoft.Storage", "Microsoft.OperationalInsights",
              "Microsoft.Insights")
@@ -203,9 +203,9 @@ def average_run_seconds(function_id: str) -> float | None:
     return total_units / total_count / INSTANCE_MEMORY_MB / 1000
 
 
-def cost_lines(region: str, cron: str, function_id: str | None,
-               num_secrets: int) -> list[str]:
-    console.say("Fetching list prices from the Azure Retail Prices API...")
+def cost_estimate_for(region: str, cron: str, function_id: str | None,
+               num_secrets: int) -> CostEstimate:
+    console.status("Fetching list prices from the Azure Retail Prices API...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(average_run_seconds(function_id) if function_id else None)
@@ -221,7 +221,7 @@ def cost_lines(region: str, cron: str, function_id: str | None,
             items.append(key_vault_item(region, runs))
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
-    return cost_estimate_lines(
+    return cost_estimate(
         region, items, "excludes the shared Storage account, usually under $1/month")
 
 
@@ -261,7 +261,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     sid = secret_name(name)
     rg = settings["resource_group"]
 
-    console.say(f"Checking current state in Azure subscription {settings['subscription']} "
+    console.status(f"Checking current state in Azure subscription {settings['subscription']} "
           f"({settings['region']})...")
     check_shared_names(settings)
     group = az_json("group", "show", "--name", rg)
@@ -316,7 +316,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    f'{INSTANCE_MEMORY_MB} MB, 30-minute limit)')
     if missing_origins:
         actions.append("allow Azure portal Code + Test to run the Function App")
-    if not confirm(actions, assume_yes, cost_lines(
+    if not confirm(actions, assume_yes, cost_estimate_for(
             settings["region"], cron, current["id"] if current else None, 1 if values else 0)):
         console.warn("Aborted; nothing was changed.")
         return 1
@@ -367,7 +367,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     finally:
         shutil.rmtree(archive.parent, ignore_errors=True)
     console.done(f"Deployed {name}.")
-    console.say(f"Run logs: {invocations_url(settings, function_app)}")
+    console.field("Run logs", invocations_url(settings, function_app))
     return 0
 
 

@@ -118,7 +118,7 @@ def set_sdk_python() -> None:
 def download_sdk(key: str) -> None:
     url = (f"https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/"
            f"{archive_name(key)}")
-    console.say(f"downloading {url}")
+    console.status(f"downloading {url}")
     digest = hashlib.sha256()
     tmp = tempfile.NamedTemporaryFile(suffix=Path(url).suffix, delete=False)
     tmp_path = Path(tmp.name)
@@ -144,7 +144,7 @@ def download_sdk(key: str) -> None:
                 f"  got      {digest.hexdigest()}\n"
                 f"A newer release may have replaced the pinned one; update VERSION "
                 f"and CHECKSUMS in pdt/gcloud_sdk.py from {INSTALL_DOCS}")
-        console.say(f"unpacking to {SDK_DIR}")
+        console.status(f"unpacking to {SDK_DIR}")
         if url.endswith(".zip"):
             with zipfile.ZipFile(tmp_path) as archive:
                 archive.extractall(stage)

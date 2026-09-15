@@ -36,7 +36,7 @@ from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console
-from pdt.deploy_common import fail, fetch_json
+from pdt.deploy_common import CostEstimate, fail, fetch_json
 
 AWS_CLI = [sys.executable, "-m", "awscli"]
 MANAGED_TAGS = {"managed-by": "pdt"}
@@ -124,7 +124,7 @@ def adopt_account(app: dict, session) -> str:
     # AWS gives one account per credential set, so there is nothing to pick.
     identity = session.client("sts").get_caller_identity()
     account = identity["Account"]
-    console.say(f"These credentials belong to AWS account {account}.")
+    console.field("These credentials belong to AWS account", account)
     console.bullet(f"{identity['Arn']}")
     saved = config.save_platform_key(app, "account", account)
     console.done(f"Saved account {account} to {saved.relative_to(config.find_project())}.")
@@ -168,7 +168,7 @@ def print_permission_help(identity: str, detail: str, actions: list[str]) -> Non
     console.warn("AWS blocked this deployment because the current login lacks a permission.")
     if detail:
         console.say(f"AWS said: {detail}")
-    console.say(f"Current AWS login: {identity}")
+    console.field("Current AWS login", identity)
     console.say("Send the policy below to the person who manages your AWS account.")
     console.say("Ask them to add it to this login, then run the same command again.")
     console.say(json.dumps(deployer_policy(actions), indent=2))
@@ -193,15 +193,16 @@ def choose_profile(session) -> str:
     profiles = session.available_profiles
     if not profiles:
         console.warn("No AWS credentials or profiles were found on this computer.")
-        console.say("Create a profile first:  pdt aws configure sso   (or: pdt aws configure)")
-        console.say("Then select it:          export AWS_PROFILE=<profile-name>")
+        console.say("Create a profile first, then select it:")
+        console.command("pdt aws configure sso", "or: pdt aws configure")
+        console.command("export AWS_PROFILE=<profile-name>")
         fail("run the same command again after you set AWS_PROFILE")
     if len(profiles) == 1:
-        console.say(f"Using the only AWS profile on this computer: {profiles[0]}")
+        console.field("Using the only AWS profile on this computer", profiles[0])
         return profiles[0]
     console.heading("No AWS profile is selected. Profiles on this computer:")
     for number, profile in enumerate(profiles, start=1):
-        console.bullet(f"{number}) {profile}")
+        console.choice(number, profile)
     answer = ask(f"Which profile do you want to use? [1-{len(profiles)}] ")
     if answer.isdigit() and 1 <= int(answer) <= len(profiles):
         profile = profiles[int(answer) - 1]
@@ -210,8 +211,8 @@ def choose_profile(session) -> str:
     else:
         fail("no AWS profile selected; run again with --profile <name> "
              "or set AWS_PROFILE=<name>")
-    console.say(f"To skip this question next time:  --profile {profile}  "
-                f"or  export AWS_PROFILE={profile}")
+    console.say("To skip this question next time, add:")
+    console.command(f"--profile {profile}", f"or: export AWS_PROFILE={profile}")
     return profile
 
 
@@ -233,14 +234,14 @@ def relogin(profile: str | None) -> int:
     name = profile or os.environ.get("AWS_PROFILE") or ""
     if name not in session.available_profiles:
         name = choose_profile(session)
-    console.say(f"Logging in to AWS profile {name}...")
+    console.status(f"Logging in to AWS profile {name}...")
     if subprocess.run([*AWS_CLI, "sso", "login", "--profile", name]).returncode != 0:
         console.warn(f"If {name} uses access keys instead of SSO there is no login to "
                      f"refresh; run `pdt aws configure --profile {name}` to replace the keys.")
         fail("pdt aws sso login failed")
     identity = boto3.Session(profile_name=name).client("sts").get_caller_identity()
     console.done(f"Signed in as {identity['Arn']}")
-    console.say(f"Account {identity['Account']}")
+    console.field("Account", identity["Account"])
     return 0
 
 
@@ -418,16 +419,9 @@ def recent_stream_seconds(logs, log_group: str) -> float | None:
     return sum(durations) / len(durations)
 
 
-def cost_estimate_lines(region: str, items: list[tuple[str, float]],
-                        excludes: str) -> list[str]:
-    total = sum(cost for _, cost in items)
-    width = max(len(label) for label, _ in items)
-    lines = [f"Estimated monthly cost ({region} list prices, before free tiers):"]
-    for label, cost in items:
-        lines.append(f"  {label:<{width}}  ${cost:>7.2f}")
-    lines.append(f"  {'total':<{width}}  ${total:>7.2f}")
-    lines.append(f"  ({excludes})")
-    return lines
+def cost_estimate(region: str, items: list[tuple[str, float]],
+                  excludes: str) -> CostEstimate:
+    return CostEstimate(items, f"{region} list prices, before free tiers", excludes)
 
 
 def run_basis(seconds: float | None) -> tuple[float, str]:

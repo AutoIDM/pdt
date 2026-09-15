@@ -104,7 +104,8 @@ def cmd_run(args) -> int:
     if (proc.returncode == 0 and args.app == scaffold.STARTER
             and not config.is_deployed(args.app)):
         console.say()
-        console.say(f"Try deploying this job! Type: pdt deploy {scaffold.STARTER}")
+        console.say("Try deploying this job:")
+        console.command(f"pdt deploy {scaffold.STARTER}")
     return proc.returncode
 
 
@@ -112,8 +113,9 @@ def ask_which_app(command: str) -> int:
     apps = config.find_apps()
     if not apps:
         console.say("This project has no apps yet.")
-        console.say("Run `pdt examples` to see what you can start from,")
-        console.say("then `pdt new my-report --from <example>`.")
+        console.say("Start from an example:")
+        console.command("pdt examples")
+        console.command("pdt new my-report --from <example>")
         return 1
     shown = apps[:5]
     console.heading(f"Which app do you want to {command}? This project has:")
@@ -121,7 +123,8 @@ def ask_which_app(command: str) -> int:
         console.name(name)
     if len(apps) > len(shown):
         console.bullet(f"... and {len(apps) - len(shown)} more")
-    console.say(f"Run `pdt list` to see every app, then `pdt {command} <app>`.")
+    console.command("pdt list", "see every app")
+    console.command(f"pdt {command} <app>")
     return 1
 
 

@@ -8,7 +8,6 @@ import tempfile
 from pathlib import Path
 
 from pdt import __version__, console
-from rich.markup import escape
 from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_project
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
@@ -98,7 +97,7 @@ def _ask_choice(question: str, labels: list[str], default: int = 1) -> int:
     console.heading(question)
     console.say()
     for number, label in enumerate(labels, start=1):
-        console.styled(f"  [bold cyan]{number})[/] {escape(label)}")
+        console.choice(number, label)
     console.say()
     while True:
         answer = _ask("Choose", str(default))
@@ -132,7 +131,7 @@ def choose_target(requested: str | None, assume_yes: bool) -> Path:
 
     warning = bad_place(here)
     console.say()
-    console.styled(f"This folder: [bold]{escape(str(here))}[/]")
+    console.field("This folder", str(here))
     if warning != "":
         console.warn(f"Careful: {warning}")
 
@@ -227,12 +226,12 @@ def init(directory: str | None, assume_yes: bool) -> int:
 
     console.say()
     console.done(f"Your project is ready: {target}")
-    console.bullet(f"{PROJECT_FILE}   settings shared by every app")
-    console.bullet(".env      secrets, never committed")
-    console.bullet(".gitignore")
-    console.bullet("AGENTS.md how an AI agent should work in this project (CLAUDE.md points here)")
+    console.command(PROJECT_FILE, "settings shared by every app")
+    console.command(".env", "secrets, never committed")
+    console.command(".gitignore")
+    console.command("AGENTS.md", "how an AI agent should work in this project (CLAUDE.md points here)")
     if starting_fresh:
-        console.bullet(f"{STARTER}/  a working app to run and edit")
+        console.command(f"{STARTER}/", "a working app to run and edit")
     console.say()
     console.heading("Next steps:")
     if target != Path.cwd().resolve():
@@ -296,11 +295,11 @@ def new_app(name: str, source: str | None) -> int:
             f"there is no example named {source!r}. Run `pdt examples` to see them.")
     copy_example(root, name, example)
     console.done(f"Created {name}/ from the {example.name} example.")
-    console.bullet(f"{name}/run.py       the job itself")
-    console.bullet(f"{name}/config.yml   how often it runs and what it needs")
+    console.command(f"{name}/run.py", "the job itself")
+    console.command(f"{name}/config.yml", "how often it runs and what it needs")
     needs_secrets = (destination / "env.template").is_file()
     if needs_secrets:
-        console.bullet(f"{name}/env.template the secrets to copy into .env")
+        console.command(f"{name}/env.template", "the secrets to copy into .env")
     console.say()
     console.heading("Next steps:")
     if needs_secrets:

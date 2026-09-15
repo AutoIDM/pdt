@@ -15,14 +15,14 @@ from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, SCHEDULE_GROUP, aws_schedule_expression,
-    aws_settings, clients_for, cost_estimate_lines, delete_log_group, delete_role,
+    aws_settings, clients_for, cost_estimate, delete_log_group, delete_role,
     delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     ensure_session, has_managed_tag, iam_tags, not_found,
     delete_schedule_group, other_schedules, preflight, resource_exists,
     with_role_propagation_retry,
 )
-from pdt.deploy_common import DOCKERFILE, fail, gather_secrets, stage_build_context
+from pdt.deploy_common import CostEstimate, DOCKERFILE, fail, gather_secrets, stage_build_context
 
 CLUSTER = "pdt"
 REPOSITORY = "pdt"
@@ -253,9 +253,9 @@ def build_and_push(app: dict, image: str, ecr) -> str:
     return images["imageDetails"][0]["imageDigest"]
 
 
-def cost_lines(logs, names: dict[str, str], region: str, cron: str,
-               schedule_exists: bool) -> list[str]:
-    console.say("Fetching list prices from the AWS price list...")
+def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
+               schedule_exists: bool) -> CostEstimate:
+    console.status("Fetching list prices from the AWS price list...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(
@@ -273,7 +273,7 @@ def cost_lines(logs, names: dict[str, str], region: str, cron: str,
         ]
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
-    return cost_estimate_lines(
+    return cost_estimate(
         region, items,
         "excludes EventBridge Scheduler free tier, ECR storage, and CloudWatch Logs usage")
 
@@ -297,7 +297,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     payload = json.dumps(gather_secrets(app), sort_keys=True)
     image = f"{account}.dkr.ecr.{region}.amazonaws.com/{REPOSITORY}:{names['image_tag']}"
 
-    console.say(f"Checking current state in account {account} ({region})...")
+    console.status(f"Checking current state in account {account} ({region})...")
     subnets, security_group = default_network(clients["ec2"])
     schedule_exists = resource_exists(
         clients["scheduler"], "get_schedule",
@@ -316,7 +316,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         + f" EventBridge schedule {names['schedule']}: {expression} ({app['timezone']})",
         f"use default VPC subnets and security group {security_group} with a public IP",
     ]
-    if not confirm(actions, assume_yes, cost_lines(
+    if not confirm(actions, assume_yes, cost_estimate_for(
             clients["logs"], names, region, cron, schedule_exists)):
         console.warn("Aborted; nothing was changed.")
         return 1
@@ -352,11 +352,11 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, target)
     console.done(f"Deployed {app['name']}.")
-    console.say(f"Run it once: pdt aws ecs run-task --cluster {CLUSTER} "
-                f"--task-definition {names['family']} --launch-type FARGATE "
-                f"--network-configuration 'awsvpcConfiguration={{subnets=[{subnets[0]}],"
-                f"securityGroups=[{security_group}],assignPublicIp=ENABLED}}' --region {region}")
-    console.say(f"Run logs: {log_group_url(region, names['log_group'])}")
+    console.field("Run it once", f"pdt aws ecs run-task --cluster {CLUSTER} "
+                  f"--task-definition {names['family']} --launch-type FARGATE "
+                  f"--network-configuration 'awsvpcConfiguration={{subnets=[{subnets[0]}],"
+                  f"securityGroups=[{security_group}],assignPublicIp=ENABLED}}' --region {region}")
+    console.field("Run logs", log_group_url(region, names["log_group"]))
     return 0
 
 
