@@ -116,3 +116,19 @@ score-mrs:
     - if: $CI_PIPELINE_SOURCE == "web" && $mode == "score_mrs"
       variables:
         CLAUDE_TASK_ARGS: "--dry-run"
+
+# Scheduled and manual pipelines pick a job with the `mode` variable, so each
+# schedule sets mode to the job it wants. A schedule runs armed; a web run is a
+# dry run unless the form also sets DRY_RUN=false.
+# Needs GITLAB_TOKEN and SLACK_WEBHOOK_URL.
+close_stale_drafts:
+  stage: tasks
+  needs: []
+  interruptible: false
+  script:
+    - uv run python ci/close_stale_drafts.py
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $mode == "close_stale_drafts"
+      variables:
+        DRY_RUN: "false"
+    - if: $CI_PIPELINE_SOURCE == "web" && $mode == "close_stale_drafts"
