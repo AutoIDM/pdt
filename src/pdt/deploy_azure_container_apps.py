@@ -71,6 +71,92 @@ def job_history_url(settings: dict[str, str], job: str) -> str:
             + resource_id(settings, "Microsoft.App", "jobs", job))
 
 
+def _activity_error(status_message) -> dict:
+    if isinstance(status_message, str):
+        try:
+            status_message = json.loads(status_message)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(status_message, dict):
+        return {}
+    error = status_message.get("error")
+    if not isinstance(error, dict):
+        error = status_message
+    summary = {key: error[key] for key in ("code", "message")
+               if isinstance(error.get(key), str)}
+    details = error.get("details")
+    if isinstance(details, list):
+        summary["details"] = [
+            {key: item[key] for key in ("code", "message")
+             if isinstance(item, dict) and isinstance(item.get(key), str)}
+            for item in details if isinstance(item, dict)
+        ]
+    return summary
+
+
+def report_job_failure(settings: dict[str, str], job: str) -> None:
+    timestamp = datetime.datetime.now(datetime.UTC).isoformat()
+    job_id = resource_id(settings, "Microsoft.App", "jobs", job)
+    console.heading("Azure Container Apps failure diagnostics:")
+    console.bullet(f"resource group: {settings['resource_group']}")
+    console.bullet(f"job: {job}")
+    console.bullet(f"resource: {job_id}")
+    console.bullet(f"diagnostic time (UTC): {timestamp}")
+
+    try:
+        data = az_json(
+            "containerapp", "job", "show", "--name", job,
+            "--resource-group", settings["resource_group"], "--subscription",
+            settings["subscription"], "--query",
+            "{id:id,name:name,provisioningState:properties.provisioningState,"
+            "environmentId:properties.environmentId,identityType:identity.type,"
+            "userAssignedIdentities:identity.userAssignedIdentities,tags:tags}")
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        console.note("job state is unavailable")
+    else:
+        tags = data.get("tags") or {}
+        if not isinstance(tags, dict):
+            tags = {}
+        tags = {key: tags[key] for key in ("managed-by", "pdt-app")
+                if key in tags}
+        identities = data.get("userAssignedIdentities") or {}
+        if not isinstance(identities, dict):
+            identities = {}
+        console.bullet(f"provisioning state: {data.get('provisioningState')}")
+        console.bullet(f"environment: {data.get('environmentId')}")
+        console.bullet(f"identity type: {data.get('identityType')}")
+        console.bullet(f"user assigned identities: {list(identities)}")
+        console.bullet(f"owned tags: {tags}")
+
+    try:
+        events = az_json(
+            "monitor", "activity-log", "list", "--resource-group",
+            settings["resource_group"], "--subscription", settings["subscription"],
+            "--offset", "1h", "--query",
+            "[].{eventTimestamp:eventTimestamp,operationName:operationName.value,"
+            "status:status.value,subStatus:subStatus.value,correlationId:"
+            "correlationId,resourceId:resourceId,statusMessage:properties.statusMessage}")
+    except Exception:
+        events = None
+    if not isinstance(events, list):
+        console.note("activity log is unavailable")
+        return
+    matching = [event for event in events if isinstance(event, dict)
+                and str(event.get("resourceId") or "").lower() == job_id.lower()]
+    matching.sort(key=lambda event: str(event.get("eventTimestamp") or ""), reverse=True)
+    if not matching:
+        console.note("no recent activity log events matched this job")
+        return
+    for event in matching[:5]:
+        console.bullet(
+            f"activity: {event.get('eventTimestamp')} "
+            f"{event.get('operationName')} {event.get('status')} "
+            f"{event.get('subStatus')} correlation {event.get('correlationId')} "
+            f"error {_activity_error(event.get('statusMessage'))}")
+
+
 def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                   identity_id: str, secret_uri: str | None,
                   exists: bool, app_name: str) -> None:
@@ -97,7 +183,7 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                 f"pdt-env=keyvaultref:{secret_uri},identityref:{identity_id}",
                 "--env-vars", "PDT_ENV_JSON=secretref:pdt-env",
             ]
-        run_quiet(*args, retry_access=True)
+        run_quiet(*args, retry_access=True, retry_internal=True)
         return
 
     run_quiet("containerapp", "job", "identity", "assign", "--name", job,
@@ -279,8 +365,12 @@ def deploy(app: dict, assume_yes: bool) -> int:
     secret_uri = ensure_secret(settings, sid, values, payload, digest, current_hash, name)
     console.step(f"reconciling Container Apps Job {job}")
     image = f"{settings['registry']}.azurecr.io/{name}:latest"
-    reconcile_job(settings, job, image, cron, identity_id, secret_uri,
-                  current_job is not None, name)
+    try:
+        reconcile_job(settings, job, image, cron, identity_id, secret_uri,
+                      current_job is not None, name)
+    except SystemExit:
+        report_job_failure(settings, job)
+        raise
     console.done(f"Deployed {name}.")
     console.say(f"Run it once now: pdt az containerapp job start --name {job} --resource-group {rg}")
     console.say(f"Run logs: {job_history_url(settings, job)} (Execution history tab)")
