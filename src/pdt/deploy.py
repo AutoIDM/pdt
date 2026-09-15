@@ -17,6 +17,7 @@ from pathlib import Path
 
 from pdt import config, console
 from pdt.config import ConfigError
+from pdt.deploy_common import CostEstimate
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -101,20 +102,18 @@ def destroy(app_name: str, assume_yes: bool = False, profile: str | None = None)
 
 
 def confirm(actions: list[str], assume_yes: bool,
-            cost_lines: list[str] | None = None) -> bool:
+            cost: CostEstimate | None = None) -> bool:
     console.heading("Plan:")
     for action in actions:
         console.bullet(action)
-    if cost_lines:
-        console.heading(cost_lines[0])
-        for line in cost_lines[1:]:
-            console.say(line)
+    if cost is not None:
+        cost.show()
     if assume_yes:
         return True
     if not can_prompt(None):
         console.say()
-        console.say("there is no one to answer. Run this in a terminal, "
-                    "or add --yes to proceed without asking.")
+        console.warn("there is no one to answer. Run this in a terminal, "
+                     "or add --yes to proceed without asking.")
         return False
     try:
         return console.confirm()

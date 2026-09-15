@@ -22,14 +22,14 @@ from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, MANAGED_TAGS, RECENT_RUNS, SCHEDULE_GROUP,
-    aws_schedule_expression, aws_settings, clients_for, cost_estimate_lines,
+    aws_schedule_expression, aws_settings, clients_for, cost_estimate,
     delete_log_group, list_price, log_group_url, run_basis,
     delete_role, delete_secret, ensure_log_group, ensure_role, ensure_schedule,
     ensure_secret, ensure_session, not_found, preflight,
     resource_exists, other_schedules, delete_schedule_group,
     with_role_propagation_retry,
 )
-from pdt.deploy_common import fail, gather_secrets, run_build, stage_build_context
+from pdt.deploy_common import CostEstimate, fail, gather_secrets, run_build, stage_build_context
 
 LAMBDA_MEMORY_MB = 512
 LAMBDA_TIMEOUT_SECONDS = 900
@@ -230,9 +230,9 @@ def recent_report_seconds(logs, log_group: str) -> float | None:
     return sum(durations) / len(durations)
 
 
-def cost_lines(logs, names: dict[str, str], region: str, cron: str,
-               function_exists: bool) -> list[str]:
-    console.say("Fetching list prices from the AWS price list...")
+def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
+               function_exists: bool) -> CostEstimate:
+    console.status("Fetching list prices from the AWS price list...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(
@@ -246,7 +246,7 @@ def cost_lines(logs, names: dict[str, str], region: str, cron: str,
         ]
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
-    return cost_estimate_lines(
+    return cost_estimate(
         region, items, "excludes EventBridge Scheduler free tier and CloudWatch Logs usage")
 
 
@@ -261,7 +261,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     expression = aws_schedule_expression(cron)
     payload = json.dumps(gather_secrets(app), sort_keys=True)
 
-    console.say(f"Checking current state in account {account} ({region})...")
+    console.status(f"Checking current state in account {account} ({region})...")
     function_exists = resource_exists(
         clients["lambda"], "get_function", FunctionName=names["function"])
     schedule_exists = resource_exists(
@@ -280,7 +280,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         ("update" if schedule_exists else "create")
         + f" EventBridge schedule {names['schedule']}: {expression} ({app['timezone']})",
     ]
-    if not confirm(actions, assume_yes, cost_lines(
+    if not confirm(actions, assume_yes, cost_estimate_for(
             clients["logs"], names, region, cron, function_exists)):
         console.warn("Aborted; nothing was changed.")
         return 1
@@ -301,9 +301,9 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         clients["scheduler"], names["schedule"], expression, app["timezone"],
         scheduler_role, {"Arn": function_arn})
     console.done(f"Deployed {app['name']}.")
-    console.say(f"Run it once: pdt aws lambda invoke --function-name {names['function']} "
-                f"--region {region} response.json")
-    console.say(f"Run logs: {log_group_url(region, names['log_group'])}")
+    console.field("Run it once", f"pdt aws lambda invoke --function-name {names['function']} "
+                  f"--region {region} response.json")
+    console.field("Run logs", log_group_url(region, names["log_group"]))
     return 0
 
 

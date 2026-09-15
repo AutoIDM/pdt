@@ -48,7 +48,7 @@ from pdt import console
 from pdt import gcloud_sdk
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    DOCKERFILE, fail, fetch_json, gather_secrets, stage_build_context)
+    DOCKERFILE, CostEstimate, fail, fetch_json, gather_secrets, stage_build_context)
 from pdt.utils import email_auth
 
 GCLOUD = "gcloud"
@@ -151,7 +151,7 @@ def login_with_key_file() -> bool:
     key_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
     if key_file == "" or not Path(key_file).is_file():
         return False
-    console.say(f"Signing in to Google Cloud with {key_file}...")
+    console.status(f"Signing in to Google Cloud with {key_file}...")
     subprocess.run([GCLOUD, "--quiet", "auth", "login", "--cred-file", key_file],
                    stdin=subprocess.DEVNULL, capture_output=True, text=True)
     return have_credentials()
@@ -203,7 +203,7 @@ def choose_project(app: dict, requested: str) -> str:
         console.warn(f"platform.project {requested!r} is not a real Google Cloud project id.")
     console.heading("Your Google Cloud projects:")
     for index, entry in enumerate(available, 1):
-        console.bullet(f"{index}. {entry[0]}  {entry[-1]}")
+        console.choice(index, entry[0], entry[-1])
     try:
         answer = input(f"Deploy to which one? [1-{len(available)}] ").strip()
     except EOFError:
@@ -222,7 +222,7 @@ def relogin(assume_yes: bool) -> int:
         GCLOUD = gcloud_sdk.ensure_gcloud(assume_yes)
     except gcloud_sdk.GcloudError as e:
         fail(str(e))
-    console.say("Revoking the cached Google Cloud logins on this computer...")
+    console.status("Revoking the cached Google Cloud logins on this computer...")
     subprocess.run([GCLOUD, "auth", "revoke", "--all"], stdin=subprocess.DEVNULL,
                    capture_output=True, text=True)
     if subprocess.run([GCLOUD, "auth", "login"]).returncode != 0:
@@ -420,11 +420,11 @@ def billing_detail(exc: Exception) -> str:
     return ""
 
 
-def cost_estimate_lines(project: str, region: str, cron: str, job: str,
+def cost_estimate(project: str, region: str, cron: str, job: str,
                         job_exists: bool, num_secrets: int,
                         assume_yes: bool, billing_confirmed: bool = False,
-                        attempt: int = 0) -> list[str]:
-    console.say("Fetching list prices from the Cloud Billing catalog...")
+                        attempt: int = 0) -> CostEstimate:
+    console.status("Fetching list prices from the Cloud Billing catalog...")
     try:
         runs = config.runs_per_month(cron)
         seconds = average_run_seconds(job, region, project) if job_exists else None
@@ -471,20 +471,14 @@ def cost_estimate_lines(project: str, region: str, cron: str, job: str,
             wait = waits[attempt]
             console.bullet(f"Cloud Billing API is not ready; retrying in {wait}s...", indent=4)
             time.sleep(wait)
-            return cost_estimate_lines(project, region, cron, job,
-                                       job_exists, num_secrets, assume_yes,
-                                       billing_confirmed,
-                                       attempt + 1)
+            return cost_estimate(project, region, cron, job,
+                                 job_exists, num_secrets, assume_yes,
+                                 billing_confirmed,
+                                 attempt + 1)
         fail(f"could not calculate the required monthly cost estimate: "
              f"{detail or str(exc)}")
-    total = sum(cost for _, cost in items)
-    width = max(len(label) for label, _ in items)
-    lines = [f"Estimated monthly cost ({region} list prices, before free tiers):"]
-    for label, cost in items:
-        lines.append(f"  {label:<{width}}  ${cost:>7.2f}")
-    lines.append(f"  {'total':<{width}}  ${total:>7.2f}")
-    lines.append("  (excludes Cloud Build image builds and Artifact Registry storage)")
-    return lines
+    return CostEstimate(items, f"{region} list prices, before free tiers",
+                        "excludes Cloud Build image builds and Artifact Registry storage")
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
@@ -503,7 +497,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     sa = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() \
         or f"pdt-runner@{project}.iam.gserviceaccount.com"
 
-    console.say(f"Checking current state in project {project} ({region})...")
+    console.status(f"Checking current state in project {project} ({region})...")
     repository = read_json_or_none(
         "artifacts", "repositories", "describe", repo,
         "--location", region, "--project", project)
@@ -549,11 +543,10 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions.append(("update" if job_exists else "create") + f" Cloud Run job {job}")
     actions.append(("update" if sched_exists else "create")
                    + f' Cloud Scheduler job {job}: "{cron}" ({timezone})')
-    cost_lines = cost_estimate_lines(project, region, cron, job,
-                                     job_exists, 1 if values else 0, assume_yes,
-                                     billing_confirmed)
+    cost = cost_estimate(project, region, cron, job, job_exists,
+                         1 if values else 0, assume_yes, billing_confirmed)
 
-    if not confirm(actions, assume_yes, cost_lines):
+    if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return 1
 
@@ -614,8 +607,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
               "--uri", uri, "--http-method", "POST",
               "--oauth-service-account-email", sa)
     console.done(f"Deployed {name}.")
-    console.say(f"Run it once now: pdt gcloud run jobs execute {job} --region {region} --project {project}")
-    console.say(f"Run logs: {job_logs_url(project, region, job)}")
+    console.field("Run it once", f"pdt gcloud run jobs execute {job} --region {region} --project {project}")
+    console.field("Run logs", job_logs_url(project, region, job))
     return 0
 
 
@@ -631,7 +624,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         or f"pdt-runner@{project}.iam.gserviceaccount.com"
     default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
 
-    console.say(f"Checking current state in project {project} ({region})...")
+    console.status(f"Checking current state in project {project} ({region})...")
     scheduler = read_json_or_none(
         "scheduler", "jobs", "describe", job,
         "--location", region, "--project", project)
@@ -727,7 +720,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.done(f"Nothing to remove for {name} in project {project}.")
         remaining = sorted(set(other_jobs))
         if remaining:
-            console.say(f"PDT apps still deployed: {', '.join(remaining)}.")
+            console.note(f"PDT apps still deployed: {', '.join(remaining)}.")
         if kept:
             console.heading("Still present:")
             for resource in kept:
@@ -763,7 +756,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     console.done(f"Removed {name} from project {project}.")
     remaining = sorted(set(other_jobs))
     if remaining:
-        console.say(f"PDT apps still deployed: {', '.join(remaining)}.")
+        console.note(f"PDT apps still deployed: {', '.join(remaining)}.")
     if kept:
         console.heading("Still present:")
         for resource in kept:

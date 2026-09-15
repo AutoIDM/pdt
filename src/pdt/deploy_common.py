@@ -15,6 +15,7 @@ PDT_PROJECT names the project directory, so no job depends on its cwd.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 import os
 import shutil
@@ -47,6 +48,22 @@ BUILD_EXCLUDES = (
 def fail(message: str) -> None:
     console.error(message)
     raise SystemExit(1)
+
+
+@dataclasses.dataclass
+class CostEstimate:
+    """What a deploy will cost per month, shown before the user agrees.
+
+    `items` pairs a label with a dollar amount. `prices` says where the
+    numbers come from, such as "us-east-1 list prices, before free tiers".
+    `excludes` names what the estimate leaves out.
+    """
+    items: list[tuple[str, float]]
+    prices: str
+    excludes: str = ""
+
+    def show(self) -> None:
+        console.cost(self.items, self.prices, self.excludes)
 
 
 # HTTP fetching follows the Meltano SDK's RESTStream pattern:

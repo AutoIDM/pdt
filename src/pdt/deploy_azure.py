@@ -46,7 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console
-from pdt.deploy_common import fail, fetch_json
+from pdt.deploy_common import CostEstimate, fail, fetch_json
 from pdt.utils.email_auth import can_prompt
 
 AZ = [sys.executable, "-m", "azure.cli"]
@@ -228,7 +228,7 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
              "this login can use")
     console.heading("Your Azure subscriptions:")
     for index, sub in enumerate(available, 1):
-        console.bullet(f"{index}. {sub.get('name')}  {sub.get('id')}")
+        console.choice(index, str(sub.get("name")), str(sub.get("id")))
     try:
         answer = input(f"Deploy to which one? [1-{len(available)}] ").strip()
     except EOFError:
@@ -241,7 +241,7 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
 
 
 def login(requested: str) -> None:
-    console.say("Opening your browser for the Azure login...")
+    console.status("Opening your browser for the Azure login...")
     proc = subprocess.run([*AZ, "login"], capture_output=True, text=True)
     if proc.returncode == 0:
         return
@@ -263,7 +263,7 @@ def login(requested: str) -> None:
 
 
 def relogin(requested: str) -> int:
-    console.say("Clearing the cached Azure login on this computer...")
+    console.status("Clearing the cached Azure login on this computer...")
     subprocess.run([*AZ, "account", "clear"], stdin=subprocess.DEVNULL,
                    capture_output=True, text=True)
     console.say("Choose a different account in the browser to sign in as someone else.")
@@ -272,7 +272,7 @@ def relogin(requested: str) -> int:
     if not account:
         fail("Azure login failed")
     console.done(f"Signed in as {(account.get('user') or {}).get('name') or 'unknown'}")
-    console.say(f"Subscription {account.get('name')} ({account.get('id')})")
+    console.field("Subscription", f"{account.get('name')} ({account.get('id')})")
     return 0
 
 
@@ -554,10 +554,10 @@ def destroy_group(settings: dict[str, str]) -> None:
 
 def report_shared_kept(rg: str, others: list[str]) -> None:
     if others:
-        console.say(f"Apps still deployed in resource group {rg}: {', '.join(others)}.")
-        console.say("Shared resources stay until the last app is destroyed.")
+        console.note(f"apps still deployed in resource group {rg}: {', '.join(others)}. "
+                     "Shared resources stay until the last app is destroyed.")
     else:
-        console.say(f"Resource group {rg} is not fully owned by PDT, so PDT kept it.")
+        console.note(f"resource group {rg} is not fully owned by PDT, so PDT kept it.")
     console.heading("Still present:")
     for resource in az_json("resource", "list", "--resource-group", rg) or []:
         console.bullet(f"{resource.get('name')}  ({resource.get('type')})")
@@ -574,16 +574,9 @@ def key_vault_item(region: str, runs: float) -> tuple[str, float]:
     return f"Key Vault: 1 secret, ~{runs:.0f} reads", runs * kv_price / 10000
 
 
-def cost_estimate_lines(region: str, items: list[tuple[str, float]],
-                        excludes: str) -> list[str]:
-    total = sum(cost for _, cost in items)
-    width = max(len(label) for label, _ in items)
-    lines = [f"Estimated monthly cost ({region} list prices, before free grants):"]
-    for label, cost in items:
-        lines.append(f"  {label:<{width}}  ${cost:>7.2f}")
-    lines.append(f"  {'total':<{width}}  ${total:>7.2f}")
-    lines.append(f"  ({excludes})")
-    return lines
+def cost_estimate(region: str, items: list[tuple[str, float]],
+                  excludes: str) -> CostEstimate:
+    return CostEstimate(items, f"{region} list prices, before free grants", excludes)
 
 
 def load_app(app_name: str) -> dict:

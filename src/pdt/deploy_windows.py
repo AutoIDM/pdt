@@ -5,6 +5,7 @@
 #     "pyyaml",
 #     "rich",
 #     "python-dotenv",
+#     "backoff",
 # ]
 # ///
 """Deploy an app locally as a Windows Task Scheduler task.
@@ -30,6 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console
 from pdt.deploy import confirm
+from pdt.deploy_common import CostEstimate
 
 
 class WindowsDeployError(Exception):
@@ -297,9 +299,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         f"run {app['name']} {description} (machine local time)",
         f"working directory: {app['dir']}",
     ]
-    cost_lines = ["Estimated monthly platform cost: $0.00 "
-                  "(uses this Windows computer)"]
-    if not confirm(actions, assume_yes, cost_lines):
+    cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
+                        "no cloud charges")
+    if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return 1
 
@@ -316,9 +318,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.error(str(exc))
         return 1
     console.done(f"Deployed {app['name']} as Windows task {name}.")
-    console.say(f"Run it once now: Start-ScheduledTask -TaskName {_ps_string(name)}")
-    console.say("Run history: Get-ScheduledTaskInfo -TaskName "
-                f"{_ps_string(name)} (or Task Scheduler > Task Scheduler Library)")
+    console.field("Run it once", f"Start-ScheduledTask -TaskName {_ps_string(name)}")
+    console.field("Run history", f"Get-ScheduledTaskInfo -TaskName {_ps_string(name)}")
+    console.bullet("or open Task Scheduler > Task Scheduler Library", indent=4)
     return 0
 
 
@@ -362,7 +364,7 @@ def main() -> int:
     parser.add_argument("--profile", help="not used by Windows")
     args = parser.parse_args()
     if args.command == "login":
-        console.say("The windows provider deploys to this computer, so it needs no login.")
+        console.note("the windows provider deploys to this computer, so it needs no login.")
         return 0
     try:
         app = config.merged_app(args.app)
