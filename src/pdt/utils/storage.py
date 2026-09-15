@@ -9,12 +9,15 @@ computer and the windows provider behave the same as a cloud job.
 Inside the folder pdt reserves `runs/` and `state/`. `state/lock` is
 the lock that pull takes and push releases.
 
+`sync` does the whole round trip for an app: it pulls `state/` into a
+local folder, hands the app that folder and an empty output folder, and
+pushes both back when the block ends, also after an error.
+
     from pdt.utils import storage
-    s = storage.store()
-    lease = s.pull("state/", Path(".pdt-state"))
-    ... work ...
-    s.push(Path(".pdt-state"), "state/", lease)
-    s.push(Path("artifacts"), s.run_folder() + "artifacts/")
+    with storage.sync() as run:
+        ... work with run.state and run.output ...
+
+An app with another layout calls `pull` and `push` itself.
 """
 
 from __future__ import annotations
@@ -22,7 +25,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import tempfile
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
@@ -31,6 +38,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from pdt import config
+from pdt.utils.log import log
 
 LOCK = "state/lock"
 DONE = "_done"
@@ -49,6 +57,16 @@ class StorageConflict(Exception):
 class Lease:
     versions: dict[str, str]
     lock: dict
+
+
+@dataclass(frozen=True)
+class Run:
+    """The local folders of one run. `state` holds the app folder's
+    `state/` and goes back there when the run ends. Files the app writes
+    under `output` go to `folder`, this run's folder under `runs/`."""
+    state: Path
+    output: Path
+    folder: str
 
 
 RUN_ID = os.environ.get("PDT_RUN_ID", "").strip() or uuid.uuid4().hex[:8]
@@ -343,3 +361,42 @@ class Store:
                 f"another run of {app} started at {held['started']} still holds the state")
         backend.put_if_version(LOCK, data, backend.versions(LOCK)[LOCK])
         return lock
+
+
+@contextmanager
+def sync(store: Store | None = None) -> Iterator[Run]:
+    """Pull `state/` before the block and push state and output after it.
+
+    The pushes happen after an error too, so the rotated token or bookmark
+    the app saved reaches the store and the lock is released. An error in
+    the block is raised again after the pushes. An error in a push is
+    raised only when the block itself succeeded, and is logged otherwise.
+    The local folders are removed once both pushes succeed."""
+    if store is None:
+        store = Store(root())
+    base = Path(tempfile.mkdtemp(prefix="pdt-run-"))
+    run = Run(base / "state", base / "output", store.run_folder())
+    run.output.mkdir()
+    lease = store.pull("state/", run.state)
+    try:
+        yield run
+    finally:
+        error = _push_all(store, run, lease)
+        if error is None:
+            shutil.rmtree(base, ignore_errors=True)
+    if error is not None:
+        raise error
+
+
+def _push_all(store: Store, run: Run, lease: Lease) -> Exception | None:
+    """Push output then state. Return the first error after trying both."""
+    first = None
+    for local, remote, held in ((run.output, run.folder, None), (run.state, "state/", lease)):
+        try:
+            store.push(local, remote, held)
+        except Exception as e:
+            log("error", "push failed", local=str(local), remote=remote, error=str(e))
+            first = first or e
+    if first is not None:
+        log("error", "local files kept", path=str(run.state.parent))
+    return first

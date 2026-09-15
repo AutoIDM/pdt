@@ -126,19 +126,18 @@ with store.open("report.csv", "wb") as f:
 
 `store.fs()` gives you the full [fsspec](https://filesystem-spec.readthedocs.io/) filesystem, rooted at your app's folder. Output from one run goes under `store.run_folder()`, which names a new `runs/<time>-<id>/` folder each run.
 
-Some apps need files from the last run: a Meltano bookmark, a database. Keep those in one local folder, and copy it down before the work and up after:
+Some apps need files from the last run: a Meltano bookmark, a database. Let pdt copy them down before the work and up after:
 
 ```python
-from pathlib import Path
 from pdt.utils import storage
 
-store = storage.store()
-lease = store.pull("state/", Path(".pdt-state"))
-# do the work; keep anything the next run needs inside .pdt-state/
-store.push(Path(".pdt-state"), "state/", lease)
+with storage.sync() as run:
+    # run.state holds the last run's files; keep anything the next run needs here
+    # run.output is empty; files written here end up in this run's folder
+    ...
 ```
 
-`pull` locks the folder, so a second copy of your app cannot run at the same time and mix up the files. `push` checks that nobody else changed them, saves them, and unlocks. If a run crashes, the next one takes over the lock after 30 minutes.
+`sync` locks the folder, so a second copy of your app cannot run at the same time and mix up the files. When the block ends, also after an error, it uploads `run.output` to `run.folder`, checks that nobody else changed the state files, saves them, and unlocks. If a run crashes before that, the next one takes over the lock after 30 minutes. An app with another layout calls `store.pull` and `store.push` itself.
 
 From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
 

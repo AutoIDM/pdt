@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import pytest
 from conftest import add_app
 from pdt.config import merged_app, validate_app
 from pdt.utils import storage
-from pdt.utils.storage import LOCK, Store, StorageConflict, StorageLocked, root
+from pdt.utils.storage import DONE, LOCK, Store, StorageConflict, StorageLocked, root
 
 
 @pytest.fixture
@@ -148,3 +149,42 @@ def test_usage_counts_files_and_bytes(store):
     write(store, "runs/a/report.csv", "abc")
     write(store, "state/count.txt", "12")
     assert store.usage() == (2, 5)
+
+
+def test_sync_pulls_state_and_pushes_state_and_output(store, tmp_path, monkeypatch):
+    monkeypatch.setenv("PDT_RUN_ID", "run1")
+    write(store, "state/sync.duckdb", "v1")
+    with storage.sync(store) as run:
+        assert (run.state / "sync.duckdb").read_text() == "v1"
+        assert LOCK in store.ls("state")
+        (run.state / "sync.duckdb").write_text("v2")
+        (run.output / "report.csv").write_text("a,b\n")
+        base = run.state.parent
+    assert store.open("state/sync.duckdb").read() == b"v2"
+    assert store.open(run.folder + "report.csv").read() == b"a,b\n"
+    assert store.open(run.folder + DONE).read() == b""
+    assert LOCK not in store.ls("state")
+    assert not base.exists()
+
+
+def test_sync_pushes_and_unlocks_after_an_error(store, tmp_path):
+    with pytest.raises(RuntimeError, match="meltano failed"):
+        with storage.sync(store) as run:
+            (run.state / "token").write_text("rotated")
+            base = run.state.parent
+            raise RuntimeError("meltano failed")
+    assert store.open("state/token").read() == b"rotated"
+    assert LOCK not in store.ls("state")
+    assert not base.exists()
+
+
+def test_sync_raises_a_conflict_when_the_state_changed_underneath(store, tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    write(store, "state/sync.duckdb", "v1")
+    with pytest.raises(StorageConflict):
+        with storage.sync(store) as run:
+            write(store, "state/sync.duckdb", "someone else")
+            (run.state / "sync.duckdb").write_text("v2")
+            base = run.state.parent
+    assert store.open(run.folder + DONE).read() == b""
+    assert base.exists()
