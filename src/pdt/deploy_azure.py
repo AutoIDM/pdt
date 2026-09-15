@@ -188,25 +188,65 @@ def az(*args: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args, code, out.getvalue(), err.getvalue())
 
 
-def no_role_on_subscription(stderr: str) -> bool:
+GRANT_ROLE = "Role Based Access Control Administrator"
+LOCK_ROLE = "Locks Contributor"
+DEPLOY_ROLES = ("Contributor", GRANT_ROLE, LOCK_ROLE)
+GRANT = ((GRANT_ROLE,), "cannot grant roles",
+         "Deploy grants the job's identity access to the Key Vault and the container registry")
+LOCK = ((LOCK_ROLE,), "cannot lock resources",
+        "Deploy locks the shared environment and the container registry against deletion")
+# The denied actions that Contributor excludes, and the one role that adds each.
+CONTRIBUTOR_LACKS = {
+    "microsoft.authorization/roleassignments/write": GRANT,
+    "microsoft.authorization/roleassignments/delete": GRANT,
+    "microsoft.authorization/locks/write": LOCK,
+    "microsoft.authorization/locks/delete": LOCK,
+}
+
+
+def authorization_failed(stderr: str) -> bool:
     lowered = stderr.lower()
     return ("authorizationfailed" in lowered
             or "does not have authorization" in lowered)
 
 
-def explain_missing_role() -> None:
+def denied_action(stderr: str) -> str:
+    match = re.search(r"perform action '([^']+)'", stderr)
+    return match.group(1) if match else ""
+
+
+def explain_missing_role(stderr: str) -> None:
     console.say()
-    console.say("Azure refused this because your account holds no role, or too small a role, on the subscription.")
-    console.say("Microsoft 365 and Entra ID admin roles do not count; Azure grants subscription roles separately.")
-    console.say("pdt needs the Owner role, assigned as Active and Permanent:")
-    console.bullet("1. Someone who already has Owner grants it: portal.azure.com > Subscriptions > the subscription >")
-    console.bullet("Access control (IAM) > Add > Add role assignment > Privileged administrator roles > Owner >", indent=5)
-    console.bullet("your account. On the Assignment type step: Active, Permanent.", indent=5)
-    console.bullet("2. Nobody has Owner but you are the Global Administrator: portal.azure.com >")
+    lacks = CONTRIBUTOR_LACKS.get(denied_action(stderr).lower())
+    if lacks:
+        roles, cannot, why = lacks
+        console.say(f"Azure refused this because your account can create resources but {console.escape(cannot)}.")
+        console.say(f"{console.escape(why)}, so your account needs one more role on the subscription:")
+    else:
+        console.say("Azure refused this because your account holds no role on the subscription.")
+        console.say("Microsoft 365 and Entra ID admin roles do not count; Azure grants subscription roles separately.")
+        console.say("Your account needs three roles on the subscription:")
+        roles = DEPLOY_ROLES
+    console.say("  " + ", ".join(console.value(role) for role in roles) + ".")
+    console.say("Owner also works" + ("" if lacks else ", as one role instead of three")
+                + ", but it grants more than pdt needs.")
+    console.bullet("1. Someone who can grant roles adds them: portal.azure.com > Subscriptions > the subscription >")
+    console.bullet("Access control (IAM) > Add > Add role assignment > the role (Locks Contributor is on the", indent=5)
+    console.bullet("Job function roles tab, the others on Privileged administrator roles) > your account.", indent=5)
+    console.bullet("If the wizard shows an Assignment type step, choose", indent=5)
+    console.bullet("Active and Permanent.", indent=5)
+    console.bullet("2. Nobody can grant roles but you are the Global Administrator: portal.azure.com >")
     console.bullet('Microsoft Entra ID > Properties > set "Access management for Azure resources" to Yes > Save,', indent=5)
-    console.bullet("grant yourself Owner as in step 1, then set the toggle back to No.", indent=5)
+    console.bullet("run `pdt login <app>`, grant yourself the roles as in step 1, then set the toggle back to No.", indent=5)
     console.bullet("3. Run `pdt login <app>` to sign in fresh, and deploy again.")
     console.say('The "If Azure says AuthorizationFailed" section of docs/platforms.md in the pdt repository walks through the same steps.')
+
+
+def fail_az(command: str, error: str) -> None:
+    if authorization_failed(error):
+        explain_missing_role(error)
+        fail(f"{console.value(command)} failed; grant the roles above and re-run")
+    fail(f"{console.value(command)} failed; fix the problem above and re-run")
 
 
 def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = False,
@@ -221,7 +261,7 @@ def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = Fal
             output = proc.stderr.lower()
             access_error = retry_access and (
                 "unable to fetch secret" in output or "forbidden" in output
-                or no_role_on_subscription(proc.stderr))
+                or authorization_failed(proc.stderr))
             internal_error = retry_internal and "internalservererror" in output
             retried = seconds != 0 and (access_error or internal_error)
             if proc.stderr.strip():
@@ -234,10 +274,7 @@ def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = Fal
         for text, hint in (hints or {}).items():
             if text.lower() in output:
                 console.say(console.escape(hint))
-        if no_role_on_subscription(proc.stderr):
-            explain_missing_role()
-            fail(f"{console.value(command)} failed; grant the role above and re-run")
-        fail(f"{console.value(command)} failed; fix the problem above and re-run")
+        fail_az(command, proc.stderr)
 
 
 LOCK_NAME = re.compile(r"Microsoft\.Authorization/locks/([^'\s,]+)", re.IGNORECASE)
@@ -1286,8 +1323,7 @@ def main() -> int:
         return run_command(app, args)
     except ReadError as exc:
         console.say(console.escape(str(exc)))
-        command = "pdt az " + " ".join(exc.az_command[:4])
-        fail(f"{console.value(command)} failed; fix the problem above and re-run")
+        fail_az("pdt az " + " ".join(exc.az_command[:4]), str(exc))
 
 
 def run_command(app: dict, args: argparse.Namespace) -> int:
