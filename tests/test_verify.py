@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ET
 
+import inventory
 from inventory import Resource, classify
 from verify import junit_tree, verify, wait_for, write_report
 
@@ -199,6 +200,45 @@ def test_a_nonempty_account_is_left_untouched():
     assert [step.name for step in failed(steps)] == ["account is empty before deploy"]
     assert cloud.calls == []
     assert cloud.resources == before
+
+
+def test_azure_preflight_purges_only_soft_deleted_pdt_vaults(monkeypatch):
+    calls = []
+
+    def az(*args):
+        calls.append(args)
+        if args[1] == "list-deleted":
+            return [{"name": "pdt-leftover"}, {"name": "team-vault"}]
+        return None
+
+    monkeypatch.setattr(inventory, "az", az)
+    inventory.purge_azure_deleted_vaults()
+
+    assert calls == [
+        ("keyvault", "list-deleted", "--resource-type", "vault"),
+        ("keyvault", "purge", "--name", "pdt-leftover"),
+    ]
+
+
+def test_preflight_purges_before_initial_inventory_check():
+    cloud = FakeCloud()
+    deleted = Resource("soft-deleted key vault", "deleted/pdt-leftover",
+                       tagged(), "pdt-leftover")
+    cloud.add(deleted)
+    inventory_calls = []
+
+    def read_inventory():
+        inventory_calls.append(list(cloud.resources))
+        return cloud.inventory()
+
+    def preflight():
+        cloud.resources.pop(deleted.id)
+
+    steps = verify(cloud.apps, cloud.run_pdt, read_inventory,
+                   report=lambda step: None, wait=now, preflight=preflight)
+
+    assert failed(steps) == []
+    assert inventory_calls[0] == []
 
 
 def test_an_initial_inventory_exception_leaves_the_account_untouched():
