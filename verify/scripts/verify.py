@@ -7,7 +7,8 @@ in verify/pdt.yml order, reads each app's run history with `pdt health` and
 `pdt runs` (no app has run yet, so this proves the read path), records which resource each app owns and which
 resources the apps share, then destroys the apps one at a time and checks
 after each one that the destroyed app is gone and that nothing else moved.
-If the initial check fails, the run exits without changing resources.
+Azure first purges soft-deleted pdt vaults. If the initial check then fails,
+the run exits without changing any active resources.
 After that check passes, a failure attempts to destroy every app and exits 1.
 """
 
