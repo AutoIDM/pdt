@@ -17,13 +17,15 @@ from pdt.deploy_aws import (
     aws_settings, clients_for, cost_estimate, delete_log_group, delete_role,
     delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
-    ensure_session, has_managed_tag, iam_tags, not_found,
+    deployer_store, ensure_session, ensure_store, has_managed_tag, iam_tags, not_found,
     delete_schedule_group, other_schedules, preflight, resource_exists,
-    with_role_propagation_retry,
+    store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
     CostEstimate, fail, gather_secrets, image_action, stage_build_context,
-    write_dockerfile)
+    store_kept_line, store_name, store_plan_lines, warn_if_locked,
+    write_dockerfile,
+)
 
 CLUSTER = "pdt"
 REPOSITORY = "pdt"
@@ -143,7 +145,7 @@ def ensure_cluster(ecs) -> str:
 
 
 def ensure_roles(iam, names: dict[str, str], account: str, region: str,
-                 secret_arn: str) -> tuple[str, str, str]:
+                 secret_arn: str, store_statements: list[dict]) -> tuple[str, str, str]:
     execution = ensure_role(
         iam, names["execution_role"], "ecs-tasks.amazonaws.com", "pdt-execution", [
             {"Effect": "Allow",
@@ -158,8 +160,8 @@ def ensure_roles(iam, names: dict[str, str], account: str, region: str,
             {"Effect": "Allow", "Action": ["secretsmanager:GetSecretValue"],
              "Resource": secret_arn},
         ])
-    # The task role carries no application permissions yet.
-    task = ensure_role(iam, names["task_role"], "ecs-tasks.amazonaws.com", "pdt-task", [])
+    task = ensure_role(iam, names["task_role"], "ecs-tasks.amazonaws.com", "pdt-task",
+                       store_statements)
     task_definition = f"arn:aws:ecs:{region}:{account}:task-definition/{names['family']}:*"
     scheduler = ensure_role(
         iam, names["scheduler_role"], "scheduler.amazonaws.com", "pdt-scheduler", [
@@ -171,7 +173,8 @@ def ensure_roles(iam, names: dict[str, str], account: str, region: str,
 
 
 def desired_task(names: dict[str, str], image: str, region: str,
-                 execution_role: str, task_role: str, secret_arn: str) -> dict:
+                 execution_role: str, task_role: str, secret_arn: str,
+                 environment: dict[str, str]) -> dict:
     return {
         "family": names["family"],
         "taskRoleArn": task_role,
@@ -186,6 +189,8 @@ def desired_task(names: dict[str, str], image: str, region: str,
             "name": names["family"],
             "image": image,
             "essential": True,
+            "environment": [{"name": name, "value": value}
+                            for name, value in environment.items()],
             "secrets": [{"name": "PDT_ENV_JSON", "valueFrom": secret_arn}],
             "logConfiguration": {
                 "logDriver": "awslogs",
@@ -203,7 +208,8 @@ def normalized_task(task: dict) -> dict:
     keys = ("family", "taskRoleArn", "executionRoleArn", "networkMode",
             "requiresCompatibilities", "cpu", "memory", "runtimePlatform")
     result = {key: task.get(key) for key in keys}
-    container_keys = ("name", "image", "essential", "secrets", "logConfiguration")
+    container_keys = ("name", "image", "essential", "environment", "secrets",
+                      "logConfiguration")
     result["containerDefinitions"] = [
         {key: container.get(key) for key in container_keys}
         for container in task.get("containerDefinitions", [])
@@ -255,12 +261,13 @@ def build_and_push(app: dict, image: str, ecr) -> str:
 
 
 def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
-               schedule_exists: bool) -> CostEstimate:
+               schedule_exists: bool, usage: tuple[int, int] | None) -> CostEstimate:
     console.status("Fetching list prices from the AWS price list...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(
-            recent_stream_seconds(logs, names["log_group"]) if schedule_exists else None)
+            recent_stream_seconds(clients["logs"], names["log_group"])
+            if schedule_exists else None)
         seconds = max(seconds, FARGATE_MIN_SECONDS)
         vcpu = int(TASK_CPU) / 1024
         gib = int(TASK_MEMORY) / 1024
@@ -272,6 +279,8 @@ def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
             (f"Fargate (arm64): ~{runs:.0f} runs x {basis} x {vcpu:g} vCPU / {gib:g} GiB", compute),
             ("Secrets Manager: 1 secret", secret),
         ]
+        if usage is not None:
+            items.append(store_cost(usage, region))
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
     return cost_estimate(
@@ -297,8 +306,12 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     expression = aws_schedule_expression(cron)
     payload = json.dumps(gather_secrets(app), sort_keys=True)
     image = f"{account}.dkr.ecr.{region}.amazonaws.com/{REPOSITORY}:{names['image_tag']}"
+    bucket = store_name(account)
+    store = deployer_store(app, session, account) if app["storage"] else None
 
     console.status(f"Checking current state in account {account} ({region})...")
+    store_present = store_exists(clients["s3"], bucket) if store else False
+    usage = (store.usage() if store_present else (0, 0)) if store else None
     subnets, security_group = default_network(clients["ec2"])
     schedule_exists = resource_exists(
         clients["scheduler"], "get_schedule",
@@ -317,8 +330,10 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         + f" EventBridge schedule {names['schedule']}: {expression} ({app['timezone']})",
         f"use default VPC subnets and security group {security_group} with a public IP",
     ]
+    if store:
+        actions += store_plan_lines(f"bucket {bucket}", store_present, names["task_role"], app["name"])
     if not confirm(actions, assume_yes, cost_estimate_for(
-            clients["logs"], names, region, cron, schedule_exists)):
+            clients["logs"], names, region, cron, schedule_exists, usage)):
         console.warn("Aborted; nothing was changed.")
         return 1
 
@@ -327,13 +342,19 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     cluster_arn = ensure_cluster(clients["ecs"])
     ensure_log_group(clients["logs"], names["log_group"])
     secret_arn = ensure_secret(clients["secretsmanager"], names["secret"], payload)
+    environment = {}
+    grants = []
+    if store:
+        ensure_store(clients["s3"], bucket, region)
+        environment["PDT_STORAGE_URL"] = store_url(bucket, app["name"])
+        grants = store_statements(bucket, app["name"])
     execution, task, scheduler_role = ensure_roles(
-        clients["iam"], names, account, region, secret_arn)
+        clients["iam"], names, account, region, secret_arn, grants)
     image = f"{repository_uri}:{names['image_tag']}"
     console.step(f"building and pushing {image}")
     image_digest = build_and_push(app, image, clients["ecr"])
     console.step("reconciling task definition and schedule")
-    desired = desired_task(names, image, region, execution, task, secret_arn)
+    desired = desired_task(names, image, region, execution, task, secret_arn, environment)
     task_arn = ensure_task_definition(clients["ecs"], desired, image_digest)
     target = {
         "Arn": cluster_arn,
@@ -419,6 +440,11 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     repository_unused = repository_unused_after(clients["ecr"], names["image_tag"])
     if repository_unused:
         actions.append(f"delete ECR repository {REPOSITORY} (no other apps use it)")
+    bucket = store_name(account)
+    store = deployer_store(app, session, account) if app["storage"] else None
+    store_present = store_exists(clients["s3"], bucket) if store else False
+    if store_present:
+        warn_if_locked(store, app["name"])
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 1
@@ -449,4 +475,6 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     if repository_unused:
         clients["ecr"].delete_repository(repositoryName=REPOSITORY, force=True)
     console.done(f"Removed {app['name']} from account {account} ({region}).")
+    if store_present:
+        console.say(store_kept_line(f"bucket {bucket}", store.usage()[0], app["name"]))
     return 0

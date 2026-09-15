@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from conftest import add_app
-from pdt import cli
+from pdt import cli, deploy
 
 
 def run_cli(monkeypatch, *argv):
@@ -73,6 +73,15 @@ def test_every_app_command_goes_through_choose_app():
     for command in APP_COMMANDS:
         app_arg = next(a for a in sub.choices[command]._actions if a.dest == "app")
         assert app_arg.nargs == "?", f"pdt {command} must accept a missing app name"
+
+
+def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
+    add_app(project, "hello-world", "schedule: daily\n")
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append((a, k)) or 0)
+    assert run_cli(monkeypatch, "storage", "hello-world", "ls", "state/") == 0
+    assert calls == [(("azure", "storage", "hello-world", False, None,
+                        ["ls", "state/"]), {})]
 
 
 def test_cloud_cli_passthroughs_are_registered():

@@ -8,6 +8,9 @@
 #     "rich",
 #     "python-dotenv",
 #     "backoff",
+#     "fsspec",
+#     "s3fs",
+#     "duckdb",
 # ]
 # ///
 """Deploy an app to AWS.
@@ -35,8 +38,10 @@ import boto3
 from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console
-from pdt.deploy_common import CostEstimate, fail, fetch_json
+from pdt import config, console, storage_cli
+from pdt.deploy_common import (
+    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_name)
+from pdt.utils.storage import Store
 
 AWS_CLI = [sys.executable, "-m", "awscli"]
 MANAGED_TAGS = {"managed-by": "pdt"}
@@ -81,6 +86,12 @@ COMMON_ACTIONS = [
     "secretsmanager:PutSecretValue",
     "secretsmanager:RestoreSecret",
     "secretsmanager:TagResource",
+    "s3:CreateBucket",
+    "s3:GetBucketTagging",
+    "s3:GetObject",
+    "s3:ListBucket",
+    "s3:PutBucketPublicAccessBlock",
+    "s3:PutBucketTagging",
 ]
 def error_code(exc: Exception) -> str:
     return getattr(exc, "response", {}).get("Error", {}).get("Code", "")
@@ -342,6 +353,62 @@ def ensure_role(iam, name: str, service: str, policy_name: str,
     return role["Arn"]
 
 
+def store_url(bucket: str, app_name: str) -> str:
+    return f"s3://{bucket}/{app_name}/"
+
+
+def store_statements(bucket: str, app_name: str) -> list[dict]:
+    return [
+        {"Effect": "Allow",
+         "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+         "Resource": f"arn:aws:s3:::{bucket}/{app_name}/*"},
+        {"Effect": "Allow", "Action": ["s3:ListBucket"],
+         "Resource": f"arn:aws:s3:::{bucket}",
+         "Condition": {"StringLike": {"s3:prefix": [f"{app_name}/*"]}}},
+    ]
+
+
+def store_exists(s3, name: str) -> bool:
+    try:
+        s3.head_bucket(Bucket=name)
+        return True
+    except ClientError as exc:
+        if error_code(exc) == "404":
+            return False
+        raise
+
+
+def ensure_store(s3, name: str, region: str) -> None:
+    if store_exists(s3, name):
+        tags = s3.get_bucket_tagging(Bucket=name).get("TagSet", [])
+        if not has_managed_tag(tags, "Key", "Value"):
+            fail(f"S3 bucket {name} exists but is not managed by PDT")
+        return
+    location = {} if region == "us-east-1" else {
+        "CreateBucketConfiguration": {"LocationConstraint": region}}
+    s3.create_bucket(Bucket=name, **location)
+    s3.put_public_access_block(Bucket=name, PublicAccessBlockConfiguration={
+        "BlockPublicAcls": True, "IgnorePublicAcls": True,
+        "BlockPublicPolicy": True, "RestrictPublicBuckets": True,
+    })
+    s3.put_bucket_tagging(Bucket=name, Tagging={
+        "TagSet": [{"Key": key, "Value": value} for key, value in STORE_TAGS.items()]})
+
+
+def store_cost(usage: tuple[int, int], region: str) -> tuple[str, float]:
+    count, size = usage
+    price = list_price("AmazonS3", region, "TimedStorage-ByteHrs", volumeType="Standard")
+    return store_cost_label(count, size), size / 1024 ** 3 * price
+
+
+def deployer_store(app: dict, session, account: str) -> Store:
+    return Store(store_url(store_name(account), app["name"]), session)
+
+
+def storage(app: dict, session, account: str, rest: list[str], assume_yes: bool) -> int:
+    return storage_cli.run(deployer_store(app, session, account), app, rest, assume_yes)
+
+
 def log_group_url(region: str, log_group: str) -> str:
     # The CloudWatch console double-encodes names in its URLs: "/" -> "%2F" -> "$252F".
     return (f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
@@ -389,11 +456,13 @@ def ensure_secret(secrets, name: str, payload: str) -> str:
     )["ARN"]
 
 
-def list_price(offer: str, region: str, usagetype_suffix: str) -> float:
+def list_price(offer: str, region: str, usagetype_suffix: str, **attributes: str) -> float:
     url = PRICE_LIST_URL.format(offer=offer, region=region)
     data = fetch_json(url, timeout=60)
     for sku, product in data["products"].items():
         if not product["attributes"].get("usagetype", "").endswith(usagetype_suffix):
+            continue
+        if any(product["attributes"].get(key) != value for key, value in attributes.items()):
             continue
         for term in data["terms"]["OnDemand"].get(sku, {}).values():
             for dimension in term["priceDimensions"].values():
@@ -510,7 +579,7 @@ def resource_exists(client, operation: str, **kwargs) -> bool:
 
 def clients_for(session) -> dict:
     return {name: session.client(name) for name in
-            ("sts", "logs", "secretsmanager", "iam", "scheduler")}
+            ("sts", "logs", "secretsmanager", "iam", "scheduler", "s3")}
 
 
 def delete_secret(secrets, name: str) -> None:
@@ -580,14 +649,19 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "aws":
         return subprocess.run([*AWS_CLI, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login"))
+    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage"))
     parser.add_argument("app")
+    parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--profile", help="AWS profile name")
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
     if args.command == "login":
         return relogin(args.profile)
     app = load_app(args.app)
+    if args.command == "storage":
+        session = ensure_session(app, args.profile)
+        account, _region = aws_settings(app, session)
+        return storage(app, session, account, args.rest, args.yes)
     from pdt import deploy_aws_fargate as fargate
     try:
         if args.command == "deploy":

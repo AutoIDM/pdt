@@ -38,7 +38,7 @@ SCHEDULE_SHORTHAND = {
     "yearly": "0 0 1 1 *",
 }
 ROOT_KEYS = {"platform", "apps"}
-APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env"}
+APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account",
@@ -56,6 +56,7 @@ KEY_HOME = {
     "timezone": APP_LEVEL,
     "config": APP_LEVEL,
     "env": APP_LEVEL,
+    "storage": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     **{key: "the env: section" for key in ENV_KEYS},
 }
@@ -182,6 +183,7 @@ def merged_app(name: str) -> dict:
             **env_overrides(name),
         },
         "env": mapping(own, "env", own_where) or mapping(entry, "env", entry_where),
+        "storage": own.get("storage", entry.get("storage", True)),
     }
 
 
@@ -527,4 +529,6 @@ def validate_app(name: str) -> list[str]:
             cron_expression(app["schedule"])
         except ConfigError as e:
             problems.append(f"{name}: {e}")
+    if not isinstance(app["storage"], bool):
+        problems.append(f"{where}: storage must be true or false")
     return problems

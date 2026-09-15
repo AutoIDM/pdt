@@ -4,6 +4,11 @@ Entered through
 deploy_azure.py, which owns the uv script header, login, and Key Vault.
 The resource group, Container Apps environment, ACR, Key Vault, and
 user-assigned identity are shared. Each app owns one tagged job.
+
+The shared identity pulls the image and reads the app's Key Vault
+secret. A job that uses the data store also gets its own system-assigned
+identity, because the store grant carries a condition naming one app and
+Azure keeps one assignment per principal, role, and scope.
 """
 
 from __future__ import annotations
@@ -17,16 +22,18 @@ import subprocess
 from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
-    AZ, RECENT_RUNS, assign_role, az_json, az_tsv, azure_settings, check_shared_names,
-    clean_name, cost_estimate, destroy_group, ensure_group_and_vault, ensure_secret,
-    group_can_be_deleted, key_vault_item, managed_by_pdt, managed_secret,
-    other_pdt_apps, owned_by, preflight, purge_secret, report_shared_kept,
-    require_managed, resource_id, retail_price, run_basis, run_quiet, run_stream,
-    secret_actions, secret_name, secret_state, workspace_resource,
+    AZ, RECENT_RUNS, STORE_ROLE, assign_role, az_json, az_tsv, azure_settings,
+    check_shared_names, clean_name, cost_estimate, deployer_store, destroy_group,
+    ensure_group_and_vault, ensure_secret, ensure_store, group_can_be_deleted,
+    key_vault_item, managed_by_pdt, managed_secret, other_pdt_apps, owned_by,
+    preflight, purge_secret, report_shared_kept, require_managed, resource_id,
+    retail_price, revoke_role, run_basis, run_quiet, run_stream, secret_actions,
+    secret_name, secret_state, store_condition, store_cost, store_description,
+    store_exists, store_plan, store_settings, store_url, workspace_resource,
 )
 from pdt.deploy_common import (
     CostEstimate, fail, gather_secrets, image_action, stage_build_context,
-    write_dockerfile)
+    store_kept_line, warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -66,7 +73,7 @@ def job_history_url(settings: dict[str, str], job: str) -> str:
 
 
 def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
-                  identity_id: str, secret_uri: str | None,
+                  identity_id: str, secret_uri: str | None, storage_url: str | None,
                   exists: bool, app_name: str) -> None:
     rg = settings["resource_group"]
     common = [
@@ -76,6 +83,11 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
         "--parallelism", "1", "--replica-completion-count", "1",
         "--tags", "managed-by=pdt", f"pdt-app={app_name}",
     ]
+    env_vars = []
+    if secret_uri:
+        env_vars.append("PDT_ENV_JSON=secretref:pdt-env")
+    if storage_url:
+        env_vars.append(f"PDT_STORAGE_URL={storage_url}")
     if not exists:
         args = [
             "containerapp", "job", "create", *common,
@@ -85,17 +97,21 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             "--registry-server", f"{settings['registry']}.azurecr.io",
             "--registry-identity", identity_id,
         ]
+        if storage_url:
+            args += ["--mi-system-assigned"]
         if secret_uri:
             args += [
                 "--secrets",
                 f"pdt-env=keyvaultref:{secret_uri},identityref:{identity_id}",
-                "--env-vars", "PDT_ENV_JSON=secretref:pdt-env",
             ]
+        if env_vars:
+            args += ["--env-vars", *env_vars]
         run_quiet(*args, retry_access=True)
         return
 
+    system = ["--system-assigned"] if storage_url else []
     run_quiet("containerapp", "job", "identity", "assign", "--name", job,
-              "--resource-group", rg, "--user-assigned", identity_id)
+              "--resource-group", rg, *system, "--user-assigned", identity_id)
     run_quiet("containerapp", "job", "registry", "set", "--name", job,
               "--resource-group", rg,
               "--server", f"{settings['registry']}.azurecr.io",
@@ -106,10 +122,10 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             "--resource-group", rg, "--secrets",
             f"pdt-env=keyvaultref:{secret_uri},identityref:{identity_id}",
             retry_access=True)
-        common += ["--replace-env-vars",
-                   "PDT_ENV_JSON=secretref:pdt-env"]
+    if env_vars:
+        common += ["--replace-env-vars", *env_vars]
     else:
-        common += ["--remove-env-vars", "PDT_ENV_JSON"]
+        common += ["--remove-env-vars", "PDT_ENV_JSON", "PDT_STORAGE_URL"]
     run_quiet("containerapp", "job", "update", *common, retry_access=True)
     if not secret_uri:
         # Ignore absence: Azure returns nonzero when there is nothing to remove.
@@ -117,6 +133,15 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             [*AZ, "containerapp", "job", "secret", "remove", "--name", job,
              "--resource-group", rg, "--secret-names", "pdt-env"],
             stdin=subprocess.DEVNULL, capture_output=True, text=True)
+
+
+def job_principal_id(job: str, rg: str) -> str:
+    current = az_json("containerapp", "job", "show", "--name", job,
+                      "--resource-group", rg)
+    principal = ((current or {}).get("identity") or {}).get("principalId")
+    if not principal:
+        fail(f"could not read the identity of Container Apps Job {job}")
+    return principal
 
 
 def average_run_seconds(job: str, rg: str) -> float | None:
@@ -137,7 +162,8 @@ def average_run_seconds(job: str, rg: str) -> float | None:
 
 
 def cost_estimate_for(region: str, cron: str, job: str, rg: str,
-               job_exists: bool, num_secrets: int) -> CostEstimate:
+               job_exists: bool, num_secrets: int,
+               usage: tuple[int, int] | None) -> CostEstimate:
     console.status("Fetching list prices from the Azure Retail Prices API...")
     try:
         runs = config.runs_per_month(cron)
@@ -157,6 +183,8 @@ def cost_estimate_for(region: str, cron: str, job: str, rg: str,
         ]
         if num_secrets:
             items.append(key_vault_item(region, runs))
+        if usage is not None:
+            items.append(store_cost(usage, region))
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
     return cost_estimate(
@@ -203,6 +231,10 @@ def deploy(app: dict, assume_yes: bool) -> int:
         fail(f"Container Apps Job {job} already exists but is not owned by "
              f"PDT app {name}; choose another resource group")
     vault_exists, current_hash = secret_state(settings, sid, name, values)
+    store = store_settings(settings) if app["storage"] else None
+    store_present = store_exists(store) if store else False
+    deployer = deployer_store(settings, name) if store_present else None
+    usage = (deployer.usage() if deployer else (0, 0)) if store else None
 
     actions = ["register required Azure resource providers"]
     actions.append(("use existing" if group_exists else "create")
@@ -223,13 +255,16 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    + f" Key Vault {settings['vault']} (RBAC)")
     actions.append("ensure scoped Key Vault secret permissions for the deployer "
                    "and managed identity")
+    if store:
+        actions += store_plan(store, store_present, name, job)
     actions.append(image_action(
         app, f"build and push image {settings['registry']}.azurecr.io/{name}:latest"))
     actions += secret_actions(sid, values, current_hash, digest)
     actions.append(("update" if current_job else "create")
                    + f' Container Apps Job {job}: "{cron}" (UTC)')
     if not confirm(actions, assume_yes, cost_estimate_for(
-            settings["region"], cron, job, rg, current_job is not None, 1 if values else 0)):
+            settings["region"], cron, job, rg, current_job is not None,
+            1 if values else 0, usage)):
         console.warn("Aborted; nothing was changed.")
         return 1
 
@@ -266,6 +301,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
                          "registries", settings["registry"])
     assign_role(acr_id, principal_id, "AcrPull")
     assign_role(vault_id, principal_id, "Key Vault Secrets User")
+    if store:
+        ensure_store(settings, store, store_present)
     console.step(f"enabling ACR authentication-as-arm on {settings['registry']}")
     enable_acr_arm_auth(settings["registry"])
 
@@ -275,7 +312,11 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.step(f"reconciling Container Apps Job {job}")
     image = f"{settings['registry']}.azurecr.io/{name}:latest"
     reconcile_job(settings, job, image, cron, identity_id, secret_uri,
+                  store_url(store, name) if store else None,
                   current_job is not None, name)
+    if store:
+        assign_role(store["container_id"], job_principal_id(job, rg), STORE_ROLE,
+                    condition=store_condition(name))
     console.done(f"Deployed {name}.")
     console.field("Run it once", f"pdt az containerapp job start --name {job} --resource-group {rg}")
     console.field("Run logs (Execution history tab)", job_history_url(settings, job))
@@ -294,6 +335,15 @@ def destroy(app: dict, assume_yes: bool) -> int:
     secret_owned = managed_secret(settings, sid, name)
     if current_job and not managed_job:
         console.note(f"Container Apps Job {job} is not owned by this app; keeping it")
+    store = store_settings(settings) if app["storage"] else None
+    store_present = store_exists(store) if store else False
+    deployer = deployer_store(settings, name) if store_present else None
+    principal_id = ((current_job or {}).get("identity") or {}).get("principalId")
+    grant = ""
+    if deployer and managed_job and principal_id:
+        grant = (f"revoke {job}'s write access to {name}/ "
+                 f"in {store_description(store)}")
+        warn_if_locked(deployer, name)
     others = other_pdt_apps(rg, name)
     if group_can_be_deleted(settings, others):
         actions = [
@@ -302,10 +352,16 @@ def destroy(app: dict, assume_yes: bool) -> int:
             "identity, Key Vault, and Log Analytics workspace",
             f"purge the soft-deleted Key Vault {settings['vault']}",
         ]
+        if grant:
+            actions.insert(0, grant)
         if not confirm(actions, assume_yes):
             console.warn("Aborted; nothing was changed.")
             return 1
+        if grant:
+            revoke_role(store["container_id"], principal_id, STORE_ROLE)
         destroy_group(settings)
+        if deployer:
+            console.say(store_kept_line(store_description(store), deployer.usage()[0], name))
         return 0
     registry = az_json("acr", "show", "--name", settings["registry"],
                        "--resource-group", rg)
@@ -316,6 +372,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         "acr", "repository", "show", "--name", settings["registry"],
         "--repository", name) is not None
     actions = []
+    if grant:
+        actions.append(grant)
     if managed_job:
         actions.append(f"delete Container Apps Job {job}")
     if image_exists:
@@ -328,6 +386,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 1
+    if grant:
+        revoke_role(store["container_id"], principal_id, STORE_ROLE)
     if managed_job:
         run_quiet("containerapp", "job", "delete", "--name", job,
                   "--resource-group", rg, "--yes")
@@ -337,4 +397,6 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if secret_owned:
         purge_secret(settings, sid)
     report_shared_kept(rg, others)
+    if deployer:
+        console.say(store_kept_line(store_description(store), deployer.usage()[0], name))
     return 0

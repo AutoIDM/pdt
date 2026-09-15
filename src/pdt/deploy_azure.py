@@ -3,6 +3,11 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "azure-cli==2.89.1",
+#     "azure-identity==1.25.3",
+#     "azure-storage-blob",
+#     "adlfs",
+#     "fsspec",
+#     "duckdb==1.5.5",
 #     "pyyaml",
 #     "rich",
 #     "python-dotenv",
@@ -27,6 +32,14 @@ pre-releases; without that, uv before 0.12 refuses to resolve it.
 Every app owns one tagged Key Vault secret holding its env vars as one
 json blob, exposed to the job as PDT_ENV_JSON. Secret values are sent to
 Azure through a protected temporary file, never on the command line.
+
+The data store is storage account pdtdata<suffix> in its own resource
+group pdt-data, so it survives destroy of resource group pdt. Blob
+containers carry no ARM tags, so the container holds STORE_TAGS as
+metadata instead, with underscores in the keys because metadata keys
+must be C# identifiers. RBAC scope stops at the container, so store_condition
+adds an attribute-based access control condition that holds the job
+inside its own <app>/ folder.
 """
 
 from __future__ import annotations
@@ -45,9 +58,12 @@ import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console
-from pdt.deploy_common import CostEstimate, fail, fetch_json
+from pdt import config, console, storage_cli
+from pdt.deploy_common import (
+    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_plan_lines,
+    store_suffix)
 from pdt.utils.email_auth import can_prompt
+from pdt.utils.storage import Store
 
 AZ = [sys.executable, "-m", "azure.cli"]
 COMMON_PROVIDERS = ("Microsoft.KeyVault", "Microsoft.ManagedIdentity")
@@ -55,6 +71,12 @@ PLACEHOLDER_SUBSCRIPTION = "00000000-0000-0000-0000-000000000000"
 PRICES_API = "https://prices.azure.com/api/retail/prices"
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
+STORE_GROUP = "pdt-data"
+STORE_ROLE = "Storage Blob Data Contributor"
+STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
+STORE_METADATA_ARGS = tuple(
+    f"{key.replace('-', '_')}={value}" for key, value in STORE_TAGS.items())
+BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
 
 
 def run_quiet(*args: str, data: str | None = None, retry_access: bool = False) -> str:
@@ -303,21 +325,40 @@ def set_key_vault_secret(vault: str, name: str, payload: str,
 
 
 def assign_role(scope: str, principal_id: str, role: str,
-                principal_type: str = "ServicePrincipal") -> None:
+                principal_type: str = "ServicePrincipal", condition: str = "") -> None:
+    existing = az_json(
+        "role", "assignment", "list", "--assignee", principal_id,
+        "--role", role, "--scope", scope) or []
+    if existing and (existing[0].get("condition") or "") == condition:
+        return
+    if existing:
+        run_quiet("role", "assignment", "delete", "--assignee", principal_id,
+                  "--role", role, "--scope", scope)
+    args = ["role", "assignment", "create", "--assignee-object-id", principal_id,
+            "--assignee-principal-type", principal_type, "--role", role,
+            "--scope", scope]
+    if condition:
+        args += ["--condition", condition, "--condition-version", "2.0"]
+    run_quiet(*args)
+
+
+def revoke_role(scope: str, principal_id: str, role: str) -> None:
     existing = az_json(
         "role", "assignment", "list", "--assignee", principal_id,
         "--role", role, "--scope", scope)
-    if existing:
+    if not existing:
         return
-    run_quiet("role", "assignment", "create", "--assignee-object-id", principal_id,
-              "--assignee-principal-type", principal_type, "--role", role,
-              "--scope", scope)
+    run_quiet("role", "assignment", "delete", "--assignee", principal_id,
+              "--role", role, "--scope", scope)
 
 
-def retail_price(region: str, service: str, meter: str, sku: str) -> tuple[float, str]:
+def retail_price(region: str, service: str, meter: str, sku: str,
+                 product: str = "") -> tuple[float, str]:
     query = (f"serviceName eq '{service}' and armRegionName eq '{region}' "
              f"and meterName eq '{meter}' and skuName eq '{sku}' "
              f"and type eq 'Consumption'")
+    if product:
+        query += f" and productName eq '{product}'"
     url = f"{PRICES_API}?$filter={urllib.parse.quote(query)}"
     items = fetch_json(url, timeout=30).get("Items") or []
     items = [i for i in items if i.get("retailPrice")]
@@ -549,7 +590,7 @@ def destroy_group(settings: dict[str, str]) -> None:
         console.step(f"purging soft-deleted Key Vault {settings['vault']}")
         run_quiet("keyvault", "purge", "--name", settings["vault"])
     if az_tsv("group", "exists", "--name", rg) == "false":
-        console.done("Nothing remains.")
+        console.done(f"Nothing remains in resource group {rg}.")
 
 
 def report_shared_kept(rg: str, others: list[str]) -> None:
@@ -561,6 +602,113 @@ def report_shared_kept(rg: str, others: list[str]) -> None:
     console.heading("Still present:")
     for resource in az_json("resource", "list", "--resource-group", rg) or []:
         console.bullet(f"{resource.get('name')}  ({resource.get('type')})")
+
+
+def store_settings(settings: dict[str, str]) -> dict[str, str]:
+    suffix = store_suffix(settings["subscription"])
+    account = f"pdtdata{suffix}"
+    container = f"pdt-data-{suffix}"
+    return {
+        "group": STORE_GROUP,
+        "account": account,
+        "container": container,
+        "container_id": (
+            f"/subscriptions/{settings['subscription']}/resourceGroups/{STORE_GROUP}"
+            f"/providers/Microsoft.Storage/storageAccounts/{account}"
+            f"/blobServices/default/containers/{container}"),
+    }
+
+
+def store_url(store: dict[str, str], app_name: str) -> str:
+    return (f"abfs://{store['container']}@{store['account']}.dfs.core.windows.net"
+            f"/{app_name}/")
+
+
+def store_description(store: dict[str, str]) -> str:
+    return f"storage account {store['account']}, container {store['container']}"
+
+
+def store_exists(store: dict[str, str]) -> bool:
+    group = az_json("group", "show", "--name", store["group"])
+    require_managed(group, f"resource group {store['group']}")
+    account = az_json("storage", "account", "show", "--name", store["account"],
+                      "--resource-group", store["group"])
+    require_managed(account, f"Storage account {store['account']}")
+    if account is None:
+        return False
+    container = az_json("storage", "container-rm", "show",
+                        "--storage-account", store["account"],
+                        "--resource-group", store["group"], "--name", store["container"])
+    if container is None:
+        return False
+    metadata = container.get("metadata") or {}
+    if metadata and metadata.get("managed_by") != "pdt":
+        fail(f"container {store['container']} exists but is not managed by PDT")
+    return bool(metadata)
+
+
+def store_condition(app_name: str) -> str:
+    """Limit Storage Blob Data Contributor to the app's own folder.
+
+    The grammar and the action names come from "Example Azure role assignment
+    conditions for Blob Storage":
+    https://learn.microsoft.com/en-us/azure/storage/blobs/storage-auth-abac-examples
+    """
+    read = f"ActionMatches{{'{BLOB_ACTION}/read'}}"
+    return (
+        f"((!({read} AND NOT SubOperationMatches{{'Blob.List'}})"
+        f" AND !(ActionMatches{{'{BLOB_ACTION}/write'}})"
+        f" AND !(ActionMatches{{'{BLOB_ACTION}/delete'}}))"
+        f" OR (@Resource[{BLOB_ACTION}:path] StringStartsWith '{app_name}/'))"
+        f" AND ((!({read} AND SubOperationMatches{{'Blob.List'}}))"
+        f" OR (@Request[{BLOB_ACTION}:prefix] StringStartsWith '{app_name}/'))")
+
+
+def store_plan(store: dict[str, str], exists: bool, app_name: str,
+               identity: str) -> list[str]:
+    return store_plan_lines(store_description(store), exists, identity, app_name) + [
+        f"grant the signed-in Azure account write access to {store['container']} "
+        "(for pdt storage)",
+    ]
+
+
+def ensure_store(settings: dict[str, str], store: dict[str, str], exists: bool) -> None:
+    if not exists:
+        register_providers(("Microsoft.Storage",))
+        console.step(f"creating {store_description(store)}")
+        run_quiet("group", "create", "--name", store["group"],
+                  "--location", settings["region"], "--tags", *STORE_TAG_ARGS)
+        run_quiet("storage", "account", "create", "--name", store["account"],
+                  "--resource-group", store["group"], "--location", settings["region"],
+                  "--sku", "Standard_LRS", "--allow-blob-public-access", "false",
+                  "--min-tls-version", "TLS1_2", "--tags", *STORE_TAG_ARGS)
+        container = az_json("storage", "container-rm", "show",
+                            "--storage-account", store["account"],
+                            "--resource-group", store["group"], "--name", store["container"])
+        run_quiet("storage", "container-rm", "update" if container else "create",
+                  "--storage-account", store["account"],
+                  "--resource-group", store["group"], "--name", store["container"],
+                  "--metadata", *STORE_METADATA_ARGS)
+    assign_role(store["container_id"], settings["deployer_object_id"], STORE_ROLE,
+                settings["deployer_principal_type"])
+
+
+def store_cost(usage: tuple[int, int], region: str) -> tuple[str, float]:
+    count, size = usage
+    price, _ = retail_price(region, "Storage", "Hot LRS Data Stored", "Hot LRS",
+                            "General Block Blob v2")
+    return store_cost_label(count, size), size / 1024 ** 3 * price
+
+
+def deployer_store(settings: dict[str, str], app_name: str) -> Store:
+    from azure.identity import AzureCliCredential
+    os.environ["PATH"] = os.pathsep.join(
+        [str(Path(sys.executable).parent), os.environ.get("PATH", "")])
+    return Store(store_url(store_settings(settings), app_name), AzureCliCredential())
+
+
+def storage(app: dict, settings: dict[str, str], rest: list[str], assume_yes: bool) -> int:
+    return storage_cli.run(deployer_store(settings, app["name"]), app, rest, assume_yes)
 
 
 def run_basis(seconds: float | None) -> tuple[float, str]:
@@ -592,15 +740,18 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "az":
         return subprocess.run([*AZ, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login"))
+    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage"))
     parser.add_argument("app")
+    parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--profile", help="not used by Azure")
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
     app = load_app(args.app)
     if args.command == "login":
         requested = azure_settings(app)["subscription"]
         return relogin("" if requested == PLACEHOLDER_SUBSCRIPTION else requested)
+    if args.command == "storage":
+        return storage(app, preflight(app, azure_settings(app)), args.rest, args.yes)
     if app["timezone"] not in ("Etc/UTC", "UTC"):
         fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
     from pdt import deploy_azure_container_apps as module
