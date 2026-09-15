@@ -73,6 +73,9 @@ verify:azure:
   variables:
     DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
+    # The subscription allows one Container Apps environment. It is created
+    # once by hand and named here, so no run creates or deletes it.
+    PDT_AZURE_CONTAINER_APPS_ENVIRONMENT: pdt-shared/pdt-eastus2
   # Without the account's variables the job cannot log in. It then waits as a
   # manual job, so the pipeline shows the gap instead of failing at login.
   rules:

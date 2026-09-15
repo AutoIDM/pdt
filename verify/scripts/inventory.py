@@ -250,7 +250,11 @@ def azure_deleted_vaults() -> Inventory:
 
 def azure_inventory(settings: dict[str, str]) -> Inventory:
     found = azure_deleted_vaults()
-    for group_name in (settings["resource_group"], AZURE_SHARED_GROUP):
+    # A named environment is the user's own, so its group is not pdt's to empty.
+    groups = [settings["resource_group"]]
+    if not settings["environment"]:
+        groups.append(AZURE_SHARED_GROUP)
+    for group_name in groups:
         if az("group", "exists", "--name", group_name) is not True:
             continue
         group = az("group", "show", "--name", group_name)
@@ -328,6 +332,8 @@ SETTINGS = {
     "azure": lambda platform: {
         "resource_group": platform.get("resource_group")
         or os.environ.get("PDT_AZURE_RESOURCE_GROUP") or "pdt",
+        "environment": platform.get("environment")
+        or os.environ.get("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT") or "",
     },
     "google-cloud": lambda platform: {
         "project": platform.get("project")

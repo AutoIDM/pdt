@@ -22,6 +22,7 @@ The app directories are generated. Edit `scripts/templates/`, then run `uv run -
 ```sh
 uv tool install .
 export PDT_SMOKE_TOKEN=pdt-verify
+export PDT_AZURE_CONTAINER_APPS_ENVIRONMENT=pdt-shared/pdt-eastus2  # azure only
 uv run --no-project --with pyyaml python verify/scripts/verify.py aws
 ```
 
@@ -57,7 +58,7 @@ The AWS job stores no key. It sends the job's OIDC token to `sts assume-role-wit
 | Provider | Listing |
 | --- | --- |
 | aws | `resourcegroupstaggingapi get-resources`, plus one list per kind filtered on the `pdt` name prefix |
-| azure | `az resource list --resource-group pdt-verify`, plus the resource group itself |
+| azure | `az resource list --resource-group pdt-verify`, plus the resource group itself. The Container Apps environment `pdt-shared/pdt-eastus2` is named in `PDT_AZURE_CONTAINER_APPS_ENVIRONMENT`, so the run treats it as the user's own and never creates, lists, or deletes it. Create it once by hand before the first run |
 | google-cloud | `gcloud asset search-all-resources`, plus `scheduler jobs list` and `iam service-accounts list` |
 | windows | `Get-ScheduledTask` filtered on `pdt-` task names |
 

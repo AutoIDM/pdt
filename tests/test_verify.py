@@ -260,7 +260,10 @@ def test_the_azure_inventory_covers_the_shared_environment_group(monkeypatch):
 
     monkeypatch.setattr(inventory, "az", az)
     monkeypatch.setattr(inventory, "azure_deleted_vaults", list)
-    found = inventory.azure_inventory({"resource_group": "pdt-verify"})
+    found = inventory.azure_inventory({"resource_group": "pdt-verify", "environment": ""})
     assert [resource.name for resource in found] == [
         "pdt-verify", "pdt-app-one", "pdt-shared", "pdt-eastus2"]
     assert classify(found[3], APPS) == "shared"
+    found = inventory.azure_inventory(
+        {"resource_group": "pdt-verify", "environment": "pdt-shared/pdt-eastus2"})
+    assert [resource.name for resource in found] == ["pdt-verify", "pdt-app-one"]
