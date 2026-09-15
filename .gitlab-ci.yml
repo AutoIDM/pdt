@@ -54,6 +54,7 @@ smoke:
 # write_repository). How to create them is in the handbook, developer.md,
 # "Claude Code in CI". Exit code 2 means an item needs a person: the job
 # shows a warning, not a failure. A bad token exits 1 and fails the job.
+# A rule may set CLAUDE_TASK_ARGS, for example "--dry-run".
 .claude-task:
   stage: tasks
   interruptible: false
@@ -68,7 +69,7 @@ smoke:
     - export PATH="$HOME/.local/bin:$PATH"
     - export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN"
   script:
-    - uv run --python 3.13 python ci/claude_task.py "$CLAUDE_TASK"
+    - uv run --python 3.13 python ci/claude_task.py "$CLAUDE_TASK" $CLAUDE_TASK_ARGS
   artifacts:
     when: always
     paths:
@@ -85,3 +86,27 @@ rebase-mrs:
     CLAUDE_TASK: rebase-mrs
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Scores every open MR into tier::simple / tier::review / tier::architectural,
+# comments the reasons, and merges a tier::simple MR once its pipeline passes.
+# Runs after each merge to master (after rebase-mrs) and on a daily schedule
+# whose `mode` variable is score_mrs. A web run with mode=score_mrs lists what
+# it would do and changes nothing.
+score-mrs:
+  extends: .claude-task
+  resource_group: score-mrs
+  needs:
+    - job: rebase-mrs
+      optional: true
+  variables:
+    CLAUDE_TASK: score-mrs
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE != "schedule"
+      variables:
+        DRY_RUN: "false"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $mode == "score_mrs"
+      variables:
+        DRY_RUN: "false"
+    - if: $CI_PIPELINE_SOURCE == "web" && $mode == "score_mrs"
+      variables:
+        CLAUDE_TASK_ARGS: "--dry-run"
