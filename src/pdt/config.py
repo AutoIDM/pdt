@@ -35,6 +35,7 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
+ROOT_KEYS = {"platform", "apps"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
@@ -42,6 +43,22 @@ PLATFORM_KEYS = {
     "subscription", "resource_group",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
+# Where each known key belongs, so a key in the wrong section gets told
+# where to move instead of "unknown key".
+APP_LEVEL = f"the top level of the app's {APP_FILE}, or its apps: entry in {PROJECT_FILE}"
+KEY_HOME = {
+    "apps": f"the top level of {PROJECT_FILE}",
+    "platform": f"the top level of {PROJECT_FILE} or of the app's {APP_FILE}",
+    "name": f"the app's apps: entry in {PROJECT_FILE}",
+    "schedule": APP_LEVEL,
+    "timezone": APP_LEVEL,
+    "config": APP_LEVEL,
+    "env": APP_LEVEL,
+    **{key: "the platform: section" for key in PLATFORM_KEYS},
+    **{key: "the env: section" for key in ENV_KEYS},
+}
+# config: is free-form, so only keys that shape the app are rejected there.
+CONFIG_REJECTS = (APP_KEYS | {"apps"}) - {"name"}
 CRON_FIELDS = (
     ("minute", 0, 59),
     ("hour", 0, 23),
@@ -117,6 +134,15 @@ def env_overrides(name: str) -> dict:
     return out
 
 
+def mapping(cfg: dict, key: str, where: str) -> dict:
+    value = cfg.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ConfigError(f"{where}: {key}: must be a mapping of key: value lines")
+    return value
+
+
 def merged_app(name: str) -> dict:
     app_dir = find_project() / name
     if not (app_dir / "run.py").is_file():
@@ -124,22 +150,24 @@ def merged_app(name: str) -> dict:
     root_cfg = load_yaml(find_project() / PROJECT_FILE)
     entry = root_app_entry(root_cfg, name)
     own = load_yaml(app_dir / APP_FILE)
+    entry_where = f"{PROJECT_FILE}: apps entry {name!r}"
+    own_where = f"{name}/{APP_FILE}"
     return {
         "name": name,
         "dir": app_dir,
         "schedule": own.get("schedule", entry.get("schedule")),
         "timezone": own.get("timezone", entry.get("timezone", "Etc/UTC")),
         "platform": {
-            **(root_cfg.get("platform") or {}),
-            **(entry.get("platform") or {}),
-            **(own.get("platform") or {}),
+            **mapping(root_cfg, "platform", PROJECT_FILE),
+            **mapping(entry, "platform", entry_where),
+            **mapping(own, "platform", own_where),
         },
         "config": {
-            **(entry.get("config") or {}),
-            **(own.get("config") or {}),
+            **mapping(entry, "config", entry_where),
+            **mapping(own, "config", own_where),
             **env_overrides(name),
         },
-        "env": own.get("env", entry.get("env")) or {},
+        "env": mapping(own, "env", own_where) or mapping(entry, "env", entry_where),
     }
 
 
@@ -358,52 +386,100 @@ def check_env(env_spec: dict) -> list[str]:
     return problems
 
 
+def key_problems(where: str, section: dict, allowed: set[str] | None) -> list[str]:
+    # allowed=None means free-form (the config: section).
+    problems = []
+    for key in section:
+        if allowed is None and key not in CONFIG_REJECTS:
+            continue
+        if allowed is not None and key in allowed:
+            continue
+        if key in KEY_HOME:
+            problems.append(f"{where}: {key!r} belongs in {KEY_HOME[key]}, not here")
+        else:
+            problems.append(f"{where}: unknown key {key!r}")
+    return problems
+
+
+def app_section_problems(where: str, section: dict) -> list[str]:
+    problems = key_problems(where, section, APP_KEYS)
+    for key, allowed in (("platform", PLATFORM_KEYS), ("config", None), ("env", ENV_KEYS)):
+        try:
+            block = mapping(section, key, where)
+        except ConfigError as e:
+            problems.append(str(e))
+            continue
+        problems.extend(key_problems(f"{where}: {key}", block, allowed))
+        if key == "env":
+            problems.extend(env_shape_problems(f"{where}: env", block))
+    return problems
+
+
+def env_shape_problems(where: str, env: dict) -> list[str]:
+    problems = []
+    for key in ("required", "optional"):
+        names = env.get(key)
+        if names is not None and not (
+                isinstance(names, list) and all(isinstance(n, str) for n in names)):
+            problems.append(f"{where}: {key} must be a list of env var names")
+    groups = env.get("one_of")
+    if groups is not None and not (
+            isinstance(groups, list)
+            and all(isinstance(g, list) and all(isinstance(n, str) for n in g) for g in groups)):
+        problems.append(f"{where}: one_of must be a list of lists of env var names")
+    return problems
+
+
 def validate() -> list[str]:
     problems = []
     try:
         root_cfg = load_yaml(find_project() / PROJECT_FILE)
     except ConfigError as e:
         return [str(e)]
-    for key in root_cfg:
-        if key not in {"platform", "apps"}:
-            problems.append(f"{PROJECT_FILE}: unknown key {key!r}")
+    problems.extend(key_problems(PROJECT_FILE, root_cfg, ROOT_KEYS))
     apps = find_apps()
-    for entry in root_cfg.get("apps") or []:
+    entries = root_cfg.get("apps")
+    if entries is not None and not isinstance(entries, list):
+        problems.append(f"{PROJECT_FILE}: apps must be a list, one `- name: <app>` per app")
+        entries = []
+    for entry in entries or []:
         if not isinstance(entry, dict) or "name" not in entry:
             problems.append(f"{PROJECT_FILE}: every apps entry needs a name")
             continue
         if entry["name"] not in apps:
             problems.append(f"{PROJECT_FILE}: app {entry['name']!r} has no directory with a run.py")
-        for key in entry:
-            if key not in APP_KEYS:
-                problems.append(f"{PROJECT_FILE}: app {entry['name']}: unknown key {key!r}")
     for name in apps:
         problems.extend(validate_app(name))
-    return problems
+    # Every app re-checks the shared platform: block; report it once.
+    return sorted(set(problems), key=problems.index)
 
 
 def validate_app(name: str) -> list[str]:
-    problems = []
-    where = f"{name}/config.yml"
+    where = f"{name}/{APP_FILE}"
     try:
+        root_cfg = load_yaml(find_project() / PROJECT_FILE)
         own = load_yaml(find_project() / name / APP_FILE)
     except ConfigError as e:
         return [str(e)]
-    for key in own:
-        if key == "apps":
-            problems.append(f"{where}: the apps list is only allowed in pdt.yml")
-        elif key not in APP_KEYS:
-            problems.append(f"{where}: unknown key {key!r}")
+    problems = []
+    try:
+        platform = mapping(root_cfg, "platform", PROJECT_FILE)
+    except ConfigError as e:
+        problems.append(str(e))
+        platform = {}
+    problems.extend(key_problems(f"{PROJECT_FILE}: platform", platform, PLATFORM_KEYS))
+    entry = root_app_entry(root_cfg, name)
+    problems.extend(app_section_problems(f"{PROJECT_FILE}: apps entry {name!r}", entry))
+    problems.extend(app_section_problems(where, own))
     own_name = own.get("name")
     if own_name is not None and own_name != name:
         problems.append(f"{where}: name {own_name!r} does not match directory {name!r}")
     try:
         app = merged_app(name)
     except ConfigError as e:
-        return problems + [str(e)]
-    for key in app["platform"]:
-        if key not in PLATFORM_KEYS:
-            problems.append(f"{name}: platform: unknown key {key!r}")
+        if str(e) not in problems:
+            problems.append(str(e))
+        return problems
     provider = app["platform"].get("provider")
     if provider not in PROVIDERS:
         problems.append(
@@ -425,7 +501,4 @@ def validate_app(name: str) -> list[str]:
             cron_expression(app["schedule"])
         except ConfigError as e:
             problems.append(f"{name}: {e}")
-    for key in app["env"]:
-        if key not in ENV_KEYS:
-            problems.append(f"{name}: env: unknown key {key!r}")
     return problems
