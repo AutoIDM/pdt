@@ -1,8 +1,8 @@
 """Floor every open merge request and merge the simple ones already scored.
 
-This is the ``select`` hook of the score-mrs task. For each open, non-Draft
-merge request from this project it reads the diff from the GitLab API, sets a
-floor tier from path rules, and looks for the score note a previous run left.
+This is the ``select`` hook of the score-mrs task. For each open merge
+request from this project it reads the diff from the GitLab API, sets a floor
+tier from path rules, and looks for the score note a previous run left.
 
   Not scored yet, or the diff changed since: the MR becomes one item, so
   Claude reads it and may raise the floor (see check_mrs.py).
@@ -10,6 +10,9 @@ floor tier from path rules, and looks for the score note a previous run left.
   ``simple`` and the MR is mergeable (pipeline passed on the head commit, no
   conflicts, no unresolved discussions) it is merged right here, so a green
   pipeline never waits for another Claude run.
+  A Draft is scored once and then left alone while it stays a Draft, however
+  often it changes. When it leaves Draft it is scored again only if its diff
+  changed since. A Draft is never merged.
 
 The floor is deterministic and default-deny: a path no rule names is
 ``review``. The three tiers, lowest first, are simple, review, architectural.
@@ -247,7 +250,15 @@ def previous_score(notes: list[dict]) -> dict | None:
 
 
 def wanted(mr: dict, project_id) -> bool:
-    return str(mr.get("source_project_id")) == str(project_id) and not mr.get("draft")
+    """Same-project MRs only. Drafts stay in; they are scored once."""
+    return str(mr.get("source_project_id")) == str(project_id)
+
+
+def already_scored(mr: dict, previous: dict | None, did: str) -> bool:
+    """Nothing for Claude: scored for this diff, or a Draft scored at any diff."""
+    if previous is None or previous["claude"] == "unavailable":
+        return False
+    return previous["diff"] == did or bool(mr.get("draft"))
 
 
 def item_for(mr: dict, did: str, floor: str, reasons: list[str], files: list[dict],
@@ -310,7 +321,7 @@ def paginate(env, path: str) -> list:
 
 def list_open_mrs(env, target: str) -> list[dict]:
     return paginate(env, f"/projects/{env['CI_PROJECT_ID']}/merge_requests"
-                         f"?state=opened&wip=no&target_branch={target}&per_page=100")
+                         f"?state=opened&target_branch={target}&per_page=100")
 
 
 def get_mr(env, iid: int) -> dict:
@@ -364,13 +375,14 @@ def main() -> int:
         did = diff_id(files)
         floor, reasons = rule_floor(mr, files)
         previous = previous_score(list_notes(env, mr["iid"]))
-        scored = (previous is not None and previous["diff"] == did
-                  and previous["claude"] != "unavailable")
-        if not scored:
+        if not already_scored(mr, previous, did):
             log(f"  score       !{mr['iid']} {mr['title']} (floor {floor}: {'; '.join(reasons)})")
             items.append(item_for(mr, did, floor, reasons, files, previous))
             continue
         tier = previous["tier"]
+        if mr.get("draft"):
+            log(f"  draft       !{mr['iid']} {mr['title']} ({tier}, scored once; not merged)")
+            continue
         if tier != "simple":
             log(f"  {tier:11} !{mr['iid']} {mr['title']} (already scored)")
             continue
