@@ -514,7 +514,11 @@ def environment_release(settings: dict) -> Release:
     if not environment.managed:
         return Release(note=f"Container Apps environment {environment} is your own; "
                             "pdt leaves it as it is")
-    if not managed_by_pdt(environment_resource(settings)):
+    resource = environment_resource(settings)
+    if resource is None:
+        group = az_json("group", "show", "--name", environment.resource_group)
+        return Release(group=managed_by_pdt(group) and not other_environments(settings))
+    if not managed_by_pdt(resource):
         return Release()
     users = environment_users(settings)
     if users:

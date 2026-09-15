@@ -135,6 +135,17 @@ def test_destroy_releases_the_environment_and_the_shared_group_when_nothing_uses
     ]
 
 
+def test_destroy_releases_the_shared_group_when_the_environment_is_already_gone(monkeypatch):
+    def read(*args):
+        if args[:2] == ("group", "show"):
+            return TAGGED
+        return None if args[:3] == ("containerapp", "env", "show") else []
+
+    monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
+    release = deploy_azure_container_apps.environment_release(deploy_settings(SHARED))
+    assert release == deploy_azure_container_apps.Release(group=True)
+
+
 def test_destroy_keeps_the_shared_group_while_another_region_has_an_environment(monkeypatch):
     release = release_with(monkeypatch, [], other_environments=["pdt-westus"])
     assert release == deploy_azure_container_apps.Release(environment=True, group=False)
