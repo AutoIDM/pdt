@@ -11,6 +11,13 @@ def run_cli(monkeypatch, *argv):
     return cli.main()
 
 
+def test_no_command_prints_help(monkeypatch, capsys):
+    assert run_cli(monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "Usage: pdt" in out
+    assert "deploy" in out
+
+
 def test_deploy_without_app_lists_apps(project, monkeypatch, capsys):
     add_app(project, "hello-world")
     add_app(project, "daily-report")

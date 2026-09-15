@@ -153,8 +153,7 @@ def main() -> int:
         prog="pdt", description=summary, epilog=note,
         formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
     parser.add_argument("--version", action="version", version=__version__)
-    sub = parser.add_subparsers(dest="command", required=True, title="commands",
-                                metavar="<command>")
+    sub = parser.add_subparsers(dest="command", title="commands", metavar="<command>")
 
     def add_parser(name: str, **kwargs):
         return sub.add_parser(
@@ -193,6 +192,9 @@ def main() -> int:
     for name, label in (("aws", "AWS"), ("az", "Azure"), ("gcloud", "Google Cloud")):
         add_parser(name, help=f"run the {label} CLI that pdt installs")
     args = parser.parse_args()
+    if args.command is None:
+        parser.print_help()
+        return 0
     try:
         return args.func(args)
     except ConfigError as e:
