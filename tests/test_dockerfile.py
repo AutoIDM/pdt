@@ -49,7 +49,7 @@ def test_a_leftover_runtime_key_is_told_to_go(project):
     (project / "pdt.yml").write_text("platform:\n  provider: azure\n  runtime: container_apps\n")
     add_app(project, "my-report", "schedule: daily\n")
     assert validate_app("my-report") == [
-        "my-report: platform.runtime is no longer a setting: AWS always runs jobs on "
+        "pdt.yml: platform: 'runtime' is no longer a setting: AWS always runs jobs on "
         "Fargate and Azure on Container Apps Jobs; remove the key"]
 
 

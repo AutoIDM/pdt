@@ -55,7 +55,7 @@ def test_unknown_app_is_an_error(project):
 def test_apps_list_is_rejected_inside_an_app_folder(project):
     add_app(project, "my-report", "apps:\n  - name: x\n")
     problems = validate_app("my-report")
-    assert any("apps list is only allowed in pdt.yml" in p for p in problems)
+    assert any("belongs in the top level of pdt.yml" in p for p in problems)
 
 
 def test_name_must_match_the_folder(project):
