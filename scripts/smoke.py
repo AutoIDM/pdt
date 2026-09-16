@@ -1,5 +1,10 @@
 """Build the wheel, install it, and drive the commands a new user runs.
 
+    smoke.py [WHEEL]
+
+With WHEEL it installs that file instead of building one, so a pipeline
+that already built the wheel does not build it twice.
+
 The unit tests import pdt directly, so they cannot catch a packaging
 mistake. GitLab CI and GitHub Actions both call it, so keep it free of
 shell syntax and working on Windows.
@@ -54,14 +59,20 @@ def console_script(venv: Path) -> Path:
 def main() -> int:
     work = Path(tempfile.mkdtemp(prefix="pdt-smoke-"))
     try:
-        dist = work / "dist"
-        built = uv("build", "--wheel", "--out-dir", str(dist))
-        check(built.returncode == 0, "wheel builds")
-        if built.returncode != 0:
-            print(built.stderr)
-            return 1
+        if len(sys.argv) > 1:
+            wheel = Path(sys.argv[1]).resolve()
+            check(wheel.is_file(), f"the given wheel exists ({wheel.name})")
+            if not wheel.is_file():
+                return 1
+        else:
+            dist = work / "dist"
+            built = uv("build", "--wheel", "--out-dir", str(dist))
+            check(built.returncode == 0, "wheel builds")
+            if built.returncode != 0:
+                print(built.stderr)
+                return 1
+            wheel = next(dist.glob("*.whl"))
 
-        wheel = next(dist.glob("*.whl"))
         names = zipfile.ZipFile(wheel).namelist()
         missing = [item for item in WHEEL_MUST_HOLD if item not in names]
         check(not missing, f"wheel holds every shipped file (missing: {missing})")

@@ -12,6 +12,7 @@ default:
 
 variables:
   UV_CACHE_DIR: .uv-cache
+  CLAUDE_CLI_VERSION: "2.1.266"
   # Job logs are pipes, so Python would hold output until a job ends and a
   # running job would show nothing. This makes every job log live.
   PYTHONUNBUFFERED: "1"
@@ -26,8 +27,11 @@ stages:
 include:
   - local: verify/.gitlab-ci.yml
 
+# Every job in the test stage sets `needs: []` so it starts as soon as the
+# pipeline does, and `smoke` needs only `build`, so no job waits for a stage.
 build:
   stage: test
+  needs: []
   script:
     - uv build --wheel
   artifacts:
@@ -39,13 +43,13 @@ build:
     - if: $CI_PIPELINE_SOURCE == "schedule"
     - if: $CI_COMMIT_TAG
 
+# Tests run on 3.12, the minimum in pyproject.toml, so a newer-only feature
+# fails here before it reaches a user on the minimum version.
 test:
   stage: test
-  parallel:
-    matrix:
-      - PYTHON_VERSION: ["3.12", "3.13"]
+  needs: []
   script:
-    - uv run --python "$PYTHON_VERSION" --group dev pytest -q
+    - uv run --python 3.12 --group dev pytest -q
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
@@ -53,6 +57,7 @@ test:
 
 lint:
   stage: test
+  needs: []
   script:
     - uv run --group dev ruff check
   rules:
@@ -60,10 +65,13 @@ lint:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
     - if: $CI_COMMIT_TAG
 
+# Installs the wheel the build job made, so the wheel is built once per
+# pipeline. Without an argument the script builds its own wheel.
 smoke:
   stage: test
+  needs: [build]
   script:
-    - uv run --python 3.12 python scripts/smoke.py
+    - uv run --python 3.12 python scripts/smoke.py dist/*.whl
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
@@ -77,18 +85,35 @@ smoke:
 # "Claude Code in CI". Exit code 2 means an item needs a person: the job
 # shows a warning, not a failure. A bad token exits 1 and fails the job.
 # A rule may set CLAUDE_TASK_ARGS, for example "--dry-run".
+# The full (not slim) image ships git and curl, so no apt-get runs. The Claude
+# binary is copied into the project and cached under its version, so a run
+# downloads it only when CLAUDE_CLI_VERSION changes.
 .claude-task:
   stage: tasks
+  image: ghcr.io/astral-sh/uv:python3.13-bookworm
   interruptible: false
   variables:
     GIT_DEPTH: 0
     GIT_EDITOR: "true"
+  cache:
+    - key:
+        files:
+          - uv.lock
+      paths:
+        - .uv-cache
+    - key: claude-cli-$CLAUDE_CLI_VERSION
+      paths:
+        - .claude-cli/
   allow_failure:
     exit_codes: [2]
   before_script:
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl ca-certificates
-    - curl -fsSL https://claude.ai/install.sh | bash -s 2.1.266
-    - export PATH="$HOME/.local/bin:$PATH"
+    - >
+      if [ ! -x .claude-cli/claude ]; then
+      curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_CLI_VERSION"
+      && mkdir -p .claude-cli && cp -L "$HOME/.local/bin/claude" .claude-cli/claude;
+      fi
+    - export PATH="$PWD/.claude-cli:$PATH"
+    - claude --version
     - export CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_TOKEN"
   script:
     - uv run --python 3.13 python ci/claude_task.py "$CLAUDE_TASK" $CLAUDE_TASK_ARGS

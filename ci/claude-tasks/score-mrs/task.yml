@@ -5,6 +5,9 @@
 model: opus
 budget_usd: 2
 timeout_minutes: 10
+# A daily sweep scores every open MR. Sessions are read-only and short, so
+# four at a time keeps a sweep of 15 MRs under five minutes.
+parallel: 4
 permission_mode: dontAsk
 select: select_mrs.py
 check: check_mrs.py
