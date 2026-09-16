@@ -2,8 +2,11 @@
 
 Entered through
 deploy_azure.py, which owns the uv script header, login, and Key Vault.
-The resource group, Container Apps environment, ACR, Key Vault, and
-user-assigned identity are shared. Each app owns one tagged job.
+The resource group, ACR, Key Vault, and user-assigned identity are shared
+by the project's apps. The Container Apps environment and its Log
+Analytics workspace are shared by every pdt project in the subscription,
+one environment per region, unless the user names an environment of their
+own. Each app owns one tagged job.
 
 The shared identity pulls the image and reads the app's Key Vault
 secret. A job that uses the data store also gets its own system-assigned
@@ -13,40 +16,57 @@ Azure keeps one assignment per principal, role, and scope.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 
 from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
-    AZ, RECENT_RUNS, STORE_ROLE, assign_role, az_json, az_tsv, azure_settings,
-    check_shared_names, clean_name, cost_estimate, deployer_store, destroy_group,
-    ensure_group_and_vault, ensure_secret, ensure_store, group_can_be_deleted,
-    key_vault_item, managed_by_pdt, managed_secret, other_pdt_apps, owned_by,
-    preflight, purge_secret, report_shared_kept, require_managed, resource_id,
-    retail_price, revoke_role, run_basis, run_quiet, run_stream, secret_actions,
-    secret_name, secret_state, store_condition, store_cost, store_description,
-    store_exists, store_plan, store_settings, store_url, workspace_resource,
+    AZ, ENVIRONMENT_TYPE, RECENT_RUNS, STORE_ROLE, assign_role, az_json, az_tsv,
+    azure_settings, check_shared_names, clean_name, cost_estimate, deployer_store,
+    destroy_group, ensure_group_and_vault, ensure_secret, ensure_shared_group,
+    ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item,
+    managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
+    purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
+    revoke_role, run_basis, run_quiet, run_stream, secret_actions, secret_name,
+    secret_state, store_condition, store_cost, store_description, store_exists,
+    store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, stage_build_context,
-    store_kept_line, warn_if_locked, write_dockerfile)
+    CostEstimate, fail, gather_secrets, image_action, run_build,
+    stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
 CPU = "0.5"
 MEMORY = "1.0Gi"
+QUOTA_HINT = (
+    "This subscription's quota of Container Apps environments is used up. pdt "
+    "shares one environment between every pdt project in a subscription and "
+    "region.\n"
+    "Either set platform.environment: <resource-group>/<name> in pdt.yml to an "
+    "environment you already have, or request a quota increase for Container "
+    "Apps environments in the Azure portal (Subscriptions > Usage + quotas).")
 
 
 def build_image(app: dict, registry: str, image_name: str) -> None:
     stage = stage_build_context(app)
     try:
         write_dockerfile(stage, app)
-        run_stream("acr", "build", "--registry", registry, "--image",
-                   f"{image_name}:latest", str(stage))
+        if os.environ.get("GITLAB_CI") == "true":
+            image = f"{registry}.azurecr.io/{image_name}:latest"
+            run_quiet("acr", "login", "--name", registry)
+            run_build(["docker", "build", "--platform", "linux/amd64",
+                       "-t", image, str(stage)])
+            run_build(["docker", "push", image])
+        else:
+            run_stream("acr", "build", "--registry", registry, "--image",
+                       f"{image_name}:latest", str(stage))
     finally:
         shutil.rmtree(stage, ignore_errors=True)
 
@@ -72,6 +92,92 @@ def job_history_url(settings: dict[str, str], job: str) -> str:
             + resource_id(settings, "Microsoft.App", "jobs", job))
 
 
+def _activity_error(status_message) -> dict:
+    if isinstance(status_message, str):
+        try:
+            status_message = json.loads(status_message)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(status_message, dict):
+        return {}
+    error = status_message.get("error")
+    if not isinstance(error, dict):
+        error = status_message
+    summary = {key: error[key] for key in ("code", "message")
+               if isinstance(error.get(key), str)}
+    details = error.get("details")
+    if isinstance(details, list):
+        summary["details"] = [
+            {key: item[key] for key in ("code", "message")
+             if isinstance(item, dict) and isinstance(item.get(key), str)}
+            for item in details if isinstance(item, dict)
+        ]
+    return summary
+
+
+def report_job_failure(settings: dict[str, str], job: str) -> None:
+    timestamp = datetime.datetime.now(datetime.UTC).isoformat()
+    job_id = resource_id(settings, "Microsoft.App", "jobs", job)
+    console.heading("Azure Container Apps failure diagnostics:")
+    console.bullet(f"resource group: {settings['resource_group']}")
+    console.bullet(f"job: {job}")
+    console.bullet(f"resource: {job_id}")
+    console.bullet(f"diagnostic time (UTC): {timestamp}")
+
+    try:
+        data = az_json(
+            "containerapp", "job", "show", "--name", job,
+            "--resource-group", settings["resource_group"], "--subscription",
+            settings["subscription"], "--query",
+            "{id:id,name:name,provisioningState:properties.provisioningState,"
+            "environmentId:properties.environmentId,identityType:identity.type,"
+            "userAssignedIdentities:identity.userAssignedIdentities,tags:tags}")
+    except Exception:
+        data = None
+    if not isinstance(data, dict):
+        console.note("job state is unavailable")
+    else:
+        tags = data.get("tags") or {}
+        if not isinstance(tags, dict):
+            tags = {}
+        tags = {key: tags[key] for key in ("managed-by", "pdt-app")
+                if key in tags}
+        identities = data.get("userAssignedIdentities") or {}
+        if not isinstance(identities, dict):
+            identities = {}
+        console.bullet(f"provisioning state: {data.get('provisioningState')}")
+        console.bullet(f"environment: {data.get('environmentId')}")
+        console.bullet(f"identity type: {data.get('identityType')}")
+        console.bullet(f"user assigned identities: {list(identities)}")
+        console.bullet(f"owned tags: {tags}")
+
+    try:
+        events = az_json(
+            "monitor", "activity-log", "list", "--resource-group",
+            settings["resource_group"], "--subscription", settings["subscription"],
+            "--offset", "1h", "--query",
+            "[].{eventTimestamp:eventTimestamp,operationName:operationName.value,"
+            "status:status.value,subStatus:subStatus.value,correlationId:"
+            "correlationId,resourceId:resourceId,statusMessage:properties.statusMessage}")
+    except Exception:
+        events = None
+    if not isinstance(events, list):
+        console.note("activity log is unavailable")
+        return
+    matching = [event for event in events if isinstance(event, dict)
+                and str(event.get("resourceId") or "").lower() == job_id.lower()]
+    matching.sort(key=lambda event: str(event.get("eventTimestamp") or ""), reverse=True)
+    if not matching:
+        console.note("no recent activity log events matched this job")
+        return
+    for event in matching[:5]:
+        console.bullet(
+            f"activity: {event.get('eventTimestamp')} "
+            f"{event.get('operationName')} {event.get('status')} "
+            f"{event.get('subStatus')} correlation {event.get('correlationId')} "
+            f"error {_activity_error(event.get('statusMessage'))}")
+
+
 def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                   identity_id: str, secret_uri: str | None, storage_url: str | None,
                   exists: bool, app_name: str) -> None:
@@ -91,7 +197,7 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
     if not exists:
         args = [
             "containerapp", "job", "create", *common,
-            "--environment", settings["environment"],
+            "--environment", settings["environment"].resource_id(settings["subscription"]),
             "--trigger-type", "Schedule",
             "--mi-user-assigned", identity_id,
             "--registry-server", f"{settings['registry']}.azurecr.io",
@@ -106,7 +212,7 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             ]
         if env_vars:
             args += ["--env-vars", *env_vars]
-        run_quiet(*args, retry_access=True)
+        run_quiet(*args, retry_access=True, retry_internal=True)
         return
 
     system = ["--system-assigned"] if storage_url else []
@@ -191,6 +297,61 @@ def cost_estimate_for(region: str, cron: str, job: str, rg: str,
         region, items, "excludes ACR image builds/storage and Log Analytics ingestion")
 
 
+def environment_resource(settings: dict) -> dict | None:
+    environment = settings["environment"]
+    return az_json("containerapp", "env", "show", "--name", environment.name,
+                   "--resource-group", environment.resource_group)
+
+
+def check_environment(settings: dict, resource: dict | None) -> None:
+    environment = settings["environment"]
+    if environment.managed:
+        require_managed(resource, f"Container Apps environment {environment}")
+        return
+    if resource is None:
+        fail(f"the Container Apps environment {environment} named by "
+             f"platform.environment in {config.PROJECT_FILE} does not exist in "
+             f"subscription {settings['subscription']}")
+    location = str(resource.get("location") or "").lower().replace(" ", "")
+    if location and location != settings["region"]:
+        fail(f"the Container Apps environment {environment} is in {location}, but "
+             f"platform.region in {config.PROJECT_FILE} is {settings['region']}. A "
+             "job must run in its environment's region; change one of them")
+
+
+def environment_actions(settings: dict, exists: bool, logs_exist: bool,
+                        shared_group_exists: bool) -> list[str]:
+    environment = settings["environment"]
+    if not environment.managed:
+        return [f"use your own Container Apps environment {environment}"]
+    shared = "(shared by every pdt project in this subscription)"
+    return [
+        ("use existing" if shared_group_exists else "create")
+        + f" resource group {environment.resource_group} {shared}",
+        ("use existing" if logs_exist else "create")
+        + f" Log Analytics workspace {settings['workspace']} in {environment.resource_group}",
+        ("use existing" if exists else "create")
+        + f" Container Apps environment {environment} {shared}",
+    ]
+
+
+def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
+    environment = settings["environment"]
+    if not environment.managed:
+        return
+    ensure_shared_group(settings)
+    logs_id, logs_key = ensure_workspace(settings, logs_exist)
+    if exists:
+        return
+    console.step(f"creating Container Apps environment {environment}")
+    run_quiet("containerapp", "env", "create", "--name", environment.name,
+              "--resource-group", environment.resource_group,
+              "--location", settings["region"],
+              "--logs-workspace-id", logs_id, "--logs-workspace-key", logs_key,
+              "--tags", "managed-by=pdt",
+              hints={"EnvironmentsInSubExceeded": QUOTA_HINT})
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
@@ -212,17 +373,20 @@ def deploy(app: dict, assume_yes: bool) -> int:
                        "--resource-group", rg)
     require_managed(registry, f"ACR {settings['registry']}")
     registry_exists = registry is not None
-    environment = az_json(
-        "containerapp", "env", "show", "--name", settings["environment"],
-        "--resource-group", rg)
-    require_managed(environment, f"Container Apps environment {settings['environment']}")
+    environment = environment_resource(settings)
+    check_environment(settings, environment)
     environment_exists = environment is not None
     identity = az_json("identity", "show", "--name", settings["identity"],
                        "--resource-group", rg)
     require_managed(identity, f"managed identity {settings['identity']}")
-    workspace = workspace_resource(settings)
-    require_managed(workspace, f"Log Analytics workspace {settings['workspace']}")
-    logs_exist = workspace is not None
+    logs_exist = shared_group_exists = False
+    if settings["environment"].managed:
+        shared_group = az_json("group", "show", "--name", settings["environment"].resource_group)
+        require_managed(shared_group, f"resource group {settings['environment'].resource_group}")
+        shared_group_exists = shared_group is not None
+        workspace = workspace_resource(settings)
+        require_managed(workspace, f"Log Analytics workspace {settings['workspace']}")
+        logs_exist = workspace is not None
     arm_auth_enabled = (
         acr_arm_auth_enabled(settings["registry"]) if registry_exists else False)
     current_job = az_json("containerapp", "job", "show", "--name", job,
@@ -234,9 +398,11 @@ def deploy(app: dict, assume_yes: bool) -> int:
     store = store_settings(settings) if app["storage"] else None
     store_present = store_exists(store) if store else False
     deployer = deployer_store(settings, name) if store_present else None
-    usage = (deployer.usage() if deployer else (0, 0)) if store else None
+    usage = (store_usage(deployer) if deployer else (0, 0)) if store else None
 
     actions = ["register required Azure resource providers"]
+    actions += environment_actions(settings, environment_exists, logs_exist,
+                                   shared_group_exists)
     actions.append(("use existing" if group_exists else "create")
                    + f" resource group {rg}")
     actions.append(("use existing" if registry_exists else "create")
@@ -245,10 +411,6 @@ def deploy(app: dict, assume_yes: bool) -> int:
         ("keep" if arm_auth_enabled else "enable")
         + f" ACR authentication-as-arm on {settings['registry']} "
         "(required for managed-identity image pulls)")
-    actions.append(("use existing" if logs_exist else "create")
-                   + f" Log Analytics workspace {settings['workspace']} (shared)")
-    actions.append(("use existing" if environment_exists else "create")
-                   + f" Container Apps environment {settings['environment']}")
     actions.append(("use existing" if identity else "create")
                    + f" managed identity {settings['identity']}")
     actions.append(("use existing" if vault_exists else "create")
@@ -268,24 +430,13 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.warn("Aborted; nothing was changed.")
         return 1
 
+    ensure_environment(settings, environment_exists, logs_exist)
     vault_id = ensure_group_and_vault(settings, PROVIDERS, vault_exists)
     if not registry_exists:
         console.step(f"creating ACR {settings['registry']}")
         run_quiet("acr", "create", "--name", settings["registry"],
                   "--resource-group", rg, "--location", settings["region"],
                   "--sku", "Basic", "--admin-enabled", "false",
-                  "--tags", "managed-by=pdt")
-    if not environment_exists:
-        console.step(f"creating Container Apps environment {settings['environment']}")
-        logs_id = az_tsv("monitor", "log-analytics", "workspace", "show",
-                         "--resource-group", rg, "--workspace-name",
-                         settings["workspace"], "--query", "customerId")
-        logs_key = az_tsv("monitor", "log-analytics", "workspace", "get-shared-keys",
-                          "--resource-group", rg, "--workspace-name",
-                          settings["workspace"], "--query", "primarySharedKey")
-        run_quiet("containerapp", "env", "create", "--name", settings["environment"],
-                  "--resource-group", rg, "--location", settings["region"],
-                  "--logs-workspace-id", logs_id, "--logs-workspace-key", logs_key,
                   "--tags", "managed-by=pdt")
     if not identity:
         console.step(f"creating managed identity {settings['identity']}")
@@ -311,9 +462,13 @@ def deploy(app: dict, assume_yes: bool) -> int:
     secret_uri = ensure_secret(settings, sid, values, payload, digest, current_hash, name)
     console.step(f"reconciling Container Apps Job {job}")
     image = f"{settings['registry']}.azurecr.io/{name}:latest"
-    reconcile_job(settings, job, image, cron, identity_id, secret_uri,
-                  store_url(store, name) if store else None,
-                  current_job is not None, name)
+    try:
+        reconcile_job(settings, job, image, cron, identity_id, secret_uri,
+                      store_url(store, name) if store else None,
+                      current_job is not None, name)
+    except SystemExit:
+        report_job_failure(settings, job)
+        raise
     if store:
         assign_role(store["container_id"], job_principal_id(job, rg), STORE_ROLE,
                     condition=store_condition(name))
@@ -321,6 +476,87 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.field("Run it once", f"pdt az containerapp job start --name {job} --resource-group {rg}")
     console.field("Run logs (Execution history tab)", job_history_url(settings, job))
     return 0
+
+
+def environment_users(settings: dict) -> dict[str, int]:
+    """Jobs outside this project's group that run in the environment, by group."""
+    wanted = settings["environment"].resource_id(settings["subscription"]).lower()
+    users: dict[str, int] = {}
+    for job in az_json("containerapp", "job", "list") or []:
+        group = str(job.get("resourceGroup") or "")
+        if group.lower() == settings["resource_group"].lower():
+            continue
+        if str((job.get("properties") or {}).get("environmentId") or "").lower() == wanted:
+            users[group] = users.get(group, 0) + 1
+    return users
+
+
+def other_environments(settings: dict) -> list[str]:
+    environment = settings["environment"]
+    return sorted(
+        str(item.get("name")) for item in az_json(
+            "resource", "list", "--resource-group", environment.resource_group,
+            "--resource-type", ENVIRONMENT_TYPE) or []
+        if str(item.get("name")) != environment.name)
+
+
+@dataclasses.dataclass
+class Release:
+    """What destroy may let go of after the last app in the project is gone."""
+
+    environment: bool = False
+    group: bool = False
+    note: str = ""
+
+
+def environment_release(settings: dict) -> Release:
+    environment = settings["environment"]
+    if not environment.managed:
+        return Release(note=f"Container Apps environment {environment} is your own; "
+                            "pdt leaves it as it is")
+    resource = environment_resource(settings)
+    if resource is None:
+        group = az_json("group", "show", "--name", environment.resource_group)
+        return Release(group=managed_by_pdt(group) and not other_environments(settings))
+    if not managed_by_pdt(resource):
+        return Release()
+    users = environment_users(settings)
+    if users:
+        count = sum(users.values())
+        return Release(note=f"Container Apps environment {environment} still runs {count} "
+                            f"job{'s' if count != 1 else ''} in resource group"
+                            f"{'s' if len(users) != 1 else ''} {', '.join(sorted(users))}; "
+                            "keeping it")
+    return Release(environment=True, group=not other_environments(settings))
+
+
+def release_actions(settings: dict, release: Release) -> list[str]:
+    environment = settings["environment"]
+    actions = []
+    if release.environment:
+        actions.append(f"delete Container Apps environment {environment} (no other job uses it)")
+    if release.group:
+        actions.append(f"delete resource group {environment.resource_group} and the Log "
+                       f"Analytics workspace {settings['workspace']} in it")
+    return actions
+
+
+def release_environment(settings: dict, release: Release) -> None:
+    environment = settings["environment"]
+    if release.environment:
+        console.step(f"deleting Container Apps environment {environment}")
+        run_quiet("containerapp", "env", "delete", "--name", environment.name,
+                  "--resource-group", environment.resource_group, "--yes")
+    if release.group:
+        console.step(f"deleting resource group {environment.resource_group}")
+        run_quiet("group", "delete", "--name", environment.resource_group, "--yes")
+
+
+def kept_line(store: dict[str, str], deployer, name: str) -> str:
+    usage = store_usage(deployer)
+    if usage is None:
+        return f"kept: {store_description(store)} (data under {name}/)"
+    return store_kept_line(store_description(store), usage[0], name)
 
 
 def destroy(app: dict, assume_yes: bool) -> int:
@@ -345,23 +581,36 @@ def destroy(app: dict, assume_yes: bool) -> int:
                  f"in {store_description(store)}")
         warn_if_locked(deployer, name)
     others = other_pdt_apps(rg, name)
-    if group_can_be_deleted(settings, others):
-        actions = [
-            f"delete resource group {rg} and everything in it: the job and the "
-            "shared ACR (with images), Container Apps environment, managed "
-            "identity, Key Vault, and Log Analytics workspace",
-            f"purge the soft-deleted Key Vault {settings['vault']}",
-        ]
+    # A run that stopped after the project group went may still owe the
+    # environment, so a missing group takes the same path as a deletable one.
+    group_exists = az_tsv("group", "exists", "--name", rg) == "true"
+    if not group_exists or group_can_be_deleted(settings, others):
+        release = environment_release(settings)
+        actions = []
         if grant:
-            actions.insert(0, grant)
+            actions.append(grant)
+        if group_exists:
+            actions += [
+                f"delete resource group {rg} and everything in it: the job and the "
+                "shared ACR (with images), managed identity, and Key Vault",
+                f"purge the soft-deleted Key Vault {settings['vault']}",
+            ]
+        actions += release_actions(settings, release)
+        if release.note:
+            console.note(release.note)
+        if not actions:
+            console.done(f"Nothing owned by {name} to remove.")
+            return 0
         if not confirm(actions, assume_yes):
             console.warn("Aborted; nothing was changed.")
             return 1
         if grant:
             revoke_role(store["container_id"], principal_id, STORE_ROLE)
-        destroy_group(settings)
+        if group_exists:
+            destroy_group(settings)
+        release_environment(settings, release)
         if deployer:
-            console.say(store_kept_line(store_description(store), deployer.usage()[0], name))
+            console.say(kept_line(store, deployer, name))
         return 0
     registry = az_json("acr", "show", "--name", settings["registry"],
                        "--resource-group", rg)
@@ -398,5 +647,5 @@ def destroy(app: dict, assume_yes: bool) -> int:
         purge_secret(settings, sid)
     report_shared_kept(rg, others)
     if deployer:
-        console.say(store_kept_line(store_description(store), deployer.usage()[0], name))
+        console.say(kept_line(store, deployer, name))
     return 0

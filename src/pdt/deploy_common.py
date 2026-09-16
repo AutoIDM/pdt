@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import urllib.error
 import urllib.request
@@ -210,6 +211,17 @@ def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
     except urllib.error.HTTPError as error:
         validate_response(error)
         raise
+
+
+def run_build(command: list[str]) -> None:
+    proc = subprocess.run(
+        command, capture_output=True, text=True, check=False)
+    if proc.returncode:
+        if proc.stdout.strip():
+            console.say(proc.stdout.strip())
+        if proc.stderr.strip():
+            console.say(proc.stderr.strip())
+        fail(f"{' '.join(command[:3])} failed")
 
 
 def gather_secrets(app: dict) -> dict[str, str]:

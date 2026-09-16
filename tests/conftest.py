@@ -1,4 +1,11 @@
+import sys
+from pathlib import Path
+
 import pytest
+
+# verify/scripts holds the live verification framework. It ships with the
+# user's project, not with the wheel, so it is not importable as a package.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "verify" / "scripts"))
 
 
 @pytest.fixture
