@@ -11,6 +11,7 @@ hold resources that have nothing to do with pdt.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import subprocess
@@ -27,11 +28,17 @@ GOOGLE_ASSET_TYPES = (
     "secretmanager.googleapis.com/Secret",
     "artifactregistry.googleapis.com/Repository",
 )
+GREETING = "Hello from pdt."
 WINDOWS_TASKS = (
     "$tasks = @(Get-ScheduledTask -TaskPath '\\' | "
     "Where-Object { $_.TaskName -like 'pdt-*' } | "
     "Select-Object TaskName, TaskPath, Description); "
     "ConvertTo-Json -InputObject $tasks -Compress"
+)
+WINDOWS_TASK_INFO = (
+    "Get-ScheduledTaskInfo -TaskName '{task}' | Select-Object "
+    "@{{n='LastRunTime';e={{$_.LastRunTime.ToUniversalTime().ToString('o')}}}}, "
+    "LastTaskResult | ConvertTo-Json -Compress"
 )
 
 
@@ -318,6 +325,69 @@ def windows_inventory(_settings: dict[str, str]) -> Inventory:
                               dict(MANAGED) if managed else {}, name))
     return found
 
+
+def timestamp(text: str) -> datetime.datetime:
+    stamp = datetime.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return stamp
+
+
+def aws_runs(settings: dict[str, str], app: str, since: datetime.datetime) -> list[str]:
+    try:
+        listed = aws(settings["region"], "logs", "filter-log-events",
+                     "--log-group-name", f"/ecs/pdt-{app}",
+                     "--start-time", str(int(since.timestamp() * 1000))) or {}
+    except InventoryError as error:
+        if "ResourceNotFoundException" not in str(error):
+            raise
+        return []
+    return sorted({event["logStreamName"] for event in listed.get("events") or []
+                   if GREETING in str(event.get("message") or "")})
+
+
+def azure_runs(settings: dict[str, str], app: str, since: datetime.datetime) -> list[str]:
+    listed = az("containerapp", "job", "execution", "list", "--name", f"pdt-{app}",
+                "--resource-group", settings["resource_group"]) or []
+    found = []
+    for item in listed:
+        props = item.get("properties") or {}
+        if (props.get("status") == "Succeeded" and props.get("startTime")
+                and timestamp(props["startTime"]) >= since):
+            found.append(item["name"])
+    return found
+
+
+def google_cloud_runs(settings: dict[str, str], app: str, since: datetime.datetime) -> list[str]:
+    listed = gcloud("run", "jobs", "executions", "list", "--job", f"pdt-{app}",
+                    "--region", settings["region"], "--project", settings["project"]) or []
+    found = []
+    for item in listed:
+        meta = item.get("metadata") or {}
+        created = meta.get("creationTimestamp")
+        if ((item.get("status") or {}).get("succeededCount") or 0) >= 1 and created \
+                and timestamp(created) >= since:
+            found.append(meta["name"])
+    return found
+
+
+def windows_runs(_settings: dict[str, str], app: str, since: datetime.datetime) -> list[str]:
+    info = run_json([
+        "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+        "-ExecutionPolicy", "Bypass", "-Command",
+        WINDOWS_TASK_INFO.format(task=f"pdt-{app}")]) or {}
+    last = info.get("LastRunTime")
+    if info.get("LastTaskResult") == 0 and last and timestamp(last) >= since:
+        return [last]
+    return []
+
+
+RUNS = {
+    "aws": aws_runs,
+    "azure": azure_runs,
+    "google-cloud": google_cloud_runs,
+    "windows": windows_runs,
+}
 
 INVENTORIES = {
     "aws": aws_inventory,

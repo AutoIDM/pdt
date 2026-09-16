@@ -12,9 +12,10 @@
 
 ## Scenarios
 
-- A scenario is a function in `scripts/verify.py` registered in `SCENARIOS`. Its name is what `coverage.yml` refers to.
-- A scenario records steps with `record(steps, report, name, problems)`; an empty problem list is a PASS. It returns at the first failed step.
-- A scenario reads the account through `inventory()` and runs pdt through `run_pdt(verb, app, "--yes")`. It never calls a provider CLI directly; add a listing to `scripts/inventory.py` instead.
+- A scenario is a function `(ctx) -> bool` in `scripts/verify.py` registered in `SCENARIOS`; `CLOUD_SCENARIOS` fixes the order a provider run uses, and `local` runs alone under `verify.py local`. Its name is what `coverage.yml` refers to.
+- A scenario records steps with `ctx.record(name, problems)`, `ctx.check(name, checker)`, or `ctx.command(name, *pdt_args)`; an empty problem list is a PASS. It returns False at the first failed step.
+- A scenario reads the account through `ctx.inventory()`, run records through `ctx.runs(app, since)`, and pdt through `ctx.run_pdt`. It never calls a provider CLI directly; add a listing or a run reader to `scripts/inventory.py` instead.
+- The a app of a provider is `ctx.apps[0]` and the b app `ctx.apps[1]`; the run writes the b app's fire-time schedule into its `config.yml` and restores the file when the run ends.
 - Every scenario's check logic gets a unit test in `tests/test_verify.py` against `FakeCloud`, with no network and no cloud account.
 - A failure after the first deploy destroys every app before the run exits. Keep that order when adding steps.
 
