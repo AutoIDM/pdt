@@ -419,20 +419,20 @@ def test_a_run_without_an_event_sweeps_every_open_mr(monkeypatch, capsys):
     assert [item["iid"] for item in items] == [1, 2]
 
 
-# --- which events get a pipeline at all ---------------------------------------
+# --- which events run which job -----------------------------------------------
 
-def pipeline_created(variables: dict) -> bool:
-    """Evaluate the top-level workflow rules the way GitLab would for these variables.
+def job_runs(job: str, variables: dict) -> bool:
+    """Evaluate one job's rules the way GitLab would for these variables.
 
-    Only the literal comparisons those rules use are understood: ``$X == "v"``,
-    ``$X != "v"`` and ``$X == null``, joined with ``&&``. No rule matching means
-    no pipeline.
+    Only what those rules use is understood: ``$X == "v"``, ``$X != "v"`` and
+    ``$X == null``, joined with ``&&``, and a rule with no ``if`` that matches
+    everything. The first matching rule decides; no match means the job does
+    not run.
     """
     ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
-    for rule in ci["workflow"]["rules"]:
-        assert "if" in rule, "every workflow rule has an if"
+    for rule in ci[job]["rules"]:
         matched = True
-        for clause in rule["if"].split(" && "):
+        for clause in rule["if"].split(" && ") if "if" in rule else ():
             if " != " in clause:
                 name, _, value = clause.partition(" != ")
                 matched &= variables.get(name.strip("$ ")) != value.strip('"')
@@ -445,32 +445,47 @@ def pipeline_created(variables: dict) -> bool:
     return False
 
 
-def test_a_webhook_event_gets_a_pipeline_only_when_the_mr_opens_or_leaves_draft():
-    def trigger(action, before="", after=""):
-        return {"CI_PIPELINE_SOURCE": "trigger", "mode": "score_mrs", "MR_IID": "5",
-                "MR_ACTION": action, "MR_DRAFT_BEFORE": before, "MR_DRAFT_AFTER": after}
-
-    assert pipeline_created(trigger("open"))
-    assert pipeline_created(trigger("reopen"))
-    assert pipeline_created(trigger("update", "true", "false"))
-    # Everything else never becomes a pipeline: pushes, rebases, labels, edits,
-    # going to Draft, approvals, closing, merging.
-    assert not pipeline_created(trigger("update"))
-    assert not pipeline_created(trigger("update", "false", "true"))
-    assert not pipeline_created(trigger("update", "true", "true"))
-    assert not pipeline_created(trigger("approved"))
-    assert not pipeline_created(trigger("close"))
-    assert not pipeline_created(trigger("merge"))
-    assert not pipeline_created(trigger(""))
+def trigger(action, before="null", after="null"):
+    """The variables the webhook's template sends; a missing Draft change renders as null."""
+    return {"CI_PIPELINE_SOURCE": "trigger", "mode": "score_mrs", "MR_IID": "5",
+            "MR_ACTION": action, "MR_DRAFT_BEFORE": before, "MR_DRAFT_AFTER": after}
 
 
-def test_every_other_pipeline_source_is_untouched_by_the_workflow_rules():
-    assert pipeline_created({"CI_PIPELINE_SOURCE": "merge_request_event"})
-    assert pipeline_created({"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "master"})
-    assert pipeline_created({"CI_PIPELINE_SOURCE": "schedule", "mode": "score_mrs"})
-    assert pipeline_created({"CI_PIPELINE_SOURCE": "schedule", "mode": "close_stale_drafts"})
-    assert pipeline_created({"CI_PIPELINE_SOURCE": "web", "mode": "score_mrs"})
-    assert pipeline_created({"CI_PIPELINE_SOURCE": "web"})
+SCORED_EVENTS = [trigger("open"), trigger("reopen"), trigger("update", "true", "false")]
+# Pushes, rebases, labels, edits, going to Draft, approvals, closing, merging.
+SKIPPED_EVENTS = [trigger("update"), trigger("update", "false", "true"),
+                  trigger("update", "true", "true"), trigger("approved"),
+                  trigger("close"), trigger("merge"), trigger("")]
+
+
+def test_a_webhook_event_scores_only_when_the_mr_opens_or_leaves_draft():
+    for variables in SCORED_EVENTS:
+        assert job_runs("score-mrs", variables), variables
+        assert not job_runs("score-mrs-skip", variables), variables
+    for variables in SKIPPED_EVENTS:
+        assert not job_runs("score-mrs", variables), variables
+
+
+def test_every_webhook_event_gets_a_pipeline_so_the_hook_never_sees_a_4xx():
+    # The trigger API answers 400 when a pipeline has no job or workflow rules
+    # filter it out, and GitLab disables a webhook after four 4xx in a row.
+    ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
+    assert "workflow" not in ci, "workflow rules would filter trigger pipelines out"
+    for variables in SCORED_EVENTS + SKIPPED_EVENTS:
+        assert job_runs("score-mrs", variables) != job_runs("score-mrs-skip", variables), variables
+
+
+def test_the_skip_job_never_runs_outside_a_score_mrs_trigger():
+    for variables in [{"CI_PIPELINE_SOURCE": "merge_request_event"},
+                      {"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "master"},
+                      {"CI_PIPELINE_SOURCE": "schedule", "mode": "score_mrs"},
+                      {"CI_PIPELINE_SOURCE": "schedule", "mode": "close_stale_drafts"},
+                      {"CI_PIPELINE_SOURCE": "web", "mode": "score_mrs"},
+                      {"CI_PIPELINE_SOURCE": "web"},
+                      {"CI_PIPELINE_SOURCE": "trigger", "mode": "other"}]:
+        assert not job_runs("score-mrs-skip", variables), variables
+    assert job_runs("score-mrs", {"CI_PIPELINE_SOURCE": "schedule", "mode": "score_mrs"})
+    assert job_runs("score-mrs", {"CI_PIPELINE_SOURCE": "web", "mode": "score_mrs"})
 
 
 # --- check hook end to end ----------------------------------------------------
@@ -585,7 +600,8 @@ def test_score_mrs_job_runs_on_a_webhook_trigger_and_its_schedule():
     rules = {rule["if"]: rule.get("variables", {}) for rule in job["rules"]}
     assert not [k for k in rules if "CI_DEFAULT_BRANCH" in k], "no run on every merge"
     trigger = [v for k, v in rules.items() if '"trigger"' in k and "score_mrs" in k]
-    assert trigger == [{"DRY_RUN": "false"}]
+    assert len(trigger) == 3, "open, reopen, and leaving Draft"
+    assert all(v == {"DRY_RUN": "false"} for v in trigger)
     schedule = [v for k, v in rules.items() if '"schedule"' in k and "score_mrs" in k]
     assert schedule == [{"DRY_RUN": "false"}]
     web = [(k, v) for k, v in rules.items() if '"web"' in k and "score_mrs" in k]
@@ -599,7 +615,8 @@ def test_a_mode_pipeline_runs_only_its_own_task():
         if not isinstance(job, dict) or "rules" not in job:
             continue
         for rule in job["rules"]:
-            if "$mode ==" in rule["if"] and "$mode == null" not in rule["if"]:
+            condition = rule.get("if", "")
+            if "$mode ==" in condition and "$mode == null" not in condition:
                 continue  # the job a mode pipeline is for
-            if "CI_DEFAULT_BRANCH" in rule["if"]:
-                assert "$mode == null" in rule["if"], name
+            if "CI_DEFAULT_BRANCH" in condition:
+                assert "$mode == null" in condition, name
