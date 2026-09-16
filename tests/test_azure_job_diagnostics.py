@@ -5,6 +5,11 @@ import pytest
 from pdt import deploy_azure, deploy_azure_container_apps
 
 
+@pytest.fixture(autouse=True)
+def skip_docker_preflight(monkeypatch):
+    monkeypatch.setattr(deploy_azure_container_apps, "docker_preflight", lambda provider: None)
+
+
 SETTINGS = {
     "subscription": "sub-1",
     "resource_group": "pdt",
@@ -102,7 +107,6 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
     }
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",
                         lambda app, requested: settings)
-    monkeypatch.setattr(deploy_azure_container_apps, "docker_preflight", lambda provider: None)
     monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
     monkeypatch.setattr(deploy_azure_container_apps, "gather_secrets", lambda app: {})
     monkeypatch.setattr(deploy_azure_container_apps, "check_shared_names", lambda settings: None)

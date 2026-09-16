@@ -43,6 +43,11 @@ def deploy_settings(environment) -> dict:
     }
 
 
+@pytest.fixture(autouse=True)
+def skip_docker_preflight(monkeypatch):
+    monkeypatch.setattr(deploy_azure_container_apps, "docker_preflight", lambda provider: None)
+
+
 def plan_for(monkeypatch, settings, resources):
     calls = []
 
@@ -52,7 +57,6 @@ def plan_for(monkeypatch, settings, resources):
 
     plans = []
     monkeypatch.setattr(deploy_azure_container_apps, "preflight", lambda app, requested: settings)
-    monkeypatch.setattr(deploy_azure_container_apps, "docker_preflight", lambda provider: None)
     monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
     monkeypatch.setattr(deploy_azure_container_apps, "gather_secrets", lambda app: {})
     monkeypatch.setattr(deploy_azure_container_apps, "check_shared_names", lambda settings: None)
