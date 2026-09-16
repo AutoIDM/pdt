@@ -1,0 +1,149 @@
+# What pdt can do, and which verify scenario or app proves each item.
+# scripts/coverage.py --check reads this file. A name in covered_by is a
+# scenario in scripts/verify.py SCENARIOS or an app in pdt.yml.
+
+commands:
+  init:
+    uncovered: no scenario runs pdt in a temp folder yet
+  examples:
+    uncovered: no scenario runs pdt in a temp folder yet
+  new:
+    uncovered: no scenario runs pdt in a temp folder yet
+  list:
+    uncovered: no scenario runs the read-only commands yet
+  validate:
+    uncovered: verify:check runs pdt validate on the matrix, but no scenario records it
+  run:
+    uncovered: no scenario runs an app locally yet
+  deploy:
+    covered_by: [lifecycle]
+  login:
+    uncovered: login opens a browser; CI signs in with the provider CLI before the run
+  destroy:
+    covered_by: [lifecycle]
+  storage:
+    uncovered: no scenario reads a deployed app's data store yet
+  completion:
+    uncovered: no scenario prints the completion script yet
+  aws:
+    covered_by: [lifecycle]
+    note: the AWS listing in scripts/inventory.py runs through pdt aws
+  az:
+    covered_by: [lifecycle]
+    note: the Azure listing in scripts/inventory.py runs through pdt az
+  gcloud:
+    covered_by: [lifecycle]
+    note: the Google Cloud listing in scripts/inventory.py runs through pdt gcloud
+
+keys:
+  name:
+    covered_by: [lifecycle]
+  schedule:
+    covered_by: [lifecycle]
+  schedule.shorthand:
+    covered_by: [aws-fargate-a, azure-container-apps-a, google-cloud-a, windows-a]
+  schedule.cron:
+    uncovered: every app uses the daily shorthand
+  timezone:
+    covered_by: [windows-a, windows-b]
+    note: Etc/UTC by default on the cloud apps, local on Windows; no app sets another zone
+  platform:
+    covered_by: [lifecycle]
+  platform.provider:
+    covered_by: [lifecycle]
+  platform.region:
+    covered_by: [aws-fargate-a, azure-container-apps-a, google-cloud-a]
+  platform.project:
+    covered_by: [google-cloud-a, google-cloud-b]
+    note: reaches deploy through PDT_GOOGLE_CLOUD_PROJECT in verify/.gitlab-ci.yml
+  platform.account:
+    covered_by: [aws-fargate-a, aws-fargate-b]
+    note: deploy discovers the account and writes it back with save_platform_key
+  platform.subscription:
+    covered_by: [azure-container-apps-a, azure-container-apps-b]
+    note: deploy discovers the subscription and writes it back with save_platform_key
+  platform.resource_group:
+    covered_by: [azure-container-apps-a, azure-container-apps-b]
+  platform.environment:
+    covered_by: [azure-container-apps-a, azure-container-apps-b]
+    note: reaches deploy through PDT_AZURE_CONTAINER_APPS_ENVIRONMENT in verify/.gitlab-ci.yml
+  config:
+    covered_by: [lifecycle]
+    note: every app's run.py logs config.greeting
+  env:
+    covered_by: [lifecycle]
+  env.required:
+    covered_by: [lifecycle]
+    note: PDT_SMOKE_TOKEN is required by every app, so a deployed run fails without PDT_ENV_JSON
+  env.one_of:
+    uncovered: no app declares a one_of group
+  env.optional:
+    covered_by: [lifecycle]
+    note: every app declares an empty optional list
+  storage:
+    uncovered: every app keeps the default storage true; no app sets storage false
+  Dockerfile:
+    uncovered: no app ships its own Dockerfile
+
+providers:
+  aws:
+    covered_by: [aws-fargate-a, aws-fargate-b]
+    note: shared resources are the ECS cluster, the schedule group, the ECR repository, and the data bucket
+  azure:
+    covered_by: [azure-container-apps-a, azure-container-apps-b]
+    note: shared resources are the resource group, the Container Apps environment, its Log Analytics workspace, the registry, and the storage account
+  google-cloud:
+    covered_by: [google-cloud-a, google-cloud-b]
+    note: shared resources are the Artifact Registry repository, the service account, and the data bucket
+  windows:
+    covered_by: [windows-a, windows-b]
+    note: no shared resource; each app is one scheduled task and one storage folder
+
+rules:
+  runs-every-scenario-on-every-provider:
+    covered_by: [lifecycle]
+    note: one CI job per provider runs the same scenarios
+  cleans-up-after-the-run:
+    covered_by: [lifecycle]
+    note: a failure after the first deploy destroys every app before the run exits
+  fails-when-a-provider-cannot-deploy-or-manage:
+    covered_by: [lifecycle]
+  every-resource-is-tagged:
+    covered_by: [lifecycle]
+  each-app-destroys-individually:
+    covered_by: [lifecycle]
+  shared-resources-go-with-the-last-app:
+    covered_by: [lifecycle]
+  jobs-fire-on-schedule:
+    uncovered: no scenario waits for a scheduled run yet
+  deploy-reconciles:
+    uncovered: no scenario deploys the same app twice
+  plan-and-cost-before-changes:
+    uncovered: the runner passes --yes and does not read the plan
+  cost-estimates-use-provider-prices:
+    uncovered: the runner does not read the estimate
+  cheapest-option-by-default:
+    uncovered: the runner does not inspect the chosen instance shape
+  no-package-source-in-the-build-context:
+    uncovered: the runner does not inspect the build context
+  own-dockerfile-is-used:
+    uncovered: no app ships its own Dockerfile
+  pinned-version-stays-deployed:
+    uncovered: every run installs the wheel of the commit under test, so no upgrade happens
+  per-app-names-and-managed-by-tag:
+    covered_by: [lifecycle]
+  destroy-removes-everything:
+    covered_by: [lifecycle]
+  azure-shared-environment:
+    covered_by: [azure-container-apps-a, azure-container-apps-b]
+    note: the named environment pdt-shared/pdt-eastus2 must survive every destroy
+  no-auto-created-side-resources:
+    covered_by: [lifecycle]
+    note: the empty-account check after the last destroy catches anything the platform added
+  destroy-prints-then-asks:
+    uncovered: the runner passes --yes and does not read the plan
+  guide-the-user:
+    uncovered: needs a missing tool, login, or permission; CI has all three in place
+  schedules-translate-to-the-provider:
+    covered_by: [lifecycle]
+    note: a translation error fails the deploy
