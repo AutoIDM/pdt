@@ -13,22 +13,22 @@ import subprocess
 from pdt import config, console
 from pdt.deploy import confirm
 from pdt.deploy_aws import (
-    COMMON_ACTIONS, SCHEDULE_GROUP, aws_schedule_expression,
+    COMMON_ACTIONS, aws_schedule_expression,
     aws_settings, clients_for, cost_estimate, delete_log_group, delete_role,
     delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     deployer_store, ensure_session, ensure_store, has_managed_tag, iam_tags, not_found,
     delete_schedule_group, other_schedules, preflight, resource_exists,
-    store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
+    schedule_group, store_cost, store_exists, store_statements, store_url,
+    with_role_propagation_retry,
 )
 from pdt.deploy_common import (
     CostEstimate, fail, gather_secrets, image_action, stage_build_context,
-    store_kept_line, store_name, store_plan_lines, warn_if_locked,
+    resource_name, resource_prefix, store_kept_line, store_name, store_plan_lines,
+    warn_if_locked,
     write_dockerfile,
 )
 
-CLUSTER = "pdt"
-REPOSITORY = "pdt"
 TASK_CPU = "256"
 TASK_MEMORY = "512"
 TASK_ARCHITECTURE = "ARM64"
@@ -66,14 +66,22 @@ FARGATE_ACTIONS = [
 DEPLOYER_ACTIONS = sorted(COMMON_ACTIONS + FARGATE_ACTIONS)
 
 
+def cluster_name() -> str:
+    return resource_prefix()
+
+
+def repository_name() -> str:
+    return resource_prefix()
+
+
 def resource_names(app_name: str) -> dict[str, str]:
-    base = f"pdt-{app_name}"
+    base = resource_name(app_name)
     return {
         "family": base,
         "schedule": base,
         "secret": f"{base}-env",
         "log_group": f"/ecs/{base}",
-        "legacy_log_group": f"/pdt/{app_name}",
+        "legacy_log_group": f"/{resource_prefix()}/{app_name}",
         "execution_role": f"{base}-execution",
         "task_role": f"{base}-task",
         "scheduler_role": f"{base}-scheduler",
@@ -118,13 +126,13 @@ def default_network(ec2) -> tuple[list[str], str]:
 
 def ensure_repository(ecr) -> str:
     try:
-        repos = ecr.describe_repositories(repositoryNames=[REPOSITORY])["repositories"]
+        repos = ecr.describe_repositories(repositoryNames=[repository_name()])["repositories"]
         return repos[0]["repositoryUri"]
     except Exception as exc:
         if not not_found(exc):
             raise
     repo = ecr.create_repository(
-        repositoryName=REPOSITORY,
+        repositoryName=repository_name(),
         imageScanningConfiguration={"scanOnPush": True},
         encryptionConfiguration={"encryptionType": "AES256"},
         tags=iam_tags({"shared": "true"}),
@@ -133,12 +141,12 @@ def ensure_repository(ecr) -> str:
 
 
 def ensure_cluster(ecs) -> str:
-    response = ecs.describe_clusters(clusters=[CLUSTER])
+    response = ecs.describe_clusters(clusters=[cluster_name()])
     active = [item for item in response.get("clusters", []) if item.get("status") == "ACTIVE"]
     if active:
         return active[0]["clusterArn"]
     created = ecs.create_cluster(
-        clusterName=CLUSTER,
+        clusterName=cluster_name(),
         capacityProviders=["FARGATE"],
         tags=tags_list({"shared": "true"}),
     )
@@ -154,7 +162,7 @@ def ensure_roles(iam, names: dict[str, str], account: str, region: str,
             {"Effect": "Allow",
              "Action": ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer",
                         "ecr:BatchGetImage"],
-             "Resource": f"arn:aws:ecr:{region}:{account}:repository/{REPOSITORY}"},
+             "Resource": f"arn:aws:ecr:{region}:{account}:repository/{repository_name()}"},
             {"Effect": "Allow",
              "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
              "Resource": f"arn:aws:logs:{region}:{account}:log-group:{names['log_group']}:*"},
@@ -257,7 +265,7 @@ def build_and_push(app: dict, image: str, ecr) -> str:
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     images = ecr.describe_images(
-        repositoryName=REPOSITORY, imageIds=[{"imageTag": image.rsplit(":", 1)[1]}])
+        repositoryName=repository_name(), imageIds=[{"imageTag": image.rsplit(":", 1)[1]}])
     return images["imageDetails"][0]["imageDigest"]
 
 
@@ -267,7 +275,7 @@ def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(
-            recent_stream_seconds(clients["logs"], names["log_group"])
+            recent_stream_seconds(logs, names["log_group"])
             if schedule_exists else None)
         seconds = max(seconds, FARGATE_MIN_SECONDS)
         vcpu = int(TASK_CPU) / 1024
@@ -306,7 +314,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     cron = config.cron_expression(app["schedule"])
     expression = aws_schedule_expression(cron)
     payload = json.dumps(gather_secrets(app), sort_keys=True)
-    image = f"{account}.dkr.ecr.{region}.amazonaws.com/{REPOSITORY}:{names['image_tag']}"
+    image = f"{account}.dkr.ecr.{region}.amazonaws.com/{repository_name()}:{names['image_tag']}"
     bucket = store_name(account)
     store = deployer_store(app, session, account) if app["storage"] else None
 
@@ -316,11 +324,11 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     subnets, security_group = default_network(clients["ec2"])
     schedule_exists = resource_exists(
         clients["scheduler"], "get_schedule",
-        Name=names["schedule"], GroupName=SCHEDULE_GROUP)
+        Name=names["schedule"], GroupName=schedule_group())
     secret_exists = resource_exists(
         clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
     actions = [
-        f"reconcile shared ECR repository {REPOSITORY} and ECS cluster {CLUSTER}",
+        f"reconcile shared ECR repository {repository_name()} and ECS cluster {cluster_name()}",
         image_action(app, f"build and push Docker image {image} ({DOCKER_PLATFORM})"),
         ("update" if secret_exists else "create")
         + f" Secrets Manager secret {names['secret']}",
@@ -375,7 +383,7 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, target)
     console.done(f"Deployed {app['name']}.")
-    console.field("Run it once", f"pdt aws ecs run-task --cluster {CLUSTER} "
+    console.field("Run it once", f"pdt aws ecs run-task --cluster {cluster_name()} "
                   f"--task-definition {names['family']} --launch-type FARGATE "
                   f"--network-configuration 'awsvpcConfiguration={{subnets=[{subnets[0]}],"
                   f"securityGroups=[{security_group}],assignPublicIp=ENABLED}}' --region {region}")
@@ -384,19 +392,19 @@ def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
 
 
 def cluster_unused_after(ecs, family: str) -> bool:
-    clusters = ecs.describe_clusters(clusters=[CLUSTER]).get("clusters", [])
+    clusters = ecs.describe_clusters(clusters=[cluster_name()]).get("clusters", [])
     if not any(item.get("status") == "ACTIVE" for item in clusters):
         return False
-    if ecs.list_tasks(cluster=CLUSTER).get("taskArns"):
+    if ecs.list_tasks(cluster=cluster_name()).get("taskArns"):
         return False
     families = ecs.list_task_definition_families(
-        familyPrefix="pdt-", status="ACTIVE").get("families", [])
+        familyPrefix=f"{resource_prefix()}-", status="ACTIVE").get("families", [])
     return all(item == family for item in families)
 
 
 def repository_unused_after(ecr, image_tag: str) -> bool:
     try:
-        images = ecr.list_images(repositoryName=REPOSITORY,
+        images = ecr.list_images(repositoryName=repository_name(),
                                  filter={"tagStatus": "TAGGED"}).get("imageIds", [])
     except Exception as exc:
         if not not_found(exc):
@@ -414,7 +422,7 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     names = resource_names(app["name"])
     schedule_exists = resource_exists(
         clients["scheduler"], "get_schedule",
-        Name=names["schedule"], GroupName=SCHEDULE_GROUP)
+        Name=names["schedule"], GroupName=schedule_group())
     task_arns = clients["ecs"].list_task_definitions(
         familyPrefix=names["family"], status="ACTIVE").get("taskDefinitionArns", [])
     secret_exists = resource_exists(
@@ -430,7 +438,7 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
     actions += [
         f"delete tagged log group {names['log_group']}",
         "delete tagged per-app IAM roles",
-        f"delete image tag {names['image_tag']} from ECR repository {REPOSITORY}",
+        f"delete image tag {names['image_tag']} from ECR repository {repository_name()}",
     ]
     legacy_groups = clients["logs"].describe_log_groups(
         logGroupNamePrefix=names["legacy_log_group"]).get("logGroups", [])
@@ -440,13 +448,13 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         actions.append(f"delete tagged log group {names['legacy_log_group']} (older name)")
     others = other_schedules(clients["scheduler"], names["schedule"])
     if others == []:
-        actions.append(f"delete schedule group {SCHEDULE_GROUP} (no other apps use it)")
+        actions.append(f"delete schedule group {schedule_group()} (no other apps use it)")
     cluster_unused = cluster_unused_after(clients["ecs"], names["family"])
     if cluster_unused:
-        actions.append(f"delete ECS cluster {CLUSTER} (no other apps use it)")
+        actions.append(f"delete ECS cluster {cluster_name()} (no other apps use it)")
     repository_unused = repository_unused_after(clients["ecr"], names["image_tag"])
     if repository_unused:
-        actions.append(f"delete ECR repository {REPOSITORY} (no other apps use it)")
+        actions.append(f"delete ECR repository {repository_name()} (no other apps use it)")
     bucket = store_name(account)
     store = deployer_store(app, session, account) if app["storage"] else None
     store_present = store_exists(clients["s3"], bucket) if store else False
@@ -458,7 +466,7 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
 
     if schedule_exists:
         clients["scheduler"].delete_schedule(
-            Name=names["schedule"], GroupName=SCHEDULE_GROUP)
+            Name=names["schedule"], GroupName=schedule_group())
     ecs = clients["ecs"]
     for arn in task_arns:
         tags = ecs.list_tags_for_resource(resourceArn=arn).get("tags", [])
@@ -473,16 +481,16 @@ def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
         delete_role(iam, role)
     try:
         clients["ecr"].batch_delete_image(
-            repositoryName=REPOSITORY, imageIds=[{"imageTag": names["image_tag"]}])
+            repositoryName=repository_name(), imageIds=[{"imageTag": names["image_tag"]}])
     except Exception as exc:
         if not not_found(exc):
             raise
     if others == []:
         delete_schedule_group(clients["scheduler"])
     if cluster_unused:
-        ecs.delete_cluster(cluster=CLUSTER)
+        ecs.delete_cluster(cluster=cluster_name())
     if repository_unused:
-        clients["ecr"].delete_repository(repositoryName=REPOSITORY, force=True)
+        clients["ecr"].delete_repository(repositoryName=repository_name(), force=True)
     console.done(f"Removed {app['name']} from account {account} ({region}).")
     if store_present:
         console.say(store_kept_line(f"bucket {bucket}", store.usage()[0], app["name"]))

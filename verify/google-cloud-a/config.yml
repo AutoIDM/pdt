@@ -3,4 +3,4 @@ config:
   greeting: Hello from pdt.
 env:
   required: [PDT_SMOKE_TOKEN]
-  optional: []
+  optional: [PDT_VERIFY_OPTIONAL]

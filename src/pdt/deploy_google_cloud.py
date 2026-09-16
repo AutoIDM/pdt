@@ -57,7 +57,7 @@ from pdt.deploy import confirm
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action,
     stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
-    warn_if_locked, write_dockerfile)
+    resource_name, resource_prefix, warn_if_locked, write_dockerfile)
 from pdt import storage_cli
 from pdt.utils import email_auth
 from pdt.utils.storage import Store
@@ -128,7 +128,7 @@ def read_json_or_none(*args: str):
         return json.loads(proc.stdout or "null")
     detail = proc.stderr.strip()
     lowered = detail.lower()
-    if "not found" in lowered or "not_found" in lowered:
+    if "not found" in lowered or "not_found" in lowered or "cannot find" in lowered:
         return None
     if detail:
         console.say(detail)
@@ -137,6 +137,11 @@ def read_json_or_none(*args: str):
 
 def list_json(*args: str) -> list:
     return json.loads(run_quiet(*args, "--format=json") or "[]")
+
+
+def service_account_or_none(project: str, email: str) -> dict | None:
+    accounts = list_json("iam", "service-accounts", "list", "--project", project)
+    return next((account for account in accounts if account.get("email") == email), None)
 
 
 def managed_by_pdt(resource: dict | None) -> bool:
@@ -275,7 +280,7 @@ def project_region(app: dict) -> tuple[str, str]:
 
 
 def secret_id(app_name: str) -> str:
-    return f"pdt-{app_name}-env"
+    return f"{resource_name(app_name)}-env"
 
 
 def store_bucket(project: str) -> str:
@@ -288,7 +293,7 @@ def store_url(bucket: str, app_name: str) -> str:
 
 def store_condition(bucket: str, app_name: str) -> str:
     expression = f'resource.name.startsWith("projects/_/buckets/{bucket}/objects/{app_name}/")'
-    return f"expression={expression},title=pdt-{app_name}"
+    return f"expression={expression},title={resource_name(app_name)}"
 
 
 def deployer_store(project: str, app_name: str) -> Store:
@@ -303,7 +308,7 @@ def store_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
     for binding in policy.get("bindings") or []:
         condition = binding.get("condition") or {}
         if (binding.get("role") == STORE_ROLE
-                and condition.get("title") == f"pdt-{app_name}"
+                and condition.get("title") == resource_name(app_name)
                 and f"serviceAccount:{sa}" in (binding.get("members") or [])):
             return True
     return False
@@ -328,14 +333,15 @@ def scheduler_owned(resource: dict | None, app_name: str, project: str,
     target = resource.get("httpTarget") or {}
     token = target.get("oauthToken") or {}
     expected_uri = (f"https://{region}-run.googleapis.com/apis/run.googleapis.com"
-                    f"/v1/namespaces/{project}/jobs/pdt-{app_name}:run")
+                    f"/v1/namespaces/{project}/jobs/{resource_name(app_name)}:run")
     return (resource.get("description") in (None, "")
             and target.get("uri") == expected_uri
             and token.get("serviceAccountEmail") == service_account)
 
 
 def service_account_owned(resource: dict | None) -> bool:
-    return resource is not None and resource.get("displayName") == "pdt job runner"
+    return resource is not None and resource.get("displayName") == (
+        f"{resource_prefix()} job runner")
 
 
 def image_name(image: dict) -> str:
@@ -354,6 +360,13 @@ def run_job_identity(run_job: dict) -> tuple[str, str]:
         if index + 1 < len(parts):
             region = parts[index + 1]
     return value.rstrip("/").rsplit("/", 1)[-1], region
+
+
+def same_namespace_job(run_job: dict) -> bool:
+    if not os.environ.get("PDT_RESOURCE_NAMESPACE", "").strip():
+        return True
+    name, _region = run_job_identity(run_job)
+    return name.startswith(f"{resource_prefix()}-")
 
 
 def needs_oauth_cache_updates(values: dict) -> bool:
@@ -541,11 +554,11 @@ def deploy(app: dict, assume_yes: bool) -> int:
     timezone = app["timezone"]
     values = gather_secrets(app)
     oauth_cache_updates = needs_oauth_cache_updates(values)
-    job = f"pdt-{name}"
-    repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
+    job = resource_name(name)
+    repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or resource_prefix()
     image = f"{region}-docker.pkg.dev/{project}/{repo}/{name}:latest"
     sa = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() \
-        or f"pdt-runner@{project}.iam.gserviceaccount.com"
+        or f"{resource_prefix()}-runner@{project}.iam.gserviceaccount.com"
     bucket = store_bucket(project)
     store = deployer_store(project, name) if app["storage"] else None
 
@@ -555,9 +568,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
         "--location", region, "--project", project)
     require_managed(repository, f"Artifact Registry repository {repo}")
     repo_exists = repository is not None
-    service_account = read_json_or_none(
-        "iam", "service-accounts", "describe", sa, "--project", project)
-    default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
+    service_account = service_account_or_none(project, sa)
+    default_sa = f"{resource_prefix()}-runner@{project}.iam.gserviceaccount.com"
     if (service_account is not None and sa == default_sa
             and not service_account_owned(service_account)):
         fail(f"service account {sa} exists but is not managed by PDT")
@@ -619,11 +631,11 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.step(f"building image {image}")
     build_image(app, image, project)
     if not sa_exists:
-        if not sa.startswith("pdt-runner@"):
+        if not sa.startswith(f"{resource_prefix()}-runner@"):
             fail(f"CLOUD_RUN_SERVICE_ACCOUNT {sa} does not exist in project {project}")
         console.step(f"creating service account {sa}")
-        run_quiet("iam", "service-accounts", "create", "pdt-runner",
-                  "--project", project, "--display-name", "pdt job runner",
+        run_quiet("iam", "service-accounts", "create", f"{resource_prefix()}-runner",
+                  "--project", project, "--display-name", f"{resource_prefix()} job runner",
                   "--description", "Managed by PDT")
     if store:
         if not bucket_exists:
@@ -695,12 +707,12 @@ def destroy(app: dict, assume_yes: bool) -> int:
     project, region = project_region(app)
     project = preflight(app, project, assume_yes)
     ensure_apis(project, assume_yes, DESTROY_APIS)
-    job = f"pdt-{name}"
-    repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
+    job = resource_name(name)
+    repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or resource_prefix()
     image = f"{region}-docker.pkg.dev/{project}/{repo}/{name}"
     sa = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() \
-        or f"pdt-runner@{project}.iam.gserviceaccount.com"
-    default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
+        or f"{resource_prefix()}-runner@{project}.iam.gserviceaccount.com"
+    default_sa = f"{resource_prefix()}-runner@{project}.iam.gserviceaccount.com"
 
     console.status(f"Checking current state in project {project} ({region})...")
     scheduler = read_json_or_none(
@@ -735,23 +747,23 @@ def destroy(app: dict, assume_yes: bool) -> int:
     other_images = [item for item in images if image_name(item) != name]
     regional_jobs = list_json("run", "jobs", "list", "--region", region,
                               "--project", project)
-    other_regional_jobs = [
-        item for item in regional_jobs if run_job_identity(item)[0] != job
-    ]
+    other_regional_jobs = [item for item in regional_jobs
+                           if run_job_identity(item)[0] != job
+                           and same_namespace_job(item)]
     project_jobs = list_json("run", "jobs", "list", "--project", project)
     other_project_jobs = []
     for item in project_jobs:
         item_name, item_region = run_job_identity(item)
         if item_name == job and item_region == region:
             continue
-        other_project_jobs.append(item)
+        if same_namespace_job(item):
+            other_project_jobs.append(item)
     other_jobs = [
         run_job_identity(item)[0]
         for item in other_project_jobs
         if managed_by_pdt(item) and run_job_identity(item)[0]
     ]
-    service_account = read_json_or_none(
-        "iam", "service-accounts", "describe", sa, "--project", project)
+    service_account = service_account_or_none(project, sa)
     bucket = store_bucket(project)
     store = deployer_store(project, name) if app["storage"] else None
     store_present = store is not None and read_json_or_none(

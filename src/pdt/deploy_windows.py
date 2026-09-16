@@ -33,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console
 from pdt.deploy import confirm
-from pdt.deploy_common import CostEstimate
+from pdt.deploy_common import CostEstimate, resource_name
 
 
 class WindowsDeployError(Exception):
@@ -158,7 +158,7 @@ def storage_folder(app_name: str) -> Path:
 
 
 def _task_name(app_name: str) -> str:
-    name = f"pdt-{app_name}"
+    name = resource_name(app_name)
     if any(char in FORBIDDEN_TASK_NAME_CHARS or ord(char) < 32 for char in name):
         raise WindowsDeployError(
             f"app name {app_name!r} contains characters Windows forbids in task names")

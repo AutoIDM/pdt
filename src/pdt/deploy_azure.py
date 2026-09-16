@@ -62,7 +62,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_plan_lines,
-    store_suffix)
+    resource_prefix, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
@@ -77,7 +77,6 @@ ENVIRONMENT_TYPE = "Microsoft.App/managedEnvironments"
 PRICES_API = "https://prices.azure.com/api/retail/prices"
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
-STORE_GROUP = "pdt-data"
 STORE_ROLE = "Storage Blob Data Contributor"
 STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
 STORE_METADATA_ARGS = tuple(
@@ -177,7 +176,7 @@ def azure_settings(app: dict) -> dict:
         or "eastus")
     resource_group = str(
         platform.get("resource_group")
-        or os.environ.get("PDT_AZURE_RESOURCE_GROUP") or "pdt")
+        or os.environ.get("PDT_AZURE_RESOURCE_GROUP") or resource_prefix())
     return {
         "subscription": subscription,
         "region": region,
@@ -187,12 +186,12 @@ def azure_settings(app: dict) -> dict:
             or os.environ.get("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT") or ""), region),
         "identity": str(
             os.environ.get("PDT_AZURE_MANAGED_IDENTITY")
-            or "pdt-runner"),
+            or f"{resource_prefix()}-runner"),
         # Log Analytics workspace names must be 4 to 63 characters, so this
         # default cannot be the bare "pdt" the other shared names start from.
         "workspace": str(
             os.environ.get("PDT_AZURE_LOG_WORKSPACE")
-            or "pdt-logs"),
+            or f"{resource_prefix()}-logs"),
         **shared_names(subscription, resource_group),
     }
 
@@ -351,7 +350,7 @@ def resource_id(settings: dict[str, str], provider: str, kind: str, name: str) -
 
 
 def secret_name(app_name: str) -> str:
-    return clean_name(f"pdt-{app_name}-env", 127)
+    return clean_name(f"{resource_prefix()}-{app_name}-env", 127)
 
 
 def set_key_vault_secret(vault: str, name: str, payload: str,
@@ -709,14 +708,16 @@ def report_shared_kept(rg: str, others: list[str]) -> None:
 
 def store_settings(settings: dict[str, str]) -> dict[str, str]:
     suffix = store_suffix(settings["subscription"])
+    prefix = resource_prefix()
+    group = "pdt-data" if prefix == "pdt" else f"{prefix}-data"
     account = f"pdtdata{suffix}"
-    container = f"pdt-data-{suffix}"
+    container = f"{group}-{suffix}"
     return {
-        "group": STORE_GROUP,
+        "group": group,
         "account": account,
         "container": container,
         "container_id": (
-            f"/subscriptions/{settings['subscription']}/resourceGroups/{STORE_GROUP}"
+            f"/subscriptions/{settings['subscription']}/resourceGroups/{group}"
             f"/providers/Microsoft.Storage/storageAccounts/{account}"
             f"/blobServices/default/containers/{container}"),
     }
