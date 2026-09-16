@@ -6,6 +6,19 @@ variables:
   # unless deploy delivered it as PDT_ENV_JSON.
   PDT_SMOKE_TOKEN: pdt-verify
 
+# The files a cloud run can prove anything about. A merge request or master
+# pipeline that changes none of them (docs, the Claude tasks, the unit tests)
+# gets no cloud job, so the per-provider queue stays free for the ones that do.
+# A schedule always runs.
+.verify-paths:
+  changes:
+    - src/pdt/**/*
+    - verify/**/*
+    - scripts/**/*
+    - pyproject.toml
+    - uv.lock
+    - .gitlab-ci.yml
+
 .verify:
   stage: verify
   needs: [build]
@@ -17,7 +30,9 @@ variables:
       junit: verify-*.xml
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: !reference [.verify-paths, changes]
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
+      changes: !reference [.verify-paths, changes]
     - if: $CI_PIPELINE_SOURCE == "schedule"
 
 .verify:unix:
@@ -129,6 +144,7 @@ verify:windows:
 # Everything the matrix can prove without a cloud account.
 verify:check:
   stage: test
+  needs: []
   script:
     - uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --check
     - PDT_PROJECT=verify uv run pdt validate
