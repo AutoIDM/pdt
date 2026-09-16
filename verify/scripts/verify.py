@@ -145,6 +145,9 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
     check("account is empty after destroy", empty_check)
 
 
+SCENARIOS = {"lifecycle": scenario}
+
+
 def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
     steps: list[Step] = []
     cleanup = False
