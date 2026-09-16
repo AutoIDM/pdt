@@ -96,7 +96,7 @@ verify:google-cloud:
   # Without the account's variables the job cannot log in. It then waits as a
   # manual job, so the pipeline shows the gap instead of failing at login.
   rules:
-    - if: $GOOGLE_CLOUD_PROJECT == null
+    - if: $GOOGLE_CLOUD_PROJECT == null || $GOOGLE_APPLICATION_CREDENTIALS == null
       when: manual
       allow_failure: true
     - !reference [.verify, rules]
