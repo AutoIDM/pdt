@@ -23,10 +23,13 @@ can run ``git diff origin/<target>...origin/<branch>`` without fetching.
 A pipeline the project webhook started (through the trigger API) is about
 one merge request. The webhook's custom template passes the MR number as
 the pipeline variable MR_IID, and such a run looks at that MR alone. Which
-events get a pipeline at all is decided in .gitlab-ci.yml (``workflow``
-rules on the MR_ACTION and MR_DRAFT_* variables from the same template):
-only the MR opening or leaving Draft. A schedule or web run has no MR_IID
-and sweeps every open MR, which also picks up a changed diff.
+events run this task at all is decided by the score-mrs job rules in
+.gitlab-ci.yml (on the MR_ACTION and MR_DRAFT_* variables from the same
+template): only the MR opening or leaving Draft. Every other event runs the
+empty score-mrs-skip job, because a trigger call that creates no pipeline
+counts as a webhook failure and GitLab disables the hook. A schedule or web
+run has no MR_IID and sweeps every open MR, which also picks up a changed
+diff.
 
 Environment:
   GITLAB_TOKEN   project access token with ``api``. Merging into the default

@@ -23,19 +23,6 @@ stages:
   - verify
   - tasks
 
-# The score-mrs webhook calls the pipeline trigger API for every merge
-# request event, and its custom template passes the event's action and
-# Draft change as variables. These rules let a trigger pipeline exist only
-# when the MR opens or leaves Draft; for any other event (a push, a rebase,
-# a label, an edit, a close) no pipeline is created at all. Every other
-# pipeline source is untouched.
-workflow:
-  rules:
-    - if: $CI_PIPELINE_SOURCE != "trigger"
-    - if: $MR_ACTION == "open"
-    - if: $MR_ACTION == "reopen"
-    - if: $MR_ACTION == "update" && $MR_DRAFT_BEFORE == "true" && $MR_DRAFT_AFTER == "false"
-
 include:
   - local: verify/.gitlab-ci.yml
 
@@ -128,10 +115,10 @@ rebase-mrs:
 # Runs on a master pipeline whose `mode` variable is score_mrs: a project
 # webhook on merge request events triggers one (see the handbook, "Claude
 # Code in CI"), and a daily schedule sweeps everything. The webhook's template
-# sets MR_IID, so a webhook run scores that MR alone; the `workflow` rules at
-# the top decide which events get a pipeline. A web run with mode=score_mrs
-# lists what it would do and changes nothing unless the form also sets
-# DRY_RUN=false.
+# sets MR_IID, MR_ACTION, MR_DRAFT_BEFORE and MR_DRAFT_AFTER, so a webhook
+# run scores that MR alone, and only when the event is the MR opening or
+# leaving Draft. A web run with mode=score_mrs lists what it would do and
+# changes nothing unless the form also sets DRY_RUN=false.
 score-mrs:
   extends: .claude-task
   needs: []
@@ -139,7 +126,17 @@ score-mrs:
   variables:
     CLAUDE_TASK: score-mrs
   rules:
-    - if: $CI_PIPELINE_SOURCE == "trigger" && $mode == "score_mrs"
+    # The three merge request events that score: the MR opens, reopens, or
+    # leaves Draft. The webhook's template renders a missing Draft change as
+    # the word null, so a push, a rebase, a label, an edit, or a close never
+    # matches; those events run score-mrs-skip instead.
+    - if: $CI_PIPELINE_SOURCE == "trigger" && $mode == "score_mrs" && $MR_ACTION == "open"
+      variables:
+        DRY_RUN: "false"
+    - if: $CI_PIPELINE_SOURCE == "trigger" && $mode == "score_mrs" && $MR_ACTION == "reopen"
+      variables:
+        DRY_RUN: "false"
+    - if: $CI_PIPELINE_SOURCE == "trigger" && $mode == "score_mrs" && $MR_ACTION == "update" && $MR_DRAFT_BEFORE == "true" && $MR_DRAFT_AFTER == "false"
       variables:
         DRY_RUN: "false"
     - if: $CI_PIPELINE_SOURCE == "schedule" && $mode == "score_mrs"
@@ -149,6 +146,36 @@ score-mrs:
     - if: $CI_PIPELINE_SOURCE == "web" && $mode == "score_mrs"
       variables:
         CLAUDE_TASK_ARGS: "--dry-run"
+
+# Every other merge request event the webhook sends (a push, a rebase, a
+# label, an edit, an approval, a close, a merge) lands here. The pipeline
+# has to exist: the trigger API answers HTTP 400 when no job matches or
+# workflow rules filter the pipeline out, GitLab counts every 4xx as a
+# webhook failure, disables the hook after four in a row, and drops the
+# events that arrive while it is disabled. So this job runs instead, does
+# nothing, and clones nothing. Its rules mirror score-mrs, negated. Do not
+# filter trigger pipelines with workflow rules.
+score-mrs-skip:
+  stage: tasks
+  image: alpine:3.20
+  needs: []
+  cache: []
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - echo "Merge request !$MR_IID sent a $MR_ACTION event. Nothing to score."
+  rules:
+    - if: $CI_PIPELINE_SOURCE != "trigger"
+      when: never
+    - if: $mode != "score_mrs"
+      when: never
+    - if: $MR_ACTION == "open"
+      when: never
+    - if: $MR_ACTION == "reopen"
+      when: never
+    - if: $MR_ACTION == "update" && $MR_DRAFT_BEFORE == "true" && $MR_DRAFT_AFTER == "false"
+      when: never
+    - when: on_success
 
 # Scheduled and manual pipelines pick a job with the `mode` variable, so each
 # schedule sets mode to the job it wants. A schedule runs armed; a web run is a
