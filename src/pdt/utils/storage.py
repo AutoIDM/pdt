@@ -8,14 +8,31 @@ Windows scheduled task, gets it set). Without it the folder is
 behaves the same as a deployed job.
 
 Inside the folder pdt reserves `runs/` and `state/`. `state/lock` is
-the lock that pull takes and push releases.
+the lock that pull takes and push or abort releases.
 
     from pdt.utils import storage
+    with storage.sync() as run:
+        ... read and write files under run.state, write results to run.output ...
+
+sync pulls state/ under the lock, uploads run.output to this run's folder,
+and pushes state/ back when the block ends without error. An exception
+uploads run.output, releases the lock without touching state/, and
+propagates. The same steps by hand:
+
     s = storage.store()
     lease = s.pull("state/", Path(".pdt-state"))
-    ... work ...
+    try:
+        ... work ...
+    except BaseException:
+        s.abort(lease)
+        raise
     s.push(Path(".pdt-state"), "state/", lease)
     s.push(Path("artifacts"), s.run_folder() + "artifacts/")
+
+A run that dies without releasing the lock blocks the next run until the
+lock's TTL passes, unless the next run can tell the holder is gone: it
+carries the same PDT_RUN_ID, or it started on this same machine and its
+process no longer exists. `pdt storage <app> unlock` releases a lock by hand.
 """
 
 from __future__ import annotations
@@ -23,7 +40,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
+import sys
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
@@ -52,7 +72,63 @@ class Lease:
     lock: dict
 
 
+@dataclass(frozen=True)
+class Run:
+    """What `sync` hands the app: the local folders for this run, the remote
+    folder its output lands in, and the store and lease behind them."""
+
+    store: Store
+    state: Path
+    output: Path
+    folder: str
+    lease: Lease
+
+
 RUN_ID = os.environ.get("PDT_RUN_ID", "").strip() or uuid.uuid4().hex[:8]
+HOST = socket.gethostname()
+
+
+def _boot_id() -> str:
+    """Tells apart two machines that share a hostname, where the OS offers it."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return ""
+
+
+BOOT_ID = _boot_id()
+
+
+def _process_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.GetLastError() == 5  # ERROR_ACCESS_DENIED: exists, not ours
+        code = ctypes.c_ulong()
+        try:
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def reclaimable(held: dict) -> bool:
+    """Whether the run that wrote this lock body is known to be gone: it is
+    this same run started again, or it ran on this machine and its process
+    has ended."""
+    if held.get("run") == RUN_ID:
+        return True
+    same_machine = held.get("host") == HOST and held.get("boot", "") == BOOT_ID
+    pid = held.get("pid")
+    return same_machine and isinstance(pid, int) and not _process_alive(pid)
 
 
 def root() -> str:
@@ -65,6 +141,12 @@ def root() -> str:
 
 def store(credentials=None) -> Store:
     return Store(root(), credentials)
+
+
+def sync(local: Path | None = None, lock_ttl: timedelta = LOCK_TTL,
+         push_state_on_error: bool = False):
+    """`store().sync(...)`: the one call most apps need. See Store.sync."""
+    return store().sync(local, lock_ttl, push_state_on_error)
 
 
 class Backend:
@@ -292,29 +374,46 @@ class Store:
                  if entry.get("type") == "file"]
         return len(files), sum(entry.get("size") or 0 for entry in files)
 
-    def held_lock(self, ttl: timedelta = LOCK_TTL) -> dict | None:
-        """The lock body while a run younger than ttl still holds the state."""
+    def read_lock(self) -> dict | None:
+        """The lock body as written, however old, or None when there is none."""
         try:
             with self.open(LOCK) as f:
                 held = json.loads(f.read())
-            started = datetime.fromisoformat(held["started"])
+            datetime.fromisoformat(held["started"])
         except (OSError, ValueError, KeyError, TypeError):
             return None
-        if datetime.now(timezone.utc) - started >= ttl:
+        return held
+
+    def held_lock(self, ttl: timedelta = LOCK_TTL) -> dict | None:
+        """The lock body while a run younger than ttl still holds the state."""
+        held = self.read_lock()
+        if held is None:
+            return None
+        if datetime.now(timezone.utc) - datetime.fromisoformat(held["started"]) >= ttl:
             return None
         return held
+
+    def unlock(self) -> None:
+        """Release the state lock whoever holds it. For a person who knows the
+        run is dead; a run releases its own lock with push or abort."""
+        if self.read_lock() is not None:
+            self.backend().delete(LOCK)
 
     def pull(self, remote: str, local: Path, lock_ttl: timedelta = LOCK_TTL) -> Lease:
         backend = self.backend()
         lock = self._take_lock(backend, lock_ttl) if remote.startswith("state") else {}
-        versions = backend.versions(remote)
-        versions.pop(LOCK, None)
-        local.mkdir(parents=True, exist_ok=True)
-        fs = backend.dirfs()
-        for path in versions:
-            target = local / path[len(remote):]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            fs.get_file(path, str(target))
+        try:
+            versions = backend.versions(remote)
+            versions.pop(LOCK, None)
+            local.mkdir(parents=True, exist_ok=True)
+            fs = backend.dirfs()
+            for path in versions:
+                target = local / path[len(remote):]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                fs.get_file(path, str(target))
+        except BaseException:
+            self._release_lock(backend, Lease({}, lock))
+            raise
         return Lease(versions, lock)
 
     def push(self, local: Path, remote: str, lease: Lease | None = None) -> None:
@@ -329,18 +428,76 @@ class Store:
                 fs.pipe_file(path, data)
             else:
                 backend.put_if_version(path, data, lease.versions.get(path))
-        if lease is not None and lease.lock:
-            backend.delete(LOCK)
+        if lease is not None:
+            self._release_lock(backend, lease)
+
+    def abort(self, lease: Lease) -> None:
+        """Give up a pull without pushing: release the lock and leave the
+        remote files as they were."""
+        self._release_lock(self.backend(), lease)
+
+    @contextmanager
+    def sync(self, local: Path | None = None, lock_ttl: timedelta = LOCK_TTL,
+             push_state_on_error: bool = False):
+        """Pull state/ into local/state under the lock and yield a Run.
+
+        When the block ends, files under local/output go to this run's
+        folder, then state/ goes back and the lock is released. When the
+        block raises, output still goes up, the lock is released, and the
+        exception propagates; state/ is left as it was, so the next run
+        starts from the last good state. An app whose state is safe to
+        keep at any point (a Meltano bookmark, a rotated OAuth token) sets
+        push_state_on_error so a failed run keeps what it saved. local
+        defaults to .pdt/runs/<run id>/ in the working folder, and is kept.
+        """
+        local = Path(local) if local is not None else Path(".pdt") / "runs" / RUN_ID
+        state, output = local / "state", local / "output"
+        lease = self.pull("state/", state, lock_ttl)
+        run = Run(self, state, output, self.run_folder(), lease)
+        output.mkdir(parents=True, exist_ok=True)
+        try:
+            yield run
+        except BaseException:
+            self._end(run, push_state_on_error)
+            raise
+        self._end(run, True)
+
+    def _end(self, run: Run, push_state: bool) -> None:
+        """Upload the run's output, then push state/ or abort. The lock is
+        released on every path, and a failed upload propagates."""
+        try:
+            if any(file.is_file() for file in run.output.rglob("*")):
+                self.push(run.output, run.folder)
+            if push_state:
+                self.push(run.state, "state/", run.lease)
+        except BaseException:
+            self.abort(run.lease)
+            raise
+        if not push_state:
+            self.abort(run.lease)
 
     def _take_lock(self, backend: Backend, ttl: timedelta) -> dict:
-        lock = {"run": RUN_ID, "started": datetime.now(timezone.utc).isoformat()}
+        lock = {"run": RUN_ID, "host": HOST, "boot": BOOT_ID, "pid": os.getpid(),
+                "started": datetime.now(timezone.utc).isoformat()}
         data = json.dumps(lock).encode()
         if backend.create_if_absent(LOCK, data):
             return lock
         held = self.held_lock(ttl)
-        if held is not None:
+        if held is not None and not reclaimable(held):
             app = self.url.rstrip("/").rsplit("/", 1)[-1]
+            where = f" on {held['host']}" if held.get("host") else ""
             raise StorageLocked(
-                f"another run of {app} started at {held['started']} still holds the state")
+                f"another run of {app} started at {held['started']}{where} still holds "
+                f"the state; if that run is dead, release it with: pdt storage {app} unlock")
         backend.put_if_version(LOCK, data, backend.versions(LOCK)[LOCK])
         return lock
+
+    def _release_lock(self, backend: Backend, lease: Lease) -> None:
+        """Delete the lock only while it is still the one this lease took. A
+        lock another run took over after the TTL passed stays with that run."""
+        if not lease.lock:
+            return
+        held = self.read_lock()
+        if held is not None and (held.get("run"), held.get("started")) == (
+                lease.lock["run"], lease.lock["started"]):
+            backend.delete(LOCK)

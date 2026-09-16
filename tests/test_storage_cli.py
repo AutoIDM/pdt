@@ -38,3 +38,26 @@ def test_storage_turned_off_is_refused(store, capsys):
     out = capsys.readouterr().out
     assert "storage is turned off for my-report" in out
     assert "remove storage: false from my-report/config.yml" in out
+
+
+def test_unlock_with_no_lock_says_so(store, app, capsys):
+    assert storage_cli.run(store, app, ["unlock"], False) == 0
+    assert "nothing to unlock" in capsys.readouterr().out
+
+
+def test_unlock_asks_then_releases_the_lock(store, app, tmp_path, capsys, monkeypatch):
+    store.pull("state/", tmp_path / "local")
+    monkeypatch.setattr("pdt.deploy.confirm", lambda actions, assume_yes: True)
+    assert storage_cli.run(store, app, ["unlock"], False) == 0
+    out = capsys.readouterr().out
+    assert "released the state lock of my-report" in out
+    assert store.read_lock() is None
+
+
+def test_unlock_refused_keeps_the_lock(store, app, tmp_path, capsys, monkeypatch):
+    store.pull("state/", tmp_path / "local")
+    seen = []
+    monkeypatch.setattr("pdt.deploy.confirm", lambda actions, assume_yes: seen.append(actions) or False)
+    assert storage_cli.run(store, app, ["unlock"], False) == 1
+    assert store.read_lock() is not None
+    assert any("release the state lock held by run" in line for line in seen[0])

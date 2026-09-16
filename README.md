@@ -97,7 +97,7 @@ pdt login my-report
 | `pdt secrets APP get` | copy the deployed values into a `.env.<provider>` file |
 | `pdt secrets APP set NAME` | put one value, read from stdin, into the deployed app's secrets |
 | `pdt login APP` | sign in again to the app's cloud provider |
-| `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files |
+| `pdt storage APP ls|get|query|unlock|destroy` | look at, fetch, query, unlock, or delete the app's stored files |
 | `pdt runs APP` | list the deployed app's runs with each run's exit code: the 10 newest, or with `--since 3d` (or `12h`, `2w`, `2026-09-20`, `2026-09-20T14:00`) every run since then, `--span 1d` keeping only the runs within that long after `--since` and `--count N` keeping only the N newest; a run's number is its place among every run pdt can still find, so it stays the same whichever runs print |
 | `pdt logs APP [N]` | read the log of run N as `pdt runs` numbers it; with no N, the newest run, and `--failed` picks the newest failed run instead; `--since`, `--span`, and `--count` limit which runs those two choose from, `--errors` leaves out DEBUG and INFO lines; the last 20 lines print, `--lines N` prints N instead, `--head` prints the first lines instead of the last, and `--full` prints every line |
 | `pdt health [APP]` | show whether each app's last run succeeded; exits 1 when one failed |
@@ -127,19 +127,21 @@ with store.open("report.csv", "wb") as f:
 
 `store.fs()` gives you the full [fsspec](https://filesystem-spec.readthedocs.io/) filesystem, rooted at your app's folder. Output from one run goes under `store.run_folder()`, which names a new `runs/<time>-<id>/` folder each run.
 
-Some apps need files from the last run: a Meltano bookmark, a database. Keep those in one local folder, and copy it down before the work and up after:
+Some apps need files from the last run: a Meltano bookmark, a database. Keep those in the `state` folder that `storage.sync()` hands you, and put anything a person may want to look at afterwards in its `output` folder:
 
 ```python
-from pathlib import Path
 from pdt.utils import storage
 
-store = storage.store()
-lease = store.pull("state/", Path(".pdt-state"))
-# do the work; keep anything the next run needs inside .pdt-state/
-store.push(Path(".pdt-state"), "state/", lease)
+with storage.sync() as run:
+    # do the work; keep anything the next run needs inside run.state/
+    (run.output / "report.csv").write_text("name,count\n")
 ```
 
-`pull` locks the folder, so a second copy of your app cannot run at the same time and mix up the files. `push` checks that nobody else changed them, saves them, and unlocks. If a run crashes, the next one takes over the lock after 30 minutes.
+`sync` copies `state/` down from your app's folder and locks it, so a second copy of your app cannot run at the same time and mix up the files. When the block ends, it uploads `run.output` to this run's `runs/` folder, checks that nobody else changed the state files, saves them, and unlocks. When the block raises, or the run is interrupted, it still uploads `run.output`, unlocks, and leaves `state/` as it was, so the next run starts from the last good state. An app whose state is safe to keep at any point, such as a Meltano bookmark or an OAuth token that rotates on every login, passes `storage.sync(push_state_on_error=True)` so a failed run keeps what it saved. Both local folders live under `.pdt/runs/` in the app folder and stay there for inspection.
+
+The same steps by hand are `store.pull("state/", folder)`, which returns a lease, then `store.push(folder, "state/", lease)` on success or `store.abort(lease)` on failure.
+
+A run that dies without reaching either call leaves the lock behind. The next run takes it over right away when it can tell the holder is gone: the holder ran on the same computer and its process has ended, or it carries the same `PDT_RUN_ID`. Otherwise it waits 30 minutes, or you release the lock yourself with `pdt storage APP unlock`, which asks first.
 
 From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
 

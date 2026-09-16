@@ -353,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
     app = p.add_argument("app", nargs="?",
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
-    p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|destroy [args...]")
+    p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|unlock|destroy [args...]")
     p.set_defaults(func=cmd_storage)
     p = add_parser("runs", help="list a deployed app's recent runs")
     app = p.add_argument("app", nargs="?",
