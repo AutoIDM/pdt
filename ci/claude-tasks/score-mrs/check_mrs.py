@@ -17,8 +17,10 @@ Writes, unless DRY_RUN is anything but the exact word ``false``:
   would differ from the previous score's.
   A simple MR is then merged in the same run, through the gates and the
   merge call select_mrs.py uses for an MR scored earlier, so the MR does not
-  wait for the next sweep. A gate that fails (pipeline still running, a
-  conflict, an open discussion) is logged and the MR waits for the sweep.
+  wait for the next sweep. Only the commit that was scored merges: a push
+  during the run moves the head to commits nobody scored, and the MR waits.
+  A gate that fails (pipeline still running, a conflict, an open
+  discussion) is logged the same way and the MR waits for the sweep.
 
 Verdict printed for the runner: ``ok`` for simple and review; ``needs_human``
 for architectural, so the pipeline shows a warning and the summary lists the
@@ -199,14 +201,18 @@ def post_note(env, iid: int, body: str) -> None:
     api(env, "POST", f"/projects/{env['CI_PROJECT_ID']}/merge_requests/{iid}/notes", {"body": body})
 
 
-def merge_after_score(env, iid: int) -> str:
+def merge_after_score(env, iid: int, scored_sha: str) -> str:
     """Merge a simple MR right after scoring it, when the merge gates pass.
 
     Reads the MR again, because the label write and the pipeline may have
-    changed it since select ran. Returns one phrase for the log and the
-    runner's summary: ``merged``, or why it waits for the daily sweep.
+    changed it since select ran. Only the commit that was scored may merge:
+    a push during the run moves the head to commits nobody scored, so the MR
+    waits for the sweep to score them. Returns one phrase for the log and
+    the runner's summary: ``merged``, or why it waits.
     """
     mr = select_mrs.get_mr(env, iid)
+    if mr.get("sha") != scored_sha:
+        return "not merged: new commits since it was scored"
     blockers = select_mrs.merge_blockers(mr)
     if blockers:
         return f"not merged: {', '.join(blockers)}"
@@ -255,7 +261,7 @@ def main() -> int:
             post_note(env, iid, note_body(item["diff_id"], score, job_url))
             log("posted the score comment")
         if score.tier == "simple":
-            merge_outcome = merge_after_score(env, iid)
+            merge_outcome = merge_after_score(env, iid, str(item.get("head_sha") or ""))
             log(merge_outcome)
     else:
         log("GITLAB_TOKEN or CI_PROJECT_ID is not set; nothing written")

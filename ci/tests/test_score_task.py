@@ -611,6 +611,23 @@ def test_check_says_why_a_simple_mr_waits_for_the_sweep(monkeypatch, capsys):
     assert "not merged: pipeline running" in err
 
 
+def test_check_never_merges_commits_pushed_after_the_score(monkeypatch, capsys):
+    # The head moved (and its pipeline passed) while Claude was reading the
+    # scored commit. Those commits were never floored or read, so no merge.
+    routes = [(("GET", "/labels?search=tier::"), [{"name": "tier::simple"}]),
+              *merge_routes(sha="sha3-pushed", head_pipeline={"status": "success",
+                                                             "sha": "sha3-pushed"}),
+              (("PUT", "/merge_requests/3"), {})]
+    item = item_for_check()
+    assert item["head_sha"] == "sha3"
+    status, err, calls = run_check(monkeypatch, capsys, item,
+                                   verdict("simple", "agree with floor"), routes)
+    assert status == {"status": "ok",
+                      "message": "tier::simple, not merged: new commits since it was scored"}
+    assert not [p for _, p, _ in calls if p.endswith("/merge")]
+    assert calls[-1][1] == "/projects/42/merge_requests/3"  # the read, then it stopped
+
+
 def test_check_reports_a_refused_merge_and_still_scores(monkeypatch, capsys):
     def refuse(request, timeout=0):
         if request.full_url.endswith("/merge"):
