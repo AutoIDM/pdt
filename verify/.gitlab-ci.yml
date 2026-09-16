@@ -147,6 +147,7 @@ verify:check:
   needs: []
   script:
     - uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --check
+    - uv run --no-project --with pyyaml python verify/scripts/coverage.py --check
     - PDT_PROJECT=verify uv run pdt validate
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"

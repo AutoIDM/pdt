@@ -1,0 +1,10 @@
+# Install once with: uvx pre-commit install
+repos:
+  - repo: local
+    hooks:
+      - id: verify-coverage
+        name: verify/coverage.yml names every pdt behavior
+        entry: uv run --no-project --with pyyaml python verify/scripts/coverage.py --check
+        language: system
+        pass_filenames: false
+        files: ^(src/pdt/(cli|config)\.py|verify/)
