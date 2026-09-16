@@ -121,14 +121,19 @@ def describe_json(*args: str):
     return json.loads(proc.stdout or "null")
 
 
+def not_found(detail: str) -> bool:
+    # Cloud Run says "Cannot find job [x]"; the other services say "not found".
+    lowered = detail.lower()
+    return any(marker in lowered for marker in ("not found", "not_found", "cannot find"))
+
+
 def read_json_or_none(*args: str):
     proc = subprocess.run([GCLOUD, *args, "--format=json"], stdin=subprocess.DEVNULL,
                           capture_output=True, text=True)
     if proc.returncode == 0:
         return json.loads(proc.stdout or "null")
     detail = proc.stderr.strip()
-    lowered = detail.lower()
-    if "not found" in lowered or "not_found" in lowered:
+    if not_found(detail):
         return None
     if detail:
         console.say(detail)
