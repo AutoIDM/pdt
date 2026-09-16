@@ -1,5 +1,9 @@
 # One row per deploy target under test. Two apps per provider, so
 # every shared resource is used by more than one app while one is destroyed.
+# The a app is plain. The b app carries the loaded combination: a cron
+# schedule (the run replaces it with a time a few minutes out), storage off,
+# a one_of env group, its own Dockerfile, and a non-UTC timezone where the
+# provider allows one.
 apps:
   - name: aws-fargate-a
     schedule: daily
@@ -7,7 +11,8 @@ apps:
       provider: aws
       region: us-east-1
   - name: aws-fargate-b
-    schedule: daily
+    schedule: "30 6 * * *"
+    timezone: America/New_York
     platform:
       provider: aws
       region: us-east-1
@@ -18,7 +23,7 @@ apps:
       region: eastus2
       resource_group: pdt-verify
   - name: azure-container-apps-b
-    schedule: daily
+    schedule: "30 6 * * *"
     platform:
       provider: azure
       region: eastus2
@@ -29,7 +34,8 @@ apps:
       provider: google-cloud
       region: us-central1
   - name: google-cloud-b
-    schedule: daily
+    schedule: "30 6 * * *"
+    timezone: America/New_York
     platform:
       provider: google-cloud
       region: us-central1
@@ -39,7 +45,7 @@ apps:
     platform:
       provider: windows
   - name: windows-b
-    schedule: daily
+    schedule: "30 6 * * *"
     timezone: local
     platform:
       provider: windows
