@@ -810,6 +810,18 @@ def deployer_store(settings: dict[str, str], app_name: str) -> Store:
     return Store(store_url(store_settings(settings), app_name), AzureCliCredential())
 
 
+def store_usage(deployer: Store) -> tuple[int, int] | None:
+    """None until this login holds the data role, which ensure_store grants."""
+    try:
+        return deployer.usage()
+    except Exception as exc:  # the SDK raises HttpResponseError; tests have no SDK
+        if "AuthorizationPermissionMismatch" not in str(exc):
+            raise
+        console.note("this login cannot read the data store yet; the deploy grants it "
+                     "the role, and the next plan shows the stored data")
+        return None
+
+
 def storage(app: dict, settings: dict[str, str], rest: list[str], assume_yes: bool) -> int:
     return storage_cli.run(deployer_store(settings, app["name"]), app, rest, assume_yes)
 

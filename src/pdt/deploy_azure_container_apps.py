@@ -35,7 +35,7 @@ from pdt.deploy_azure import (
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, run_stream, secret_actions, secret_name,
     secret_state, store_condition, store_cost, store_description, store_exists,
-    store_plan, store_settings, store_url, workspace_resource,
+    store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
     CostEstimate, fail, gather_secrets, image_action, run_build,
@@ -398,7 +398,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     store = store_settings(settings) if app["storage"] else None
     store_present = store_exists(store) if store else False
     deployer = deployer_store(settings, name) if store_present else None
-    usage = (deployer.usage() if deployer else (0, 0)) if store else None
+    usage = (store_usage(deployer) if deployer else (0, 0)) if store else None
 
     actions = ["register required Azure resource providers"]
     actions += environment_actions(settings, environment_exists, logs_exist,
@@ -552,6 +552,13 @@ def release_environment(settings: dict, release: Release) -> None:
         run_quiet("group", "delete", "--name", environment.resource_group, "--yes")
 
 
+def kept_line(store: dict[str, str], deployer, name: str) -> str:
+    usage = store_usage(deployer)
+    if usage is None:
+        return f"kept: {store_description(store)} (data under {name}/)"
+    return store_kept_line(store_description(store), usage[0], name)
+
+
 def destroy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
@@ -603,7 +610,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             destroy_group(settings)
         release_environment(settings, release)
         if deployer:
-            console.say(store_kept_line(store_description(store), deployer.usage()[0], name))
+            console.say(kept_line(store, deployer, name))
         return 0
     registry = az_json("acr", "show", "--name", settings["registry"],
                        "--resource-group", rg)
@@ -640,5 +647,5 @@ def destroy(app: dict, assume_yes: bool) -> int:
         purge_secret(settings, sid)
     report_shared_kept(rg, others)
     if deployer:
-        console.say(store_kept_line(store_description(store), deployer.usage()[0], name))
+        console.say(kept_line(store, deployer, name))
     return 0
