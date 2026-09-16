@@ -56,3 +56,14 @@ def test_destroy_removes_each_object_separately(app):
 
     assert storage_cli.run(store, app, ["destroy"], True) == 0
     assert fs.removed == ["one.csv", "two.csv"]
+
+
+def test_destroy_accepts_an_absent_store(app, capsys):
+    class FileSystem:
+        def find(self, path):
+            raise FileNotFoundError(path)
+
+    store = type("Store", (), {"fs": lambda self: FileSystem()})()
+
+    assert storage_cli.run(store, app, ["destroy"], True) == 0
+    assert "no objects under my-report/" in capsys.readouterr().out

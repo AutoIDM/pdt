@@ -58,7 +58,10 @@ def destroy(store, app, assume_yes) -> int:
     from pdt import deploy
 
     fs = store.fs()
-    objects = fs.find("")
+    try:
+        objects = fs.find("")
+    except FileNotFoundError:
+        objects = []
     if not objects:
         console.say(f"no objects under {app}/")
         return 0

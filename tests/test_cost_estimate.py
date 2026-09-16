@@ -12,7 +12,7 @@ def test_confirm_prints_plan_then_cost(capsys):
     assert "total" in out and "$   0.00" in out
 
 
-def test_aws_cost_estimate_reads_the_logs_client(monkeypatch):
+def test_aws_scheduled_store_cost_estimate_reads_the_logs_client(monkeypatch):
     logs = object()
     calls = []
     monkeypatch.setattr(deploy_aws_fargate, "recent_stream_seconds",
@@ -20,6 +20,6 @@ def test_aws_cost_estimate_reads_the_logs_client(monkeypatch):
     monkeypatch.setattr(deploy_aws_fargate, "list_price", lambda *args, **kwargs: 0)
 
     deploy_aws_fargate.cost_estimate_for(
-        logs, {"log_group": "/ecs/pdt-report"}, "us-east-1", "0 * * * *", True, None)
+        logs, {"log_group": "/ecs/pdt-report"}, "us-east-1", "0 * * * *", True, (0, 0))
 
     assert calls == [(logs, "/ecs/pdt-report")]
