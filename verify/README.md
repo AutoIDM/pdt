@@ -2,9 +2,19 @@
 
 A pdt project used to prove that deploy and destroy do what they say on a real cloud account. It is not a unit test: every run creates and deletes real resources, and it costs real money.
 
-One run covers one provider. It asserts the account is empty, deploys every app the provider owns, lists the account through the provider's own API, and checks two things: every resource pdt made carries `managed-by=pdt`, and every resource belongs either to one app or to the set the apps share. It then destroys the apps one at a time. After each destroy it checks that the destroyed app's resources are gone and that every other app's resources, and the shared ones, are still there. The last destroy must leave the account empty again.
+One run covers one provider and runs the scenarios in `scripts/verify.py` in order. `coverage.yml` lists every pdt behavior and the scenario or app that proves it; `scripts/coverage.py --check` fails when the code has a behavior the file does not name. `AGENTS.md` in this folder holds the rules for keeping both in step.
 
-The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Every provider gets two apps, so a shared resource always has a second owner while the first one is destroyed.
+| Scenario | What it proves |
+| --- | --- |
+| `deploy` | The account is empty first. Every app deploys. Every resource carries `managed-by=pdt` and belongs to one app or to the shared set. |
+| `schedule-fires` | The b app's schedule, set to a few minutes after the run starts, fires once and the run succeeds. The run reads the provider's own run record: CloudWatch log events on AWS, job executions on Azure and Google Cloud, `Get-ScheduledTaskInfo` on Windows. |
+| `storage` | `pdt storage <app> ls` reads the a app's data store, and is refused for the b app, which sets `storage: false`. |
+| `redeploy` | A second deploy of the a app exits 0 and changes no resource. |
+| `destroy` | Destroying one app removes its resources and leaves the other app and the shared resources in place. The last destroy leaves the account empty. |
+| `destroy-absent` | Destroying an app that is no longer deployed exits 0 and creates nothing. |
+| `local` | `pdt validate`, `list`, `examples`, `completion --script`, and `run` work in this project, and `pdt init`, `new`, `list`, and `validate` work in a new folder. Runs in `verify:check` with no account. |
+
+The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Every provider gets two apps, so a shared resource always has a second owner while the first one is destroyed. The a app is plain: the `daily` shorthand, storage on, the generated Dockerfile. The b app carries the loaded combination: a cron expression, `storage: false`, an `env.one_of` group, its own `Dockerfile` on the container providers, and `timezone: America/New_York` where the provider allows a zone (Azure evaluates cron in UTC only; Windows uses `local`).
 
 | App | Provider | Runs on |
 | --- | --- | --- |
@@ -26,7 +36,7 @@ export PDT_AZURE_CONTAINER_APPS_ENVIRONMENT=pdt-shared/pdt-eastus2  # azure only
 uv run --no-project --with pyyaml python verify/scripts/verify.py aws
 ```
 
-Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one `PASS` or `FAIL` line per step and stops at the first failure. If the initial check fails, the run exits without changing resources. After that check passes, a failure attempts to destroy every app and exits 1.
+Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one `PASS` or `FAIL` line per step and stops at the first failure. If the initial check fails, the run exits without changing resources. After that check passes, a failure attempts to destroy every app and exits 1. The run writes the b app's fire-time schedule into its `config.yml` and restores the file when the run ends. `verify.py local` runs the `local` scenario alone and needs no account.
 
 The `windows` provider deploys to the computer you run it on, so run it only on a Windows machine you are willing to add scheduled tasks to.
 
