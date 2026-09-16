@@ -37,6 +37,7 @@ from pathlib import Path
 
 from pdt import console
 from pdt.config import data_home
+from pdt.utils import email_auth
 
 VERSION = "581.0.0"
 CHECKSUMS = {
@@ -89,7 +90,7 @@ def ensure_gcloud(assume_yes: bool = False) -> str:
     console.warn(f"gcloud is not installed. pdt can download the Google Cloud CLI "
                  f"{VERSION} (~150 MB) to {SDK_DIR}.")
     console.say("Deleting that folder uninstalls it again.")
-    if not assume_yes:
+    if not assume_yes and email_auth.can_prompt(None):
         try:
             answer = input("Download now? [y/N] ").strip().lower()
         except EOFError:
