@@ -5,6 +5,8 @@ variables:
   # A fake secret. Each app declares it as required, so a deployed job fails
   # unless deploy delivered it as PDT_ENV_JSON.
   PDT_SMOKE_TOKEN: pdt-verify
+  PDT_VERIFY_OPTIONAL: optional
+  PDT_VERIFY_ALT: alternate
 
 # The files a cloud run can prove anything about. A merge request or master
 # pipeline that changes none of them (docs, the Claude tasks, the unit tests)
@@ -44,6 +46,8 @@ verify:
 .verify:
   stage: verify
   needs: [build, verify]
+  variables:
+    PDT_RESOURCE_NAMESPACE: $CI_PIPELINE_ID
   # A cancelled run leaks the resources it made, so these never get cancelled.
   interruptible: false
   artifacts:
@@ -69,7 +73,6 @@ verify:
 # Fargate builds for linux/arm64, so the AWS job uses an arm64 runner.
 verify:aws:
   extends: .verify:unix
-  resource_group: aws
   # Without the account's variables the job cannot log in. It then waits as a
   # manual job, so the pipeline shows the gap instead of failing at login.
   rules:
@@ -106,7 +109,6 @@ verify:aws:
 
 verify:azure:
   extends: .verify:unix
-  resource_group: azure
   services:
     - docker:28-dind
   variables:
@@ -132,7 +134,6 @@ verify:azure:
 
 verify:google-cloud:
   extends: .verify:unix
-  resource_group: google-cloud
   # Without the account's variables the job cannot log in. It then waits as a
   # manual job, so the pipeline shows the gap instead of failing at login.
   rules:
@@ -153,7 +154,6 @@ verify:google-cloud:
 # Deploys to the runner's own Task Scheduler, so it needs no cloud credentials.
 verify:windows:
   extends: .verify
-  resource_group: windows
   inherit:
     default: false
   tags:
@@ -163,6 +163,12 @@ verify:windows:
     - $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
     - if (-not $env:PDT_INSTALL) { $env:PDT_INSTALL = (Get-Item dist\*.whl).FullName }
     - uv tool install $env:PDT_INSTALL
+    - |
+      @(
+        "PDT_SMOKE_TOKEN=$env:PDT_SMOKE_TOKEN"
+        "PDT_VERIFY_OPTIONAL=$env:PDT_VERIFY_OPTIONAL"
+        "PDT_VERIFY_ALT=$env:PDT_VERIFY_ALT"
+      ) | Set-Content verify\.env
   script:
     - $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
     - uv run --no-project --with pyyaml python verify\scripts\verify.py windows --report verify-windows.xml

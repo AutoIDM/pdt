@@ -8,10 +8,10 @@ from pdt.utils import email_auth
 
 
 class Result:
-    def __init__(self, returncode, stdout=""):
+    def __init__(self, returncode, stdout="", stderr=""):
         self.returncode = returncode
         self.stdout = stdout
-        self.stderr = ""
+        self.stderr = stderr
 
 
 def record_gcloud(monkeypatch, answers):
@@ -108,3 +108,31 @@ def test_an_unattended_run_with_no_project_names_the_key_to_set(project, monkeyp
     message = capsys.readouterr().out
     assert "platform.project" in message
     assert "PDT_GOOGLE_CLOUD_PROJECT" in message
+
+
+
+def test_a_cloud_run_permission_error_still_fails(monkeypatch):
+    record_gcloud(monkeypatch, [
+        (["run", "jobs", "describe"], Result(1, stderr="PERMISSION_DENIED")),
+    ])
+    with pytest.raises(SystemExit):
+        deploy_google_cloud.read_json_or_none("run", "jobs", "describe", "pdt-report")
+
+
+def test_service_account_lookup_uses_the_account_list(monkeypatch):
+    monkeypatch.setattr(deploy_google_cloud, "list_json", lambda *args: [
+        {"email": "other@example.test"},
+        {"email": "pdt-runner@example.test", "displayName": "pdt job runner"},
+    ])
+
+    account = deploy_google_cloud.service_account_or_none(
+        "example-project", "pdt-runner@example.test")
+
+    assert account["displayName"] == "pdt job runner"
+
+
+def test_missing_service_account_is_absent(monkeypatch):
+    monkeypatch.setattr(deploy_google_cloud, "list_json", lambda *args: [])
+
+    assert deploy_google_cloud.service_account_or_none(
+        "example-project", "pdt-runner@example.test") is None

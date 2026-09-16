@@ -64,7 +64,8 @@ def destroy(store, app, assume_yes) -> int:
         return 0
     if not deploy.confirm([f"delete {len(objects)} object(s) under {app}/"], assume_yes):
         return 1
-    fs.rm(objects)
+    for path in objects:
+        fs.rm(path)
     console.done(f"deleted {len(objects)} object(s) under {app}/")
     return 0
 

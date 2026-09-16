@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 from pathlib import Path
 
 import yaml
@@ -21,6 +22,32 @@ SRC = PROJECT.parent / "src" / "pdt"
 INVENTORY = PROJECT / "coverage.yml"
 # Behaviors an app folder turns on that are not config keys.
 EXTRA_KEYS = {"Dockerfile"}
+REQUIRED_RULES = {
+    "runs-every-scenario-on-every-provider",
+    "cleans-up-after-the-run",
+    "fails-when-a-provider-cannot-deploy-or-manage",
+    "isolates-concurrent-ci-runs",
+    "every-resource-is-tagged",
+    "each-app-destroys-individually",
+    "deletes-run-owned-storage",
+    "shared-resources-go-with-the-last-app",
+    "jobs-fire-on-schedule",
+    "deploy-reconciles",
+    "plan-and-cost-before-changes",
+    "cost-estimates-use-provider-prices",
+    "cheapest-option-by-default",
+    "no-package-source-in-the-build-context",
+    "own-dockerfile-is-used",
+    "pinned-version-stays-deployed",
+    "per-app-names-and-managed-by-tag",
+    "destroy-removes-everything",
+    "destroy-of-an-undeployed-app-is-safe",
+    "azure-shared-environment",
+    "no-auto-created-side-resources",
+    "destroy-prints-then-asks",
+    "guide-the-user",
+    "schedules-translate-to-the-provider",
+}
 
 
 def assigned(tree: ast.Module, name: str):
@@ -46,8 +73,10 @@ def cli_commands() -> set[str]:
 def config_keys() -> tuple[set[str], set[str]]:
     tree = ast.parse((SRC / "config.py").read_text())
     keys = set(assigned(tree, "APP_KEYS"))
+    keys |= {f"project.{key}" for key in assigned(tree, "ROOT_KEYS")}
     keys |= {f"platform.{key}" for key in assigned(tree, "PLATFORM_KEYS")}
     keys |= {f"env.{key}" for key in assigned(tree, "ENV_KEYS")}
+    keys |= {f"retired.{key}" for key in assigned(tree, "RETIRED_KEYS")}
     return keys, set(assigned(tree, "PROVIDERS"))
 
 
@@ -59,6 +88,51 @@ def scenario_names() -> set[str]:
 def app_names() -> set[str]:
     matrix = yaml.safe_load((PROJECT / "pdt.yml").read_text())
     return {entry["name"] for entry in matrix["apps"]}
+
+
+def matrix_problems(providers: set[str]) -> list[str]:
+    matrix = yaml.safe_load((PROJECT / "pdt.yml").read_text())
+    rows = matrix.get("apps") or []
+    problems = []
+    for provider in sorted(providers):
+        apps = [row for row in rows
+                if (row.get("platform") or {}).get("provider") == provider]
+        variants = {row["name"].rsplit("-", 1)[-1]: row for row in apps}
+        if len(apps) != 2 or set(variants) != {"a", "b"}:
+            problems.append(f"matrix: {provider} needs exactly one a app and one b app")
+            continue
+        if variants["a"].get("storage", True) is not True:
+            problems.append(f"matrix: {provider} a must enable storage")
+        if variants["b"].get("storage", True) is not False:
+            problems.append(f"matrix: {provider} b must disable storage")
+        a_config = yaml.safe_load((PROJECT / variants["a"]["name"] / "config.yml").read_text())
+        b_config = yaml.safe_load((PROJECT / variants["b"]["name"] / "config.yml").read_text())
+        if "PDT_VERIFY_OPTIONAL" not in ((a_config.get("env") or {}).get("optional") or []):
+            problems.append(f"matrix: {provider} a must cover env.optional")
+        if ((b_config.get("env") or {}).get("one_of")
+                != [["PDT_VERIFY_ALT"], ["PDT_VERIFY_FALLBACK"]]):
+            problems.append(f"matrix: {provider} b must cover the alternate env.one_of branch")
+    return problems
+
+
+def ci_problems() -> list[str]:
+    text = (PROJECT / ".gitlab-ci.yml").read_text()
+    global_config, verify_config = text.split(".verify:", 1)
+    verify_config = verify_config.split(".verify:unix:", 1)[0]
+    problems = []
+    namespace = "PDT_RESOURCE_NAMESPACE: $CI_PIPELINE_ID"
+    if namespace not in verify_config:
+        problems.append("ci: provider jobs need a CI_PIPELINE_ID resource namespace")
+    if "PDT_RESOURCE_NAMESPACE:" in global_config:
+        problems.append("ci: the resource namespace must not affect non-provider jobs")
+    if "resource_group:" in text:
+        problems.append("ci: provider verification jobs must not use resource groups")
+    # A provider job may wait as a manual job only when its account variables
+    # are absent; with an account it must block the pipeline.
+    guarded = re.sub(r"- if: [^\n]*== null\n\s+when: manual\n\s+allow_failure: true\n", "", text)
+    if "allow_failure: true" in guarded:
+        problems.append("ci: every provider verification job must be required")
+    return problems
 
 
 def check(data: dict, commands: set[str], keys: set[str], providers: set[str],
@@ -80,6 +154,11 @@ def check(data: dict, commands: set[str], keys: set[str], providers: set[str],
             for target in row.get("covered_by") or []:
                 if target not in targets:
                     problems.append(f"{section}: {name} names {target}, which is neither a scenario nor an app")
+    rules = data.get("rules") or {}
+    for name in sorted(REQUIRED_RULES - rules.keys()):
+        problems.append(f"rules: {name} has no row in coverage.yml")
+    for name in sorted(rules.keys() - REQUIRED_RULES):
+        problems.append(f"rules: {name} is not in the required rule set")
     return problems
 
 
@@ -92,6 +171,8 @@ def main(argv=None) -> int:
     keys, providers = config_keys()
     problems = check(yaml.safe_load(INVENTORY.read_text()), cli_commands(), keys | EXTRA_KEYS,
                      providers, scenario_names() | app_names())
+    problems += matrix_problems(providers)
+    problems += ci_problems()
     for problem in problems:
         print(problem)
     print(f"coverage: {len(problems)} problem(s)")

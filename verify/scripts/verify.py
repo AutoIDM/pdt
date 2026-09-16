@@ -4,8 +4,8 @@
 
 The scenarios in SCENARIOS run in order and the run stops at the first
 failed step. On a cloud provider they assert the account is empty, deploy
-every app in verify/pdt.yml order, wait for the b app's schedule to fire,
-read the data store, deploy the a app again, then destroy the apps one at a
+every app in verify/pdt.yml order, wait for the a app's schedule to fire,
+deploy the a app again, read the data store, then destroy the apps one at a
 time and check after each one that the destroyed app is gone and that
 nothing else moved. The `local` provider runs only the commands that need
 no account. If the initial check fails, the run exits without changing
@@ -29,12 +29,13 @@ from pathlib import Path
 
 import yaml
 
-from inventory import INVENTORIES, RUNS, SETTINGS, SHARED, UNTAGGED, classify
+from inventory import (INVENTORIES, RUNS, SETTINGS, SHARED, UNTAGGED,
+                       aws, az, azure_store_names, classify, resource_prefix, store_name)
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEADLINE_SECONDS = 180
 POLL_SECONDS = 10
-FIRE_LEAD_MINUTES = 10
+FIRE_LEAD_MINUTES = 15
 FIRE_GRACE_SECONDS = 8 * 60
 FIRE_POLL_SECONDS = 20
 
@@ -52,9 +53,13 @@ class Run:
     run_pdt: object
     report: object
     inventory: object = None
+    raw_inventory: object = None
+    settings: dict = field(default_factory=dict)
     wait: object = None
     runs: object = None
     fire: datetime.datetime | None = None
+    timezone: str = "Etc/UTC"
+    schedule: object = None
     steps: list[Step] = field(default_factory=list)
     owned: dict = field(default_factory=dict)
     shared: set = field(default_factory=set)
@@ -193,14 +198,17 @@ def deploy(ctx):
     for app in ctx.apps:
         if not ctx.command(f"deploy {app}", "deploy", app, "--yes"):
             return False
-    if not ctx.check("every resource is tagged", untagged_check(ctx.apps)):
+    if not ctx.record("every resource is tagged",
+                      ctx.wait(ctx.raw_inventory, untagged_check(ctx.apps))):
         return False
     ctx.owned, ctx.shared = ownership(ctx.inventory(), ctx.apps)
     return ctx.record("every resource has an owner", owner_problems(ctx.owned, ctx.apps))
 
 
 def schedule_fires(ctx):
-    app = ctx.apps[1]
+    app = ctx.apps[0]
+    if not ctx.command(f"schedule {app} for verification", "deploy", app, "--yes"):
+        return False
     since = ctx.fire - datetime.timedelta(minutes=FIRE_LEAD_MINUTES)
     remaining = (ctx.fire - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
     deadline = max(remaining, 0) + FIRE_GRACE_SECONDS
@@ -213,9 +221,76 @@ def storage(ctx):
     first, second = ctx.apps[0], ctx.apps[1]
     if not ctx.command(f"storage ls {first}", "storage", first, "ls"):
         return False
+    with tempfile.TemporaryDirectory(prefix="pdt-storage-verify-") as folder:
+        target = str(Path(folder) / "verify.csv")
+        if not ctx.command(f"storage get {first}", "storage", first,
+                           "get", "verify.csv", target):
+            return False
+        downloaded = Path(target).read_text()
+        if not ctx.record(f"storage get {first} returned the expected data",
+                          [] if downloaded == "name,value\nverification,1\n"
+                          else ["downloaded verify.csv has unexpected content"]):
+            return False
+    if not ctx.command(f"storage query {first}", "storage", first,
+                       "query", "SELECT count(*) AS rows FROM 'verify.csv'"):
+        return False
+    if not ctx.command(f"storage destroy {first}", "storage", first, "destroy", "--yes"):
+        return False
     code = ctx.run_pdt("storage", second, "ls")
     return ctx.record(f"storage ls {second} is refused",
                       [] if code != 0 else [f"pdt storage {second} ls exited 0 with storage off"])
+
+
+def storage_cleanup(ctx, required=True):
+    if resource_prefix() == "pdt":
+        return True
+    settings = ctx.settings
+    resources = ctx.raw_inventory()
+    if settings["provider"] == "aws":
+        identity = aws(settings["region"], "sts", "get-caller-identity") or {}
+        expected = {store_name(str(identity.get("Account") or ""))}
+        command = ("aws", "s3api", "delete-bucket", "--bucket")
+    elif settings["provider"] == "google-cloud":
+        expected = {store_name(settings["project"])}
+        command = ("gcloud", "storage", "buckets", "delete", "--quiet")
+    elif settings["provider"] == "azure":
+        group, account, _container = azure_store_names(settings["subscription"])
+        expected = {group, account}
+        command = ("az", "group", "delete", "--name", group, "--yes")
+    else:
+        return True
+    stores = [resource for resource in resources if resource.name in expected]
+    problems = []
+    missing = expected - {resource.name for resource in stores}
+    if required:
+        problems.extend(f"expected run store {name} was not found" for name in sorted(missing))
+    for resource in stores:
+        if resource.tags.get("managed-by") != "pdt":
+            problems.append(f"{resource.kind} {resource.name} is not managed by PDT")
+            continue
+        if resource.tags.get("pdt-lifecycle") != "retain":
+            problems.append(f"{resource.kind} {resource.name} has unexpected lifecycle tags")
+            continue
+        if settings["provider"] == "azure":
+            continue
+        if settings["provider"] == "google-cloud":
+            args = (*command, f"gs://{resource.name}")
+        else:
+            args = (*command, resource.name)
+        if ctx.run_pdt(*args) != 0:
+            problems.append(f"could not delete {resource.kind} {resource.name}")
+    if not problems and settings["provider"] == "azure":
+        if ctx.run_pdt(*command) != 0:
+            problems.append(f"could not delete storage resource group {command[4]}")
+    if problems:
+        return ctx.record("delete run-owned storage", problems)
+    remaining = ctx.wait(ctx.raw_inventory,
+                         lambda current: [f"{resource.kind} {resource.name} remains"
+                                           for resource in current
+                                           if resource.name in expected])
+    if remaining:
+        return ctx.record("delete run-owned storage", remaining)
+    return ctx.record("no run-owned resources remain", empty_check(ctx.raw_inventory()))
 
 
 def redeploy(ctx):
@@ -262,33 +337,59 @@ def local(ctx):
 SCENARIOS = {
     "deploy": deploy,
     "schedule-fires": schedule_fires,
-    "storage": storage,
     "redeploy": redeploy,
+    "storage": storage,
     "destroy": destroy,
     "destroy-absent": destroy_absent,
+    "storage-cleanup": storage_cleanup,
     "local": local,
 }
-CLOUD_SCENARIOS = tuple(name for name in SCENARIOS if name != "local")
-
-
-def verify(apps, run_pdt, inventory, runs, fire, report=print_step, wait=wait_for):
-    ctx = Run(apps, run_pdt, report, inventory, wait, runs, fire)
+def verify(apps, run_pdt, inventory, runs, fire, report=print_step, wait=wait_for,
+           raw_inventory=None, settings=None, schedule=contextlib.nullcontext,
+           timezone="Etc/UTC"):
+    ctx = Run(apps, run_pdt, report, inventory, raw_inventory=raw_inventory or inventory,
+              settings=settings or {}, wait=wait, runs=runs, fire=fire, timezone=timezone,
+              schedule=schedule)
     cleanup = False
     try:
         try:
-            problems = wait(inventory, empty_check)
+            problems = wait(ctx.raw_inventory, empty_check)
             if not ctx.record("account is empty before deploy", problems):
                 return ctx.steps
             cleanup = True
-            for name in CLOUD_SCENARIOS:
-                if not SCENARIOS[name](ctx):
-                    break
+            if not SCENARIOS["deploy"](ctx):
+                return ctx.steps
+            if ctx.fire is None:
+                cron, ctx.fire = fire_schedule(app_now(ctx.timezone))
+            else:
+                cron = f"{ctx.fire.minute} {ctx.fire.hour} * * *"
+            with ctx.schedule(cron):
+                for name in ("schedule-fires", "redeploy"):
+                    if not SCENARIOS[name](ctx):
+                        break
+            if all(step.ok for step in ctx.steps):
+                for name in ("storage", "destroy", "destroy-absent", "storage-cleanup"):
+                    if not SCENARIOS[name](ctx):
+                        break
         except Exception as exc:
             ctx.record("unexpected error", [f"{type(exc).__name__}: {exc}"])
     finally:
         if cleanup and any(not step.ok for step in ctx.steps):
+            cleanup_problems = []
+            code = run_pdt("storage", apps[0], "destroy", "--yes")
+            if code != 0:
+                cleanup_problems.append(
+                    f"pdt storage {apps[0]} destroy --yes exited {code}")
             for app in apps:
-                run_pdt("destroy", app, "--yes")
+                code = run_pdt("destroy", app, "--yes")
+                if code != 0:
+                    cleanup_problems.append(f"pdt destroy {app} --yes exited {code}")
+            if cleanup_problems:
+                ctx.record("cleanup commands", cleanup_problems)
+            try:
+                storage_cleanup(ctx, required=False)
+            except Exception as exc:
+                ctx.record("cleanup after failure", [f"{type(exc).__name__}: {exc}"])
     return ctx.steps
 
 
@@ -342,12 +443,16 @@ def main(argv=None) -> int:
             print(f"error: verify/pdt.yml needs two apps on provider {args.provider}")
             return 1
         settings = SETTINGS[args.provider](rows[0].get("platform") or {})
-        inventory = functools.partial(
-            listing, functools.partial(INVENTORIES[args.provider], settings))
+        if args.provider == "azure" and not settings["subscription"]:
+            settings["subscription"] = str((az("account", "show") or {}).get("id") or "")
+        raw_inventory = functools.partial(INVENTORIES[args.provider], settings)
+        inventory = functools.partial(listing, raw_inventory)
         runs = functools.partial(RUNS[args.provider], settings)
-        cron, fire = fire_schedule(app_now(rows[1].get("timezone", "Etc/UTC")))
-        with scheduled(PROJECT / rows[1]["name"], cron):
-            steps = verify([row["name"] for row in rows], run_pdt, inventory, runs, fire)
+        schedule = functools.partial(scheduled, PROJECT / rows[0]["name"])
+        steps = verify([row["name"] for row in rows], run_pdt, inventory, runs, None,
+                       raw_inventory=raw_inventory,
+                       settings={**settings, "provider": args.provider}, schedule=schedule,
+                       timezone=rows[0].get("timezone", "Etc/UTC"))
     if args.report:
         write_report(args.report, args.provider, steps)
     return 0 if all(step.ok for step in steps) else 1

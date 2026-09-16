@@ -16,18 +16,18 @@ apps:
     platform:
       provider: aws
       region: us-east-1
+    storage: false
   - name: azure-container-apps-a
     schedule: daily
     platform:
       provider: azure
       region: eastus2
-      resource_group: pdt-verify
   - name: azure-container-apps-b
     schedule: "30 6 * * *"
     platform:
       provider: azure
       region: eastus2
-      resource_group: pdt-verify
+    storage: false
   - name: google-cloud-a
     schedule: daily
     platform:
@@ -39,6 +39,7 @@ apps:
     platform:
       provider: google-cloud
       region: us-central1
+    storage: false
   - name: windows-a
     schedule: daily
     timezone: local
@@ -49,3 +50,4 @@ apps:
     timezone: local
     platform:
       provider: windows
+    storage: false

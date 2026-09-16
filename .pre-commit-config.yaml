@@ -7,4 +7,4 @@ repos:
         entry: uv run --no-project --with pyyaml python verify/scripts/coverage.py --check
         language: system
         pass_filenames: false
-        files: ^(src/pdt/(cli|config)\.py|verify/)
+        files: ^(src/pdt/|verify/)

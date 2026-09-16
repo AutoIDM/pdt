@@ -6,18 +6,18 @@
 
 - `coverage.yml` is the source of truth for what verification covers. A behavior is covered only when its row names a scenario or an app.
 - A change that adds a CLI command, a config key, a provider, or a lifecycle rule to pdt adds a row to `coverage.yml` and the scenario or app that exercises it, in the same change.
-- `scripts/coverage.py --check` fails when a command in `src/pdt/cli.py`, a key in `config.APP_KEYS`, `PLATFORM_KEYS`, or `ENV_KEYS`, or a provider in `config.PROVIDERS` has no row, and when a row names a scenario or app that does not exist.
+- `scripts/coverage.py --check` fails when a command, config key, provider, or required lifecycle rule has no row, and when a row names a scenario or app that does not exist.
 - The check runs in the `verify:check` CI job, in `tests/test_coverage.py`, and as a commit hook. Install the hook once with `uvx pre-commit install`.
 - A row is `uncovered` only with a reason that says what CI cannot do. The uncovered rows in `coverage.yml` are the complete list; do not repeat them here.
 
 ## Scenarios
 
-- A scenario is a function `(ctx) -> bool` in `scripts/verify.py` registered in `SCENARIOS`; `CLOUD_SCENARIOS` fixes the order a provider run uses, and `local` runs alone under `verify.py local`. Its name is what `coverage.yml` refers to.
+- A scenario is a function `(ctx) -> bool` in `scripts/verify.py` registered in `SCENARIOS`; `verify` fixes the provider order, and `local` runs alone under `verify.py local`. Its name is what `coverage.yml` refers to.
 - A scenario records steps with `ctx.record(name, problems)`, `ctx.check(name, checker)`, or `ctx.command(name, *pdt_args)`; an empty problem list is a PASS. It returns False at the first failed step.
 - A scenario reads the account through `ctx.inventory()`, run records through `ctx.runs(app, since)`, and pdt through `ctx.run_pdt`. It never calls a provider CLI directly; add a listing or a run reader to `scripts/inventory.py` instead.
-- The a app of a provider is `ctx.apps[0]` and the b app `ctx.apps[1]`; the run writes the b app's fire-time schedule into its `config.yml` and restores the file when the run ends.
+- The a app of a provider is `ctx.apps[0]` and the b app `ctx.apps[1]`; the run keeps the fire-time schedule through the no-change redeploy and then restores the file.
 - Every scenario's check logic gets a unit test in `tests/test_verify.py` against `FakeCloud`, with no network and no cloud account.
-- A failure after the first deploy destroys every app before the run exits. Keep that order when adding steps.
+- A failure after the first deploy clears app storage, destroys every app, deletes the exact tagged test store, and verifies cleanup.
 
 ## Matrix and templates
 
