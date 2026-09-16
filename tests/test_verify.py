@@ -1,10 +1,11 @@
 import datetime
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import inventory
 from inventory import Resource, classify
-from verify import (fire_schedule, junit_tree, scheduled, verify, verify_local,
-                    wait_for, write_report)
+from verify import (Run, fire_schedule, junit_tree, scheduled, storage_cleanup,
+                    verify, verify_local, wait_for, write_report)
 
 APPS = ["app-one", "app-two"]
 FIRE = datetime.datetime(2026, 1, 1, 12, 0, tzinfo=datetime.timezone.utc)
@@ -27,18 +28,23 @@ class FakeCloud:
         self.keep_shared = False
         self.deploy_fails = ()
         self.no_storage = {"app-two"}
-        self.fired = {"app-two": ["run-1"]}
+        self.fired = {"app-one": ["run-1"]}
         self.redeploy_adds = None
+        self.redeploys = {}
 
     def run_pdt(self, verb, app, *_args):
         self.calls.append((verb, app))
         if verb == "storage":
+            if _args[:1] == ("get",) and app not in self.no_storage:
+                Path(_args[2]).write_text("name,value\nverification,1\n")
             return 1 if app in self.no_storage else 0
         if verb == "deploy":
             if app in self.deploy_fails:
                 return 1
-            if app in self.deployed and self.redeploy_adds:
-                self.add(self.redeploy_adds)
+            if app in self.deployed:
+                self.redeploys[app] = self.redeploys.get(app, 0) + 1
+                if self.redeploy_adds and self.redeploys[app] >= 2:
+                    self.add(self.redeploy_adds)
             self.deploy(app)
         else:
             self.destroy(app)
@@ -78,9 +84,10 @@ def now(inventory, check, _deadline=None, _poll=None):
     return check(inventory())
 
 
-def run(cloud, inventory=None):
+def run(cloud, inventory=None, raw_inventory=None):
     return verify(cloud.apps, cloud.run_pdt, inventory or cloud.inventory,
-                  cloud.runs, FIRE, report=lambda step: None, wait=now)
+                  cloud.runs, FIRE, report=lambda step: None, wait=now,
+                  raw_inventory=raw_inventory)
 
 
 def failed(steps):
@@ -125,11 +132,16 @@ def test_happy_path_leaves_the_account_empty():
         "deploy app-two",
         "every resource is tagged",
         "every resource has an owner",
-        "app-two ran on schedule",
-        "storage ls app-one",
-        "storage ls app-two is refused",
+        "schedule app-one for verification",
+        "app-one ran on schedule",
         "deploy app-one again",
         "nothing changed after redeploy app-one",
+        "storage ls app-one",
+        "storage get app-one",
+        "storage get app-one returned the expected data",
+        "storage query app-one",
+        "storage destroy app-one",
+        "storage ls app-two is refused",
         "destroy app-one",
         "app-one resources are gone",
         "other apps are untouched after destroy app-one",
@@ -142,12 +154,24 @@ def test_happy_path_leaves_the_account_empty():
     ]
 
 
+def test_retained_storage_is_tagged_but_not_part_of_app_destroy_checks():
+    from verify import listing
+
+    cloud = FakeCloud()
+    cloud.extra = [Resource(
+        "s3 bucket", "arn:aws:s3:::pdt-data-1",
+        tagged() | {"pdt-lifecycle": "retain"}, "pdt-data-1")]
+    steps = run(cloud, lambda: listing(cloud.inventory), cloud.inventory)
+    assert failed(steps) == []
+
+
 def test_a_schedule_that_never_fires_fails_and_cleans_up():
     cloud = FakeCloud()
     cloud.fired = {}
     steps = run(cloud)
-    assert [step.name for step in failed(steps)] == ["app-two ran on schedule"]
-    assert "no successful run of app-two" in failed(steps)[0].detail
+    assert [step.name for step in failed(steps)] == ["app-one ran on schedule"]
+    assert "no successful run of app-one" in failed(steps)[0].detail
+    assert ("storage", "app-one") in cloud.calls
     assert cloud.resources == {}
 
 
@@ -283,6 +307,41 @@ def test_a_failure_destroys_every_app():
     assert cloud.resources == {}
 
 
+def test_a_failed_cleanup_command_is_reported():
+    cloud = FakeCloud()
+    cloud.deploy_fails = ("app-two",)
+    original = cloud.run_pdt
+
+    def fail_destroy(verb, app, *args):
+        if verb == "destroy" and app == "app-one":
+            original(verb, app, *args)
+            return 1
+        return original(verb, app, *args)
+
+    cloud.run_pdt = fail_destroy
+    steps = run(cloud)
+    assert [step.name for step in failed(steps)] == ["deploy app-two", "cleanup commands"]
+    assert "pdt destroy app-one --yes exited 1" in failed(steps)[1].detail
+
+
+def test_storage_cleanup_reports_a_resource_named_as_the_namespace(monkeypatch):
+    monkeypatch.setenv("PDT_RESOURCE_NAMESPACE", "101")
+    bucket = inventory.store_name("project")
+    resources = [
+        Resource("bucket", bucket, tagged(**{"pdt-lifecycle": "retain"}), bucket),
+        Resource("repository", "pdt-101", tagged(), "pdt-101"),
+    ]
+
+    def run_pdt(*_args):
+        resources.pop(0)
+        return 0
+
+    ctx = Run(APPS, run_pdt, lambda _step: None, raw_inventory=lambda: resources,
+              settings={"provider": "google-cloud", "project": "project"}, wait=now)
+    assert not storage_cleanup(ctx)
+    assert failed(ctx.steps)[0].detail == "repository pdt-101 still exists"
+
+
 def test_an_exception_after_deploy_destroys_every_app():
     cloud = FakeCloud()
 
@@ -296,6 +355,7 @@ def test_an_exception_after_deploy_destroys_every_app():
     assert "the cloud said no" in failed(steps)[0].detail
     assert cloud.calls == [
         ("deploy", "app-one"), ("deploy", "app-two"),
+        ("storage", "app-one"),
         ("destroy", "app-one"), ("destroy", "app-two"),
     ]
     assert cloud.resources == {}
@@ -385,13 +445,15 @@ def test_the_azure_inventory_covers_the_shared_environment_group(monkeypatch):
         return groups[args[3]]
 
     monkeypatch.setattr(inventory, "az", az)
-    monkeypatch.setattr(inventory, "azure_deleted_vaults", list)
-    found = inventory.azure_inventory({"resource_group": "pdt-verify", "environment": ""})
+    monkeypatch.setattr(inventory, "azure_deleted_vaults", lambda _settings: [])
+    found = inventory.azure_inventory(
+        {"subscription": "sub", "resource_group": "pdt-verify", "environment": ""})
     assert [resource.name for resource in found] == [
         "pdt-verify", "pdt-app-one", "pdt-shared", "pdt-eastus2"]
     assert classify(found[3], APPS) == "shared"
     found = inventory.azure_inventory(
-        {"resource_group": "pdt-verify", "environment": "pdt-shared/pdt-eastus2"})
+        {"subscription": "sub", "resource_group": "pdt-verify",
+         "environment": "pdt-shared/pdt-eastus2"})
     assert [resource.name for resource in found] == ["pdt-verify", "pdt-app-one"]
 
 

@@ -12,21 +12,23 @@ hold resources that have nothing to do with pdt.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import os
 import subprocess
 from dataclasses import dataclass, field
 
+
 MANAGED = {"managed-by": "pdt"}
 UNTAGGED = "untagged"
 SHARED = "shared"
-AWS_LOG_PREFIXES = ("/aws/lambda/pdt-", "/ecs/pdt-", "/pdt/")
 # The Container Apps environment every pdt project in a subscription shares.
 AZURE_SHARED_GROUP = "pdt-shared"
 GOOGLE_ASSET_TYPES = (
     "run.googleapis.com/Job",
     "secretmanager.googleapis.com/Secret",
     "artifactregistry.googleapis.com/Repository",
+    "storage.googleapis.com/Bucket",
 )
 GREETING = "Hello from pdt."
 WINDOWS_TASKS = (
@@ -40,6 +42,46 @@ WINDOWS_TASK_INFO = (
     "@{{n='LastRunTime';e={{$_.LastRunTime.ToUniversalTime().ToString('o')}}}}, "
     "LastTaskResult | ConvertTo-Json -Compress"
 )
+
+
+def resource_prefix() -> str:
+    namespace = os.environ.get("PDT_RESOURCE_NAMESPACE", "").strip()
+    return f"pdt-{namespace}" if namespace else "pdt"
+
+
+def has_prefix(value: str) -> bool:
+    prefix = resource_prefix()
+    return value == prefix or value.startswith(f"{prefix}-")
+
+
+def resource_name(app: str) -> str:
+    return f"{resource_prefix()}-{app}"
+
+
+def azure_job_name(app: str) -> str:
+    name = resource_name(app)
+    if len(name) <= 32:
+        return name
+    suffix = hashlib.sha256(name.encode()).hexdigest()[:7]
+    return f"{name[:24].rstrip('-')}-{suffix}"
+
+
+def store_name(seed: str) -> str:
+    namespace = os.environ.get("PDT_RESOURCE_NAMESPACE", "").strip()
+    value = f"{namespace}/{seed}" if namespace else seed
+    suffix = hashlib.sha256(value.encode()).hexdigest()[:10]
+    prefix = "pdt-data" if not namespace else f"{resource_prefix()}-data"
+    return f"{prefix}-{suffix}"
+
+
+def azure_store_names(subscription: str) -> tuple[str, str, str]:
+    namespace = os.environ.get("PDT_RESOURCE_NAMESPACE", "").strip()
+    value = f"{namespace}/{subscription}" if namespace else subscription
+    suffix = hashlib.sha256(value.encode()).hexdigest()[:10]
+    prefix = resource_prefix()
+    group = "pdt-data" if prefix == "pdt" else f"{prefix}-data"
+    account = f"pdtdata{suffix}"
+    return group, account, f"{group}-{suffix}"
 
 
 class InventoryError(Exception):
@@ -65,7 +107,8 @@ def classify(resource: Resource, apps: list[str]) -> Owner:
     if tagged in apps:
         return tagged
     named = [app for app in apps
-             if f"pdt-{app}" in resource.id or f"pdt-{app}" in resource.name]
+             if f"{resource_prefix()}-{app}" in resource.id
+             or f"{resource_prefix()}-{app}" in resource.name]
     if len(named) == 1:
         return named[0]
     return SHARED
@@ -94,7 +137,7 @@ def gcloud(*args: str):
 def aws_functions(region: str) -> Inventory:
     found = []
     for item in (aws(region, "lambda", "list-functions") or {}).get("Functions") or []:
-        if not item["FunctionName"].startswith("pdt-"):
+        if not has_prefix(item["FunctionName"]):
             continue
         arn = item["FunctionArn"]
         tags = (aws(region, "lambda", "list-tags", "--resource", arn) or {}).get("Tags") or {}
@@ -117,7 +160,7 @@ def aws_roles(region: str) -> Inventory:
     found = []
     for item in (aws(region, "iam", "list-roles") or {}).get("Roles") or []:
         name = item["RoleName"]
-        if not name.startswith("pdt-") or name == own:
+        if not has_prefix(name) or name == own:
             continue
         listed = aws(region, "iam", "list-role-tags", "--role-name", name) or {}
         tags = {tag["Key"]: tag["Value"] for tag in listed.get("Tags") or []}
@@ -127,7 +170,8 @@ def aws_roles(region: str) -> Inventory:
 
 def aws_log_groups(region: str) -> Inventory:
     found = []
-    for prefix in AWS_LOG_PREFIXES:
+    for prefix in (f"/aws/lambda/{resource_prefix()}-",
+                   f"/ecs/{resource_prefix()}-", f"/{resource_prefix()}/"):
         listed = aws(region, "logs", "describe-log-groups",
                      "--log-group-name-prefix", prefix) or {}
         for item in listed.get("logGroups") or []:
@@ -141,7 +185,7 @@ def aws_log_groups(region: str) -> Inventory:
 def aws_secrets(region: str) -> Inventory:
     found = []
     for item in (aws(region, "secretsmanager", "list-secrets") or {}).get("SecretList") or []:
-        if not item["Name"].startswith("pdt-"):
+        if not has_prefix(item["Name"]):
             continue
         tags = {tag["Key"]: tag["Value"] for tag in item.get("Tags") or []}
         found.append(Resource("secret", item["ARN"], tags, item["Name"]))
@@ -152,7 +196,7 @@ def aws_schedules(region: str) -> Inventory:
     found = []
     listed = aws(region, "scheduler", "list-schedule-groups") or {}
     for group in listed.get("ScheduleGroups") or []:
-        if group["Name"] != "pdt":
+        if group["Name"] != resource_prefix():
             continue
         try:
             tagged = aws(region, "scheduler", "list-tags-for-resource",
@@ -185,7 +229,7 @@ def aws_clusters(region: str) -> Inventory:
     found = []
     for item in described.get("clusters") or []:
         arn, name = item["clusterArn"], item["clusterName"]
-        if name != "pdt" or item.get("status") != "ACTIVE":
+        if name != resource_prefix() or item.get("status") != "ACTIVE":
             continue
         found.append(Resource("ecs cluster", arn, aws_ecs_tags(region, arn), name))
     return found
@@ -193,7 +237,7 @@ def aws_clusters(region: str) -> Inventory:
 
 def aws_task_definitions(region: str) -> Inventory:
     listed = aws(region, "ecs", "list-task-definitions",
-                 "--family-prefix", "pdt-", "--status", "ACTIVE") or {}
+                 "--family-prefix", f"{resource_prefix()}-", "--status", "ACTIVE") or {}
     return [Resource("ecs task definition", arn, aws_ecs_tags(region, arn),
                      arn.rsplit("/", 1)[-1])
             for arn in listed.get("taskDefinitionArns") or []]
@@ -203,7 +247,7 @@ def aws_repositories(region: str) -> Inventory:
     found = []
     for item in (aws(region, "ecr", "describe-repositories") or {}).get("repositories") or []:
         name = item["repositoryName"]
-        if name != "pdt" and not name.startswith("pdt-"):
+        if not has_prefix(name):
             continue
         arn = item["repositoryArn"]
         listed = aws(region, "ecr", "list-tags-for-resource", "--resource-arn", arn) or {}
@@ -212,24 +256,48 @@ def aws_repositories(region: str) -> Inventory:
     return found
 
 
+def aws_stores(region: str) -> Inventory:
+    identity = aws(region, "sts", "get-caller-identity") or {}
+    account = str(identity.get("Account") or "")
+    if not account:
+        return []
+    name = store_name(account)
+    try:
+        aws(region, "s3api", "head-bucket", "--bucket", name)
+    except InventoryError as error:
+        if "(404)" in str(error) or "Not Found" in str(error):
+            return []
+        raise
+    try:
+        tags = {tag["Key"]: tag["Value"] for tag in (
+            aws(region, "s3api", "get-bucket-tagging", "--bucket", name)
+            or {}).get("TagSet") or []}
+    except InventoryError:
+        tags = {}
+    return [Resource("s3 bucket", f"arn:aws:s3:::{name}", tags, name)]
+
+
 def aws_tagged(region: str) -> Inventory:
     listed = aws(region, "resourcegroupstaggingapi", "get-resources",
                  "--tag-filters", "Key=managed-by,Values=pdt") or {}
     found = []
     for item in listed.get("ResourceTagMappingList") or []:
         arn = item["ResourceARN"]
+        name = arn.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+        if not has_prefix(name):
+            continue
         # ECS keeps a deleted cluster or task definition visible as INACTIVE,
         # and this API still returns it. The ECS listings above decide those.
         if arn.split(":")[2] == "ecs":
             continue
         tags = {tag["Key"]: tag["Value"] for tag in item.get("Tags") or []}
-        found.append(Resource(arn.split(":")[2], arn, tags, arn.rsplit("/", 1)[-1]))
+        found.append(Resource(arn.split(":")[2], arn, tags, name))
     return found
 
 
 AWS_SOURCES = (
     aws_functions, aws_roles, aws_log_groups, aws_secrets, aws_schedules,
-    aws_clusters, aws_task_definitions, aws_repositories, aws_tagged,
+    aws_clusters, aws_task_definitions, aws_repositories, aws_stores, aws_tagged,
 )
 
 
@@ -243,12 +311,16 @@ def aws_inventory(settings: dict[str, str]) -> Inventory:
     return sorted(found.values(), key=lambda resource: resource.id)
 
 
-def azure_deleted_vaults() -> Inventory:
+def azure_deleted_vaults(settings: dict[str, str]) -> Inventory:
     # A soft-deleted vault still owns its global name and blocks the next
     # deploy, so it counts as a leftover.
+    seed = (f"{settings['subscription']}/{settings['resource_group']}"
+            if settings.get("subscription") else settings["resource_group"])
+    expected = (os.environ.get("PDT_AZURE_KEY_VAULT", "").strip()
+                or f"pdt-{hashlib.sha256(seed.encode()).hexdigest()[:10]}")
     found = []
     for item in az("keyvault", "list-deleted", "--resource-type", "vault") or []:
-        if not item["name"].startswith("pdt-"):
+        if item["name"] != expected:
             continue
         tags = (item.get("properties") or {}).get("tags") or {}
         found.append(Resource("soft-deleted key vault", item["id"], tags, item["name"]))
@@ -256,9 +328,15 @@ def azure_deleted_vaults() -> Inventory:
 
 
 def azure_inventory(settings: dict[str, str]) -> Inventory:
-    found = azure_deleted_vaults()
+    found = azure_deleted_vaults(settings)
     # A named environment is the user's own, so its group is not pdt's to empty.
     groups = [settings["resource_group"]]
+    subscription = settings.get("subscription", "")
+    if "subscription" in settings and not subscription:
+        account = az("account", "show") or {}
+        subscription = str(account.get("id") or "") if isinstance(account, dict) else ""
+    store_group, _account, _container = azure_store_names(subscription)
+    groups.append(store_group)
     if not settings["environment"]:
         groups.append(AZURE_SHARED_GROUP)
     for group_name in groups:
@@ -281,7 +359,7 @@ def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
                     "--asset-types=" + ",".join(GOOGLE_ASSET_TYPES)) or []
     for item in assets:
         name = str(item.get("displayName") or item["name"]).rsplit("/", 1)[-1]
-        if not name.startswith("pdt"):
+        if not has_prefix(name):
             continue
         found.append(Resource(item["assetType"], item["name"],
                               dict(item.get("labels") or {}), name))
@@ -289,7 +367,7 @@ def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
                   "--location", region, "--project", project) or []
     for item in jobs:
         name = str(item["name"]).rsplit("/", 1)[-1]
-        if not name.startswith("pdt"):
+        if not has_prefix(name):
             continue
         # A Cloud Scheduler job takes no labels, so pdt marks it by description.
         managed = str(item.get("description") or "").startswith("Managed by PDT")
@@ -301,10 +379,10 @@ def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
     accounts = gcloud("iam", "service-accounts", "list", "--project", project) or []
     for item in accounts:
         name = str(item["email"]).split("@", 1)[0]
-        if not name.startswith("pdt") or item["email"] == own:
+        if not has_prefix(name) or item["email"] == own:
             continue
         # A service account takes no labels, so pdt marks it by display name.
-        managed = item.get("displayName") == "pdt job runner"
+        managed = item.get("displayName") == f"{resource_prefix()} job runner"
         found.append(Resource("iam.googleapis.com/ServiceAccount", item["name"],
                               dict(MANAGED) if managed else {}, name))
     return found
@@ -319,6 +397,8 @@ def windows_inventory(_settings: dict[str, str]) -> Inventory:
     found = []
     for item in tasks or []:
         name = item["TaskName"]
+        if not has_prefix(name):
+            continue
         # deploy_windows.py writes this prefix; a task carries no other marker.
         managed = str(item.get("Description") or "").startswith("Managed by pdt;")
         found.append(Resource("scheduled task", f"{item.get('TaskPath') or ''}{name}",
@@ -336,7 +416,7 @@ def timestamp(text: str) -> datetime.datetime:
 def aws_runs(settings: dict[str, str], app: str, since: datetime.datetime) -> list[str]:
     try:
         listed = aws(settings["region"], "logs", "filter-log-events",
-                     "--log-group-name", f"/ecs/pdt-{app}",
+                     "--log-group-name", f"/ecs/{resource_name(app)}",
                      "--start-time", str(int(since.timestamp() * 1000))) or {}
     except InventoryError as error:
         if "ResourceNotFoundException" not in str(error):
@@ -347,7 +427,7 @@ def aws_runs(settings: dict[str, str], app: str, since: datetime.datetime) -> li
 
 
 def azure_runs(settings: dict[str, str], app: str, since: datetime.datetime) -> list[str]:
-    listed = az("containerapp", "job", "execution", "list", "--name", f"pdt-{app}",
+    listed = az("containerapp", "job", "execution", "list", "--name", azure_job_name(app),
                 "--resource-group", settings["resource_group"]) or []
     found = []
     for item in listed:
@@ -359,7 +439,7 @@ def azure_runs(settings: dict[str, str], app: str, since: datetime.datetime) -> 
 
 
 def google_cloud_runs(settings: dict[str, str], app: str, since: datetime.datetime) -> list[str]:
-    listed = gcloud("run", "jobs", "executions", "list", "--job", f"pdt-{app}",
+    listed = gcloud("run", "jobs", "executions", "list", "--job", resource_name(app),
                     "--region", settings["region"], "--project", settings["project"]) or []
     found = []
     for item in listed:
@@ -375,7 +455,7 @@ def windows_runs(_settings: dict[str, str], app: str, since: datetime.datetime) 
     info = run_json([
         "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
         "-ExecutionPolicy", "Bypass", "-Command",
-        WINDOWS_TASK_INFO.format(task=f"pdt-{app}")]) or {}
+        WINDOWS_TASK_INFO.format(task=resource_name(app))]) or {}
     last = info.get("LastRunTime")
     if info.get("LastTaskResult") == 0 and last and timestamp(last) >= since:
         return [last]
@@ -403,8 +483,10 @@ SETTINGS = {
         or os.environ.get("AWS_DEFAULT_REGION") or "",
     },
     "azure": lambda platform: {
+        "subscription": platform.get("subscription")
+        or os.environ.get("PDT_AZURE_SUBSCRIPTION") or "",
         "resource_group": platform.get("resource_group")
-        or os.environ.get("PDT_AZURE_RESOURCE_GROUP") or "pdt",
+        or os.environ.get("PDT_AZURE_RESOURCE_GROUP") or resource_prefix(),
         "environment": platform.get("environment")
         or os.environ.get("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT") or "",
     },

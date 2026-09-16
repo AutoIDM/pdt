@@ -40,12 +40,12 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_name)
+    STORE_TAGS, CostEstimate, fail, fetch_json, resource_prefix, store_cost_label,
+    store_name)
 from pdt.utils.storage import Store
 
 AWS_CLI = [sys.executable, "-m", "awscli"]
 MANAGED_TAGS = {"managed-by": "pdt"}
-SCHEDULE_GROUP = "pdt"
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 PRICE_LIST_URL = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/{offer}/current/{region}/index.json"
@@ -161,6 +161,10 @@ def aws_settings(app: dict, session) -> tuple[str, str]:
 def iam_tags(extra: dict[str, str] | None = None) -> list[dict[str, str]]:
     return [{"Key": key, "Value": value}
             for key, value in {**MANAGED_TAGS, **(extra or {})}.items()]
+
+
+def schedule_group() -> str:
+    return resource_prefix()
 
 
 def has_managed_tag(tags: list[dict], key_name: str, value_name: str) -> bool:
@@ -535,12 +539,13 @@ def aws_schedule_expression(cron: str) -> str:
 
 
 def ensure_schedule_group(scheduler) -> None:
+    group = schedule_group()
     try:
-        scheduler.get_schedule_group(Name=SCHEDULE_GROUP)
+        scheduler.get_schedule_group(Name=group)
     except Exception as exc:
         if not not_found(exc):
             raise
-        scheduler.create_schedule_group(Name=SCHEDULE_GROUP, Tags=iam_tags())
+        scheduler.create_schedule_group(Name=group, Tags=iam_tags())
 
 
 def ensure_schedule(scheduler, name: str, expression: str, timezone: str,
@@ -550,7 +555,7 @@ def ensure_schedule(scheduler, name: str, expression: str, timezone: str,
     ensure_schedule_group(scheduler)
     request = {
         "Name": name,
-        "GroupName": SCHEDULE_GROUP,
+        "GroupName": schedule_group(),
         "ScheduleExpression": expression,
         "ScheduleExpressionTimezone": timezone,
         "FlexibleTimeWindow": {"Mode": "OFF"},
@@ -562,7 +567,7 @@ def ensure_schedule(scheduler, name: str, expression: str, timezone: str,
         },
     }
     try:
-        scheduler.get_schedule(Name=name, GroupName=SCHEDULE_GROUP)
+        scheduler.get_schedule(Name=name, GroupName=schedule_group())
         with_role_propagation_retry(lambda: scheduler.update_schedule(**request))
     except Exception as exc:
         if not not_found(exc):
@@ -611,7 +616,8 @@ def delete_log_group(logs, name: str) -> None:
 def other_schedules(scheduler, name: str) -> list[str] | None:
     """Names of other schedules in the pdt group; None when the group is absent."""
     try:
-        schedules = scheduler.list_schedules(GroupName=SCHEDULE_GROUP).get("Schedules", [])
+        schedules = scheduler.list_schedules(
+            GroupName=schedule_group()).get("Schedules", [])
     except Exception as exc:
         if not not_found(exc):
             raise
@@ -621,7 +627,7 @@ def other_schedules(scheduler, name: str) -> list[str] | None:
 
 def delete_schedule_group(scheduler) -> None:
     try:
-        scheduler.delete_schedule_group(Name=SCHEDULE_GROUP)
+        scheduler.delete_schedule_group(Name=schedule_group())
     except Exception as exc:
         if not not_found(exc):
             raise
