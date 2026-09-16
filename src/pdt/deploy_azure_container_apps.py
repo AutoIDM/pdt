@@ -41,7 +41,8 @@ from pdt.deploy_azure import (
     AZ, ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cost_estimate, delete_unless_locked, deployer_store,
     destroy_group, disable_old_secret_versions, ensure_group_and_vault, ensure_secret, ensure_shared_group,
-    ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item, list_remaining,
+    ensure_store, ensure_workspace, group_can_be_deleted, job_name, key_vault_item, legacy_job,
+    list_remaining,
     managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, run_stream, secret_actions, secret_name,
@@ -252,6 +253,19 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             [*AZ, "containerapp", "job", "secret", "remove", "--name", job,
              "--resource-group", rg, "--secret-names", "pdt-env"],
             stdin=subprocess.DEVNULL, capture_output=True, text=True)
+
+
+def remove_job(job: str, rg: str, resource: dict | None,
+               store: dict[str, str] | None, secret: str = "") -> None:
+    principal_id = ((resource or {}).get("identity") or {}).get("principalId")
+    if principal_id:
+        if store:
+            revoke_role(store["container_id"], principal_id, STORE_ROLE)
+        if secret:
+            revoke_role(secret, principal_id, SECRET_ROLE)
+    console.step(f"deleting Container Apps Job {job}")
+    run_quiet("containerapp", "job", "delete", "--name", job,
+              "--resource-group", rg, "--yes")
 
 
 def job_principal_id(job: str, rg: str) -> str:
@@ -486,16 +500,22 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
-    job = clean_name(f"pdt-{name}")
+    job = job_name(name)
+    rg = settings["resource_group"]
     sid = secret_name(name)
     _vault_exists, current = secret_state(settings, sid, name, True)
 
     def write(values: dict[str, str]) -> None:
+        # An app an older pdt deployed still runs under the name it gave it.
+        target = job
+        if az_json("containerapp", "job", "show", "--name", job,
+                   "--resource-group", rg) is None:
+            target = legacy_job(rg, name)[0] or job
         payload = json.dumps(values, sort_keys=True)
         secret_uri = ensure_secret(settings, sid, values, payload, current, name)
         identity_id = az_tsv("identity", "show", "--name", settings["identity"],
-                             "--resource-group", settings["resource_group"], "--query", "id")
-        set_job_secret(job, settings["resource_group"], secret_uri, identity_id)
+                             "--resource-group", rg, "--query", "id")
+        set_job_secret(target, rg, secret_uri, identity_id)
         disable_old_secret_versions(settings, sid)
 
     return run_secrets(action, app, current, write, assume_yes, name)
@@ -504,7 +524,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 def deploy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
-    job = clean_name(f"pdt-{name}")
+    job = job_name(name)
     cron = config.cron_expression(app["schedule"])
     values = gather_secrets(app)
     payload = json.dumps(values, sort_keys=True)
@@ -543,6 +563,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         fail(f"Container Apps Job {job} already exists but is not owned by "
              f"PDT app {name}; choose another resource group")
     missing_locks = [lock for lock in shared_locks(settings, job) if not lock.exists()]
+    old_job, old_resource = ("", None) if current_job else legacy_job(rg, name)
+    # The app's locks carry its job name, so a renamed app leaves its old ones behind.
+    old_locks = [lock for lock in shared_locks(settings, old_job) if lock.exists()] if old_job else []
     vault_exists, current_secret = secret_state(settings, sid, name, bool(values))
     store = store_settings(settings) if app["storage"] else None
     store_present = store_exists(store) if store else False
@@ -576,10 +599,15 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions += secret_actions(sid, values, current_secret, payload)
     if values:
         actions.append(f"allow {job} to update its own Key Vault secret {sid}")
+    if old_job:
+        actions.append(f"delete Container Apps Job {old_job} (renamed to {job})")
+        actions += [f"remove lock {lock.name} from {lock.label} (held under the old job name)"
+                    for lock in old_locks]
     actions.append(("update" if current_job else "create")
                    + f' Container Apps Job {job}: "{cron}" (UTC)')
+    history = job if current_job else old_job
     if not confirm(actions, assume_yes, cost_estimate_for(
-            settings["region"], cron, job, rg, current_job is not None,
+            settings["region"], cron, history or job, rg, bool(history),
             1 if values else 0, usage)):
         console.warn("Aborted; nothing was changed.")
         return 1
@@ -616,6 +644,12 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.step(f"building image {settings['registry']}.azurecr.io/{name}:latest")
     build_image(app, settings["registry"], name)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
+    if old_job:
+        # The old job goes first so the schedule never runs the app twice.
+        remove_job(old_job, rg, old_resource, store,
+                   secret_scope(settings, sid) if secret_uri else "")
+        for lock in old_locks:
+            lock.remove()
     console.step(f"reconciling Container Apps Job {job}")
     image = f"{settings['registry']}.azurecr.io/{name}:latest"
     try:
@@ -735,11 +769,15 @@ def kept_line(store: dict[str, str], deployer, name: str) -> str:
 def destroy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
-    job = clean_name(f"pdt-{name}")
+    job = job_name(name)
     sid = secret_name(name)
     rg = settings["resource_group"]
     current_job = az_json("containerapp", "job", "show", "--name", job,
                           "--resource-group", rg)
+    if current_job is None:
+        old_job, old_resource = legacy_job(rg, name)
+        if old_resource:
+            job, current_job = old_job, old_resource
     managed_job = owned_by(current_job, name)
     secret_owned = managed_secret(settings, sid, name)
     if current_job and not managed_job:
