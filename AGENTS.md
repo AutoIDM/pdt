@@ -23,7 +23,7 @@ Ease of use and simplification of the process is the top guiding principle. Ever
 
 Two directory trees exist and they are never the same tree.
 
-- **This repo** holds the tool. It has no `pdt.yml`, so no command ever mistakes it for a project.
+- **This repo** holds the tool. Its root has no `pdt.yml`, so no command ever mistakes it for a project. The one `pdt.yml` in the repo is `verify/pdt.yml`, the live test project described under `## verify/`.
 - **The user's project** is any folder holding `pdt.yml`. The user creates it with `pdt init`. Their apps live there, under their own version control.
 
 `pdt.config.find_project()` walks up from the working folder to the nearest `pdt.yml`. `PDT_PROJECT` overrides the walk. Never derive the project from `__file__`; after an install that path is inside site-packages.
