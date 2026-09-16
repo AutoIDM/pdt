@@ -1,10 +1,10 @@
 # Live verification
 
-A pdt project used to prove that deploy and destroy do what they say on a real cloud account. It is not a unit test: every run creates and deletes real resources, and it costs real money.
+`verify/` is a pdt project that proves deploy and destroy do what they say on a real cloud account. It is not a unit test: every run creates and deletes real resources, and it costs real money.
 
-One run covers one provider. It asserts the account is empty, deploys every app the provider owns, lists the account through the provider's own API, and checks two things: every resource pdt made carries `managed-by=pdt`, and every resource belongs either to one app or to the set the apps share. It then destroys the apps one at a time. After each destroy it checks that the destroyed app's resources are gone and that every other app's resources, and the shared ones, are still there. The last destroy must leave the account empty again.
+One run covers one provider. It asserts the account is empty, deploys every app the provider owns, and lists the account through the provider's own API. It checks two things: every resource pdt made carries `managed-by=pdt`, and every resource belongs to one app or to the set the apps share. It then destroys the apps one at a time. After each destroy it checks that the destroyed app's resources are gone and that every other app's resources, and the shared ones, are still there. The last destroy must leave the account empty again.
 
-The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Every provider gets two apps, so a shared resource always has a second owner while the first one is destroyed.
+The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Every provider gets two apps, so a shared resource always has a second owner while the first one is destroyed. AGENTS.md at the repo root holds the rules for changing this folder.
 
 | App | Provider | Runs on |
 | --- | --- | --- |
@@ -13,7 +13,7 @@ The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Ever
 | `google-cloud-a`, `google-cloud-b` | google-cloud | Cloud Run job |
 | `windows-a`, `windows-b` | windows | Task Scheduler |
 
-The app directories are generated. Edit `scripts/templates/`, then run `uv run --with pyyaml python verify/scripts/sync_apps.py` from the repository root.
+The app directories are generated. Do not edit them by hand. Edit `scripts/templates/`, then run `uv run --with pyyaml python verify/scripts/sync_apps.py` from the repository root.
 
 ## Running one provider locally
 
@@ -26,7 +26,7 @@ export PDT_AZURE_CONTAINER_APPS_ENVIRONMENT=pdt-shared/pdt-eastus2  # azure only
 uv run --no-project --with pyyaml python verify/scripts/verify.py aws
 ```
 
-Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one `PASS` or `FAIL` line per step and stops at the first failure. If the initial check fails, the run exits without changing resources. After that check passes, a failure attempts to destroy every app and exits 1.
+Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one `PASS` or `FAIL` line per step and stops at the first failure. If the first empty-account check fails, the run exits without changing resources. After that check passes, a failure attempts to destroy every app and exits 1.
 
 The `windows` provider deploys to the computer you run it on, so run it only on a Windows machine you are willing to add scheduled tasks to.
 
@@ -57,7 +57,7 @@ The Azure service principal holds `Contributor` on the subscription, and `Role B
 
 ## What the listings read
 
-Every listing drops resources tagged `pdt-lifecycle: retain`. The data store (an S3 bucket, an Azure storage account, or a Cloud Storage bucket) outlives its apps by design, so the empty-account checks do not expect it to go.
+Every listing drops resources tagged `pdt-lifecycle: retain`. The data store (an S3 bucket, an Azure storage account, or a Cloud Storage bucket) outlives its apps by design, so the empty-account checks do not expect it to go. See "Keep files between runs" in the root README.
 
 | Provider | Listing |
 | --- | --- |
