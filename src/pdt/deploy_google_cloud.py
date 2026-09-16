@@ -92,16 +92,20 @@ ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 
 
+# A freshly enabled API reports SERVICE_DISABLED for a few minutes, and Cloud
+# Scheduler reports ABORTED when a job changed a moment ago. Both pass.
+TRANSIENT = ("SERVICE_DISABLED", "ABORTED")
+
+
 def run_quiet(*args: str, data: str | None = None) -> str:
-    # a freshly enabled API can report SERVICE_DISABLED for a few minutes
     for wait in (10, 20, 40, 60, 60, 0):
         proc = subprocess.run([GCLOUD, *args], input=data if data is not None else "",
                               capture_output=True, text=True)
         if proc.returncode == 0:
             return proc.stdout
-        if wait == 0 or "SERVICE_DISABLED" not in proc.stderr:
+        if wait == 0 or not any(marker in proc.stderr for marker in TRANSIENT):
             break
-        console.bullet(f"API not ready yet; retrying in {wait}s...", indent=4)
+        console.bullet(f"Google Cloud is not ready yet; retrying in {wait}s...", indent=4)
         time.sleep(wait)
     console.say(proc.stderr.strip())
     fail(f"pdt gcloud {' '.join(args[:4])} failed; fix the problem above and re-run the deploy")
