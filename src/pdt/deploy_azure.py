@@ -124,12 +124,6 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
     fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
 
 
-def run_stream(*args: str) -> None:
-    proc = subprocess.run([*AZ, *args])
-    if proc.returncode != 0:
-        fail(f"pdt az {' '.join(args[:3])} failed; fix the problem above and re-run")
-
-
 LOCK_NAME = re.compile(r"Microsoft\.Authorization/locks/([^'\s,]+)", re.IGNORECASE)
 
 
