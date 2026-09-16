@@ -55,6 +55,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -68,6 +69,11 @@ from pdt.utils.storage import Store
 AZ = [sys.executable, "-m", "azure.cli"]
 COMMON_PROVIDERS = ("Microsoft.KeyVault", "Microsoft.ManagedIdentity")
 PLACEHOLDER_SUBSCRIPTION = "00000000-0000-0000-0000-000000000000"
+# A subscription allows a fixed number of Container Apps environments, so
+# every pdt project in a subscription shares one per region, kept in a
+# resource group of its own that outlives any one project.
+SHARED_GROUP = "pdt-shared"
+ENVIRONMENT_TYPE = "Microsoft.App/managedEnvironments"
 PRICES_API = "https://prices.azure.com/api/retail/prices"
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
@@ -79,22 +85,31 @@ STORE_METADATA_ARGS = tuple(
 BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
 
 
-def run_quiet(*args: str, data: str | None = None, retry_access: bool = False) -> str:
-    waits = (10, 20, 40, 0) if retry_access else (0,)
+def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
+              retry_internal: bool = False, hints: dict[str, str] | None = None) -> str:
+    waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
     for wait in waits:
         proc = subprocess.run(
             [*AZ, *args], input=data, capture_output=True, text=True)
         if proc.returncode == 0:
             return proc.stdout
-        transient = any(text in proc.stderr.lower() for text in (
+        output = proc.stderr.lower()
+        access_error = retry_access and any(text in output for text in (
             "unable to fetch secret", "forbidden", "authorizationfailed",
             "does not have authorization",
         ))
-        if wait == 0 or not transient:
+        internal_error = retry_internal and "internalservererror" in output
+        if proc.stderr.strip():
+            console.say(proc.stderr.strip())
+        if wait == 0 or not (access_error or internal_error):
             break
-        console.bullet(f"Azure RBAC is still propagating; retrying in {wait}s...", indent=4)
+        reason = ("Azure returned an access error" if access_error
+                  else "Azure returned InternalServerError")
+        console.bullet(f"{reason}; retrying in {wait}s...", indent=4)
         time.sleep(wait)
-    console.say(proc.stderr.strip())
+    for text, hint in (hints or {}).items():
+        if text.lower() in output:
+            console.say(hint)
     fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
 
 
@@ -125,7 +140,34 @@ def clean_name(value: str, limit: int = 32) -> str:
     return f"{name[:limit - 8].rstrip('-')}-{suffix}"
 
 
-def azure_settings(app: dict) -> dict[str, str]:
+@dataclass(frozen=True)
+class Environment:
+    """The Container Apps environment a job runs in.
+
+    `managed` means pdt created it and may delete it. A user-supplied one is
+    only used: never created, tagged, checked for the tag, or deleted.
+    """
+
+    resource_group: str
+    name: str
+    managed: bool
+
+    def resource_id(self, subscription: str) -> str:
+        return (f"/subscriptions/{subscription}/resourceGroups/{self.resource_group}"
+                f"/providers/{ENVIRONMENT_TYPE}/{self.name}")
+
+    def __str__(self) -> str:
+        return f"{self.resource_group}/{self.name}"
+
+
+def parse_environment(value: str, region: str) -> Environment:
+    if not value:
+        return Environment(SHARED_GROUP, f"pdt-{region}", True)
+    group, _, name = value.partition("/")
+    return Environment(group, name, False)
+
+
+def azure_settings(app: dict) -> dict:
     platform = app["platform"]
     subscription = str(
         platform.get("subscription")
@@ -140,9 +182,9 @@ def azure_settings(app: dict) -> dict[str, str]:
         "subscription": subscription,
         "region": region,
         "resource_group": resource_group,
-        "environment": str(
-            os.environ.get("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT")
-            or "pdt"),
+        "environment": parse_environment(str(
+            platform.get("environment")
+            or os.environ.get("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT") or ""), region),
         "identity": str(
             os.environ.get("PDT_AZURE_MANAGED_IDENTITY")
             or "pdt-runner"),
@@ -151,13 +193,16 @@ def azure_settings(app: dict) -> dict[str, str]:
         "workspace": str(
             os.environ.get("PDT_AZURE_LOG_WORKSPACE")
             or "pdt-logs"),
+        **shared_names(subscription, resource_group),
     }
 
 
-def shared_names(subscription: str) -> dict[str, str]:
-    # Storage account and Key Vault names are global across Azure, so they
-    # carry a hash of the subscription.
-    suffix = hashlib.sha256(subscription.encode()).hexdigest()[:10]
+def shared_names(subscription: str, resource_group: str) -> dict[str, str]:
+    # Storage, registry, vault, and Function App names are global, and the
+    # resources live in one resource group, so two projects in one
+    # subscription need different names.
+    seed = f"{subscription}/{resource_group}" if subscription else resource_group
+    suffix = hashlib.sha256(seed.encode()).hexdigest()[:10]
     return {
         "suffix": suffix,
         "registry": str(
@@ -172,7 +217,7 @@ def shared_names(subscription: str) -> dict[str, str]:
     }
 
 
-def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
+def preflight(app: dict, settings: dict) -> dict:
     requested = settings["subscription"]
     if requested == PLACEHOLDER_SUBSCRIPTION:
         requested = ""
@@ -200,7 +245,9 @@ def preflight(app: dict, settings: dict[str, str]) -> dict[str, str]:
     elif not requested and can_ask:
         save_subscription(app, account)
     settings["subscription"] = str(account["id"])
-    settings.update(shared_names(settings["subscription"]))
+    # A first deploy learns the subscription here, and its names must match
+    # every later deploy that reads the saved one.
+    settings.update(shared_names(settings["subscription"], settings["resource_group"]))
     user = account.get("user") or {}
     is_user = str(user.get("type", "")).lower() == "user"
     deployer_id = os.environ.get("PDT_AZURE_DEPLOYER_OBJECT_ID", "").strip()
@@ -463,30 +510,59 @@ def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
     run_quiet("group", "create", "--name", rg, "--location", settings["region"],
               "--tags", "managed-by=pdt")
     if not vault_exists:
+        purge_deleted_vault(settings)
         console.step(f"creating Key Vault {settings['vault']}")
         run_quiet("keyvault", "create", "--name", settings["vault"],
                   "--resource-group", rg, "--location", settings["region"],
                   "--enable-rbac-authorization", "true",
                   "--tags", "managed-by=pdt")
-    if not workspace_exists(settings):
-        console.step(f"creating Log Analytics workspace {settings['workspace']}")
-        run_quiet("monitor", "log-analytics", "workspace", "create",
-                  "--resource-group", rg, "--workspace-name", settings["workspace"],
-                  "--location", settings["region"], "--tags", "managed-by=pdt")
     vault_id = resource_id(settings, "Microsoft.KeyVault", "vaults", settings["vault"])
     assign_role(vault_id, settings["deployer_object_id"], "Key Vault Secrets Officer",
                 settings["deployer_principal_type"])
     return vault_id
 
 
-def workspace_resource(settings: dict[str, str]) -> dict | None:
+def purge_deleted_vault(settings: dict[str, str]) -> None:
+    """A soft-deleted vault still owns its name, so create fails until it is purged."""
+    deleted = az_json("keyvault", "show-deleted", "--name", settings["vault"])
+    if not deleted:
+        return
+    tags = (deleted.get("properties") or {}).get("tags") or {}
+    if tags.get("managed-by") != "pdt":
+        fail(f"a soft-deleted Key Vault named {settings['vault']} exists but is not "
+             "managed by PDT; purge it or deploy to another subscription")
+    console.step(f"purging soft-deleted Key Vault {settings['vault']}")
+    run_quiet("keyvault", "purge", "--name", settings["vault"])
+
+
+def workspace_resource(settings: dict) -> dict | None:
     return az_json("monitor", "log-analytics", "workspace", "show",
-                   "--resource-group", settings["resource_group"],
+                   "--resource-group", settings["environment"].resource_group,
                    "--workspace-name", settings["workspace"])
 
 
-def workspace_exists(settings: dict[str, str]) -> bool:
-    return workspace_resource(settings) is not None
+def ensure_workspace(settings: dict, exists: bool) -> tuple[str, str]:
+    group = settings["environment"].resource_group
+    if not exists:
+        console.step(f"creating Log Analytics workspace {settings['workspace']}")
+        run_quiet("monitor", "log-analytics", "workspace", "create",
+                  "--resource-group", group, "--workspace-name", settings["workspace"],
+                  "--location", settings["region"], "--tags", "managed-by=pdt")
+    logs_id = az_tsv("monitor", "log-analytics", "workspace", "show",
+                     "--resource-group", group, "--workspace-name",
+                     settings["workspace"], "--query", "customerId")
+    logs_key = az_tsv("monitor", "log-analytics", "workspace", "get-shared-keys",
+                      "--resource-group", group, "--workspace-name",
+                      settings["workspace"], "--query", "primarySharedKey")
+    return logs_id, logs_key
+
+
+def ensure_shared_group(settings: dict) -> None:
+    group = settings["environment"].resource_group
+    require_managed(az_json("group", "show", "--name", group), f"resource group {group}")
+    console.step(f"reconciling resource group {group}")
+    run_quiet("group", "create", "--name", group, "--location", settings["region"],
+              "--tags", "managed-by=pdt")
 
 
 def ensure_secret(settings: dict[str, str], sid: str, values: dict,
@@ -528,6 +604,13 @@ INSIGHTS_TYPE = "microsoft.insights/components"
 SMART_RULE_TYPE = "microsoft.alertsmanagement/smartDetectorAlertRules"
 ACTION_GROUP_TYPE = "microsoft.insights/actionGroups"
 SMART_ACTION_GROUP = "Application Insights Smart Detection"
+SMART_ACTION_SHORT_NAME = "SmartDetect"
+# Azure's own copy of the action group emails these two built-in roles, so
+# pdt's copy names them too and nobody loses a notification.
+SMART_ACTION_ROLES = (
+    ("MonitoringContributor", "749f88d5-cbae-40b8-bcfc-e573ddc772fa"),
+    ("MonitoringReader", "43d0d8ad-25c7-4714-9337-8ba259a9fe05"),
+)
 
 
 def failure_rule_name(function_app: str) -> str:
@@ -544,6 +627,26 @@ def tag_side_resource(rg: str, name: str, kind: str, *tags: str) -> None:
     if side_resource(rg, name, kind):
         run_quiet("resource", "tag", "--resource-group", rg, "--name", name,
                   "--resource-type", kind, "--tags", *tags)
+
+
+def ensure_action_group(rg: str) -> None:
+    """Create the Smart Detection action group before Azure gets to it.
+
+    Azure adds this group beside the first Application Insights component in
+    the subscription, minutes after the component and never on request. A
+    deploy that only tagged what it found had nothing to tag yet, so the group
+    stayed untagged and destroy could not claim it. Creating it first, under
+    the name Azure looks for, leaves one tagged group both sides use.
+    """
+    if side_resource(rg, SMART_ACTION_GROUP, ACTION_GROUP_TYPE):
+        return
+    receivers = []
+    for name, role in SMART_ACTION_ROLES:
+        receivers += ["--action", "armrole", name, role]
+    console.step(f"creating action group {SMART_ACTION_GROUP}")
+    run_quiet("monitor", "action-group", "create", "--name", SMART_ACTION_GROUP,
+              "--resource-group", rg, "--short-name", SMART_ACTION_SHORT_NAME,
+              *receivers, "--tags", "managed-by=pdt")
 
 
 def platform_side_resource(resource: dict) -> bool:
@@ -705,6 +808,18 @@ def deployer_store(settings: dict[str, str], app_name: str) -> Store:
     os.environ["PATH"] = os.pathsep.join(
         [str(Path(sys.executable).parent), os.environ.get("PATH", "")])
     return Store(store_url(store_settings(settings), app_name), AzureCliCredential())
+
+
+def store_usage(deployer: Store) -> tuple[int, int] | None:
+    """None until this login holds the data role, which ensure_store grants."""
+    try:
+        return deployer.usage()
+    except Exception as exc:  # the SDK raises HttpResponseError; tests have no SDK
+        if "AuthorizationPermissionMismatch" not in str(exc):
+            raise
+        console.note("this login cannot read the data store yet; the deploy grants it "
+                     "the role, and the next plan shows the stored data")
+        return None
 
 
 def storage(app: dict, settings: dict[str, str], rest: list[str], assume_yes: bool) -> int:

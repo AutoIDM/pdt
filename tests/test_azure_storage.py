@@ -1,3 +1,4 @@
+import pytest
 from pdt import deploy_azure
 from pdt.deploy_common import store_name, store_suffix
 
@@ -59,3 +60,21 @@ def test_the_grant_condition_names_one_app_only():
     assert "my-report/" in deploy_azure.store_condition("my-report")
     assert "other/" not in deploy_azure.store_condition("my-report")
     assert deploy_azure.store_condition("a") != deploy_azure.store_condition("b")
+
+
+def test_usage_is_unknown_until_the_data_role_lands(capsys):
+    class Deployer:
+        def usage(self):
+            raise RuntimeError("ErrorCode:AuthorizationPermissionMismatch")
+
+    assert deploy_azure.store_usage(Deployer()) is None
+    assert "cannot read the data store yet" in capsys.readouterr().out
+
+
+def test_another_storage_error_is_raised():
+    class Deployer:
+        def usage(self):
+            raise RuntimeError("ErrorCode:ContainerNotFound")
+
+    with pytest.raises(RuntimeError):
+        deploy_azure.store_usage(Deployer())

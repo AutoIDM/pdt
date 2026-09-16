@@ -42,7 +42,7 @@ APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storag
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account",
-    "subscription", "resource_group",
+    "subscription", "resource_group", "environment",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
 # Where each known key belongs, so a key in the wrong section gets told
@@ -264,6 +264,17 @@ def aws_account_problem(account: str) -> str:
     if account == "" or (len(account) == 12 and account.isdigit()):
         return ""
     return "That is not an AWS account ID. It is 12 digits, for example 123456789012."
+
+
+def azure_environment_problem(environment: str) -> str:
+    environment = environment.strip()
+    if environment == "":
+        return ""
+    group, _, name = environment.partition("/")
+    if group and name and "/" not in name and " " not in environment:
+        return ""
+    return ("That is not a Container Apps environment. Write it as "
+            "<resource-group>/<name>, for example my-group/my-environment.")
 
 
 def cron_expression(schedule) -> str:
@@ -519,6 +530,10 @@ def validate_app(name: str) -> list[str]:
         problem = aws_account_problem(str(app["platform"].get("account") or ""))
         if problem != "":
             problems.append(f"{name}: platform.account: {problem}")
+    if provider == "azure":
+        problem = azure_environment_problem(str(app["platform"].get("environment") or ""))
+        if problem != "":
+            problems.append(f"{name}: platform.environment: {problem}")
     dockerfile = find_project() / name / "Dockerfile"
     if dockerfile.is_file():
         problem = dockerfile_problem(app["platform"])

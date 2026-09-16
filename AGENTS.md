@@ -23,7 +23,7 @@ Ease of use and simplification of the process is the top guiding principle. Ever
 
 Two directory trees exist and they are never the same tree.
 
-- **This repo** holds the tool. It has no `pdt.yml`, so no command ever mistakes it for a project.
+- **This repo** holds the tool. Its root has no `pdt.yml`, so no command ever mistakes it for a project. The one `pdt.yml` in the repo is `verify/pdt.yml`, the live test project described under `## verify/`.
 - **The user's project** is any folder holding `pdt.yml`. The user creates it with `pdt init`. Their apps live there, under their own version control.
 
 `pdt.config.find_project()` walks up from the working folder to the nearest `pdt.yml`. `PDT_PROJECT` overrides the walk. Never derive the project from `__file__`; after an install that path is inside site-packages.
@@ -80,6 +80,7 @@ Both install routes must keep working, and a change is not done until both do:
 - The version pinned in a scaffolded `run.py` is the version that stays deployed. Upgrading pdt locally must not change a job already running.
 - Name per-app resources `pdt-<app>`. Tag or label every created resource `managed-by=pdt`. The string `autoidm` appears nowhere in code, names, tags, or defaults. Only delete resources that carry that tag.
 - Destroy removes everything deploy created for the app. When no other app still uses a shared resource (schedule group, cluster, image repository, service account), destroy removes that too. Do not leave resources behind. Do not use recovery windows or soft deletes; on Azure that means delete plus purge for Key Vaults and their secrets.
+- On Azure the Container Apps environment and its Log Analytics workspace are shared by every pdt project in the subscription, one environment per region in the resource group `pdt-shared`, because a subscription's environment quota is small. Destroy releases them only when no job in the subscription uses the environment, and never touches an environment the user names in `platform.environment`.
 - A provider must not let the platform auto-create side resources (Application Insights, default Log Analytics workspaces, action groups). Create each one explicitly, tag it, print it in the plan, and delete it in destroy. After the last app is destroyed, the resource group or project is gone; destroy ends by listing anything that still remains.
 - Destroy prints what it will delete before it deletes anything, and asks to proceed.
 - Guide the user. If a required tool is missing, install it (see the guiding principle above). If a login or profile is missing, list the choices and ask. If a permission is missing, print the exact policy the user must add.
@@ -88,6 +89,16 @@ Both install routes must keep working, and a change is not done until both do:
 ## Anything written to disk outside the project
 
 The tool downloads the Google Cloud CLI to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). Never write it beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
+
+## verify/
+
+`verify/` is a pdt project used as a live test. It deploys to real cloud accounts, so it is the one directory in this repo that holds a `pdt.yml`.
+
+- The `apps:` list in `verify/pdt.yml` is the matrix and the single source of truth. Add a target by adding a row there.
+- The app directories are generated. Never edit `verify/<app>/run.py` or `verify/<app>/config.yml` by hand. Edit `verify/scripts/templates/` and run `uv run --with pyyaml python verify/scripts/sync_apps.py`.
+- Never pin `pdt-cli` in `verify/.gitlab-ci.yml`. Each job installs the wheel the `build` job produced, so a run tests the commit it belongs to.
+- Every run asserts the account is empty before the first deploy and after the last destroy. A run that starts on a dirty account fails instead of hiding the leftovers.
+- The cloud jobs create and destroy real resources and cost real money. They are `interruptible: false`, because a cancelled run leaks what it made.
 
 ## Writing Markdown
 
