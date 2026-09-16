@@ -46,6 +46,15 @@ def wait_for(inventory, check, sleep=time.sleep, clock=time.monotonic):
         sleep(POLL_SECONDS)
 
 
+def kept_by_design(resource):
+    """A data store outlives its apps, so no check expects it to go."""
+    return resource.tags.get("pdt-lifecycle") == "retain"
+
+
+def listing(inventory):
+    return [resource for resource in inventory() if not kept_by_design(resource)]
+
+
 def empty_check(resources):
     return [f"{resource.kind} {resource.name or resource.id} still exists"
             for resource in resources]
@@ -197,7 +206,7 @@ def main(argv=None) -> int:
         print(f"error: no app in verify/pdt.yml uses provider {args.provider}")
         return 1
     settings = SETTINGS[args.provider](rows[0].get("platform") or {})
-    inventory = functools.partial(INVENTORIES[args.provider], settings)
+    inventory = functools.partial(listing, functools.partial(INVENTORIES[args.provider], settings))
     steps = verify([row["name"] for row in rows], run_pdt, inventory)
     if args.report:
         write_report(args.report, args.provider, steps)

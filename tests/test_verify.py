@@ -267,3 +267,11 @@ def test_the_azure_inventory_covers_the_shared_environment_group(monkeypatch):
     found = inventory.azure_inventory(
         {"resource_group": "pdt-verify", "environment": "pdt-shared/pdt-eastus2"})
     assert [resource.name for resource in found] == ["pdt-verify", "pdt-app-one"]
+
+
+def test_a_retained_data_store_is_left_out_of_every_listing():
+    from verify import listing
+
+    kept = Resource("s3", "arn:aws:s3:::pdt-data-1", tagged() | {"pdt-lifecycle": "retain"})
+    job = Resource("job", "pdt-app-one", tagged())
+    assert listing(lambda: [kept, job]) == [job]

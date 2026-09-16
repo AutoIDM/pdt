@@ -57,6 +57,8 @@ The Azure service principal holds `Contributor` on the subscription, and `Role B
 
 ## What the listings read
 
+Every listing drops resources tagged `pdt-lifecycle: retain`. The data store (an S3 bucket, an Azure storage account, or a Cloud Storage bucket) outlives its apps by design, so the empty-account checks do not expect it to go.
+
 | Provider | Listing |
 | --- | --- |
 | aws | `resourcegroupstaggingapi get-resources`, plus one list per kind filtered on the `pdt` name prefix |
