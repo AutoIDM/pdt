@@ -38,3 +38,21 @@ def test_storage_turned_off_is_refused(store, capsys):
     out = capsys.readouterr().out
     assert "storage is turned off for my-report" in out
     assert "remove storage: false from my-report/config.yml" in out
+
+
+def test_destroy_removes_each_object_separately(app):
+    class FileSystem:
+        def __init__(self):
+            self.removed = []
+
+        def find(self, path):
+            return ["one.csv", "two.csv"]
+
+        def rm(self, path):
+            self.removed.append(path)
+
+    fs = FileSystem()
+    store = type("Store", (), {"fs": lambda self: fs})()
+
+    assert storage_cli.run(store, app, ["destroy"], True) == 0
+    assert fs.removed == ["one.csv", "two.csv"]

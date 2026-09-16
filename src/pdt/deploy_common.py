@@ -30,6 +30,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -55,16 +56,33 @@ BUILD_EXCLUDES = (
     ".DS_Store", ".gcloud", "*.json.key", "*-key.json",
     "service-account*.json",
 )
-STORE_PREFIX = "pdt-data"
 STORE_TAGS = {"managed-by": "pdt", "pdt-lifecycle": "retain"}
 
 
+def resource_prefix() -> str:
+    namespace = os.environ.get("PDT_RESOURCE_NAMESPACE", "").strip()
+    if namespace and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,18}", namespace):
+        raise ValueError(
+            "PDT_RESOURCE_NAMESPACE must contain 1 to 19 lowercase letters, numbers, or hyphens")
+    return f"pdt-{namespace}" if namespace else "pdt"
+
+
+def resource_name(name: str) -> str:
+    return f"{resource_prefix()}-{name}"
+
+
+def store_prefix() -> str:
+    return "pdt-data" if resource_prefix() == "pdt" else f"{resource_prefix()}-data"
+
+
 def store_suffix(seed: str) -> str:
-    return hashlib.sha256(seed.encode()).hexdigest()[:10]
+    namespace = os.environ.get("PDT_RESOURCE_NAMESPACE", "").strip()
+    value = f"{namespace}/{seed}" if namespace else seed
+    return hashlib.sha256(value.encode()).hexdigest()[:10]
 
 
 def store_name(seed: str) -> str:
-    return f"{STORE_PREFIX}-{store_suffix(seed)}"
+    return f"{store_prefix()}-{store_suffix(seed)}"
 
 
 def own_dockerfile(app: dict) -> Path | None:

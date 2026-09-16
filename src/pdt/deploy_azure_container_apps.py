@@ -39,7 +39,8 @@ from pdt.deploy_azure import (
 )
 from pdt.deploy_common import (
     CostEstimate, fail, gather_secrets, image_action, run_build,
-    stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
+    resource_name, stage_build_context, store_kept_line, warn_if_locked,
+    write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -355,7 +356,7 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
 def deploy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
-    job = clean_name(f"pdt-{name}")
+    job = clean_name(resource_name(name))
     cron = config.cron_expression(app["schedule"])
     values = gather_secrets(app)
     payload = json.dumps(values, sort_keys=True)
@@ -562,7 +563,7 @@ def kept_line(store: dict[str, str], deployer, name: str) -> str:
 def destroy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
-    job = clean_name(f"pdt-{name}")
+    job = clean_name(resource_name(name))
     sid = secret_name(name)
     rg = settings["resource_group"]
     current_job = az_json("containerapp", "job", "show", "--name", job,

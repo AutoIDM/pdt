@@ -24,7 +24,7 @@ commands:
     covered_by: [destroy, destroy-absent]
   storage:
     covered_by: [storage]
-    note: ls only; get, query, and destroy need files in the store that no verify app writes
+    note: the scheduled a app writes verify.csv; storage runs ls, get, query, and destroy against it
   completion:
     covered_by: [local]
     note: prints the bash script; nothing is installed into the runner's shell
@@ -39,6 +39,13 @@ commands:
     note: the Google Cloud listing in scripts/inventory.py runs through pdt gcloud
 
 keys:
+  project.apps:
+    covered_by: [deploy, local]
+    note: the live matrix and the local list command load the project apps list
+  project.platform:
+    uncovered: one project cannot set a shared provider or region while deploying all four providers
+  retired.runtime:
+    uncovered: a live project containing this retired key cannot pass validation; unit tests cover its error
   name:
     covered_by: [deploy]
   schedule:
@@ -47,7 +54,7 @@ keys:
     covered_by: [aws-fargate-a, azure-container-apps-a, google-cloud-a, windows-a]
   schedule.cron:
     covered_by: [aws-fargate-b, azure-container-apps-b, google-cloud-b, windows-b]
-    note: the run replaces the b app's cron with a time a few minutes out, and schedule-fires waits for it
+    note: each b app deploys its configured cron; the run gives the a app a near-term cron and waits for it
   timezone:
     covered_by: [aws-fargate-b, google-cloud-b, windows-a, windows-b]
     note: America/New_York on AWS and Google Cloud, local on Windows; Azure accepts only UTC
@@ -78,14 +85,14 @@ keys:
     covered_by: [deploy]
   env.required:
     covered_by: [deploy]
-    note: PDT_SMOKE_TOKEN is required by every app, so a deployed run fails without PDT_ENV_JSON
+    note: PDT_SMOKE_TOKEN is required by every app; cloud jobs receive PDT_ENV_JSON, and Windows loads verify/.env as SYSTEM
   env.one_of:
     covered_by: [aws-fargate-b, azure-container-apps-b, google-cloud-b, windows-b]
   env.optional:
-    covered_by: [deploy]
-    note: every app declares an empty optional list
+    covered_by: [aws-fargate-a, azure-container-apps-a, google-cloud-a, windows-a]
+    note: each a app requires the supplied PDT_VERIFY_OPTIONAL value during its run
   storage:
-    covered_by: [storage, aws-fargate-b, azure-container-apps-b, google-cloud-b, windows-b]
+    covered_by: [storage, aws-fargate-a, aws-fargate-b, azure-container-apps-a, azure-container-apps-b, google-cloud-a, google-cloud-b, windows-a, windows-b]
     note: the a app keeps the default; the b app sets storage false and pdt storage refuses it
   Dockerfile:
     covered_by: [aws-fargate-b, azure-container-apps-b, google-cloud-b]
@@ -107,22 +114,27 @@ providers:
 
 rules:
   runs-every-scenario-on-every-provider:
-    covered_by: [deploy, schedule-fires, storage, redeploy, destroy, destroy-absent]
+    covered_by: [deploy, schedule-fires, storage, redeploy, destroy, destroy-absent, storage-cleanup]
     note: one CI job per provider runs the same scenarios
   cleans-up-after-the-run:
-    covered_by: [destroy]
-    note: a failure after the first deploy destroys every app before the run exits
+    covered_by: [destroy, storage-cleanup]
+    note: success and failure paths clear storage, destroy every app, delete the exact test store, and check the raw inventory
   fails-when-a-provider-cannot-deploy-or-manage:
     covered_by: [deploy, destroy]
+  isolates-concurrent-ci-runs:
+    covered_by: [deploy, storage-cleanup]
+    note: CI_PIPELINE_ID namespaces each pipeline and no provider verification job uses a resource group
   every-resource-is-tagged:
     covered_by: [deploy]
   each-app-destroys-individually:
     covered_by: [destroy]
+  deletes-run-owned-storage:
+    covered_by: [storage-cleanup]
   shared-resources-go-with-the-last-app:
     covered_by: [destroy]
   jobs-fire-on-schedule:
     covered_by: [schedule-fires]
-    note: the b app's run must complete with success on the provider's own run record
+    note: the a app's run must complete with success on the provider's own run record
   deploy-reconciles:
     covered_by: [redeploy]
     note: a second deploy of the a app exits 0 and adds or removes no resource
