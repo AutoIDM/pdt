@@ -92,13 +92,7 @@ The tool downloads the Google Cloud CLI to the user's data folder (`~/.local/sha
 
 ## verify/
 
-`verify/` is a pdt project used as a live test. It deploys to real cloud accounts, so it is the one directory in this repo that holds a `pdt.yml`.
-
-- The `apps:` list in `verify/pdt.yml` is the matrix and the single source of truth. Add a target by adding a row there.
-- The app directories are generated. Never edit `verify/<app>/run.py` or `verify/<app>/config.yml` by hand. Edit `verify/scripts/templates/` and run `uv run --with pyyaml python verify/scripts/sync_apps.py`.
-- Never pin `pdt-cli` in `verify/.gitlab-ci.yml`. Each job installs the wheel the `build` job produced, so a run tests the commit it belongs to.
-- Every run asserts the account is empty before the first deploy and after the last destroy. A run that starts on a dirty account fails instead of hiding the leftovers.
-- The cloud jobs create and destroy real resources and cost real money. They are `interruptible: false`, because a cancelled run leaks what it made.
+`verify/` is the live test project that CI deploys to every provider, checks, and destroys; its rules, coverage inventory, and scenario guide are in `verify/AGENTS.md`.
 
 ## Writing Markdown
 
