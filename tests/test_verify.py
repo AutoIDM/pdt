@@ -1,9 +1,13 @@
+import datetime
 import xml.etree.ElementTree as ET
 
+import inventory
 from inventory import Resource, classify
-from verify import junit_tree, verify, wait_for, write_report
+from verify import (fire_schedule, junit_tree, scheduled, verify, verify_local,
+                    wait_for, write_report)
 
 APPS = ["app-one", "app-two"]
+FIRE = datetime.datetime(2026, 1, 1, 12, 0, tzinfo=datetime.timezone.utc)
 
 
 def tagged(**extra):
@@ -22,16 +26,26 @@ class FakeCloud:
         self.extra = []
         self.keep_shared = False
         self.deploy_fails = ()
+        self.no_storage = {"app-two"}
+        self.fired = {"app-two": ["run-1"]}
+        self.redeploy_adds = None
 
-    def run_pdt(self, verb, app, _yes):
+    def run_pdt(self, verb, app, *_args):
         self.calls.append((verb, app))
+        if verb == "storage":
+            return 1 if app in self.no_storage else 0
         if verb == "deploy":
             if app in self.deploy_fails:
                 return 1
+            if app in self.deployed and self.redeploy_adds:
+                self.add(self.redeploy_adds)
             self.deploy(app)
         else:
             self.destroy(app)
         return 0
+
+    def runs(self, app, _since):
+        return self.fired.get(app, [])
 
     def add(self, resource):
         self.resources[resource.id] = resource
@@ -41,7 +55,8 @@ class FakeCloud:
         self.add(Resource("registry", "pdt-registry", tagged(), "pdt-registry"))
         for resource in self.extra:
             self.add(resource)
-        self.deployed.append(app)
+        if app not in self.deployed:
+            self.deployed.append(app)
 
     def destroy(self, app):
         if app not in self.deployed:
@@ -59,13 +74,13 @@ class FakeCloud:
         return list(self.resources.values())
 
 
-def now(inventory, check):
+def now(inventory, check, _deadline=None, _poll=None):
     return check(inventory())
 
 
-def run(cloud):
-    return verify(cloud.apps, cloud.run_pdt, cloud.inventory,
-                  report=lambda step: None, wait=now)
+def run(cloud, inventory=None):
+    return verify(cloud.apps, cloud.run_pdt, inventory or cloud.inventory,
+                  cloud.runs, FIRE, report=lambda step: None, wait=now)
 
 
 def failed(steps):
@@ -110,6 +125,11 @@ def test_happy_path_leaves_the_account_empty():
         "deploy app-two",
         "every resource is tagged",
         "every resource has an owner",
+        "app-two ran on schedule",
+        "storage ls app-one",
+        "storage ls app-two is refused",
+        "deploy app-one again",
+        "nothing changed after redeploy app-one",
         "destroy app-one",
         "app-one resources are gone",
         "other apps are untouched after destroy app-one",
@@ -117,7 +137,117 @@ def test_happy_path_leaves_the_account_empty():
         "app-two resources are gone",
         "other apps are untouched after destroy app-two",
         "account is empty after destroy",
+        "destroy app-one again",
+        "account is still empty",
     ]
+
+
+def test_a_schedule_that_never_fires_fails_and_cleans_up():
+    cloud = FakeCloud()
+    cloud.fired = {}
+    steps = run(cloud)
+    assert [step.name for step in failed(steps)] == ["app-two ran on schedule"]
+    assert "no successful run of app-two" in failed(steps)[0].detail
+    assert cloud.resources == {}
+
+
+def test_a_redeploy_that_changes_the_account_fails():
+    cloud = FakeCloud()
+    cloud.redeploy_adds = Resource("role", "pdt-app-one-extra", tagged())
+    steps = run(cloud)
+    assert [step.name for step in failed(steps)] == ["nothing changed after redeploy app-one"]
+    assert "pdt-app-one-extra appeared" in failed(steps)[0].detail
+
+
+def test_storage_must_be_refused_when_it_is_off():
+    cloud = FakeCloud()
+    cloud.no_storage = set()
+    steps = run(cloud)
+    assert [step.name for step in failed(steps)] == ["storage ls app-two is refused"]
+
+
+def test_fire_schedule_rounds_up_to_the_next_whole_minute():
+    now = datetime.datetime(2026, 1, 1, 23, 52, 30, tzinfo=datetime.timezone.utc)
+    cron, fire = fire_schedule(now, lead_minutes=10)
+    assert cron == "3 0 * * *"
+    assert fire == datetime.datetime(2026, 1, 2, 0, 3, tzinfo=datetime.timezone.utc)
+    assert fire_schedule(now.replace(second=0), lead_minutes=10)[0] == "2 0 * * *"
+
+
+def test_scheduled_writes_the_cron_and_restores_the_file(tmp_path):
+    path = tmp_path / "config.yml"
+    path.write_text("storage: false\n")
+    with scheduled(tmp_path, "3 0 * * *"):
+        assert path.read_text() == 'storage: false\nschedule: "3 0 * * *"\n'
+    assert path.read_text() == "storage: false\n"
+
+
+def test_the_local_scenario_runs_the_commands_that_need_no_account():
+    calls = []
+
+    def run_pdt(*args, cwd=None):
+        calls.append((args, cwd is not None))
+        return 1 if args == ("validate",) and cwd is not None else 0
+
+    steps = verify_local(run_pdt, report=lambda step: None)
+    assert failed(steps) == []
+    assert [step.name for step in steps] == [
+        "validate", "list", "examples", "completion --script bash", "run windows-a",
+        "init --yes in a new folder", "new report --from hello-world in a new folder",
+        "list in a new folder", "validate in a new folder reports the missing provider",
+    ]
+    assert [folder for _args, folder in calls] == [False] * 5 + [True] * 4
+
+
+def test_aws_runs_count_streams_that_logged_the_greeting(monkeypatch):
+    events = {"events": [
+        {"logStreamName": "ecs/one", "message": '{"msg": "Hello from pdt."}'},
+        {"logStreamName": "ecs/two", "message": "Traceback"},
+    ]}
+    monkeypatch.setattr(inventory, "aws", lambda *args: events)
+    assert inventory.aws_runs({"region": "us-east-1"}, "app-two", FIRE) == ["ecs/one"]
+
+    def missing(*args):
+        raise inventory.InventoryError("(ResourceNotFoundException) no group")
+
+    monkeypatch.setattr(inventory, "aws", missing)
+    assert inventory.aws_runs({"region": "us-east-1"}, "app-two", FIRE) == []
+
+
+def test_azure_runs_count_succeeded_executions_since(monkeypatch):
+    listed = [
+        {"name": "ok", "properties": {"status": "Succeeded", "startTime": "2026-01-01T12:05:00Z"}},
+        {"name": "bad", "properties": {"status": "Failed", "startTime": "2026-01-01T12:06:00Z"}},
+        {"name": "old", "properties": {"status": "Succeeded", "startTime": "2026-01-01T11:00:00Z"}},
+    ]
+    monkeypatch.setattr(inventory, "az", lambda *args: listed)
+    assert inventory.azure_runs({"resource_group": "pdt-verify"}, "app-two", FIRE) == ["ok"]
+
+
+def test_google_cloud_runs_count_succeeded_executions_since(monkeypatch):
+    listed = [
+        {"metadata": {"name": "ok", "creationTimestamp": "2026-01-01T12:05:00Z"},
+         "status": {"succeededCount": 1}},
+        {"metadata": {"name": "bad", "creationTimestamp": "2026-01-01T12:06:00Z"},
+         "status": {"failedCount": 1}},
+        {"metadata": {"name": "old", "creationTimestamp": "2026-01-01T11:00:00Z"},
+         "status": {"succeededCount": 1}},
+    ]
+    monkeypatch.setattr(inventory, "gcloud", lambda *args: listed)
+    assert inventory.google_cloud_runs(
+        {"region": "us-central1", "project": "p"}, "app-two", FIRE) == ["ok"]
+
+
+def test_windows_runs_need_a_zero_result_since(monkeypatch):
+    replies = iter([
+        {"LastRunTime": "2026-01-01T12:05:00.0000000Z", "LastTaskResult": 0},
+        {"LastRunTime": "2026-01-01T12:05:00.0000000Z", "LastTaskResult": 1},
+        {"LastRunTime": "2026-01-01T11:00:00.0000000Z", "LastTaskResult": 0},
+    ])
+    monkeypatch.setattr(inventory, "run_json", lambda command: next(replies))
+    assert inventory.windows_runs({}, "app-two", FIRE) == ["2026-01-01T12:05:00.0000000Z"]
+    assert inventory.windows_runs({}, "app-two", FIRE) == []
+    assert inventory.windows_runs({}, "app-two", FIRE) == []
 
 
 def test_an_untagged_resource_fails():
@@ -161,8 +291,7 @@ def test_an_exception_after_deploy_destroys_every_app():
             raise RuntimeError("the cloud said no")
         return []
 
-    steps = verify(cloud.apps, cloud.run_pdt, explode,
-                   report=lambda step: None, wait=now)
+    steps = run(cloud, explode)
     assert [step.name for step in failed(steps)] == ["unexpected error"]
     assert "the cloud said no" in failed(steps)[0].detail
     assert cloud.calls == [
@@ -190,8 +319,7 @@ def test_an_initial_inventory_exception_leaves_the_account_untouched():
     def explode():
         raise RuntimeError("the cloud said no")
 
-    steps = verify(cloud.apps, cloud.run_pdt, explode,
-                   report=lambda step: None, wait=now)
+    steps = run(cloud, explode)
     assert [step.name for step in failed(steps)] == ["unexpected error"]
     assert cloud.calls == []
     assert cloud.resources == before
@@ -245,8 +373,6 @@ def test_the_junit_report_marks_a_clean_run(tmp_path):
 
 
 def test_the_azure_inventory_covers_the_shared_environment_group(monkeypatch):
-    import inventory
-
     groups = {"pdt-verify": [{"type": "Microsoft.App/jobs", "id": "/job", "name": "pdt-app-one"}],
               "pdt-shared": [{"type": "Microsoft.App/managedEnvironments", "id": "/env",
                               "name": "pdt-eastus2", "tags": tagged()}]}
