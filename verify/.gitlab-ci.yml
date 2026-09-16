@@ -170,11 +170,20 @@ verify:windows:
 # Everything the matrix can prove without a cloud account.
 verify:check:
   stage: test
-  needs: []
+  # The local scenario runs real pdt commands, so this job installs the wheel
+  # the build job made instead of starting with needs: [].
+  needs: [build]
+  artifacts:
+    when: always
+    reports:
+      junit: verify-local.xml
+  before_script:
+    - !reference [".verify:unix", before_script]
   script:
     - uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --check
     - uv run --no-project --with pyyaml python verify/scripts/coverage.py --check
     - PDT_PROJECT=verify uv run pdt validate
+    - uv run --no-project --with pyyaml python verify/scripts/verify.py local --report verify-local.xml
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
