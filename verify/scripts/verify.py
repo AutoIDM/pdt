@@ -2,32 +2,42 @@
 
     verify.py <provider> [--report FILE]
 
-The scenario is fixed. It asserts the account is empty, deploys every app
-in verify/pdt.yml order, reads the run history with `pdt health` and
-`pdt runs` (no app has run yet, so this proves the read path), records which resource each app owns and which
-resources the apps share, then destroys the apps one at a time and checks
-after each one that the destroyed app is gone and that nothing else moved.
-If the initial check fails, the run exits without changing resources.
-After that check passes, a failure attempts to destroy every app and exits 1.
+The scenarios in SCENARIOS run in order and the run stops at the first
+failed step. On a cloud provider they assert the account is empty, deploy
+every app in verify/pdt.yml order, read the run history with `pdt health`
+and `pdt runs` (no app has run yet, so this proves the read path), wait for
+the b app's schedule to fire, read the data store, deploy the a app again,
+then destroy the apps one at a time and check after each one that the
+destroyed app is gone and that nothing else moved. The `local` provider runs
+only the commands that need no account. If the initial check fails, the run
+exits without changing resources. After that check passes, a failure
+attempts to destroy every app and exits 1.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import datetime
 import functools
 import subprocess
+import tempfile
 import time
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+import zoneinfo
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
-from inventory import INVENTORIES, SETTINGS, SHARED, UNTAGGED, classify
+from inventory import INVENTORIES, RUNS, SETTINGS, SHARED, UNTAGGED, classify
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEADLINE_SECONDS = 180
 POLL_SECONDS = 10
+FIRE_LEAD_MINUTES = 10
+FIRE_GRACE_SECONDS = 8 * 60
+FIRE_POLL_SECONDS = 20
 
 
 @dataclass
@@ -37,14 +47,39 @@ class Step:
     detail: str = ""
 
 
-def wait_for(inventory, check, sleep=time.sleep, clock=time.monotonic):
+@dataclass
+class Run:
+    apps: list[str]
+    run_pdt: object
+    report: object
+    inventory: object = None
+    wait: object = None
+    runs: object = None
+    fire: datetime.datetime | None = None
+    steps: list[Step] = field(default_factory=list)
+    owned: dict = field(default_factory=dict)
+    shared: set = field(default_factory=set)
+
+    def record(self, name, problems):
+        return record(self.steps, self.report, name, problems)
+
+    def check(self, name, checker, deadline=DEADLINE_SECONDS, poll=POLL_SECONDS):
+        return self.record(name, self.wait(self.inventory, checker, deadline, poll))
+
+    def command(self, name, *args, **kwargs):
+        code = self.run_pdt(*args, **kwargs)
+        return self.record(name, [] if code == 0 else [f"pdt {' '.join(args)} exited {code}"])
+
+
+def wait_for(inventory, check, deadline=DEADLINE_SECONDS, poll=POLL_SECONDS,
+             sleep=time.sleep, clock=time.monotonic):
     """Re-read the account until its listing catches up with the deletions."""
-    deadline = clock() + DEADLINE_SECONDS
+    stop = clock() + deadline
     while True:
         problems = check(inventory())
-        if not problems or clock() >= deadline:
+        if not problems or clock() >= stop:
             return problems
-        sleep(POLL_SECONDS)
+        sleep(poll)
 
 
 def kept_by_design(resource):
@@ -88,6 +123,20 @@ def untouched_check(owned, shared, remaining):
     return check
 
 
+def same_check(before):
+    def check(resources):
+        present = {resource.id for resource in resources}
+        return ([f"{item} appeared" for item in sorted(present - before)]
+                + [f"{item} disappeared" for item in sorted(before - present)])
+    return check
+
+
+def fired_check(app):
+    def check(found):
+        return [] if found else [f"no successful run of {app} since its schedule was set"]
+    return check
+
+
 def ownership(resources, apps):
     owned = {app: set() for app in apps}
     shared = set()
@@ -104,6 +153,30 @@ def owner_problems(owned, apps):
     return [f"{app} owns no resource" for app in apps if not owned[app]]
 
 
+def fire_schedule(now, lead_minutes=FIRE_LEAD_MINUTES):
+    """A daily cron for the next whole minute at least lead_minutes after now."""
+    fire = (now + datetime.timedelta(minutes=lead_minutes, seconds=59)).replace(
+        second=0, microsecond=0)
+    return f"{fire.minute} {fire.hour} * * *", fire
+
+
+def app_now(timezone):
+    if timezone == "local":
+        return datetime.datetime.now().astimezone()
+    return datetime.datetime.now(zoneinfo.ZoneInfo(timezone))
+
+
+@contextlib.contextmanager
+def scheduled(app_dir, cron):
+    path = app_dir / "config.yml"
+    original = path.read_text()
+    path.write_text(f'{original}schedule: "{cron}"\n')
+    try:
+        yield
+    finally:
+        path.write_text(original)
+
+
 def print_step(step):
     print(f"{'PASS' if step.ok else 'FAIL'}  {step.name}", flush=True)
     for line in step.detail.splitlines():
@@ -117,62 +190,118 @@ def record(steps, report, name, problems):
     return step.ok
 
 
-def scenario(steps, apps, run_pdt, inventory, report, wait):
-    def check(name, checker):
-        return record(steps, report, name, wait(inventory, checker))
-
-    def command(*args):
-        code = run_pdt(*args)
-        name = " ".join(arg for arg in args if arg != "--yes")
-        return record(steps, report, name,
-                      [] if code == 0 else [f"pdt {name} exited {code}"])
-
-    for app in apps:
-        if not command("deploy", app, "--yes"):
-            return
-    if not command("health"):
-        return
-    for app in apps:
-        if not command("runs", app):
-            return
-    if not check("every resource is tagged", untagged_check(apps)):
-        return
-    owned, shared = ownership(inventory(), apps)
-    if not record(steps, report, "every resource has an owner",
-                  owner_problems(owned, apps)):
-        return
-    for index, app in enumerate(apps):
-        if not command("destroy", app, "--yes"):
-            return
-        if not check(f"{app} resources are gone", gone_check(owned[app])):
-            return
-        if not check(f"other apps are untouched after destroy {app}",
-                     untouched_check(owned, shared, apps[index + 1:])):
-            return
-    check("account is empty after destroy", empty_check)
+def deploy(ctx):
+    for app in ctx.apps:
+        if not ctx.command(f"deploy {app}", "deploy", app, "--yes"):
+            return False
+    if not ctx.command("health", "health"):
+        return False
+    for app in ctx.apps:
+        if not ctx.command(f"runs {app}", "runs", app):
+            return False
+    if not ctx.check("every resource is tagged", untagged_check(ctx.apps)):
+        return False
+    ctx.owned, ctx.shared = ownership(ctx.inventory(), ctx.apps)
+    return ctx.record("every resource has an owner", owner_problems(ctx.owned, ctx.apps))
 
 
-SCENARIOS = {"lifecycle": scenario}
+def schedule_fires(ctx):
+    app = ctx.apps[1]
+    since = ctx.fire - datetime.timedelta(minutes=FIRE_LEAD_MINUTES)
+    remaining = (ctx.fire - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    deadline = max(remaining, 0) + FIRE_GRACE_SECONDS
+    found = ctx.wait(functools.partial(ctx.runs, app, since), fired_check(app),
+                     deadline, FIRE_POLL_SECONDS)
+    return ctx.record(f"{app} ran on schedule", found)
 
 
-def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
-    steps: list[Step] = []
+def storage(ctx):
+    first, second = ctx.apps[0], ctx.apps[1]
+    if not ctx.command(f"storage ls {first}", "storage", first, "ls"):
+        return False
+    code = ctx.run_pdt("storage", second, "ls")
+    return ctx.record(f"storage ls {second} is refused",
+                      [] if code != 0 else [f"pdt storage {second} ls exited 0 with storage off"])
+
+
+def redeploy(ctx):
+    app = ctx.apps[0]
+    before = {resource.id for resource in ctx.inventory()}
+    if not ctx.command(f"deploy {app} again", "deploy", app, "--yes"):
+        return False
+    return ctx.check(f"nothing changed after redeploy {app}", same_check(before))
+
+
+def destroy(ctx):
+    for index, app in enumerate(ctx.apps):
+        if not ctx.command(f"destroy {app}", "destroy", app, "--yes"):
+            return False
+        if not ctx.check(f"{app} resources are gone", gone_check(ctx.owned[app])):
+            return False
+        if not ctx.check(f"other apps are untouched after destroy {app}",
+                         untouched_check(ctx.owned, ctx.shared, ctx.apps[index + 1:])):
+            return False
+    return ctx.check("account is empty after destroy", empty_check)
+
+
+def destroy_absent(ctx):
+    app = ctx.apps[0]
+    if not ctx.command(f"destroy {app} again", "destroy", app, "--yes"):
+        return False
+    return ctx.check("account is still empty", empty_check)
+
+
+def local(ctx):
+    for args in (("validate",), ("list",), ("examples",),
+                 ("completion", "--script", "bash"), ("run", "windows-a")):
+        if not ctx.command(" ".join(args), *args):
+            return False
+    with tempfile.TemporaryDirectory(prefix="pdt-verify-") as folder:
+        for args in (("init", "--yes"), ("new", "report", "--from", "hello-world"), ("list",)):
+            if not ctx.command(f"{' '.join(args)} in a new folder", *args, cwd=folder):
+                return False
+        code = ctx.run_pdt("validate", cwd=folder)
+        return ctx.record("validate in a new folder reports the missing provider",
+                          [] if code != 0 else ["pdt validate exited 0 with no provider set"])
+
+
+SCENARIOS = {
+    "deploy": deploy,
+    "schedule-fires": schedule_fires,
+    "storage": storage,
+    "redeploy": redeploy,
+    "destroy": destroy,
+    "destroy-absent": destroy_absent,
+    "local": local,
+}
+CLOUD_SCENARIOS = tuple(name for name in SCENARIOS if name != "local")
+
+
+def verify(apps, run_pdt, inventory, runs, fire, report=print_step, wait=wait_for):
+    ctx = Run(apps, run_pdt, report, inventory, wait, runs, fire)
     cleanup = False
     try:
         try:
             problems = wait(inventory, empty_check)
-            if not record(steps, report, "account is empty before deploy", problems):
-                return steps
+            if not ctx.record("account is empty before deploy", problems):
+                return ctx.steps
             cleanup = True
-            scenario(steps, apps, run_pdt, inventory, report, wait)
+            for name in CLOUD_SCENARIOS:
+                if not SCENARIOS[name](ctx):
+                    break
         except Exception as exc:
-            record(steps, report, "unexpected error",
-                   [f"{type(exc).__name__}: {exc}"])
+            ctx.record("unexpected error", [f"{type(exc).__name__}: {exc}"])
     finally:
-        if cleanup and any(not step.ok for step in steps):
+        if cleanup and any(not step.ok for step in ctx.steps):
             for app in apps:
                 run_pdt("destroy", app, "--yes")
-    return steps
+    return ctx.steps
+
+
+def verify_local(run_pdt, report=print_step):
+    ctx = Run([], run_pdt, report)
+    local(ctx)
+    return ctx.steps
 
 
 def junit_tree(provider, steps):
@@ -200,24 +329,31 @@ def matrix_rows(provider):
             if (entry.get("platform") or {}).get("provider") == provider]
 
 
-def run_pdt(*args: str) -> int:
-    return subprocess.run(["pdt", *args], cwd=PROJECT, check=False).returncode
+def run_pdt(*args: str, cwd=PROJECT) -> int:
+    return subprocess.run(["pdt", *args], cwd=cwd, check=False).returncode
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="verify.py", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("provider", choices=sorted(INVENTORIES))
+    parser.add_argument("provider", choices=sorted(INVENTORIES) + ["local"])
     parser.add_argument("--report", help="write a JUnit XML report to this file")
     args = parser.parse_args(argv)
-    rows = matrix_rows(args.provider)
-    if not rows:
-        print(f"error: no app in verify/pdt.yml uses provider {args.provider}")
-        return 1
-    settings = SETTINGS[args.provider](rows[0].get("platform") or {})
-    inventory = functools.partial(listing, functools.partial(INVENTORIES[args.provider], settings))
-    steps = verify([row["name"] for row in rows], run_pdt, inventory)
+    if args.provider == "local":
+        steps = verify_local(run_pdt)
+    else:
+        rows = matrix_rows(args.provider)
+        if len(rows) < 2:
+            print(f"error: verify/pdt.yml needs two apps on provider {args.provider}")
+            return 1
+        settings = SETTINGS[args.provider](rows[0].get("platform") or {})
+        inventory = functools.partial(
+            listing, functools.partial(INVENTORIES[args.provider], settings))
+        runs = functools.partial(RUNS[args.provider], settings)
+        cron, fire = fire_schedule(app_now(rows[1].get("timezone", "Etc/UTC")))
+        with scheduled(PROJECT / rows[1]["name"], cron):
+            steps = verify([row["name"] for row in rows], run_pdt, inventory, runs, fire)
     if args.report:
         write_report(args.report, args.provider, steps)
     return 0 if all(step.ok for step in steps) else 1
