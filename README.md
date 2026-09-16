@@ -162,6 +162,8 @@ platform:
 
 `subscription` is optional. When it is missing or wrong, the deploy asks you to choose one.
 
+The deploy builds each app's image with Docker on your computer and uploads it to Azure Container Registry, so [Docker Desktop](https://www.docker.com/products/docker-desktop/) must be installed and running.
+
 Every pdt project in a subscription runs its jobs in one shared Container Apps environment per region, `pdt-<region>` in the resource group `pdt-shared`, because a subscription allows only a few environments. Destroying the last app that uses the environment removes it, and removes `pdt-shared` once it holds no environment. Set `environment` to use an environment you already have; pdt then never creates, changes, or deletes it.
 
 ### AWS
@@ -173,6 +175,8 @@ platform:
   # Written for you on the first deploy, from your credentials.
   account: "123456789012"
 ```
+
+The deploy builds each app's image with Docker on your computer and uploads it to Amazon ECR, so [Docker Desktop](https://www.docker.com/products/docker-desktop/) must be installed and running.
 
 ### Google Cloud
 

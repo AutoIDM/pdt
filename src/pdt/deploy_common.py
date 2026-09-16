@@ -213,6 +213,15 @@ def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
         raise
 
 
+def docker_preflight(provider: str) -> None:
+    if not shutil.which("docker"):
+        fail(f"Docker is required to deploy to {provider}; install Docker Desktop "
+             "and run the same command again")
+    proc = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False)
+    if proc.returncode:
+        fail("Docker is installed but not running; start Docker and run the same command again")
+
+
 def run_build(command: list[str]) -> None:
     proc = subprocess.run(
         command, capture_output=True, text=True, check=False)

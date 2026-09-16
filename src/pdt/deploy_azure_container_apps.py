@@ -20,7 +20,6 @@ import dataclasses
 import datetime
 import hashlib
 import json
-import os
 import shutil
 import subprocess
 
@@ -33,13 +32,14 @@ from pdt.deploy_azure import (
     ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item,
     managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
-    revoke_role, run_basis, run_quiet, run_stream, secret_actions, secret_name,
+    revoke_role, run_basis, run_quiet, secret_actions, secret_name,
     secret_state, store_condition, store_cost, store_description, store_exists,
     store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_build,
-    stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
+    CostEstimate, docker_preflight, fail, gather_secrets, image_action,
+    run_build, stage_build_context, store_kept_line, warn_if_locked,
+    write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -58,15 +58,11 @@ def build_image(app: dict, registry: str, image_name: str) -> None:
     stage = stage_build_context(app)
     try:
         write_dockerfile(stage, app)
-        if os.environ.get("GITLAB_CI") == "true":
-            image = f"{registry}.azurecr.io/{image_name}:latest"
-            run_quiet("acr", "login", "--name", registry)
-            run_build(["docker", "build", "--platform", "linux/amd64",
-                       "-t", image, str(stage)])
-            run_build(["docker", "push", image])
-        else:
-            run_stream("acr", "build", "--registry", registry, "--image",
-                       f"{image_name}:latest", str(stage))
+        image = f"{registry}.azurecr.io/{image_name}:latest"
+        run_quiet("acr", "login", "--name", registry)
+        run_build(["docker", "build", "--platform", "linux/amd64",
+                   "-t", image, str(stage)])
+        run_build(["docker", "push", image])
     finally:
         shutil.rmtree(stage, ignore_errors=True)
 
@@ -353,6 +349,7 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
+    docker_preflight("Azure")
     settings = preflight(app, azure_settings(app))
     name = app["name"]
     job = clean_name(f"pdt-{name}")
