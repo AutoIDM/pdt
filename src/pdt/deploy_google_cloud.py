@@ -148,6 +148,13 @@ def list_json(*args: str) -> list:
     return json.loads(run_quiet(*args, "--format=json") or "[]")
 
 
+def service_account_or_none(project: str, email: str) -> dict | None:
+    # describe answers PERMISSION_DENIED, not NOT_FOUND, for an account that
+    # does not exist, so a first deploy would stop here. list does not.
+    accounts = list_json("iam", "service-accounts", "list", "--project", project)
+    return next((account for account in accounts if account.get("email") == email), None)
+
+
 def managed_by_pdt(resource: dict | None) -> bool:
     if resource is None:
         return False
@@ -564,8 +571,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         "--location", region, "--project", project)
     require_managed(repository, f"Artifact Registry repository {repo}")
     repo_exists = repository is not None
-    service_account = read_json_or_none(
-        "iam", "service-accounts", "describe", sa, "--project", project)
+    service_account = service_account_or_none(project, sa)
     default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
     if (service_account is not None and sa == default_sa
             and not service_account_owned(service_account)):
@@ -759,8 +765,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         for item in other_project_jobs
         if managed_by_pdt(item) and run_job_identity(item)[0]
     ]
-    service_account = read_json_or_none(
-        "iam", "service-accounts", "describe", sa, "--project", project)
+    service_account = service_account_or_none(project, sa)
     bucket = store_bucket(project)
     store = deployer_store(project, name) if app["storage"] else None
     store_present = store is not None and read_json_or_none(
