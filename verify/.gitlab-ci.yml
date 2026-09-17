@@ -19,9 +19,31 @@ variables:
     - uv.lock
     - .gitlab-ci.yml
 
+.verify:force-merge:
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /(^|,)force-merge(,|$)/
+      when: never
+
+verify:
+  stage: verify
+  image: alpine:3.20
+  needs: []
+  cache: []
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - echo "Starting the verify jobs."
+  rules:
+    - !reference [".verify:force-merge", rules]
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: !reference [.verify-paths, changes]
+      when: manual
+      allow_failure: false
+    - !reference [.verify, rules]
+
 .verify:
   stage: verify
-  needs: [build]
+  needs: [build, verify]
   # A cancelled run leaks the resources it made, so these never get cancelled.
   interruptible: false
   artifacts:
@@ -29,6 +51,7 @@ variables:
     reports:
       junit: verify-*.xml
   rules:
+    - !reference [".verify:force-merge", rules]
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       changes: !reference [.verify-paths, changes]
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
@@ -50,6 +73,7 @@ verify:aws:
   # Without the account's variables the job cannot log in. It then waits as a
   # manual job, so the pipeline shows the gap instead of failing at login.
   rules:
+    - !reference [".verify:force-merge", rules]
     - if: $AWS_ROLE_ARN == null
       when: manual
       allow_failure: true
@@ -94,6 +118,7 @@ verify:azure:
   # Without the account's variables the job cannot log in. It then waits as a
   # manual job, so the pipeline shows the gap instead of failing at login.
   rules:
+    - !reference [".verify:force-merge", rules]
     - if: $AZURE_CLIENT_ID == null
       when: manual
       allow_failure: true
@@ -111,6 +136,7 @@ verify:google-cloud:
   # Without the account's variables the job cannot log in. It then waits as a
   # manual job, so the pipeline shows the gap instead of failing at login.
   rules:
+    - !reference [".verify:force-merge", rules]
     - if: $GOOGLE_CLOUD_PROJECT == null
       when: manual
       allow_failure: true
