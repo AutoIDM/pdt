@@ -27,6 +27,8 @@ GOOGLE_ASSET_TYPES = (
     "secretmanager.googleapis.com/Secret",
     "artifactregistry.googleapis.com/Repository",
 )
+# The wording each Google service uses for a resource that does not exist.
+GOOGLE_GONE = ("not found", "not_found", "cannot find")
 WINDOWS_TASKS = (
     "$tasks = @(Get-ScheduledTask -TaskPath '\\' | "
     "Where-Object { $_.TaskName -like 'pdt-*' } | "
@@ -82,6 +84,18 @@ def az(*args: str):
 
 def gcloud(*args: str):
     return run_json(["pdt", "gcloud", *args, "--format", "json"])
+
+
+def gcloud_or_none(*args: str):
+    """The resource, or None when Google Cloud says it does not exist."""
+    command = ["pdt", "gcloud", *args, "--format", "json"]
+    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    if proc.returncode == 0:
+        return json.loads(proc.stdout or "null")
+    detail = (proc.stderr or proc.stdout).strip()
+    if any(marker in detail.lower() for marker in GOOGLE_GONE):
+        return None
+    raise InventoryError(f"{' '.join(command[:5])} failed: {detail}")
 
 
 def aws_functions(region: str) -> Inventory:
@@ -266,6 +280,27 @@ def azure_inventory(settings: dict[str, str]) -> Inventory:
     return found
 
 
+def google_cloud_asset_exists(settings: dict[str, str], asset: dict, name: str) -> bool:
+    """Ask the service that owns the resource whether it is really still there.
+
+    `asset search-all-resources` answers from a search index that lags behind
+    a delete by minutes, so it reports a destroyed resource as present. The
+    service's own describe call is the truth. The asset names its own region,
+    so a resource outside the region the matrix deploys to still counts.
+    """
+    project = settings["project"]
+    where = str(asset.get("location") or settings["region"])
+    describe = {
+        "run.googleapis.com/Job": ("run", "jobs", "describe", name, "--region", where),
+        "secretmanager.googleapis.com/Secret": ("secrets", "describe", name),
+        "artifactregistry.googleapis.com/Repository":
+            ("artifacts", "repositories", "describe", name, "--location", where),
+    }.get(str(asset["assetType"]))
+    if describe is None:
+        return True
+    return gcloud_or_none(*describe, "--project", project) is not None
+
+
 def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
     project, region = settings["project"], settings["region"]
     found = []
@@ -275,6 +310,8 @@ def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
     for item in assets:
         name = str(item.get("displayName") or item["name"]).rsplit("/", 1)[-1]
         if not name.startswith("pdt"):
+            continue
+        if not google_cloud_asset_exists(settings, item, name):
             continue
         found.append(Resource(item["assetType"], item["name"],
                               dict(item.get("labels") or {}), name))
