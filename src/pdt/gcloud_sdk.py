@@ -1,8 +1,9 @@
 """Find gcloud, or install a pinned Google Cloud CLI in the pdt data folder.
 
 Search order: gcloud on PATH, then the local install. If neither exists,
-offer to download the pinned version below (~150 MB) from dl.google.com,
-verify its sha256, and unpack it. No admin rights are needed; deleting
+download the pinned version below (~150 MB) from dl.google.com, verify its
+sha256, and unpack it, with no question, the same way uv installs awscli
+and azure-cli for the other providers. No admin rights are needed; deleting
 SDK_DIR removes the install. The download lives in the user's data folder
 rather than beside this file, so upgrading pdt keeps it. Login state lives
 in ~/.config/gcloud either way, so a later system install keeps working.
@@ -78,7 +79,7 @@ def archive_name(key: str) -> str:
     return f"google-cloud-cli-{VERSION}-{key}.tar.gz"
 
 
-def ensure_gcloud(assume_yes: bool = False) -> str:
+def ensure_gcloud() -> str:
     found = shutil.which("gcloud")
     if found:
         return found
@@ -86,18 +87,9 @@ def ensure_gcloud(assume_yes: bool = False) -> str:
         set_sdk_python()
         return str(LOCAL_GCLOUD)
     key = sdk_platform()
-    console.warn(f"gcloud is not installed. pdt can download the Google Cloud CLI "
+    console.warn(f"gcloud is not installed. pdt downloads the Google Cloud CLI "
                  f"{VERSION} (~150 MB) to {SDK_DIR}.")
     console.say("Deleting that folder uninstalls it again.")
-    if not assume_yes:
-        try:
-            answer = input("Download now? [y/N] ").strip().lower()
-        except EOFError:
-            answer = ""
-        if answer not in ("y", "yes"):
-            raise GcloudError(
-                f"gcloud is required; answer y to download it, or install it "
-                f"yourself from {INSTALL_DOCS}")
     download_sdk(key)
     if not LOCAL_GCLOUD.is_file():
         raise GcloudError(f"the unpacked SDK has no {LOCAL_GCLOUD}")

@@ -39,13 +39,13 @@ Set these in the project's CI/CD settings.
 | Variable | Job | Value | Setting |
 | --- | --- | --- | --- |
 | `AWS_ROLE_ARN` | verify:aws | ARN of an IAM role that trusts this project's GitLab OIDC token | Not protected |
-| `AZURE_CLIENT_ID` | verify:azure | Service principal client ID | Masked; protected |
-| `AZURE_CLIENT_SECRET` | verify:azure | Service principal secret | Masked; protected |
-| `AZURE_TENANT_ID` | verify:azure | Azure tenant ID | Masked; protected |
-| `GOOGLE_APPLICATION_CREDENTIALS` | verify:google-cloud | Service account key | Masked; protected; file type |
-| `GOOGLE_CLOUD_PROJECT` | verify:google-cloud | Google Cloud project ID | Protected |
+| `AZURE_CLIENT_ID` | verify:azure | Service principal client ID | Not protected |
+| `AZURE_CLIENT_SECRET` | verify:azure | Service principal secret | Masked; not protected |
+| `AZURE_TENANT_ID` | verify:azure | Azure tenant ID | Not protected |
+| `GOOGLE_APPLICATION_CREDENTIALS` | verify:google-cloud | Service account key | File type; not protected |
+| `GOOGLE_CLOUD_PROJECT` | verify:google-cloud | Google Cloud project ID | Not protected |
 
-A cloud job whose variables are absent becomes a manual job that is allowed to fail. The pipeline stays green and shows the job as not run, so a project without an account for that provider still merges. Add the variables and the job runs on every merge request.
+No variable is protected, because a merge request pipeline runs on an unprotected branch, and GitLab hides a protected variable from it. A cloud job whose variables are absent becomes a manual job that is allowed to fail. The pipeline stays green and shows the job as not run, so a project without an account for that provider still merges. Add the variables and the job runs on every merge request.
 
 The AWS job stores no key. It sends the job's OIDC token to `sts assume-role-with-web-identity` and receives credentials that expire after one hour. The role's trust policy must allow `sts:AssumeRoleWithWebIdentity` from the `gitlab.com` identity provider when `gitlab.com:sub` matches `project_path:autoidm/pdt:ref_type:branch:ref:*`, and its permission policy needs the actions pdt prints in `deployer_policy` plus the read actions the inventory uses: `tag:GetResources`, `lambda:ListFunctions`, `iam:ListRoles`, `secretsmanager:ListSecrets`, `scheduler:ListScheduleGroups`, `scheduler:ListTagsForResource`, `ecs:ListClusters`, `ecr:ListTagsForResource`, `sts:GetCallerIdentity`.
 

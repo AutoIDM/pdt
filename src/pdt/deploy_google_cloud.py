@@ -26,7 +26,7 @@ Shared across apps:
   Storage bucket         pdt-data-<suffix> (kept after destroy; one folder
                          per app, the runner may write only its own)
 
-If gcloud is not installed, pdt/gcloud_sdk.py offers to download a
+If gcloud is not installed, pdt/gcloud_sdk.py downloads a
 pinned copy to the pdt data folder and every call here uses that copy.
 
 Deploy reconciles: it creates what is missing and updates what changed,
@@ -92,16 +92,20 @@ ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 
 
+# A freshly enabled API reports SERVICE_DISABLED for a few minutes, and Cloud
+# Scheduler reports ABORTED when a job changed a moment ago. Both pass.
+TRANSIENT = ("SERVICE_DISABLED", "ABORTED")
+
+
 def run_quiet(*args: str, data: str | None = None) -> str:
-    # a freshly enabled API can report SERVICE_DISABLED for a few minutes
     for wait in (10, 20, 40, 60, 60, 0):
         proc = subprocess.run([GCLOUD, *args], input=data if data is not None else "",
                               capture_output=True, text=True)
         if proc.returncode == 0:
             return proc.stdout
-        if wait == 0 or "SERVICE_DISABLED" not in proc.stderr:
+        if wait == 0 or not any(marker in proc.stderr for marker in TRANSIENT):
             break
-        console.bullet(f"API not ready yet; retrying in {wait}s...", indent=4)
+        console.bullet(f"Google Cloud is not ready yet; retrying in {wait}s...", indent=4)
         time.sleep(wait)
     console.say(proc.stderr.strip())
     fail(f"pdt gcloud {' '.join(args[:4])} failed; fix the problem above and re-run the deploy")
@@ -121,14 +125,19 @@ def describe_json(*args: str):
     return json.loads(proc.stdout or "null")
 
 
+def not_found(detail: str) -> bool:
+    # Cloud Run says "Cannot find job [x]"; the other services say "not found".
+    lowered = detail.lower()
+    return any(marker in lowered for marker in ("not found", "not_found", "cannot find"))
+
+
 def read_json_or_none(*args: str):
     proc = subprocess.run([GCLOUD, *args, "--format=json"], stdin=subprocess.DEVNULL,
                           capture_output=True, text=True)
     if proc.returncode == 0:
         return json.loads(proc.stdout or "null")
     detail = proc.stderr.strip()
-    lowered = detail.lower()
-    if "not found" in lowered or "not_found" in lowered:
+    if not_found(detail):
         return None
     if detail:
         console.say(detail)
@@ -137,6 +146,13 @@ def read_json_or_none(*args: str):
 
 def list_json(*args: str) -> list:
     return json.loads(run_quiet(*args, "--format=json") or "[]")
+
+
+def service_account_or_none(project: str, email: str) -> dict | None:
+    # describe answers PERMISSION_DENIED, not NOT_FOUND, for an account that
+    # does not exist, so a first deploy would stop here. list does not.
+    accounts = list_json("iam", "service-accounts", "list", "--project", project)
+    return next((account for account in accounts if account.get("email") == email), None)
 
 
 def managed_by_pdt(resource: dict | None) -> bool:
@@ -194,7 +210,7 @@ def ensure_credentials() -> None:
 def preflight(app: dict, project: str, assume_yes: bool) -> str:
     global GCLOUD
     try:
-        GCLOUD = gcloud_sdk.ensure_gcloud(assume_yes)
+        GCLOUD = gcloud_sdk.ensure_gcloud()
     except gcloud_sdk.GcloudError as e:
         fail(str(e))
     ensure_credentials()
@@ -233,7 +249,7 @@ def choose_project(app: dict, requested: str) -> str:
 def relogin(assume_yes: bool) -> int:
     global GCLOUD
     try:
-        GCLOUD = gcloud_sdk.ensure_gcloud(assume_yes)
+        GCLOUD = gcloud_sdk.ensure_gcloud()
     except gcloud_sdk.GcloudError as e:
         fail(str(e))
     console.status("Revoking the cached Google Cloud logins on this computer...")
@@ -555,8 +571,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         "--location", region, "--project", project)
     require_managed(repository, f"Artifact Registry repository {repo}")
     repo_exists = repository is not None
-    service_account = read_json_or_none(
-        "iam", "service-accounts", "describe", sa, "--project", project)
+    service_account = service_account_or_none(project, sa)
     default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
     if (service_account is not None and sa == default_sa
             and not service_account_owned(service_account)):
@@ -750,8 +765,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         for item in other_project_jobs
         if managed_by_pdt(item) and run_job_identity(item)[0]
     ]
-    service_account = read_json_or_none(
-        "iam", "service-accounts", "describe", sa, "--project", project)
+    service_account = service_account_or_none(project, sa)
     bucket = store_bucket(project)
     store = deployer_store(project, name) if app["storage"] else None
     store_present = store is not None and read_json_or_none(
