@@ -288,10 +288,13 @@ def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
         managed = str(item.get("description") or "").startswith("Managed by PDT")
         found.append(Resource("cloudscheduler.googleapis.com/Job", item["name"],
                               dict(MANAGED) if managed else {}, name))
+    # The account this run signs in with may share the pdt prefix, and it is
+    # not something deploy made.
+    own = gcloud("config", "get-value", "account") or ""
     accounts = gcloud("iam", "service-accounts", "list", "--project", project) or []
     for item in accounts:
         name = str(item["email"]).split("@", 1)[0]
-        if not name.startswith("pdt"):
+        if not name.startswith("pdt") or item["email"] == own:
             continue
         # A service account takes no labels, so pdt marks it by display name.
         managed = item.get("displayName") == "pdt job runner"

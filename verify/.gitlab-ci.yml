@@ -137,7 +137,7 @@ verify:google-cloud:
   # manual job, so the pipeline shows the gap instead of failing at login.
   rules:
     - !reference [".verify:force-merge", rules]
-    - if: $GOOGLE_CLOUD_PROJECT == null
+    - if: $GOOGLE_CLOUD_PROJECT == null || $GOOGLE_APPLICATION_CREDENTIALS == null
       when: manual
       allow_failure: true
     - !reference [.verify, rules]
