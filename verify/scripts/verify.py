@@ -2,13 +2,14 @@
 
     verify.py <provider> [--report FILE]
 
-The scenario is fixed. It asserts the account is empty, deploys every app
-in verify/pdt.yml order, reads the run history with `pdt health` and
-`pdt runs` (no app has run yet, so this proves the read path), records which resource each app owns and which
+The scenario is fixed. It destroys what an earlier run left behind, asserts
+the account is empty, deploys every app in verify/pdt.yml order, reads the
+run history with `pdt health` and `pdt runs` (no app has run yet, so this
+proves the read path), records which resource each app owns and which
 resources the apps share, then destroys the apps one at a time and checks
 after each one that the destroyed app is gone and that nothing else moved.
-If the initial check fails, the run exits without changing resources.
-After that check passes, a failure attempts to destroy every app and exits 1.
+A leftover pdt did not make stops the run before it changes anything. Once
+the account is empty, a failure attempts to destroy every app and exits 1.
 """
 
 from __future__ import annotations
@@ -152,11 +153,39 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
     check("account is empty after destroy", empty_check)
 
 
+def recoverable(resources, apps):
+    """True when every leftover is one pdt made, so destroy can take it away."""
+    return bool(resources) and all(classify(resource, apps) != UNTAGGED
+                                   for resource in resources)
+
+
+def recover(steps, apps, run_pdt, inventory, report):
+    """Destroy what an earlier run left behind, before the run reads the account.
+
+    A cancelled run leaks the resources it made, and the next run then fails
+    before it deploys anything. Every leftover pdt made is destroyed here and
+    listed, so the leak is on the report instead of blocking the matrix. A
+    resource pdt did not make is left alone and fails the check below.
+    """
+    leftovers = inventory()
+    if not recoverable(leftovers, apps):
+        return
+    detail = "\n".join(f"{resource.kind} {resource.name or resource.id} "
+                       "is left over from an earlier run"
+                       for resource in leftovers)
+    step = Step("leftovers from an earlier run are destroyed", True, detail)
+    steps.append(step)
+    report(step)
+    for app in apps:
+        run_pdt("destroy", app, "--yes")
+
+
 def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
     steps: list[Step] = []
     cleanup = False
     try:
         try:
+            recover(steps, apps, run_pdt, inventory, report)
             problems = wait(inventory, empty_check)
             if not record(steps, report, "account is empty before deploy", problems):
                 return steps

@@ -2,7 +2,7 @@
 
 A pdt project used to prove that deploy and destroy do what they say on a real cloud account. It is not a unit test: every run creates and deletes real resources, and it costs real money.
 
-One run covers one provider. It asserts the account is empty, deploys every app the provider owns, lists the account through the provider's own API, and checks two things: every resource pdt made carries `managed-by=pdt`, and every resource belongs either to one app or to the set the apps share. It then destroys the apps one at a time. After each destroy it checks that the destroyed app's resources are gone and that every other app's resources, and the shared ones, are still there. The last destroy must leave the account empty again.
+One run covers one provider. It destroys what an earlier run left behind, asserts the account is empty, deploys every app the provider owns, lists the account through the provider's own API, and checks two things: every resource pdt made carries `managed-by=pdt`, and every resource belongs either to one app or to the set the apps share. It then destroys the apps one at a time. After each destroy it checks that the destroyed app's resources are gone and that every other app's resources, and the shared ones, are still there. The last destroy must leave the account empty again.
 
 The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Every provider gets two apps, so a shared resource always has a second owner while the first one is destroyed.
 
@@ -26,7 +26,11 @@ export PDT_AZURE_CONTAINER_APPS_ENVIRONMENT=pdt-shared/pdt-eastus2  # azure only
 uv run --no-project --with pyyaml python verify/scripts/verify.py aws
 ```
 
-Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one `PASS` or `FAIL` line per step and stops at the first failure. If the initial check fails, the run exits without changing resources. After that check passes, a failure attempts to destroy every app and exits 1.
+Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one `PASS` or `FAIL` line per step and stops at the first failure. If the account is not empty at the start, the run exits without deploying anything. After that check passes, a failure attempts to destroy every app and exits 1.
+
+## Leftovers from an earlier run
+
+A cancelled run leaks the resources it made, and the next run then fails before it deploys anything. So the first step reads the account, and when every resource it finds carries `managed-by=pdt` it runs `pdt destroy <app> --yes` for each app in the matrix and lists what it took away. The step passes and the run goes on, so one leak does not stop the matrix for the rest of the day; the report still names every leftover it had to remove. A resource that carries no `managed-by=pdt` tag is not pdt's to delete, so the run leaves the account exactly as it found it and fails the empty check.
 
 The `windows` provider deploys to the computer you run it on, so run it only on a Windows machine you are willing to add scheduled tasks to.
 
@@ -75,6 +79,10 @@ pdt gcloud services enable cloudasset.googleapis.com --project <project>
 ```
 
 pdt itself never needs this API. It exists only so verification can ask the project what it holds instead of asking pdt.
+
+### The Cloud Asset index lags behind a delete
+
+`gcloud asset search-all-resources` answers from a search index, not from the services themselves, and that index keeps a deleted resource for minutes after it is gone. On 2026-09-17 one run deleted the secret `pdt-google-cloud-b-env` and watched the same index report the project empty; six minutes later the index handed the secret to the next run, which failed its first check on a resource that no longer existed. So for every asset the index returns, the listing asks the service that owns it (`run jobs describe`, `secrets describe`, `artifacts repositories describe`) whether it is really there, and drops what the service says is gone. Those are the same calls deploy and destroy make, so the CI service account needs no extra role.
 
 ### The AWS tagging API omits untagged resources
 

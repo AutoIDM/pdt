@@ -189,14 +189,25 @@ def test_an_exception_after_deploy_destroys_every_app():
     assert cloud.resources == {}
 
 
-def test_a_nonempty_account_is_left_untouched():
+def test_a_leftover_pdt_did_not_make_leaves_the_account_untouched():
     cloud = FakeCloud()
-    cloud.deploy("app-one")
+    cloud.add(Resource("job", "pdt-app-one", {}, "pdt-app-one"))
     before = dict(cloud.resources)
     steps = run(cloud)
     assert [step.name for step in failed(steps)] == ["account is empty before deploy"]
     assert cloud.calls == []
     assert cloud.resources == before
+
+
+def test_a_leftover_from_an_earlier_run_is_destroyed_first():
+    cloud = FakeCloud()
+    cloud.deploy("app-one")
+    steps = run(cloud)
+    assert failed(steps) == []
+    assert steps[0].name == "leftovers from an earlier run are destroyed"
+    assert "pdt-app-one is left over from an earlier run" in steps[0].detail
+    assert cloud.calls[:2] == [("destroy", "app-one"), ("destroy", "app-two")]
+    assert cloud.resources == {}
 
 
 def test_an_initial_inventory_exception_leaves_the_account_untouched():
