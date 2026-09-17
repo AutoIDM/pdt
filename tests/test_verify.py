@@ -193,6 +193,7 @@ def test_an_exception_after_deploy_destroys_every_app():
 
 def test_managed_leftovers_are_destroyed_before_deploy():
     cloud = FakeCloud()
+    cloud.extra = [Resource("ecs cluster", "arn:cluster/pdt", tagged(), "pdt")]
     cloud.deploy("app-one")
     steps = run(cloud)
     assert failed(steps) == []
