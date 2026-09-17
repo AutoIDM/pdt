@@ -185,7 +185,7 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
     common = [
         "--name", job, "--resource-group", rg, "--image", image,
         "--cron-expression", cron, "--cpu", CPU, "--memory", MEMORY,
-        "--replica-timeout", "1800", "--replica-retry-limit", "1",
+        "--replica-timeout", "1800", "--replica-retry-limit", "0",
         "--parallelism", "1", "--replica-completion-count", "1",
         "--tags", "managed-by=pdt", f"pdt-app={app_name}",
     ]
