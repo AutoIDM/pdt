@@ -204,6 +204,9 @@ def test_claude_command_shape(tmp_path):
     assert command[command.index("--disallowedTools") + 1] == "Bash(git push -f*)"
     assert command[command.index("--max-budget-usd") + 1] == "20.0"
     assert "--append-system-prompt-file" not in command
+    assert "--effort" not in command
+    high = runner.claude_command(runner.load_task("demo", make_task(tmp_path / "e", "effort: high\n")))
+    assert high[high.index("--effort") + 1] == "high"
     assert runner.claude_command(task, 0.1)[runner.claude_command(task, 0.1).index(
         "--max-budget-usd") + 1] == "0.1"
 

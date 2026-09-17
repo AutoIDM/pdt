@@ -91,6 +91,11 @@ REVIEW = (
     ("uv.lock", "the lock file"),
     (".gitignore", "ignore rules"),
 )
+# A few changed lines in one of these files floor at simple when the MR also
+# changes a test: the unit tests and the live verify deploys cover them.
+SMALL_EDIT = ("src/pdt/deploy.py", "src/pdt/deploy_common.py", "src/pdt/config.py",
+              "src/pdt/cli.py")
+MAX_SMALL_EDIT_LINES = 4
 SIMPLE = ("*.md", "tests/*", "ci/tests/*", "src/pdt/examples/*")
 PYPROJECT_KEYS = ("requires-python", "build-backend", "[project.scripts]")
 # Words in a changed line that mean a person should at least read the diff.
@@ -149,13 +154,21 @@ def hard_gate_hits(diff: str) -> list[str]:
     return hits
 
 
-def path_floor(path: str, new_file: bool = False, diff: str = "") -> tuple[str, str]:
+def small_edit(path: str, diff: str) -> bool:
+    return (path in SMALL_EDIT and len(changed_lines(diff)) <= MAX_SMALL_EDIT_LINES
+            and not hard_gate_hits(diff))
+
+
+def path_floor(path: str, new_file: bool = False, diff: str = "",
+               tested: bool = False) -> tuple[str, str]:
     """The floor one file sets, and why. A simple file has no reason."""
     if path == "pyproject.toml":
         if dependency_change(diff):
             return "architectural", "pyproject.toml changes a dependency or build setting"
         return "review", "pyproject.toml changed"
     if fnmatch(path, "ci/tests/*"):
+        return "simple", ""
+    if tested and small_edit(path, diff):
         return "simple", ""
     for pattern, why in ARCHITECTURAL:
         if fnmatch(path, pattern):
@@ -174,11 +187,12 @@ def rule_floor(mr: dict, files: list[dict]) -> tuple[str, list[str]]:
     """The floor tier of a merge request and the reasons at that tier."""
     found: list[tuple[str, str]] = []
     lines = 0
+    tested = any(fnmatch(file.get("new_path") or "", "tests/*") for file in files)
     for file in files:
         path = file.get("new_path") or file.get("old_path") or ""
         diff = file.get("diff") or ""
         lines += len(changed_lines(diff))
-        found.append(path_floor(path, bool(file.get("new_file")), diff))
+        found.append(path_floor(path, bool(file.get("new_file")), diff, tested))
         if file.get("deleted_file"):
             found.append(("review", f"{path} is deleted"))
         if file.get("renamed_file"):
@@ -199,6 +213,11 @@ def rule_floor(mr: dict, files: list[dict]) -> tuple[str, list[str]]:
     reasons = [why for tier, why in found if tier == floor and why]
     if floor == "simple":
         reasons = ["only documentation, tests, or example apps changed"]
+        small = [file["new_path"] for file in files
+                 if small_edit(file.get("new_path") or "", file.get("diff") or "")]
+        if small:
+            reasons = [f"{', '.join(small)} changes at most {MAX_SMALL_EDIT_LINES} lines "
+                       "and the MR changes a test"]
     return floor, reasons
 
 
