@@ -123,6 +123,23 @@ def command(text: str, note: str = "", indent: int = 2) -> None:
         _console.print(f"{' ' * indent}[bold]{escape(text)}[/]")
 
 
+SECRET_CHANGE_STYLES = {"remove": ("-", "red"), "add": ("+", "green"),
+                        "change": ("~", "yellow"), "same": ("=", "dim")}
+
+
+def secret_change(kind: str, name: str, width: int, before: str, after: str) -> None:
+    """One env var that `pdt secrets` will write; `before` and `after` are already masked."""
+    sign, colour = SECRET_CHANGE_STYLES[kind]
+    line = f"  [{colour}]{sign} {escape(name):<{width}}[/]  "
+    if kind == "change":
+        line += f"[dim]{escape(before)} ->[/] {escape(after)}"
+    elif kind in ("remove", "same"):
+        line += f"[dim]{escape(before)}[/]"
+    else:
+        line += escape(after)
+    _console.print(line)
+
+
 def ask(question: str, default: str = "") -> str:
     suffix = f" [{default}]" if default != "" else ""
     return _console.input(f"{question}{suffix}: ", markup=False).strip()

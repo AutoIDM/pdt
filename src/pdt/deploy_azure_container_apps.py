@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import hashlib
 import json
 import os
 import shutil
@@ -29,7 +28,7 @@ from pdt.deploy import confirm
 from pdt.deploy_azure import (
     AZ, ENVIRONMENT_TYPE, RECENT_RUNS, STORE_ROLE, assign_role, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cost_estimate, deployer_store,
-    destroy_group, ensure_group_and_vault, ensure_secret, ensure_shared_group,
+    destroy_group, disable_old_secret_versions, ensure_group_and_vault, ensure_secret, ensure_shared_group,
     ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item,
     managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
@@ -38,7 +37,7 @@ from pdt.deploy_azure import (
     store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_build,
+    CostEstimate, confirm_secrets, fail, gather_secrets, image_action, run_build,
     stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
@@ -178,6 +177,14 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
             f"error {_activity_error(event.get('statusMessage'))}")
 
 
+def set_job_secret(job: str, rg: str, secret_uri: str, identity_id: str) -> None:
+    run_quiet(
+        "containerapp", "job", "secret", "set", "--name", job,
+        "--resource-group", rg, "--secrets",
+        f"pdt-env=keyvaultref:{secret_uri},identityref:{identity_id}",
+        retry_access=True)
+
+
 def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                   identity_id: str, secret_uri: str | None, storage_url: str | None,
                   exists: bool, app_name: str) -> None:
@@ -223,11 +230,7 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
               "--server", f"{settings['registry']}.azurecr.io",
               "--identity", identity_id)
     if secret_uri:
-        run_quiet(
-            "containerapp", "job", "secret", "set", "--name", job,
-            "--resource-group", rg, "--secrets",
-            f"pdt-env=keyvaultref:{secret_uri},identityref:{identity_id}",
-            retry_access=True)
+        set_job_secret(job, rg, secret_uri, identity_id)
     if env_vars:
         common += ["--replace-env-vars", *env_vars]
     else:
@@ -352,6 +355,25 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
               hints={"EnvironmentsInSubExceeded": QUOTA_HINT})
 
 
+def secrets(app: dict, assume_yes: bool) -> int:
+    settings = preflight(app, azure_settings(app))
+    name = app["name"]
+    job = clean_name(f"pdt-{name}")
+    values = gather_secrets(app)
+    sid = secret_name(name)
+    _vault_exists, current = secret_state(settings, sid, name, values)
+    if not confirm_secrets(current, values, f"Key Vault secret {sid}", assume_yes):
+        return 0
+    payload = json.dumps(values, sort_keys=True)
+    secret_uri = ensure_secret(settings, sid, values, payload, current, name)
+    identity_id = az_tsv("identity", "show", "--name", settings["identity"],
+                         "--resource-group", settings["resource_group"], "--query", "id")
+    set_job_secret(job, settings["resource_group"], secret_uri, identity_id)
+    disable_old_secret_versions(settings, sid)
+    console.done(f"Updated the secrets of {name}. The next run uses them.")
+    return 0
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
@@ -359,7 +381,6 @@ def deploy(app: dict, assume_yes: bool) -> int:
     cron = config.cron_expression(app["schedule"])
     values = gather_secrets(app)
     payload = json.dumps(values, sort_keys=True)
-    digest = hashlib.sha256(payload.encode()).hexdigest()
     sid = secret_name(name)
     rg = settings["resource_group"]
 
@@ -394,7 +415,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if current_job and not owned_by(current_job, name):
         fail(f"Container Apps Job {job} already exists but is not owned by "
              f"PDT app {name}; choose another resource group")
-    vault_exists, current_hash = secret_state(settings, sid, name, values)
+    vault_exists, current_secret = secret_state(settings, sid, name, values)
     store = store_settings(settings) if app["storage"] else None
     store_present = store_exists(store) if store else False
     deployer = deployer_store(settings, name) if store_present else None
@@ -421,7 +442,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         actions += store_plan(store, store_present, name, job)
     actions.append(image_action(
         app, f"build and push image {settings['registry']}.azurecr.io/{name}:latest"))
-    actions += secret_actions(sid, values, current_hash, digest)
+    actions += secret_actions(sid, values, current_secret, payload)
     actions.append(("update" if current_job else "create")
                    + f' Container Apps Job {job}: "{cron}" (UTC)')
     if not confirm(actions, assume_yes, cost_estimate_for(
@@ -459,7 +480,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
     console.step(f"building image {settings['registry']}.azurecr.io/{name}:latest")
     build_image(app, settings["registry"], name)
-    secret_uri = ensure_secret(settings, sid, values, payload, digest, current_hash, name)
+    secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
     console.step(f"reconciling Container Apps Job {job}")
     image = f"{settings['registry']}.azurecr.io/{name}:latest"
     try:
@@ -469,6 +490,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     except SystemExit:
         report_job_failure(settings, job)
         raise
+    if secret_uri:
+        disable_old_secret_versions(settings, sid)
     if store:
         assign_role(store["container_id"], job_principal_id(job, rg), STORE_ROLE,
                     condition=store_condition(name))

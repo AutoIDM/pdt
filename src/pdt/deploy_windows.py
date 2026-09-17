@@ -389,13 +389,17 @@ def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage"))
+    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage", "secrets"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     args = parser.parse_intermixed_args()
     if args.command == "login":
         console.note("the windows provider deploys to this computer, so it needs no login.")
+        return 0
+    if args.command == "secrets":
+        console.note("the windows provider reads your .env file at every run, "
+                     "so there is nothing to update.")
         return 0
     try:
         app = config.merged_app(args.app)

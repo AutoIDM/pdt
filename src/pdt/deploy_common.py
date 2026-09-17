@@ -256,6 +256,60 @@ def gather_secrets(app: dict) -> dict[str, str]:
     return values
 
 
+MASK_BOTH_ENDS_FROM = 12
+
+
+def masked(value: str) -> str:
+    """Enough of a secret to recognise it, never enough to use it."""
+    value = str(value)
+    if len(value) < MASK_BOTH_ENDS_FROM:
+        return f"•••• ({len(value)} chars)"
+    return f"{value[:2]}••••{value[-2:]} ({len(value)} chars)"
+
+
+def secret_changes(current: str | None, values: dict[str, str]) -> list[tuple[str, str, str, str]]:
+    """(kind, name, masked before, masked after) per env var, grouped by kind, then by name."""
+    try:
+        deployed = json.loads(current or "{}")
+    except ValueError:
+        deployed = {}
+    changes = []
+    for name in sorted(set(deployed) | set(values)):
+        if name not in deployed:
+            changes.append(("add", name, "", masked(values[name])))
+        elif name not in values:
+            changes.append(("remove", name, masked(deployed[name]), ""))
+        elif deployed[name] != values[name]:
+            changes.append(("change", name, masked(deployed[name]), masked(values[name])))
+        else:
+            changes.append(("same", name, masked(deployed[name]), ""))
+    kinds = list(console.SECRET_CHANGE_STYLES)
+    return sorted(changes, key=lambda change: (kinds.index(change[0]), change[1]))
+
+
+def confirm_secrets(current: str | None, values: dict[str, str], where: str,
+                    assume_yes: bool) -> bool:
+    """The plan and question of `pdt secrets`; False means there is nothing to write."""
+    from pdt.deploy import proceed
+    if not values:
+        console.note("this app declares no env vars, so it has no secrets to update.")
+        return False
+    if current is None:
+        fail(f"{where} does not exist yet. Run `pdt deploy` first.")
+    changes = secret_changes(current, values)
+    console.heading(f"{where}:")
+    width = max(len(name) for _kind, name, _before, _after in changes)
+    for kind, name, before, after in changes:
+        console.secret_change(kind, name, width, before, after)
+    if all(kind == "same" for kind, _name, _before, _after in changes):
+        console.done(f"{where} already matches your .env file.")
+        return False
+    if not proceed(assume_yes):
+        console.warn("Aborted; nothing was changed.")
+        return False
+    return True
+
+
 def stage_build_context(app: dict) -> Path:
     # Stage a clean build context so .env and .secrets never reach the image.
     stage = Path(tempfile.mkdtemp(prefix="pdt-build-"))

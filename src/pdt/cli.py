@@ -167,6 +167,13 @@ def cmd_destroy(args) -> int:
     return deploy.destroy(name, assume_yes=args.yes)
 
 
+def cmd_secrets(args) -> int:
+    name = choose_app(args.app, "secrets")
+    if name is None:
+        return 1
+    return deploy.secrets(name, assume_yes=args.yes)
+
+
 def cmd_storage(args) -> int:
     return deploy.storage(args.app, args.rest)
 
@@ -228,6 +235,12 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_destroy)
+    p = add_parser("secrets", help="send changed .env values to a deployed app, without a full deploy")
+    app = p.add_argument("app", nargs="?",
+                         help="the app's folder name; omit to see the choices")
+    app.completer = completion.apps
+    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.set_defaults(func=cmd_secrets)
     p = add_parser("storage", help="read or manage an app's data store")
     app = p.add_argument("app", help="the app's folder name")
     app.completer = completion.apps
