@@ -673,7 +673,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                   "--role", "roles/secretmanager.secretVersionAdder")
     console.step(f"deploying Cloud Run job {job}")
     args = ["run", "jobs", "deploy", job, "--image", image, "--region", region,
-            "--project", project, "--service-account", sa, "--max-retries", "1",
+            "--project", project, "--service-account", sa, "--max-retries", "0",
             "--labels", "managed-by=pdt"]
     if values:
         args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"]
