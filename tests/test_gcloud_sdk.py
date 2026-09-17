@@ -1,8 +1,11 @@
+import pytest
+
 from pdt import gcloud_sdk
 
 
-def test_an_unattended_run_downloads_gcloud_without_a_question(monkeypatch, tmp_path):
-    monkeypatch.setenv("CI", "true")
+@pytest.mark.parametrize("ci", ["true", ""])
+def test_a_missing_gcloud_downloads_without_a_question(monkeypatch, tmp_path, ci):
+    monkeypatch.setenv("CI", ci)
     monkeypatch.setattr(gcloud_sdk.shutil, "which", lambda name: None)
     monkeypatch.setattr(gcloud_sdk, "LOCAL_GCLOUD", tmp_path / "gcloud")
 

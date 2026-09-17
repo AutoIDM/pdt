@@ -26,7 +26,7 @@ Shared across apps:
   Storage bucket         pdt-data-<suffix> (kept after destroy; one folder
                          per app, the runner may write only its own)
 
-If gcloud is not installed, pdt/gcloud_sdk.py offers to download a
+If gcloud is not installed, pdt/gcloud_sdk.py downloads a
 pinned copy to the pdt data folder and every call here uses that copy.
 
 Deploy reconciles: it creates what is missing and updates what changed,
@@ -203,7 +203,7 @@ def ensure_credentials() -> None:
 def preflight(app: dict, project: str, assume_yes: bool) -> str:
     global GCLOUD
     try:
-        GCLOUD = gcloud_sdk.ensure_gcloud(assume_yes)
+        GCLOUD = gcloud_sdk.ensure_gcloud()
     except gcloud_sdk.GcloudError as e:
         fail(str(e))
     ensure_credentials()
@@ -242,7 +242,7 @@ def choose_project(app: dict, requested: str) -> str:
 def relogin(assume_yes: bool) -> int:
     global GCLOUD
     try:
-        GCLOUD = gcloud_sdk.ensure_gcloud(assume_yes)
+        GCLOUD = gcloud_sdk.ensure_gcloud()
     except gcloud_sdk.GcloudError as e:
         fail(str(e))
     console.status("Revoking the cached Google Cloud logins on this computer...")
