@@ -2,7 +2,7 @@
 
 A task is a folder under ci/claude-tasks/<name>/:
 
-  task.yml    model, budget_usd, timeout_minutes, permission_mode,
+  task.yml    model, effort, budget_usd, timeout_minutes, permission_mode,
               allowed_tools, disallowed_tools, parallel (how many items run
               at once, default 1), and the optional hook filenames
               ``select`` and ``check``.
@@ -79,7 +79,7 @@ TOKEN_NAMES = ("CLAUDE_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
 # "oauth_token" is what `claude auth status` reports for a token taken from the
 # environment (the CI case); "claude.ai" is an interactive login on a laptop.
 SUBSCRIPTION_AUTH_METHODS = ("oauth_token", "claude.ai")
-KNOWN_KEYS = {"model", "budget_usd", "timeout_minutes", "permission_mode",
+KNOWN_KEYS = {"model", "effort", "budget_usd", "timeout_minutes", "permission_mode",
               "allowed_tools", "disallowed_tools", "parallel", "select", "check"}
 # Hooks fetch into the shared .git, and two fetches of the same ref at once
 # fail with "cannot lock ref". Worktree add/remove edits .git too.
@@ -96,6 +96,7 @@ class Task:
     folder: Path
     prompt: str
     model: str = "opus"
+    effort: str = ""
     budget_usd: float = 20.0
     timeout_minutes: int = 30
     permission_mode: str = "acceptEdits"
@@ -126,6 +127,8 @@ def load_task(name: str, tasks_dir: Path = TASKS_DIR) -> Task:
     task = Task(name=name, folder=folder, prompt=prompt.read_text())
     if "model" in raw:
         task.model = _text(config, "model", raw["model"])
+    if "effort" in raw:
+        task.effort = _text(config, "effort", raw["effort"])
     if "permission_mode" in raw:
         task.permission_mode = _text(config, "permission_mode", raw["permission_mode"])
     if "budget_usd" in raw:
@@ -314,6 +317,8 @@ def claude_command(task: Task, budget_usd: float | None = None) -> list[str]:
         "--output-format", "json",
         "--max-budget-usd", str(budget_usd if budget_usd is not None else task.budget_usd),
     ]
+    if task.effort:
+        command += ["--effort", task.effort]
     if task.allowed_tools:
         command += ["--allowedTools", ",".join(task.allowed_tools)]
     if task.disallowed_tools:

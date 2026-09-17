@@ -43,8 +43,9 @@ AGREE = "agree with floor"
 NO_VERDICT = "Claude gave no verdict"
 TIMEOUT = 60
 DEFAULT_API = "https://gitlab.com/api/v4"
-FOOTER = ("A `tier::simple` MR is merged by pdt CI once its pipeline passes with no "
-          "conflicts and no unresolved discussions. A changed diff is scored again.")
+MERGE_FOOTER = ("pdt CI merges this MR once its pipeline passes with no conflicts and no "
+                "unresolved discussions.")
+FOOTER = "A changed diff is scored again."
 
 
 class HttpFailure(Exception):
@@ -125,7 +126,8 @@ def note_body(diff: str, score: Score, job_url: str) -> str:
     lines = [format_marker(diff, score.floor, score.tier, score.claude),
              f"**MR tier: `tier::{score.tier}`** ({how})", ""]
     lines += [f"- {reason}" for reason in score.reasons]
-    lines += ["", FOOTER + (f" Job log: {job_url}" if job_url else "")]
+    footer = f"{MERGE_FOOTER} {FOOTER}" if score.tier == "simple" else FOOTER
+    lines += ["", footer + (f" Job log: {job_url}" if job_url else "")]
     return "\n".join(lines)
 
 

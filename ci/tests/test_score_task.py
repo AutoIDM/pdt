@@ -136,6 +136,21 @@ def test_a_simple_floor_says_why():
         "simple", ["only documentation, tests, or example apps changed"])
 
 
+def test_a_few_tested_lines_in_a_covered_file_floor_at_simple():
+    small = change("src/pdt/deploy_common.py", lines=4)
+    test = change("tests/test_dockerfile.py")
+    floor, reasons = select.rule_floor(mr(), [small, test])
+    assert floor == "simple" and "src/pdt/deploy_common.py" in reasons[0]
+    assert select.rule_floor(mr(), [small])[0] == "architectural"
+    assert select.rule_floor(mr(), [small, change("ci/tests/test_x.py")])[0] == "architectural"
+    five = change("src/pdt/deploy_common.py", lines=5)
+    assert select.rule_floor(mr(), [five, test])[0] == "architectural"
+    gated = change("src/pdt/cli.py", extra="+token = 1\n")
+    assert select.rule_floor(mr(), [gated, test])[0] == "architectural"
+    for path in ("src/pdt/utils/log.py", ".gitlab-ci.yml", "AGENTS.md", "pdt"):
+        assert select.rule_floor(mr(), [change(path), test])[0] == "architectural", path
+
+
 def test_deleted_renamed_and_large_files_bump_simple_to_review():
     for flag in ("deleted_file", "renamed_file", "too_large", "collapsed"):
         floor, reasons = select.rule_floor(mr(), [change("README.md", **{flag: True})])
@@ -265,6 +280,9 @@ def test_status_and_note_body():
     assert body.splitlines()[0] == check.format_marker("abc", "review", "architectural", "raised")
     assert "`tier::architectural`" in body and "Claude raised it" in body
     assert "- touches deploy dispatch" in body and "http://job" in body
+    assert check.MERGE_FOOTER not in body and check.FOOTER in body
+    simple = check.note_body("abc", check.Score("simple", "simple", [], "agree"), "")
+    assert check.MERGE_FOOTER in simple
 
 
 def test_label_change_leaves_exactly_one_tier_label():
