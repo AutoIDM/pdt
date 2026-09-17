@@ -19,9 +19,25 @@ variables:
     - uv.lock
     - .gitlab-ci.yml
 
+verify:
+  stage: verify
+  image: alpine:3.20
+  needs: []
+  cache: []
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - echo "Starting the verify jobs."
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: !reference [.verify-paths, changes]
+      when: manual
+      allow_failure: false
+    - !reference [.verify, rules]
+
 .verify:
   stage: verify
-  needs: [build]
+  needs: [build, verify]
   # A cancelled run leaks the resources it made, so these never get cancelled.
   interruptible: false
   artifacts:
