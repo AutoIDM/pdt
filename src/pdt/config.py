@@ -38,7 +38,7 @@ SCHEDULE_SHORTHAND = {
     "yearly": "0 0 1 1 *",
 }
 ROOT_KEYS = {"platform", "apps"}
-APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage"}
+APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account",
@@ -57,6 +57,7 @@ KEY_HOME = {
     "config": APP_LEVEL,
     "env": APP_LEVEL,
     "storage": APP_LEVEL,
+    "enabled": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     **{key: "the env: section" for key in ENV_KEYS},
 }
@@ -119,7 +120,7 @@ def find_project(start: Path | None = None) -> Path:
         folder = folder.parent
 
 
-def find_apps() -> list[str]:
+def app_folders() -> list[str]:
     names = []
     for child in sorted(find_project().iterdir()):
         if child.name.startswith(".") or not child.is_dir():
@@ -127,6 +128,21 @@ def find_apps() -> list[str]:
         if (child / "run.py").is_file():
             names.append(child.name)
     return names
+
+
+def is_enabled(name: str) -> bool:
+    project = find_project()
+    try:
+        entry = root_app_entry(load_yaml(project / PROJECT_FILE), name)
+        own = load_yaml(project / name / APP_FILE)
+    except ConfigError:
+        return True
+    return own.get("enabled", entry.get("enabled", True)) is not False
+
+
+def find_apps() -> list[str]:
+    """The apps every command acts on. `enabled: false` takes an app out."""
+    return [name for name in app_folders() if is_enabled(name)]
 
 
 def uses_email(app: dict) -> bool:
@@ -184,6 +200,7 @@ def merged_app(name: str) -> dict:
         },
         "env": mapping(own, "env", own_where) or mapping(entry, "env", entry_where),
         "storage": own.get("storage", entry.get("storage", True)),
+        "enabled": own.get("enabled", entry.get("enabled", True)),
     }
 
 
@@ -475,7 +492,7 @@ def validate() -> list[str]:
         if not isinstance(entry, dict) or "name" not in entry:
             problems.append(f"{PROJECT_FILE}: every apps entry needs a name")
             continue
-        if entry["name"] not in apps:
+        if entry["name"] not in app_folders():
             problems.append(f"{PROJECT_FILE}: app {entry['name']!r} has no directory with a run.py")
     for name in apps:
         problems.extend(validate_app(name))
@@ -546,4 +563,6 @@ def validate_app(name: str) -> list[str]:
             problems.append(f"{name}: {e}")
     if not isinstance(app["storage"], bool):
         problems.append(f"{where}: storage must be true or false")
+    if not isinstance(app["enabled"], bool):
+        problems.append(f"{where}: enabled must be true or false")
     return problems

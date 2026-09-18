@@ -86,7 +86,7 @@ pdt login my-report
 | `pdt init [DIR]` | create a project here, or in DIR |
 | `pdt examples` | list the example apps bundled with pdt |
 | `pdt new APP --from EXAMPLE` | add an app to the project |
-| `pdt list` | show every app with its schedule and provider |
+| `pdt list` | show every app with its schedule and provider; `--names` prints only the enabled app names |
 | `pdt validate` | check the config files and the required env vars |
 | `pdt run APP` | run an app on this machine |
 | `pdt deploy APP` | deploy an app to its configured platform |
@@ -134,6 +134,8 @@ store.push(Path(".pdt-state"), "state/", lease)
 `pull` locks the folder, so a second copy of your app cannot run at the same time and mix up the files. `push` checks that nobody else changed them, saves them, and unlocks. If a run crashes, the next one takes over the lock after 30 minutes.
 
 From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
+
+An app that is not ready sets `enabled: false` in its `config.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it.
 
 ## Running pdt from CI
 

@@ -73,20 +73,25 @@ def choose_app(name: str | None, command: str) -> str | None:
     return None
 
 
-def cmd_list(_args) -> int:
-    apps = config.find_apps()
+def cmd_list(args) -> int:
+    if args.names:
+        for name in config.find_apps():
+            console.say(name)
+        return 0
+    apps = config.app_folders()
     if not apps:
         say_no_apps()
         return 0
     rows = []
     for name in apps:
+        enabled = "true" if config.is_enabled(name) else "false"
         try:
             app = config.merged_app(name)
             rows.append([name, app["schedule"] or "-",
-                         app["platform"].get("provider", "-")])
+                         app["platform"].get("provider", "-"), enabled])
         except ConfigError as e:
-            rows.append([name, "-", f"config error: {e}"])
-    console.table(["App", "Schedule", "Provider"], rows, ["bold cyan"])
+            rows.append([name, "-", f"config error: {e}", enabled])
+    console.table(["name", "schedule", "provider", "enabled"], rows, ["bold cyan"])
     return 0
 
 
@@ -196,7 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
                             help="which example to copy; run `pdt examples` to see them")
     source.completer = completion.examples
     p.set_defaults(func=cmd_new)
-    add_parser("list", help="show every app").set_defaults(func=cmd_list)
+    p = add_parser("list", help="show every app")
+    p.add_argument("--names", action="store_true",
+                   help="print only the name of each enabled app, one per line")
+    p.set_defaults(func=cmd_list)
     add_parser("validate", help="check config and env").set_defaults(func=cmd_validate)
     p = add_parser("run", help="run an app locally")
     app = p.add_argument("app", nargs="?",
