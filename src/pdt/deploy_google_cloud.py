@@ -103,17 +103,27 @@ RECENT_RUNS = 3
 
 
 # A freshly enabled API reports SERVICE_DISABLED for a few minutes, and Cloud
-# Scheduler reports ABORTED when a job changed a moment ago. Both pass, so every
-# gcloud call waits them out.
+# Scheduler reports ABORTED when a job changed a moment ago. A service account
+# created a moment ago still reads as missing to the service being granted a
+# role on it. All three pass, so every gcloud call waits them out.
 TRANSIENT = ("SERVICE_DISABLED", "ABORTED")
 RETRY_WAITS = (10, 20, 40, 60, 60, 60)
+
+
+def service_account_missing(detail: str) -> bool:
+    lowered = detail.lower()
+    return "service account " in lowered and " does not exist" in lowered
+
+
+def transient(detail: str) -> bool:
+    return any(m in detail for m in TRANSIENT) or service_account_missing(detail)
 
 
 def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
     stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
     for wait in (*RETRY_WAITS, None):
         proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
-        if proc.returncode == 0 or wait is None or not any(m in proc.stderr for m in TRANSIENT):
+        if proc.returncode == 0 or wait is None or not transient(proc.stderr):
             return proc
         title = re.search(r"serviceTitle: (.+)", proc.stderr)
         what = title.group(1).strip() if title else "Google Cloud"
@@ -169,6 +179,23 @@ def service_account_or_none(project: str, email: str) -> dict | None:
     # does not exist, so a first deploy would stop here. list does not.
     accounts = list_json("iam", "service-accounts", "list", "--project", project)
     return next((account for account in accounts if account.get("email") == email), None)
+
+
+def wait_for_service_account(project: str, email: str) -> None:
+    for wait in (1, 2, 4, 8, 15, 30, 0):
+        proc = subprocess.run(
+            [GCLOUD, "iam", "service-accounts", "describe", email,
+             "--project", project, "--format=json"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        if proc.returncode == 0:
+            return
+        if wait == 0:
+            if proc.stderr.strip():
+                console.say(proc.stderr.strip())
+            fail(f"service account {email} is not ready in project {project}")
+        console.bullet(f"service account {email} is not ready yet; retrying in {wait}s...",
+                       indent=4)
+        time.sleep(wait)
 
 
 def managed_by_pdt(resource: dict | None) -> bool:
@@ -744,6 +771,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         run_quiet("iam", "service-accounts", "create", "pdt-runner",
                   "--project", project, "--display-name", "pdt job runner",
                   "--description", "Managed by PDT")
+    wait_for_service_account(project, sa)
     if store:
         if not bucket_exists:
             console.step(f"creating bucket {bucket}")

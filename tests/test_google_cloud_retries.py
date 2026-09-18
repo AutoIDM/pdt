@@ -42,6 +42,29 @@ def test_a_permission_error_fails_without_a_retry(monkeypatch):
     assert len(calls) == 1
 
 
+def test_a_new_service_account_missing_from_an_iam_binding_retries(monkeypatch):
+    attempts = iter([
+        subprocess.CompletedProcess(
+            [], 1, "", "HTTPError 400: Service account "
+            "pdt-runner@p.iam.gserviceaccount.com does not exist."),
+        subprocess.CompletedProcess([], 0, "{}", ""),
+    ])
+    calls = []
+    sleeps = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return next(attempts)
+
+    monkeypatch.setattr(deploy_google_cloud.subprocess, "run", run)
+    monkeypatch.setattr(deploy_google_cloud.time, "sleep", sleeps.append)
+
+    assert deploy_google_cloud.run_quiet(
+        "storage", "buckets", "add-iam-policy-binding", "gs://pdt-data") == "{}"
+    assert calls == [calls[0], calls[0]]
+    assert sleeps == [10]
+
+
 SERVICE_DISABLED = ("ERROR: (gcloud.artifacts.repositories.describe) PERMISSION_DENIED: "
                     "Artifact Registry API has not been used in project p before or it is disabled.\n"
                     "- '@type': type.googleapis.com/google.rpc.ErrorInfo\n"
