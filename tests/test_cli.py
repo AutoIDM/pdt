@@ -91,3 +91,15 @@ def test_cloud_cli_passthroughs_are_registered():
         assert f'sys.argv[1] == "{name}"' in path.read_text(), (
             f"{script} has no `{name}` passthrough branch")
         assert name in cli.CLOUD_CLIS
+
+
+def test_list_shows_a_disabled_app_and_names_leaves_it_out(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    add_app(project, "not-ready")
+    (project / "not-ready" / "config.yml").write_text("enabled: false\n")
+    assert run_cli(monkeypatch, "list") == 0
+    assert "not-ready" in capsys.readouterr().out
+    assert run_cli(monkeypatch, "list", "--names") == 0
+    assert capsys.readouterr().out.split() == ["hello-world"]
+    assert run_cli(monkeypatch, "run", "not-ready") == 1
+    assert "no app named 'not-ready'" in capsys.readouterr().out

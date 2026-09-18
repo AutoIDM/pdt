@@ -50,3 +50,10 @@ def test_find_apps_lists_only_folders_holding_run_py(project):
     (project / ".hidden").mkdir()
     (project / ".hidden" / "run.py").write_text("")
     assert find_apps() == ["report-one", "report-two"]
+
+
+def test_find_apps_leaves_out_a_disabled_app(project):
+    add_app(project, "report-one")
+    add_app(project, "report-two")
+    (project / "report-two" / "config.yml").write_text("enabled: false\n")
+    assert find_apps() == ["report-one"]
