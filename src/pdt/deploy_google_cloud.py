@@ -55,7 +55,8 @@ from pdt import console
 from pdt import gcloud_sdk
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action, run_secrets,
+    STORE_TAGS, CostEstimate, LogPage, NotDeployed, RemoteJob, Run, RunState, fail, fetch_json,
+    gather_secrets, image_action, run_secrets,
     stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
     warn_if_locked, write_dockerfile)
 from pdt import runs_cli
@@ -125,6 +126,53 @@ def describe_json(*args: str):
     if proc.returncode != 0:
         return None
     return json.loads(proc.stdout or "null")
+
+
+def remote_job(app: dict) -> RemoteJob:
+    project, region = project_region(app)
+    job = f"pdt-{app['name']}"
+
+    def start() -> Run:
+        proc = subprocess.run([GCLOUD, "run", "jobs", "execute", job, "--region", region,
+                               "--project", project, "--format=json"], capture_output=True, text=True)
+        if proc.returncode:
+            if not_found(proc.stderr):
+                raise NotDeployed
+            fail(proc.stderr.strip() or "pdt gcloud run jobs execute failed")
+        data = json.loads(proc.stdout or "{}")
+        return Run(data["metadata"]["name"], RunState.STARTING, job_logs_url(project, region, job))
+
+    def poll(run: Run) -> Run:
+        data = describe_json("run", "jobs", "executions", "describe", run.id, "--region", region,
+                             "--project", project) or {}
+        status = data.get("status") or {}
+        completed = next((item for item in status.get("conditions") or []
+                          if item.get("type") == "Completed"), {})
+        if completed.get("status") == "True":
+            state = RunState.SUCCEEDED
+        elif completed.get("status") == "False":
+            state = RunState.FAILED
+        elif status.get("runningCount") or status.get("startTime"):
+            state = RunState.RUNNING
+        else:
+            state = RunState.STARTING
+        return Run(run.id, state, run.logs_url)
+
+    def read_logs(run: Run, cursor: str | None) -> LogPage:
+        query = (f'resource.type="cloud_run_job" resource.labels.job_name="{job}" '
+                 f'labels."run.googleapis.com/execution_name"="{run.id}"')
+        if cursor:
+            query += f' timestamp>"{cursor}"'
+        data = describe_json("logging", "read", query, "--project", project, "--order=asc",
+                             "--limit=1000") or []
+        lines = []
+        for item in data:
+            payload = item.get("jsonPayload") or {}
+            lines.append(item.get("textPayload") or json.dumps(payload, separators=(",", ":")))
+        next_cursor = data[-1].get("timestamp") if data else cursor
+        return LogPage(lines, next_cursor)
+
+    return RemoteJob(start, poll, read_logs)
 
 
 def not_found(detail: str) -> bool:
@@ -717,7 +765,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
               "--uri", uri, "--http-method", "POST",
               "--oauth-service-account-email", sa)
     console.done(f"Deployed {name}.")
-    console.field("Run it once", f"pdt gcloud run jobs execute {job} --region {region} --project {project}")
+    console.field("Run it once", f"pdt run {name} --remote")
     console.field("Run logs", job_logs_url(project, region, job))
     return 0
 
@@ -985,10 +1033,12 @@ def main() -> int:
         return subprocess.run([binary, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
-                        choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
+                        choices=("deploy", "destroy", "login", "run", "storage", "secrets",
+                                 "runs", "logs"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--no-wait", action="store_true")
     args = parser.parse_intermixed_args()
     try:
         app = config.merged_app(args.app)
@@ -1007,6 +1057,8 @@ def main() -> int:
         return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
         return deploy(app, args.yes)
+    if args.command == "run":
+        return run_once(remote_job(app), not args.no_wait, args.app, "google-cloud")
     return destroy(app, args.yes)
 
 
