@@ -1,7 +1,15 @@
 import xml.etree.ElementTree as ET
 
 from inventory import Resource, classify
-from verify import junit_tree, verify, wait_for, write_report
+from verify import (
+    RETIRED_AWS_APP,
+    RETIRED_AWS_RESOURCES,
+    cleanup_retired_aws,
+    junit_tree,
+    verify,
+    wait_for,
+    write_report,
+)
 
 APPS = ["app-one", "app-two"]
 
@@ -64,9 +72,10 @@ def now(inventory, check):
     return check(inventory())
 
 
-def run(cloud):
+def run(cloud, cleanup_leftovers=None):
     return verify(cloud.apps, cloud.run_pdt, cloud.inventory,
-                  report=lambda step: None, wait=now)
+                  report=lambda step: None, wait=now,
+                  cleanup_leftovers=cleanup_leftovers)
 
 
 def failed(steps):
@@ -199,6 +208,60 @@ def test_a_nonempty_account_is_left_untouched():
     assert [step.name for step in failed(steps)] == ["account is empty before deploy"]
     assert cloud.calls == []
     assert cloud.resources == before
+
+
+def test_managed_aws_leftovers_are_destroyed_before_deploy():
+    cloud = FakeCloud()
+    cloud.deploy("app-one")
+    steps = run(cloud, cleanup_leftovers=lambda resources: None)
+    assert failed(steps) == []
+    assert steps[0].name == "leftovers from an earlier run are destroyed"
+    assert cloud.calls[:2] == [("destroy", "app-one"), ("destroy", "app-two")]
+    assert cloud.resources == {}
+
+
+def retired_aws_resources():
+    return [
+        Resource(kind, f"arn:{kind}:{name}", tagged(), name)
+        for kind, name in sorted(RETIRED_AWS_RESOURCES)
+    ]
+
+
+def test_retired_aws_example_leftovers_are_deleted(monkeypatch):
+    calls = []
+
+    def aws(_region, *args):
+        calls.append(args)
+        if args[:2] == ("iam", "list-role-policies"):
+            return {"PolicyNames": ["inline-policy"]}
+        return None
+
+    monkeypatch.setattr("verify.aws", aws)
+    cleanup_retired_aws(retired_aws_resources(), {"region": "us-east-1"})
+
+    base = f"pdt-{RETIRED_AWS_APP}"
+    assert ("scheduler", "delete-schedule", "--name", base, "--group-name", "pdt") in calls
+    assert ("secretsmanager", "delete-secret", "--secret-id", f"{base}-env",
+            "--force-delete-without-recovery") in calls
+    assert ("logs", "delete-log-group", "--log-group-name", f"/ecs/{base}") in calls
+    for suffix in ("scheduler", "task", "execution"):
+        role = f"{base}-{suffix}"
+        assert ("iam", "list-role-policies", "--role-name", role) in calls
+        assert ("iam", "delete-role-policy", "--role-name", role,
+                "--policy-name", "inline-policy") in calls
+        assert ("iam", "delete-role", "--role-name", role) in calls
+    assert ("scheduler", "delete-schedule-group", "--name", "pdt") in calls
+    assert ("ecs", "delete-cluster", "--cluster", "pdt") in calls
+    assert ("ecr", "delete-repository", "--repository-name", "pdt", "--force") in calls
+
+
+def test_retired_aws_cleanup_leaves_unknown_resources_untouched(monkeypatch):
+    calls = []
+    monkeypatch.setattr("verify.aws", lambda *args: calls.append(args))
+    resources = retired_aws_resources()
+    resources.append(Resource("s3 bucket", "arn:bucket:pdt-other", tagged(), "pdt-other"))
+    cleanup_retired_aws(resources, {"region": "us-east-1"})
+    assert calls == []
 
 
 def test_an_initial_inventory_exception_leaves_the_account_untouched():
