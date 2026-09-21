@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import configparser
 import os
 import shlex
 import stat
@@ -29,31 +28,6 @@ def apps(prefix: str, **_kwargs) -> list[str]:
 def examples(prefix: str, **_kwargs) -> list[str]:
     return [example.name for example in scaffold.examples()
             if example.name.startswith(prefix)]
-
-
-def profiles(prefix: str, **_kwargs) -> list[str]:
-    paths = [
-        (Path(os.environ.get("AWS_CONFIG_FILE",
-                             Path.home() / ".aws" / "config")), "profile "),
-        (Path(os.environ.get("AWS_SHARED_CREDENTIALS_FILE",
-                             Path.home() / ".aws" / "credentials")), ""),
-    ]
-    names = set()
-    for path, section_prefix in paths:
-        parser = configparser.ConfigParser(interpolation=None)
-        try:
-            parser.read(path)
-        except (configparser.Error, OSError):
-            continue
-        for section in parser.sections():
-            if section_prefix:
-                if section == "default":
-                    names.add(section)
-                elif section.startswith(section_prefix):
-                    names.add(section[len(section_prefix):])
-            else:
-                names.add(section)
-    return sorted(name for name in names if name.startswith(prefix))
 
 
 directories = DirectoriesCompleter()

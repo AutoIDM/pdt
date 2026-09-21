@@ -878,7 +878,6 @@ def main() -> int:
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
-    parser.add_argument("--profile", help="not used by Azure")
     args = parser.parse_intermixed_args()
     app = load_app(args.app)
     if args.command == "login":

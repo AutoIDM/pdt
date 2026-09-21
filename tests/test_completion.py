@@ -22,24 +22,12 @@ def test_example_completer_lists_matching_examples():
     assert completion.examples("hello") == ["hello-world"]
 
 
-def test_profile_completer_reads_aws_files(tmp_path, monkeypatch):
-    config = tmp_path / "config"
-    credentials = tmp_path / "credentials"
-    config.write_text("[default]\n[profile production]\n[sso-session company]\n")
-    credentials.write_text("[production]\n[preview]\n")
-    monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
-    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(credentials))
-
-    assert completion.profiles("pr") == ["preview", "production"]
-
-
 def test_build_parser_attaches_dynamic_completers():
     parser = cli.build_parser()
     commands = parser._subparsers._group_actions[0].choices
 
     assert commands["run"]._actions[1].completer is completion.apps
     assert commands["new"]._option_string_actions["--from"].completer is completion.examples
-    assert commands["deploy"]._option_string_actions["--profile"].completer is completion.profiles
 
 
 def test_install_preserves_content_and_replaces_owned_block(tmp_path):

@@ -10,7 +10,7 @@ uv tool install pdt-cli
 
 That puts a `pdt` command on your PATH. To update it later, run `uv tool upgrade pdt-cli`.
 
-The first interactive `pdt` command turns on tab completion without a prompt. It works in every new terminal: Tab finishes pdt commands, their options, your app names, example names for `new --from`, and AWS profile names for `--profile`. It supports bash, zsh, fish, and PowerShell. `pdt completion [SHELL]` sets up a second shell, and `pdt completion --script bash` prints the script instead of writing it, if you keep your own dotfiles.
+The first interactive `pdt` command turns on tab completion without a prompt. It works in every new terminal: Tab finishes pdt commands, their options, your app names, and example names for `new --from`. It supports bash, zsh, fish, and PowerShell. `pdt completion [SHELL]` sets up a second shell, and `pdt completion --script bash` prints the script instead of writing it, if you keep your own dotfiles.
 
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
 
@@ -174,7 +174,11 @@ platform:
   region: us-east-1
   # Written for you on the first deploy, from your credentials.
   account: "123456789012"
+  # Optional. Which profile in ~/.aws to use. Written for you if pdt has to ask.
+  profile: work
 ```
+
+`profile` is optional. When it is missing, pdt uses `AWS_PROFILE`, or the only profile on your computer. When there are several and none is chosen, or the one in the file is not on this computer, the deploy lists them and asks you to choose, then writes your answer here.
 
 ### Google Cloud
 

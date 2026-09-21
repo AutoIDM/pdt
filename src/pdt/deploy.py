@@ -3,7 +3,7 @@
 Validates the app, then dispatches to one script per provider
 (pdt/deploy_<provider>.py) with `uv run --script`, so each provider
 installs its own SDK packages. Every provider script accepts
-`deploy|destroy|login <app> [--yes] [--profile NAME]`, and also
+`deploy|destroy|login <app> [--yes]`, and also
 `storage <app> <ls|get|query|destroy> [args...]`.
 
 PDT_PROJECT reaches the provider script through the environment, so the
@@ -41,19 +41,17 @@ def _load(app_name: str):
 
 
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
-             profile: str | None = None, extra: list[str] | None = None) -> int:
+             extra: list[str] | None = None) -> int:
     script = Path(__file__).with_name(PROVIDERS[provider])
     args = ["uv", "run", "--script", str(script), command, app_name]
     if assume_yes:
         args.append("--yes")
-    if profile:
-        args += ["--profile", profile]
     args += extra or []
     env = dict(os.environ, PDT_PROJECT=str(config.find_project()))
     return subprocess.run(args, check=False, env=env).returncode
 
 
-def deploy(app_name: str, assume_yes: bool = False, profile: str | None = None) -> int:
+def deploy(app_name: str, assume_yes: bool = False) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
@@ -73,41 +71,41 @@ def deploy(app_name: str, assume_yes: bool = False, profile: str | None = None) 
         return 1
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
-    code = dispatch(provider, "deploy", app_name, assume_yes, profile)
+    code = dispatch(provider, "deploy", app_name, assume_yes)
     if code == 0:
         # A declined plan exits nonzero, so 0 means the deploy completed.
         config.mark_deployed(app_name, True)
     return code
 
 
-def login(app_name: str, profile: str | None = None) -> int:
+def login(app_name: str) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
         console.error(str(e))
         return 1
     config.load_env(app["dir"])
-    return dispatch(provider, "login", app_name, False, profile)
+    return dispatch(provider, "login", app_name, False)
 
 
-def storage(app_name: str, rest: list[str], profile: str | None = None) -> int:
+def storage(app_name: str, rest: list[str]) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
         console.error(str(e))
         return 1
     config.load_env(app["dir"])
-    return dispatch(provider, "storage", app_name, False, profile, rest)
+    return dispatch(provider, "storage", app_name, False, rest)
 
 
-def destroy(app_name: str, assume_yes: bool = False, profile: str | None = None) -> int:
+def destroy(app_name: str, assume_yes: bool = False) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
         console.error(str(e))
         return 1
     config.load_env(app["dir"])
-    code = dispatch(provider, "destroy", app_name, assume_yes, profile)
+    code = dispatch(provider, "destroy", app_name, assume_yes)
     if code == 0:
         config.mark_deployed(app_name, False)
     return code

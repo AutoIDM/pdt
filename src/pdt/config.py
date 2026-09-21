@@ -41,7 +41,7 @@ ROOT_KEYS = {"platform", "apps"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
-    "account",
+    "account", "profile",
     "subscription", "resource_group", "environment",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
