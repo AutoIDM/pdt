@@ -71,7 +71,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_plan_lines,
+    STORE_TAGS, CostEstimate, fail, fetch_json, heartbeat, store_cost_label, store_plan_lines,
     store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
@@ -100,8 +100,9 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
               retry_internal: bool = False, hints: dict[str, str] | None = None) -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
     for wait in waits:
-        proc = subprocess.run(
-            [*AZ, *args], input=data, capture_output=True, text=True)
+        with heartbeat():
+            proc = subprocess.run(
+                [*AZ, *args], input=data, capture_output=True, text=True)
         if proc.returncode == 0:
             return proc.stdout
         output = proc.stderr.lower()
