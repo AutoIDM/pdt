@@ -18,10 +18,8 @@ Shared login, IAM, secret, log, and schedule code lives here. The job
 itself, a scheduled ECS task on Fargate, is in deploy_aws_fargate.py.
 
 The deploy itself talks to AWS through boto3. `pdt aws` and the SSO login
-here run AWS CLI v2 through `uvx`, which builds it from the official git tag
-the first time (about 90 seconds) and caches it after that. The PyPI package
-is v1, which has no `sso login`, and v2 bundles its own botocore, so it cannot
-share this script's environment with boto3. No system install is needed.
+run AWS CLI v2 through `uvx`. The PyPI `awscli` package is v1, which has no
+`sso login`, and v2 bundles its own botocore, so it needs its own environment.
 Credentials live in ~/.aws either way.
 """
 
@@ -45,7 +43,7 @@ from pdt.deploy_common import (
 from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
-AWS_CLI_V2 = "awscli @ git+https://github.com/aws/aws-cli.git@2.36.49"
+AWS_CLI_V2 = "awscli @ https://github.com/aws/aws-cli/archive/refs/tags/2.36.49.tar.gz"
 AWS_CLI = ["uvx", "--from", AWS_CLI_V2, "aws"]
 MANAGED_TAGS = {"managed-by": "pdt"}
 SCHEDULE_GROUP = "pdt"
@@ -223,7 +221,7 @@ def choose_profile(app: dict, session) -> str:
         console.field("Using the only AWS profile on this computer", profiles[0])
         return profiles[0]
     if not can_ask():
-        fail("no AWS profile selected; run again with --profile <name> "
+        fail("no AWS profile selected; add `profile: <name>` under platform: in pdt.yml, "
              f"or set AWS_PROFILE=<name> (profiles: {', '.join(profiles)})")
     console.heading("No AWS profile is selected. Profiles on this computer:")
     for number, profile in enumerate(profiles, start=1):
