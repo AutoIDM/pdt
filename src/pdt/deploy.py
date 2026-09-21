@@ -3,7 +3,7 @@
 Validates the app, then dispatches to one script per provider
 (pdt/deploy_<provider>.py) with `uv run --script`, so each provider
 installs its own SDK packages. Every provider script accepts
-`deploy|destroy|login|run <app> [--yes]`, and also
+`deploy|destroy|login|run <app> [--yes] [--no-wait]`, and also
 `storage <app> <ls|get|query|destroy> [args...]` and
 `runs|logs <app> -- [args...]`. The `--` keeps flags such as `--json` for
 `pdt.runs_cli`, which parses them.

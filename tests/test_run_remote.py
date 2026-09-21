@@ -100,3 +100,10 @@ def test_no_wait_requires_remote(project, monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["pdt", "run", "hello-world", "--no-wait"])
     assert cli.main() == 1
     assert "--no-wait only applies with --remote" in capsys.readouterr().out
+
+
+def test_every_provider_script_accepts_run():
+    providers = ["deploy_aws.py", "deploy_azure.py", "deploy_google_cloud.py", "deploy_windows.py"]
+    root = __import__("pathlib").Path(cli.__file__).parent
+    for provider in providers:
+        assert '"run"' in (root / provider).read_text()

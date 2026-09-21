@@ -89,6 +89,7 @@ pdt login my-report
 | `pdt list` | show every app with its schedule and provider; `--names` prints only the enabled app names |
 | `pdt validate` | check the config files and the required env vars |
 | `pdt run APP` | run an app on this machine |
+| `pdt run APP --remote [--no-wait]` | start one run on the deployed job now |
 | `pdt deploy APP` | deploy an app to its configured platform |
 | `pdt destroy APP` | remove everything deploy created |
 | `pdt secrets APP` | show which `.env` values differ from the deployed app |

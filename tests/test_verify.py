@@ -111,7 +111,9 @@ def test_happy_path_leaves_the_account_empty():
         "deploy app-two",
         "health",
         "runs app-one",
+        "run app-one --remote",
         "runs app-two",
+        "run app-two --remote",
         "every resource is tagged",
         "every resource has an owner",
         "destroy app-one",
@@ -183,7 +185,9 @@ def test_an_exception_after_deploy_destroys_every_app():
     assert "the cloud said no" in failed(steps)[0].detail
     assert cloud.calls == [
         ("deploy", "app-one"), ("deploy", "app-two"),
-        ("health",), ("runs", "app-one"), ("runs", "app-two"),
+        ("health",),
+        ("runs", "app-one"), ("run", "app-one"),
+        ("runs", "app-two"), ("run", "app-two"),
         ("destroy", "app-one"), ("destroy", "app-two"),
     ]
     assert cloud.resources == {}

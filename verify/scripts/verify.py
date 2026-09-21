@@ -135,6 +135,10 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
     for app in apps:
         if not command("runs", app):
             return
+        code = run_pdt("run", app, "--remote")
+        if not record(steps, report, f"run {app} --remote",
+                      [] if code == 0 else [f"pdt run {app} --remote exited {code}"]):
+            return
     if not check("every resource is tagged", untagged_check(apps)):
         return
     owned, shared = ownership(inventory(), apps)
