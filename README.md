@@ -91,7 +91,9 @@ pdt login my-report
 | `pdt run APP` | run an app on this machine |
 | `pdt deploy APP` | deploy an app to its configured platform |
 | `pdt destroy APP` | remove everything deploy created |
-| `pdt secrets APP` | send changed `.env` values to the deployed app; the next run uses them |
+| `pdt secrets APP` | show which `.env` values differ from the deployed app |
+| `pdt secrets APP save` | send your `.env` values to the deployed app; the next run uses them |
+| `pdt secrets APP get` | copy the deployed values into a `.env.<provider>` file |
 | `pdt login APP` | sign in again to the app's cloud provider |
 | `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files |
 | `pdt az ...` | run the Azure CLI that pdt installs |

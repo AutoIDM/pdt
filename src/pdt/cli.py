@@ -16,7 +16,7 @@ from pathlib import Path
 
 import rich_argparse
 
-from pdt import __version__, completion, config, console, deploy, scaffold
+from pdt import __version__, completion, config, console, deploy, deploy_common, scaffold
 from pdt.config import ConfigError
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -46,6 +46,15 @@ def say_no_apps() -> None:
     console.command("pdt new my-report --from <example>")
 
 
+APP_QUESTIONS = {
+    "run": "Which app do you want to run?",
+    "deploy": "Which app do you want to deploy?",
+    "login": "Which app's cloud provider do you want to sign in to?",
+    "destroy": "Which app do you want to destroy?",
+    "secrets": "Which app's secrets?",
+}
+
+
 def choose_app(name: str | None, command: str) -> str | None:
     """Return the app `pdt <command>` should act on, or None after guiding the user.
 
@@ -60,7 +69,7 @@ def choose_app(name: str | None, command: str) -> str | None:
     if name in apps:
         return name
     if name is None:
-        console.heading(f"Which app do you want to {command}? This project has:")
+        console.heading(f"{APP_QUESTIONS[command]} This project has:")
     else:
         console.error(f"no app named {name!r}. This project has:")
     shown = apps[:5]
@@ -171,7 +180,7 @@ def cmd_secrets(args) -> int:
     name = choose_app(args.app, "secrets")
     if name is None:
         return 1
-    return deploy.secrets(name, assume_yes=args.yes)
+    return deploy.secrets(name, args.action, assume_yes=args.yes)
 
 
 def cmd_storage(args) -> int:
@@ -235,10 +244,14 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_destroy)
-    p = add_parser("secrets", help="send changed .env values to a deployed app, without a full deploy")
+    p = add_parser("secrets", help="compare, send, or fetch a deployed app's .env values")
     app = p.add_argument("app", nargs="?",
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
+    p.add_argument("action", nargs="?", choices=deploy_common.SECRET_ACTIONS, default="diff",
+                   help="diff shows what save would change (the default); "
+                        "save sends your .env values to the deployed app; "
+                        "get copies the deployed values into a file")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_secrets)
     p = add_parser("storage", help="read or manage an app's data store")

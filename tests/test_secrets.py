@@ -1,5 +1,7 @@
 import json
 
+from dotenv import dotenv_values
+
 from pdt import deploy_azure, deploy_common, deploy_google_cloud
 
 SETTINGS = {"vault": "pdt-abc"}
@@ -61,3 +63,47 @@ def test_every_google_version_but_the_latest_is_destroyed(monkeypatch):
     deploy_google_cloud.destroy_old_secret_versions("proj", "pdt-demo-env")
     assert calls == [("secrets", "versions", "destroy", "2", "--secret", "pdt-demo-env",
                       "--project", "proj", "--quiet")]
+
+
+def app_dir(tmp_path):
+    return {"name": "demo", "dir": tmp_path, "platform": {"provider": "aws"}}
+
+
+def test_env_line_reads_back_to_the_same_value(tmp_path):
+    values = {"PLAIN": "abc-1.2/x@y=z", "SPACED": "two words #1",
+              "QUOTED": 'say "hi"\\now', "MULTI": "line one\nline two", "EMPTY": ""}
+    path = tmp_path / ".env"
+    path.write_text("".join(deploy_common.env_line(k, v) + "\n" for k, v in values.items()))
+    assert dotenv_values(path) == values
+
+
+def test_diff_writes_nothing_and_names_the_save_command(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(deploy_common, "gather_secrets", lambda app: {"A": "new"})
+    written = []
+    code = deploy_common.run_secrets("diff", app_dir(tmp_path), "secret s",
+                                     json.dumps({"A": "old"}), written.append, True)
+    assert code == 0 and written == []
+    assert "pdt secrets demo save" in capsys.readouterr().out
+
+
+def test_save_writes_the_env_values(tmp_path, monkeypatch):
+    monkeypatch.setattr(deploy_common, "gather_secrets", lambda app: {"A": "new"})
+    written = []
+    code = deploy_common.run_secrets("save", app_dir(tmp_path), "secret s",
+                                     json.dumps({"A": "old"}), written.append, True)
+    assert code == 0 and written == [{"A": "new"}]
+
+
+def test_get_writes_a_dotenv_file_named_for_the_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(deploy_common, "can_prompt", lambda interactive: False)
+    code = deploy_common.run_secrets("get", app_dir(tmp_path), "secret s",
+                                     json.dumps({"B": "2", "A": "1"}), None, True)
+    assert code == 0
+    assert (tmp_path / ".env.aws").read_text() == "A=1\nB=2\n"
+
+
+def test_get_uses_the_file_name_the_user_types(tmp_path, monkeypatch):
+    monkeypatch.setattr(deploy_common, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(deploy_common.console, "ask", lambda question, default: ".env.prod")
+    deploy_common.run_secrets("get", app_dir(tmp_path), "secret s", json.dumps({"A": "1"}), None, True)
+    assert (tmp_path / ".env.prod").read_text() == "A=1\n"

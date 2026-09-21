@@ -471,13 +471,13 @@ def check_shared_names(settings: dict[str, str]) -> None:
 
 
 def secret_state(settings: dict[str, str], sid: str, app_name: str,
-                 values: dict) -> tuple[bool, str | None]:
+                 wanted: bool) -> tuple[bool, str | None]:
     vault = az_json("keyvault", "show", "--name", settings["vault"],
                     "--resource-group", settings["resource_group"])
     require_managed(vault, f"Key Vault {settings['vault']}")
     vault_exists = vault is not None
     current = None
-    if vault_exists and values:
+    if vault_exists and wanted:
         current = az_json("keyvault", "secret", "show", "--vault-name",
                           settings["vault"], "--name", sid)
         if current and not managed_secret(settings, sid, app_name):
@@ -904,7 +904,7 @@ def main() -> int:
         fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
     from pdt import deploy_azure_container_apps as module
     if args.command == "secrets":
-        return module.secrets(app, args.yes)
+        return module.secrets(app, args.rest[0], args.yes)
     if args.command == "deploy":
         return module.deploy(app, args.yes)
     return module.destroy(app, args.yes)

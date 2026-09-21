@@ -55,7 +55,7 @@ from pdt import console
 from pdt import gcloud_sdk
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, confirm_secrets, fail, fetch_json, gather_secrets, image_action,
+    STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action, run_secrets,
     stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
     warn_if_locked, write_dockerfile)
 from pdt import storage_cli
@@ -557,22 +557,21 @@ def destroy_old_secret_versions(project: str, sid: str) -> None:
                   "--secret", sid, "--project", project, "--quiet")
 
 
-def secrets(app: dict, assume_yes: bool) -> int:
+def secrets(app: dict, action: str, assume_yes: bool) -> int:
     project, _region = project_region(app)
     project = preflight(app, project, assume_yes)
-    values = gather_secrets(app)
     sid = secret_id(app["name"])
     secret = read_json_or_none("secrets", "describe", sid, "--project", project)
     require_managed(secret, f"Secret Manager secret {sid}")
     current = secret_value(project, sid) if secret else None
-    if not confirm_secrets(current, values, f"Secret Manager secret {sid}", assume_yes):
-        return 0
-    console.step(f"updating secret {sid}")
-    run_quiet("secrets", "versions", "add", sid, "--project", project,
-              "--data-file", "-", data=json.dumps(values, sort_keys=True))
-    destroy_old_secret_versions(project, sid)
-    console.done(f"Updated the secrets of {app['name']}. The next run uses them.")
-    return 0
+
+    def write(values: dict[str, str]) -> None:
+        console.step(f"updating secret {sid}")
+        run_quiet("secrets", "versions", "add", sid, "--project", project,
+                  "--data-file", "-", data=json.dumps(values, sort_keys=True))
+        destroy_old_secret_versions(project, sid)
+
+    return run_secrets(action, app, f"Secret Manager secret {sid}", current, write, assume_yes)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
@@ -932,7 +931,7 @@ def main() -> int:
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
     if args.command == "secrets":
-        return secrets(app, args.yes)
+        return secrets(app, args.rest[0], args.yes)
     if args.command == "deploy":
         return deploy(app, args.yes)
     return destroy(app, args.yes)

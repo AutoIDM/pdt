@@ -31,6 +31,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -38,10 +39,12 @@ import urllib.error
 import urllib.request
 from http import HTTPStatus
 from pathlib import Path
+from typing import Callable
 
 import backoff
 
 from pdt import config, console
+from pdt.utils.email_auth import can_prompt
 
 DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -287,15 +290,21 @@ def secret_changes(current: str | None, values: dict[str, str]) -> list[tuple[st
     return sorted(changes, key=lambda change: (kinds.index(change[0]), change[1]))
 
 
-def confirm_secrets(current: str | None, values: dict[str, str], where: str,
-                    assume_yes: bool) -> bool:
-    """The plan and question of `pdt secrets`; False means there is nothing to write."""
+SECRET_ACTIONS = ("diff", "save", "get")
+
+
+def run_secrets(action: str, app: dict, where: str, current: str | None,
+                write: Callable[[dict[str, str]], None], assume_yes: bool) -> int:
+    """`pdt secrets <app> diff|save|get`, once the provider has read the deployed secret."""
     from pdt.deploy import proceed
-    if not values:
-        console.note("this app declares no env vars, so it has no secrets to update.")
-        return False
     if current is None:
         fail(f"{where} does not exist yet. Run `pdt deploy` first.")
+    if action == "get":
+        return get_secrets(app, current, assume_yes)
+    values = gather_secrets(app)
+    if not values:
+        console.note("this app declares no env vars, so it has no secrets.")
+        return 0
     changes = secret_changes(current, values)
     console.heading(f"{where}:")
     width = max(len(name) for _kind, name, _before, _after in changes)
@@ -303,11 +312,49 @@ def confirm_secrets(current: str | None, values: dict[str, str], where: str,
         console.secret_change(kind, name, width, before, after)
     if all(kind == "same" for kind, _name, _before, _after in changes):
         console.done(f"{where} already matches your .env file.")
-        return False
+        return 0
+    if action == "diff":
+        console.say()
+        console.command(f"pdt secrets {app['name']} save", "send these values to the deployed app")
+        return 0
     if not proceed(assume_yes):
         console.warn("Aborted; nothing was changed.")
-        return False
-    return True
+        return 0
+    write(values)
+    console.done(f"Updated the secrets of {app['name']}. The next run uses them.")
+    return 0
+
+
+def get_secrets(app: dict, current: str, assume_yes: bool) -> int:
+    """Copy the deployed secret into a .env file in the app folder."""
+    from pdt.deploy import proceed
+    try:
+        values = json.loads(current)
+    except ValueError:
+        fail("the deployed secret is not the JSON that pdt writes, so pdt cannot read it.")
+    default = f".env.{app['platform']['provider']}"
+    answer = console.ask("Save to which file?", default) if can_prompt(None) else ""
+    target = Path(app["dir"]) / (answer or default)
+    if target.exists():
+        console.warn(f"{target.name} already exists and will be replaced.")
+        if not proceed(assume_yes):
+            console.warn("Aborted; nothing was written.")
+            return 0
+    target.write_text("".join(env_line(name, values[name]) + "\n" for name in sorted(values)))
+    console.done(f"Saved {len(values)} value(s) to {target}.")
+    return 0
+
+
+PLAIN_ENV_VALUE = re.compile(r"[A-Za-z0-9_./:@+=,%-]*")
+
+
+def env_line(name: str, value: str) -> str:
+    """One .env line that `dotenv` reads back to the same value."""
+    value = str(value)
+    if PLAIN_ENV_VALUE.fullmatch(value):
+        return f"{name}={value}"
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'{name}="{escaped}"'
 
 
 def stage_build_context(app: dict) -> Path:

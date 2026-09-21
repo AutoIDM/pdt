@@ -678,7 +678,7 @@ def main() -> int:
     from pdt import deploy_aws_fargate as fargate
     try:
         if args.command == "secrets":
-            return fargate.secrets(app, args.yes)
+            return fargate.secrets(app, args.rest[0], args.yes)
         if args.command == "deploy":
             return fargate.deploy(app, args.yes)
         return fargate.destroy(app, args.yes)

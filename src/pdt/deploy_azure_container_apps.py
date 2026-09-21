@@ -37,7 +37,7 @@ from pdt.deploy_azure import (
     store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, confirm_secrets, fail, gather_secrets, image_action, run_build,
+    CostEstimate, fail, gather_secrets, image_action, run_build, run_secrets,
     stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
@@ -355,23 +355,22 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
               hints={"EnvironmentsInSubExceeded": QUOTA_HINT})
 
 
-def secrets(app: dict, assume_yes: bool) -> int:
+def secrets(app: dict, action: str, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
     job = clean_name(f"pdt-{name}")
-    values = gather_secrets(app)
     sid = secret_name(name)
-    _vault_exists, current = secret_state(settings, sid, name, values)
-    if not confirm_secrets(current, values, f"Key Vault secret {sid}", assume_yes):
-        return 0
-    payload = json.dumps(values, sort_keys=True)
-    secret_uri = ensure_secret(settings, sid, values, payload, current, name)
-    identity_id = az_tsv("identity", "show", "--name", settings["identity"],
-                         "--resource-group", settings["resource_group"], "--query", "id")
-    set_job_secret(job, settings["resource_group"], secret_uri, identity_id)
-    disable_old_secret_versions(settings, sid)
-    console.done(f"Updated the secrets of {name}. The next run uses them.")
-    return 0
+    _vault_exists, current = secret_state(settings, sid, name, True)
+
+    def write(values: dict[str, str]) -> None:
+        payload = json.dumps(values, sort_keys=True)
+        secret_uri = ensure_secret(settings, sid, values, payload, current, name)
+        identity_id = az_tsv("identity", "show", "--name", settings["identity"],
+                             "--resource-group", settings["resource_group"], "--query", "id")
+        set_job_secret(job, settings["resource_group"], secret_uri, identity_id)
+        disable_old_secret_versions(settings, sid)
+
+    return run_secrets(action, app, f"Key Vault secret {sid}", current, write, assume_yes)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
@@ -415,7 +414,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if current_job and not owned_by(current_job, name):
         fail(f"Container Apps Job {job} already exists but is not owned by "
              f"PDT app {name}; choose another resource group")
-    vault_exists, current_secret = secret_state(settings, sid, name, values)
+    vault_exists, current_secret = secret_state(settings, sid, name, bool(values))
     store = store_settings(settings) if app["storage"] else None
     store_present = store_exists(store) if store else False
     deployer = deployer_store(settings, name) if store_present else None
