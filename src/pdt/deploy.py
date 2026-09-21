@@ -3,7 +3,7 @@
 Validates the app, then dispatches to one script per provider
 (pdt/deploy_<provider>.py) with `uv run --script`, so each provider
 installs its own SDK packages. Every provider script accepts
-`deploy|destroy|login <app> [--yes]`, and also
+`deploy|destroy|login|run <app> [--yes]`, and also
 `storage <app> <ls|get|query|destroy> [args...]` and
 `runs|logs <app> -- [args...]`. The `--` keeps flags such as `--json` for
 `pdt.runs_cli`, which parses them.
@@ -119,6 +119,16 @@ def login(app_name: str) -> int:
         return 1
     config.load_env(app["dir"])
     return dispatch(provider, "login", app_name, False)
+
+
+def run_remote(app_name: str, wait: bool = True) -> int:
+    try:
+        app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(str(e))
+        return 1
+    config.load_env(app["dir"])
+    return dispatch(provider, "run", app_name, False, [] if wait else ["--no-wait"])
 
 
 def storage(app_name: str, rest: list[str]) -> int:

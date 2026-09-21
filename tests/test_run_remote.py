@@ -1,3 +1,5 @@
+from conftest import add_app
+from pdt import cli, deploy
 from pdt.deploy_common import LogPage, NotDeployed, RemoteJob, Run, RunState, run_once
 
 
@@ -73,3 +75,28 @@ def test_run_once_explains_when_the_job_is_not_deployed(capsys):
     out = capsys.readouterr().out
     assert "not deployed to azure" in out
     assert "pdt deploy hello-world" in out
+
+
+def test_remote_run_dispatches(project, monkeypatch):
+    add_app(project, "hello-world")
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *args: calls.append(args) or 0)
+    monkeypatch.setattr("sys.argv", ["pdt", "run", "hello-world", "--remote"])
+    assert cli.main() == 0
+    assert calls == [("azure", "run", "hello-world", False, [])]
+
+
+def test_remote_run_without_wait_dispatches_the_flag(project, monkeypatch):
+    add_app(project, "hello-world")
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *args: calls.append(args) or 0)
+    monkeypatch.setattr("sys.argv", ["pdt", "run", "hello-world", "--remote", "--no-wait"])
+    assert cli.main() == 0
+    assert calls == [("azure", "run", "hello-world", False, ["--no-wait"])]
+
+
+def test_no_wait_requires_remote(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    monkeypatch.setattr("sys.argv", ["pdt", "run", "hello-world", "--no-wait"])
+    assert cli.main() == 1
+    assert "--no-wait only applies with --remote" in capsys.readouterr().out

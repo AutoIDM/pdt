@@ -145,6 +145,11 @@ def cmd_run(args) -> int:
     name = choose_app(args.app, "run")
     if name is None:
         return 1
+    if args.no_wait and not args.remote:
+        console.error("--no-wait only applies with --remote")
+        return 1
+    if args.remote:
+        return deploy.run_remote(name, wait=not args.no_wait)
     app = config.merged_app(name)
     if config.uses_email(app):
         config.load_env(app["dir"])
@@ -268,10 +273,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print only the name of each enabled app, one per line")
     p.set_defaults(func=cmd_list)
     add_parser("validate", help="check config and env").set_defaults(func=cmd_validate)
-    p = add_parser("run", help="run an app locally")
+    p = add_parser("run", help="run an app locally, or --remote on its platform")
     app = p.add_argument("app", nargs="?",
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
+    p.add_argument("--remote", action="store_true",
+                   help="start one run on the deployed job now, outside its schedule")
+    p.add_argument("--no-wait", action="store_true",
+                   help="with --remote: start the run and print its id without waiting")
     p.set_defaults(func=cmd_run)
     p = add_parser("deploy", help="deploy an app")
     app = p.add_argument("app", nargs="?",

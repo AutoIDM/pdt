@@ -65,7 +65,7 @@ def test_the_starter_is_also_offered_as_an_example():
 def run_app(monkeypatch, name, returncode=0):
     monkeypatch.setattr(cli.subprocess, "run",
                         lambda *a, **k: SimpleNamespace(returncode=returncode))
-    return cli.cmd_run(SimpleNamespace(app=name))
+    return cli.cmd_run(SimpleNamespace(app=name, remote=False, no_wait=False))
 
 
 def test_running_the_starter_suggests_deploying_it(tmp_path, monkeypatch, capsys):
