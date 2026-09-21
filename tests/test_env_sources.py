@@ -214,8 +214,6 @@ def test_the_bundle_is_checked_against_the_spec_after_conversion(project, monkey
     clear(monkeypatch)
     monkeypatch.setenv("PDT_KEY_PATH", "key.pem")
     config.load_env(folder)
-    # No key.pem on disk: the string goes through, and the bundle still
-    # satisfies the spec, so deploy proceeds and the job sees the path.
     values = deploy_common.gather_secrets(config.merged_app("my-report"))
     assert values == {"PDT_KEY_PATH": "key.pem"}
 

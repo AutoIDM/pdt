@@ -2,9 +2,10 @@
 
 Every env var the app declares goes into one json secret, mounted on the
 job as PDT_ENV_JSON and expanded back into env vars by
-pdt.config.load_env_json. A var that ends in _PATH is replaced by
-<NAME>_B64 holding the base64 of the file it points to, because the
-cloud job gets no files, only string secrets.
+pdt.config.load_env_json. A var that ends in _PATH and names a local
+file is replaced by <NAME>_B64 holding the file's base64, because the
+cloud job gets no files, only string secrets. One that names no file is
+a run-time location the app sets itself and goes through as is.
 
 A build context holds the app directory and pdt.yml, nothing else. The
 app's run.py declares pdt in its script header, so every deployment
@@ -225,14 +226,6 @@ def run_build(command: list[str]) -> None:
 
 
 def gather_secrets(app: dict) -> dict[str, str]:
-    """The env vars the app declares, as the cloud job will see them.
-
-    A <NAME>_PATH that names a local file becomes <NAME>_B64 holding the
-    file's base64. One that names nothing on disk is a plain string the app
-    uses at run time, such as an output location, and goes through as is.
-    The bundle is then checked against the app's env spec, so a missing
-    key file that leaves a required or one_of name unset stops the deploy.
-    """
     spec = app["env"]
     names = list(spec.get("required") or [])
     for group in spec.get("one_of") or []:

@@ -410,16 +410,13 @@ def load_env_json() -> None:
 
 
 def is_set(values, name: str) -> bool:
-    """True when name has a value. A <NAME>_PATH is also satisfied by
-    <NAME>_B64, which is what deploy turns it into for the cloud."""
+    """<NAME>_B64 satisfies <NAME>_PATH, since deploy turns one into the other."""
     if str(values.get(name, "")).strip() != "":
         return True
     return name.endswith("_PATH") and str(values.get(name[:-5] + "_B64", "")).strip() != ""
 
 
 def check_env(env_spec: dict, values=None) -> list[str]:
-    """Problems with the env vars an app declares. values defaults to the
-    environment; deploy passes the secret bundle it built instead."""
     if values is None:
         values = os.environ
     problems = []
