@@ -150,21 +150,21 @@ def cmd_deploy(args) -> int:
     name = choose_app(args.app, "deploy")
     if name is None:
         return 1
-    return deploy.deploy(name, assume_yes=args.yes, profile=args.profile)
+    return deploy.deploy(name, assume_yes=args.yes)
 
 
 def cmd_login(args) -> int:
     name = choose_app(args.app, "login")
     if name is None:
         return 1
-    return deploy.login(name, profile=args.profile)
+    return deploy.login(name)
 
 
 def cmd_destroy(args) -> int:
     name = choose_app(args.app, "destroy")
     if name is None:
         return 1
-    return deploy.destroy(name, assume_yes=args.yes, profile=args.profile)
+    return deploy.destroy(name, assume_yes=args.yes)
 
 
 def cmd_storage(args) -> int:
@@ -216,23 +216,17 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    profile = p.add_argument("--profile", help="AWS profile name (AWS only)")
-    profile.completer = completion.profiles
     p.set_defaults(func=cmd_deploy)
     p = add_parser("login", help="sign in again to an app's cloud provider")
     app = p.add_argument("app", nargs="?",
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
-    profile = p.add_argument("--profile", help="AWS profile name (AWS only)")
-    profile.completer = completion.profiles
     p.set_defaults(func=cmd_login)
     p = add_parser("destroy", help="tear down an app's deployed resources")
     app = p.add_argument("app", nargs="?",
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    profile = p.add_argument("--profile", help="AWS profile name (AWS only)")
-    profile.completer = completion.profiles
     p.set_defaults(func=cmd_destroy)
     p = add_parser("storage", help="read or manage an app's data store")
     app = p.add_argument("app", help="the app's folder name")

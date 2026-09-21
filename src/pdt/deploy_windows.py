@@ -393,7 +393,6 @@ def main() -> int:
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
-    parser.add_argument("--profile", help="not used by Windows")
     args = parser.parse_intermixed_args()
     if args.command == "login":
         console.note("the windows provider deploys to this computer, so it needs no login.")

@@ -892,7 +892,6 @@ def main() -> int:
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
-    parser.add_argument("--profile", help="not used by Google Cloud")
     args = parser.parse_intermixed_args()
     try:
         app = config.merged_app(args.app)

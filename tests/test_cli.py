@@ -80,8 +80,7 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     calls = []
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append((a, k)) or 0)
     assert run_cli(monkeypatch, "storage", "hello-world", "ls", "state/") == 0
-    assert calls == [(("azure", "storage", "hello-world", False, None,
-                        ["ls", "state/"]), {})]
+    assert calls == [(("azure", "storage", "hello-world", False, ["ls", "state/"]), {})]
 
 
 def test_cloud_cli_passthroughs_are_registered():

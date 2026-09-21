@@ -295,9 +295,9 @@ def fargate_clients(session) -> dict:
     return clients
 
 
-def deploy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
+def deploy(app: dict, assume_yes: bool) -> int:
     docker_preflight()
-    session = ensure_session(app, profile)
+    session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
     clients = fargate_clients(session)
     account, _identity = preflight(
@@ -405,8 +405,8 @@ def repository_unused_after(ecr, image_tag: str) -> bool:
     return all(item.get("imageTag") == image_tag for item in images)
 
 
-def destroy(app: dict, assume_yes: bool, profile: str | None = None) -> int:
-    session = ensure_session(app, profile)
+def destroy(app: dict, assume_yes: bool) -> int:
+    session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
     clients = fargate_clients(session)
     account, _identity = preflight(

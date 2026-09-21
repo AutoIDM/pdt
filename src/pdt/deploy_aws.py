@@ -204,14 +204,14 @@ def ask(prompt: str) -> str:
         return ""
 
 
-def choose_profile(session) -> str:
+def choose_profile(app: dict, session) -> str:
     profiles = session.available_profiles
     if not profiles:
         console.warn("No AWS credentials or profiles were found on this computer.")
         console.say("Create a profile first, then select it:")
         console.command("pdt aws configure sso", "or: pdt aws configure")
-        console.command("export AWS_PROFILE=<profile-name>")
-        fail("run the same command again after you set AWS_PROFILE")
+        console.command("profile: <profile-name>", "under platform: in pdt.yml")
+        fail("run the same command again after you create a profile")
     if len(profiles) == 1:
         console.field("Using the only AWS profile on this computer", profiles[0])
         return profiles[0]
@@ -224,10 +224,10 @@ def choose_profile(session) -> str:
     elif answer in profiles:
         profile = answer
     else:
-        fail("no AWS profile selected; run again with --profile <name> "
+        fail("no AWS profile selected; add `profile: <name>` under platform: in pdt.yml, "
              "or set AWS_PROFILE=<name>")
-    console.say("To skip this question next time, add:")
-    console.command(f"--profile {profile}", f"or: export AWS_PROFILE={profile}")
+    saved = config.save_platform_key(app, "profile", profile)
+    console.done(f"Saved profile {profile} to {saved.relative_to(config.find_project())}.")
     return profile
 
 
@@ -244,11 +244,11 @@ def sso_login(profile: str | None) -> bool:
     return subprocess.run(command, check=False).returncode == 0
 
 
-def relogin(profile: str | None) -> int:
+def relogin(app: dict) -> int:
     session = boto3.Session()
-    name = profile or os.environ.get("AWS_PROFILE") or ""
+    name = app["platform"].get("profile") or os.environ.get("AWS_PROFILE") or ""
     if name not in session.available_profiles:
-        name = choose_profile(session)
+        name = choose_profile(app, session)
     console.status(f"Logging in to AWS profile {name}...")
     if subprocess.run([*AWS_CLI, "sso", "login", "--profile", name]).returncode != 0:
         console.warn(f"If {name} uses access keys instead of SSO there is no login to "
@@ -267,14 +267,15 @@ def login_error(exc: Exception) -> bool:
                                    "InvalidClientTokenId", "UnrecognizedClientException"})
 
 
-def ensure_session(app: dict, profile: str | None = None):
+def ensure_session(app: dict):
     region = app["platform"].get("region") or None
+    profile = app["platform"].get("profile") or None
     if profile and profile not in boto3.Session().available_profiles:
-        fail(f"AWS profile {profile!r} not found; profiles on this computer: "
-             + ", ".join(boto3.Session().available_profiles))
+        console.warn(f"AWS profile {profile!r} from your config is not on this computer.")
+        profile = choose_profile(app, boto3.Session())
     session = boto3.Session(region_name=region, profile_name=profile)
     if session.get_credentials() is None:
-        session = boto3.Session(region_name=region, profile_name=choose_profile(session))
+        session = boto3.Session(region_name=region, profile_name=choose_profile(app, session))
     try:
         session.client("sts").get_caller_identity()
     except Exception as exc:  # noqa: BLE001 - credential providers raise several types
@@ -657,20 +658,19 @@ def main() -> int:
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
-    parser.add_argument("--profile", help="AWS profile name")
     args = parser.parse_intermixed_args()
-    if args.command == "login":
-        return relogin(args.profile)
     app = load_app(args.app)
+    if args.command == "login":
+        return relogin(app)
     if args.command == "storage":
-        session = ensure_session(app, args.profile)
+        session = ensure_session(app)
         account, _region = aws_settings(app, session)
         return storage(app, session, account, args.rest, args.yes)
     from pdt import deploy_aws_fargate as fargate
     try:
         if args.command == "deploy":
-            return fargate.deploy(app, args.yes, args.profile)
-        return fargate.destroy(app, args.yes, args.profile)
+            return fargate.deploy(app, args.yes)
+        return fargate.destroy(app, args.yes)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",
                                "UnauthorizedOperation"}:
