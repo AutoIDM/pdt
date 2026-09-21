@@ -43,7 +43,7 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_secrets, stage_build_context,
+    CostEstimate, fail, gather_secrets, image_action, run_secrets, ssh_build_args, stage_build_context,
     store_kept_line, store_name, store_plan_lines, warn_if_locked,
     write_dockerfile,
 )
@@ -498,7 +498,8 @@ def build_and_push(app: dict, image: str, ecr) -> str:
         registry = auth["proxyEndpoint"]
         commands = [
             (["docker", "login", "--username", username, "--password-stdin", registry], password),
-            (["docker", "build", "--platform", DOCKER_PLATFORM, "-t", image, str(stage)], None),
+            (["docker", "build", "--platform", DOCKER_PLATFORM, *ssh_build_args(),
+              "-t", image, str(stage)], None),
             (["docker", "push", image], None),
         ]
         for command, stdin in commands:

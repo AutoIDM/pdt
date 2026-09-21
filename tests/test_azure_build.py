@@ -15,6 +15,7 @@ def test_github_actions_builds_and_pushes_with_docker(tmp_path, monkeypatch):
     stage.mkdir()
     calls = []
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     monkeypatch.setattr(azure, "stage_build_context", lambda app: stage)
     monkeypatch.setattr(azure, "run_quiet", lambda *args: calls.append(args))
     monkeypatch.setattr(azure, "run_stream", lambda *args: calls.append(args))
