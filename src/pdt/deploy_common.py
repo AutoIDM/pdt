@@ -2,9 +2,10 @@
 
 Every env var the app declares goes into one json secret, mounted on the
 job as PDT_ENV_JSON and expanded back into env vars by
-pdt.config.load_env_json. A var that ends in _PATH is replaced by
-<NAME>_B64 holding the base64 of the file it points to, because the
-cloud job gets no files, only string secrets.
+pdt.config.load_env_json. A var that ends in _PATH and names a local
+file is replaced by <NAME>_B64 holding the file's base64, because the
+cloud job gets no files, only string secrets. One that names no file is
+a run-time location the app sets itself and goes through as is.
 
 A build context holds the app directory and pdt.yml, nothing else. The
 app's run.py declares pdt in its script header, so every deployment
@@ -243,9 +244,15 @@ def gather_secrets(app: dict) -> dict[str, str]:
             bases += [app["dir"], config.find_project()]
             path = next((base / path for base in bases if (base / path).is_file()), path)
         if not path.is_file():
-            fail(f"{name} points to {path}, which does not exist")
+            console.note(f"{name} is not a file here; the job gets it as a plain value")
+            continue
         values.setdefault(target, base64.b64encode(path.read_bytes()).decode("ascii"))
         del values[name]
+    problems = config.check_env(spec, values)
+    if problems:
+        for problem in problems:
+            console.error(f"env: {problem}")
+        fail("the secret bundle does not satisfy the app's env spec")
     return values
 
 

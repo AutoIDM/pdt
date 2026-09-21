@@ -409,10 +409,19 @@ def load_env_json() -> None:
         os.environ.setdefault(key, str(val))
 
 
-def check_env(env_spec: dict) -> list[str]:
+def is_set(values, name: str) -> bool:
+    """<NAME>_B64 satisfies <NAME>_PATH, since deploy turns one into the other."""
+    if str(values.get(name, "")).strip() != "":
+        return True
+    return name.endswith("_PATH") and str(values.get(name[:-5] + "_B64", "")).strip() != ""
+
+
+def check_env(env_spec: dict, values=None) -> list[str]:
+    if values is None:
+        values = os.environ
     problems = []
     for name in env_spec.get("required") or []:
-        if os.environ.get(name, "").strip() == "":
+        if not is_set(values, name):
             problems.append(f"missing required env var {name}")
     groups = env_spec.get("one_of") or []
     if groups:
@@ -420,7 +429,7 @@ def check_env(env_spec: dict) -> list[str]:
         for group in groups:
             complete = True
             for name in group:
-                if os.environ.get(name, "").strip() == "":
+                if not is_set(values, name):
                     complete = False
             if complete:
                 satisfied = True
