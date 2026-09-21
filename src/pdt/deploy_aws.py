@@ -37,7 +37,7 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_name)
+    STORE_TAGS, CostEstimate, fail, fetch_json, run_once, store_cost_label, store_name)
 from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
@@ -105,7 +105,8 @@ def not_found(exc: Exception) -> bool:
         return True
     # ECS reports a missing task definition family as a generic ClientException.
     message = getattr(exc, "response", {}).get("Error", {}).get("Message", "")
-    return error_code(exc) == "ClientException" and "Unable to describe task definition" in message
+    return error_code(exc) == "ClientException" and (
+        "Unable to describe task definition" in message or "TaskDefinition not found" in message)
 
 
 def role_propagation_error(exc: Exception) -> bool:
@@ -672,10 +673,11 @@ def main() -> int:
         return subprocess.run([*AWS_CLI, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
-        "deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
+        "deploy", "destroy", "login", "run", "storage", "secrets", "runs", "logs"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--no-wait", action="store_true")
     args = parser.parse_intermixed_args()
     app = load_app(args.app)
     if args.command == "login":
@@ -690,6 +692,9 @@ def main() -> int:
             return fargate.secrets(app, args.rest[0], args.yes, *args.rest[1:])
         if args.command == "deploy":
             return fargate.deploy(app, args.yes)
+        if args.command == "run":
+            return run_once(fargate.remote_job(app), not args.no_wait,
+                            args.app, "aws")
         if args.command == "runs":
             return fargate.runs(app, ensure_session(app), args.rest)
         if args.command == "logs":

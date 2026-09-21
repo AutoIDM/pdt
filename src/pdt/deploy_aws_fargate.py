@@ -24,7 +24,8 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_secrets, stage_build_context,
+    CostEstimate, LogPage, NotDeployed, RemoteJob, Run, RunState, fail, gather_secrets,
+    image_action, run_secrets, stage_build_context,
     store_kept_line, store_name, store_plan_lines, warn_if_locked,
     write_dockerfile,
 )
@@ -57,12 +58,14 @@ FARGATE_ACTIONS = [
     "ecs:DeleteCluster",
     "ecs:DeregisterTaskDefinition",
     "ecs:DescribeClusters",
+    "ecs:DescribeTasks",
     "ecs:DescribeTaskDefinition",
     "ecs:ListTagsForResource",
     "ecs:ListTaskDefinitionFamilies",
     "ecs:ListTaskDefinitions",
     "ecs:ListTasks",
     "ecs:RegisterTaskDefinition",
+    "ecs:RunTask",
     "ecs:TagResource",
 ]
 DEPLOYER_ACTIONS = sorted(COMMON_ACTIONS + FARGATE_ACTIONS)
@@ -315,6 +318,56 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     return run_secrets(action, app, current, write, assume_yes, name)
 
 
+def remote_job(app: dict) -> RemoteJob:
+    session = ensure_session(app)
+    _account, region = aws_settings(app, session)
+    clients = fargate_clients(session)
+    names = resource_names(app["name"])
+
+    def start() -> Run:
+        subnets, security_group = default_network(clients["ec2"])
+        try:
+            result = clients["ecs"].run_task(
+                cluster=CLUSTER, taskDefinition=names["family"], launchType="FARGATE", count=1,
+                networkConfiguration={"awsvpcConfiguration": {
+                    "Subnets": subnets, "SecurityGroups": [security_group], "AssignPublicIp": "ENABLED",
+                }}, tags=tags_list())
+        except Exception as exc:
+            if not_found(exc):
+                raise NotDeployed from exc
+            raise
+        arn = result["tasks"][0]["taskArn"]
+        task_id = arn.rsplit("/", 1)[-1]
+        return Run(task_id, RunState.STARTING, log_group_url(region, names["log_group"]))
+
+    def poll(run: Run) -> Run:
+        task = clients["ecs"].describe_tasks(cluster=CLUSTER, tasks=[run.id])["tasks"][0]
+        status = task["lastStatus"]
+        if status in {"PROVISIONING", "PENDING", "ACTIVATING"}:
+            state = RunState.STARTING
+            exit_code = None
+        elif status == "RUNNING":
+            state = RunState.RUNNING
+            exit_code = None
+        else:
+            exit_code = (task.get("containers") or [{}])[0].get("exitCode")
+            state = RunState.SUCCEEDED if exit_code == 0 else RunState.FAILED
+        return Run(run.id, state, run.logs_url, exit_code)
+
+    def read_logs(run: Run, cursor: str | None) -> LogPage:
+        try:
+            result = clients["logs"].get_log_events(
+                logGroupName=names["log_group"], logStreamName=f"ecs/{names['family']}/{run.id}",
+                startFromHead=True, **({"nextToken": cursor} if cursor else {}))
+        except Exception as exc:
+            if getattr(exc, "response", {}).get("Error", {}).get("Code") == "ResourceNotFoundException":
+                return LogPage([], cursor)
+            raise
+        return LogPage([event["message"] for event in result["events"]], result.get("nextForwardToken"))
+
+    return RemoteJob(start, poll, read_logs)
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     docker_preflight()
     session = ensure_session(app)
@@ -396,10 +449,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, target)
     console.done(f"Deployed {app['name']}.")
-    console.field("Run it once", f"pdt aws ecs run-task --cluster {CLUSTER} "
-                  f"--task-definition {names['family']} --launch-type FARGATE "
-                  f"--network-configuration 'awsvpcConfiguration={{subnets=[{subnets[0]}],"
-                  f"securityGroups=[{security_group}],assignPublicIp=ENABLED}}' --region {region}")
+    console.field("Run it once", f"pdt run {app['name']} --remote")
     console.field("Run logs", log_group_url(region, names["log_group"]))
     return 0
 
