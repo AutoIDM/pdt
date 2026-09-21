@@ -2,7 +2,6 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "awscli",
 #     "boto3",
 #     "pyyaml",
 #     "rich",
@@ -18,10 +17,8 @@
 Shared login, IAM, secret, log, and schedule code lives here. The job
 itself, a scheduled ECS task on Fargate, is in deploy_aws_fargate.py.
 
-The deploy itself talks to AWS through boto3. The AWS CLI is a Python
-package, so the script header installs it too, and `pdt aws` plus the SSO
-login here run it as `python -m awscli`. No system install is needed.
-Credentials live in ~/.aws either way.
+The deploy itself talks to AWS through boto3. `pdt aws` and the SSO login
+run AWS CLI v2 through `uvx`. Credentials live in ~/.aws.
 """
 
 from __future__ import annotations
@@ -41,9 +38,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_name)
+from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
-AWS_CLI = [sys.executable, "-m", "awscli"]
+AWS_CLI_V2 = "awscli @ https://github.com/aws/aws-cli/archive/refs/tags/2.36.49.tar.gz"
+AWS_CLI = ["uvx", "--from", AWS_CLI_V2, "aws"]
 MANAGED_TAGS = {"managed-by": "pdt"}
 SCHEDULE_GROUP = "pdt"
 ASSUMED_RUN_MINUTES = 5.0
@@ -197,6 +196,10 @@ def principal_arn(identity_arn: str, account: str) -> str:
     return identity_arn
 
 
+def can_ask() -> bool:
+    return email_auth.can_prompt(None)
+
+
 def ask(prompt: str) -> str:
     try:
         return input(prompt).strip()
@@ -215,6 +218,9 @@ def choose_profile(app: dict, session) -> str:
     if len(profiles) == 1:
         console.field("Using the only AWS profile on this computer", profiles[0])
         return profiles[0]
+    if not can_ask():
+        fail("no AWS profile selected; add `profile: <name>` under platform: in pdt.yml, "
+             f"or set AWS_PROFILE=<name> (profiles: {', '.join(profiles)})")
     console.heading("No AWS profile is selected. Profiles on this computer:")
     for number, profile in enumerate(profiles, start=1):
         console.choice(number, profile)
@@ -238,6 +244,9 @@ def sso_login(profile: str | None) -> bool:
         command += ["--profile", profile]
         shown += f" --profile {profile}"
     console.warn("Your AWS login has expired or is missing.")
+    if not can_ask():
+        console.say(f"Log in first: {shown}")
+        return False
     answer = ask(f"Log in now with `{shown}` (opens a browser)? [y/N] ")
     if answer.lower() not in ("y", "yes"):
         return False
