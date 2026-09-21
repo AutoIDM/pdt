@@ -22,7 +22,7 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, stage_build_context,
+    CostEstimate, fail, gather_secrets, image_action, run_secrets, stage_build_context,
     store_kept_line, store_name, store_plan_lines, warn_if_locked,
     write_dockerfile,
 )
@@ -293,6 +293,24 @@ def fargate_clients(session) -> dict:
     clients = clients_for(session)
     clients.update({name: session.client(name) for name in ("ec2", "ecr", "ecs")})
     return clients
+
+
+def secrets(app: dict, action: str, assume_yes: bool) -> int:
+    session = ensure_session(app)
+    expected_account, _region = aws_settings(app, session)
+    clients = fargate_clients(session)
+    preflight(clients["sts"], clients["iam"], expected_account, DEPLOYER_ACTIONS)
+    client = clients["secretsmanager"]
+    name = resource_names(app["name"])["secret"]
+    current = None
+    if resource_exists(client, "describe_secret", SecretId=name):
+        current = client.get_secret_value(SecretId=name).get("SecretString", "")
+
+    def write(values: dict[str, str]) -> None:
+        console.step(f"updating secret {name}")
+        ensure_secret(client, name, json.dumps(values, sort_keys=True))
+
+    return run_secrets(action, app, current, write, assume_yes)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:

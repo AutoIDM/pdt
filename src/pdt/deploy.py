@@ -78,6 +78,22 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
     return code
 
 
+def secrets(app_name: str, action: str, assume_yes: bool = False) -> int:
+    try:
+        app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(str(e))
+        return 1
+    config.load_env(app["dir"])
+    if action != "get":
+        problems = config.check_env(app["env"])
+        if problems:
+            for problem in problems:
+                console.error(f"{app_name}: env: {problem}")
+            return 1
+    return dispatch(provider, "secrets", app_name, assume_yes, [action])
+
+
 def login(app_name: str) -> int:
     try:
         app, provider = _load(app_name)
@@ -118,6 +134,10 @@ def confirm(actions: list[str], assume_yes: bool,
         console.bullet(action)
     if cost is not None:
         cost.show()
+    return proceed(assume_yes)
+
+
+def proceed(assume_yes: bool) -> bool:
     if assume_yes:
         return True
     if not can_prompt(None):

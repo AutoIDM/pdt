@@ -91,13 +91,16 @@ pdt login my-report
 | `pdt run APP` | run an app on this machine |
 | `pdt deploy APP` | deploy an app to its configured platform |
 | `pdt destroy APP` | remove everything deploy created |
+| `pdt secrets APP` | show which `.env` values differ from the deployed app |
+| `pdt secrets APP save` | send your `.env` values to the deployed app; the next run uses them |
+| `pdt secrets APP get` | copy the deployed values into a `.env.<provider>` file |
 | `pdt login APP` | sign in again to the app's cloud provider |
 | `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
 | `pdt completion [SHELL]` | turn on tab completion for a shell |
 
-Leave `APP` off `run`, `deploy`, `destroy`, or `login`, or mistype it, and pdt lists the apps in the project so you can pick one.
+Leave `APP` off `run`, `deploy`, `destroy`, `secrets`, or `login`, or mistype it, and pdt lists the apps in the project so you can pick one.
 
 `pdt az` and `pdt gcloud` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
 

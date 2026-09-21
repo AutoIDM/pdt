@@ -663,7 +663,7 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "aws":
         return subprocess.run([*AWS_CLI, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage"))
+    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage", "secrets"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -677,6 +677,8 @@ def main() -> int:
         return storage(app, session, account, args.rest, args.yes)
     from pdt import deploy_aws_fargate as fargate
     try:
+        if args.command == "secrets":
+            return fargate.secrets(app, args.rest[0], args.yes)
         if args.command == "deploy":
             return fargate.deploy(app, args.yes)
         return fargate.destroy(app, args.yes)

@@ -12,7 +12,7 @@ def run_cli(monkeypatch, *argv):
     return cli.main()
 
 
-APP_COMMANDS = ["run", "deploy", "login", "destroy"]
+APP_COMMANDS = ["run", "deploy", "login", "destroy", "secrets"]
 
 
 def test_no_command_prints_help(monkeypatch, capsys):
@@ -28,7 +28,7 @@ def test_command_without_app_lists_apps(project, monkeypatch, capsys, command):
     add_app(project, "daily-report")
     assert run_cli(monkeypatch, command) == 1
     out = capsys.readouterr().out
-    assert f"Which app do you want to {command}?" in out
+    assert cli.APP_QUESTIONS[command] in out
     assert "hello-world" in out
     assert "daily-report" in out
     assert "pdt list" in out

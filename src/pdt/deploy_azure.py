@@ -373,8 +373,7 @@ def secret_name(app_name: str) -> str:
     return clean_name(f"pdt-{app_name}-env", 127)
 
 
-def set_key_vault_secret(vault: str, name: str, payload: str,
-                         digest: str, app_name: str) -> str:
+def set_key_vault_secret(vault: str, name: str, payload: str, app_name: str) -> str:
     fd, filename = tempfile.mkstemp(prefix="pdt-secret-")
     try:
         os.chmod(filename, 0o600)
@@ -384,8 +383,7 @@ def set_key_vault_secret(vault: str, name: str, payload: str,
             "keyvault", "secret", "set", "--vault-name", vault, "--name", name,
             "--file", filename, "--encoding", "utf-8", "--tags",
             "managed-by=pdt", f"pdt-app={app_name}",
-            f"pdt-hash={digest}", "--query", "id", "--output", "tsv",
-            retry_access=True).strip()
+            "--query", "id", "--output", "tsv", retry_access=True).strip()
     finally:
         Path(filename).unlink(missing_ok=True)
 
@@ -473,28 +471,27 @@ def check_shared_names(settings: dict[str, str]) -> None:
 
 
 def secret_state(settings: dict[str, str], sid: str, app_name: str,
-                 values: dict) -> tuple[bool, str | None]:
+                 wanted: bool) -> tuple[bool, str | None]:
     vault = az_json("keyvault", "show", "--name", settings["vault"],
                     "--resource-group", settings["resource_group"])
     require_managed(vault, f"Key Vault {settings['vault']}")
     vault_exists = vault is not None
     current = None
-    if vault_exists and values:
+    if vault_exists and wanted:
         current = az_json("keyvault", "secret", "show", "--vault-name",
                           settings["vault"], "--name", sid)
-        if current and not owned_by(current, app_name):
+        if current and not managed_secret(settings, sid, app_name):
             fail(f"Key Vault secret {sid} already exists but is not owned "
                  f"by PDT app {app_name}; choose another Key Vault")
-    current_hash = (current.get("tags") or {}).get("pdt-hash") if current else None
-    return vault_exists, current_hash
+    return vault_exists, current.get("value") if current else None
 
 
-def secret_actions(sid: str, values: dict, current_hash: str | None,
-                   digest: str) -> list[str]:
+def secret_actions(sid: str, values: dict, current: str | None,
+                   payload: str) -> list[str]:
     if not values:
         return []
-    state = "unchanged" if current_hash == digest else (
-        "update" if current_hash else "create")
+    state = "unchanged" if current == payload else (
+        "update" if current else "create")
     return [f"{state} Key Vault secret {sid} ({len(values)} env vars)"]
 
 
@@ -585,21 +582,39 @@ def ensure_shared_group(settings: dict) -> None:
 
 
 def ensure_secret(settings: dict[str, str], sid: str, values: dict,
-                  payload: str, digest: str, current_hash: str | None,
-                  app_name: str) -> str | None:
+                  payload: str, current: str | None, app_name: str) -> str | None:
+    """Write the secret when it changed; return its URI without a version.
+
+    A URI that names a version pins the job to that version, so a later
+    change in the vault never reaches a run.
+    """
     if not values:
         return None
-    if current_hash != digest:
+    if current != payload:
         console.step(f"writing Key Vault secret {sid}")
-        return set_key_vault_secret(settings["vault"], sid, payload, digest, app_name)
-    return az_tsv("keyvault", "secret", "show", "--vault-name", settings["vault"],
-                  "--name", sid, "--query", "id")
+        uri = set_key_vault_secret(settings["vault"], sid, payload, app_name)
+    else:
+        uri = az_tsv("keyvault", "secret", "show", "--vault-name", settings["vault"],
+                     "--name", sid, "--query", "id")
+    return uri.rsplit("/", 1)[0]
+
+
+def disable_old_secret_versions(settings: dict[str, str], sid: str) -> None:
+    """Key Vault cannot delete one version, so every version but the latest is disabled."""
+    versions = az_json("keyvault", "secret", "list-versions", "--vault-name",
+                       settings["vault"], "--name", sid) or []
+    versions.sort(key=lambda version: version["attributes"]["created"])
+    for version in versions[:-1]:
+        if version["attributes"]["enabled"]:
+            run_quiet("keyvault", "secret", "set-attributes", "--id", version["id"],
+                      "--enabled", "false", retry_access=True)
 
 
 def managed_secret(settings: dict[str, str], sid: str, app_name: str) -> bool:
-    secret = az_json("keyvault", "secret", "show", "--vault-name",
-                     settings["vault"], "--name", sid)
-    return owned_by(secret, app_name)
+    # Tags belong to a version, and a version added in the portal has none.
+    versions = az_json("keyvault", "secret", "list-versions", "--vault-name",
+                       settings["vault"], "--name", sid) or []
+    return any(owned_by(version, app_name) for version in versions)
 
 
 def delete_secret(settings: dict[str, str], sid: str) -> None:
@@ -874,7 +889,7 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "az":
         return subprocess.run([*AZ, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage"))
+    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage", "secrets"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -888,6 +903,8 @@ def main() -> int:
     if app["timezone"] not in ("Etc/UTC", "UTC"):
         fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
     from pdt import deploy_azure_container_apps as module
+    if args.command == "secrets":
+        return module.secrets(app, args.rest[0], args.yes)
     if args.command == "deploy":
         return module.deploy(app, args.yes)
     return module.destroy(app, args.yes)
