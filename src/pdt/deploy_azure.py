@@ -244,6 +244,9 @@ def preflight(app: dict, settings: dict) -> dict:
         run_quiet("account", "set", "--subscription", account["id"])
     elif not requested and can_ask:
         save_subscription(app, account)
+    problem = subscription_problem(account)
+    if problem:
+        fail(problem)
     settings["subscription"] = str(account["id"])
     # A first deploy learns the subscription here, and its names must match
     # every later deploy that reads the saved one.
@@ -259,6 +262,23 @@ def preflight(app: dict, settings: dict) -> dict:
     settings["deployer_object_id"] = deployer_id
     settings["deployer_principal_type"] = "User" if is_user else "ServicePrincipal"
     return settings
+
+
+# `az account show` reports the billing state. Azure rejects every write to a
+# subscription that is not Enabled or PastDue, so deploy stops here instead of
+# after the plan, at the first `az group create`.
+WRITABLE_SUBSCRIPTION_STATES = ("enabled", "pastdue")
+SUBSCRIPTIONS_URL = "https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2"
+
+
+def subscription_problem(account: dict) -> str:
+    state = str(account.get("state") or "")
+    if not state or state.lower() in WRITABLE_SUBSCRIPTION_STATES:
+        return ""
+    return (f"Azure subscription {account.get('name')} ({account.get('id')}) is "
+            f"{state}, so Azure rejects every change to it. Re-enable it at "
+            f"{SUBSCRIPTIONS_URL}, or set platform.subscription in "
+            f"{config.PROJECT_FILE} to another subscription id.")
 
 
 def object_id_from_token(token: str) -> str:
@@ -285,8 +305,7 @@ def save_subscription(app: dict, sub: dict) -> None:
 def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
     available = az_json("account", "list", "--all") or []
     if not available:
-        fail("your Azure account has no subscription yet; create one at "
-             "https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2")
+        fail(f"your Azure account has no subscription yet; create one at {SUBSCRIPTIONS_URL}")
     for sub in available:
         if requested in (sub.get("id"), sub.get("name")):
             return sub
