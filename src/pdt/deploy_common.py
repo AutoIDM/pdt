@@ -31,6 +31,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -38,10 +39,12 @@ import urllib.error
 import urllib.request
 from http import HTTPStatus
 from pathlib import Path
+from typing import Callable
 
 import backoff
 
 from pdt import config, console
+from pdt.utils.email_auth import can_prompt
 
 DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -254,6 +257,104 @@ def gather_secrets(app: dict) -> dict[str, str]:
             console.error(f"env: {problem}")
         fail("the secret bundle does not satisfy the app's env spec")
     return values
+
+
+MASK_BOTH_ENDS_FROM = 12
+
+
+def masked(value: str) -> str:
+    """Enough of a secret to recognise it, never enough to use it."""
+    value = str(value)
+    if len(value) < MASK_BOTH_ENDS_FROM:
+        return f"•••• ({len(value)} chars)"
+    return f"{value[:2]}••••{value[-2:]} ({len(value)} chars)"
+
+
+def secret_changes(current: str | None, values: dict[str, str]) -> list[tuple[str, str, str, str]]:
+    """(kind, name, masked before, masked after) per env var, grouped by kind, then by name."""
+    try:
+        deployed = json.loads(current or "{}")
+    except ValueError:
+        deployed = {}
+    changes = []
+    for name in sorted(set(deployed) | set(values)):
+        before = masked(deployed[name]) if name in deployed else ""
+        after = masked(values[name]) if name in values else ""
+        if not before:
+            kind = "new"
+        elif not after:
+            kind = "deleted"
+        elif deployed[name] != values[name]:
+            kind = "updated"
+        else:
+            kind = "unchanged"
+        changes.append((kind, name, before, after))
+    kinds = list(console.SECRET_CHANGE_COLOURS)
+    return sorted(changes, key=lambda change: (kinds.index(change[0]), change[1]))
+
+
+SECRET_ACTIONS = ("diff", "save", "get")
+
+
+def run_secrets(action: str, app: dict, current: str | None,
+                write: Callable[[dict[str, str]], None], assume_yes: bool) -> int:
+    """`pdt secrets <app> diff|save|get`, once the provider has read the deployed secret."""
+    from pdt.deploy import proceed
+    if current is None:
+        fail(f"{app['name']} has no deployed secrets yet. Run `pdt deploy {app['name']}` first.")
+    if action == "get":
+        return get_secrets(app, current, assume_yes)
+    values = gather_secrets(app)
+    if not values:
+        console.note("this app declares no env vars, so it has no secrets.")
+        return 0
+    changes = secret_changes(current, values)
+    console.secret_changes(changes)
+    if all(kind == "unchanged" for kind, _name, _before, _after in changes):
+        console.done("The deployed secrets already match your .env file.")
+        return 0
+    if action == "diff":
+        console.say()
+        console.command(f"pdt secrets {app['name']} save", "send these values to the deployed app")
+        return 0
+    if not proceed(assume_yes):
+        console.warn("Aborted; nothing was changed.")
+        return 0
+    write(values)
+    console.done(f"Updated the secrets of {app['name']}. The next run uses them.")
+    return 0
+
+
+def get_secrets(app: dict, current: str, assume_yes: bool) -> int:
+    """Copy the deployed secret into a .env file in the app folder."""
+    from pdt.deploy import proceed
+    try:
+        values = json.loads(current)
+    except ValueError:
+        fail("the deployed secret is not the JSON that pdt writes, so pdt cannot read it.")
+    default = f".env.{app['platform']['provider']}"
+    answer = console.ask("Save to which file?", default) if can_prompt(None) else ""
+    target = Path(app["dir"]) / (answer or default)
+    if target.exists():
+        console.warn(f"{target.name} already exists and will be replaced.")
+        if not proceed(assume_yes):
+            console.warn("Aborted; nothing was written.")
+            return 0
+    target.write_text("".join(env_line(name, values[name]) + "\n" for name in sorted(values)))
+    console.done(f"Saved {len(values)} value(s) to {target}.")
+    return 0
+
+
+PLAIN_ENV_VALUE = re.compile(r"[A-Za-z0-9_./:@+=,%-]*")
+
+
+def env_line(name: str, value: str) -> str:
+    """One .env line that `dotenv` reads back to the same value."""
+    value = str(value)
+    if PLAIN_ENV_VALUE.fullmatch(value):
+        return f"{name}={value}"
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'{name}="{escaped}"'
 
 
 def stage_build_context(app: dict) -> Path:

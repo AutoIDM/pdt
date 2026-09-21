@@ -123,6 +123,18 @@ def command(text: str, note: str = "", indent: int = 2) -> None:
         _console.print(f"{' ' * indent}[bold]{escape(text)}[/]")
 
 
+SECRET_CHANGE_COLOURS = {"deleted": "red", "new": "green", "updated": "yellow", "unchanged": "dim"}
+
+
+def secret_changes(rows: list[tuple[str, str, str, str]]) -> None:
+    """One row per env var: kind, name, the deployed value, the .env value (both masked)."""
+    headers = ["", "env var", "deployed", ".env"]
+    widths = [max(len(cell) for cell in column) for column in zip(headers, *rows)]
+    _console.print(_row(headers, widths, ["bold"] * len(headers)))
+    for row in rows:
+        _console.print(_row(list(row), widths, [SECRET_CHANGE_COLOURS[row[0]]] * len(row)))
+
+
 def ask(question: str, default: str = "") -> str:
     suffix = f" [{default}]" if default != "" else ""
     return _console.input(f"{question}{suffix}: ", markup=False).strip()
@@ -139,6 +151,7 @@ def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:
         line.append(cell, style=style or "")
         if index < len(cells) - 1:
             line.append(" " * (widths[index] - len(cell) + 2))
+    line.rstrip()
     return line
 
 

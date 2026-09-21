@@ -55,7 +55,7 @@ from pdt import console
 from pdt import gcloud_sdk
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action,
+    STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action, run_secrets,
     stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
     warn_if_locked, write_dockerfile)
 from pdt import storage_cli
@@ -547,6 +547,33 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                         "excludes Cloud Build image builds and Artifact Registry storage")
 
 
+def destroy_old_secret_versions(project: str, sid: str) -> None:
+    """The job reads `latest`, and every older version is billed, so none is kept."""
+    versions = read_json_or_none(
+        "secrets", "versions", "list", sid, "--project", project,
+        "--filter", "state!=DESTROYED", "--sort-by", "~createTime") or []
+    for version in versions[1:]:
+        run_quiet("secrets", "versions", "destroy", version["name"].rsplit("/", 1)[1],
+                  "--secret", sid, "--project", project, "--quiet")
+
+
+def secrets(app: dict, action: str, assume_yes: bool) -> int:
+    project, _region = project_region(app)
+    project = preflight(app, project, assume_yes)
+    sid = secret_id(app["name"])
+    secret = read_json_or_none("secrets", "describe", sid, "--project", project)
+    require_managed(secret, f"Secret Manager secret {sid}")
+    current = secret_value(project, sid) if secret else None
+
+    def write(values: dict[str, str]) -> None:
+        console.step(f"updating secret {sid}")
+        run_quiet("secrets", "versions", "add", sid, "--project", project,
+                  "--data-file", "-", data=json.dumps(values, sort_keys=True))
+        destroy_old_secret_versions(project, sid)
+
+    return run_secrets(action, app, current, write, assume_yes)
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     name = app["name"]
     project, region = project_region(app)
@@ -663,6 +690,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
             console.step(f"updating secret {sid}")
             run_quiet("secrets", "versions", "add", sid, "--project", project,
                       "--data-file", "-", data=payload)
+        destroy_old_secret_versions(project, sid)
     if values:
         run_quiet("secrets", "add-iam-policy-binding", sid, "--project", project,
                   "--member", f"serviceAccount:{sa}",
@@ -888,7 +916,7 @@ def main() -> int:
             fail(str(e))
         return subprocess.run([binary, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage"))
+    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage", "secrets"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -902,6 +930,8 @@ def main() -> int:
         return relogin(args.yes)
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
+    if args.command == "secrets":
+        return secrets(app, args.rest[0], args.yes)
     if args.command == "deploy":
         return deploy(app, args.yes)
     return destroy(app, args.yes)
