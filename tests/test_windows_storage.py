@@ -1,3 +1,5 @@
+import html
+
 import pytest
 
 from conftest import add_app
@@ -48,3 +50,11 @@ def test_storage_ls_lists_the_folder_contents(project, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "a.csv" in out
     assert "b.csv" in out
+
+
+def test_task_xml_captures_each_run_in_a_timestamped_log(project, monkeypatch):
+    app = windows_app(project, monkeypatch)
+    _description, xml = deploy_windows.task_xml(app, "uv.exe")
+    arguments = html.unescape(xml)
+    assert "Get-Date -Format yyyyMMdd-HHmmss" in arguments
+    assert "exit $LASTEXITCODE" in arguments

@@ -32,13 +32,14 @@ import html
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, runs_cli
 from pdt.deploy import confirm
-from pdt.deploy_common import CostEstimate
+from pdt.deploy_common import CostEstimate, LogPage, NotDeployed, RemoteJob, Run, RunState, run_once
 
 
 class WindowsDeployError(Exception):
@@ -327,6 +328,74 @@ def _task_running(powershell: str, name: str) -> bool:
     return proc.returncode == 0
 
 
+def remote_job(app: dict) -> RemoteJob:
+    powershell, _uv = _preflight(require_uv=False)
+    name = _task_name(app["name"])
+    folder = runs_folder(app["name"])
+    started = None
+
+    def start() -> Run:
+        nonlocal started
+        if _task_state(powershell, name) == "absent":
+            raise NotDeployed
+        started = time.time()
+        _run(powershell, f"Start-ScheduledTask -TaskName {_ps_string(name)}")
+        paths = []
+        for _ in range(15):
+            paths = [path for path in folder.glob("*.log") if path.stat().st_mtime >= started]
+            if paths:
+                break
+            time.sleep(1)
+        if paths:
+            run_id = max(paths, key=lambda path: path.stat().st_mtime).stem
+        else:
+            run_id = str(int(started))
+            console.note("this task was registered before pdt recorded run logs; "
+                         f"pdt deploy {app['name']} once will record them.")
+        return Run(run_id, RunState.STARTING, str(folder / f"{run_id}.log"))
+
+    def poll(run: Run) -> Run:
+        start_time = datetime.fromtimestamp(started or time.time(), timezone.utc).isoformat()
+        script = (f"$start = [datetime]::Parse({_ps_string(start_time)}); "
+                  f"$task = Get-ScheduledTask -TaskName {_ps_string(name)}; "
+                  "$info = Get-ScheduledTaskInfo -TaskName $task.TaskName; $task.State; "
+                  "if ($info.LastRunTime -lt $start) { 'before' } else { 'after' }; "
+                  "$info.LastTaskResult")
+        proc = subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout).strip()
+            raise WindowsDeployError(
+                "Windows Task Scheduler command failed"
+                + (f": {detail}" if detail else f" (exit {proc.returncode})"))
+        state, last_run, result = (proc.stdout.splitlines() + ["", "", ""])[:3]
+        if state == "Running":
+            return Run(run.id, RunState.RUNNING, run.logs_url)
+        if last_run == "before":
+            return Run(run.id, RunState.STARTING, run.logs_url)
+        code = int(result or 1)
+        return Run(run.id, RunState.SUCCEEDED if code == 0 else RunState.FAILED,
+                   run.logs_url, code)
+
+    def read_logs(run: Run, cursor: str | None) -> LogPage:
+        path = folder / f"{run.id}.log"
+        if not path.exists():
+            return LogPage([], cursor)
+        offset = int(cursor or 0)
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            data = stream.read()
+            next_cursor = str(stream.tell())
+        text = data.decode(errors="replace")
+        if offset == 0:
+            text = text.lstrip("﻿")  # Out-File -Encoding utf8 writes a BOM
+        return LogPage(text.splitlines(), next_cursor)
+
+    return RemoteJob(start, poll, read_logs)
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     try:
         powershell, uv = _preflight()
@@ -359,6 +428,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
     if app["storage"]:
         folder.mkdir(parents=True, exist_ok=True)
+    runs_folder(app["name"]).mkdir(parents=True, exist_ok=True)
 
     payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     script = (
@@ -373,7 +443,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.error(str(exc))
         return 1
     console.done(f"Deployed {app['name']} as Windows task {name}.")
-    console.field("Run it once", f"Start-ScheduledTask -TaskName {_ps_string(name)}")
+    console.field("Run it once", f"pdt run {app['name']} --remote")
     console.field("Run history", f"Get-ScheduledTaskInfo -TaskName {_ps_string(name)}")
     console.bullet("or open Task Scheduler > Task Scheduler Library", indent=4)
     return 0
@@ -462,11 +532,12 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
-                        choices=("deploy", "destroy", "login", "storage", "secrets",
+                        choices=("deploy", "destroy", "login", "run", "storage", "secrets",
                                  "runs", "logs"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--no-wait", action="store_true")
     args = parser.parse_intermixed_args()
     if args.command == "login":
         console.note("the windows provider deploys to this computer, so it needs no login.")
@@ -490,6 +561,12 @@ def main() -> int:
                              lambda run: read_lines(app["name"], run), app["name"], args.rest)
     if args.command == "deploy":
         return deploy(app, args.yes)
+    if args.command == "run":
+        try:
+            return run_once(remote_job(app), not args.no_wait, args.app, "windows")
+        except WindowsDeployError as exc:
+            console.error(str(exc))
+            return 1
     return destroy(app, args.yes)
 
 
