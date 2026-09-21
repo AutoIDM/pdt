@@ -40,8 +40,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
+from enum import Enum
 from http import HTTPStatus
 from pathlib import Path
 from typing import Callable
@@ -66,6 +69,87 @@ BUILD_EXCLUDES = (
 )
 STORE_PREFIX = "pdt-data"
 STORE_TAGS = {"managed-by": "pdt", "pdt-lifecycle": "retain"}
+RUN_POLL_SECONDS = 3
+
+
+class RunState(Enum):
+    STARTING = "starting"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+    @property
+    def terminal(self) -> bool:
+        return self in (RunState.SUCCEEDED, RunState.FAILED)
+
+
+@dataclasses.dataclass(frozen=True)
+class Run:
+    id: str
+    state: RunState
+    logs_url: str
+    exit_code: int | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class LogPage:
+    lines: list[str]
+    cursor: str | None
+
+
+@dataclasses.dataclass(frozen=True)
+class RemoteJob:
+    start: Callable[[], Run]
+    poll: Callable[[Run], Run]
+    read_logs: Callable[[Run, str | None], LogPage]
+
+
+class NotDeployed(Exception):
+    pass
+
+
+def run_once(job: RemoteJob, wait: bool, app_name: str, provider: str,
+             sleep=time.sleep) -> int:
+    try:
+        run = job.start()
+    except NotDeployed:
+        console.error(f"{app_name} is not deployed to {provider} yet, so there is nothing to run there.")
+        console.say("Deploy it first:")
+        console.command(f"pdt deploy {app_name}")
+        return 1
+    console.field("Run id", run.id)
+    console.field("Run logs", run.logs_url)
+    if not wait:
+        return 0
+    started = time.monotonic()
+
+    def show(cursor: str | None) -> str | None:
+        page = job.read_logs(run, cursor)
+        for line in page.lines:
+            console.say(line)
+        return page.cursor
+
+    cursor = None
+    try:
+        while not run.state.terminal:
+            cursor = show(cursor)
+            run = job.poll(run)
+            if not run.state.terminal:
+                sleep(RUN_POLL_SECONDS)
+        show(cursor)
+    except KeyboardInterrupt:
+        console.note(f"the run is still going. Its id is {run.id}.")
+        console.field("Run logs", run.logs_url)
+        return 130
+    elapsed = round(time.monotonic() - started)
+    if run.state == RunState.SUCCEEDED:
+        console.done(f"Succeeded in {elapsed}s.")
+        return 0
+    exit_code = run.exit_code
+    detail = f" (exit code {exit_code})" if exit_code is not None else ""
+    console.failed(f"Failed after {elapsed}s{detail}.")
+    console.field("Run logs", run.logs_url)
+    return exit_code if exit_code not in (None, 0) else 1
 
 
 def store_suffix(seed: str) -> str:
