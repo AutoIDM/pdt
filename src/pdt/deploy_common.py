@@ -225,6 +225,14 @@ def run_build(command: list[str]) -> None:
 
 
 def gather_secrets(app: dict) -> dict[str, str]:
+    """The env vars the app declares, as the cloud job will see them.
+
+    A <NAME>_PATH that names a local file becomes <NAME>_B64 holding the
+    file's base64. One that names nothing on disk is a plain string the app
+    uses at run time, such as an output location, and goes through as is.
+    The bundle is then checked against the app's env spec, so a missing
+    key file that leaves a required or one_of name unset stops the deploy.
+    """
     spec = app["env"]
     names = list(spec.get("required") or [])
     for group in spec.get("one_of") or []:
@@ -243,9 +251,15 @@ def gather_secrets(app: dict) -> dict[str, str]:
             bases += [app["dir"], config.find_project()]
             path = next((base / path for base in bases if (base / path).is_file()), path)
         if not path.is_file():
-            fail(f"{name} points to {path}, which does not exist")
+            console.note(f"{name} is not a file here; the job gets it as a plain value")
+            continue
         values.setdefault(target, base64.b64encode(path.read_bytes()).decode("ascii"))
         del values[name]
+    problems = config.check_env(spec, values)
+    if problems:
+        for problem in problems:
+            console.error(f"env: {problem}")
+        fail("the secret bundle does not satisfy the app's env spec")
     return values
 
 
