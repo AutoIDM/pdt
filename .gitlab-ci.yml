@@ -220,6 +220,23 @@ score-mrs-skip:
       when: never
     - when: on_success
 
+# The label `force-merge` turns the verify jobs off (verify/.gitlab-ci.yml),
+# but GitLab reads labels only when it creates a pipeline, so the label does
+# nothing for an MR whose pipeline already exists. This job runs on every
+# update event the webhook sends and, when the MR carries the label and its
+# head pipeline still holds the verify gate, creates a new merge request
+# pipeline for it. A repeat run finds no gate and does nothing.
+force-merge:
+  stage: tasks
+  needs: []
+  interruptible: false
+  script:
+    - uv run python ci/force_merge.py
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "trigger" && $mode == "score_mrs" && $MR_ACTION == "update"
+      variables:
+        DRY_RUN: "false"
+
 # Scheduled and manual pipelines pick a job with the `mode` variable, so each
 # schedule sets mode to the job it wants. A schedule runs armed; a web run is a
 # dry run unless the form also sets DRY_RUN=false.

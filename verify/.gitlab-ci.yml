@@ -19,6 +19,11 @@ variables:
     - uv.lock
     - .gitlab-ci.yml
 
+# The label `force-merge` keeps every verify job out of a merge request
+# pipeline, so the MR can merge on the test stage alone. GitLab reads labels
+# when it creates the pipeline, so the `force-merge` job in .gitlab-ci.yml
+# creates a fresh merge request pipeline when the label lands on an MR that
+# already has one.
 .verify:force-merge:
   rules:
     - if: $CI_MERGE_REQUEST_LABELS =~ /(^|,)force-merge(,|$)/
