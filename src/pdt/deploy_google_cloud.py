@@ -571,7 +571,7 @@ def secrets(app: dict, action: str, assume_yes: bool) -> int:
                   "--data-file", "-", data=json.dumps(values, sort_keys=True))
         destroy_old_secret_versions(project, sid)
 
-    return run_secrets(action, app, f"Secret Manager secret {sid}", current, write, assume_yes)
+    return run_secrets(action, app, current, write, assume_yes)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:

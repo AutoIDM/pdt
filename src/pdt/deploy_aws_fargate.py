@@ -310,7 +310,7 @@ def secrets(app: dict, action: str, assume_yes: bool) -> int:
         console.step(f"updating secret {name}")
         ensure_secret(client, name, json.dumps(values, sort_keys=True))
 
-    return run_secrets(action, app, f"Secrets Manager secret {name}", current, write, assume_yes)
+    return run_secrets(action, app, current, write, assume_yes)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:

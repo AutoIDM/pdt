@@ -278,27 +278,30 @@ def secret_changes(current: str | None, values: dict[str, str]) -> list[tuple[st
         deployed = {}
     changes = []
     for name in sorted(set(deployed) | set(values)):
-        if name not in deployed:
-            changes.append(("add", name, "", masked(values[name])))
-        elif name not in values:
-            changes.append(("remove", name, masked(deployed[name]), ""))
+        before = masked(deployed[name]) if name in deployed else ""
+        after = masked(values[name]) if name in values else ""
+        if not before:
+            kind = "new"
+        elif not after:
+            kind = "deleted"
         elif deployed[name] != values[name]:
-            changes.append(("change", name, masked(deployed[name]), masked(values[name])))
+            kind = "updated"
         else:
-            changes.append(("same", name, masked(deployed[name]), ""))
-    kinds = list(console.SECRET_CHANGE_STYLES)
+            kind = "unchanged"
+        changes.append((kind, name, before, after))
+    kinds = list(console.SECRET_CHANGE_COLOURS)
     return sorted(changes, key=lambda change: (kinds.index(change[0]), change[1]))
 
 
 SECRET_ACTIONS = ("diff", "save", "get")
 
 
-def run_secrets(action: str, app: dict, where: str, current: str | None,
+def run_secrets(action: str, app: dict, current: str | None,
                 write: Callable[[dict[str, str]], None], assume_yes: bool) -> int:
     """`pdt secrets <app> diff|save|get`, once the provider has read the deployed secret."""
     from pdt.deploy import proceed
     if current is None:
-        fail(f"{where} does not exist yet. Run `pdt deploy` first.")
+        fail(f"{app['name']} has no deployed secrets yet. Run `pdt deploy {app['name']}` first.")
     if action == "get":
         return get_secrets(app, current, assume_yes)
     values = gather_secrets(app)
@@ -306,12 +309,9 @@ def run_secrets(action: str, app: dict, where: str, current: str | None,
         console.note("this app declares no env vars, so it has no secrets.")
         return 0
     changes = secret_changes(current, values)
-    console.heading(f"{where}:")
-    width = max(len(name) for _kind, name, _before, _after in changes)
-    for kind, name, before, after in changes:
-        console.secret_change(kind, name, width, before, after)
-    if all(kind == "same" for kind, _name, _before, _after in changes):
-        console.done(f"{where} already matches your .env file.")
+    console.secret_changes(changes)
+    if all(kind == "unchanged" for kind, _name, _before, _after in changes):
+        console.done("The deployed secrets already match your .env file.")
         return 0
     if action == "diff":
         console.say()

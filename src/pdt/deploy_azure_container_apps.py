@@ -370,7 +370,7 @@ def secrets(app: dict, action: str, assume_yes: bool) -> int:
         set_job_secret(job, settings["resource_group"], secret_uri, identity_id)
         disable_old_secret_versions(settings, sid)
 
-    return run_secrets(action, app, f"Key Vault secret {sid}", current, write, assume_yes)
+    return run_secrets(action, app, current, write, assume_yes)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:

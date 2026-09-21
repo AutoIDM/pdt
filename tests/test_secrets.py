@@ -16,10 +16,10 @@ def version(name, created, enabled=True, tags=None):
 def test_secret_changes_list_every_var_grouped_by_kind_then_by_name():
     current = json.dumps({"KEEP": "1", "OLD": "hunter2", "ROTATED": "before"})
     lines = deploy_common.secret_changes(current, {"KEEP": "1", "ROTATED": "after", "NEW": "x"})
-    assert lines == [("remove", "OLD", "•••• (7 chars)", ""),
-                     ("add", "NEW", "", "•••• (1 chars)"),
-                     ("change", "ROTATED", "•••• (6 chars)", "•••• (5 chars)"),
-                     ("same", "KEEP", "•••• (1 chars)", "")]
+    assert lines == [("deleted", "OLD", "•••• (7 chars)", ""),
+                     ("new", "NEW", "", "•••• (1 chars)"),
+                     ("updated", "ROTATED", "•••• (6 chars)", "•••• (5 chars)"),
+                     ("unchanged", "KEEP", "•••• (1 chars)", "•••• (1 chars)")]
 
 
 def test_a_long_value_shows_two_chars_at_each_end_and_a_short_one_shows_none():
@@ -80,23 +80,24 @@ def test_env_line_reads_back_to_the_same_value(tmp_path):
 def test_diff_writes_nothing_and_names_the_save_command(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(deploy_common, "gather_secrets", lambda app: {"A": "new"})
     written = []
-    code = deploy_common.run_secrets("diff", app_dir(tmp_path), "secret s",
+    code = deploy_common.run_secrets("diff", app_dir(tmp_path),
                                      json.dumps({"A": "old"}), written.append, True)
     assert code == 0 and written == []
-    assert "pdt secrets demo save" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "updated" in out and "pdt secrets demo save" in out
 
 
 def test_save_writes_the_env_values(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "gather_secrets", lambda app: {"A": "new"})
     written = []
-    code = deploy_common.run_secrets("save", app_dir(tmp_path), "secret s",
+    code = deploy_common.run_secrets("save", app_dir(tmp_path),
                                      json.dumps({"A": "old"}), written.append, True)
     assert code == 0 and written == [{"A": "new"}]
 
 
 def test_get_writes_a_dotenv_file_named_for_the_provider(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "can_prompt", lambda interactive: False)
-    code = deploy_common.run_secrets("get", app_dir(tmp_path), "secret s",
+    code = deploy_common.run_secrets("get", app_dir(tmp_path),
                                      json.dumps({"B": "2", "A": "1"}), None, True)
     assert code == 0
     assert (tmp_path / ".env.aws").read_text() == "A=1\nB=2\n"
@@ -105,5 +106,5 @@ def test_get_writes_a_dotenv_file_named_for_the_provider(tmp_path, monkeypatch):
 def test_get_uses_the_file_name_the_user_types(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "can_prompt", lambda interactive: True)
     monkeypatch.setattr(deploy_common.console, "ask", lambda question, default: ".env.prod")
-    deploy_common.run_secrets("get", app_dir(tmp_path), "secret s", json.dumps({"A": "1"}), None, True)
+    deploy_common.run_secrets("get", app_dir(tmp_path), json.dumps({"A": "1"}), None, True)
     assert (tmp_path / ".env.prod").read_text() == "A=1\n"

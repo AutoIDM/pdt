@@ -123,21 +123,16 @@ def command(text: str, note: str = "", indent: int = 2) -> None:
         _console.print(f"{' ' * indent}[bold]{escape(text)}[/]")
 
 
-SECRET_CHANGE_STYLES = {"remove": ("-", "red"), "add": ("+", "green"),
-                        "change": ("~", "yellow"), "same": ("=", "dim")}
+SECRET_CHANGE_COLOURS = {"deleted": "red", "new": "green", "updated": "yellow", "unchanged": "dim"}
 
 
-def secret_change(kind: str, name: str, width: int, before: str, after: str) -> None:
-    """One env var that `pdt secrets` will write; `before` and `after` are already masked."""
-    sign, colour = SECRET_CHANGE_STYLES[kind]
-    line = f"  [{colour}]{sign} {escape(name):<{width}}[/]  "
-    if kind == "change":
-        line += f"[dim]{escape(before)} ->[/] {escape(after)}"
-    elif kind in ("remove", "same"):
-        line += f"[dim]{escape(before)}[/]"
-    else:
-        line += escape(after)
-    _console.print(line)
+def secret_changes(rows: list[tuple[str, str, str, str]]) -> None:
+    """One row per env var: kind, name, the deployed value, the .env value (both masked)."""
+    headers = ["", "env var", "deployed", ".env"]
+    widths = [max(len(cell) for cell in column) for column in zip(headers, *rows)]
+    _console.print(_row(headers, widths, ["bold"] * len(headers)))
+    for row in rows:
+        _console.print(_row(list(row), widths, [SECRET_CHANGE_COLOURS[row[0]]] * len(row)))
 
 
 def ask(question: str, default: str = "") -> str:
@@ -156,6 +151,7 @@ def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:
         line.append(cell, style=style or "")
         if index < len(cells) - 1:
             line.append(" " * (widths[index] - len(cell) + 2))
+    line.rstrip()
     return line
 
 
