@@ -37,7 +37,8 @@ from pdt.deploy_azure import (
     store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_build, run_secrets,
+    CostEstimate, LogPage, NotDeployed, RemoteJob, Run, RunState, fail, gather_secrets,
+    image_action, run_build, run_secrets,
     stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
@@ -89,6 +90,65 @@ def job_history_url(settings: dict[str, str], job: str) -> str:
     # each run's Console link opens that run's logs. No deeper deep link exists.
     return ("https://portal.azure.com/#resource"
             + resource_id(settings, "Microsoft.App", "jobs", job))
+
+
+def remote_job(app: dict) -> RemoteJob:
+    settings = azure_settings(app)
+    job = f"pdt-{app['name']}"
+    last_page = set()
+
+    def start() -> Run:
+        proc = subprocess.run(
+            [*AZ, "containerapp", "job", "start", "--name", job,
+             "--resource-group", settings["resource_group"], "--output", "json"],
+            capture_output=True, text=True)
+        if proc.returncode:
+            stderr = proc.stderr.lower()
+            if any(text in stderr for text in (
+                    "resourcenotfound", "could not be found", "not found")):
+                raise NotDeployed
+            fail(proc.stderr.strip())
+        data = json.loads(proc.stdout or "null")
+        if not isinstance(data, dict) or not data.get("name"):
+            fail("Azure did not return the job execution name")
+        return Run(data["name"], RunState.STARTING, job_history_url(settings, job))
+
+    def poll(run: Run) -> Run:
+        data = az_json("containerapp", "job", "execution", "show", "--name", job,
+                       "--resource-group", settings["resource_group"],
+                       "--job-execution-name", run.id)
+        status = ((data or {}).get("properties") or {}).get("status")
+        state = {
+            "Running": RunState.RUNNING, "Succeeded": RunState.SUCCEEDED,
+            "Failed": RunState.FAILED, "Stopped": RunState.FAILED,
+            "Degraded": RunState.FAILED,
+        }.get(status, RunState.STARTING)
+        return Run(run.id, state, run.logs_url)
+
+    def read_logs(run: Run, cursor: str | None) -> LogPage:
+        nonlocal last_page
+        data = az_json("containerapp", "job", "logs", "show", "--name", job,
+                       "--resource-group", settings["resource_group"], "--execution", run.id,
+                       "--container", job, "--tail", "300", "--format", "json")
+        if not isinstance(data, list):
+            return LogPage([], cursor)
+        lines = []
+        next_cursor = cursor
+        markers = set()
+        for item in data:
+            timestamp = str(item.get("TimeGenerated") or item.get("timestamp") or "")
+            text = str(item.get("Log") or item.get("message") or "")
+            marker = (timestamp, text)
+            markers.add(marker)
+            if timestamp and (cursor is None or timestamp > cursor
+                              or (timestamp == cursor and marker not in last_page)):
+                lines.append(text)
+            if timestamp:
+                next_cursor = timestamp
+        last_page = markers
+        return LogPage(lines, next_cursor)
+
+    return RemoteJob(start, poll, read_logs)
 
 
 def _activity_error(status_message) -> dict:
@@ -570,7 +630,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         assign_role(store["container_id"], principal, STORE_ROLE,
                     condition=store_condition(name))
     console.done(f"Deployed {name}.")
-    console.field("Run it once", f"pdt az containerapp job start --name {job} --resource-group {rg}")
+    console.field("Run it once", f"pdt run {name} --remote")
     console.field("Run logs (Execution history tab)", job_history_url(settings, job))
     return 0
 

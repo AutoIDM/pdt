@@ -61,7 +61,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_plan_lines,
+    STORE_TAGS, CostEstimate, fail, fetch_json, run_once, store_cost_label, store_plan_lines,
     store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
@@ -895,10 +895,12 @@ def main() -> int:
         return subprocess.run([*AZ, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
-                        choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
+                        choices=("deploy", "destroy", "login", "run", "storage", "secrets",
+                                 "runs", "logs"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--no-wait", action="store_true")
     args = parser.parse_intermixed_args()
     app = load_app(args.app)
     if args.command == "login":
@@ -911,12 +913,14 @@ def main() -> int:
         return module.runs(app, preflight(app, azure_settings(app)), args.rest)
     if args.command == "logs":
         return module.logs(app, preflight(app, azure_settings(app)), args.rest)
-    if app["timezone"] not in ("Etc/UTC", "UTC"):
+    if args.command in ("deploy", "destroy") and app["timezone"] not in ("Etc/UTC", "UTC"):
         fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
     if args.command == "secrets":
         return module.secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
         return module.deploy(app, args.yes)
+    if args.command == "run":
+        return run_once(module.remote_job(app), not args.no_wait, args.app, "azure")
     return module.destroy(app, args.yes)
 
 
