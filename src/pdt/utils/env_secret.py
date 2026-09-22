@@ -9,17 +9,16 @@ rotates a credential at run time, such as a Salesforce refresh token,
 calls `update` so the next run starts with the new value.
 
     from pdt.utils import env_secret
-    token = env_secret.value("TAP_SALESFORCE_REFRESH_TOKEN")
     env_secret.update("TAP_SALESFORCE_REFRESH_TOKEN", new_token)
 
-`value` reads the secret itself, not this process's environment, because
-the environment was fixed when the run started and an earlier update in
-the same run has already changed the secret.
+`update` reads the secret itself first, not this process's environment,
+because the environment was fixed when the run started and an earlier
+update in the same run has already changed the secret.
 
 Without PDT_ENV_SECRET_RESOURCE (`pdt run` on the user's own computer and
-the windows provider) the .env file stands in for the secret: `value`
-reads the nearest .env that holds the var, and `update` writes it there,
-so the next run and the next deploy both see the new value.
+the windows provider) the .env file stands in for the secret: `update`
+writes the nearest .env that holds the var, so the next run and the next
+deploy both see the new value.
 """
 
 from __future__ import annotations
@@ -35,12 +34,6 @@ RESOURCE_ENV = "PDT_ENV_SECRET_RESOURCE"
 
 def deployed() -> bool:
     return os.environ.get(RESOURCE_ENV, "").strip() != ""
-
-
-def value(name: str) -> str | None:
-    values = backend().read()
-    current = values.get(name)
-    return None if current in (None, "") else str(current)
 
 
 def update(name: str, new_value: str) -> None:

@@ -44,7 +44,6 @@ Both install routes must keep working, and a change is not done until both do:
 - `src/pdt/deploy_<provider>.py` is one module per provider. AWS and Azure keep the job itself in a module under the provider (`deploy_aws_fargate.py`, `deploy_azure_container_apps.py`); login, secrets, prices, and everything else the job shares with `login` and `destroy` stay in the provider module.
 - `src/pdt/deploy_common.py` holds code shared by every provider: `fail`, the `DOCKERFILE`, `gather_secrets`, and `stage_build_context`. A provider module imports from here. A provider module never imports from another provider module.
 - `src/pdt/utils/` is code the user's apps import. It is public API. Changing it breaks every deployed app, so treat a change here as breaking.
-- Every cloud job may update its own env secret and no other. `PDT_ENV_SECRET_RESOURCE` names the secret, `pdt.utils.env_secret` reads and writes it, and each provider grants exactly that secret to the identity the job runs as. An app that rotates a credential at run time (a Salesforce refresh token, an OAuth cache) writes it back this way; the next `pdt secrets <app>` shows the rotated value as a difference from `.env`, and `pdt secrets <app> get` copies it down.
 - `src/pdt/examples/<name>/` ships inside the wheel. `pdt new` copies one into the user's project. An example never sets `name:` in its `config.yml`, because the copy takes the new folder's name.
 - `tests/` runs with pytest and needs no network and no cloud account.
 

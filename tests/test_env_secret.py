@@ -44,8 +44,6 @@ def test_update_changes_one_var_and_keeps_the_rest(monkeypatch):
     assert Memory.values == {"KEEP": "1", "TOKEN": "new"}
     assert os.environ["TOKEN"] == "new"
     assert json.loads(os.environ["PDT_ENV_JSON"]) == {"KEEP": "1", "TOKEN": "new"}
-    assert env_secret.value("TOKEN") == "new"
-    assert env_secret.value("MISSING") is None
 
 
 def test_without_a_cloud_secret_the_nearest_env_file_holds_the_value(tmp_path, monkeypatch):
@@ -58,7 +56,6 @@ def test_without_a_cloud_secret_the_nearest_env_file_holds_the_value(tmp_path, m
     monkeypatch.delenv(env_secret.RESOURCE_ENV, raising=False)
 
     assert env_secret.deployed() is False
-    assert env_secret.value("TOKEN") == "old"
     env_secret.update("TOKEN", "new")
     env_secret.update("FRESH", "x")
 
