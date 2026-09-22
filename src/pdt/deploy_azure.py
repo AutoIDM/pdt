@@ -421,7 +421,7 @@ def preflight(app: dict, settings: dict) -> dict:
         if not account:
             fail("Azure login failed")
     if requested and requested not in (account.get("id"), account.get("name")):
-        account = choose_subscription(app, requested, can_ask)
+        account = switch_subscription(app, requested, account, can_ask)
         if config.unsaved() is not None:
             fail(f"the Azure CLI uses another subscription, and a plan does not change it; run "
                  f"`{console.value('pdt az account set --subscription ' + account['id'])}`, "
@@ -501,42 +501,79 @@ def save_subscription(app: dict, sub: dict) -> None:
     config.save_platform_key(app, "subscription", sub["id"])
 
 
-def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
-    available = az_json("account", "list", "--all") or []
-    if not available:
-        fail("your Azure account has no subscription yet; create one at "
-             f"{console.value(SUBSCRIPTIONS_URL)}")
-    for sub in available:
+def find_subscription(requested: str) -> dict | None:
+    for sub in az_json("account", "list", "--all") or []:
         if requested in (sub.get("id"), sub.get("name")):
             return sub
+    return None
+
+
+def signed_in_as(account: dict) -> console.Markup:
+    user = account.get("user") or {}
+    who = str(user.get("name") or "unknown")
+    if str(user.get("type", "")).lower() == "user":
+        return console.Markup(f"The signed-in Azure account {console.value(who)}")
+    return console.Markup(f"The signed-in Azure service principal {console.value(who)}")
+
+
+def switch_subscription(app: dict, requested: str, account: dict, can_ask: bool) -> dict:
+    """Make the subscription recorded in pdt.yml the active one, or stop.
+
+    pdt.yml records where the project's jobs live, and the shared storage,
+    vault, and registry names hash that id. A login that cannot see it is
+    almost always the wrong login, so deploy offers to sign in again and
+    never rewrites the id or deploys somewhere else.
+    """
+    sub = find_subscription(requested)
+    if sub is not None:
+        return sub
     if os.environ.get(config.DEPLOYED_PLATFORM_ENV):
         console.error(f"{console.value(app['name'])} is deployed to Azure subscription "
                       f"{console.value(requested)}. This Azure login cannot use it.")
         console.next_steps([("pdt az login", "log in with an account that can use it"),
                             (f"pdt destroy {app['name']}", "")])
         raise SystemExit(1)
-    console.warn(f"platform.subscription {console.value(repr(requested))} in "
-                 f"{console.value('pdt.yml')} is not one of your subscriptions.")
-    if not can_ask:
-        fail(f"no Azure subscription selected; set {console.value('platform.subscription')} in "
+    console.warn(f"{signed_in_as(account)} cannot use {console.value('platform.subscription')} "
+                 f"{console.value(repr(requested))} from {console.value('pdt.yml')}.")
+    if not can_ask or config.unsaved() is not None:
+        fail("sign in as the account that owns that subscription (a service principal needs "
+             f"a role on it), or change {console.value('platform.subscription')} in "
              f"{console.value('pdt.yml')}, or set {console.value('PDT_AZURE_SUBSCRIPTION')}, "
-             "to a subscription id this login can use")
-    console.heading("Your Azure subscriptions:")
-    for index, sub in enumerate(available, 1):
-        console.choice(index, str(sub.get("name")), str(sub.get("id")))
+             "to a subscription this login can use")
     try:
-        answer = console.read(f"Deploy to which one? [1-{len(available)}, or a subscription id] ")
+        answer = console.confirm("Sign in as a different account (opens a browser)?")
     except EOFError:
-        answer = ""
-    typed = [sub for sub in available if answer in (sub.get("id"), sub.get("name"))]
-    if answer.isdigit() and 1 <= int(answer) <= len(available):
-        sub = available[int(answer) - 1]
-    elif typed:
-        sub = typed[0]
-    else:
-        fail("no Azure subscription selected; type a number from the list or one of the subscription ids")
-    save_subscription(app, sub)
+        answer = False
+    if not answer:
+        available = az_json("account", "list", "--all") or []
+        if available:
+            console.heading("Subscriptions this login can use:")
+            for index, sub in enumerate(available, 1):
+                console.choice(index, str(sub.get("name")), str(sub.get("id")))
+        fail(f"run `{console.value('pdt login ' + app['name'])}` to sign in as the account that "
+             f"owns {console.value(requested)}, or change {console.value('platform.subscription')} "
+             f"in {console.value('pdt.yml')} if the project has moved to another subscription")
+    account = sign_in_again(requested)
+    sub = find_subscription(requested)
+    if sub is None:
+        fail(f"{signed_in_as(account)} cannot use {console.value('platform.subscription')} "
+             f"{console.value(repr(requested))} either; sign in as the account that owns it, or "
+             f"change {console.value('platform.subscription')} in {console.value('pdt.yml')} "
+             "if the project has moved")
     return sub
+
+
+def sign_in_again(requested: str) -> dict:
+    console.status("Clearing the cached Azure login on this computer...")
+    az("account", "clear")
+    console.say("Choose a different account in the browser to sign in as someone else.")
+    login(requested)
+    account = az_json("account", "show")
+    if not account:
+        fail("Azure login failed")
+    user = (account.get("user") or {}).get("name") or "unknown"
+    console.done(f"Signed in as {console.value(user)}")
+    return account
 
 
 def login(requested: str) -> None:
@@ -566,16 +603,13 @@ def login(requested: str) -> None:
 
 
 def relogin(requested: str) -> int:
-    console.status("Clearing the cached Azure login on this computer...")
-    az("account", "clear")
-    console.say("Choose a different account in the browser to sign in as someone else.")
-    login(requested)
-    account = az_json("account", "show")
-    if not account:
-        fail("Azure login failed")
-    user = (account.get("user") or {}).get("name") or "unknown"
-    console.done(f"Signed in as {console.value(user)}")
+    account = sign_in_again(requested)
     console.field("Subscription", f"{account.get('name')} ({account.get('id')})")
+    if requested and requested not in (account.get("id"), account.get("name")) \
+            and find_subscription(requested) is None:
+        console.warn(f"{signed_in_as(account)} cannot use {console.value('platform.subscription')} "
+                     f"{console.value(repr(requested))} from {console.value('pdt.yml')}, so deploy "
+                     "will stop until you sign in as the account that owns it or change the id.")
     return 0
 
 

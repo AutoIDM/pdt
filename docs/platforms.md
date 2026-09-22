@@ -29,7 +29,7 @@ platform:
   # environment: my-group/my-environment
 ```
 
-`subscription` is optional. When it is missing or wrong, the deploy asks you to choose one.
+`subscription` is optional. When it is missing, the first deploy writes the signed-in account's subscription into `pdt.yml`; `pdt deploy --plan` writes nothing. After that every deploy checks the signed-in account can use it. If it cannot, the deploy never deploys somewhere else: at a terminal it offers to sign you in as a different account, and with `--plan` or with no one to answer it stops and names the fix. If the project really has moved, change the id in `pdt.yml`.
 
 Every pdt project in a subscription runs its jobs in one shared Container Apps environment per region, `pdt-<region>` in the resource group `pdt-shared`, because a subscription allows only a few environments. Destroying the last app that uses the environment removes it, and removes `pdt-shared` once it holds no environment. Set `environment` to use an environment you already have; pdt then never creates, changes, or deletes it.
 
