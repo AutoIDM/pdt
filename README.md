@@ -147,7 +147,6 @@ Every command reads its values from the environment it runs in. A build server s
 
 - A `.env` file is a convenience for a person working on their own machine. A value that is already in the environment wins over the same name in a `.env` file.
 - `PDT_ENV_JSON` holds every value as one JSON object, for a CI system that keeps one secret instead of many. For example, `PDT_ENV_JSON={"PDT_TOKEN": "abc", "PDT_SMTP_USER": "reports@example.com"}`.
-- A deployed app may change one of its own values while it runs, for a credential that the other side rotates at every login. `from pdt.utils import env_secret` then `env_secret.update("NAME", value)` writes it to the deployed secret. On your own computer it writes the nearest `.env` file and then runs `pdt secrets APP set NAME` with the same value, because a credential the other side rotates has one current value and a local run that kept it to itself would break the deployed job's next login. `pdt secrets APP` shows such a change as a difference from your `.env`, and `pdt secrets APP get` copies it down before a deploy would overwrite it.
 - pdt creates no `.env` file on a build server. It looks for the `CI` variable that build systems set, and for a missing terminal. Email authorization must therefore be done first: run `pdt run APP` once on a machine with a browser, then copy `PDT_SMTP_OAUTH_CACHE_B64` (or `PDT_GRAPH_MAIL_CACHE_B64` for Microsoft Graph) from your `.env` into the CI variables.
 - `pdt deploy APP` and `pdt destroy APP` ask before they change anything. Add `--yes` so they proceed without asking.
 
