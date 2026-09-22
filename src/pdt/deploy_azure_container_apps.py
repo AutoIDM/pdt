@@ -6,7 +6,10 @@ The resource group, ACR, Key Vault, and user-assigned identity are shared
 by the project's apps. The Container Apps environment and its Log
 Analytics workspace are shared by every pdt project in the subscription,
 one environment per region, unless the user names an environment of their
-own. Each app owns one tagged job.
+own. Each app owns one tagged job, named pdt-<app>-<project suffix>:
+job names are unique across the shared environment, so the suffix keeps
+the same app in two resource groups of one subscription apart. A job
+named the old way, pdt-<app>, is deleted on the next deploy of its app.
 
 The shared identity pulls the image and reads the app's Key Vault
 secret. Each job's own system-assigned identity holds the grants that
@@ -442,27 +445,32 @@ class Lock:
         run_quiet("lock", "delete", "--name", self.name, *self.scope)
 
 
-def registry_lock(settings: dict, job: str) -> Lock:
-    return Lock(job, f"ACR {settings['registry']}", (
+def registry_lock(settings: dict, owner: str) -> Lock:
+    return Lock(owner, f"ACR {settings['registry']}", (
         "--resource-group", settings["resource_group"],
         "--resource-name", settings["registry"],
         "--resource-type", "Microsoft.ContainerRegistry/registries"))
 
 
-def environment_lock(settings: dict, job: str) -> Lock:
+def environment_lock(settings: dict, owner: str) -> Lock:
     environment = settings["environment"]
-    return Lock(clean_name(f"{job}-in-{settings['resource_group']}"),
+    return Lock(clean_name(f"{owner}-in-{settings['resource_group']}"),
                 f"Container Apps environment {environment}", (
                     "--resource-group", environment.resource_group,
                     "--resource-name", environment.name,
                     "--resource-type", ENVIRONMENT_TYPE))
 
 
-def shared_locks(settings: dict, job: str) -> list[Lock]:
+def lock_owner(app_name: str) -> str:
+    """The name an app's locks carry, `pdt-<app>`, so renaming its job leaves them in place."""
+    return clean_name(f"pdt-{app_name}")
+
+
+def shared_locks(settings: dict, owner: str) -> list[Lock]:
     """The locks one app holds while deployed. A user's own environment gets none."""
-    locks = [registry_lock(settings, job)]
+    locks = [registry_lock(settings, owner)]
     if settings["environment"].managed:
-        locks.append(environment_lock(settings, job))
+        locks.append(environment_lock(settings, owner))
     return locks
 
 
@@ -483,10 +491,46 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
               hints={"EnvironmentsInSubExceeded": QUOTA_HINT})
 
 
+def job_name(settings: dict[str, str], app_name: str) -> str:
+    suffix = settings["suffix"][:7]
+    return f"{clean_name(f'pdt-{app_name}', 32 - len(suffix) - 1)}-{suffix}"
+
+
+def legacy_job_name(app_name: str) -> str:
+    return clean_name(f"pdt-{app_name}")
+
+
+def find_job(settings: dict[str, str], app_name: str) -> tuple[str, dict | None]:
+    """The app's job under its current name, else under the name pdt used before the suffix."""
+    job = job_name(settings, app_name)
+    current = az_json("containerapp", "job", "show", "--name", job,
+                      "--resource-group", settings["resource_group"])
+    if current is None:
+        legacy = legacy_job_name(app_name)
+        old = az_json("containerapp", "job", "show", "--name", legacy,
+                      "--resource-group", settings["resource_group"])
+        if owned_by(old, app_name):
+            return legacy, old
+    return job, current
+
+
+def retire_job(settings: dict[str, str], job: str, current: dict, store: dict | None,
+               sid: str) -> None:
+    """Delete a job that is about to be recreated under a new name."""
+    principal = (current.get("identity") or {}).get("principalId")
+    if principal:
+        if store:
+            revoke_role(store["container_id"], principal, STORE_ROLE)
+        revoke_role(secret_scope(settings, sid), principal, SECRET_ROLE)
+    console.step(f"deleting Container Apps Job {job}")
+    run_quiet("containerapp", "job", "delete", "--name", job,
+              "--resource-group", settings["resource_group"], "--yes")
+
+
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
-    job = clean_name(f"pdt-{name}")
+    job, _current = find_job(settings, name)
     sid = secret_name(name)
     _vault_exists, current = secret_state(settings, sid, name, True)
 
@@ -504,7 +548,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 def deploy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
-    job = clean_name(f"pdt-{name}")
+    job = job_name(settings, name)
     cron = config.cron_expression(app["schedule"])
     values = gather_secrets(app)
     payload = json.dumps(values, sort_keys=True)
@@ -542,7 +586,15 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if current_job and not owned_by(current_job, name):
         fail(f"Container Apps Job {job} already exists but is not owned by "
              f"PDT app {name}; choose another resource group")
-    missing_locks = [lock for lock in shared_locks(settings, job) if not lock.exists()]
+    locks = shared_locks(settings, lock_owner(name))
+    missing_locks = [lock for lock in locks if not lock.exists()]
+    legacy = legacy_job_name(name)
+    legacy_job = None
+    if current_job is None and legacy != job:
+        legacy_job = az_json("containerapp", "job", "show", "--name", legacy,
+                             "--resource-group", rg)
+        if not owned_by(legacy_job, name):
+            legacy_job = None
     vault_exists, current_secret = secret_state(settings, sid, name, bool(values))
     store = store_settings(settings) if app["storage"] else None
     store_present = store_exists(store) if store else False
@@ -560,7 +612,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         ("keep" if arm_auth_enabled else "enable")
         + f" ACR authentication-as-arm on {settings['registry']} "
         "(required for managed-identity image pulls)")
-    for lock in shared_locks(settings, job):
+    for lock in locks:
         actions.append(f"create lock {lock.name} on {lock.label} (keeps it while {name} is deployed)"
                        if lock in missing_locks else f"use existing lock {lock.name} on {lock.label}")
     actions.append(("use existing" if identity else "create")
@@ -574,6 +626,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions.append(image_action(
         app, f"build and push image {settings['registry']}.azurecr.io/{name}:latest"))
     actions += secret_actions(sid, values, current_secret, payload)
+    if legacy_job:
+        actions.append(f"delete Container Apps Job {legacy} (its name is now {job})")
     if values:
         actions.append(f"allow {job} to update its own Key Vault secret {sid}")
     actions.append(("update" if current_job else "create")
@@ -616,6 +670,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.step(f"building image {settings['registry']}.azurecr.io/{name}:latest")
     build_image(app, settings["registry"], name)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
+    if legacy_job:
+        retire_job(settings, legacy, legacy_job, store, sid)
     console.step(f"reconciling Container Apps Job {job}")
     image = f"{settings['registry']}.azurecr.io/{name}:latest"
     try:
@@ -735,11 +791,9 @@ def kept_line(store: dict[str, str], deployer, name: str) -> str:
 def destroy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
-    job = clean_name(f"pdt-{name}")
+    job, current_job = find_job(settings, name)
     sid = secret_name(name)
     rg = settings["resource_group"]
-    current_job = az_json("containerapp", "job", "show", "--name", job,
-                          "--resource-group", rg)
     managed_job = owned_by(current_job, name)
     secret_owned = managed_secret(settings, sid, name)
     if current_job and not managed_job:
@@ -757,7 +811,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     # A run that stopped after the project group went may still owe the
     # environment, so a missing group takes the same path as a deletable one.
     group_exists = az_tsv("group", "exists", "--name", rg) == "true"
-    held = [lock for lock in shared_locks(settings, job) if lock.exists()]
+    held = [lock for lock in shared_locks(settings, lock_owner(name)) if lock.exists()]
     unlock = [f"remove lock {lock.name} from {lock.label}" for lock in held]
     if not group_exists or group_can_be_deleted(settings, others):
         release = environment_release(settings)
