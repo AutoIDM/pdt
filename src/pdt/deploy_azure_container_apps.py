@@ -9,11 +9,8 @@ one environment per region, unless the user names an environment of their
 own. Each app owns one tagged job.
 
 The shared identity pulls the image and reads the app's Key Vault
-secret. Each job also has its own system-assigned identity for the grants
-that belong to one app: updating its own Key Vault secret, and writing
-its own folder of the data store, because that grant carries a condition
-naming one app and Azure keeps one assignment per principal, role, and
-scope.
+secret. Each job's own system-assigned identity holds the grants that
+name one app: its secret, and its folder of the data store.
 """
 
 from __future__ import annotations

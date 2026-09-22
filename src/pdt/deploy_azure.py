@@ -375,7 +375,6 @@ def secret_name(app_name: str) -> str:
 
 
 def secret_scope(settings: dict[str, str], sid: str) -> str:
-    """The one secret a job may update: a role scope below the vault."""
     return resource_id(settings, "Microsoft.KeyVault", "vaults", settings["vault"]) + f"/secrets/{sid}"
 
 

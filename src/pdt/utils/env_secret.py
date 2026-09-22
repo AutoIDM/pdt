@@ -1,26 +1,12 @@
-"""One env var of a deployed app, changed while the app runs.
-
-Used as a library (`from pdt.utils import env_secret`).
-
-A cloud job holds its env vars as one json secret, mounted as
-PDT_ENV_JSON (see deploy_common.py). PDT_ENV_SECRET_RESOURCE names that
-secret, and deploy grants the job the right to update it. An app that
-rotates a credential at run time, such as a Salesforce refresh token,
-calls `update` so the next run starts with the new value.
+"""Change one env var of a deployed app while it runs.
 
     from pdt.utils import env_secret
     env_secret.update("TAP_SALESFORCE_REFRESH_TOKEN", new_token)
 
-`update` reads the secret itself first, not this process's environment,
-because the environment was fixed when the run started and an earlier
-update in the same run has already changed the secret.
-
-Without PDT_ENV_SECRET_RESOURCE (`pdt run` on the user's own computer and
-the windows provider) `update` writes the nearest .env that holds the var,
-so the next local run and the next deploy both see the new value, and then
-runs `pdt secrets <app> set` so the deployed job, if there is one, sees it
-too. A credential the other side rotates has one current value; a local
-run that kept it to itself would break the deployed job's next login.
+PDT_ENV_SECRET_RESOURCE, set by deploy, names the app's env secret (see
+deploy_common.py). Without it, on the user's computer, `update` writes
+the nearest .env and then `pdt secrets <app> set`, because a rotated
+credential has one current value and the deployed job needs it too.
 """
 
 from __future__ import annotations
@@ -42,12 +28,7 @@ def deployed() -> bool:
 
 
 def current() -> str:
-    """The deployed secret as it is now, or "" when it cannot be read.
-
-    A platform may start a job with the secret it cached at deploy time.
-    Reading the secret itself gives every run the value the previous run
-    rotated. A failed read is logged and the job keeps the mounted copy.
-    """
+    """The deployed secret as it is now, or "" when it cannot be read."""
     try:
         return json.dumps(backend().read(), sort_keys=True)
     except Exception as e:  # noqa: BLE001 - any SDK or permission error means the mounted copy stands
@@ -69,7 +50,6 @@ def update(name: str, new_value: str) -> None:
 
 
 def set_deployed(name: str, new_value: str) -> None:
-    """From the user's computer, put the value into the deployed job's secret too."""
     app = Path.cwd().name
     try:
         project = config.find_project()
@@ -128,7 +108,7 @@ class SecretManager(Backend):
         return json.loads(version.payload.data.decode() or "{}")
 
     def write(self, values: dict[str, str]) -> None:
-        # Every kept version is billed, so the one just added is the only one left.
+        # Every kept version is billed.
         client = self.client()
         added = client.add_secret_version(request={
             "parent": self.resource,
@@ -156,7 +136,7 @@ class KeyVault(Backend):
         return json.loads(self.client().get_secret(self.name).value or "{}")
 
     def write(self, values: dict[str, str]) -> None:
-        # The tags carry pdt's ownership mark, and deploy keeps one enabled version.
+        # The tags mark pdt's ownership.
         client = self.client()
         tags = client.get_secret(self.name).properties.tags
         added = client.set_secret(self.name, json.dumps(values, sort_keys=True), tags=tags)

@@ -7,11 +7,8 @@ file is replaced by <NAME>_B64 holding the file's base64, because the
 cloud job gets no files, only string secrets. One that names no file is
 a run-time location the app sets itself and goes through as is.
 
-PDT_ENV_SECRET_RESOURCE names that secret, and every provider grants the
-job the right to update it and nothing else: the task role on AWS, the
-job's system-assigned identity on Azure, the runner service account on
-Google Cloud. `pdt.utils.env_secret` is how an app writes a value it
-rotated at run time back, so the next run starts with it.
+PDT_ENV_SECRET_RESOURCE names that secret. The job's identity may update
+it and no other, through `pdt.utils.env_secret`.
 
 A build context holds the app directory and pdt.yml, nothing else. The
 app's run.py declares pdt in its script header, so every deployment
@@ -337,12 +334,7 @@ def run_secrets(action: str, app: dict, current: str | None,
 
 def set_secret(app: dict, current: str | None, write: Callable[[dict[str, str]], None],
                name: str | None) -> int:
-    """Put one value, read from stdin, into the deployed secret.
-
-    An app that is not deployed has no secret to update, so that is a note
-    and not an error: a hook that rotates a credential on the user's own
-    computer calls this to keep a deployed job working, and there is no job.
-    """
+    """Put one value, read from stdin, into the deployed secret."""
     if not name:
         fail("pdt secrets <app> set needs the env var name, with the value on stdin.")
     if current is None:
