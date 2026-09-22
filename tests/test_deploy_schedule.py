@@ -1,4 +1,4 @@
-"""A deploy of an app with no schedule asks for one and saves it in the app's config.yml."""
+"""A deploy of an app with no schedule asks for one and saves it in the app's pdt.yml."""
 
 import pytest
 import yaml
@@ -10,7 +10,7 @@ from pdt.config import merged_app
 
 @pytest.fixture
 def ps_app(project):
-    # A PowerShell app is a folder of .ps1 files; it needs no config.yml.
+    # A PowerShell app is a folder of .ps1 files; it needs no pdt.yml.
     folder = project / "ps-report"
     folder.mkdir()
     (folder / "report.ps1").write_text("Write-Output 'hi'\n")
@@ -18,7 +18,7 @@ def ps_app(project):
 
 
 def schedule_in(folder):
-    path = folder / "config.yml"
+    path = folder / "pdt.yml"
     return yaml.safe_load(path.read_text()).get("schedule") if path.is_file() else None
 
 
@@ -38,7 +38,7 @@ def test_the_user_can_pick_a_schedule_and_comments_survive(project, monkeypatch)
     monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: True)
     monkeypatch.setattr(deploy.console, "ask", lambda _question, _default: "weekly")
     assert deploy.choose_schedule(merged_app("my-report"), False) == ""
-    assert (folder / "config.yml").read_text().startswith("# my notes\nstorage: false\n")
+    assert (folder / "pdt.yml").read_text().startswith("# my notes\nstorage: false\n")
     assert schedule_in(folder) == "weekly"
 
 
@@ -60,9 +60,9 @@ def test_an_empty_answer_takes_daily(ps_app, monkeypatch):
 def test_no_one_to_ask_and_no_yes_names_the_fix(ps_app, monkeypatch):
     monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: False)
     problem = deploy.choose_schedule(merged_app("ps-report"), False)
-    assert "schedule: daily" in problem and "ps-report/config.yml" in problem
+    assert "schedule: daily" in problem and "ps-report/pdt.yml" in problem
     assert "--yes" in problem
-    assert not (ps_app / "config.yml").exists()
+    assert not (ps_app / "pdt.yml").exists()
 
 
 def test_a_set_schedule_is_never_asked_again(project, monkeypatch):

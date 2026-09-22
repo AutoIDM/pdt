@@ -106,13 +106,13 @@ def test_no_docker_builds_in_the_cloud_and_says_why(tmp_path, monkeypatch, capsy
 
 def test_local_without_docker_stops_and_names_the_file(tmp_path, monkeypatch, capsys):
     docker(monkeypatch, on_path=False)
-    app = app_for(tmp_path, "local", "report/config.yml")
+    app = app_for(tmp_path, "local", "report/pdt.yml")
     with pytest.raises(SystemExit):
         build_in_cloud(app, "Cloud Build", "linux/amd64")
     out = said(capsys)
     assert ("Docker on this computer cannot build the image: the docker command is not on the "
             "PATH.") in out
-    assert "docker-build: local in report/config.yml builds only with Docker." in out
+    assert "docker-build: local in report/pdt.yml builds only with Docker." in out
 
 
 def test_cloud_never_asks_docker(tmp_path, monkeypatch, capsys):
@@ -177,9 +177,9 @@ def test_docker_build_merges_from_project_to_app(project):
     assert config.merged_app("other")["docker_build"] == "cloud"
     assert config.merged_app("other")["docker_build_from"] == "pdt.yml"
     assert config.merged_app("report")["docker_build"] == "local"
-    (project / "report" / "config.yml").write_text("schedule: daily\ndocker-build: auto\n")
+    (project / "report" / "pdt.yml").write_text("schedule: daily\ndocker-build: auto\n")
     app = config.merged_app("report")
-    assert (app["docker_build"], app["docker_build_from"]) == ("auto", "report/config.yml")
+    assert (app["docker_build"], app["docker_build_from"]) == ("auto", "report/pdt.yml")
     assert config.validate_app("report") == []
 
 
@@ -192,14 +192,14 @@ def test_docker_build_defaults_to_auto(project):
 def test_an_unknown_docker_build_names_the_file_and_the_choices(project):
     add_app(project, "report", "schedule: daily\ndocker-build: remote\n")
     assert config.validate_app("report") == [
-        "report/config.yml: docker-build must be auto, local, or cloud"]
+        "report/pdt.yml: docker-build must be auto, local, or cloud"]
 
 
 def test_docker_build_on_the_windows_provider_is_told_to_go(project):
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
     add_app(project, "report", "schedule: daily\ndocker-build: cloud\n")
     assert config.validate_app("report") == [
-        "report/config.yml: docker-build: not used by the windows provider; remove the key"]
+        "report/pdt.yml: docker-build: not used by the windows provider; remove the key"]
 
 
 def docker_runs(monkeypatch, results):

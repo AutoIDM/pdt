@@ -127,7 +127,7 @@ def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
     if not app["storage"]:
         console.error(f"storage is turned off for {console.value(name)}; "
                       f"remove {console.value('storage: false')} from "
-                      f"{console.value(f'{name}/config.yml')}")
+                      f"{console.value(f'{name}/pdt.yml')}")
         return 1
     as_json = "--json" in rest
     recursive = "--recursive" in rest

@@ -4,7 +4,7 @@ Inside an app folder, leave <app> off any command that takes one and pdt uses th
 Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
 Every command except init, examples, upgrade, completion, aws, az, and gcloud needs a project.
-pdt finds it by walking up from the working directory to the nearest pdt.yml.
+pdt finds it by walking up from the working directory to the nearest pdt.yml that is not in an app folder (an app folder holds its own pdt.yml).
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def say_no_apps(as_json: bool = False) -> None:
     """Say why there is no app to act on; with `as_json`, also print the empty list."""
     if config.app_folders():
         console.say("This project has no enabled apps. Every app has enabled: false.")
-        console.say("Set enabled: true in an app's config.yml, or delete the line, to turn it on.")
+        console.say("Set enabled: true in an app's pdt.yml, or delete the line, to turn it on.")
         console.next_steps([("pdt list", "see every app and whether it is enabled")])
     else:
         console.say("This project has no apps yet.")

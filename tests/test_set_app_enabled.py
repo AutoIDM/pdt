@@ -19,7 +19,7 @@ platform:
 def test_appends_the_key_to_a_file_that_lacks_it(project):
     add_app(project, "my-report", "schedule: daily\n")
     saved = set_app_enabled("my-report", False)
-    assert saved == project / "my-report" / "config.yml"
+    assert saved == project / "my-report" / "pdt.yml"
     assert saved.read_text() == "schedule: daily\nenabled: false\n"
 
 
@@ -65,8 +65,8 @@ def test_a_failed_write_leaves_the_file_as_it_was(project, monkeypatch):
     monkeypatch.setattr(os, "replace", fail)
     with pytest.raises(OSError):
         set_app_enabled("my-report", False)
-    assert (app_dir / "config.yml").read_text() == COMMENTED
-    assert sorted(p.name for p in app_dir.iterdir() if p.name != "config.yml.lock") == before
+    assert (app_dir / "pdt.yml").read_text() == COMMENTED
+    assert sorted(p.name for p in app_dir.iterdir() if p.name != "pdt.yml.lock") == before
 
 
 def test_shares_the_lock_with_save_app_key(project):
@@ -89,6 +89,6 @@ def test_shares_the_lock_with_save_app_key(project):
         thread.start()
     for thread in threads:
         thread.join()
-    saved = load_yaml(project / "my-report" / "config.yml")
+    saved = load_yaml(project / "my-report" / "pdt.yml")
     assert saved["enabled"] is True
     assert saved["pause"] is True

@@ -1,7 +1,7 @@
 # Exports the Intune configuration of a tenant with IntuneManagement's own
 # bulk export (https://github.com/Micke-K/IntuneManagement, version 4), and
 # writes IntuneExport-<date>.zip to PDT_OUTPUT_DIR. IntuneManagement imports
-# the folder in the zip. PDT_CONFIG_JSON holds the settings (see config.yml).
+# the folder in the zip. PDT_CONFIG_JSON holds the settings (see pdt.yml).
 # PDT_STATE_DIR keeps a hash of each exported file, so each run lists what
 # changed since the last.
 
@@ -94,10 +94,10 @@ Remove-Item $work -Recurse -Force
 Write-Output "Exported $($result.Policies) objects of $($result.Types) types to $name.zip."
 $changes | Write-Output
 if ($result.UnknownSelectors) {
-    throw "config.yml names policy types or groups that IntuneManagement does not know: $($result.UnknownSelectors -join ', ')."
+    throw "pdt.yml names policy types or groups that IntuneManagement does not know: $($result.UnknownSelectors -join ', ')."
 }
 if ($unlisted) {
-    throw "Microsoft Graph refused to list $($unlisted.Count) object types, so the zip is incomplete: $($unlisted -join ' ') A status of 403 means the Entra app lacks a permission that config.yml lists."
+    throw "Microsoft Graph refused to list $($unlisted.Count) object types, so the zip is incomplete: $($unlisted -join ' ') A status of 403 means the Entra app lacks a permission that pdt.yml lists."
 }
 if ($result.Failed) {
     throw "$($result.Failed) of $($result.Types) object types failed to export, so the zip is incomplete. The log above names them."

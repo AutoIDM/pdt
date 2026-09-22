@@ -141,7 +141,7 @@ def test_mentions_come_from_every_kind_of_source():
     sources = {where for where, _command in MENTIONS}
     assert {"README.md", "AGENTS.md", "src/pdt/scaffold.py", "src/pdt/cli.py",
             "src/pdt/utils/storage.py", "src/pdt/gui/templates/gui/run.html",
-            "src/pdt/examples/hello-world/config.yml"} <= sources
+            "src/pdt/examples/hello-world/pdt.yml"} <= sources
     commands = {command for _where, command in MENTIONS}
     assert "pdt storage APP ls\\|get\\|query\\|unlock\\|destroy" in commands
     assert "pdt storage {} unlock" in commands

@@ -18,8 +18,8 @@ runner, and the container image start it there; it also runs as
 `python -m pdt.run_powershell .` from an installed pdt-cli[apps].
 
 It loads the app's config and env (PDT_ENV_JSON secrets become env vars),
-stops when an env var that config.yml lists as required, or that a script
-reads and config.yml does not list, is not set,
+stops when an env var that pdt.yml lists as required, or that a script
+reads and pdt.yml does not list, is not set,
 exports an empty folder as PDT_OUTPUT_DIR and the app's merged `config:`
 section as JSON in PDT_CONFIG_JSON, then runs each entry script in
 order through pwsh. It stops at the first failure unless `continue_on_error`

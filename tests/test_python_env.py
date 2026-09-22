@@ -39,7 +39,7 @@ def expected(project, app="py-report", read='run.py:4 reads os.environ["TENANT_I
         f"the environment; there is no .env file in {project / app} or a folder above it. "
         f"To fix it, add each one as NAME=value to {project / '.env'}, then run the command again. "
         "If a script works without one that it reads, list that one under env: optional: in "
-        f"{app}/config.yml instead.")
+        f"{app}/pdt.yml instead.")
 
 
 def run_cli(monkeypatch, *argv):
@@ -98,7 +98,7 @@ def test_other_py_files_in_the_app_folder_count_after_run_py(tmp_path):
 
 
 def test_a_listed_name_keeps_its_listing(py_app):
-    (py_app / "config.yml").write_text("schedule: daily\nenv:\n  optional: [TENANT_ID]\n")
+    (py_app / "pdt.yml").write_text("schedule: daily\nenv:\n  optional: [TENANT_ID]\n")
     assert config.env_spec(config.merged_app("py-report")) == {
         "optional": ["TENANT_ID", "NOTE"], "required": [], "read_by": {}}
 
@@ -151,7 +151,7 @@ def test_a_powershell_app_and_a_python_app_give_the_same_message(py_app, project
     folder = project / "ps-report"
     folder.mkdir()
     (folder / "report.ps1").write_text("")
-    (folder / "config.yml").write_text("schedule: daily\nenv:\n  optional: [NOTE]\n")
+    (folder / "pdt.yml").write_text("schedule: daily\nenv:\n  optional: [NOTE]\n")
     monkeypatch.setattr(powershell, "extract", lambda folder: FACTS)
     assert config.missing_env(config.merged_app("ps-report")) == expected(
         project, "ps-report", "report.ps1:4 reads $env:TENANT_ID")
