@@ -79,6 +79,7 @@ ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 STORE_GROUP = "pdt-data"
 STORE_ROLE = "Storage Blob Data Contributor"
+SECRET_ROLE = "Key Vault Secrets Officer"
 STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
 STORE_METADATA_ARGS = tuple(
     f"{key.replace('-', '_')}={value}" for key, value in STORE_TAGS.items())
@@ -371,6 +372,10 @@ def resource_id(settings: dict[str, str], provider: str, kind: str, name: str) -
 
 def secret_name(app_name: str) -> str:
     return clean_name(f"pdt-{app_name}-env", 127)
+
+
+def secret_scope(settings: dict[str, str], sid: str) -> str:
+    return resource_id(settings, "Microsoft.KeyVault", "vaults", settings["vault"]) + f"/secrets/{sid}"
 
 
 def set_key_vault_secret(vault: str, name: str, payload: str, app_name: str) -> str:
@@ -904,7 +909,7 @@ def main() -> int:
         fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
     from pdt import deploy_azure_container_apps as module
     if args.command == "secrets":
-        return module.secrets(app, args.rest[0], args.yes)
+        return module.secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
         return module.deploy(app, args.yes)
     return module.destroy(app, args.yes)

@@ -31,6 +31,7 @@ apps = [
     "google-cloud-storage",
     "azure-storage-blob",
     "azure-identity",
+    "azure-keyvault-secrets",
 ]
 
 [project.scripts]

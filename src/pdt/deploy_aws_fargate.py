@@ -18,7 +18,7 @@ from pdt.deploy_aws import (
     delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     deployer_store, ensure_session, ensure_store, has_managed_tag, iam_tags, not_found,
-    delete_schedule_group, other_schedules, preflight, resource_exists,
+    delete_schedule_group, other_schedules, preflight, resource_exists, secret_statements,
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
@@ -162,7 +162,7 @@ def ensure_roles(iam, names: dict[str, str], account: str, region: str,
              "Resource": secret_arn},
         ])
     task = ensure_role(iam, names["task_role"], "ecs-tasks.amazonaws.com", "pdt-task",
-                       store_statements)
+                       secret_statements(secret_arn) + store_statements)
     task_definition = f"arn:aws:ecs:{region}:{account}:task-definition/{names['family']}:*"
     scheduler = ensure_role(
         iam, names["scheduler_role"], "scheduler.amazonaws.com", "pdt-scheduler", [
@@ -295,7 +295,7 @@ def fargate_clients(session) -> dict:
     return clients
 
 
-def secrets(app: dict, action: str, assume_yes: bool) -> int:
+def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
     session = ensure_session(app)
     expected_account, _region = aws_settings(app, session)
     clients = fargate_clients(session)
@@ -310,7 +310,7 @@ def secrets(app: dict, action: str, assume_yes: bool) -> int:
         console.step(f"updating secret {name}")
         ensure_secret(client, name, json.dumps(values, sort_keys=True))
 
-    return run_secrets(action, app, current, write, assume_yes)
+    return run_secrets(action, app, current, write, assume_yes, name)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
@@ -343,6 +343,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         ("update" if secret_exists else "create")
         + f" Secrets Manager secret {names['secret']}",
         "reconcile the execution, task, and scheduler IAM roles",
+        f"allow {names['task_role']} to update its own secret {names['secret']}",
         f"reconcile Fargate task definition {names['family']} "
         f"({int(TASK_CPU) / 1024:g} vCPU, {TASK_MEMORY} MiB, no time limit)",
         ("update" if schedule_exists else "create")
@@ -361,7 +362,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     cluster_arn = ensure_cluster(clients["ecs"])
     ensure_log_group(clients["logs"], names["log_group"])
     secret_arn = ensure_secret(clients["secretsmanager"], names["secret"], payload)
-    environment = {}
+    environment = {"PDT_ENV_SECRET_RESOURCE": secret_arn}
     grants = []
     if store:
         ensure_store(clients["s3"], bucket, region)

@@ -180,7 +180,7 @@ def cmd_secrets(args) -> int:
     name = choose_app(args.app, "secrets")
     if name is None:
         return 1
-    return deploy.secrets(name, args.action, assume_yes=args.yes)
+    return deploy.secrets(name, args.action, assume_yes=args.yes, name=args.name)
 
 
 def cmd_storage(args) -> int:
@@ -251,7 +251,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", nargs="?", choices=deploy_common.SECRET_ACTIONS, default="diff",
                    help="diff shows what save would change (the default); "
                         "save sends your .env values to the deployed app; "
-                        "get copies the deployed values into a file")
+                        "get copies the deployed values into a file; "
+                        "set NAME puts one value, read from stdin, into the deployed app")
+    p.add_argument("name", nargs="?", help="the env var that set changes")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_secrets)
     p = add_parser("storage", help="read or manage an app's data store")

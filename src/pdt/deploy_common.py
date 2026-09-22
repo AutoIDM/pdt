@@ -7,6 +7,9 @@ file is replaced by <NAME>_B64 holding the file's base64, because the
 cloud job gets no files, only string secrets. One that names no file is
 a run-time location the app sets itself and goes through as is.
 
+PDT_ENV_SECRET_RESOURCE names that secret. The job's identity may update
+it and no other, through `pdt.utils.env_secret`.
+
 A build context holds the app directory and pdt.yml, nothing else. The
 app's run.py declares pdt in its script header, so every deployment
 installs the package from the index the same way a local run does.
@@ -34,6 +37,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -293,13 +297,16 @@ def secret_changes(current: str | None, values: dict[str, str]) -> list[tuple[st
     return sorted(changes, key=lambda change: (kinds.index(change[0]), change[1]))
 
 
-SECRET_ACTIONS = ("diff", "save", "get")
+SECRET_ACTIONS = ("diff", "save", "get", "set")
 
 
 def run_secrets(action: str, app: dict, current: str | None,
-                write: Callable[[dict[str, str]], None], assume_yes: bool) -> int:
-    """`pdt secrets <app> diff|save|get`, once the provider has read the deployed secret."""
+                write: Callable[[dict[str, str]], None], assume_yes: bool,
+                name: str | None = None) -> int:
+    """`pdt secrets <app> diff|save|get|set`, once the provider has read the deployed secret."""
     from pdt.deploy import proceed
+    if action == "set":
+        return set_secret(app, current, write, name)
     if current is None:
         fail(f"{app['name']} has no deployed secrets yet. Run `pdt deploy {app['name']}` first.")
     if action == "get":
@@ -322,6 +329,30 @@ def run_secrets(action: str, app: dict, current: str | None,
         return 0
     write(values)
     console.done(f"Updated the secrets of {app['name']}. The next run uses them.")
+    return 0
+
+
+def set_secret(app: dict, current: str | None, write: Callable[[dict[str, str]], None],
+               name: str | None) -> int:
+    """Put one value, read from stdin, into the deployed secret."""
+    if not name:
+        fail("pdt secrets <app> set needs the env var name, with the value on stdin.")
+    if current is None:
+        console.note(f"{app['name']} is not deployed, so there is no secret to update.")
+        return 0
+    value = sys.stdin.read().strip()
+    if value == "":
+        fail(f"no value for {name} on stdin.")
+    try:
+        values = json.loads(current)
+    except ValueError:
+        fail("the deployed secret is not the JSON that pdt writes, so pdt cannot update it.")
+    if values.get(name) == value:
+        console.done(f"{name} already has that value in the secrets of {app['name']}.")
+        return 0
+    values[name] = value
+    write(values)
+    console.done(f"Updated {name} in the secrets of {app['name']}. The next run uses it.")
     return 0
 
 
