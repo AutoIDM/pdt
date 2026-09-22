@@ -113,3 +113,30 @@ def test_the_task_role_may_only_touch_its_own_secret():
                            "Action": ["secretsmanager:GetSecretValue",
                                       "secretsmanager:PutSecretValue"],
                            "Resource": ARN}]
+
+
+def test_a_deployed_job_reads_the_secret_fresh_at_start(monkeypatch):
+    from pdt import config
+    monkeypatch.setattr(env_secret, "backend", lambda resource=None: Memory(""))
+    Memory.values = {"TOKEN": "rotated"}
+    monkeypatch.setenv(env_secret.RESOURCE_ENV, AZURE)
+    monkeypatch.setenv("PDT_ENV_JSON", json.dumps({"TOKEN": "cached-at-deploy"}))
+    monkeypatch.delenv("TOKEN", raising=False)
+    config.load_env_json()
+    assert os.environ["TOKEN"] == "rotated"
+
+
+def test_an_unreadable_secret_leaves_the_mounted_copy_in_place(monkeypatch, capsys):
+    from pdt import config
+
+    class Broken(env_secret.Backend):
+        def read(self):
+            raise PermissionError("denied")
+
+    monkeypatch.setattr(env_secret, "backend", lambda resource=None: Broken(""))
+    monkeypatch.setenv(env_secret.RESOURCE_ENV, AZURE)
+    monkeypatch.setenv("PDT_ENV_JSON", json.dumps({"TOKEN": "cached-at-deploy"}))
+    monkeypatch.delenv("TOKEN", raising=False)
+    config.load_env_json()
+    assert os.environ["TOKEN"] == "cached-at-deploy"
+    assert "could not read the deployed secret" in capsys.readouterr().out

@@ -397,8 +397,14 @@ def load_env(start: Path) -> list[Path]:
 
 
 def load_env_json() -> None:
-    # In the cloud, deploy mounts all app secrets as one json blob.
+    # In the cloud, deploy mounts all app secrets as one json blob. Azure
+    # hands a job the blob it cached when the job was made, so a value an
+    # earlier run rotated only reaches the next run if the run reads the
+    # secret itself.
     raw = os.environ.get("PDT_ENV_JSON", "").strip()
+    if os.environ.get("PDT_ENV_SECRET_RESOURCE", "").strip() != "":
+        from pdt.utils import env_secret
+        raw = env_secret.current() or raw
     if raw == "":
         return
     try:

@@ -41,6 +41,21 @@ def deployed() -> bool:
     return os.environ.get(RESOURCE_ENV, "").strip() != ""
 
 
+def current() -> str:
+    """The deployed secret as it is now, or "" when it cannot be read.
+
+    A platform may start a job with the secret it cached at deploy time.
+    Reading the secret itself gives every run the value the previous run
+    rotated. A failed read is logged and the job keeps the mounted copy.
+    """
+    try:
+        return json.dumps(backend().read(), sort_keys=True)
+    except Exception as e:  # noqa: BLE001 - any SDK or permission error means the mounted copy stands
+        log("warning", "could not read the deployed secret; using the value the job started with",
+            error=str(e))
+        return ""
+
+
 def update(name: str, new_value: str) -> None:
     store = backend()
     values = store.read()
