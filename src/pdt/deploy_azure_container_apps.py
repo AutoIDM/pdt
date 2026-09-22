@@ -355,7 +355,7 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
               hints={"EnvironmentsInSubExceeded": QUOTA_HINT})
 
 
-def secrets(app: dict, action: str, assume_yes: bool) -> int:
+def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
     job = clean_name(f"pdt-{name}")
@@ -370,7 +370,7 @@ def secrets(app: dict, action: str, assume_yes: bool) -> int:
         set_job_secret(job, settings["resource_group"], secret_uri, identity_id)
         disable_old_secret_versions(settings, sid)
 
-    return run_secrets(action, app, current, write, assume_yes)
+    return run_secrets(action, app, current, write, assume_yes, name)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:

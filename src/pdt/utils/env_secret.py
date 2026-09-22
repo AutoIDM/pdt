@@ -16,18 +16,23 @@ because the environment was fixed when the run started and an earlier
 update in the same run has already changed the secret.
 
 Without PDT_ENV_SECRET_RESOURCE (`pdt run` on the user's own computer and
-the windows provider) the .env file stands in for the secret: `update`
-writes the nearest .env that holds the var, so the next run and the next
-deploy both see the new value.
+the windows provider) `update` writes the nearest .env that holds the var,
+so the next local run and the next deploy both see the new value, and then
+runs `pdt secrets <app> set` so the deployed job, if there is one, sees it
+too. A credential the other side rotates has one current value; a local
+run that kept it to itself would break the deployed job's next login.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 from pdt import config
+from pdt.utils.log import log
 
 RESOURCE_ENV = "PDT_ENV_SECRET_RESOURCE"
 
@@ -43,11 +48,35 @@ def update(name: str, new_value: str) -> None:
     store.write(values)
     os.environ[name] = new_value
     os.environ["PDT_ENV_JSON"] = json.dumps(values, sort_keys=True)
+    log("info", "env var stored", name=name, target=store.describe())
+    if isinstance(store, EnvFile):
+        set_deployed(name, new_value)
+
+
+def set_deployed(name: str, new_value: str) -> None:
+    """From the user's computer, put the value into the deployed job's secret too."""
+    app = Path.cwd().name
+    try:
+        project = config.find_project()
+    except config.ConfigError:
+        log("info", "no pdt project here, so no deployed secret to update", name=name)
+        return
+    command = [sys.executable, "-m", "pdt.cli", "secrets", app, "set", name, "--yes"]
+    done = subprocess.run(command, input=new_value, capture_output=True, text=True,
+                          cwd=project, env=dict(os.environ, NO_COLOR="1"))
+    for line in (done.stdout + done.stderr).splitlines():
+        if line.strip():
+            log("info", line.strip())
+    if done.returncode != 0:
+        raise RuntimeError(f"pdt secrets {app} set {name} failed with exit code {done.returncode}")
 
 
 class Backend:
     def __init__(self, resource: str):
         self.resource = resource
+
+    def describe(self) -> str:
+        return self.resource
 
     def read(self) -> dict[str, str]:
         raise NotImplementedError
@@ -124,9 +153,16 @@ class KeyVault(Backend):
 class EnvFile(Backend):
     """No cloud secret: the nearest .env file that holds the var."""
 
+    def __init__(self, resource: str):
+        super().__init__(resource)
+        self.written: list[Path] = []
+
     def files(self) -> list[Path]:
         files = config.find_env_files(Path.cwd())
         return files or [Path.cwd() / ".env"]
+
+    def describe(self) -> str:
+        return ", ".join(str(path) for path in self.written) or "no .env file (value unchanged)"
 
     def read(self) -> dict[str, str]:
         from dotenv import dotenv_values
@@ -145,6 +181,7 @@ class EnvFile(Backend):
                            if path.is_file() and name in dotenv_values(path)), self.files()[0])
             target.touch(mode=0o600, exist_ok=True)
             set_key(str(target), name, new, quote_mode="never")
+            self.written.append(target)
 
 
 def backend(resource: str | None = None) -> Backend:

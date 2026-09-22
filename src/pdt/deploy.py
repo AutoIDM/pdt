@@ -78,20 +78,21 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
     return code
 
 
-def secrets(app_name: str, action: str, assume_yes: bool = False) -> int:
+def secrets(app_name: str, action: str, assume_yes: bool = False,
+            name: str | None = None) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
         console.error(str(e))
         return 1
     config.load_env(app["dir"])
-    if action != "get":
+    if action in ("diff", "save"):
         problems = config.check_env(app["env"])
         if problems:
             for problem in problems:
                 console.error(f"{app_name}: env: {problem}")
             return 1
-    return dispatch(provider, "secrets", app_name, assume_yes, [action])
+    return dispatch(provider, "secrets", app_name, assume_yes, [action, *([name] if name else [])])
 
 
 def login(app_name: str) -> int:

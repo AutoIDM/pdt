@@ -547,7 +547,7 @@ def destroy_old_secret_versions(project: str, sid: str) -> None:
                   "--secret", sid, "--project", project, "--quiet")
 
 
-def secrets(app: dict, action: str, assume_yes: bool) -> int:
+def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
     project, _region = project_region(app)
     project = preflight(app, project, assume_yes)
     sid = secret_id(app["name"])
@@ -561,7 +561,7 @@ def secrets(app: dict, action: str, assume_yes: bool) -> int:
                   "--data-file", "-", data=json.dumps(values, sort_keys=True))
         destroy_old_secret_versions(project, sid)
 
-    return run_secrets(action, app, current, write, assume_yes)
+    return run_secrets(action, app, current, write, assume_yes, name)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
@@ -918,7 +918,7 @@ def main() -> int:
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
     if args.command == "secrets":
-        return secrets(app, args.rest[0], args.yes)
+        return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
         return deploy(app, args.yes)
     return destroy(app, args.yes)

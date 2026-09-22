@@ -295,7 +295,7 @@ def fargate_clients(session) -> dict:
     return clients
 
 
-def secrets(app: dict, action: str, assume_yes: bool) -> int:
+def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
     session = ensure_session(app)
     expected_account, _region = aws_settings(app, session)
     clients = fargate_clients(session)
@@ -310,7 +310,7 @@ def secrets(app: dict, action: str, assume_yes: bool) -> int:
         console.step(f"updating secret {name}")
         ensure_secret(client, name, json.dumps(values, sort_keys=True))
 
-    return run_secrets(action, app, current, write, assume_yes)
+    return run_secrets(action, app, current, write, assume_yes, name)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:

@@ -910,7 +910,7 @@ def main() -> int:
         fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
     from pdt import deploy_azure_container_apps as module
     if args.command == "secrets":
-        return module.secrets(app, args.rest[0], args.yes)
+        return module.secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
         return module.deploy(app, args.yes)
     return module.destroy(app, args.yes)
