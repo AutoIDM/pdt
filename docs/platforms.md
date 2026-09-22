@@ -1,6 +1,6 @@
 # Choosing where jobs run
 
-Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
+Set `platform:` in the project's `pdt.yml` for every app, or in an app's own `pdt.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
 
 A deploy to AWS, Azure, or Google Cloud builds each app's image in one of two places, and it says which place and why:
 
@@ -9,7 +9,7 @@ A deploy to AWS, Azure, or Google Cloud builds each app's image in one of two pl
 
 When a build fails, the deploy shows the error and stops.
 
-Set `docker-build` to choose the place yourself. Put it at the top level of `pdt.yml` for every app, or at the top level of an app's `config.yml` (or its `apps:` entry) for one app. The app's value wins.
+Set `docker-build` to choose the place yourself. Put it at the top level of the project's `pdt.yml` for every app, or at the top level of an app's own `pdt.yml` (or its `apps:` entry) for one app. The app's value wins.
 
 ```yaml
 docker-build: auto   # Docker on this computer when it answers, else the cloud (the default)

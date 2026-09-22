@@ -32,11 +32,11 @@ The same steps by hand are `store.pull("state/", folder)`, which returns a lease
 
 A run that dies without reaching either call leaves the lock behind. The next run takes it over right away when it can tell the holder is gone: the holder ran on the same computer and its process has ended, or it carries the same `PDT_RUN_ID`. Otherwise it waits 30 minutes, or you release the lock yourself with `pdt storage APP unlock`, which asks first.
 
-From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
+From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its own `pdt.yml`.
 
 ## Reading another app's files
 
-An app can read the folders of the apps listed under `storage: read:` in its `config.yml`. It cannot change them.
+An app can read the folders of the apps listed under `storage: read:` in its `pdt.yml`. It cannot change them.
 
 ```yml
 storage:

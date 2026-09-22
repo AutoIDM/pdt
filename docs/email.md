@@ -61,7 +61,7 @@ Optional:
 
 - PDT_GRAPH_MAIL_TENANT_ID: Defaults to `common`.
 
-PDT sends as `PDT_GRAPH_MAIL_USER`, so `email_from` in config.yml must match it. Graph sends the HTML part alone; the other transports send both parts. If a provider revokes authorization, run or deploy the app from a terminal again.
+PDT sends as `PDT_GRAPH_MAIL_USER`, so `email_from` in the app's pdt.yml must match it. Graph sends the HTML part alone; the other transports send both parts. If a provider revokes authorization, run or deploy the app from a terminal again.
 
 Create an app registration in the [Microsoft Entra admin center](https://entra.microsoft.com/). Add a Mobile and desktop application platform with `http://localhost` as a redirect URI. Add the Microsoft Graph delegated permission `Mail.Send` and allow public client flows. Do not add a client secret.
 

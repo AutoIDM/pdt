@@ -263,7 +263,7 @@ def test_the_schedule_is_explained_on_hover(gui):
 
 
 def test_pause_unpause_and_run_now_run_the_pdt_commands(gui):
-    gui.answers[("pause",)] = (0, "done: pause: true saved in my-report/config.yml\n")
+    gui.answers[("pause",)] = (0, "done: pause: true saved in my-report/pdt.yml\n")
     response = gui.client.post("/apps/my-report/do/pause/", {"next": "/"}, follow=True)
     assert ("pause", "my-report") in gui.calls
     assert "pause: true saved" in response.content.decode()
@@ -279,7 +279,7 @@ def test_pause_unpause_and_run_now_run_the_pdt_commands(gui):
 
 def test_the_actions_name_the_commands_they_run(gui):
     config.mark_deployed("my-report", True)
-    (gui.project / "my-report" / "config.yml").write_text("schedule: daily\npause: true\n")
+    (gui.project / "my-report" / "pdt.yml").write_text("schedule: daily\npause: true\n")
     html = gui.client.get("/apps/my-report/").content.decode()
     assert '<button type="submit">Unpause</button><button type="button" class="copy" data-copy="pdt unpause my-report">' in html
     assert 'data-copy="pdt run my-report --deployed"' in html
@@ -299,9 +299,9 @@ def test_the_health_grid_shows_runs_and_projects_the_schedule(gui):
 
 
 def test_a_paused_app_projects_no_future_runs(gui):
-    (gui.project / "my-report" / "config.yml").write_text("schedule: daily\npause: true\n")
+    (gui.project / "my-report" / "pdt.yml").write_text("schedule: daily\npause: true\n")
     assert health.scheduled_apps() == []
-    (gui.project / "my-report" / "config.yml").write_text("schedule: daily\n")
+    (gui.project / "my-report" / "pdt.yml").write_text("schedule: daily\n")
     assert health.scheduled_apps() == [("my-report", "0 0 * * *", "Etc/UTC")]
 
 

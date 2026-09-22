@@ -137,7 +137,7 @@ def powershell_deploy(project, monkeypatch):
     from pdt import powershell
     folder = project / "ps-report"
     folder.mkdir()
-    (folder / "config.yml").write_text("schedule: hourly\ntimezone: local\n")
+    (folder / "pdt.yml").write_text("schedule: hourly\ntimezone: local\n")
     (folder / "report.ps1").write_text("")
     needs = []
     host = []

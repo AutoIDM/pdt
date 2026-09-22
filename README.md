@@ -101,7 +101,7 @@ PowerShell job. Finds the Microsoft 365 licenses a tenant pays for that nobody u
 ### impossible-travel-report
 Looks at recent Entra ID sign-ins. Sends an email when one person signs in from two far-apart places too quickly: Dallas an hour ago, Paris now.
 
-Settings for the lookback window, the minimum distance, and the email addresses live in the job's `config.yml`. The env vars it needs are listed there too, and in its `env.template`.
+Settings for the lookback window, the minimum distance, and the email addresses live in the job's own `pdt.yml`. The env vars it needs are listed there too, and in its `env.template`.
 
 ### intune-export
 

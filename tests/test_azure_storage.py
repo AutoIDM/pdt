@@ -91,7 +91,7 @@ def test_a_condition_longer_than_azure_allows_stops_the_deploy(capsys):
     with pytest.raises(SystemExit):
         deploy_azure.check_condition_size("report", names)
     assert " ".join(capsys.readouterr().out.split()).endswith(
-        "storage.read in report/config.yml names 40 apps. The access rule that names them is "
+        "storage.read in report/pdt.yml names 40 apps. The access rule that names them is "
         "9976 bytes long, and Azure allows 8192 bytes. Remove names from the list.")
 
 
