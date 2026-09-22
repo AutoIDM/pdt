@@ -399,7 +399,7 @@ def main() -> int:
         return 0
     if args.command == "secrets":
         console.note("the windows provider reads your .env file at every run, "
-                     "so there is nothing to compare, save, or get.")
+                     "so there is nothing to compare, save, get, or set.")
         return 0
     try:
         app = config.merged_app(args.app)

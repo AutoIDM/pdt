@@ -35,23 +35,6 @@ def refuse_prompt(monkeypatch):
     monkeypatch.setattr("builtins.input", fake_input)
 
 
-def test_a_microsoft_smtp_app_with_a_cached_token_needs_cache_updates():
-    values = {"PDT_SMTP_HOST": "smtp.office365.com",
-              "PDT_SMTP_OAUTH_CACHE_B64": "abc"}
-    assert deploy_google_cloud.needs_oauth_cache_updates(values) is True
-
-
-def test_a_graph_app_needs_cache_updates_without_any_smtp_host():
-    assert deploy_google_cloud.needs_oauth_cache_updates(
-        {"PDT_GRAPH_MAIL_CACHE_B64": "abc"}) is True
-
-
-def test_an_app_with_neither_token_cache_needs_no_cache_updates():
-    assert deploy_google_cloud.needs_oauth_cache_updates(
-        {"PDT_SMTP_HOST": "smtp.office365.com", "PDT_TOKEN": "t-1"}) is False
-    assert deploy_google_cloud.needs_oauth_cache_updates({}) is False
-
-
 def test_an_existing_access_token_is_enough_and_nothing_else_runs(monkeypatch):
     refuse_prompt(monkeypatch)
     calls = record_gcloud(monkeypatch, [(["auth", "print-access-token"], Result(0, "ya29.a0\n"))])

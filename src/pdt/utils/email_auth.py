@@ -192,24 +192,14 @@ def _write_env(env_file: Path, name: str, value: str) -> None:
 
 
 def _save_cloud_cache(value: str, cache_env: str = CACHE_ENV) -> None:
-    resource = os.environ.get("PDT_ENV_SECRET_RESOURCE", "").strip()
-    raw = os.environ.get("PDT_ENV_JSON", "").strip()
-    if resource == "" or raw == "":
+    from pdt.utils import env_secret
+    if not env_secret.deployed():
         return
     try:
-        values = json.loads(raw)
-        values[cache_env] = value
-        payload = json.dumps(values, separators=(",", ":"), sort_keys=True)
-        from google.cloud import secretmanager
-        client = secretmanager.SecretManagerServiceClient()
-        client.add_secret_version(request={
-            "parent": resource,
-            "payload": {"data": payload.encode()},
-        })
+        env_secret.update(cache_env, value)
     except Exception as e:
         raise OAuthError(
-            f"could not update OAuth authorization in {resource}: {e}")
-    os.environ["PDT_ENV_JSON"] = payload
+            f"could not update OAuth authorization in {os.environ[env_secret.RESOURCE_ENV]}: {e}")
 
 
 def can_prompt(interactive: bool | None) -> bool:

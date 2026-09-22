@@ -372,16 +372,6 @@ def run_job_identity(run_job: dict) -> tuple[str, str]:
     return value.rstrip("/").rsplit("/", 1)[-1], region
 
 
-def needs_oauth_cache_updates(values: dict) -> bool:
-    if values.get("PDT_GRAPH_MAIL_CACHE_B64", "") != "":
-        return True
-    host = values.get("PDT_SMTP_HOST", "").lower().rstrip(".")
-    return (
-        host in ("smtp.office365.com", "smtp-mail.outlook.com")
-        and values.get("PDT_SMTP_OAUTH_CACHE_B64", "") != ""
-    )
-
-
 def secret_value(project: str, sid: str) -> str | None:
     proc = subprocess.run(
         [GCLOUD, "secrets", "versions", "access", "latest",
@@ -557,7 +547,7 @@ def destroy_old_secret_versions(project: str, sid: str) -> None:
                   "--secret", sid, "--project", project, "--quiet")
 
 
-def secrets(app: dict, action: str, assume_yes: bool) -> int:
+def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
     project, _region = project_region(app)
     project = preflight(app, project, assume_yes)
     sid = secret_id(app["name"])
@@ -571,7 +561,7 @@ def secrets(app: dict, action: str, assume_yes: bool) -> int:
                   "--data-file", "-", data=json.dumps(values, sort_keys=True))
         destroy_old_secret_versions(project, sid)
 
-    return run_secrets(action, app, current, write, assume_yes)
+    return run_secrets(action, app, current, write, assume_yes, name)
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
@@ -583,7 +573,6 @@ def deploy(app: dict, assume_yes: bool) -> int:
     cron = config.cron_expression(app["schedule"])
     timezone = app["timezone"]
     values = gather_secrets(app)
-    oauth_cache_updates = needs_oauth_cache_updates(values)
     job = f"pdt-{name}"
     repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
     image = f"{region}-docker.pkg.dev/{project}/{repo}/{name}:latest"
@@ -637,8 +626,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions.append(image_action(app, f"build and push image {image}"))
     if secret_state:
         actions.append(f"{secret_state} secret {sid} ({len(values)} env vars as one json blob)")
-    if oauth_cache_updates:
-        actions.append(f"allow {job} to update its OAuth cache in secret {sid}")
+    if values:
+        actions.append(f"allow {job} to update its own secret {sid}")
     actions.append(("use existing" if sa_exists else "create") + f" service account {sa}")
     if store:
         actions += store_plan_lines(f"bucket {bucket}", bucket_exists, sa, name)
@@ -695,10 +684,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         run_quiet("secrets", "add-iam-policy-binding", sid, "--project", project,
                   "--member", f"serviceAccount:{sa}",
                   "--role", "roles/secretmanager.secretAccessor")
-    if oauth_cache_updates:
         run_quiet("secrets", "add-iam-policy-binding", sid, "--project", project,
                   "--member", f"serviceAccount:{sa}",
-                  "--role", "roles/secretmanager.secretVersionAdder")
+                  "--role", "roles/secretmanager.secretVersionManager")
     console.step(f"deploying Cloud Run job {job}")
     args = ["run", "jobs", "deploy", job, "--image", image, "--region", region,
             "--project", project, "--service-account", sa, "--max-retries", "0",
@@ -706,9 +694,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if values:
         args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"]
     env_vars = []
-    if oauth_cache_updates:
-        resource = f"projects/{project}/secrets/{sid}"
-        env_vars.append(f"PDT_ENV_SECRET_RESOURCE={resource}")
+    if values:
+        env_vars.append(f"PDT_ENV_SECRET_RESOURCE=projects/{project}/secrets/{sid}")
     if store:
         env_vars.append(f"PDT_STORAGE_URL={store.url}")
     if env_vars:
@@ -931,7 +918,7 @@ def main() -> int:
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
     if args.command == "secrets":
-        return secrets(app, args.rest[0], args.yes)
+        return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
         return deploy(app, args.yes)
     return destroy(app, args.yes)
