@@ -116,6 +116,7 @@ def test_azure_set_stores_the_value_under_the_env_var_name(monkeypatch):
     written = {}
     monkeypatch.setattr(aca, "preflight", lambda app, settings: {"identity": "id", "resource_group": "rg"})
     monkeypatch.setattr(aca, "azure_settings", lambda app: {})
+    monkeypatch.setattr(aca, "find_job", lambda settings, name: ("pdt-demo", None))
     monkeypatch.setattr(aca, "secret_state", lambda *args: (True, json.dumps({"TOKEN": "old"})))
     monkeypatch.setattr(aca, "ensure_secret",
                         lambda settings, sid, values, *args: written.update(values) or URI)

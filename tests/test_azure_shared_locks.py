@@ -20,7 +20,7 @@ def settings() -> dict:
         "subscription": SUBSCRIPTION, "resource_group": "pdt", "region": "eastus2",
         "registry": "pdtregistry", "environment": SHARED, "identity": "pdt-runner",
         "workspace": "pdt-logs", "vault": "pdt-vault", "deployer_object_id": "d",
-        "deployer_principal_type": "User",
+        "deployer_principal_type": "User", "suffix": "abc1234def",
     }
 
 
@@ -144,7 +144,8 @@ def test_destroy_removes_its_lock_then_keeps_a_group_another_app_locked(monkeypa
         ("lock", "delete", "--name", "pdt-report-in-pdt"),
     ]
     assert ("group", "delete", "--name", "pdt", "--yes") in events
-    assert ("containerapp", "job", "delete", "--name", "pdt-report", "--resource-group", "pdt", "--yes") in events
+    job = deploy_azure_container_apps.job_name(settings(), "report")
+    assert ("containerapp", "job", "delete", "--name", job, "--resource-group", "pdt", "--yes") in events
     assert not any(event[:3] == ("containerapp", "env", "delete") for event in events)
     out = capsys.readouterr().out
     assert "kept: resource group pdt" in out

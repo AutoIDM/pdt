@@ -8,6 +8,7 @@ from pdt import deploy_azure, deploy_azure_container_apps
 SETTINGS = {
     "subscription": "sub-1",
     "resource_group": "pdt",
+    "suffix": "abc1234def",
 }
 
 
@@ -129,4 +130,4 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
             {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
 
     assert error.value.code == 7
-    assert reported and reported[0][1] == "pdt-report"
+    assert reported and reported[0][1] == deploy_azure_container_apps.job_name(SETTINGS, "report")
