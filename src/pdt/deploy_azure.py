@@ -79,6 +79,7 @@ ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 STORE_GROUP = "pdt-data"
 STORE_ROLE = "Storage Blob Data Contributor"
+SECRET_ROLE = "Key Vault Secrets Officer"
 STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
 STORE_METADATA_ARGS = tuple(
     f"{key.replace('-', '_')}={value}" for key, value in STORE_TAGS.items())
@@ -371,6 +372,11 @@ def resource_id(settings: dict[str, str], provider: str, kind: str, name: str) -
 
 def secret_name(app_name: str) -> str:
     return clean_name(f"pdt-{app_name}-env", 127)
+
+
+def secret_scope(settings: dict[str, str], sid: str) -> str:
+    """The one secret a job may update: a role scope below the vault."""
+    return resource_id(settings, "Microsoft.KeyVault", "vaults", settings["vault"]) + f"/secrets/{sid}"
 
 
 def set_key_vault_secret(vault: str, name: str, payload: str, app_name: str) -> str:

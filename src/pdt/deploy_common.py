@@ -7,6 +7,12 @@ file is replaced by <NAME>_B64 holding the file's base64, because the
 cloud job gets no files, only string secrets. One that names no file is
 a run-time location the app sets itself and goes through as is.
 
+PDT_ENV_SECRET_RESOURCE names that secret, and every provider grants the
+job the right to update it and nothing else: the task role on AWS, the
+job's system-assigned identity on Azure, the runner service account on
+Google Cloud. `pdt.utils.env_secret` is how an app writes a value it
+rotated at run time back, so the next run starts with it.
+
 A build context holds the app directory and pdt.yml, nothing else. The
 app's run.py declares pdt in its script header, so every deployment
 installs the package from the index the same way a local run does.

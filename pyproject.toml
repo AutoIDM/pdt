@@ -1,6 +1,6 @@
 [project]
 name = "pdt-cli"
-version = "0.1.1"
+version = "0.1.2"
 description = "Easily deploy your process to AWS, Azure, Google Cloud, or Windows."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -31,6 +31,7 @@ apps = [
     "google-cloud-storage",
     "azure-storage-blob",
     "azure-identity",
+    "azure-keyvault-secrets",
 ]
 
 [project.scripts]

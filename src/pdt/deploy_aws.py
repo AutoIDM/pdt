@@ -371,6 +371,13 @@ def store_url(bucket: str, app_name: str) -> str:
     return f"s3://{bucket}/{app_name}/"
 
 
+def secret_statements(secret_arn: str) -> list[dict]:
+    """The task may read and update its own env secret, and nothing else."""
+    return [{"Effect": "Allow",
+             "Action": ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"],
+             "Resource": secret_arn}]
+
+
 def store_statements(bucket: str, app_name: str) -> list[dict]:
     return [
         {"Effect": "Allow",
