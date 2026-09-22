@@ -37,4 +37,4 @@ def test_storage_turned_off_is_refused(store, capsys):
     assert storage_cli.run(store, app, ["ls"], False) == 1
     out = capsys.readouterr().out
     assert "storage is turned off for my-report" in out
-    assert "remove storage: false from my-report/config.yml" in out
+    assert "remove storage: false from my-report/pdt.yml" in out

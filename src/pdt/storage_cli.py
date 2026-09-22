@@ -73,7 +73,7 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
     name = app["name"]
     if not app["storage"]:
         console.error(f"storage is turned off for {name}; "
-                      f"remove storage: false from {name}/config.yml")
+                      f"remove storage: false from {name}/pdt.yml")
         return 1
     handlers = {
         "ls": (0, lambda args: ls(store, args[0] if args else "")),

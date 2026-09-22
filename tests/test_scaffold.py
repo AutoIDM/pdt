@@ -107,13 +107,13 @@ def test_every_bundled_example_is_complete():
     assert examples, "the wheel ships no examples"
     for example in examples:
         assert (example / "run.py").is_file()
-        config = yaml.safe_load((example / "config.yml").read_text())
+        config = yaml.safe_load((example / "pdt.yml").read_text())
         assert config["schedule"], f"{example.name} has no schedule"
         assert "name" not in config, f"{example.name} pins a name, so it cannot be renamed"
 
 
 def test_every_example_summary_is_whole(tmp_path):
-    # The summary is the whole comment block at the top of config.yml, not
+    # The summary is the whole comment block at the top of the app pdt.yml, not
     # only its first line, so a summary that wraps is not cut short.
     for example in scaffold.examples():
         assert scaffold.summary_of(example).endswith("."), example.name

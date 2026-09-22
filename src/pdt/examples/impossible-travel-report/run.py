@@ -51,11 +51,11 @@ GRAPH_SIGNINS = "https://graph.microsoft.com/v1.0/auditLogs/signIns"
 def cfg_float(cfg: dict, key: str) -> float:
     raw = str(cfg.get(key, "") or "").strip()
     if raw == "":
-        die(EXIT_CONFIG, "config.yml missing key", key=key)
+        die(EXIT_CONFIG, "pdt.yml missing key", key=key)
     try:
         return float(raw)
     except ValueError:
-        die(EXIT_CONFIG, "config.yml value is not a number", key=key, value=raw)
+        die(EXIT_CONFIG, "pdt.yml value is not a number", key=key, value=raw)
 
 
 def fetch_signins(token: str, since: datetime) -> list:

@@ -16,7 +16,7 @@ You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) i
 
 ## Set up a project
 
-A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`. Every command except `init` finds the project by looking in the current folder, then each folder above it.
+A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py` and its own `pdt.yml`. Every command except `init` finds the project by looking in the current folder, then each folder above it; a folder that also holds `run.py` is an app, so the walk goes past it.
 
 ```
 pdt init my-jobs
@@ -57,7 +57,7 @@ my-jobs/
   .env              secrets, never committed
   my-report/
     run.py          the job
-    config.yml      schedule, settings, and the env vars it needs
+    pdt.yml         schedule, settings, and the env vars it needs
     env.template
 ```
 
@@ -141,9 +141,9 @@ store.push(Path(".pdt-state"), "state/", lease)
 
 `pull` locks the folder, so a second copy of your app cannot run at the same time and mix up the files. `push` checks that nobody else changed them, saves them, and unlocks. If a run crashes, the next one takes over the lock after 30 minutes.
 
-From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
+From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its own `pdt.yml`.
 
-An app that is not ready sets `enabled: false` in its `config.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it.
+An app that is not ready sets `enabled: false` in its own `pdt.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it.
 
 ## Running pdt from CI
 
@@ -156,7 +156,7 @@ Every command reads its values from the environment it runs in. A build server s
 
 ## Choosing where jobs run
 
-Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
+Set `platform:` in the project's `pdt.yml` for every app, or in an app's own `pdt.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
 
 ### Azure
 
@@ -249,13 +249,13 @@ Run `pdt examples` to list them, then `pdt new <name> --from <example>` to copy 
 
 ### hello-world
 
-Small app that logs "Hello world." Shows how to write a config.yml and useful as an empty starting project so you can write your own. `pdt init` puts a copy of this in every new empty project.
+Small app that logs "Hello world." Shows how to write an app's pdt.yml and useful as an empty starting project so you can write your own. `pdt init` puts a copy of this in every new empty project.
 
 ### impossible-travel-report
 
 Looks at recent Entra ID sign-ins. Sends an email when one person signs in from two far-apart places too quickly: Dallas an hour ago, Paris now.
 
-Settings for the lookback window, the minimum distance, and the email addresses live in the app's `config.yml`. The env vars it needs are listed there too, and in its `env.template`.
+Settings for the lookback window, the minimum distance, and the email addresses live in the app's `pdt.yml`. The env vars it needs are listed there too, and in its `env.template`.
 
 ### monday-orphaned-account-report
 
@@ -370,7 +370,7 @@ Optional:
 
 - PDT_GRAPH_MAIL_TENANT_ID: Defaults to `common`.
 
-PDT sends as `PDT_GRAPH_MAIL_USER`, so `email_from` in config.yml must match it. Graph sends the HTML part alone; the other transports send both parts. If a provider revokes authorization, run or deploy the app from a terminal again.
+PDT sends as `PDT_GRAPH_MAIL_USER`, so `email_from` in the app's pdt.yml must match it. Graph sends the HTML part alone; the other transports send both parts. If a provider revokes authorization, run or deploy the app from a terminal again.
 
 Create an app registration in the [Microsoft Entra admin center](https://entra.microsoft.com/). Add a Mobile and desktop application platform with `http://localhost` as a redirect URI. Add the Microsoft Graph delegated permission `Mail.Send` and allow public client flows. Do not add a client secret.
 

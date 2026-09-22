@@ -254,24 +254,24 @@ def test_deploy_all_skips_without_disabling_the_app(project, monkeypatch, capsys
     assert questions == ["Skip the failing app bravo and deploy the rest?",
                          "Disable the failing app bravo?"]
     assert config.is_enabled("bravo")
-    assert not (project / "bravo" / "config.yml").exists()
+    assert not (project / "bravo" / "pdt.yml").exists()
     assert "Not deployed: bravo" in capsys.readouterr().out
 
 
 def test_deploy_all_disables_a_skipped_app(project, monkeypatch, capsys):
     four_apps(project)
-    (project / "bravo" / "config.yml").write_text("# my notes\nschedule: daily\n")
+    (project / "bravo" / "pdt.yml").write_text("# my notes\nschedule: daily\n")
     fake_deploys(monkeypatch, {"bravo": 3})
     questions = answer(monkeypatch, True, True)
     assert run_cli(monkeypatch, "deploy", "--all") == 1
     assert "Skip the failing app bravo" in questions[0]
     assert "Disable the failing app bravo" in questions[1]
     assert not config.is_enabled("bravo")
-    text = (project / "bravo" / "config.yml").read_text()
+    text = (project / "bravo" / "pdt.yml").read_text()
     assert "# my notes" in text
     assert "schedule: daily" in text
     out = capsys.readouterr().out
-    assert f"Disabled bravo in {Path('bravo', 'config.yml')}." in out
+    assert f"Disabled bravo in {Path('bravo', 'pdt.yml')}." in out
     assert "Not deployed: bravo" in out
 
 
@@ -316,7 +316,7 @@ def test_cloud_cli_passthroughs_are_registered():
 def test_list_shows_a_disabled_app_and_names_leaves_it_out(project, monkeypatch, capsys):
     add_app(project, "hello-world")
     add_app(project, "not-ready")
-    (project / "not-ready" / "config.yml").write_text("enabled: false\n")
+    (project / "not-ready" / "pdt.yml").write_text("enabled: false\n")
     assert run_cli(monkeypatch, "list") == 0
     assert "not-ready" in capsys.readouterr().out
     assert run_cli(monkeypatch, "list", "--names") == 0
