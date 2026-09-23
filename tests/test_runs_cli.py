@@ -1,5 +1,8 @@
 import json
+import time
 from datetime import UTC, datetime
+
+import pytest
 
 from pdt import runs_cli
 from pdt.runs_cli import Line, Run
@@ -7,6 +10,20 @@ from pdt.runs_cli import Line, Run
 T0 = datetime(2026, 9, 23, 10, 0, 12, tzinfo=UTC)
 T1 = datetime(2026, 9, 23, 10, 0, 24, tzinfo=UTC)
 EARLIER = datetime(2026, 9, 22, 10, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def utc_clock(monkeypatch):
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    yield
+    time.tzset()
+
+
+def test_times_render_in_the_local_time_zone(monkeypatch):
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    assert runs_cli.local_text(T0) == "2026-09-23 06:00:12"
 
 NEWEST = Run("stream-2", T0, T1, "succeeded")
 OLDER = Run("stream-1", EARLIER, EARLIER.replace(minute=3, second=5), "failed")
@@ -60,7 +77,7 @@ def test_marker_status():
 def test_runs_prints_a_table_newest_first(capsys):
     assert runs_cli.runs(list_two, "my-report", []) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split() == ["#", "Started", "(UTC)", "Duration", "Status", "Id"]
+    assert lines[0].split() == ["#", "Started", "Duration", "Status", "Id"]
     assert lines[1].split() == ["1", "2026-09-23", "10:00:12", "12s", "succeeded", "stream-2"]
     assert lines[2].split() == ["2", "2026-09-22", "10:00:00", "3m", "05s", "failed", "stream-1"]
 
@@ -81,7 +98,7 @@ def test_runs_with_no_runs(capsys):
 def test_logs_shows_the_newest_run_without_the_marker(capsys):
     assert runs_cli.logs(list_two, read, "my-report", []) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "run 1 of my-report: started 2026-09-23 10:00:12 UTC, 12s, succeeded"
+    assert lines[0] == "run 1 of my-report: started 2026-09-23 10:00:12, 12s, succeeded"
     assert lines[1] == "10:00:12 DEBUG   connecting"
     assert lines[3] == "10:00:24 WARNING slow"
     assert len(lines) == 4

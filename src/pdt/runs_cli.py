@@ -99,8 +99,13 @@ def parse_runs(output: str) -> list[Run] | None:
                 record["status"]) for record in records]
 
 
+def local_text(moment: datetime, form: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """A UTC moment in the user's local time zone."""
+    return f"{moment.astimezone():{form}}"
+
+
 def started_text(run: Run) -> str:
-    return f"{run.started:%Y-%m-%d %H:%M:%S}"
+    return local_text(run.started)
 
 
 def duration_text(run: Run) -> str:
@@ -132,7 +137,7 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str]) -> 
     rows = [[str(number), started_text(run), duration_text(run), run.status, run.id]
             for number, run in enumerate(found, 1)]
     row_styles = [["", "", "", console.RUN_STATUS_COLOURS[run.status], "dim"] for run in found]
-    console.table(["#", "Started (UTC)", "Duration", "Status", "Id"], rows,
+    console.table(["#", "Started", "Duration", "Status", "Id"], rows,
                   row_styles=row_styles)
     return 0
 
@@ -170,10 +175,10 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
                                  "level": line.level, "message": line.message}
                                 for line in lines]))
     else:
-        console.heading(f"run {number} of {app_name}: started {started_text(run)} UTC, "
+        console.heading(f"run {number} of {app_name}: started {started_text(run)}, "
                         f"{duration_text(run)}, {run.status}")
         for line in lines:
-            console.log_line(f"{line.time:%H:%M:%S}" if line.time else "",
+            console.log_line(local_text(line.time, "%H:%M:%S") if line.time else "",
                              line.level, line.message)
     return 1 if run.status == "failed" else 0
 
@@ -197,9 +202,9 @@ def health(app_runs: dict[str, list[Run] | None], as_json: bool) -> int:
         console.say(json.dumps(rows))
     else:
         console.table(
-            ["App", "Status", "Last run (UTC)", "Recent"],
+            ["App", "Status", "Last run", "Recent"],
             [[row["app"], row["status"],
-              f"{datetime.fromisoformat(row['last_run']):%Y-%m-%d %H:%M:%S}"
+              local_text(datetime.fromisoformat(row["last_run"]))
               if row["last_run"] else "",
               f"{row['succeeded']} of {row['runs']} succeeded" if row["runs"] else ""]
              for row in rows],
