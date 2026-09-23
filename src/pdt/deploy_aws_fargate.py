@@ -541,10 +541,11 @@ def list_runs(logs, ecs, names: dict[str, str]) -> list[runs_cli.Run]:
             continue
         name = stream["logStreamName"]
         task_id = name.rsplit("/", 1)[-1]
-        status = runs_cli.marker_status(
-            tail_lines(logs, names["log_group"], name), lambda: task_id in running())
+        lines = tail_lines(logs, names["log_group"], name)
+        status = runs_cli.marker_status(lines, lambda: task_id in running())
         ended = None if status == "running" else ms_to_utc(stream["lastEventTimestamp"])
-        found.append(runs_cli.Run(name, ms_to_utc(stream["firstEventTimestamp"]), ended, status))
+        found.append(runs_cli.Run(name, ms_to_utc(stream["firstEventTimestamp"]), ended, status,
+                                  runs_cli.exit_code(lines)))
     return found
 
 

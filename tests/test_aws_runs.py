@@ -73,12 +73,14 @@ def test_a_zero_exit_marker_succeeds():
     logs = FakeLogs(streams=[stream(0, 1)], tail=[{"message": "pdt: exit 0"}])
     [run] = list_runs(logs, FakeEcs(), NAMES)
     assert run.status == "succeeded"
+    assert run.exit_code == 0
 
 
 def test_a_nonzero_exit_marker_fails():
     logs = FakeLogs(streams=[stream(0, 1)], tail=[{"message": "pdt: exit 1"}])
     [run] = list_runs(logs, FakeEcs(), NAMES)
     assert run.status == "failed"
+    assert run.exit_code == 1
 
 
 def test_no_marker_and_a_running_task_is_running():
@@ -86,6 +88,7 @@ def test_no_marker_and_a_running_task_is_running():
     [run] = list_runs(logs, FakeEcs(running_task_ids=["task-1"]), NAMES)
     assert run.status == "running"
     assert run.ended is None
+    assert run.exit_code is None
 
 
 def test_no_marker_and_no_running_task_fails():

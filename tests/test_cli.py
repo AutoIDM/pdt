@@ -90,10 +90,14 @@ def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatc
     assert run_cli(monkeypatch, "runs", "hello-world", "--json") == 0
     assert run_cli(monkeypatch, "logs", "hello-world") == 0
     assert run_cli(monkeypatch, "logs", "hello-world", "3", "--failed", "--errors") == 0
+    assert run_cli(monkeypatch, "runs", "hello-world", "--since", "3d") == 0
+    assert run_cli(monkeypatch, "logs", "hello-world", "2", "--since", "2026-09-20") == 0
     assert calls == [
         ("azure", "runs", "hello-world", False, ["--", "--json"]),
         ("azure", "logs", "hello-world", False, ["--", "1"]),
         ("azure", "logs", "hello-world", False, ["--", "3", "--failed", "--errors"]),
+        ("azure", "runs", "hello-world", False, ["--", "--since", "3d"]),
+        ("azure", "logs", "hello-world", False, ["--", "2", "--since", "2026-09-20"]),
     ]
 
 
@@ -107,7 +111,7 @@ def test_health_checks_every_enabled_app(project, monkeypatch, capsys):
         calls.append((provider, command, app_name, extra))
         if app_name == "daily-report":
             return 0, 'status line\n[{"id": "e1", "started": "2026-09-23T10:00:00+00:00", ' \
-                      '"ended": "2026-09-23T10:00:12+00:00", "status": "failed"}]\n'
+                      '"ended": "2026-09-23T10:00:12+00:00", "status": "failed", "exit_code": 1}]\n'
         return 0, "[]\n"
 
     monkeypatch.setattr(deploy, "dispatch_output", fake_output)

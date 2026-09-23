@@ -57,6 +57,9 @@ APP_QUESTIONS = {
     "health": "Which app do you want to check?",
 }
 
+SINCE_HELP = ("show every run that started at or after this: 12h, 3d, 2w, 2026-09-20, "
+              "or 2026-09-20T14:00 (default: the 10 newest runs)")
+
 
 def choose_app(name: str | None, command: str) -> str | None:
     """Return the app `pdt <command>` should act on, or None after guiding the user.
@@ -194,7 +197,8 @@ def cmd_runs(args) -> int:
     name = choose_app(args.app, "runs")
     if name is None:
         return 1
-    return deploy.runs(name, ["--json"] if args.json else [])
+    since = ["--since", args.since] if args.since else []
+    return deploy.runs(name, [*since, *(["--json"] if args.json else [])])
 
 
 def cmd_logs(args) -> int:
@@ -203,7 +207,8 @@ def cmd_logs(args) -> int:
         return 1
     flags = [flag for flag, on in (("--failed", args.failed), ("--errors", args.errors),
                                    ("--json", args.json)) if on]
-    return deploy.logs(name, [str(args.number), *flags])
+    since = ["--since", args.since] if args.since else []
+    return deploy.logs(name, [str(args.number), *since, *flags])
 
 
 def cmd_health(args) -> int:
@@ -298,6 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
     app = p.add_argument("app", nargs="?",
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
+    p.add_argument("--since", help=SINCE_HELP)
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_runs)
     p = add_parser("logs", help="read the log of one of a deployed app's runs")
@@ -306,6 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("number", nargs="?", type=int, default=1,
                    help="which run, as `pdt runs` numbers them (default: 1, the newest)")
+    p.add_argument("--since", help=SINCE_HELP)
     p.add_argument("--failed", action="store_true", help="read the newest failed run")
     p.add_argument("--errors", action="store_true",
                    help="leave out DEBUG and INFO lines")

@@ -16,6 +16,20 @@ def execution(name: str, status: str, start: str, end: str | None) -> dict:
     return {"name": name, "properties": props}
 
 
+def fake_az(monkeypatch, execs, marker_rows=()):
+    calls = []
+
+    def az_json(*args):
+        calls.append(args)
+        if args[0] == "containerapp":
+            return execs
+        return {"tables": [{"rows": [list(row) for row in marker_rows]}]}
+
+    monkeypatch.setattr(deploy_azure_container_apps, "az_json", az_json)
+    monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "workspace-id")
+    return calls
+
+
 def test_status_mapping_and_times(monkeypatch):
     execs = [
         execution("job-a", "Succeeded", "2026-09-23T10:00:00Z", "2026-09-23T10:00:12Z"),
@@ -23,8 +37,8 @@ def test_status_mapping_and_times(monkeypatch):
         execution("job-c", "Processing", "2026-09-23T10:06:00Z", None),
         execution("job-d", "Degraded", "2026-09-23T09:00:00Z", "2026-09-23T09:00:05Z"),
     ]
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args: execs)
-    found = deploy_azure_container_apps.list_runs("pdt-report", "pdt")
+    fake_az(monkeypatch, execs)
+    found = deploy_azure_container_apps.list_runs(SETTINGS, "pdt-report")
     by_id = {run.id: run for run in found}
     assert by_id["job-a"].status == "succeeded"
     assert by_id["job-b"].status == "running"
@@ -37,8 +51,25 @@ def test_status_mapping_and_times(monkeypatch):
 
 
 def test_a_missing_job_has_no_runs(monkeypatch):
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args: None)
-    assert deploy_azure_container_apps.list_runs("pdt-report", "pdt") == []
+    calls = fake_az(monkeypatch, None)
+    assert deploy_azure_container_apps.list_runs(SETTINGS, "pdt-report") == []
+    assert [call[0] for call in calls] == ["containerapp"]
+
+
+def test_list_runs_reads_every_exit_code_in_one_query(monkeypatch):
+    execs = [
+        execution("pdt-report-aaa", "Succeeded", "2026-09-23T10:00:00Z", "2026-09-23T10:00:12Z"),
+        execution("pdt-report-bbb", "Failed", "2026-09-23T09:00:00Z", "2026-09-23T09:00:05Z"),
+        execution("pdt-report-ccc", "Succeeded", "2026-09-23T08:00:00Z", "2026-09-23T08:00:05Z"),
+    ]
+    calls = fake_az(monkeypatch, execs, [("pdt-report-aaa-x1y2z", "pdt: exit 0"),
+                                         ("pdt-report-bbb-q9w8e", "pdt: exit 3")])
+    found = deploy_azure_container_apps.list_runs(SETTINGS, "pdt-report")
+    assert [run.exit_code for run in found] == [0, 3, None]
+    [query_call] = [call for call in calls if call[0] == "rest"]
+    query = json.loads(query_call[query_call.index("--body") + 1])["query"]
+    assert "ContainerJobName_s == 'pdt-report'" in query
+    assert "Log_s startswith 'pdt: exit '" in query
 
 
 def test_read_lines_queries_the_shared_workspace(monkeypatch):
@@ -72,7 +103,7 @@ def test_read_lines_queries_the_shared_workspace(monkeypatch):
 
 def test_logs_notes_the_ingestion_delay_for_a_finished_run_with_no_lines(monkeypatch, capsys):
     ended = execution("job-a", "Succeeded", "2026-09-23T10:00:00Z", "2026-09-23T10:00:12Z")
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args: [ended])
+    fake_az(monkeypatch, [ended])
     monkeypatch.setattr(deploy_azure_container_apps, "read_lines", lambda *args: [])
     assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS, []) == 0
     assert "receives lines 2 to 5 minutes" in capsys.readouterr().out
