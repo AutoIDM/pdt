@@ -206,6 +206,7 @@ def cmd_logs(args) -> int:
     if name is None:
         return 1
     flags = [flag for flag, on in (("--failed", args.failed), ("--errors", args.errors),
+                                   ("--full", args.full),
                                    ("--json", args.json)) if on]
     since = ["--since", args.since] if args.since else []
     return deploy.logs(name, [str(args.number), *since, *flags])
@@ -316,6 +317,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--failed", action="store_true", help="read the newest failed run")
     p.add_argument("--errors", action="store_true",
                    help="leave out DEBUG and INFO lines")
+    p.add_argument("--full", action="store_true",
+                   help="print every line, not only the last 20")
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_logs)
     p = add_parser("health", help="show whether each deployed app's last run succeeded")

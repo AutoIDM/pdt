@@ -98,7 +98,7 @@ pdt login my-report
 | `pdt login APP` | sign in again to the app's cloud provider |
 | `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files |
 | `pdt runs APP` | list the deployed app's 10 newest runs with each run's exit code; `--since 3d` (or `12h`, `2w`, `2026-09-20`, `2026-09-20T14:00`) lists every run since then instead |
-| `pdt logs APP [N]` | read the log of run N as `pdt runs` numbers it (default 1, the newest); `--since` numbers the runs the same way `pdt runs --since` does, `--failed` picks the newest failed run, `--errors` leaves out DEBUG and INFO lines |
+| `pdt logs APP [N]` | read the log of run N as `pdt runs` numbers it (default 1, the newest); `--since` numbers the runs the same way `pdt runs --since` does, `--failed` picks the newest failed run, `--errors` leaves out DEBUG and INFO lines; the last 20 lines print unless `--full` is given |
 | `pdt health [APP]` | show whether each app's last run succeeded; exits 1 when one failed |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |

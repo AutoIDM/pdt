@@ -18,6 +18,7 @@ from pdt import console
 
 RUN_HISTORY = 50
 DEFAULT_RUNS = 10
+TAIL_LINES = 20
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
 SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
                "or a date and time (2026-09-20T14:00)")
@@ -208,6 +209,7 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
     parser.add_argument("number", nargs="?", type=int, default=1)
     parser.add_argument("--failed", action="store_true")
     parser.add_argument("--errors", action="store_true")
+    parser.add_argument("--full", action="store_true")
     parser.add_argument("--since")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
@@ -237,6 +239,9 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
                            if not line.message.startswith(EXIT_MARKER)])
     if args.errors:
         lines = [line for line in lines if line.level not in ("DEBUG", "INFO")]
+    total = len(lines)
+    if not args.full:
+        lines = lines[-TAIL_LINES:]
     if args.json:
         console.say(json.dumps([{"time": line.time.isoformat() if line.time else None,
                                  "level": line.level, "message": line.message}
@@ -245,6 +250,8 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
         exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
         console.heading(f"run {number} of {app_name}: started {started_text(run)}, "
                         f"{duration_text(run)}, {run.status}{exit_part}")
+        if len(lines) < total:
+            console.status(f"the last {len(lines)} of {total} lines; add --full for all of them")
         for line in lines:
             console.log_line(local_text(line.time, "%H:%M:%S") if line.time else "",
                              line.level, line.message)
