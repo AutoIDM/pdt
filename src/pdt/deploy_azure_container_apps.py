@@ -309,12 +309,12 @@ def read_lines(settings: dict, job: str, execution: str) -> list[runs_cli.Line]:
 
 
 def runs(app: dict, settings: dict, rest: list[str]) -> int:
-    job = clean_name(f"pdt-{app['name']}")
+    job = job_name(settings, app["name"])
     return runs_cli.runs(lambda: list_runs(job, settings["resource_group"]), app["name"], rest)
 
 
 def logs(app: dict, settings: dict, rest: list[str]) -> int:
-    job = clean_name(f"pdt-{app['name']}")
+    job = job_name(settings, app["name"])
 
     def read(run: runs_cli.Run) -> list[runs_cli.Line]:
         lines = read_lines(settings, job, run.id)
