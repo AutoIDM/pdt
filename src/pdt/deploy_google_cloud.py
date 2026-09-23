@@ -71,6 +71,7 @@ APIS = (
     "cloudbuild.googleapis.com",
     "cloudscheduler.googleapis.com",
     "iam.googleapis.com",
+    "logging.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
