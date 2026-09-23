@@ -19,6 +19,7 @@ import dataclasses
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -268,6 +269,7 @@ def average_run_seconds(job: str, rg: str) -> float | None:
 
 
 LOG_ANALYTICS_API = "https://api.loganalytics.io"
+EXIT_CODE = re.compile(r"exit code '(\d+)'")
 RUN_STATUS = {"Succeeded": "succeeded", "Running": "running", "Processing": "running"}
 
 
@@ -288,12 +290,17 @@ def list_runs(settings: dict, job: str) -> list[runs_cli.Run]:
     found = found[:runs_cli.RUN_HISTORY]
     if not found:
         return found
-    rows = log_query(settings, f"ContainerAppConsoleLogs_CL | where ContainerJobName_s == '{job}' "
-                               f"and Log_s startswith '{runs_cli.EXIT_MARKER}' "
-                               "| project ContainerGroupName_s, Log_s")
+    # The platform's own record: "Container 'x' was terminated with exit code '1' and reason ...".
+    rows = log_query(settings, f"ContainerAppSystemLogs_CL | where JobName_s == '{job}' "
+                               "and Reason_s == 'ContainerTerminated' "
+                               "| project ExecutionName_s, Log_s")
+    codes = {}
+    for execution, log in rows:
+        match = EXIT_CODE.search(log)
+        if match:
+            codes[execution] = int(match.group(1))
     for run in found:
-        run.exit_code = next((runs_cli.exit_code([runs_cli.parse_line(log, None)])
-                              for group, log in rows if group.startswith(run.id)), None)
+        run.exit_code = codes.get(run.id)
     return found
 
 
