@@ -6,11 +6,13 @@ Entered through deploy_aws.py, which owns the uv script header, login, and permi
 from __future__ import annotations
 
 import base64
+import functools
 import json
 import shutil
 import subprocess
+from datetime import datetime, timezone
 
-from pdt import config, console
+from pdt import config, console, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, SCHEDULE_GROUP, aws_schedule_expression,
@@ -506,3 +508,72 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if store_present:
         console.say(store_kept_line(f"bucket {bucket}", store.usage()[0], app["name"]))
     return 0
+
+
+def ms_to_utc(milliseconds: int) -> datetime:
+    return datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
+
+
+def running_task_ids(ecs) -> set[str]:
+    arns = ecs.list_tasks(cluster=CLUSTER, desiredStatus="RUNNING").get("taskArns", [])
+    return {arn.rsplit("/", 1)[-1] for arn in arns}
+
+
+def tail_lines(logs, log_group: str, stream_name: str) -> list[runs_cli.Line]:
+    events = logs.get_log_events(logGroupName=log_group, logStreamName=stream_name,
+                                 startFromHead=False, limit=5)["events"]
+    return [runs_cli.parse_line(event["message"], None) for event in events]
+
+
+def list_runs(logs, ecs, names: dict[str, str]) -> list[runs_cli.Run]:
+    try:
+        streams = logs.describe_log_streams(
+            logGroupName=names["log_group"], orderBy="LastEventTime",
+            descending=True, limit=runs_cli.RUN_HISTORY).get("logStreams", [])
+    except Exception as exc:
+        if not_found(exc):
+            return []
+        raise
+    running = functools.cache(lambda: running_task_ids(ecs))
+    found = []
+    for stream in streams:
+        if "firstEventTimestamp" not in stream or "lastEventTimestamp" not in stream:
+            continue
+        name = stream["logStreamName"]
+        task_id = name.rsplit("/", 1)[-1]
+        status = runs_cli.marker_status(
+            tail_lines(logs, names["log_group"], name), lambda: task_id in running())
+        ended = None if status == "running" else ms_to_utc(stream["lastEventTimestamp"])
+        found.append(runs_cli.Run(name, ms_to_utc(stream["firstEventTimestamp"]), ended, status))
+    return found
+
+
+def read_lines(logs, log_group: str, run: runs_cli.Run) -> list[runs_cli.Line]:
+    lines = []
+    token = None
+    while True:
+        kwargs = {"logGroupName": log_group, "logStreamName": run.id, "startFromHead": True}
+        if token is not None:
+            kwargs["nextToken"] = token
+        response = logs.get_log_events(**kwargs)
+        for event in response["events"]:
+            lines.append(runs_cli.parse_line(event["message"], ms_to_utc(event["timestamp"])))
+        next_token = response["nextForwardToken"]
+        if not response["events"] or next_token == token:
+            return lines
+        token = next_token
+
+
+def runs(app: dict, session, rest: list[str]) -> int:
+    logs, ecs = session.client("logs"), session.client("ecs")
+    names = resource_names(app["name"])
+    return runs_cli.runs(lambda: list_runs(logs, ecs, names), app["name"], rest)
+
+
+def logs(app: dict, session, rest: list[str]) -> int:
+    logs_client, ecs = session.client("logs"), session.client("ecs")
+    names = resource_names(app["name"])
+    return runs_cli.logs(
+        lambda: list_runs(logs_client, ecs, names),
+        lambda run: read_lines(logs_client, names["log_group"], run),
+        app["name"], rest)
