@@ -1,3 +1,9 @@
+import json
+import shutil
+import subprocess
+
+import pytest
+
 from conftest import add_app
 from pdt.config import validate_app
 from pdt.deploy_common import (
@@ -77,3 +83,15 @@ def test_no_dockerignore_means_no_ignore_files(tmp_path):
 
 def test_context_ignore_text_keeps_comments_and_blank_lines():
     assert context_ignore_text("#c\n\nx\n", "a") == "#c\n\na/x\n"
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+def test_the_entrypoint_ends_the_log_with_the_exit_code(tmp_path):
+    (tmp_path / "uv").write_text("#!/bin/sh\necho working\nexit 3\n")
+    (tmp_path / "uv").chmod(0o755)
+    line = next(line for line in DOCKERFILE.splitlines() if line.startswith("ENTRYPOINT "))
+    command = json.loads(line.removeprefix("ENTRYPOINT "))
+    proc = subprocess.run(command, capture_output=True, text=True,
+                          env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
+    assert proc.stdout == "working\npdt: exit 3\n"
+    assert proc.returncode == 3

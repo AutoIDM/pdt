@@ -19,10 +19,11 @@ import dataclasses
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 
-from pdt import config, console
+from pdt import config, console, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
     AZ, ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az_json, az_tsv,
@@ -265,6 +266,79 @@ def average_run_seconds(job: str, rg: str) -> float | None:
     if not durations:
         return None
     return sum(durations) / len(durations)
+
+
+LOG_ANALYTICS_API = "https://api.loganalytics.io"
+EXIT_CODE = re.compile(r"exit code '(\d+)'")
+RUN_STATUS = {"Succeeded": "succeeded", "Running": "running", "Processing": "running"}
+
+
+def execution_run(execution: dict) -> runs_cli.Run:
+    props = execution.get("properties") or {}
+    started = datetime.datetime.fromisoformat(props["startTime"])
+    end = props.get("endTime")
+    ended = datetime.datetime.fromisoformat(end) if end else None
+    status = RUN_STATUS.get(str(props.get("status") or ""), "failed")
+    return runs_cli.Run(str(execution.get("name") or ""), started, ended, status)
+
+
+def list_runs(settings: dict, job: str) -> list[runs_cli.Run]:
+    execs = az_json("containerapp", "job", "execution", "list", "--name", job,
+                    "--resource-group", settings["resource_group"]) or []
+    found = [execution_run(execution) for execution in execs]
+    found.sort(key=lambda run: run.started, reverse=True)
+    if not found:
+        return found
+    # The platform's own record: "Container 'x' was terminated with exit code '1' and reason ...".
+    rows = log_query(settings, f"ContainerAppSystemLogs_CL | where JobName_s == '{job}' "
+                               "and Reason_s == 'ContainerTerminated' "
+                               "| project ExecutionName_s, Log_s")
+    codes = {}
+    for execution, log in rows:
+        match = EXIT_CODE.search(log)
+        if match:
+            codes[execution] = int(match.group(1))
+    for run in found:
+        run.exit_code = codes.get(run.id)
+    return found
+
+
+def log_query(settings: dict, query: str) -> list[list]:
+    workspace_id = az_tsv("monitor", "log-analytics", "workspace", "show",
+                          "--resource-group", settings["environment"].resource_group,
+                          "--workspace-name", settings["workspace"], "--query", "customerId")
+    # `az monitor log-analytics query` needs an extension that pip cannot install
+    # into pdt's uv environment, so this calls the query API directly.
+    result = az_json("rest", "--method", "post", "--resource", LOG_ANALYTICS_API,
+                     "--url", f"{LOG_ANALYTICS_API}/v1/workspaces/{workspace_id}/query",
+                     "--body", json.dumps({"query": query})) or {}
+    return result.get("tables", [{}])[0].get("rows", [])
+
+
+def read_lines(settings: dict, job: str, execution: str) -> list[runs_cli.Line]:
+    rows = log_query(settings, f"ContainerAppConsoleLogs_CL | where ContainerJobName_s == '{job}' "
+                               f"and ContainerGroupName_s startswith '{execution}' "
+                               "| project TimeGenerated, Log_s | order by TimeGenerated asc")
+    return [runs_cli.parse_line(log, datetime.datetime.fromisoformat(generated))
+            for generated, log in rows]
+
+
+def runs(app: dict, settings: dict, rest: list[str]) -> int:
+    job = clean_name(f"pdt-{app['name']}")
+    return runs_cli.runs(lambda: list_runs(settings, job), app["name"], rest)
+
+
+def logs(app: dict, settings: dict, rest: list[str]) -> int:
+    job = clean_name(f"pdt-{app['name']}")
+
+    def read(run: runs_cli.Run) -> list[runs_cli.Line]:
+        lines = read_lines(settings, job, run.id)
+        if not lines and run.ended is not None:
+            console.note("Azure Log Analytics receives lines 2 to 5 minutes after a run "
+                         "finishes; run pdt logs again in a moment.")
+        return lines
+
+    return runs_cli.logs(lambda: list_runs(settings, job), read, app["name"], rest)
 
 
 def cost_estimate_for(region: str, cron: str, job: str, rg: str,

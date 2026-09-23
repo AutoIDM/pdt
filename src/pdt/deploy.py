@@ -4,7 +4,9 @@ Validates the app, then dispatches to one script per provider
 (pdt/deploy_<provider>.py) with `uv run --script`, so each provider
 installs its own SDK packages. Every provider script accepts
 `deploy|destroy|login <app> [--yes]`, and also
-`storage <app> <ls|get|query|destroy> [args...]`.
+`storage <app> <ls|get|query|destroy> [args...]` and
+`runs|logs <app> -- [args...]`. The `--` keeps flags such as `--json` for
+`pdt.runs_cli`, which parses them.
 
 PDT_PROJECT reaches the provider script through the environment, so the
 child agrees with the parent about which project it is working on.
@@ -16,7 +18,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from pdt import config, console
+from pdt import config, console, runs_cli
 from pdt.config import ConfigError
 from pdt.deploy_common import CostEstimate
 from pdt.utils.email_auth import can_prompt
@@ -40,15 +42,29 @@ def _load(app_name: str):
     return app, provider
 
 
-def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
-             extra: list[str] | None = None) -> int:
+def provider_command(provider: str, command: str, app_name: str, assume_yes: bool,
+                     extra: list[str] | None = None) -> list[str]:
     script = Path(__file__).with_name(PROVIDERS[provider])
     args = ["uv", "run", "--script", str(script), command, app_name]
     if assume_yes:
         args.append("--yes")
-    args += extra or []
+    return args + (extra or [])
+
+
+def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
+             extra: list[str] | None = None) -> int:
     env = dict(os.environ, PDT_PROJECT=str(config.find_project()))
+    args = provider_command(provider, command, app_name, assume_yes, extra)
     return subprocess.run(args, check=False, env=env).returncode
+
+
+def dispatch_output(provider: str, command: str, app_name: str,
+                    extra: list[str]) -> tuple[int, str]:
+    """Like dispatch, but return the provider script's output instead of showing it."""
+    env = dict(os.environ, PDT_PROJECT=str(config.find_project()))
+    proc = subprocess.run(provider_command(provider, command, app_name, False, extra),
+                          check=False, env=env, stdout=subprocess.PIPE, text=True)
+    return proc.returncode, proc.stdout
 
 
 def deploy(app_name: str, assume_yes: bool = False) -> int:
@@ -113,6 +129,44 @@ def storage(app_name: str, rest: list[str]) -> int:
         return 1
     config.load_env(app["dir"])
     return dispatch(provider, "storage", app_name, False, rest)
+
+
+def runs(app_name: str, rest: list[str]) -> int:
+    try:
+        app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(str(e))
+        return 1
+    config.load_env(app["dir"])
+    return dispatch(provider, "runs", app_name, False, ["--", *rest])
+
+
+def logs(app_name: str, rest: list[str]) -> int:
+    try:
+        app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(str(e))
+        return 1
+    config.load_env(app["dir"])
+    return dispatch(provider, "logs", app_name, False, ["--", *rest])
+
+
+def health(app_names: list[str], as_json: bool) -> int:
+    app_runs = {}
+    for app_name in app_names:
+        try:
+            _app, provider = _load(app_name)
+        except ConfigError as e:
+            console.error(str(e))
+            app_runs[app_name] = None
+            continue
+        # The provider script loads the app's .env itself, so one app's env
+        # never leaks into the next app's run.
+        code, output = dispatch_output(provider, "runs", app_name, ["--", "--json"])
+        app_runs[app_name] = runs_cli.parse_runs(output) if code == 0 else None
+        if app_runs[app_name] is None:
+            console.say(output.rstrip())
+    return runs_cli.health(app_runs, as_json)
 
 
 def destroy(app_name: str, assume_yes: bool = False) -> int:
