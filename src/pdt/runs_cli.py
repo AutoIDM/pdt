@@ -1,8 +1,13 @@
 """CLI helpers behind `pdt runs`, `pdt logs`, and `pdt health`.
 
-Every provider gives this module two callables and nothing else:
-`list_runs()` returns the app's runs, newest first, at most RUN_HISTORY,
-and `read_lines(run)` returns one run's log lines, oldest first.
+Every provider gives this module two callables, and a third when it needs one:
+`list_runs()` returns every run the provider keeps, newest first,
+`read_lines(run)` returns one run's log lines, oldest first, and
+`resolve(runs)` fills status and exit code on the runs about to print or read,
+for a provider whose list does not already know them.
+
+A run's number is its place in the full list, starting at 1. A window
+(`--since`, `--span`, `--count`) picks which runs print and never renumbers.
 """
 
 from __future__ import annotations
@@ -16,7 +21,6 @@ from typing import Callable
 
 from pdt import console
 
-RUN_HISTORY = 50
 DEFAULT_RUNS = 10
 TAIL_LINES = 20
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
@@ -39,6 +43,7 @@ class Run:
     ended: datetime | None
     status: str
     exit_code: int | None = None
+    number: int = 0
 
 
 @dataclasses.dataclass
@@ -110,7 +115,7 @@ def marker_status(lines: list[Line], running: Callable[[], bool]) -> str:
 def run_json(run: Run) -> dict:
     return {"id": run.id, "started": run.started.isoformat(),
             "ended": run.ended.isoformat() if run.ended else None, "status": run.status,
-            "exit_code": run.exit_code}
+            "exit_code": run.exit_code, "number": run.number}
 
 
 def parse_runs(output: str) -> list[Run] | None:
@@ -124,7 +129,7 @@ def parse_runs(output: str) -> list[Run] | None:
         return None
     return [Run(record["id"], datetime.fromisoformat(record["started"]),
                 datetime.fromisoformat(record["ended"]) if record["ended"] else None,
-                record["status"], record["exit_code"]) for record in records]
+                record["status"], record["exit_code"], record["number"]) for record in records]
 
 
 def local_text(moment: datetime, form: str = "%Y-%m-%d %H:%M:%S") -> str:
@@ -170,7 +175,7 @@ def parse_since(value: str, now: datetime) -> datetime:
 
 def window(found: list[Run], since: datetime | None, span: timedelta | None,
            count: int | None) -> list[Run]:
-    """The runs `pdt runs` numbers: those started in `[since, since + span)`, at most `count`."""
+    """The runs started in `[since, since + span)`, at most `count`, with their numbers kept."""
     if since is not None:
         found = [run for run in found if run.started >= since
                  and (span is None or run.started < since + span)]
@@ -211,7 +216,12 @@ def say_not_run(app_name: str, args: argparse.Namespace, since: datetime | None,
                     f"and {local_text(since + span)}.")
 
 
-def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str]) -> int:
+def numbered(list_runs: Callable[[], list[Run]]) -> list[Run]:
+    return [dataclasses.replace(run, number=number) for number, run in enumerate(list_runs(), 1)]
+
+
+def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
+         resolve: Callable[[list[Run]], None] | None = None) -> int:
     parser = argparse.ArgumentParser(prog=f"pdt runs {app_name}")
     add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
@@ -221,16 +231,17 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str]) -> 
     except ValueError as exc:
         console.error(str(exc))
         return 1
-    found = window(list_runs(), since, span, count)
+    found = window(numbered(list_runs), since, span, count)
+    if resolve is not None:
+        resolve(found)
     if args.json:
         console.say(json.dumps([run_json(run) for run in found]))
         return 0
     if not found:
         say_not_run(app_name, args, since, span)
         return 0
-    rows = [[str(number), started_text(run), duration_text(run), run.status,
-             "-" if run.exit_code is None else str(run.exit_code), run.id]
-            for number, run in enumerate(found, 1)]
+    rows = [[str(run.number), started_text(run), duration_text(run), run.status,
+             "-" if run.exit_code is None else str(run.exit_code), run.id] for run in found]
     row_styles = [["", "", "", console.RUN_STATUS_COLOURS[run.status], "", "dim"]
                   for run in found]
     console.table(["#", "Started", "Duration", "Status", "Exit Code", "Id"], rows,
@@ -239,9 +250,10 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str]) -> 
 
 
 def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Line]],
-         app_name: str, rest: list[str]) -> int:
+         app_name: str, rest: list[str],
+         resolve: Callable[[list[Run]], None] | None = None) -> int:
     parser = argparse.ArgumentParser(prog=f"pdt logs {app_name}")
-    parser.add_argument("number", nargs="?", type=int, default=1)
+    parser.add_argument("number", nargs="?", type=int)
     parser.add_argument("--failed", action="store_true")
     parser.add_argument("--errors", action="store_true")
     parser.add_argument("--lines", type=int)
@@ -261,23 +273,27 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
     except ValueError as exc:
         console.error(str(exc))
         return 1
-    found = window(list_runs(), since, span, count)
-    if not found:
+    found = numbered(list_runs)
+    shown = window(found, since, span, count)
+    if not shown and (not found or args.failed or args.number is None):
         say_not_run(app_name, args, since, span)
         return 0
     if args.failed:
-        failed = [number for number, run in enumerate(found, 1) if run.status == "failed"]
+        if resolve is not None:
+            resolve(shown)
+        failed = [run for run in shown if run.status == "failed"]
         if not failed:
-            console.say(f"{app_name} has no failed run in its last {len(found)} runs.")
+            console.say(f"{app_name} has no failed run in its last {len(shown)} runs.")
             return 0
-        number = failed[0]
+        run = failed[0]
     else:
-        number = args.number
-        if not 1 <= number <= len(found):
-            console.error(f"pdt runs {app_name} lists {len(found)} runs; "
+        if args.number is not None and not 1 <= args.number <= len(found):
+            console.error(f"pdt runs {app_name} knows {len(found)} runs; "
                           f"pick a number from 1 to {len(found)}")
             return 1
-    run = found[number - 1]
+        run = shown[0] if args.number is None else found[args.number - 1]
+        if resolve is not None:
+            resolve([run])
     lines = in_time_order([line for line in read_lines(run)
                            if not line.message.startswith(EXIT_MARKER)])
     if args.errors:
@@ -292,7 +308,7 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
                                 for line in lines]))
     else:
         exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
-        console.heading(f"run {number} of {app_name}: started {started_text(run)}, "
+        console.heading(f"run {run.number} of {app_name}: started {started_text(run)}, "
                         f"{duration_text(run)}, {run.status}{exit_part}")
         if len(lines) < total:
             side = "first" if args.head else "last"

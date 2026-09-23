@@ -287,7 +287,6 @@ def list_runs(settings: dict, job: str) -> list[runs_cli.Run]:
                     "--resource-group", settings["resource_group"]) or []
     found = [execution_run(execution) for execution in execs]
     found.sort(key=lambda run: run.started, reverse=True)
-    found = found[:runs_cli.RUN_HISTORY]
     if not found:
         return found
     # The platform's own record: "Container 'x' was terminated with exit code '1' and reason ...".

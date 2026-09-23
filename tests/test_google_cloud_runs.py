@@ -87,7 +87,9 @@ def test_list_runs_reads_every_exit_code_in_one_logging_read(monkeypatch):
     [logging_call] = [call for call in calls if call[0] == "logging"]
     assert 'resource.labels.job_name="pdt-app"' in logging_call[2]
     assert 'textPayload:"pdt: exit "' in logging_call[2]
-    assert logging_call[logging_call.index("--limit") + 1] == "200"
+    assert logging_call[logging_call.index("--limit") + 1] == "3"
+    [list_call] = [call for call in calls if call[0] == "run"]
+    assert "--limit" not in list_call
 
 
 def test_read_lines_builds_from_json_and_text_payloads(monkeypatch):

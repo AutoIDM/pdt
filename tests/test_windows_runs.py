@@ -76,6 +76,16 @@ def test_list_runs_without_a_running_task_is_failed(project, monkeypatch):
     assert found[0].status == "failed"
 
 
+def test_list_runs_keeps_every_file(project):
+    windows_app(project)
+    folder = project / ".pdt" / "runs" / "my-report"
+    folder.mkdir(parents=True)
+    for minute in range(60):
+        (folder / f"20260923T10{minute:02d}00Z.log").write_text("pdt: exit 0\n")
+
+    assert len(deploy_windows.list_runs("my-report")) == 60
+
+
 def test_list_runs_with_no_folder_is_empty(project):
     windows_app(project)
     assert deploy_windows.list_runs("my-report") == []

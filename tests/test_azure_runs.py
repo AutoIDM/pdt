@@ -56,6 +56,13 @@ def test_a_missing_job_has_no_runs(monkeypatch):
     assert [call[0] for call in calls] == ["containerapp"]
 
 
+def test_list_runs_keeps_every_execution(monkeypatch):
+    execs = [execution(f"job-{minute:02d}", "Succeeded", f"2026-09-23T10:{minute:02d}:00Z",
+                       f"2026-09-23T10:{minute:02d}:05Z") for minute in range(60)]
+    fake_az(monkeypatch, execs)
+    assert len(deploy_azure_container_apps.list_runs(SETTINGS, "pdt-report")) == 60
+
+
 def test_list_runs_reads_every_exit_code_in_one_query(monkeypatch):
     execs = [
         execution("pdt-report-aaa", "Succeeded", "2026-09-23T10:00:00Z", "2026-09-23T10:00:12Z"),

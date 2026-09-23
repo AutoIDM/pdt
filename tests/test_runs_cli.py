@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -112,8 +113,9 @@ def test_runs_json_round_trips(capsys):
     out = capsys.readouterr().out
     assert json.loads(out)[0] == {"id": "stream-2", "started": T0.isoformat(),
                                   "ended": T1.isoformat(), "status": "succeeded",
-                                  "exit_code": 0}
-    assert runs_cli.parse_runs("preflight line\n" + out) == [NEWEST, OLDER]
+                                  "exit_code": 0, "number": 1}
+    assert runs_cli.parse_runs("preflight line\n" + out) == [
+        dataclasses.replace(NEWEST, number=1), dataclasses.replace(OLDER, number=2)]
 
 
 def hourly_runs(count: int) -> list[Run]:
@@ -215,29 +217,51 @@ def test_runs_with_a_bad_since_value_names_the_forms(capsys):
     assert "2026-09-20T14:00" in capsys.readouterr().out
 
 
-def test_logs_numbers_runs_within_the_since_window(capsys):
-    since = "2026-09-23T09:00"
-    found = [NEWEST, Run("stream-0", T0 - timedelta(minutes=30), T0, "failed", 1), OLDER]
+def test_a_window_keeps_the_numbers_of_the_full_list(capsys):
+    resolved = []
+    assert runs_cli.runs(lambda: hourly_runs(12), "my-report",
+                         ["--since", "2026-09-23T02:00", "--span", "3h"],
+                         lambda found: resolved.append([run.id for run in found])) == 0
+    rows = [line.split() for line in capsys.readouterr().out.splitlines()[1:]]
+    assert [(row[0], row[-1]) for row in rows] == [("7", "run-6"), ("8", "run-7"), ("9", "run-8")]
+    assert resolved == [["run-6", "run-7", "run-8"]]
+
+
+def test_logs_n_reads_run_n_of_the_full_list_and_resolves_only_it(capsys):
+    resolved = []
+    assert runs_cli.logs(lambda: hourly_runs(12), lambda run: [], "my-report", ["8"],
+                         lambda found: resolved.append([run.id for run in found])) == 0
+    assert capsys.readouterr().out.startswith("run 8 of my-report: started 2026-09-23 03:00:12")
+    assert resolved == [["run-7"]]
+
+
+def test_logs_n_ignores_the_window(capsys):
+    assert runs_cli.logs(lambda: hourly_runs(12), lambda run: [], "my-report",
+                         ["12", "--count", "2"]) == 0
+    assert capsys.readouterr().out.startswith("run 12 of my-report:")
+
+
+def test_logs_n_past_the_full_list_names_its_length(capsys):
+    assert runs_cli.logs(lambda: hourly_runs(12), lambda run: [], "my-report", ["13"]) == 1
+    assert ("pdt runs my-report knows 12 runs; pick a number from 1 to 12"
+            in capsys.readouterr().out)
+
+
+def test_logs_without_n_reads_the_newest_run_in_the_window(capsys):
+    assert runs_cli.logs(lambda: hourly_runs(12), lambda run: [], "my-report",
+                         ["--since", "2026-09-23T02:00", "--span", "3h"]) == 0
+    assert capsys.readouterr().out.startswith("run 7 of my-report:")
+
+
+def test_logs_failed_picks_the_newest_failed_run_in_the_window(capsys):
+    found = [dataclasses.replace(run, status="failed", exit_code=1) if index in (1, 4) else run
+             for index, run in enumerate(hourly_runs(12))]
+    resolved = []
     assert runs_cli.logs(lambda: found, lambda run: [], "my-report",
-                         ["2", "--since", since]) == 1
-    assert capsys.readouterr().out.startswith("run 2 of my-report:")
-    assert runs_cli.logs(lambda: found, lambda run: [], "my-report",
-                         ["3", "--since", since]) == 1
-    assert "pick a number from 1 to 2" in capsys.readouterr().out
-
-
-def test_logs_numbers_runs_within_the_span_and_count(capsys):
-    found = hourly_runs(12)
-    assert runs_cli.logs(lambda: found, lambda run: [], "my-report",
-                         ["3", "--since", "2026-09-23T00:00", "--span", "3h"]) == 0
-    assert capsys.readouterr().out.startswith("run 3 of my-report: started 2026-09-23 00:00:12")
-    assert runs_cli.logs(lambda: found, lambda run: [], "my-report", ["3", "--count", "2"]) == 1
-    assert "pick a number from 1 to 2" in capsys.readouterr().out
-
-
-def test_logs_indexes_the_10_newest_without_since(capsys):
-    assert runs_cli.logs(lambda: hourly_runs(12), lambda run: [], "my-report", ["11"]) == 1
-    assert "pick a number from 1 to 10" in capsys.readouterr().out
+                         ["--failed", "--since", "2026-09-23T02:00", "--span", "7h"],
+                         lambda runs: resolved.append([run.id for run in runs])) == 1
+    assert capsys.readouterr().out.startswith("run 5 of my-report:")
+    assert resolved == [[f"run-{hours}" for hours in range(2, 9)]]
 
 
 def test_runs_with_no_runs(capsys):
