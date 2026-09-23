@@ -147,11 +147,19 @@ def duration_text(run: Run) -> str:
     return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
 
 
+def parse_amount(value: str) -> timedelta | None:
+    """The length of time a count with a unit (12h, 3d, 2w) names, or None."""
+    match = re.fullmatch(r"(\d+)([hdw])", value)
+    if match is None:
+        return None
+    return timedelta(**{SINCE_UNITS[match.group(2)]: int(match.group(1))})
+
+
 def parse_since(value: str, now: datetime) -> datetime:
     """The moment `--since VALUE` names; a date without a time is local midnight."""
-    match = re.fullmatch(r"(\d+)([hdw])", value)
-    if match:
-        return now - timedelta(**{SINCE_UNITS[match.group(2)]: int(match.group(1))})
+    amount = parse_amount(value)
+    if amount is not None:
+        return now - amount
     for form in ("%Y-%m-%d", "%Y-%m-%dT%H:%M"):
         try:
             return datetime.strptime(value, form).astimezone()
@@ -160,38 +168,65 @@ def parse_since(value: str, now: datetime) -> datetime:
     raise ValueError(f"--since {value} is not a time pdt reads; use {SINCE_FORMS}")
 
 
-def window(found: list[Run], since: datetime | None) -> list[Run]:
-    """The runs `pdt runs` numbers: the DEFAULT_RUNS newest, or every run since a moment."""
-    if since is None:
-        return found[:DEFAULT_RUNS]
-    return [run for run in found if run.started >= since]
+def window(found: list[Run], since: datetime | None, span: timedelta | None,
+           count: int | None) -> list[Run]:
+    """The runs `pdt runs` numbers: those started in `[since, since + span)`, at most `count`."""
+    if since is not None:
+        found = [run for run in found if run.started >= since
+                 and (span is None or run.started < since + span)]
+    return found if count is None else found[:count]
 
 
-def say_not_run(app_name: str, since: str | None) -> None:
+def add_window_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--since")
+    parser.add_argument("--span")
+    parser.add_argument("--count", type=int)
+
+
+def parse_window(args: argparse.Namespace,
+                 now: datetime) -> tuple[datetime | None, timedelta | None, int | None]:
+    """The `window` arguments; the DEFAULT_RUNS newest when no `--since` is given."""
+    if args.span is not None and args.since is None:
+        raise ValueError("--span needs --since")
+    if args.count is not None and args.count < 1:
+        raise ValueError("--count must be 1 or more")
+    since = None if args.since is None else parse_since(args.since, now)
+    span = None if args.span is None else parse_amount(args.span)
+    if args.span is not None and span is None:
+        raise ValueError(f"--span {args.span} is not a length of time pdt reads; "
+                         "use a count with a unit (12h, 3d, 2w)")
+    if args.count is None and since is None:
+        return since, span, DEFAULT_RUNS
+    return since, span, args.count
+
+
+def say_not_run(app_name: str, args: argparse.Namespace, since: datetime | None,
+                span: timedelta | None) -> None:
     if since is None:
         console.say(f"{app_name} has not run yet.")
+    elif span is None:
+        console.say(f"{app_name} has not run since {args.since}.")
     else:
-        console.say(f"{app_name} has not run since {since}.")
+        console.say(f"{app_name} has not run between {local_text(since)} "
+                    f"and {local_text(since + span)}.")
 
 
 def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str]) -> int:
     parser = argparse.ArgumentParser(prog=f"pdt runs {app_name}")
-    parser.add_argument("--since")
+    add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
     try:
-        since = None if args.since is None else parse_since(args.since, datetime.now(UTC))
+        since, span, count = parse_window(args, datetime.now(UTC))
     except ValueError as exc:
         console.error(str(exc))
         return 1
-    found = list_runs()
+    found = window(list_runs(), since, span, count)
     if args.json:
-        shown = found if since is None else window(found, since)
-        console.say(json.dumps([run_json(run) for run in shown]))
+        console.say(json.dumps([run_json(run) for run in found]))
         return 0
-    found = window(found, since)
     if not found:
-        say_not_run(app_name, args.since)
+        say_not_run(app_name, args, since, span)
         return 0
     rows = [[str(number), started_text(run), duration_text(run), run.status,
              "-" if run.exit_code is None else str(run.exit_code), run.id]
@@ -210,17 +245,17 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
     parser.add_argument("--failed", action="store_true")
     parser.add_argument("--errors", action="store_true")
     parser.add_argument("--full", action="store_true")
-    parser.add_argument("--since")
+    add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
     try:
-        since = None if args.since is None else parse_since(args.since, datetime.now(UTC))
+        since, span, count = parse_window(args, datetime.now(UTC))
     except ValueError as exc:
         console.error(str(exc))
         return 1
-    found = window(list_runs(), since)
+    found = window(list_runs(), since, span, count)
     if not found:
-        say_not_run(app_name, args.since)
+        say_not_run(app_name, args, since, span)
         return 0
     if args.failed:
         failed = [number for number, run in enumerate(found, 1) if run.status == "failed"]

@@ -157,9 +157,51 @@ def test_runs_since_keeps_the_runs_at_or_after_the_moment(capsys):
     assert ids == [f"run-{hours}" for hours in range(11)]
 
 
-def test_runs_json_returns_every_fetched_run(capsys):
+def test_runs_json_shows_the_runs_the_table_shows(capsys):
     assert runs_cli.runs(lambda: hourly_runs(12), "my-report", ["--json"]) == 0
-    assert len(json.loads(capsys.readouterr().out)) == 12
+    assert len(json.loads(capsys.readouterr().out)) == runs_cli.DEFAULT_RUNS
+
+
+def test_runs_span_keeps_the_runs_before_since_plus_span(capsys):
+    assert runs_cli.runs(lambda: hourly_runs(12), "my-report",
+                         ["--since", "2026-09-23T00:00", "--span", "3h"]) == 0
+    ids = [line.split()[-1] for line in capsys.readouterr().out.splitlines()[1:]]
+    assert ids == ["run-8", "run-9", "run-10"]
+
+
+def test_runs_span_needs_since(capsys):
+    assert runs_cli.runs(lambda: pytest.fail("listed runs"), "my-report",
+                         ["--span", "3h"]) == 1
+    assert "--span needs --since" in capsys.readouterr().out
+
+
+def test_runs_span_rejects_a_date(capsys):
+    assert runs_cli.runs(lambda: pytest.fail("listed runs"), "my-report",
+                         ["--since", "3d", "--span", "2026-09-20"]) == 1
+    assert "12h, 3d, 2w" in capsys.readouterr().out
+
+
+def test_runs_span_with_no_run_in_the_window(capsys):
+    assert runs_cli.runs(lambda: [OLDER], "my-report",
+                         ["--since", "2026-09-23T00:00", "--span", "3h"]) == 0
+    assert capsys.readouterr().out == ("my-report has not run between 2026-09-23 00:00:00 "
+                                       "and 2026-09-23 03:00:00.\n")
+
+
+def test_runs_count_caps_the_list_and_lifts_the_default_with_since(capsys):
+    assert runs_cli.runs(lambda: hourly_runs(12), "my-report", ["--count", "3"]) == 0
+    assert len(capsys.readouterr().out.splitlines()) == 1 + 3
+    assert runs_cli.runs(lambda: hourly_runs(12), "my-report", ["--since", "1w"]) == 0
+    assert len(capsys.readouterr().out.splitlines()) == 1 + 12
+    assert runs_cli.runs(lambda: hourly_runs(12), "my-report",
+                         ["--since", "1w", "--count", "2", "--json"]) == 0
+    assert [run["id"] for run in json.loads(capsys.readouterr().out)] == ["run-0", "run-1"]
+
+
+def test_runs_count_must_be_1_or_more(capsys):
+    assert runs_cli.runs(lambda: pytest.fail("listed runs"), "my-report",
+                         ["--count", "0"]) == 1
+    assert "--count must be 1 or more" in capsys.readouterr().out
 
 
 def test_runs_since_with_no_run_in_the_window(capsys):
@@ -181,6 +223,15 @@ def test_logs_numbers_runs_within_the_since_window(capsys):
     assert capsys.readouterr().out.startswith("run 2 of my-report:")
     assert runs_cli.logs(lambda: found, lambda run: [], "my-report",
                          ["3", "--since", since]) == 1
+    assert "pick a number from 1 to 2" in capsys.readouterr().out
+
+
+def test_logs_numbers_runs_within_the_span_and_count(capsys):
+    found = hourly_runs(12)
+    assert runs_cli.logs(lambda: found, lambda run: [], "my-report",
+                         ["3", "--since", "2026-09-23T00:00", "--span", "3h"]) == 0
+    assert capsys.readouterr().out.startswith("run 3 of my-report: started 2026-09-23 00:00:12")
+    assert runs_cli.logs(lambda: found, lambda run: [], "my-report", ["3", "--count", "2"]) == 1
     assert "pick a number from 1 to 2" in capsys.readouterr().out
 
 

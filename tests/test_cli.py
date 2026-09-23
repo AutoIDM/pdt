@@ -92,12 +92,20 @@ def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatc
     assert run_cli(monkeypatch, "logs", "hello-world", "3", "--failed", "--errors") == 0
     assert run_cli(monkeypatch, "runs", "hello-world", "--since", "3d") == 0
     assert run_cli(monkeypatch, "logs", "hello-world", "2", "--since", "2026-09-20") == 0
+    assert run_cli(monkeypatch, "runs", "hello-world", "--since", "3d", "--span", "1d",
+                   "--count", "5") == 0
+    assert run_cli(monkeypatch, "logs", "hello-world", "--count", "5", "--since", "3d",
+                   "--span", "1d") == 0
     assert calls == [
         ("azure", "runs", "hello-world", False, ["--", "--json"]),
         ("azure", "logs", "hello-world", False, ["--", "1"]),
         ("azure", "logs", "hello-world", False, ["--", "3", "--failed", "--errors"]),
         ("azure", "runs", "hello-world", False, ["--", "--since", "3d"]),
         ("azure", "logs", "hello-world", False, ["--", "2", "--since", "2026-09-20"]),
+        ("azure", "runs", "hello-world", False,
+         ["--", "--since", "3d", "--span", "1d", "--count", "5"]),
+        ("azure", "logs", "hello-world", False,
+         ["--", "1", "--since", "3d", "--span", "1d", "--count", "5"]),
     ]
 
 
