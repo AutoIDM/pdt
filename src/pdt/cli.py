@@ -281,13 +281,28 @@ def cmd_completion(args) -> int:
     return completion.install(args.shell, print_only=args.script)
 
 
+# Capitalize only the first letter of a section title, so "Cloud CLIs" keeps its case.
+rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
+    lambda title: title[:1].upper() + title[1:])
+
+COMMAND_GROUPS = {
+    "Get started": ["init", "examples", "new"],
+    "Run your app": ["validate", "run", "deploy"],
+    "Inspect your app": ["list", "health", "runs", "logs", "storage", "secrets"],
+    "Manage your app": ["login", "destroy"],
+    "Cloud CLIs": ["aws", "az", "gcloud"],
+    "Shell": ["completion"],
+}
+
+
 def build_parser() -> argparse.ArgumentParser:
     summary, _, note = __doc__.strip().partition("\n\n")
     parser = argparse.ArgumentParser(
-        prog="pdt", description=summary, epilog=note,
+        prog="pdt", description=summary, epilog=note, usage="pdt [-h] [--version] <command> ...",
         formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
     parser.add_argument("--version", action="version", version=__version__)
-    sub = parser.add_subparsers(dest="command", title="commands", metavar="<command>")
+    # The commands are listed under COMMAND_GROUPS instead of the one argparse section.
+    sub = parser.add_subparsers(dest="command", metavar="<command>", help=argparse.SUPPRESS)
 
     def add_parser(name: str, **kwargs):
         return sub.add_parser(
@@ -397,6 +412,11 @@ def build_parser() -> argparse.ArgumentParser:
     for name, label in (("aws", "AWS"), ("az", "Azure"), ("gcloud", "Google Cloud")):
         p = add_parser(name, help=f"run the {label} CLI that pdt installs")
         p.add_argument("args", nargs=argparse.REMAINDER)
+    entries = {a.dest: a for a in sub._choices_actions}
+    for title, names in COMMAND_GROUPS.items():
+        group = parser.add_argument_group(title)
+        for name in names:
+            group._group_actions.append(entries[name])
     return parser
 
 
