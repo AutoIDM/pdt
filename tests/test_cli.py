@@ -96,6 +96,7 @@ def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatc
                    "--count", "5") == 0
     assert run_cli(monkeypatch, "logs", "hello-world", "--count", "5", "--since", "3d",
                    "--span", "1d") == 0
+    assert run_cli(monkeypatch, "logs", "hello-world", "--lines", "50", "--head") == 0
     assert calls == [
         ("azure", "runs", "hello-world", False, ["--", "--json"]),
         ("azure", "logs", "hello-world", False, ["--", "1"]),
@@ -106,6 +107,7 @@ def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatc
          ["--", "--since", "3d", "--span", "1d", "--count", "5"]),
         ("azure", "logs", "hello-world", False,
          ["--", "1", "--since", "3d", "--span", "1d", "--count", "5"]),
+        ("azure", "logs", "hello-world", False, ["--", "1", "--lines", "50", "--head"]),
     ]
 
 

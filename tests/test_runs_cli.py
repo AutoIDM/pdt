@@ -281,6 +281,37 @@ def test_logs_shows_the_last_20_lines_unless_full(capsys):
     assert "of 25 lines" not in out and "line 0" in out
 
 
+def test_logs_lines_and_head_pick_which_lines_print(capsys):
+    lines = [Line(T0, "INFO", f"line {index}") for index in range(25)]
+    one_run = [Run("r1", T0, T1, "succeeded")]
+    runs_cli.logs(lambda: one_run, lambda run: lines, "my-report", ["--lines", "3"])
+    out = capsys.readouterr().out
+    assert "the last 3 of 25 lines; add --full for all of them" in out
+    assert "line 21" not in out and "line 22" in out and "line 24" in out
+    runs_cli.logs(lambda: one_run, lambda run: lines, "my-report", ["--head"])
+    out = capsys.readouterr().out
+    assert "the first 20 of 25 lines; add --full for all of them" in out
+    assert "line 0" in out and "line 19" in out and "line 20" not in out
+    runs_cli.logs(lambda: one_run, lambda run: lines, "my-report", ["--head", "--lines", "2"])
+    out = capsys.readouterr().out
+    assert "the first 2 of 25 lines" in out and "line 1\n" in out and "line 2\n" not in out
+    runs_cli.logs(lambda: one_run, lambda run: lines, "my-report", ["--lines", "30"])
+    assert "of 25 lines" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("extra", [["--lines", "5"], ["--head"]])
+def test_logs_full_with_lines_or_head_is_an_error(capsys, extra):
+    assert runs_cli.logs(lambda: pytest.fail("listed runs"), read, "my-report",
+                         ["--full", *extra]) == 1
+    assert "--full prints every line; drop --lines and --head" in capsys.readouterr().out
+
+
+def test_logs_lines_must_be_1_or_more(capsys):
+    assert runs_cli.logs(lambda: pytest.fail("listed runs"), read, "my-report",
+                         ["--lines", "0"]) == 1
+    assert "--lines must be 1 or more" in capsys.readouterr().out
+
+
 def test_logs_errors_keeps_warnings_errors_and_plain_lines(capsys):
     assert runs_cli.logs(list_two, read, "my-report", ["2", "--errors", "--json"]) == 1
     records = json.loads(capsys.readouterr().out)

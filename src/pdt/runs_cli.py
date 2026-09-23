@@ -244,10 +244,18 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
     parser.add_argument("number", nargs="?", type=int, default=1)
     parser.add_argument("--failed", action="store_true")
     parser.add_argument("--errors", action="store_true")
+    parser.add_argument("--lines", type=int)
+    parser.add_argument("--head", action="store_true")
     parser.add_argument("--full", action="store_true")
     add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
+    if args.full and (args.lines is not None or args.head):
+        console.error("--full prints every line; drop --lines and --head")
+        return 1
+    if args.lines is not None and args.lines < 1:
+        console.error("--lines must be 1 or more")
+        return 1
     try:
         since, span, count = parse_window(args, datetime.now(UTC))
     except ValueError as exc:
@@ -276,7 +284,8 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
         lines = [line for line in lines if line.level not in ("DEBUG", "INFO")]
     total = len(lines)
     if not args.full:
-        lines = lines[-TAIL_LINES:]
+        keep = args.lines or TAIL_LINES
+        lines = lines[:keep] if args.head else lines[-keep:]
     if args.json:
         console.say(json.dumps([{"time": line.time.isoformat() if line.time else None,
                                  "level": line.level, "message": line.message}
@@ -286,7 +295,8 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
         console.heading(f"run {number} of {app_name}: started {started_text(run)}, "
                         f"{duration_text(run)}, {run.status}{exit_part}")
         if len(lines) < total:
-            console.status(f"the last {len(lines)} of {total} lines; add --full for all of them")
+            side = "first" if args.head else "last"
+            console.status(f"the {side} {len(lines)} of {total} lines; add --full for all of them")
         for line in lines:
             console.log_line(local_text(line.time, "%H:%M:%S") if line.time else "",
                              line.level, line.message)

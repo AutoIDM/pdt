@@ -213,9 +213,10 @@ def cmd_logs(args) -> int:
     if name is None:
         return 1
     flags = [flag for flag, on in (("--failed", args.failed), ("--errors", args.errors),
-                                   ("--full", args.full),
+                                   ("--head", args.head), ("--full", args.full),
                                    ("--json", args.json)) if on]
-    return deploy.logs(name, [str(args.number), *window_options(args), *flags])
+    lines = [] if args.lines is None else ["--lines", str(args.lines)]
+    return deploy.logs(name, [str(args.number), *window_options(args), *lines, *flags])
 
 
 def cmd_health(args) -> int:
@@ -327,6 +328,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--failed", action="store_true", help="read the newest failed run")
     p.add_argument("--errors", action="store_true",
                    help="leave out DEBUG and INFO lines")
+    p.add_argument("--lines", type=int, help="print this many lines (default: 20)")
+    p.add_argument("--head", action="store_true",
+                   help="print the first lines, not the last")
     p.add_argument("--full", action="store_true",
                    help="print every line, not only the last 20")
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
