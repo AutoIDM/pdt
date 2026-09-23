@@ -912,24 +912,23 @@ def execution_run(execution: dict) -> runs_cli.Run:
 
 def list_runs(project: str, region: str, job: str) -> list[runs_cli.Run]:
     executions = describe_json("run", "jobs", "executions", "list", "--job", job,
-                               "--region", region, "--project", project,
-                               "--limit", str(runs_cli.RUN_HISTORY))
+                               "--region", region, "--project", project)
     if not executions:
         return []
     found = [execution_run(execution) for execution in executions]
     found.sort(key=lambda run: run.started, reverse=True)
-    codes = exit_codes(project, job)
+    codes = exit_codes(project, job, len(found))
     for run in found:
         run.exit_code = codes.get(run.id)
     return found
 
 
-def exit_codes(project: str, job: str) -> dict[str, int]:
+def exit_codes(project: str, job: str, count: int) -> dict[str, int]:
     entries = describe_json(
         "logging", "read",
         f'resource.type="cloud_run_job" AND resource.labels.job_name="{job}" AND '
         f'textPayload:"{runs_cli.EXIT_MARKER}"',
-        "--project", project, "--limit", "200") or []
+        "--project", project, "--limit", str(max(count, 1))) or []
     codes = {}
     for entry in entries:
         execution_id = (entry.get("labels") or {}).get("run.googleapis.com/execution_name")

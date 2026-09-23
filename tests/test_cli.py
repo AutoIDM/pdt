@@ -121,7 +121,8 @@ def test_health_checks_every_enabled_app(project, monkeypatch, capsys):
         calls.append((provider, command, app_name, extra))
         if app_name == "daily-report":
             return 0, 'status line\n[{"id": "e1", "started": "2026-09-23T10:00:00+00:00", ' \
-                      '"ended": "2026-09-23T10:00:12+00:00", "status": "failed", "exit_code": 1}]\n'
+                      '"ended": "2026-09-23T10:00:12+00:00", "status": "failed", "exit_code": 1, ' \
+                      '"number": 1}]\n'
         return 0, "[]\n"
 
     monkeypatch.setattr(deploy, "dispatch_output", fake_output)

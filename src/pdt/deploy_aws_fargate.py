@@ -519,34 +519,43 @@ def running_task_ids(ecs) -> set[str]:
     return {arn.rsplit("/", 1)[-1] for arn in arns}
 
 
-def tail_lines(logs, log_group: str, stream_name: str) -> list[runs_cli.Line]:
-    events = logs.get_log_events(logGroupName=log_group, logStreamName=stream_name,
-                                 startFromHead=False, limit=5)["events"]
-    return [runs_cli.parse_line(event["message"], None) for event in events]
-
-
-def list_runs(logs, ecs, names: dict[str, str]) -> list[runs_cli.Run]:
-    try:
-        streams = logs.describe_log_streams(
-            logGroupName=names["log_group"], orderBy="LastEventTime",
-            descending=True, limit=runs_cli.RUN_HISTORY).get("logStreams", [])
-    except Exception as exc:
-        if not_found(exc):
-            return []
-        raise
-    running = functools.cache(lambda: running_task_ids(ecs))
+def list_runs(logs, names: dict[str, str]) -> list[runs_cli.Run]:
+    kwargs = {"logGroupName": names["log_group"], "orderBy": "LastEventTime",
+              "descending": True, "limit": 50}
     found = []
-    for stream in streams:
-        if "firstEventTimestamp" not in stream or "lastEventTimestamp" not in stream:
-            continue
-        name = stream["logStreamName"]
-        task_id = name.rsplit("/", 1)[-1]
-        lines = tail_lines(logs, names["log_group"], name)
-        status = runs_cli.marker_status(lines, lambda: task_id in running())
-        ended = None if status == "running" else ms_to_utc(stream["lastEventTimestamp"])
-        found.append(runs_cli.Run(name, ms_to_utc(stream["firstEventTimestamp"]), ended, status,
-                                  runs_cli.exit_code(lines)))
-    return found
+    while True:
+        try:
+            response = logs.describe_log_streams(**kwargs)
+        except Exception as exc:
+            if not_found(exc):
+                return []
+            raise
+        for stream in response.get("logStreams", []):
+            if "firstEventTimestamp" not in stream or "lastEventTimestamp" not in stream:
+                continue
+            found.append(runs_cli.Run(stream["logStreamName"],
+                                      ms_to_utc(stream["firstEventTimestamp"]), None, "running"))
+        if "nextToken" not in response:
+            return found
+        kwargs["nextToken"] = response["nextToken"]
+
+
+def resolve(logs, ecs, log_group: str, found: list[runs_cli.Run]) -> None:
+    """Fill status, end, and exit code from the tail of each run's log stream.
+
+    On AWS only a resolved run has a trustworthy status; `list_runs` leaves every
+    run "running". `runs_cli` resolves every run it prints or reads.
+    """
+    running = functools.cache(lambda: running_task_ids(ecs))
+    for run in found:
+        events = logs.get_log_events(logGroupName=log_group, logStreamName=run.id,
+                                     startFromHead=False, limit=5)["events"]
+        lines = [runs_cli.parse_line(event["message"], None) for event in events]
+        task_id = run.id.rsplit("/", 1)[-1]
+        run.status = runs_cli.marker_status(lines, lambda: task_id in running())
+        run.exit_code = runs_cli.exit_code(lines)
+        if run.status != "running" and events:
+            run.ended = ms_to_utc(events[-1]["timestamp"])
 
 
 def read_lines(logs, log_group: str, run: runs_cli.Run) -> list[runs_cli.Line]:
@@ -568,13 +577,15 @@ def read_lines(logs, log_group: str, run: runs_cli.Run) -> list[runs_cli.Line]:
 def runs(app: dict, session, rest: list[str]) -> int:
     logs, ecs = session.client("logs"), session.client("ecs")
     names = resource_names(app["name"])
-    return runs_cli.runs(lambda: list_runs(logs, ecs, names), app["name"], rest)
+    return runs_cli.runs(lambda: list_runs(logs, names), app["name"], rest,
+                         lambda found: resolve(logs, ecs, names["log_group"], found))
 
 
 def logs(app: dict, session, rest: list[str]) -> int:
     logs_client, ecs = session.client("logs"), session.client("ecs")
     names = resource_names(app["name"])
     return runs_cli.logs(
-        lambda: list_runs(logs_client, ecs, names),
+        lambda: list_runs(logs_client, names),
         lambda run: read_lines(logs_client, names["log_group"], run),
-        app["name"], rest)
+        app["name"], rest,
+        lambda found: resolve(logs_client, ecs, names["log_group"], found))

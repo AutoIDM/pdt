@@ -446,7 +446,7 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
     powershell = shutil.which("powershell.exe") or shutil.which("powershell")
     task_name = _task_name(app_name)
     found = []
-    for file in files[:runs_cli.RUN_HISTORY]:
+    for file in files:
         started = datetime.strptime(file.stem, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
         lines = [runs_cli.parse_line(line, None) for line in
                 file.read_text(encoding="utf-8-sig").splitlines()]
