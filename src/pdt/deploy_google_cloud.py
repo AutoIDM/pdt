@@ -58,6 +58,7 @@ from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action, run_secrets,
     stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
     warn_if_locked, write_dockerfile)
+from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
 from pdt.utils.storage import Store
@@ -70,6 +71,7 @@ APIS = (
     "cloudbuild.googleapis.com",
     "cloudscheduler.googleapis.com",
     "iam.googleapis.com",
+    "logging.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
     "storage.googleapis.com",
@@ -895,6 +897,85 @@ def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
     return storage_cli.run(deployer_store(project, app["name"]), app, rest, assume_yes)
 
 
+def execution_run(execution: dict) -> runs_cli.Run:
+    metadata = execution.get("metadata") or {}
+    execution_id = str(execution.get("name") or metadata.get("name") or "").rsplit("/", 1)[-1]
+    status = execution.get("status") or {}
+    started = datetime.datetime.fromisoformat(status["startTime"])
+    completion = status.get("completionTime")
+    if not completion:
+        return runs_cli.Run(execution_id, started, None, "running")
+    ended = datetime.datetime.fromisoformat(completion)
+    completed = next((c for c in status.get("conditions") or [] if c.get("type") == "Completed"), None)
+    status_text = "succeeded" if (completed or {}).get("status") == "True" else "failed"
+    return runs_cli.Run(execution_id, started, ended, status_text)
+
+
+def list_runs(project: str, region: str, job: str) -> list[runs_cli.Run]:
+    executions = describe_json("run", "jobs", "executions", "list", "--job", job,
+                               "--region", region, "--project", project)
+    if not executions:
+        return []
+    found = [execution_run(execution) for execution in executions]
+    found.sort(key=lambda run: run.started, reverse=True)
+    codes = exit_codes(project, job, len(found))
+    for run in found:
+        run.exit_code = codes.get(run.id)
+    return found
+
+
+def exit_codes(project: str, job: str, count: int) -> dict[str, int]:
+    entries = describe_json(
+        "logging", "read",
+        f'resource.type="cloud_run_job" AND resource.labels.job_name="{job}" AND '
+        f'textPayload:"{runs_cli.EXIT_MARKER}"',
+        "--project", project, "--limit", str(max(count, 1))) or []
+    codes = {}
+    for entry in entries:
+        execution_id = (entry.get("labels") or {}).get("run.googleapis.com/execution_name")
+        code = runs_cli.exit_code([runs_cli.parse_line(entry.get("textPayload") or "", None)])
+        if execution_id and code is not None:
+            codes[execution_id] = code
+    return codes
+
+
+def read_lines(project: str, execution_id: str) -> list[runs_cli.Line]:
+    entries = describe_json(
+        "logging", "read",
+        f'resource.type="cloud_run_job" AND '
+        f'labels."run.googleapis.com/execution_name"="{execution_id}"',
+        "--project", project, "--order", "asc", "--limit", "5000")
+    if not entries:
+        return []
+    lines = []
+    for entry in entries:
+        time = datetime.datetime.fromisoformat(entry["timestamp"]) if entry.get("timestamp") else None
+        payload = entry.get("jsonPayload")
+        if payload is not None and "message" in payload:
+            # Cloud Logging moves a json line's severity out of the payload into the entry.
+            lines.append(runs_cli.json_line({**payload, "severity": entry.get("severity", "")},
+                                            time))
+        else:
+            lines.append(runs_cli.parse_line(entry.get("textPayload") or json.dumps(payload),
+                                             time))
+    return lines
+
+
+def runs(app: dict, rest: list[str], assume_yes: bool) -> int:
+    project, region = project_region(app)
+    project = preflight(app, project, assume_yes)
+    job = f"pdt-{app['name']}"
+    return runs_cli.runs(lambda: list_runs(project, region, job), app["name"], rest)
+
+
+def logs(app: dict, rest: list[str], assume_yes: bool) -> int:
+    project, region = project_region(app)
+    project = preflight(app, project, assume_yes)
+    job = f"pdt-{app['name']}"
+    return runs_cli.logs(lambda: list_runs(project, region, job),
+                         lambda run: read_lines(project, run.id), app["name"], rest)
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "gcloud":
         try:
@@ -903,7 +984,8 @@ def main() -> int:
             fail(str(e))
         return subprocess.run([binary, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage", "secrets"))
+    parser.add_argument("command",
+                        choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -917,6 +999,10 @@ def main() -> int:
         return relogin(args.yes)
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
+    if args.command == "runs":
+        return runs(app, args.rest, args.yes)
+    if args.command == "logs":
+        return logs(app, args.rest, args.yes)
     if args.command == "secrets":
         return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":

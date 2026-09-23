@@ -17,6 +17,10 @@ logged on. Registering or removing it needs administrator rights; a
 non-elevated shell gets one UAC prompt. Deploy always registers the complete
 desired task definition with -Force, so rerunning it safely reconciles
 changes to the schedule or repository path.
+
+Each run writes its output to .pdt/runs/<app>/<UTC start>.log in the
+project and ends it with `pdt: exit N`; `pdt runs` and `pdt logs` read
+those files, and the task deletes files older than 30 days.
 """
 
 from __future__ import annotations
@@ -28,10 +32,11 @@ import html
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console
+from pdt import config, console, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_common import CostEstimate
 
@@ -157,6 +162,10 @@ def storage_folder(app_name: str) -> Path:
     return config.find_project() / ".pdt" / "storage" / app_name
 
 
+def runs_folder(app_name: str) -> Path:
+    return config.find_project() / ".pdt" / "runs" / app_name
+
+
 def _task_name(app_name: str) -> str:
     name = f"pdt-{app_name}"
     if any(char in FORBIDDEN_TASK_NAME_CHARS or ord(char) < 32 for char in name):
@@ -165,15 +174,36 @@ def _task_name(app_name: str) -> str:
     return name
 
 
-def task_xml(app: dict, uv: str) -> tuple[str, str]:
+def _run_script(app: dict, uv: str) -> str:
+    """The script the scheduled task runs: log the app's run, then exit with its code."""
+    folder = _ps_string(str(runs_folder(app["name"])))
+    uv_path = _ps_string(str(Path(uv).resolve()))
+    return (
+        f"$folder = {folder}; "
+        "New-Item -ItemType Directory -Force -Path $folder | Out-Null; "
+        "$log = Join-Path $folder ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.log'); "
+        f"& {uv_path} run --script run.py *>&1 | ForEach-Object {{ \"$_\" }} | "
+        "Out-File -Encoding utf8 -FilePath $log; "
+        "$code = $LASTEXITCODE; "
+        "\"pdt: exit $code\" | Out-File -Encoding utf8 -Append -FilePath $log; "
+        "Get-ChildItem -Path $folder -Filter *.log | "
+        "Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } | Remove-Item -Force; "
+        "exit $code"
+    )
+
+
+def task_xml(app: dict, uv: str, powershell: str) -> tuple[str, str]:
     cron = config.cron_expression(app["schedule"])
-    timezone = str(app.get("timezone") or "").strip().lower()
-    if timezone != "local":
+    tz = str(app.get("timezone") or "").strip().lower()
+    if tz != "local":
         raise WindowsDeployError(
             "the Windows provider uses the machine's local timezone; "
             "set timezone: local for this app")
     description, trigger = schedule_trigger(cron)
-    command = html.escape(str(Path(uv).resolve()))
+    command = html.escape(str(Path(powershell).resolve()))
+    arguments = html.escape(
+        "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+        f"-EncodedCommand {_encoded(_run_script(app, uv))}")
     workdir = html.escape(str(Path(app["dir"]).resolve()))
     task_description = html.escape(
         f"Managed by pdt; runs {app['name']} from "
@@ -203,7 +233,7 @@ def task_xml(app: dict, uv: str) -> tuple[str, str]:
   <Actions Context="Author">
     <Exec>
       <Command>{command}</Command>
-      <Arguments>run --script run.py</Arguments>
+      <Arguments>{arguments}</Arguments>
       <WorkingDirectory>{workdir}</WorkingDirectory>
     </Exec>
   </Actions>
@@ -284,12 +314,25 @@ def _task_state(powershell: str, name: str) -> str:
         + (f": {detail}" if detail else f" (exit {proc.returncode})"))
 
 
+def _task_running(powershell: str, name: str) -> bool:
+    script = (
+        f"$task = Get-ScheduledTask -TaskName {_ps_string(name)} -TaskPath '\\' "
+        "-ErrorAction SilentlyContinue; "
+        "if ($null -ne $task -and $task.State -eq 'Running') { exit 0 }; exit 1"
+    )
+    proc = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    return proc.returncode == 0
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     try:
         powershell, uv = _preflight()
         assert uv is not None
         name = _task_name(app["name"])
-        description, xml = task_xml(app, uv)
+        description, xml = task_xml(app, uv, powershell)
         state = _task_state(powershell, name)
         if state == "unmanaged":
             raise WindowsDeployError(
@@ -387,9 +430,40 @@ def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
     return storage_cli.run(store, app, rest, assume_yes)
 
 
+def read_lines(app_name: str, run: runs_cli.Run) -> list[runs_cli.Line]:
+    try:
+        text = (runs_folder(app_name) / f"{run.id}.log").read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return []
+    return [runs_cli.parse_line(line, None) for line in text.splitlines()]
+
+
+def list_runs(app_name: str) -> list[runs_cli.Run]:
+    folder = runs_folder(app_name)
+    if not folder.is_dir():
+        return []
+    files = sorted(folder.glob("*.log"), key=lambda file: file.name, reverse=True)
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    task_name = _task_name(app_name)
+    found = []
+    for file in files:
+        started = datetime.strptime(file.stem, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        lines = [runs_cli.parse_line(line, None) for line in
+                file.read_text(encoding="utf-8-sig").splitlines()]
+        status = runs_cli.marker_status(
+            lines, lambda: powershell is not None and _task_running(powershell, task_name))
+        code = runs_cli.exit_code(lines)
+        ended = (datetime.fromtimestamp(file.stat().st_mtime, tz=timezone.utc)
+                if code is not None else None)
+        found.append(runs_cli.Run(file.stem, started, ended, status, code))
+    return found
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage", "secrets"))
+    parser.add_argument("command",
+                        choices=("deploy", "destroy", "login", "storage", "secrets",
+                                 "runs", "logs"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -409,6 +483,11 @@ def main() -> int:
     config.load_env(app["dir"])
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
+    if args.command == "runs":
+        return runs_cli.runs(lambda: list_runs(app["name"]), app["name"], args.rest)
+    if args.command == "logs":
+        return runs_cli.logs(lambda: list_runs(app["name"]),
+                             lambda run: read_lines(app["name"], run), app["name"], args.rest)
     if args.command == "deploy":
         return deploy(app, args.yes)
     return destroy(app, args.yes)

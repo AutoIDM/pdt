@@ -3,7 +3,8 @@
     verify.py <provider> [--report FILE]
 
 The scenario is fixed. It asserts the account is empty, deploys every app
-in verify/pdt.yml order, records which resource each app owns and which
+in verify/pdt.yml order, reads the run history with `pdt health` and
+`pdt runs` (no app has run yet, so this proves the read path), records which resource each app owns and which
 resources the apps share, then destroys the apps one at a time and checks
 after each one that the destroyed app is gone and that nothing else moved.
 If the initial check fails, the run exits without changing resources.
@@ -120,13 +121,19 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
     def check(name, checker):
         return record(steps, report, name, wait(inventory, checker))
 
-    def command(verb, app):
-        code = run_pdt(verb, app, "--yes")
-        return record(steps, report, f"{verb} {app}",
-                      [] if code == 0 else [f"pdt {verb} {app} exited {code}"])
+    def command(*args):
+        code = run_pdt(*args)
+        name = " ".join(arg for arg in args if arg != "--yes")
+        return record(steps, report, name,
+                      [] if code == 0 else [f"pdt {name} exited {code}"])
 
     for app in apps:
-        if not command("deploy", app):
+        if not command("deploy", app, "--yes"):
+            return
+    if not command("health"):
+        return
+    for app in apps:
+        if not command("runs", app):
             return
     if not check("every resource is tagged", untagged_check(apps)):
         return
@@ -135,7 +142,7 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
                   owner_problems(owned, apps)):
         return
     for index, app in enumerate(apps):
-        if not command("destroy", app):
+        if not command("destroy", app, "--yes"):
             return
         if not check(f"{app} resources are gone", gone_check(owned[app])):
             return

@@ -894,7 +894,8 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "az":
         return subprocess.run([*AZ, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage", "secrets"))
+    parser.add_argument("command",
+                        choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -905,9 +906,13 @@ def main() -> int:
         return relogin("" if requested == PLACEHOLDER_SUBSCRIPTION else requested)
     if args.command == "storage":
         return storage(app, preflight(app, azure_settings(app)), args.rest, args.yes)
+    from pdt import deploy_azure_container_apps as module
+    if args.command == "runs":
+        return module.runs(app, preflight(app, azure_settings(app)), args.rest)
+    if args.command == "logs":
+        return module.logs(app, preflight(app, azure_settings(app)), args.rest)
     if app["timezone"] not in ("Etc/UTC", "UTC"):
         fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
-    from pdt import deploy_azure_container_apps as module
     if args.command == "secrets":
         return module.secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":

@@ -66,6 +66,7 @@ COMMON_ACTIONS = [
     "logs:DescribeLogGroups",
     "logs:DescribeLogStreams",
     "logs:FilterLogEvents",
+    "logs:GetLogEvents",
     "logs:ListTagsForResource",
     "logs:PutRetentionPolicy",
     "logs:TagResource",
@@ -670,7 +671,8 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "aws":
         return subprocess.run([*AWS_CLI, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("deploy", "destroy", "login", "storage", "secrets"))
+    parser.add_argument("command", choices=(
+        "deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -688,6 +690,10 @@ def main() -> int:
             return fargate.secrets(app, args.rest[0], args.yes, *args.rest[1:])
         if args.command == "deploy":
             return fargate.deploy(app, args.yes)
+        if args.command == "runs":
+            return fargate.runs(app, ensure_session(app), args.rest)
+        if args.command == "logs":
+            return fargate.logs(app, ensure_session(app), args.rest)
         return fargate.destroy(app, args.yes)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",

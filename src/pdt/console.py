@@ -124,6 +124,9 @@ def command(text: str, note: str = "", indent: int = 2) -> None:
 
 
 SECRET_CHANGE_COLOURS = {"deleted": "red", "new": "green", "updated": "yellow", "unchanged": "dim"}
+RUN_STATUS_COLOURS = {"succeeded": "green", "ok": "green", "failed": "red", "unknown": "red",
+                      "running": "cyan", "not yet run": "dim"}
+LOG_LEVEL_COLOURS = {"DEBUG": "dim", "INFO": "green", "WARNING": "yellow", "ERROR": "bold red"}
 
 
 def secret_changes(rows: list[tuple[str, str, str, str]]) -> None:
@@ -133,6 +136,15 @@ def secret_changes(rows: list[tuple[str, str, str, str]]) -> None:
     _console.print(_row(headers, widths, ["bold"] * len(headers)))
     for row in rows:
         _console.print(_row(list(row), widths, [SECRET_CHANGE_COLOURS[row[0]]] * len(row)))
+
+
+def log_line(time: str, level: str, message: str) -> None:
+    """One line of a job's log: its time, its level coloured, then the message as is."""
+    line = Text(f"{time:<8} ")
+    line.append(f"{level:<7}", style=LOG_LEVEL_COLOURS.get(level, ""))
+    line.append(f" {message}")
+    line.rstrip()
+    _console.print(line)
 
 
 def ask(question: str, default: str = "") -> str:
@@ -168,11 +180,16 @@ def cost(items: list[tuple[str, float]], prices: str, excludes: str = "") -> Non
 
 
 def table(headers: list[str], rows: list[list[str]],
-          styles: list[str] | None = None) -> None:
-    """Aligned columns. Cell text is literal, and no line ends in a space."""
+          styles: list[str] | None = None,
+          row_styles: list[list[str]] | None = None) -> None:
+    """Aligned columns. Cell text is literal, and no line ends in a space.
+
+    `styles` holds one style per column. `row_styles`, when given, holds one
+    such list per row instead, so a cell can be coloured by its value.
+    """
     cells = [[str(cell) for cell in row] for row in rows]
     widths = [max(len(row[index]) for row in (headers, *cells))
               for index in range(len(headers))]
     _console.print(_row(headers, widths, ["bold"] * len(headers)))
-    for row in cells:
-        _console.print(_row(row, widths, styles or []))
+    for index, row in enumerate(cells):
+        _console.print(_row(row, widths, row_styles[index] if row_styles else styles or []))

@@ -20,7 +20,8 @@ Dockerfile; write_dockerfile puts whichever applies at the root of the
 context, so every cloud provider builds the same way. An app's own
 .dockerignore is rewritten to the context root too (and as .gcloudignore,
 which Cloud Build reads instead), so its patterns keep meaning paths
-inside the app directory.
+inside the app directory. The generated image ends every run's output
+with the line `pdt: exit N`, which `pdt runs` reads for the run's status.
 
 Every provider also shares one data store per account, named
 `pdt-data-<suffix>` by `store_name` and tagged with `STORE_TAGS`; it
@@ -56,7 +57,7 @@ COPY . /workspace
 WORKDIR /workspace/{app}
 ENV PDT_PROJECT=/workspace NO_COLOR=1
 RUN uv sync --script run.py
-ENTRYPOINT ["uv", "run", "--script", "run.py"]
+ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
 """
 BUILD_EXCLUDES = (
     ".env", ".env.*", ".secrets", ".git", ".venv", "__pycache__",
