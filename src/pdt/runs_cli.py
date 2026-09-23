@@ -24,6 +24,11 @@ SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
 EXIT_MARKER = "pdt: exit "
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 TEXT_LINE = re.compile(r"^\d\d:\d\d:\d\d (DEBUG|INFO|WARNING|ERROR)\s+(.*)$")
+# Meltano's structlog lines: `2026-09-23T13:00:35.009777Z [warning  ] dbt   message`.
+MELTANO_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) "
+                          r"\[(debug|info|warning|error|critical)\s*\] (.*)$")
+MELTANO_LEVELS = {"debug": "DEBUG", "info": "INFO", "warning": "WARNING",
+                  "error": "ERROR", "critical": "ERROR"}
 
 
 @dataclasses.dataclass
@@ -55,7 +60,23 @@ def parse_line(raw: str, time: datetime | None) -> Line:
     match = TEXT_LINE.match(raw)
     if match:
         return Line(time, match.group(1), match.group(2))
+    match = MELTANO_LINE.match(raw)
+    if match:
+        stamp = datetime.fromisoformat(match.group(1))
+        return Line(stamp, MELTANO_LEVELS[match.group(2)], match.group(3))
     return Line(time, "", raw)
+
+
+def in_time_order(lines: list[Line]) -> list[Line]:
+    """Lines by their own times; a line with no time keeps its place after the one before it."""
+    keyed = []
+    last = None
+    for index, line in enumerate(lines):
+        if line.time is not None:
+            last = line.time
+        keyed.append((last or datetime.min.replace(tzinfo=UTC), index, line))
+    keyed.sort(key=lambda item: item[:2])
+    return [line for _, _, line in keyed]
 
 
 def json_line(record: dict, time: datetime | None) -> Line:
@@ -212,7 +233,8 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
                           f"pick a number from 1 to {len(found)}")
             return 1
     run = found[number - 1]
-    lines = [line for line in read_lines(run) if not line.message.startswith(EXIT_MARKER)]
+    lines = in_time_order([line for line in read_lines(run)
+                           if not line.message.startswith(EXIT_MARKER)])
     if args.errors:
         lines = [line for line in lines if line.level not in ("DEBUG", "INFO")]
     if args.json:

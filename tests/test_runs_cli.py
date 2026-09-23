@@ -54,6 +54,22 @@ def test_parse_line_reads_the_text_form():
     assert runs_cli.parse_line("10:00:12 ERROR   boom", None) == Line(None, "ERROR", "boom")
 
 
+def test_parse_line_reads_a_meltano_line_with_its_own_time_and_level():
+    line = runs_cli.parse_line(
+        "2026-09-23T13:00:35.009777Z [warning  ] dbt          Deprecated functionality", T0)
+    assert line.time == datetime(2026, 9, 23, 13, 0, 35, 9777, tzinfo=UTC)
+    assert line.level == "WARNING"
+    assert line.message == "dbt          Deprecated functionality"
+
+
+def test_lines_sort_by_their_own_time_and_a_traceback_follows_its_line():
+    late = Line(T1, "INFO", "late")
+    early = Line(T0, "ERROR", "early")
+    trace = Line(None, "", "  File run.py")
+    assert runs_cli.in_time_order([late, early, trace]) == [early, trace, late]
+    assert runs_cli.in_time_order([late, trace, early]) == [early, late, trace]
+
+
 def test_parse_line_keeps_a_plain_line_with_no_level():
     assert runs_cli.parse_line("Traceback (most recent call last):", T0) == Line(
         T0, "", "Traceback (most recent call last):")
