@@ -97,6 +97,9 @@ pdt login my-report
 | `pdt secrets APP set NAME` | put one value, read from stdin, into the deployed app's secrets |
 | `pdt login APP` | sign in again to the app's cloud provider |
 | `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files |
+| `pdt runs APP` | list the deployed app's recent runs, newest first |
+| `pdt logs APP [N]` | read the log of run N (default 1, the newest); `--failed` picks the newest failed run, `--errors` leaves out DEBUG and INFO lines |
+| `pdt health [APP]` | show whether each app's last run succeeded; exits 1 when one failed |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
 | `pdt completion [SHELL]` | turn on tab completion for a shell |

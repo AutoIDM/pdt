@@ -63,7 +63,7 @@ Both install routes must keep working, and a change is not done until both do:
 - A command that needs a project calls `find_project()` and lets `ConfigError` reach `main`, which prints it. Do not print and return 1 in each command.
 - `src/pdt/deploy.py` must stay provider-neutral. It does these steps, in order: load and validate config, check env vars, check the schedule, prepare cross-cutting items such as email auth, then dispatch. The only provider check in it is the dispatch on `platform.provider`.
 - Dispatch every provider the same way. Do not add `if provider == "aws"` style branches. Adding a provider means adding `src/pdt/deploy_<provider>.py` and registering the name in `deploy.PROVIDERS`, `config.PROVIDERS`, and `scaffold.PROVIDER_CHOICES` plus `scaffold.PROVIDER_QUESTIONS`. Those lists must agree. A name in one and not another gives the user a config that validates and then fails at deploy.
-- Every provider script takes the same command line: `deploy|destroy|login|secrets|storage <app> [--yes]`. A setting that one provider needs (an AWS profile, an Azure subscription, a Google Cloud project) is a `platform:` key, never a command-line option, so every provider is driven the same way.
+- Every provider script takes the same command line: `deploy|destroy|login|secrets|storage|runs|logs <app> [--yes]`. A setting that one provider needs (an AWS profile, an Azure subscription, a Google Cloud project) is a `platform:` key, never a command-line option, so every provider is driven the same way.
 - `pdt aws`, `pdt az`, and `pdt gcloud` forward the rest of the command line to that provider's CLI, and install it first if it is missing. Add a passthrough only for a provider whose CLI pdt already manages.
 - Dependencies: `pyproject.toml` declares only cross-cutting packages. A provider SDK such as `boto3` or `azure-cli` belongs in that provider module's PEP 723 script header, never in `[project.dependencies]`, because `deploy.py` dispatches with `uv run --script src/pdt/deploy_<provider>.py`. Use the same dispatch mechanism for every provider. A module that is only imported carries no script header.
 - A provider script reaches the package through `sys.path.insert(0, Path(__file__).resolve().parent.parent)`. That resolves to `src/` in a clone and to site-packages after an install.
@@ -85,6 +85,7 @@ Both install routes must keep working, and a change is not done until both do:
 - Destroy prints what it will delete before it deletes anything, and asks to proceed.
 - Guide the user. If a required tool is missing, install it (see the guiding principle above). If a login or profile is missing, list the choices and ask. If a permission is missing, print the exact policy the user must add.
 - Schedules are cron expressions in config. Each provider translates them to its own scheduler format.
+- Every provider writes each run's output to one place pdt can read back by run, and the last line of a run's output on AWS and Windows is `pdt: exit N`, which `pdt runs` reads for the status.
 
 ## Anything written to disk outside the project
 

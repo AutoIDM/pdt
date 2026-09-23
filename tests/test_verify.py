@@ -23,13 +23,14 @@ class FakeCloud:
         self.keep_shared = False
         self.deploy_fails = ()
 
-    def run_pdt(self, verb, app, _yes):
-        self.calls.append((verb, app))
+    def run_pdt(self, verb, *args):
+        self.calls.append((verb, *args[:1]))
+        app = args[0] if args else None
         if verb == "deploy":
             if app in self.deploy_fails:
                 return 1
             self.deploy(app)
-        else:
+        elif verb == "destroy":
             self.destroy(app)
         return 0
 
@@ -108,6 +109,9 @@ def test_happy_path_leaves_the_account_empty():
         "account is empty before deploy",
         "deploy app-one",
         "deploy app-two",
+        "health",
+        "runs app-one",
+        "runs app-two",
         "every resource is tagged",
         "every resource has an owner",
         "destroy app-one",
@@ -153,6 +157,18 @@ def test_a_failure_destroys_every_app():
     assert cloud.resources == {}
 
 
+def test_a_failing_health_check_fails_and_destroys_every_app():
+    cloud = FakeCloud()
+
+    def run_pdt(verb, *args):
+        return 1 if verb == "health" else cloud.run_pdt(verb, *args)
+
+    steps = verify(cloud.apps, run_pdt, cloud.inventory, report=lambda step: None, wait=now)
+    assert [step.name for step in failed(steps)] == ["health"]
+    assert failed(steps)[0].detail == "pdt health exited 1"
+    assert cloud.resources == {}
+
+
 def test_an_exception_after_deploy_destroys_every_app():
     cloud = FakeCloud()
 
@@ -167,6 +183,7 @@ def test_an_exception_after_deploy_destroys_every_app():
     assert "the cloud said no" in failed(steps)[0].detail
     assert cloud.calls == [
         ("deploy", "app-one"), ("deploy", "app-two"),
+        ("health",), ("runs", "app-one"), ("runs", "app-two"),
         ("destroy", "app-one"), ("destroy", "app-two"),
     ]
     assert cloud.resources == {}
