@@ -19,7 +19,7 @@ def store(tmp_path):
 
 
 def write(store, path, text):
-    file = Path(store.url.removeprefix("file://")) / path
+    file = store.backend().folder / path
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(text)
     return file

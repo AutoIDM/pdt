@@ -1,8 +1,18 @@
+import os
+
 import pytest
 
 from pdt import cli, completion, config
 
 from conftest import add_app
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
 
 
 def test_app_completer_lists_project_apps(project):
@@ -54,13 +64,12 @@ def test_install_preserves_symlink_and_permissions(tmp_path):
     completion._install(path, "# pdt completion start\nnew\n# pdt completion end\n")
 
     assert path.is_symlink()
-    assert target.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o600
     assert target.read_text().startswith("existing\n")
 
 
-def test_setup_writes_zsh_registration(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+def test_setup_writes_zsh_registration(tmp_path, home, monkeypatch):
     monkeypatch.setenv("ZDOTDIR", str(tmp_path / "zsh"))
     monkeypatch.setattr(completion, "_shell", lambda: "zsh")
 
@@ -75,11 +84,9 @@ def test_setup_writes_zsh_registration(tmp_path, monkeypatch):
     assert startup.read_text() == first
 
 
-def test_setup_writes_bash_interactive_and_login_registration(tmp_path, monkeypatch):
+def test_setup_writes_bash_interactive_and_login_registration(tmp_path, home, monkeypatch):
     profile = tmp_path / ".profile"
     profile.write_text("existing\n")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setattr(completion, "_shell", lambda: "bash")
 
     completion.setup()
@@ -100,10 +107,7 @@ def test_setup_uses_fish_completion_directory(tmp_path, monkeypatch):
     assert "complete --command pdt" in script.read_text()
 
 
-def test_setup_uses_configured_powershell_profile(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
+def test_setup_uses_configured_powershell_profile(tmp_path, home, monkeypatch):
     monkeypatch.setattr(completion, "_shell", lambda: "pwsh")
 
     completion.setup()
@@ -153,9 +157,7 @@ def test_data_home_is_shared_with_gcloud_sdk(tmp_path, monkeypatch):
     assert completion._data_dir() == config.data_home() / "pdt"
 
 
-def test_install_command_sets_up_a_named_shell(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+def test_install_command_sets_up_a_named_shell(tmp_path, home, monkeypatch, capsys):
     monkeypatch.delenv("ZDOTDIR", raising=False)
     monkeypatch.setattr(completion, "_shell", lambda: None)
 
@@ -174,10 +176,7 @@ def test_install_command_with_unknown_shell_names_the_choices(monkeypatch, capsy
         assert f"pdt completion {shell}" in out
 
 
-def test_script_flag_prints_without_writing(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
-
+def test_script_flag_prints_without_writing(tmp_path, home, capsys):
     assert completion.install("bash", print_only=True) == 0
 
     assert "pdt" in capsys.readouterr().out
