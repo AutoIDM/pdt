@@ -59,6 +59,8 @@ APP_QUESTIONS = {
 
 SINCE_HELP = ("show every run that started at or after this: 12h, 3d, 2w, 2026-09-20, "
               "or 2026-09-20T14:00 (default: the 10 newest runs)")
+SPAN_HELP = "with --since, show only the runs that started within this long after it: 12h, 3d, 2w"
+COUNT_HELP = "show at most this many runs (default: 10 without --since, else every run)"
 
 
 def choose_app(name: str | None, command: str) -> str | None:
@@ -193,12 +195,17 @@ def cmd_storage(args) -> int:
     return deploy.storage(args.app, args.rest)
 
 
+def window_options(args) -> list[str]:
+    return [part for option, value in (("--since", args.since), ("--span", args.span),
+                                       ("--count", args.count)) if value is not None
+            for part in (option, str(value))]
+
+
 def cmd_runs(args) -> int:
     name = choose_app(args.app, "runs")
     if name is None:
         return 1
-    since = ["--since", args.since] if args.since else []
-    return deploy.runs(name, [*since, *(["--json"] if args.json else [])])
+    return deploy.runs(name, [*window_options(args), *(["--json"] if args.json else [])])
 
 
 def cmd_logs(args) -> int:
@@ -206,10 +213,10 @@ def cmd_logs(args) -> int:
     if name is None:
         return 1
     flags = [flag for flag, on in (("--failed", args.failed), ("--errors", args.errors),
-                                   ("--full", args.full),
+                                   ("--head", args.head), ("--full", args.full),
                                    ("--json", args.json)) if on]
-    since = ["--since", args.since] if args.since else []
-    return deploy.logs(name, [str(args.number), *since, *flags])
+    lines = [] if args.lines is None else ["--lines", str(args.lines)]
+    return deploy.logs(name, [str(args.number), *window_options(args), *lines, *flags])
 
 
 def cmd_health(args) -> int:
@@ -305,6 +312,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
     p.add_argument("--since", help=SINCE_HELP)
+    p.add_argument("--span", help=SPAN_HELP)
+    p.add_argument("--count", type=int, help=COUNT_HELP)
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_runs)
     p = add_parser("logs", help="read the log of one of a deployed app's runs")
@@ -314,9 +323,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("number", nargs="?", type=int, default=1,
                    help="which run, as `pdt runs` numbers them (default: 1, the newest)")
     p.add_argument("--since", help=SINCE_HELP)
+    p.add_argument("--span", help=SPAN_HELP)
+    p.add_argument("--count", type=int, help=COUNT_HELP)
     p.add_argument("--failed", action="store_true", help="read the newest failed run")
     p.add_argument("--errors", action="store_true",
                    help="leave out DEBUG and INFO lines")
+    p.add_argument("--lines", type=int, help="print this many lines (default: 20)")
+    p.add_argument("--head", action="store_true",
+                   help="print the first lines, not the last")
     p.add_argument("--full", action="store_true",
                    help="print every line, not only the last 20")
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
