@@ -4,7 +4,7 @@ import json
 from pdt import deploy_azure, deploy_azure_container_apps, runs_cli
 
 SETTINGS = {
-    "resource_group": "pdt", "workspace": "pdt-logs",
+    "resource_group": "pdt", "suffix": "aaba0d5", "workspace": "pdt-logs",
     "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
 }
 
