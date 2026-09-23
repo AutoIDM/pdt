@@ -12,7 +12,7 @@ def run_cli(monkeypatch, *argv):
     return cli.main()
 
 
-APP_COMMANDS = ["run", "deploy", "login", "destroy", "secrets"]
+APP_COMMANDS = ["run", "deploy", "login", "destroy", "secrets", "runs", "logs"]
 
 
 def test_no_command_prints_help(monkeypatch, capsys):
@@ -81,6 +81,53 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append((a, k)) or 0)
     assert run_cli(monkeypatch, "storage", "hello-world", "ls", "state/") == 0
     assert calls == [(("azure", "storage", "hello-world", False, ["ls", "state/"]), {})]
+
+
+def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatch):
+    add_app(project, "hello-world", "schedule: daily\n")
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append(a) or 0)
+    assert run_cli(monkeypatch, "runs", "hello-world", "--json") == 0
+    assert run_cli(monkeypatch, "logs", "hello-world") == 0
+    assert run_cli(monkeypatch, "logs", "hello-world", "3", "--failed", "--errors") == 0
+    assert calls == [
+        ("azure", "runs", "hello-world", False, ["--", "--json"]),
+        ("azure", "logs", "hello-world", False, ["--", "1"]),
+        ("azure", "logs", "hello-world", False, ["--", "3", "--failed", "--errors"]),
+    ]
+
+
+def test_health_checks_every_enabled_app(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    add_app(project, "not-ready", "enabled: false\n")
+    add_app(project, "daily-report", "schedule: daily\n")
+    calls = []
+
+    def fake_output(provider, command, app_name, extra):
+        calls.append((provider, command, app_name, extra))
+        if app_name == "daily-report":
+            return 0, 'status line\n[{"id": "e1", "started": "2026-09-23T10:00:00+00:00", ' \
+                      '"ended": "2026-09-23T10:00:12+00:00", "status": "failed"}]\n'
+        return 0, "[]\n"
+
+    monkeypatch.setattr(deploy, "dispatch_output", fake_output)
+    assert run_cli(monkeypatch, "health") == 1
+    assert calls == [("azure", "runs", name, ["--", "--json"])
+                     for name in ("daily-report", "hello-world")]
+    out = capsys.readouterr().out
+    assert "not-ready" not in out
+    assert "not yet run" in out
+    assert "0 of 1 succeeded" in out
+
+
+def test_health_of_one_app_relays_a_provider_failure(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch_output",
+                        lambda *a: (1, "error: not signed in to Azure\n"))
+    assert run_cli(monkeypatch, "health", "hello-world") == 1
+    out = capsys.readouterr().out
+    assert "error: not signed in to Azure" in out
+    assert "unknown" in out
 
 
 def test_cloud_cli_passthroughs_are_registered():

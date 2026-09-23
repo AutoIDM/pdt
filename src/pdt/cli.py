@@ -52,6 +52,9 @@ APP_QUESTIONS = {
     "login": "Which app's cloud provider do you want to sign in to?",
     "destroy": "Which app do you want to destroy?",
     "secrets": "Which app's secrets?",
+    "runs": "Which app's runs do you want to see?",
+    "logs": "Which app's log do you want to read?",
+    "health": "Which app do you want to check?",
 }
 
 
@@ -187,6 +190,36 @@ def cmd_storage(args) -> int:
     return deploy.storage(args.app, args.rest)
 
 
+def cmd_runs(args) -> int:
+    name = choose_app(args.app, "runs")
+    if name is None:
+        return 1
+    return deploy.runs(name, ["--json"] if args.json else [])
+
+
+def cmd_logs(args) -> int:
+    name = choose_app(args.app, "logs")
+    if name is None:
+        return 1
+    flags = [flag for flag, on in (("--failed", args.failed), ("--errors", args.errors),
+                                   ("--json", args.json)) if on]
+    return deploy.logs(name, [str(args.number), *flags])
+
+
+def cmd_health(args) -> int:
+    if args.app is None:
+        names = config.find_apps()
+        if not names:
+            say_no_apps()
+            return 0
+    else:
+        name = choose_app(args.app, "health")
+        if name is None:
+            return 1
+        names = [name]
+    return deploy.health(names, args.json)
+
+
 def cmd_completion(args) -> int:
     return completion.install(args.shell, print_only=args.script)
 
@@ -261,6 +294,28 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|destroy [args...]")
     p.set_defaults(func=cmd_storage)
+    p = add_parser("runs", help="list a deployed app's recent runs")
+    app = p.add_argument("app", nargs="?",
+                         help="the app's folder name; omit to see the choices")
+    app.completer = completion.apps
+    p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
+    p.set_defaults(func=cmd_runs)
+    p = add_parser("logs", help="read the log of one of a deployed app's runs")
+    app = p.add_argument("app", nargs="?",
+                         help="the app's folder name; omit to see the choices")
+    app.completer = completion.apps
+    p.add_argument("number", nargs="?", type=int, default=1,
+                   help="which run, as `pdt runs` numbers them (default: 1, the newest)")
+    p.add_argument("--failed", action="store_true", help="read the newest failed run")
+    p.add_argument("--errors", action="store_true",
+                   help="leave out DEBUG and INFO lines")
+    p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
+    p.set_defaults(func=cmd_logs)
+    p = add_parser("health", help="show whether each deployed app's last run succeeded")
+    app = p.add_argument("app", nargs="?", help="one app's folder name; omit to check every app")
+    app.completer = completion.apps
+    p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
+    p.set_defaults(func=cmd_health)
     p = add_parser("completion", help="turn on tab completion in your shell")
     p.add_argument("shell", nargs="?", choices=completion.SHELLS,
                    help="which shell; pdt works it out when left off")
