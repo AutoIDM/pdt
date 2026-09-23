@@ -218,6 +218,18 @@ def test_logs_failed_with_no_failed_run(capsys):
     assert capsys.readouterr().out == "my-report has no failed run in its last 1 runs.\n"
 
 
+def test_logs_shows_the_last_20_lines_unless_full(capsys):
+    lines = [Line(T0, "INFO", f"line {index}") for index in range(25)]
+    runs_cli.logs(lambda: [Run("r1", T0, T1, "succeeded")], lambda run: lines, "my-report", [])
+    out = capsys.readouterr().out
+    assert "the last 20 of 25 lines" in out
+    assert "line 4" not in out and "line 5" in out and "line 24" in out
+    runs_cli.logs(lambda: [Run("r1", T0, T1, "succeeded")], lambda run: lines, "my-report",
+                  ["--full"])
+    out = capsys.readouterr().out
+    assert "of 25 lines" not in out and "line 0" in out
+
+
 def test_logs_errors_keeps_warnings_errors_and_plain_lines(capsys):
     assert runs_cli.logs(list_two, read, "my-report", ["2", "--errors", "--json"]) == 1
     records = json.loads(capsys.readouterr().out)
