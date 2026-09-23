@@ -39,7 +39,7 @@ def deploy_settings(environment) -> dict:
         "subscription": SUBSCRIPTION, "resource_group": "pdt", "region": "eastus2",
         "registry": "pdtregistry", "environment": environment, "identity": "pdt-runner",
         "workspace": "pdt-logs", "vault": "pdt-vault", "deployer_object_id": "d",
-        "deployer_principal_type": "User",
+        "deployer_principal_type": "User", "suffix": "abc1234def",
     }
 
 
