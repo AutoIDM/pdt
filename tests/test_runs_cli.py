@@ -93,7 +93,7 @@ def test_marker_status():
 def test_runs_prints_a_table_newest_first(capsys):
     assert runs_cli.runs(list_two, "my-report", []) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split() == ["#", "Started", "Duration", "Status", "Exit", "code", "Id"]
+    assert lines[0].split() == ["#", "Started", "Duration", "Status", "Exit", "Code", "Id"]
     assert lines[1].split() == ["1", "2026-09-23", "10:00:12", "12s", "succeeded", "0",
                                 "stream-2"]
     assert lines[2].split() == ["2", "2026-09-22", "10:00:00", "3m", "05s", "failed", "1",
