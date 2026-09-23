@@ -452,9 +452,10 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
                 file.read_text(encoding="utf-8-sig").splitlines()]
         status = runs_cli.marker_status(
             lines, lambda: powershell is not None and _task_running(powershell, task_name))
+        code = runs_cli.exit_code(lines)
         ended = (datetime.fromtimestamp(file.stat().st_mtime, tz=timezone.utc)
-                if runs_cli.exit_code(lines) is not None else None)
-        found.append(runs_cli.Run(file.stem, started, ended, status))
+                if code is not None else None)
+        found.append(runs_cli.Run(file.stem, started, ended, status, code))
     return found
 
 

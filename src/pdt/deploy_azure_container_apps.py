@@ -280,34 +280,46 @@ def execution_run(execution: dict) -> runs_cli.Run:
     return runs_cli.Run(str(execution.get("name") or ""), started, ended, status)
 
 
-def list_runs(job: str, rg: str) -> list[runs_cli.Run]:
+def list_runs(settings: dict, job: str) -> list[runs_cli.Run]:
     execs = az_json("containerapp", "job", "execution", "list", "--name", job,
-                    "--resource-group", rg) or []
+                    "--resource-group", settings["resource_group"]) or []
     found = [execution_run(execution) for execution in execs]
     found.sort(key=lambda run: run.started, reverse=True)
-    return found[:runs_cli.RUN_HISTORY]
+    found = found[:runs_cli.RUN_HISTORY]
+    if not found:
+        return found
+    rows = log_query(settings, f"ContainerAppConsoleLogs_CL | where ContainerJobName_s == '{job}' "
+                               f"and Log_s startswith '{runs_cli.EXIT_MARKER}' "
+                               "| project ContainerGroupName_s, Log_s")
+    for run in found:
+        run.exit_code = next((runs_cli.exit_code([runs_cli.parse_line(log, None)])
+                              for group, log in rows if group.startswith(run.id)), None)
+    return found
 
 
-def read_lines(settings: dict, job: str, execution: str) -> list[runs_cli.Line]:
+def log_query(settings: dict, query: str) -> list[list]:
     workspace_id = az_tsv("monitor", "log-analytics", "workspace", "show",
                           "--resource-group", settings["environment"].resource_group,
                           "--workspace-name", settings["workspace"], "--query", "customerId")
-    query = (f"ContainerAppConsoleLogs_CL | where ContainerJobName_s == '{job}' and "
-            f"ContainerGroupName_s startswith '{execution}' | project TimeGenerated, Log_s "
-            "| order by TimeGenerated asc")
     # `az monitor log-analytics query` needs an extension that pip cannot install
     # into pdt's uv environment, so this calls the query API directly.
     result = az_json("rest", "--method", "post", "--resource", LOG_ANALYTICS_API,
                      "--url", f"{LOG_ANALYTICS_API}/v1/workspaces/{workspace_id}/query",
                      "--body", json.dumps({"query": query})) or {}
-    rows = result.get("tables", [{}])[0].get("rows", [])
+    return result.get("tables", [{}])[0].get("rows", [])
+
+
+def read_lines(settings: dict, job: str, execution: str) -> list[runs_cli.Line]:
+    rows = log_query(settings, f"ContainerAppConsoleLogs_CL | where ContainerJobName_s == '{job}' "
+                               f"and ContainerGroupName_s startswith '{execution}' "
+                               "| project TimeGenerated, Log_s | order by TimeGenerated asc")
     return [runs_cli.parse_line(log, datetime.datetime.fromisoformat(generated))
             for generated, log in rows]
 
 
 def runs(app: dict, settings: dict, rest: list[str]) -> int:
     job = clean_name(f"pdt-{app['name']}")
-    return runs_cli.runs(lambda: list_runs(job, settings["resource_group"]), app["name"], rest)
+    return runs_cli.runs(lambda: list_runs(settings, job), app["name"], rest)
 
 
 def logs(app: dict, settings: dict, rest: list[str]) -> int:
@@ -320,8 +332,7 @@ def logs(app: dict, settings: dict, rest: list[str]) -> int:
                          "finishes; run pdt logs again in a moment.")
         return lines
 
-    return runs_cli.logs(lambda: list_runs(job, settings["resource_group"]), read,
-                         app["name"], rest)
+    return runs_cli.logs(lambda: list_runs(settings, job), read, app["name"], rest)
 
 
 def cost_estimate_for(region: str, cron: str, job: str, rg: str,

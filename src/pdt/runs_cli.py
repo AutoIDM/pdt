@@ -28,6 +28,7 @@ class Run:
     started: datetime
     ended: datetime | None
     status: str
+    exit_code: int | None = None
 
 
 @dataclasses.dataclass
@@ -82,7 +83,8 @@ def marker_status(lines: list[Line], running: Callable[[], bool]) -> str:
 
 def run_json(run: Run) -> dict:
     return {"id": run.id, "started": run.started.isoformat(),
-            "ended": run.ended.isoformat() if run.ended else None, "status": run.status}
+            "ended": run.ended.isoformat() if run.ended else None, "status": run.status,
+            "exit_code": run.exit_code}
 
 
 def parse_runs(output: str) -> list[Run] | None:
@@ -96,7 +98,7 @@ def parse_runs(output: str) -> list[Run] | None:
         return None
     return [Run(record["id"], datetime.fromisoformat(record["started"]),
                 datetime.fromisoformat(record["ended"]) if record["ended"] else None,
-                record["status"]) for record in records]
+                record["status"], record["exit_code"]) for record in records]
 
 
 def local_text(moment: datetime, form: str = "%Y-%m-%d %H:%M:%S") -> str:
@@ -134,10 +136,12 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str]) -> 
     if not found:
         say_not_run(app_name)
         return 0
-    rows = [[str(number), started_text(run), duration_text(run), run.status, run.id]
+    rows = [[str(number), started_text(run), duration_text(run), run.status,
+             "-" if run.exit_code is None else str(run.exit_code), run.id]
             for number, run in enumerate(found, 1)]
-    row_styles = [["", "", "", console.RUN_STATUS_COLOURS[run.status], "dim"] for run in found]
-    console.table(["#", "Started", "Duration", "Status", "Id"], rows,
+    row_styles = [["", "", "", console.RUN_STATUS_COLOURS[run.status], "", "dim"]
+                  for run in found]
+    console.table(["#", "Started", "Duration", "Status", "Exit", "Id"], rows,
                   row_styles=row_styles)
     return 0
 
@@ -175,8 +179,9 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
                                  "level": line.level, "message": line.message}
                                 for line in lines]))
     else:
+        exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
         console.heading(f"run {number} of {app_name}: started {started_text(run)}, "
-                        f"{duration_text(run)}, {run.status}")
+                        f"{duration_text(run)}, {run.status}{exit_part}")
         for line in lines:
             console.log_line(local_text(line.time, "%H:%M:%S") if line.time else "",
                              line.level, line.message)

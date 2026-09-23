@@ -25,8 +25,8 @@ def test_times_render_in_the_local_time_zone(monkeypatch):
     time.tzset()
     assert runs_cli.local_text(T0) == "2026-09-23 06:00:12"
 
-NEWEST = Run("stream-2", T0, T1, "succeeded")
-OLDER = Run("stream-1", EARLIER, EARLIER.replace(minute=3, second=5), "failed")
+NEWEST = Run("stream-2", T0, T1, "succeeded", 0)
+OLDER = Run("stream-1", EARLIER, EARLIER.replace(minute=3, second=5), "failed", 1)
 LINES = {
     "stream-2": [Line(T0, "DEBUG", "connecting"), Line(T0, "INFO", "fetched 3 rows"),
                  Line(T1, "WARNING", "slow"), Line(T1, "", "pdt: exit 0")],
@@ -77,16 +77,26 @@ def test_marker_status():
 def test_runs_prints_a_table_newest_first(capsys):
     assert runs_cli.runs(list_two, "my-report", []) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].split() == ["#", "Started", "Duration", "Status", "Id"]
-    assert lines[1].split() == ["1", "2026-09-23", "10:00:12", "12s", "succeeded", "stream-2"]
-    assert lines[2].split() == ["2", "2026-09-22", "10:00:00", "3m", "05s", "failed", "stream-1"]
+    assert lines[0].split() == ["#", "Started", "Duration", "Status", "Exit", "Id"]
+    assert lines[1].split() == ["1", "2026-09-23", "10:00:12", "12s", "succeeded", "0",
+                                "stream-2"]
+    assert lines[2].split() == ["2", "2026-09-22", "10:00:00", "3m", "05s", "failed", "1",
+                                "stream-1"]
+
+
+def test_runs_shows_a_dash_for_an_unknown_exit_code(capsys):
+    running = Run("stream-3", T1, None, "running")
+    assert runs_cli.runs(lambda: [running], "my-report", []) == 0
+    assert capsys.readouterr().out.splitlines()[1].split() == [
+        "1", "2026-09-23", "10:00:24", "-", "running", "-", "stream-3"]
 
 
 def test_runs_json_round_trips(capsys):
     assert runs_cli.runs(list_two, "my-report", ["--json"]) == 0
     out = capsys.readouterr().out
     assert json.loads(out)[0] == {"id": "stream-2", "started": T0.isoformat(),
-                                  "ended": T1.isoformat(), "status": "succeeded"}
+                                  "ended": T1.isoformat(), "status": "succeeded",
+                                  "exit_code": 0}
     assert runs_cli.parse_runs("preflight line\n" + out) == [NEWEST, OLDER]
 
 
@@ -98,7 +108,7 @@ def test_runs_with_no_runs(capsys):
 def test_logs_shows_the_newest_run_without_the_marker(capsys):
     assert runs_cli.logs(list_two, read, "my-report", []) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "run 1 of my-report: started 2026-09-23 10:00:12, 12s, succeeded"
+    assert lines[0] == "run 1 of my-report: started 2026-09-23 10:00:12, 12s, succeeded, exit 0"
     assert lines[1] == "10:00:12 DEBUG   connecting"
     assert lines[3] == "10:00:24 WARNING slow"
     assert len(lines) == 4

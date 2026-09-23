@@ -57,7 +57,9 @@ def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch)
     assert running.started == datetime(2026, 9, 23, 10, 0, 0, tzinfo=timezone.utc)
     assert running.status == "running"
     assert running.ended is None
+    assert running.exit_code is None
     assert finished.status == "succeeded"
+    assert finished.exit_code == 0
     assert finished.ended is not None
 
 

@@ -918,7 +918,25 @@ def list_runs(project: str, region: str, job: str) -> list[runs_cli.Run]:
         return []
     found = [execution_run(execution) for execution in executions]
     found.sort(key=lambda run: run.started, reverse=True)
+    codes = exit_codes(project, job)
+    for run in found:
+        run.exit_code = codes.get(run.id)
     return found
+
+
+def exit_codes(project: str, job: str) -> dict[str, int]:
+    entries = describe_json(
+        "logging", "read",
+        f'resource.type="cloud_run_job" AND resource.labels.job_name="{job}" AND '
+        f'textPayload:"{runs_cli.EXIT_MARKER}"',
+        "--project", project, "--limit", "200") or []
+    codes = {}
+    for entry in entries:
+        execution_id = (entry.get("labels") or {}).get("run.googleapis.com/execution_name")
+        code = runs_cli.exit_code([runs_cli.parse_line(entry.get("textPayload") or "", None)])
+        if execution_id and code is not None:
+            codes[execution_id] = code
+    return codes
 
 
 def read_lines(project: str, execution_id: str) -> list[runs_cli.Line]:
