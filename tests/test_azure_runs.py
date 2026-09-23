@@ -62,14 +62,15 @@ def test_list_runs_reads_every_exit_code_in_one_query(monkeypatch):
         execution("pdt-report-bbb", "Failed", "2026-09-23T09:00:00Z", "2026-09-23T09:00:05Z"),
         execution("pdt-report-ccc", "Succeeded", "2026-09-23T08:00:00Z", "2026-09-23T08:00:05Z"),
     ]
-    calls = fake_az(monkeypatch, execs, [("pdt-report-aaa-x1y2z", "pdt: exit 0"),
-                                         ("pdt-report-bbb-q9w8e", "pdt: exit 3")])
+    calls = fake_az(monkeypatch, execs, [
+        ("pdt-report-aaa", "Container 'pdt-report' was terminated with exit code '0' and reason 'ProcessExited'"),
+        ("pdt-report-bbb", "Container 'pdt-report' was terminated with exit code '3' and reason 'ProcessExited'")])
     found = deploy_azure_container_apps.list_runs(SETTINGS, "pdt-report")
     assert [run.exit_code for run in found] == [0, 3, None]
     [query_call] = [call for call in calls if call[0] == "rest"]
     query = json.loads(query_call[query_call.index("--body") + 1])["query"]
-    assert "ContainerJobName_s == 'pdt-report'" in query
-    assert "Log_s startswith 'pdt: exit '" in query
+    assert "ContainerAppSystemLogs_CL | where JobName_s == 'pdt-report'" in query
+    assert "Reason_s == 'ContainerTerminated'" in query
 
 
 def test_read_lines_queries_the_shared_workspace(monkeypatch):

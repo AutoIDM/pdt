@@ -85,7 +85,7 @@ Both install routes must keep working, and a change is not done until both do:
 - Destroy prints what it will delete before it deletes anything, and asks to proceed.
 - Guide the user. If a required tool is missing, install it (see the guiding principle above). If a login or profile is missing, list the choices and ask. If a permission is missing, print the exact policy the user must add.
 - Schedules are cron expressions in config. Each provider translates them to its own scheduler format.
-- Every provider writes each run's output to one place pdt can read back by run, and the last line of a run's output on every provider is `pdt: exit N`. `pdt runs` reads it for every run's exit code, and on AWS and Windows also for the status. It reads the codes with one provider call per listing, never one call per run.
+- Every provider writes each run's output to one place pdt can read back by run. `pdt runs` reads each run's exit code with one provider call per listing: from the platform's own record where one exists (Azure system logs), else from the `pdt: exit N` line the generated image and the Windows wrapper write last.
 
 ## Anything written to disk outside the project
 
