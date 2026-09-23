@@ -198,7 +198,7 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str]) -> 
             for number, run in enumerate(found, 1)]
     row_styles = [["", "", "", console.RUN_STATUS_COLOURS[run.status], "", "dim"]
                   for run in found]
-    console.table(["#", "Started", "Duration", "Status", "Exit", "Id"], rows,
+    console.table(["#", "Started", "Duration", "Status", "Exit code", "Id"], rows,
                   row_styles=row_styles)
     return 0
 
