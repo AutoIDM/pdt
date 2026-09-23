@@ -11,12 +11,16 @@ import argparse
 import dataclasses
 import json
 import re
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Callable
 
 from pdt import console
 
-RUN_HISTORY = 20
+RUN_HISTORY = 50
+DEFAULT_RUNS = 10
+SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
+SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
+               "or a date and time (2026-09-20T14:00)")
 EXIT_MARKER = "pdt: exit "
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 TEXT_LINE = re.compile(r"^\d\d:\d\d:\d\d (DEBUG|INFO|WARNING|ERROR)\s+(.*)$")
@@ -121,20 +125,51 @@ def duration_text(run: Run) -> str:
     return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
 
 
-def say_not_run(app_name: str) -> None:
-    console.say(f"{app_name} has not run yet.")
+def parse_since(value: str, now: datetime) -> datetime:
+    """The moment `--since VALUE` names; a date without a time is local midnight."""
+    match = re.fullmatch(r"(\d+)([hdw])", value)
+    if match:
+        return now - timedelta(**{SINCE_UNITS[match.group(2)]: int(match.group(1))})
+    for form in ("%Y-%m-%d", "%Y-%m-%dT%H:%M"):
+        try:
+            return datetime.strptime(value, form).astimezone()
+        except ValueError:
+            pass
+    raise ValueError(f"--since {value} is not a time pdt reads; use {SINCE_FORMS}")
+
+
+def window(found: list[Run], since: datetime | None) -> list[Run]:
+    """The runs `pdt runs` numbers: the DEFAULT_RUNS newest, or every run since a moment."""
+    if since is None:
+        return found[:DEFAULT_RUNS]
+    return [run for run in found if run.started >= since]
+
+
+def say_not_run(app_name: str, since: str | None) -> None:
+    if since is None:
+        console.say(f"{app_name} has not run yet.")
+    else:
+        console.say(f"{app_name} has not run since {since}.")
 
 
 def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str]) -> int:
     parser = argparse.ArgumentParser(prog=f"pdt runs {app_name}")
+    parser.add_argument("--since")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
+    try:
+        since = None if args.since is None else parse_since(args.since, datetime.now(UTC))
+    except ValueError as exc:
+        console.error(str(exc))
+        return 1
     found = list_runs()
     if args.json:
-        console.say(json.dumps([run_json(run) for run in found]))
+        shown = found if since is None else window(found, since)
+        console.say(json.dumps([run_json(run) for run in shown]))
         return 0
+    found = window(found, since)
     if not found:
-        say_not_run(app_name)
+        say_not_run(app_name, args.since)
         return 0
     rows = [[str(number), started_text(run), duration_text(run), run.status,
              "-" if run.exit_code is None else str(run.exit_code), run.id]
@@ -152,11 +187,17 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
     parser.add_argument("number", nargs="?", type=int, default=1)
     parser.add_argument("--failed", action="store_true")
     parser.add_argument("--errors", action="store_true")
+    parser.add_argument("--since")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
-    found = list_runs()
+    try:
+        since = None if args.since is None else parse_since(args.since, datetime.now(UTC))
+    except ValueError as exc:
+        console.error(str(exc))
+        return 1
+    found = window(list_runs(), since)
     if not found:
-        say_not_run(app_name)
+        say_not_run(app_name, args.since)
         return 0
     if args.failed:
         failed = [number for number, run in enumerate(found, 1) if run.status == "failed"]
@@ -167,7 +208,7 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
     else:
         number = args.number
         if not 1 <= number <= len(found):
-            console.error(f"{app_name} has {len(found)} runs; "
+            console.error(f"pdt runs {app_name} lists {len(found)} runs; "
                           f"pick a number from 1 to {len(found)}")
             return 1
     run = found[number - 1]
@@ -195,6 +236,7 @@ def health_row(app_name: str, found: list[Run] | None) -> dict:
     if not found:
         return {"app": app_name, "status": "not yet run", "last_run": None,
                 "succeeded": 0, "runs": 0}
+    found = found[:DEFAULT_RUNS]
     status = {"succeeded": "ok"}.get(found[0].status, found[0].status)
     return {"app": app_name, "status": status, "last_run": found[0].started.isoformat(),
             "succeeded": sum(run.status == "succeeded" for run in found), "runs": len(found)}
