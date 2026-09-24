@@ -95,6 +95,7 @@ def index(request):
     return render(request, "gui/apps.html", {
         "project": project, "project_name": Path(project.path).name, "rows": rows,
         "grid": health.build_grid(project, **grid_params(request)),
+        "running": any(row["health"]["status"] == "running" for row in rows),
     })
 
 
@@ -115,6 +116,7 @@ def app_detail(request, name):
         "project": project, "project_name": Path(project.path).name, "app": app,
         "config": app_config(name), "health": health_row(app), "runs": numbered_runs(app),
         "grid": health.build_grid(project, **params),
+        "running": app.runs.filter(status="running").exists(),
     })
 
 
@@ -153,7 +155,7 @@ def run_detail(request, name, pk):
     project = sync.project_row()
     run = run_or_404(project, name, pk)
     pending = sync.needs_logs(run) or sync.needs_artifacts(run)
-    if pending:
+    if pending and run.status != "running":
         worker.ask(run)
     lines = run.lines.all()
     errors_only = request.GET.get("errors") == "1"

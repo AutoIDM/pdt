@@ -1,6 +1,7 @@
 {% extends "gui/base.html" %}
 {% block title %}Apps{% endblock %}
 {% block content %}
+{% if running %}<meta http-equiv="refresh" content="30">{% endif %}
 <section class="card">
     <div class="card-head">
         <h1>Apps</h1>

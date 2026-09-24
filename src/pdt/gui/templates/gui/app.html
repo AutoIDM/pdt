@@ -2,6 +2,7 @@
 {% block title %}{{ app.name }}{% endblock %}
 {% block crumbs %}<a href="{% url 'index' %}">Apps</a> › <span>{{ app.name }}</span>{% endblock %}
 {% block content %}
+{% if running %}<meta http-equiv="refresh" content="15">{% endif %}
 <section class="card">
     <div class="card-head">
         <div>
