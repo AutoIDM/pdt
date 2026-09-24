@@ -2,7 +2,7 @@
 {% block title %}{{ app.name }} run {{ number }}{% endblock %}
 {% block crumbs %}<a href="{% url 'index' %}">Apps</a> › <a href="{% url 'app_detail' app.name %}">{{ app.name }}</a> › <span>run {{ number }}</span>{% endblock %}
 {% block content %}
-{% if pending %}<meta http-equiv="refresh" content="5">{% endif %}
+{% if run.status == "running" %}<meta http-equiv="refresh" content="15">{% elif pending %}<meta http-equiv="refresh" content="5">{% endif %}
 <section class="card">
     <div class="card-head">
         <div>
@@ -12,7 +12,8 @@
                 {% if run.exit_code is not None %} · exit {{ run.exit_code }}{% endif %}
                 · <span class="dim">{{ run.run_id }}</span>
             </p>
-            {% if pending %}<p class="hint">Reading this run's log and files now; this page refreshes itself in a few seconds.</p>{% endif %}
+            {% if run.status == "running" %}<p class="hint">This run is going. The page refreshes itself every 15 seconds; the provider can report a run as running for a minute after it ends.</p>
+            {% elif pending %}<p class="hint">Reading this run's log and files now; this page refreshes itself in a few seconds.</p>{% endif %}
         </div>
     </div>
 </section>
