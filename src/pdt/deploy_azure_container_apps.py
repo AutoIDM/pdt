@@ -323,11 +323,26 @@ def log_query(settings: dict, query: str) -> list[list]:
 
 
 def read_lines(settings: dict, job: str, execution: str) -> list[runs_cli.Line]:
+    return read_many(settings, job, [execution])[execution]
+
+
+def read_many(settings: dict, job: str, executions: list[str]) -> dict[str, list[runs_cli.Line]]:
+    """The lines of several executions from one Log Analytics query, keyed by execution."""
+    if not executions:
+        return {}
+    wanted = " or ".join(f"ContainerGroupName_s startswith '{execution}'"
+                         for execution in executions)
     rows = log_query(settings, f"ContainerAppConsoleLogs_CL | where ContainerJobName_s == '{job}' "
-                               f"and ContainerGroupName_s startswith '{execution}' "
-                               "| project TimeGenerated, Log_s | order by TimeGenerated asc")
-    return [runs_cli.parse_line(log, datetime.datetime.fromisoformat(generated))
-            for generated, log in rows]
+                               f"and ({wanted}) | project TimeGenerated, Log_s, ContainerGroupName_s "
+                               "| order by TimeGenerated asc")
+    lines = {execution: [] for execution in executions}
+    for generated, log, group in rows:
+        for execution in executions:
+            if group.startswith(execution):
+                lines[execution].append(
+                    runs_cli.parse_line(log, datetime.datetime.fromisoformat(generated)))
+                break
+    return lines
 
 
 def runs(app: dict, settings: dict, rest: list[str]) -> int:
@@ -380,14 +395,16 @@ def start(app: dict, settings: dict) -> int:
 def logs(app: dict, settings: dict, rest: list[str]) -> int:
     job = job_name(settings, app["name"])
 
-    def read(run: runs_cli.Run) -> list[runs_cli.Line]:
-        lines = read_lines(settings, job, run.id)
-        if not lines and run.ended is not None:
+    def read(chosen: list[runs_cli.Run]) -> dict[str, list[runs_cli.Line]]:
+        lines = read_many(settings, job, [run.id for run in chosen])
+        if any(not lines[run.id] and run.ended is not None for run in chosen):
             console.note("Azure Log Analytics receives lines 2 to 5 minutes after a run "
                          "finishes; run pdt logs again in a moment.")
         return lines
 
-    return runs_cli.logs(lambda: list_runs(settings, job), read, app["name"], rest)
+    return runs_cli.logs(lambda: list_runs(settings, job),
+                         lambda run: read_lines(settings, job, run.id), app["name"], rest,
+                         read_many=read)
 
 
 def cost_estimate_for(region: str, cron: str, job: str, rg: str,
