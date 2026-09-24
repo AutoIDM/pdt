@@ -168,6 +168,7 @@ def run_detail(request, name, pk):
         "duration": runs_cli.duration_text(
             runs_cli.Run(run.run_id, run.started, run.ended, run.status)),
         "lines": lines, "total_lines": run.lines.count(), "artifacts": run.artifacts.all(),
+        "folders": sorted({"/".join(file.path.split("/", 2)[:2]) for file in run.artifacts.all()}),
     })
 
 
