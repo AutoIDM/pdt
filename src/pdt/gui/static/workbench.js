@@ -191,18 +191,17 @@ function setMode(mode) {
 }
 
 modeButtons.forEach((button) => button.addEventListener("click", () => setMode(button.dataset.mode)));
-fileSelect.addEventListener("change", () => {
+fileSelect.addEventListener("change", async () => {
     state.active = fileSelect.value;
     state.sort = null;
     state.filter = "";
     state.page = 0;
     filterInput.value = "";
     el("[data-download]").href = byView.get(state.active).download_url;
-    if (state.mode === "sql") {
-        compile(state).then((compiled) => { state.sql = compiled.query; render(state); });
-    } else {
-        render(state);
-    }
+    statusText.textContent = `loading ${byView.get(state.active).name}…`;
+    await load(byView.get(state.active));
+    if (state.mode === "sql") state.sql = (await compile(state)).query;
+    render(state);
 });
 let filterTimer = null;
 filterInput.addEventListener("input", () => {
@@ -213,9 +212,11 @@ filterInput.addEventListener("input", () => {
         render(state);
     }, 250);
 });
-el("[data-run]").addEventListener("click", () => {
+el("[data-run]").addEventListener("click", async () => {
     state.sql = sqlInput.value;
     state.page = 0;
+    statusText.textContent = "waiting for every file to load…";
+    await Promise.allSettled(files.map(load));
     render(state);
 });
 sqlInput.addEventListener("keydown", (event) => {
@@ -234,6 +235,34 @@ nextButton.addEventListener("click", () => {
     if (state.mode === "sql") draw(); else render(state);
 });
 
+// One load per file, started for the open file first and for the rest in the
+// background, so the page shows data as soon as its own file is in.
+const loads = new Map();
+
+function load(file) {
+    if (!loads.has(file.view)) {
+        loads.set(file.view, (async () => {
+            const response = await fetch(file.url);
+            if (!response.ok) throw new Error(`${file.name}: ${await response.text()}`);
+            const name = `${file.view}.csv`;
+            await db.registerFileBuffer(name, new Uint8Array(await response.arrayBuffer()));
+            await conn.query(`CREATE VIEW ${ident(file.view)} AS SELECT * FROM read_csv_auto(${literal(name)})`);
+            fileSelect.querySelector(`option[value="${file.view}"]`).textContent = file.name;
+        })());
+    }
+    return loads.get(file.view);
+}
+
+async function loadOthers() {
+    for (const file of files) {
+        if (file.view === state.active) continue;
+        fileSelect.querySelector(`option[value="${file.view}"]`).textContent = `${file.name} (loading…)`;
+    }
+    for (const file of files) {
+        if (file.view !== state.active) await load(file).catch(() => {});
+    }
+}
+
 async function start() {
     try {
         const duckdb = await import(root.dataset.module);
@@ -241,16 +270,10 @@ async function start() {
                                     new Worker(root.dataset.worker));
         await db.instantiate(root.dataset.wasm);
         conn = await db.connect();
-        let n = 0;
-        for (const file of files) {
-            statusText.textContent = `loading ${file.name} (${++n} of ${files.length})…`;
-            const response = await fetch(file.url);
-            if (!response.ok) throw new Error(`${file.name}: ${await response.text()}`);
-            const name = `${file.view}.csv`;
-            await db.registerFileBuffer(name, new Uint8Array(await response.arrayBuffer()));
-            await conn.query(`CREATE VIEW ${ident(file.view)} AS SELECT * FROM read_csv_auto(${literal(name)})`);
-        }
+        statusText.textContent = `loading ${byView.get(state.active).name}…`;
+        await load(byView.get(state.active));
         await render(state);
+        loadOthers();
     } catch (error) {
         statusText.textContent = "";
         errorBox.textContent = String(error.message || error);
