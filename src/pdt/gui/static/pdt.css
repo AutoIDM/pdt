@@ -33,6 +33,7 @@ h2 { font-size: 15px; }
 .project { color: var(--muted); }
 .top nav { color: var(--muted); }
 .top nav a { color: var(--link); }
+.stats-link { margin-left: auto; color: var(--muted); font-size: 12px; }
 
 main { max-width: 1200px; margin: 0 auto; padding: 16px 20px 40px; }
 
@@ -74,7 +75,8 @@ button:hover { background: #f1f5f9; }
 button:disabled { opacity: .4; cursor: default; background: var(--card); }
 button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
 
-.log { margin: 0; padding: 12px 16px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-x: auto; }
+/* The log scrolls inside its own window, so a long run never makes the page long. */
+.log { margin: 0; padding: 12px 16px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; max-height: 65vh; overflow: auto; }
 .log .line { display: block; }
 .log .time { color: var(--muted); }
 .log .level { display: inline-block; min-width: 56px; }

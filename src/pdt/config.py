@@ -456,6 +456,65 @@ def _cron_values(field: str, lo: int, hi: int, label: str) -> set[int]:
     return values
 
 
+DAY_WORDS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+MONTH_WORDS = ("January", "February", "March", "April", "May", "June", "July", "August",
+               "September", "October", "November", "December")
+
+
+def _words(items) -> str:
+    items = list(items)
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _clock_times(minute: str, hour: str) -> list[str] | None:
+    """The HH:MM times a minute and hour field name, or None when they are not plain lists."""
+    if any(mark in field for field in (minute, hour) for mark in ("*", "/")):
+        return None
+    minutes = sorted(_cron_values(minute, 0, 59, "minute"))
+    hours = sorted(_cron_values(hour, 0, 23, "hour"))
+    if len(minutes) * len(hours) > 12:
+        return None
+    return [f"{h:02d}:{m:02d}" for h in hours for m in minutes]
+
+
+def describe_schedule(schedule) -> str:
+    """A schedule in plain words, for a tooltip or a listing.
+
+    Covers the shapes a job has: every N minutes, hourly, daily, on weekdays,
+    on days of the month. Anything else stays as the cron expression.
+    """
+    cron = cron_expression(schedule)
+    minute, hour, dom, month, dow = cron.split()
+    if hour == dom == month == dow == "*":
+        if minute == "*":
+            return "every minute"
+        if minute.startswith("*/"):
+            return f"every {minute[2:]} minutes"
+        if "/" not in minute:
+            return "every hour at " + _words(
+                f":{m:02d}" for m in sorted(_cron_values(minute, 0, 59, "minute")))
+    if hour.startswith("*/") and dom == month == dow == "*" and minute.isdigit():
+        return f"every {hour[2:]} hours at :{int(minute):02d}"
+    times = _clock_times(minute, hour)
+    if times is None:
+        return f"cron {cron}"
+    when = "at " + _words(times)
+    if dom == month == dow == "*":
+        return f"daily {when}"
+    if dom == month == "*":
+        days = sorted({d % 7 for d in _cron_values(dow, 0, 7, "day-of-week")})
+        return f"every {_words(DAY_WORDS[d] for d in days)} {when}"
+    if dow == "*":
+        days = _words(str(d) for d in sorted(_cron_values(dom, 1, 31, "day-of-month")))
+        if month == "*":
+            return f"on day {days} of every month {when}"
+        months = _words(MONTH_WORDS[m - 1] for m in sorted(_cron_values(month, 1, 12, "month")))
+        return f"on day {days} of {months} {when}"
+    return f"cron {cron}"
+
+
 def runs_per_month(cron: str) -> float:
     cron = cron_expression(cron)
     minute, hour, dom, month, dow = cron.split()

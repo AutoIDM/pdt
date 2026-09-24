@@ -13,13 +13,14 @@ from datetime import datetime
 from pathlib import Path
 
 from django.contrib import messages
+from django.db.models import Avg, Count, Max, Q
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
 from pdt import config, runs_cli
 from pdt.gui import health, sync
-from pdt.gui.models import Run
+from pdt.gui.models import Run, Timing
 from pdt.gui.pdt_cmd import run_pdt
 
 # A cookie holds the messages, and a cookie holds about 4 KB.
@@ -34,12 +35,14 @@ APP_ACTIONS = {
 def app_config(name: str) -> dict:
     try:
         app = config.merged_app(name)
+        schedule_text = (config.describe_schedule(app["schedule"])
+                         if app["schedule"] is not None else "")
     except config.ConfigError as exc:
         return {"error": str(exc), "pause": False, "provider": "-", "schedule": "-",
-                "timezone": "-", "deployed": config.is_deployed(name)}
+                "schedule_text": "", "timezone": "-", "deployed": config.is_deployed(name)}
     return {"error": "", "pause": app["pause"], "provider": app["platform"].get("provider", "-"),
-            "schedule": app["schedule"] or "-", "timezone": app["timezone"],
-            "deployed": config.is_deployed(name)}
+            "schedule": app["schedule"] or "-", "schedule_text": schedule_text,
+            "timezone": app["timezone"], "deployed": config.is_deployed(name)}
 
 
 def health_row(app) -> dict:
@@ -158,19 +161,6 @@ def run_detail(request, name, pk):
     })
 
 
-@require_POST
-def run_action(request, name, pk, action):
-    project = sync.project_row()
-    run = run_or_404(project, name, pk)
-    if action == "logs":
-        sync.sync_logs(run, force=True)
-    elif action == "artifacts":
-        sync.sync_artifacts(run, force=True)
-    else:
-        raise Http404(f"no action {action}")
-    return redirect("run_detail", name=name, pk=pk)
-
-
 def artifact(request, name, pk):
     project = sync.project_row()
     run = run_or_404(project, name, pk)
@@ -210,6 +200,23 @@ def health_cell(request):
         return JsonResponse({"error": "bad start or gran"}, status=400)
     return JsonResponse({"runs": health.cell_runs(project, params["gran"], start, col, row,
                                                   params["app_name"])})
+
+
+def stats(request):
+    """How long each page and each pdt command took, so the slow parts are measured."""
+    project = sync.project_row()
+
+    def by_name(kind):
+        return (Timing.objects.filter(kind=kind).values("name")
+                .annotate(count=Count("id"), average=Avg("ms"), worst=Max("ms"),
+                          failed=Count("id", filter=Q(ok=False)))
+                .order_by("-average"))
+
+    return render(request, "gui/stats.html", {
+        "project": project, "project_name": Path(project.path).name,
+        "commands": by_name("pdt"), "pages": by_name("page"),
+        "recent": Timing.objects.all()[:40],
+    })
 
 
 def stylesheet(_request):

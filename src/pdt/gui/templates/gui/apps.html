@@ -23,7 +23,7 @@
                 <td><span class="status {{ row.health.status|slugify }}">{{ row.health.status }}</span></td>
                 <td>{% if row.health.last_run %}{{ row.app.runs.first.started|date:"Y-m-d H:i:s" }}{% endif %}</td>
                 <td>{% if row.health.runs %}{{ row.health.succeeded }} of {{ row.health.runs }} succeeded{% endif %}</td>
-                <td><code>{{ row.config.schedule }}</code> <span class="hint">{{ row.config.timezone }}</span></td>
+                <td><code title="{{ row.config.schedule_text }} ({{ row.config.timezone }})">{{ row.config.schedule }}</code> <span class="hint">{{ row.config.timezone }}</span></td>
                 <td>{{ row.config.provider }}</td>
                 <td class="buttons">{% with app=row.app config=row.config next=request.path %}{% include "gui/_actions.html" %}{% endwith %}</td>
             </tr>
