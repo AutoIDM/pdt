@@ -23,11 +23,7 @@
         <div>
             <h2>Artifacts</h2>
             <p class="hint">
-                {% if run.artifacts_by_time %}
-                Files written to the app's storage while this run was going. The job runs a pdt older than 0.1.3, which names a run's folder at random; from 0.1.3 the folder ends with the run's id.
-                {% else %}
-                Files this run kept under <code>runs/…-{{ run.key }}/</code> in the app's storage.
-                {% endif %}
+                {% for folder in folders %}<code>pdt storage {{ app.name }} ls {{ folder }}/ --recursive</code>{% if not forloop.last %}<br>{% endif %}{% empty %}<code>pdt storage {{ app.name }} ls runs/</code>{% endfor %}
             </p>
         </div>
     </div>
@@ -60,7 +56,7 @@
                 {% else %}
                 {{ total_lines }} line{{ total_lines|pluralize }} · <a href="?errors=1">only warnings and errors</a>
                 {% endif %}
-                {% if run.status == "running" %} · read again on each visit while the run is going{% endif %}
+                · <code>pdt logs {{ app.name }} --id {{ run.run_id }} --full</code>
             </p>
         </div>
     </div>

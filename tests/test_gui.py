@@ -112,7 +112,7 @@ def test_the_app_page_numbers_runs_newest_first(gui):
     html = gui.client.get("/apps/my-report/").content.decode()
     assert html.index("task2") < html.index("task1")
     assert "ecs/my-report/task2" in html
-    assert "pdt logs my-report N" in html
+    assert "pdt runs my-report" in html
     assert gui.client.get("/apps/no-such-app/").status_code == 404
 
 
@@ -218,7 +218,8 @@ def test_files_of_an_older_job_are_matched_by_the_time_they_were_written(gui):
     run, _first = open_run(gui)
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert "report.csv" in html and "late.csv" in html
-    assert "older than 0.1.3" in html
+    assert "pdt storage my-report ls runs/20260923T100020Z-4f1c9a2b/ --recursive" in html
+    assert "pdt storage my-report ls runs/20260923T100100Z-9d8e7f6a/ --recursive" in html
     assert ("storage", "my-report", "ls", "runs/20260922T100015Z-1a2b3c4d/") not in gui.calls
 
 
