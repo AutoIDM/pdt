@@ -1,20 +1,21 @@
-# pdt
+# pdt - Process Deploy Tool
 
-**Scheduled jobs for IT teams, without a cloud engineer.** Reports, alerts, and integrations run in your own AWS, Azure, or Google Cloud account, or on a Windows PC, and you deploy each one with a single command.
+**Scheduled jobs for IT teams, without a cloud engineer.** Integrations, reports, and alerts run in your own AWS, Azure, or Google Cloud account, or on a Windows PC, and you deploy each one with a single command.
 
 <!-- TODO: replace VIDEO_URL and the thumbnail with the announcement video. Use absolute URLs; PyPI shows this file too. -->
 [![Watch the 3-minute demo](https://gitlab.com/autoidm/pdt/-/raw/master/docs/images/demo-thumbnail.png)](VIDEO_URL)
 
-[Website](https://autoidm.com/?utm_source=readme&utm_content=top) · [Book a 30-minute walkthrough](BOOKING_URL?utm_source=readme&utm_content=top) · [Docs](https://gitlab.com/autoidm/pdt/-/blob/master/docs/guide.md)
+[Website](https://autoidm.com/#services?utm_source=readme&utm_content=top) · [Book a 30-minute walkthrough](BOOKING_URL?utm_source=readme&utm_content=top) · [Docs](https://gitlab.com/autoidm/pdt/-/blob/master/docs/guide.md)
 
 ## Why pdt
 
-Most IT teams have a folder of scripts that someone runs by hand, or a server under a desk that runs them on a timer. pdt turns each script into a scheduled job in the cloud account you already have.
+Most IT teams have a folder of scripts that someone runs by hand, or a server under a desk. pdt turns each script into a scheduled job in the cloud account you already have.
 
 - **One command to deploy.** `pdt deploy my-report` builds the job, schedules it, stores its secrets, and signs you in if you need to be. It installs every tool it needs by itself.
-- **You see the price first.** Before it changes anything, deploy lists what it will create and what it will cost each month, using your cloud provider's price list. Most jobs cost cents a month.
+- **Cost is purely cloud costs, a few dollars a year.** Before it changes anything, deploy lists what it will create and what it will cost each month, using your cloud provider's price list. Most jobs cost cents a month.
 - **It runs in your account.** Your data and credentials stay in your own cloud account. Nothing passes through ours.
 - **The same steps on every cloud.** AWS, Azure, and Google Cloud ask the same questions. Windows Task Scheduler asks none.
+- **Best practices from AutoIDM.** We've been doing data itegrations for years, this gets you to production and answers your questions of how to deploy, schedule, secure, and monitor your jobs
 - **It cleans up after itself.** `pdt destroy my-report` removes everything deploy created.
 
 ## Let your AI agent write the job
@@ -56,7 +57,40 @@ Put it on a schedule in your cloud:
 pdt deploy hello-world
 ```
 
-<!-- TODO: paste a real `pdt deploy` plan here, as a screenshot or a text block, including the monthly cost line. -->
+Before it changes anything, deploy shows you the plan and the monthly cost, then asks you to agree. Here is a real deploy to Azure of a Meltano job that syncs Salesforce accounts and contacts into NetSuite every hour:
+
+```
+$ pdt deploy salesforce-netsuite-customer-sync
+Fetching list prices from the Azure Retail Prices API...
+Plan:
+  register required Azure resource providers
+  use existing resource group pdt-shared (shared by every pdt project in this subscription)
+  use existing Log Analytics workspace pdt-logs in pdt-shared
+  use existing Container Apps environment pdt-shared/pdt-eastus2 (shared by every pdt project in this subscription)
+  use existing resource group pdt
+  use existing ACR pdt232959dc77 (Basic)
+  keep ACR authentication-as-arm on pdt232959dc77 (required for managed-identity image pulls)
+  use existing managed identity pdt-runner
+  use existing Key Vault pdt-232959dc77 (RBAC)
+  ensure scoped Key Vault secret permissions for the deployer and managed identity
+  use existing storage account pdtdatacfa3bd4e8d, container pdt-data-cfa3bd4e8d (kept after destroy)
+  grant pdt-salesforce-netsuite-a60138e write access to salesforce-netsuite-customer-sync/ in storage account pdtdatacfa3bd4e8d, container pdt-data-cfa3bd4e8d
+  grant the signed-in Azure account write access to pdt-data-cfa3bd4e8d (for pdt storage)
+  build and push image pdt232959dc77.azurecr.io/salesforce-netsuite-customer-sync:latest (from salesforce-netsuite-customer-sync/Dockerfile)
+  update Key Vault secret pdt-salesforce-netsuite-customer-sync-env (11 env vars)
+  allow pdt-salesforce-netsuite-a60138e to update its own Key Vault secret pdt-salesforce-netsuite-customer-sync-env
+  update Container Apps Job pdt-salesforce-netsuite-a60138e: "0 * * * *" (UTC)
+Estimated monthly cost (eastus2 list prices, before free grants):
+  Container Apps job: ~730 runs x 2.1 min avg of recent runs x 0.5 vCPU / 1 GiB  $   1.38
+  Container Registry (Basic, shared)                                             $   5.07
+  Key Vault: 1 secret, ~730 reads                                                $   0.00
+  storage: 1154 objects (0.01 GB)                                                $   0.00
+  total                                                                          $   6.45
+  excludes ACR image builds/storage and Log Analytics ingestion
+Proceed? [y/N]
+```
+
+Running the job itself every hour costs $1.38 a month. Most of the total is the container registry, which all of your jobs share, so each job you add costs only its own run time.
 
 That's it: your first job is live. Remove it with `pdt destroy hello-world` when you're finished.
 
