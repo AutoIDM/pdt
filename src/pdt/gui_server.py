@@ -47,6 +47,8 @@ def main() -> int:
     from django.core.management import call_command
     from django.core.servers.basehttp import get_internal_wsgi_application, run
     call_command("migrate", verbosity=0)
+    from pdt.gui import worker
+    worker.start()
     console.say(f"pdt gui for {os.environ['PDT_PROJECT']} at {gui_cli.url(args.port)}")
     try:
         run("127.0.0.1", args.port, get_internal_wsgi_application(), threading=True)

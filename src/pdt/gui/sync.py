@@ -1,10 +1,10 @@
-"""Fill the database from pdt commands, only as far as a page needs.
+"""Fill the database from pdt commands.
 
-An app's runs are fetched on the first page that shows them, and again
-when they are older than STALE or the user presses Refresh. A run's log
-lines and artifacts are fetched the first time its page opens. Nothing
-is fetched for a page nobody opened. A row keeps every run the provider
-ever listed, so the history outlives the provider's retention.
+A page fetches what it lacks: an app's runs when they are older than
+STALE or the user presses Refresh, a run's log lines and files the first
+time its page opens. `worker` fills the rest in the background, so most
+pages find their answers already here. A row keeps every run the
+provider ever listed, so the history outlives the provider's retention.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from pdt.gui.pdt_cmd import last_json, run_pdt
 
 STALE = timedelta(minutes=5)
 FIRST_COUNT = 50
+# Every run the provider still keeps: a date this early means all of them.
+ALL_RUNS_SINCE = "2000-01-01"
 # A later fetch starts this long before the newest run pdt already knows,
 # so a run that was still running last time gets its final status.
 OVERLAP = timedelta(hours=1)
@@ -49,8 +51,8 @@ def app_row(project: Project, name: str) -> App | None:
     return App.objects.get_or_create(project=project, name=name)[0]
 
 
-def is_stale(moment: datetime | None) -> bool:
-    return moment is None or now() - moment >= STALE
+def is_stale(moment: datetime | None, limit: timedelta = STALE) -> bool:
+    return moment is None or now() - moment >= limit
 
 
 def runs_window(app: App) -> list[str]:
@@ -67,11 +69,11 @@ def runs_window(app: App) -> list[str]:
     return ["--since", f"{(since - OVERLAP).astimezone():%Y-%m-%dT%H:%M}"]
 
 
-def sync_runs(app: App, force: bool = False) -> bool:
+def sync_runs(app: App, force: bool = False, window: list[str] | None = None) -> bool:
     """Fetch the app's runs when they are stale or `force`. True when pdt was asked."""
     if not force and not is_stale(app.synced_at):
         return False
-    code, output = run_pdt("runs", app.name, "--json", *runs_window(app))
+    code, output = run_pdt("runs", app.name, "--json", *(window or runs_window(app)))
     found = runs_cli.parse_runs(output) if code == 0 else None
     # A failed fetch is also remembered for STALE, so a broken login does
     # not start a provider script on every page load.
@@ -86,6 +88,17 @@ def sync_runs(app: App, force: bool = False) -> bool:
             "exit_code": run.exit_code})
     app.sync_error = ""
     app.save()
+    return True
+
+
+def sync_history(app: App) -> bool:
+    """Fetch every run the provider still keeps, once per app."""
+    if app.history_synced_at is not None:
+        return False
+    sync_runs(app, force=True, window=["--since", ALL_RUNS_SINCE])
+    if app.sync_error == "":
+        app.history_synced_at = now()
+        app.save()
     return True
 
 

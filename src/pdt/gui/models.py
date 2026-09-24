@@ -21,6 +21,8 @@ class App(models.Model):
     name = models.CharField(max_length=200)
     synced_at = models.DateTimeField(null=True)
     sync_error = models.TextField(blank=True, default="")
+    # Set once the worker has asked the provider for every run it still keeps.
+    history_synced_at = models.DateTimeField(null=True)
 
     class Meta:
         unique_together = [("project", "name")]
