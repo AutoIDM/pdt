@@ -88,7 +88,7 @@ Both install routes must keep working, and a change is not done until both do:
 
 ## Anything written to disk outside the project
 
-The tool downloads the Google Cloud CLI to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). Never write it beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
+The tool downloads the Google Cloud CLI, and the DuckDB-WASM files of the `pdt gui` SQL workbench (`src/pdt/duckdb_wasm.py`), to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). Never write them beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
 
 ## verify/
 

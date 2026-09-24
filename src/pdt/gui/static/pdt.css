@@ -122,3 +122,30 @@ button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color:
 .hg-time { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
 .hg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hidden { display: none; }
+
+/* The workbench: a run's CSV files queried in the browser. The results
+   table scrolls inside its own window like the log. */
+.wb-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.wb-controls label { color: var(--muted); }
+.wb-controls select, .wb-controls input {
+    font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 6px;
+    border: 1px solid #cbd5e1; background: var(--card); color: var(--ink);
+}
+.wb-controls input[type="search"] { min-width: 220px; }
+.wb-status { margin-left: auto; font-variant-numeric: tabular-nums; }
+.wb-sql { border-bottom: 1px solid var(--line); }
+.wb-sql textarea {
+    display: block; width: 100%; margin: 0; padding: 12px 16px; border: 0; resize: vertical;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink); background: #f8fafc;
+}
+.wb-sql textarea:focus-visible { outline: 2px solid #3b82f6; outline-offset: -2px; }
+.wb-sql .hint { padding: 0 16px; }
+.wb-command { margin: 4px 0 0; padding: 8px 16px 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; color: var(--muted); user-select: all; }
+.wb-results { max-height: 65vh; overflow: auto; }
+.wb-table th { position: sticky; top: 0; background: var(--card); white-space: nowrap; }
+.wb-table th.wb-sortable { cursor: pointer; }
+.wb-table th.wb-sortable:hover { color: var(--ink); }
+.wb-type { color: var(--muted); font-weight: 400; font-size: 11px; }
+.wb-table td { white-space: nowrap; max-width: 40ch; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.wb-null { color: var(--muted); font-style: italic; }
+.wb-paging { border-bottom: 0; border-top: 1px solid var(--line); }
