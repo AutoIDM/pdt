@@ -296,6 +296,23 @@ def test_logs_id_reads_that_run_and_resolves_only_it(capsys):
     assert [run.id for run in resolved] == ["stream-1"]
 
 
+def test_logs_several_ids_give_an_object_keyed_by_id(capsys):
+    asked = []
+
+    def read_many(runs):
+        asked.append([run.id for run in runs])
+        return {run.id: LINES[run.id] for run in runs}
+
+    assert runs_cli.logs(list_two, read, "my-report",
+                         ["--id", "stream-2", "--id", "stream-1", "--full", "--json"],
+                         read_many=read_many) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert asked == [["stream-2", "stream-1"]]
+    assert list(out) == ["stream-2", "stream-1"]
+    assert [line["message"] for line in out["stream-1"]] == [
+        "boom", "Traceback (most recent)", "done"]
+
+
 def test_logs_id_unknown_names_the_id(capsys):
     assert runs_cli.logs(list_two, read, "my-report", ["--id", "stream-9"]) == 1
     assert "knows no run with id stream-9" in capsys.readouterr().out

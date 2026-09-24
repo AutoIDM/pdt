@@ -12,14 +12,18 @@ from pathlib import Path
 
 from pdt import console
 
-USAGE = ("usage: pdt storage <app> ls [path] [--json] | get <path> [dest] | query <sql> "
-         "| destroy [--yes]")
+USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] | get <path> [dest] "
+         "| query <sql> | destroy [--yes]")
 
 
-def ls(store, path, as_json: bool = False) -> int:
+def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
     fs = store.fs()
     try:
-        entries = sorted(fs.ls(path, detail=True), key=lambda entry: entry["name"])
+        if recursive:
+            entries = [dict(entry, name=name) for name, entry in
+                       sorted(fs.find(path, detail=True).items())]
+        else:
+            entries = sorted(fs.ls(path, detail=True), key=lambda entry: entry["name"])
     except FileNotFoundError:
         entries = []
     if as_json:
@@ -82,9 +86,10 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
                       f"remove storage: false from {name}/config.yml")
         return 1
     as_json = "--json" in rest
-    rest = [arg for arg in rest if arg != "--json"]
+    recursive = "--recursive" in rest
+    rest = [arg for arg in rest if arg not in ("--json", "--recursive")]
     handlers = {
-        "ls": (0, lambda args: ls(store, args[0] if args else "", as_json)),
+        "ls": (0, lambda args: ls(store, args[0] if args else "", as_json, recursive)),
         "get": (1, lambda args: get(store, args[0],
                                     Path(args[1] if len(args) > 1 else Path(args[0]).name))),
         "query": (1, lambda args: query(store, args[0])),
