@@ -51,16 +51,24 @@ def gui(project, monkeypatch):
 
     def fake_run_pdt(*args, timeout=900):
         state.calls.append(args)
+        ids = [args[i + 1] for i, arg in enumerate(args) if arg == "--id"]
         for key, answer in state.answers.items():
             if args[:len(key)] == key:
+                # A canned one-run log answer serves every run of a batch.
+                try:
+                    lines = json.loads(answer[1].strip().splitlines()[-1])
+                except (ValueError, IndexError):
+                    lines = None
+                if args[0] == "logs" and len(ids) > 1 and isinstance(lines, list):
+                    return answer[0], json.dumps({run_id: lines for run_id in ids}) + "\n"
                 return answer
-        ids = [args[i + 1] for i, arg in enumerate(args) if arg == "--id"]
         if args[0] == "logs" and len(ids) > 1:
             return 0, json.dumps({run_id: [] for run_id in ids}) + "\n"
         return 0, "[]\n"
 
     monkeypatch.setattr(sync, "run_pdt", fake_run_pdt)
     monkeypatch.setattr(views, "run_pdt", fake_run_pdt)
+    worker.ASKED.clear()
     yield state
     Project.objects.all().delete()
     Timing.objects.all().delete()
@@ -118,38 +126,56 @@ def test_refresh_fetches_again_from_the_newest_known_run(gui):
     assert since[4] == f"{(T0 - timedelta(hours=1)).astimezone():%Y-%m-%dT%H:%M}"
 
 
-def test_the_run_page_fetches_the_log_by_id_and_hides_the_analysis(gui):
-    runs_answer(gui)
+def open_run(gui, run_id="ecs/my-report/task2"):
+    """A run page the way a person sees it: the first view asks the worker, the
+    worker fills the run, the second view shows it."""
     gui.client.get("/apps/my-report/")
-    run = Run.objects.get(run_id="ecs/my-report/task2")
+    run = Run.objects.get(run_id=run_id)
+    first = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
+    worker.tick()
+    return run, first
+
+
+def test_the_run_page_asks_the_worker_and_refreshes_until_the_log_is_there(gui):
+    runs_answer(gui)
     gui.answers[("logs",)] = (1, json.dumps(LINES) + "\n")
+    run, first = open_run(gui)
+    assert 'http-equiv="refresh"' in first and "refreshes itself" in first
+    assert not [call for call in gui.calls if call[0] == "logs" and len(gui.calls) == 0]
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
-    assert ("logs", "my-report", "--id", "ecs/my-report/task2", "--full", "--json") in gui.calls
+    assert 'http-equiv="refresh"' not in html
     assert "run 1 of my-report" in html
     assert "boom &lt;b&gt;" in html
     assert "starting" in html
     assert 'data-ai-analysis' in html and "<section class=\"card\" hidden" in html
     errors = gui.client.get(f"/apps/my-report/runs/{run.pk}/?errors=1").content.decode()
     assert "starting" not in errors and "boom" in errors
-    assert gui.calls.count(("logs", "my-report", "--id", "ecs/my-report/task2", "--full", "--json")) == 1
 
 
-def test_a_failed_log_fetch_shows_its_error_and_is_tried_again(gui):
+def test_the_page_never_runs_a_fetch_itself(gui):
     runs_answer(gui)
     gui.client.get("/apps/my-report/")
+    before = len(gui.calls)
     run = Run.objects.get(run_id="ecs/my-report/task2")
+    gui.client.get(f"/apps/my-report/runs/{run.pk}/")
+    assert len(gui.calls) == before
+    assert list(worker.ASKED) == [run.pk]
+
+
+def test_a_failed_log_fetch_shows_its_error_and_is_tried_again_when_asked(gui):
+    runs_answer(gui)
     gui.answers[("logs",)] = (1, "error: AWS credentials are unavailable\n")
+    run, _first = open_run(gui)
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert "AWS credentials are unavailable" in html
     gui.answers[("logs",)] = (0, json.dumps(LINES) + "\n")
+    worker.tick()
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert "AWS credentials" not in html and "starting" in html
 
 
 def test_the_run_page_lists_the_files_under_the_runs_folder(gui, monkeypatch):
     runs_answer(gui)
-    gui.client.get("/apps/my-report/")
-    run = Run.objects.get(run_id="ecs/my-report/task2")
     gui.answers[("storage", "my-report", "ls", "runs/")] = (0, json.dumps([
         {"name": "runs/20260923T100012Z-task2", "size": None, "type": "directory"},
         {"name": "runs/20260922T100012Z-task1", "size": None, "type": "directory"}]) + "\n")
@@ -157,6 +183,7 @@ def test_the_run_page_lists_the_files_under_the_runs_folder(gui, monkeypatch):
         {"name": "runs/20260923T100012Z-task2/_done", "size": 0, "type": "file"},
         {"name": "runs/20260923T100012Z-task2/report.csv", "size": 2048, "type": "file"},
         {"name": "runs/20260923T100012Z-task2/more/detail.txt", "size": 5, "type": "file"}]) + "\n")
+    run, _first = open_run(gui)
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert "report.csv" in html and "detail.txt" in html and "_done" not in html
     assert ("storage", "my-report", "ls", "runs/20260923T100012Z-task2/", "--recursive",
@@ -180,8 +207,6 @@ def test_the_run_page_lists_the_files_under_the_runs_folder(gui, monkeypatch):
 
 def test_files_of_an_older_job_are_matched_by_the_time_they_were_written(gui):
     runs_answer(gui)
-    gui.client.get("/apps/my-report/")
-    run = Run.objects.get(run_id="ecs/my-report/task2")
     gui.answers[("storage", "my-report", "ls", "runs/")] = (0, json.dumps([
         {"name": "runs/20260923T100020Z-4f1c9a2b", "size": None, "type": "directory"},
         {"name": "runs/20260923T100100Z-9d8e7f6a", "size": None, "type": "directory"},
@@ -190,23 +215,36 @@ def test_files_of_an_older_job_are_matched_by_the_time_they_were_written(gui):
         {"name": "runs/20260923T100020Z-4f1c9a2b/report.csv", "size": 10, "type": "file"}]) + "\n")
     gui.answers[("storage", "my-report", "ls", "runs/20260923T100100Z-9d8e7f6a/")] = (0, json.dumps([
         {"name": "runs/20260923T100100Z-9d8e7f6a/late.csv", "size": 10, "type": "file"}]) + "\n")
+    run, _first = open_run(gui)
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert "report.csv" in html and "late.csv" in html
     assert "older than 0.1.3" in html
     assert ("storage", "my-report", "ls", "runs/20260922T100015Z-1a2b3c4d/") not in gui.calls
 
 
-def test_a_running_run_reads_its_log_and_files_again_on_each_visit(gui):
-    running = [dict(RUNS[0], status="running", ended=None, exit_code=None)]
-    runs_answer(gui, running)
-    gui.client.get("/apps/my-report/")
-    run = Run.objects.get(run_id="ecs/my-report/task2")
-    gui.client.get(f"/apps/my-report/runs/{run.pk}/")
-    gui.client.get(f"/apps/my-report/runs/{run.pk}/")
-    assert gui.calls.count(("logs", "my-report", "--id", "ecs/my-report/task2", "--full", "--json")) == 2
-    assert gui.calls.count(("storage", "my-report", "ls", "runs/", "--json")) == 2
-    html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
-    assert "Refresh" not in html
+def test_a_run_without_an_end_claims_folders_only_until_the_next_run_starts(gui):
+    from pdt.gui.models import App
+    app = App.objects.create(project=sync.project_row(), name="my-report")
+    first = Run.objects.create(app=app, run_id="a", started=T0 - timedelta(days=1), status="failed")
+    Run.objects.create(app=app, run_id="b", started=T0, status="succeeded",
+                       ended=T0 + timedelta(seconds=30))
+    names = ["runs/20260922T100100Z-1111aaaa", "runs/20260923T100020Z-2222bbbb",
+             "runs/20260923T100100Z-3333cccc"]
+    assert sync.run_folders(first, names, T0) == (["runs/20260922T100100Z-1111aaaa"], True)
+    lonely = Run.objects.create(app=app, run_id="c", started=T0 - timedelta(days=3), status="failed")
+    assert sync.run_folders(lonely, names, None) == ([], False)
+
+
+def test_a_run_that_ends_is_read_once_more(gui):
+    runs_answer(gui, [dict(RUNS[0], status="running", ended=None, exit_code=None)])
+    run, _first = open_run(gui)
+    run.refresh_from_db()
+    assert run.logs_synced_at is not None and run.artifacts_synced_at is not None
+    runs_answer(gui)
+    sync.sync_runs(run.app, force=True)
+    run.refresh_from_db()
+    assert run.status == "failed"
+    assert run.logs_synced_at is None and run.artifacts_synced_at is None
 
 
 def test_every_page_view_is_timed_and_shown_on_the_stats_page(gui):
@@ -221,7 +259,7 @@ def test_every_page_view_is_timed_and_shown_on_the_stats_page(gui):
 
 def test_the_schedule_is_explained_on_hover(gui):
     html = gui.client.get("/").content.decode()
-    assert 'title="daily at 00:00 (Etc/UTC)"' in html
+    assert 'title="every day at 00:00 (Etc/UTC)"' in html
 
 
 def test_pause_unpause_and_run_now_run_the_pdt_commands(gui):
@@ -342,9 +380,7 @@ def run_with_files(gui):
         {"name": f"{FOLDER}/report!.csv", "size": 10, "type": "file"},
         {"name": f"{FOLDER}/2024 Sales.CSV", "size": 30, "type": "file"},
         {"name": f"{FOLDER}/more/detail.txt", "size": 5, "type": "file"}]) + "\n")
-    gui.client.get("/apps/my-report/")
-    run = Run.objects.get(run_id="ecs/my-report/task2")
-    gui.client.get(f"/apps/my-report/runs/{run.pk}/")
+    run, _first = open_run(gui)
     return run
 
 
