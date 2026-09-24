@@ -478,3 +478,31 @@ def test_the_duckdb_files_are_served_from_the_data_folder(gui, duckdb_dir):
         response = gui.client.get(f"/static/duckdb/{name}")
         assert response.status_code == 200 and response["Content-Type"] == "text/javascript"
     assert gui.client.get("/static/duckdb/other.wasm").status_code == 404
+
+
+def test_pages_with_a_running_run_refresh_themselves(gui):
+    runs_answer(gui, [dict(RUNS[0], status="running", ended=None, exit_code=None)])
+    assert 'http-equiv="refresh" content="30"' in gui.client.get("/").content.decode()
+    assert 'http-equiv="refresh" content="15"' in gui.client.get("/apps/my-report/").content.decode()
+    run = Run.objects.get(run_id="ecs/my-report/task2")
+    html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
+    assert 'http-equiv="refresh" content="15"' in html and "This run is going" in html
+    runs_answer(gui)
+    sync.sync_runs(run.app, force=True)
+    assert 'http-equiv="refresh"' not in gui.client.get("/").content.decode()
+
+
+def test_the_worker_asks_again_sooner_while_a_run_is_going(gui):
+    from pdt.gui.models import App
+    runs_answer(gui, [dict(RUNS[0], status="running", ended=None, exit_code=None)])
+    worker.tick()
+    App.objects.update(synced_at=sync.now() - timedelta(seconds=45))
+    before = len([call for call in gui.calls if call[0] == "runs"])
+    worker.tick()
+    assert len([call for call in gui.calls if call[0] == "runs"]) == before + 1
+    runs_answer(gui)
+    sync.sync_runs(App.objects.get(), force=True)
+    App.objects.update(synced_at=sync.now() - timedelta(seconds=45))
+    before = len([call for call in gui.calls if call[0] == "runs"])
+    worker.tick()
+    assert len([call for call in gui.calls if call[0] == "runs"]) == before
