@@ -75,15 +75,22 @@ button:hover { background: #f1f5f9; }
 button:disabled { opacity: .4; cursor: default; background: var(--card); }
 button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color: var(--ink); }
 
-/* The log scrolls inside its own window, so a long run never makes the page long. */
-.log { margin: 0; padding: 12px 16px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; max-height: 65vh; overflow: auto; }
-.log .line { display: block; }
-.log .time { color: var(--muted); }
-.log .level { display: inline-block; min-width: 56px; }
-.log .debug { color: var(--muted); }
-.log .info .level { color: var(--ok); }
-.log .warning .level { color: var(--warn); }
-.log .error .level { color: var(--bad); font-weight: 600; }
+/* The log is a dark terminal that scrolls inside its own window, so a long
+   run never makes the page long; a script opens it at its last line. */
+.log { margin: 0; padding: 12px 16px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; max-height: 65vh; overflow: auto; background: #0f172a; color: #e2e8f0; }
+.log:focus-visible { outline: 2px solid #3b82f6; outline-offset: -2px; }
+/* A wrapped line continues under its message, not under the time, so the
+   level column stays a column. 17ch is the time, the level, and their gaps. */
+.log .line { display: block; margin: 0 -16px; padding: 0 16px 0 calc(17ch + 13px); text-indent: -17ch; border-left: 3px solid transparent; }
+/* text-indent is inherited, so the spans get it back to zero. */
+.log .time { color: #94a3b8; text-indent: 0; }
+.log .level { display: inline-block; min-width: 8ch; text-indent: 0; }
+.log .debug { color: #94a3b8; }
+.log .info .level { color: #4ade80; }
+.log .warning { background: rgba(251, 191, 36, .08); border-left-color: #fbbf24; }
+.log .warning .level { color: #fbbf24; }
+.log .error { background: rgba(248, 113, 113, .12); border-left-color: #f87171; }
+.log .error .level { color: #f87171; font-weight: 600; }
 
 .hg-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
 .hg-grans, .hg-pages { display: flex; gap: 4px; }

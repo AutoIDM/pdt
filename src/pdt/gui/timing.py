@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import UTC, datetime
 
 from pdt.gui.models import Timing
 
 UNTIMED_PAGES = ("stylesheet", "stats")
+WORKER_THREAD = "pdt-gui-worker"
 
 
 def record(kind: str, name: str, detail: str, started: datetime, seconds: float,
            ok: bool) -> None:
+    # A command the worker ran counts apart from one a page waited for.
+    if kind == "pdt" and threading.current_thread().name == WORKER_THREAD:
+        kind = "worker"
     Timing.objects.create(kind=kind, name=name, detail=detail[:1024], started=started,
                           ms=int(seconds * 1000), ok=ok)
 

@@ -34,8 +34,10 @@ def run_pdt(*args: str, timeout: int = 900) -> tuple[int, str]:
         timing.record("pdt", timing.command_name(args), " ".join(args), started,
                       time.monotonic() - clock, False)
         return 1, f"pdt {' '.join(args)} did not finish within {timeout} seconds"
+    # `pdt logs` of a failed run exits 1 and still answers; a JSON answer counts as ok.
+    answered = proc.returncode == 0 or ("--json" in args and last_json(proc.stdout) is not None)
     timing.record("pdt", timing.command_name(args), " ".join(args), started,
-                  time.monotonic() - clock, proc.returncode == 0)
+                  time.monotonic() - clock, answered)
     output = proc.stdout
     if proc.returncode != 0 and proc.stderr.strip():
         output += ("\n" if output and not output.endswith("\n") else "") + proc.stderr

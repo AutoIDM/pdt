@@ -31,12 +31,15 @@
     </div>
     {% if run.logs_error %}<pre class="error">{{ run.logs_error }}</pre>{% endif %}
     {% if lines %}
-    <pre class="log">{% for line in lines %}<span class="line {{ line.level|lower }}"><span class="time">{% if line.time %}{{ line.time|date:"H:i:s" }}{% endif %}</span> <span class="level">{{ line.level }}</span> {{ line.message }}</span>
-{% endfor %}</pre>
+    <pre class="log" tabindex="0" aria-label="Log of run {{ number }}">{% for line in lines %}<span class="line {{ line.level|lower }}"><span class="time">{% if line.time %}{{ line.time|date:"H:i:s" }}{% endif %}</span> <span class="level">{{ line.level }}</span> {{ line.message }}</span>{% endfor %}</pre>
     {% elif not run.logs_error %}
     <p class="empty">No log lines{% if run.status == "running" %} yet{% endif %}.</p>
     {% endif %}
 </section>
+<script>
+    // The last line logged is the one to read first.
+    document.querySelectorAll('.log').forEach(function (log) { log.scrollTop = log.scrollHeight; });
+</script>
 
 <section class="card">
     <div class="card-head">

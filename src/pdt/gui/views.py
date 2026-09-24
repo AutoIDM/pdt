@@ -214,7 +214,7 @@ def stats(request):
 
     return render(request, "gui/stats.html", {
         "project": project, "project_name": Path(project.path).name,
-        "commands": by_name("pdt"), "pages": by_name("page"),
+        "commands": by_name("pdt"), "pages": by_name("page"), "worker": by_name("worker"),
         "recent": Timing.objects.all()[:40],
     })
 
