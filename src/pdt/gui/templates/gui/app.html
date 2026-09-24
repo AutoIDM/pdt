@@ -11,7 +11,7 @@
                 {% if not config.deployed %}<span class="badge muted">not deployed</span>{% endif %}
             </h1>
             <p class="hint">
-                <code>{{ config.schedule }}</code> {{ config.timezone }} · {{ config.provider }}
+                <code title="{{ config.schedule_text }} ({{ config.timezone }})">{{ config.schedule }}</code> {{ config.timezone }} · {{ config.provider }}
                 {% if app.synced_at %} · runs read {{ app.synced_at|timesince }} ago{% endif %}
             </p>
             {% if config.error %}<p class="error">{{ config.error }}</p>{% endif %}
