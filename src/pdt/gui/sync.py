@@ -29,6 +29,8 @@ FOLDER_STAMP = "%Y%m%dT%H%M%SZ"
 # A job names its runs/ folder at the moment it pushes, which is inside the
 # run; the slack covers clock skew between the job and the provider.
 FOLDER_SLACK = timedelta(minutes=1)
+# A run with no end time and no later run claims folders this long at most.
+LONGEST_RUN = timedelta(hours=24)
 
 # Two page loads at once ask the provider once, not twice.
 LOCKS = defaultdict(threading.Lock)
@@ -88,10 +90,17 @@ def sync_runs(app: App, force: bool = False, window: list[str] | None = None) ->
             app.sync_error = output.strip()
             app.save()
             return True
+        was_running = set(app.runs.filter(status="running").values_list("run_id", flat=True))
         for run in found:
-            Run.objects.update_or_create(app=app, run_id=run.id, defaults={
+            row, _created = Run.objects.update_or_create(app=app, run_id=run.id, defaults={
                 "started": run.started, "ended": run.ended, "status": run.status,
                 "exit_code": run.exit_code})
+            # A run read while it was going is read once more when it has ended,
+            # because its last lines and its files arrive at the end.
+            if run.id in was_running and run.status != "running":
+                row.logs_synced_at = None
+                row.artifacts_synced_at = None
+                row.save()
         app.sync_error = ""
         app.save()
         return True
@@ -153,18 +162,26 @@ def run_folder_names(app_name: str) -> tuple[list[str] | None, str]:
     return [entry["name"].rstrip("/") for entry in entries], ""
 
 
-def run_folders(run: Run, names: list[str]) -> tuple[list[str], bool]:
+def run_folders(run: Run, names: list[str],
+                next_started: datetime | None = None) -> tuple[list[str], bool]:
     """The runs/ folders that belong to a run, and whether they were matched by time.
 
     A job on pdt 0.1.3 or later ends the folder name with the run's id. An
-    older job names it at random, so its folders are the ones written while
-    the run was going.
+    older job names it at random, so its folders are the ones written after
+    the run started and before the next run did. A run the provider lists
+    without an end (Azure omits it for a failed execution) must not claim
+    every folder after it, so the next run's start, or LONGEST_RUN, bounds it.
     """
     exact = [name for name in names if name.endswith("-" + run.key)]
     if exact:
         return exact, False
     begin = run.started - FOLDER_SLACK
-    finish = (run.ended or now()) + FOLDER_SLACK
+    if next_started is not None:
+        finish = next_started - FOLDER_SLACK
+    elif run.ended is not None:
+        finish = run.ended + FOLDER_SLACK
+    else:
+        finish = min(now(), run.started + LONGEST_RUN)
     matched = []
     for name in names:
         stamp = name.rsplit("/", 1)[-1].split("-", 1)[0]
@@ -196,7 +213,9 @@ def sync_artifacts(run: Run, force: bool = False,
         run.save()
         return True
     run.artifacts_synced_at = now()
-    folders, run.artifacts_by_time = run_folders(run, names)
+    next_started = (run.app.runs.filter(started__gt=run.started).order_by("started")
+                    .values_list("started", flat=True).first())
+    folders, run.artifacts_by_time = run_folders(run, names, next_started)
     files = []
     for folder in folders:
         _code, output = run_pdt("storage", app, "ls", folder + "/", "--recursive", "--json")

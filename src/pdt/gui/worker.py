@@ -9,14 +9,16 @@ has to wait for pdt.
 
 A batch asks pdt once per app for all its logs and once per app for the
 list of storage folders, because each pdt command costs seconds before it
-does any work. A page that opens something the worker has not reached yet
-fetches it itself; the two only ever repeat a fetch, never lose one.
+does any work. A page never fetches a log or a file list itself: it asks
+for the run with `ask`, the worker takes that run before the rest, and
+the page refreshes itself until the run has what it lacks.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from collections import deque
 from datetime import timedelta
 
 from django.db import close_old_connections
@@ -34,16 +36,33 @@ BATCH = 5
 
 log = logging.getLogger(__name__)
 
+# Runs a page is waiting for, oldest request first, and the event that ends
+# the worker's sleep when one arrives.
+ASKED = deque()
+WAKE = threading.Event()
+
+
+def ask(run: Run) -> None:
+    if run.pk not in ASKED:
+        ASKED.append(run.pk)
+    WAKE.set()
+
 
 def pending_runs(project) -> list[Run]:
-    """Runs still lacking a log or a file list, or still running, newest first.
+    """Runs still lacking a log or a file list, or still running: the ones a
+    page asked for first, then newest first.
 
-    A run whose fetch failed is left to the page that opens it, which tries
-    again on every visit; the worker would otherwise retry it without end.
+    A run whose fetch failed by itself is left alone until a page asks for
+    it again; the worker would otherwise retry it without end.
     """
-    return list(Run.objects.filter(app__project=project, logs_error="", artifacts_error="")
-                .filter(Q(logs_synced_at__isnull=True) | Q(artifacts_synced_at__isnull=True)
-                        | Q(status="running")).order_by("-started")[:BATCH])
+    asked = list(ASKED)
+    ASKED.clear()
+    wanted = list(Run.objects.filter(pk__in=asked, app__project=project))
+    wanted.sort(key=lambda run: asked.index(run.pk))
+    rest = (Run.objects.filter(app__project=project, logs_error="", artifacts_error="")
+            .filter(Q(logs_synced_at__isnull=True) | Q(artifacts_synced_at__isnull=True)
+                    | Q(status="running")).exclude(pk__in=asked).order_by("-started"))
+    return (wanted + list(rest))[:max(BATCH, len(wanted))]
 
 
 def tick() -> bool:
@@ -60,14 +79,14 @@ def tick() -> bool:
     for run in pending:
         by_app.setdefault(run.app_id, []).append(run)
     for runs in by_app.values():
-        sync.sync_logs(runs)
+        sync.sync_logs(runs, force=any(run.logs_error for run in runs))
         listing = None
         for run in runs:
-            if sync.needs_artifacts(run):
+            if sync.needs_artifacts(run) or run.artifacts_error:
                 if listing is None:
                     listing = sync.run_folder_names(run.app.name)
-                sync.sync_artifacts(run, listing=listing)
-    return backlog
+                sync.sync_artifacts(run, force=bool(run.artifacts_error), listing=listing)
+    return backlog or bool(ASKED)
 
 
 def run_forever(stop: threading.Event) -> None:
@@ -79,7 +98,10 @@ def run_forever(stop: threading.Event) -> None:
             backlog = False
         finally:
             close_old_connections()
-        stop.wait((PAUSE if backlog else TICK).total_seconds())
+        WAKE.clear()
+        if not backlog:
+            WAKE.wait(TICK.total_seconds())
+        stop.wait(PAUSE.total_seconds() if backlog else 0)
 
 
 def start() -> threading.Event:
