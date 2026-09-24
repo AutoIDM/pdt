@@ -28,6 +28,10 @@ from pdt.gui import sync
 from pdt.gui.models import Run
 
 TICK = timedelta(minutes=2)
+# An app with a run in progress is asked again this often, so the end of a
+# run shows within a minute; Azure itself reports an execution as running
+# for a while after its container stops.
+RUNNING_TICK = timedelta(seconds=30)
 # The pause between two batches while there is a backlog, so a page's own
 # fetch gets a turn at the provider.
 PAUSE = timedelta(seconds=5)
@@ -69,7 +73,8 @@ def tick() -> bool:
     """One pass of work. True when a run still lacked something, so more may be waiting."""
     project = sync.project_row()
     for app in sync.app_rows(project):
-        if sync.is_stale(app.synced_at, TICK):
+        limit = RUNNING_TICK if app.runs.filter(status="running").exists() else TICK
+        if sync.is_stale(app.synced_at, limit):
             sync.sync_runs(app, force=True)
         sync.sync_history(app)
     pending = pending_runs(project)
@@ -100,7 +105,8 @@ def run_forever(stop: threading.Event) -> None:
             close_old_connections()
         WAKE.clear()
         if not backlog:
-            WAKE.wait(TICK.total_seconds())
+            running = Run.objects.filter(status="running").exists()
+            WAKE.wait((RUNNING_TICK if running else TICK).total_seconds())
         stop.wait(PAUSE.total_seconds() if backlog else 0)
 
 
