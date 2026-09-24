@@ -7,8 +7,10 @@ first. It keeps taking runs while there are any, so over time every run
 the provider ever listed has its log and files here, and a page rarely
 has to wait for pdt.
 
-A page that opens something the worker has not reached yet fetches it
-itself, as before; the two only ever repeat a fetch, never lose one.
+A batch asks pdt once per app for all its logs and once per app for the
+list of storage folders, because each pdt command costs seconds before it
+does any work. A page that opens something the worker has not reached yet
+fetches it itself; the two only ever repeat a fetch, never lose one.
 """
 
 from __future__ import annotations
@@ -21,14 +23,14 @@ from django.db import close_old_connections
 from django.db.models import Q
 
 from pdt.gui import sync
-from pdt.gui.models import App, Run
+from pdt.gui.models import Run
 
 TICK = timedelta(minutes=2)
 # The pause between two batches while there is a backlog, so a page's own
 # fetch gets a turn at the provider.
 PAUSE = timedelta(seconds=5)
 # Runs handled between two checks for fresher work.
-BATCH = 3
+BATCH = 5
 
 log = logging.getLogger(__name__)
 
@@ -51,12 +53,20 @@ def tick() -> bool:
         if sync.is_stale(app.synced_at, TICK):
             sync.sync_runs(app, force=True)
         sync.sync_history(app)
-    backlog = False
-    for run in pending_runs(project):
-        if run.logs_synced_at is None or run.artifacts_synced_at is None:
-            backlog = True
-        sync.sync_logs(run)
-        sync.sync_artifacts(run)
+    pending = pending_runs(project)
+    backlog = any(run.logs_synced_at is None or run.artifacts_synced_at is None
+                  for run in pending)
+    by_app = {}
+    for run in pending:
+        by_app.setdefault(run.app_id, []).append(run)
+    for runs in by_app.values():
+        sync.sync_logs(runs)
+        listing = None
+        for run in runs:
+            if sync.needs_artifacts(run):
+                if listing is None:
+                    listing = sync.run_folder_names(run.app.name)
+                sync.sync_artifacts(run, listing=listing)
     return backlog
 
 

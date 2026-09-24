@@ -54,6 +54,9 @@ def gui(project, monkeypatch):
         for key, answer in state.answers.items():
             if args[:len(key)] == key:
                 return answer
+        ids = [args[i + 1] for i, arg in enumerate(args) if arg == "--id"]
+        if args[0] == "logs" and len(ids) > 1:
+            return 0, json.dumps({run_id: [] for run_id in ids}) + "\n"
         return 0, "[]\n"
 
     monkeypatch.setattr(sync, "run_pdt", fake_run_pdt)
@@ -153,11 +156,11 @@ def test_the_run_page_lists_the_files_under_the_runs_folder(gui, monkeypatch):
     gui.answers[("storage", "my-report", "ls", "runs/20260923T100012Z-task2/")] = (0, json.dumps([
         {"name": "runs/20260923T100012Z-task2/_done", "size": 0, "type": "file"},
         {"name": "runs/20260923T100012Z-task2/report.csv", "size": 2048, "type": "file"},
-        {"name": "runs/20260923T100012Z-task2/more", "size": None, "type": "directory"}]) + "\n")
-    gui.answers[("storage", "my-report", "ls", "runs/20260923T100012Z-task2/more/")] = (0, json.dumps([
         {"name": "runs/20260923T100012Z-task2/more/detail.txt", "size": 5, "type": "file"}]) + "\n")
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert "report.csv" in html and "detail.txt" in html and "_done" not in html
+    assert ("storage", "my-report", "ls", "runs/20260923T100012Z-task2/", "--recursive",
+            "--json") in gui.calls
     assert "2.0\xa0KB" in html
 
     def fake_get(*args, timeout=900):
@@ -278,9 +281,10 @@ def test_the_worker_refreshes_runs_backfills_history_and_drains_newest_first(gui
     assert fetches[0] == ("runs", "my-report", "--json", "--count", "50")
     assert fetches[1] == ("runs", "my-report", "--json", "--since", "2000-01-01")
     logs = [call for call in gui.calls if call[0] == "logs"]
-    assert [call[3] for call in logs] == ["ecs/my-report/task2", "ecs/my-report/task1"]
+    assert logs == [("logs", "my-report", "--id", "ecs/my-report/task2",
+                     "--id", "ecs/my-report/task1", "--full", "--json")]
     files = [call for call in gui.calls if call[:4] == ("storage", "my-report", "ls", "runs/")]
-    assert len(files) == 2
+    assert len(files) == 1
     assert Run.objects.filter(logs_synced_at__isnull=True).count() == 0
     assert worker.tick() is False
     assert len([call for call in gui.calls if call[:2] == ("runs", "my-report")]) == 2
@@ -298,7 +302,17 @@ def test_the_worker_leaves_a_failed_fetch_to_the_page(gui):
     gui.answers[("logs",)] = (1, "error: AWS credentials are unavailable\n")
     assert worker.tick() is True
     assert worker.tick() is False
-    assert len([call for call in gui.calls if call[0] == "logs"]) == 2
+    assert len([call for call in gui.calls if call[0] == "logs"]) == 1
+
+
+def test_a_page_never_waits_for_a_fetch_once_the_app_is_known(gui):
+    runs_answer(gui)
+    gui.client.get("/")
+    from pdt.gui.models import App
+    App.objects.update(synced_at=T0 - timedelta(days=30))
+    gui.client.get("/")
+    gui.client.get("/apps/my-report/")
+    assert len([call for call in gui.calls if call[0] == "runs"]) == 1
 
 
 def test_the_worker_counts_its_commands_apart_from_the_pages(gui):

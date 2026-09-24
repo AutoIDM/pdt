@@ -145,7 +145,7 @@ def run_or_404(project, name, pk):
 def run_detail(request, name, pk):
     project = sync.project_row()
     run = run_or_404(project, name, pk)
-    sync.sync_logs(run)
+    sync.sync_logs([run])
     sync.sync_artifacts(run)
     lines = run.lines.all()
     errors_only = request.GET.get("errors") == "1"
