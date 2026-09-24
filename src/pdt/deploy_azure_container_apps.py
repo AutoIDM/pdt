@@ -355,7 +355,7 @@ def set_job_paused(settings: dict, job: str, paused: bool) -> None:
 
 
 def pause(app: dict, settings: dict, paused: bool) -> int:
-    job = clean_name(f"pdt-{app['name']}")
+    job = job_name(settings, app["name"])
     set_job_paused(settings, job, paused)
     console.done(f"{'Paused' if paused else 'Unpaused'} {app['name']}: "
                  f"Container Apps Job {job} is {'Suspended' if paused else 'Ready'}.")
@@ -363,7 +363,7 @@ def pause(app: dict, settings: dict, paused: bool) -> int:
 
 
 def start(app: dict, settings: dict) -> int:
-    job = clean_name(f"pdt-{app['name']}")
+    job = job_name(settings, app["name"])
     output = run_quiet("containerapp", "job", "start", "--name", job,
                        "--resource-group", settings["resource_group"], "--output", "json")
     try:

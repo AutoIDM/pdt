@@ -5,11 +5,11 @@ import pytest
 from pdt import deploy_azure, deploy_azure_container_apps
 
 SETTINGS = {
-    "subscription": "sub-1", "resource_group": "pdt",
+    "subscription": "sub-1", "resource_group": "pdt", "suffix": "aaba0d5",
     "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
 }
 JOB_URL = ("https://management.azure.com/subscriptions/sub-1/resourceGroups/pdt/providers"
-           "/Microsoft.App/jobs/pdt-my-app")
+           "/Microsoft.App/jobs/pdt-my-app-aaba0d5")
 
 
 def fake_az(monkeypatch, running_state: str):
@@ -48,14 +48,14 @@ def test_unpause_resumes_a_suspended_job(monkeypatch):
 @pytest.mark.parametrize("state,paused", [("Suspended", True), ("Ready", False)])
 def test_a_job_already_in_the_wanted_state_is_left_alone(monkeypatch, state, paused):
     calls = fake_az(monkeypatch, state)
-    deploy_azure_container_apps.set_job_paused(SETTINGS, "pdt-my-app", paused)
+    deploy_azure_container_apps.set_job_paused(SETTINGS, "pdt-my-app-aaba0d5", paused)
     assert [call[:3] for call in calls] == [("rest", "--method", "get")]
 
 
 def test_start_runs_the_job_and_names_the_execution(monkeypatch, capsys):
     calls = fake_az(monkeypatch, "Ready")
     assert deploy_azure_container_apps.start({"name": "my-app"}, SETTINGS) == 0
-    assert calls == [("containerapp", "job", "start", "--name", "pdt-my-app",
+    assert calls == [("containerapp", "job", "start", "--name", "pdt-my-app-aaba0d5",
                       "--resource-group", "pdt", "--output", "json")]
     out = capsys.readouterr().out
     assert "pdt-my-app-abc12" in out
