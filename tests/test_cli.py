@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from conftest import add_app
-from pdt import cli, deploy
+from pdt import cli, config, deploy
 
 
 def run_cli(monkeypatch, *argv):
@@ -12,7 +12,8 @@ def run_cli(monkeypatch, *argv):
     return cli.main()
 
 
-APP_COMMANDS = ["run", "deploy", "login", "destroy", "secrets", "runs", "logs"]
+APP_COMMANDS = ["run", "deploy", "login", "destroy", "secrets", "runs", "logs",
+                "pause", "unpause"]
 
 
 def test_no_command_prints_help(monkeypatch, capsys):
@@ -80,7 +81,7 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     calls = []
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append((a, k)) or 0)
     assert run_cli(monkeypatch, "storage", "hello-world", "ls", "state/") == 0
-    assert calls == [(("azure", "storage", "hello-world", False, ["ls", "state/"]), {})]
+    assert calls == [(("azure", "storage", "hello-world", False, ["--", "ls", "state/"]), {})]
 
 
 def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatch):
@@ -152,6 +153,41 @@ def test_cloud_cli_passthroughs_are_registered():
         assert f'sys.argv[1] == "{name}"' in path.read_text(), (
             f"{script} has no `{name}` passthrough branch")
         assert name in cli.CLOUD_CLIS
+
+
+def test_pause_writes_the_key_and_tells_a_deployed_app(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append(a) or 0)
+    assert run_cli(monkeypatch, "pause", "hello-world") == 0
+    assert (project / "hello-world" / "config.yml").read_text() == "schedule: daily\npause: true\n"
+    assert calls == []
+    assert "not deployed" in capsys.readouterr().out
+    config.mark_deployed("hello-world", True)
+    assert run_cli(monkeypatch, "unpause", "hello-world") == 0
+    assert (project / "hello-world" / "config.yml").read_text() == "schedule: daily\npause: false\n"
+    assert calls == [("azure", "unpause", "hello-world", False)]
+
+
+def test_run_deployed_starts_the_deployed_job(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append(a) or 0)
+    assert run_cli(monkeypatch, "run", "hello-world", "--deployed") == 1
+    assert "not deployed" in capsys.readouterr().out
+    config.mark_deployed("hello-world", True)
+    assert run_cli(monkeypatch, "run", "hello-world", "--deployed") == 0
+    assert calls == [("azure", "start", "hello-world", False)]
+
+
+def test_list_shows_whether_an_app_is_paused(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\npause: true\n")
+    add_app(project, "daily-report", "schedule: daily\n")
+    assert run_cli(monkeypatch, "list") == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "paused" in lines[0]
+    assert next(line for line in lines if "hello-world" in line).split()[-1] == "true"
+    assert next(line for line in lines if "daily-report" in line).split()[-1] == "false"
 
 
 def test_list_shows_a_disabled_app_and_names_leaves_it_out(project, monkeypatch, capsys):

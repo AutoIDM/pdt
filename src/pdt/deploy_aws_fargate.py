@@ -63,6 +63,7 @@ FARGATE_ACTIONS = [
     "ecs:ListTaskDefinitions",
     "ecs:ListTasks",
     "ecs:RegisterTaskDefinition",
+    "ecs:RunTask",
     "ecs:TagResource",
 ]
 DEPLOYER_ACTIONS = sorted(COMMON_ACTIONS + FARGATE_ACTIONS)
@@ -349,7 +350,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
         f"reconcile Fargate task definition {names['family']} "
         f"({int(TASK_CPU) / 1024:g} vCPU, {TASK_MEMORY} MiB, no time limit)",
         ("update" if schedule_exists else "create")
-        + f" EventBridge schedule {names['schedule']}: {expression} ({app['timezone']})",
+        + f" EventBridge schedule {names['schedule']}: {expression} ({app['timezone']})"
+        + (" (paused)" if app["pause"] else ""),
         f"use default VPC subnets and security group {security_group} with a public IP",
     ]
     if store:
@@ -394,7 +396,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         },
     }
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
-                    app["timezone"], scheduler_role, target)
+                    app["timezone"], scheduler_role, target, app["pause"])
     console.done(f"Deployed {app['name']}.")
     console.field("Run it once", f"pdt aws ecs run-task --cluster {CLUSTER} "
                   f"--task-definition {names['family']} --launch-type FARGATE "
@@ -579,6 +581,55 @@ def runs(app: dict, session, rest: list[str]) -> int:
     names = resource_names(app["name"])
     return runs_cli.runs(lambda: list_runs(logs, names), app["name"], rest,
                          lambda found: resolve(logs, ecs, names["log_group"], found))
+
+
+def current_schedule(scheduler, name: str, app_name: str) -> dict:
+    try:
+        return scheduler.get_schedule(Name=name, GroupName=SCHEDULE_GROUP)
+    except Exception as exc:
+        if not not_found(exc):
+            raise
+        fail(f"{app_name} has no EventBridge schedule {name}; run pdt deploy {app_name} first")
+
+
+# What update_schedule needs back from get_schedule to change one field.
+SCHEDULE_FIELDS = ("Name", "GroupName", "ScheduleExpression", "ScheduleExpressionTimezone",
+                   "FlexibleTimeWindow", "Target", "Description")
+
+
+def pause(app: dict, session, paused: bool) -> int:
+    scheduler = session.client("scheduler")
+    names = resource_names(app["name"])
+    schedule = current_schedule(scheduler, names["schedule"], app["name"])
+    state = "DISABLED" if paused else "ENABLED"
+    if schedule.get("State") != state:
+        scheduler.update_schedule(
+            **{key: schedule[key] for key in SCHEDULE_FIELDS if key in schedule}, State=state)
+    console.done(f"{'Paused' if paused else 'Unpaused'} {app['name']}: "
+                 f"EventBridge schedule {names['schedule']} is {state}.")
+    return 0
+
+
+def start(app: dict, session) -> int:
+    scheduler, ecs = session.client("scheduler"), session.client("ecs")
+    names = resource_names(app["name"])
+    target = current_schedule(scheduler, names["schedule"], app["name"])["Target"]
+    parameters = target["EcsParameters"]
+    network = parameters["NetworkConfiguration"]["awsvpcConfiguration"]
+    response = ecs.run_task(
+        cluster=target["Arn"], taskDefinition=parameters["TaskDefinitionArn"],
+        launchType=parameters.get("LaunchType", "FARGATE"), count=1,
+        networkConfiguration={"awsvpcConfiguration": {
+            "subnets": network["Subnets"], "securityGroups": network["SecurityGroups"],
+            "assignPublicIp": network["AssignPublicIp"]}},
+        tags=tags_list())
+    failures = response.get("failures") or []
+    if failures:
+        fail(f"AWS did not start a task for {app['name']}: {failures[0].get('reason')}")
+    task_id = response["tasks"][0]["taskArn"].rsplit("/", 1)[-1]
+    console.done(f"Started {app['name']}: ECS task {task_id}.")
+    console.command(f"pdt runs {app['name']}", "see the run")
+    return 0
 
 
 def logs(app: dict, session, rest: list[str]) -> int:

@@ -181,7 +181,9 @@ def _run_script(app: dict, uv: str) -> str:
     return (
         f"$folder = {folder}; "
         "New-Item -ItemType Directory -Force -Path $folder | Out-Null; "
-        "$log = Join-Path $folder ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.log'); "
+        "$stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'); "
+        "$env:PDT_RUN_ID = $stamp; "
+        "$log = Join-Path $folder ($stamp + '.log'); "
         f"& {uv_path} run --script run.py *>&1 | ForEach-Object {{ \"$_\" }} | "
         "Out-File -Encoding utf8 -FilePath $log; "
         "$code = $LASTEXITCODE; "
@@ -225,7 +227,7 @@ def task_xml(app: dict, uv: str, powershell: str) -> tuple[str, str]:
     <AllowHardTerminate>true</AllowHardTerminate>
     <StartWhenAvailable>true</StartWhenAvailable>
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <Enabled>true</Enabled>
+    <Enabled>{"false" if app.get("pause") else "true"}</Enabled>
     <Hidden>false</Hidden>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Priority>7</Priority>
@@ -346,7 +348,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     folder = storage_folder(app["name"])
     actions = [
         f"{verb} Windows scheduled task {name} (runs as SYSTEM)",
-        f"run {app['name']} {description} (machine local time)",
+        f"run {app['name']} {description} (machine local time)"
+        + (" (paused)" if app.get("pause") else ""),
         f"working directory: {app['dir']}",
     ]
     if app["storage"]:
@@ -415,6 +418,47 @@ def destroy(app: dict, assume_yes: bool) -> int:
     return 0
 
 
+def _managed_task(app: dict) -> tuple[str, str]:
+    """The PowerShell path and the task name, once the task exists and is pdt's."""
+    powershell, _uv = _preflight(require_uv=False)
+    name = _task_name(app["name"])
+    state = _task_state(powershell, name)
+    if state == "unmanaged":
+        raise WindowsDeployError(
+            f"Windows scheduled task {name} exists but is not managed by PDT")
+    if state == "absent":
+        raise WindowsDeployError(
+            f"Windows scheduled task {name} does not exist; run pdt deploy {app['name']} first")
+    return powershell, name
+
+
+def pause(app: dict, paused: bool) -> int:
+    verb = "Disable-ScheduledTask" if paused else "Enable-ScheduledTask"
+    try:
+        powershell, name = _managed_task(app)
+        _run(powershell, f"{verb} -TaskName {_ps_string(name)} -ErrorAction Stop | Out-Null",
+             elevate=True)
+    except WindowsDeployError as exc:
+        console.error(str(exc))
+        return 1
+    console.done(f"{'Paused' if paused else 'Unpaused'} {app['name']}: Windows task {name} "
+                 f"is {'disabled' if paused else 'enabled'}.")
+    return 0
+
+
+def start(app: dict) -> int:
+    try:
+        powershell, name = _managed_task(app)
+        _run(powershell, f"Start-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
+             elevate=True)
+    except WindowsDeployError as exc:
+        console.error(str(exc))
+        return 1
+    console.done(f"Started {app['name']}: Windows task {name}.")
+    console.command(f"pdt runs {app['name']}", "see the run")
+    return 0
+
+
 def _kept_storage_line(app_name: str) -> str:
     folder = storage_folder(app_name)
     count = sum(1 for file in folder.rglob("*") if file.is_file()) if folder.is_dir() else 0
@@ -463,7 +507,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets",
-                                 "runs", "logs"))
+                                 "runs", "logs", "pause", "unpause", "start"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -488,6 +532,10 @@ def main() -> int:
     if args.command == "logs":
         return runs_cli.logs(lambda: list_runs(app["name"]),
                              lambda run: read_lines(app["name"], run), app["name"], args.rest)
+    if args.command in ("pause", "unpause"):
+        return pause(app, args.command == "pause")
+    if args.command == "start":
+        return start(app)
     if args.command == "deploy":
         return deploy(app, args.yes)
     return destroy(app, args.yes)

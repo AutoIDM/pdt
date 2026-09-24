@@ -69,7 +69,7 @@ def test_a_user_environment_creates_no_workspace_and_no_shared_group(monkeypatch
     plans, calls = plan_for(monkeypatch, deploy_settings(OWN),
                             lambda args: TAGGED if args[:3] == ("containerapp", "env", "show") else None)
     assert deploy_azure_container_apps.deploy(
-        {"name": "report", "schedule": "0 0 * * *", "storage": False}, True) == 1
+        {"name": "report", "schedule": "0 0 * * *", "storage": False, "pause": False}, True) == 1
     plan = "\n".join(plans[0])
     assert "use your own Container Apps environment my-group/my-env" in plan
     assert "workspace" not in plan
@@ -81,7 +81,7 @@ def test_a_missing_user_environment_fails_before_the_plan(monkeypatch, capsys):
     plans, _ = plan_for(monkeypatch, deploy_settings(OWN), lambda args: None)
     with pytest.raises(SystemExit):
         deploy_azure_container_apps.deploy(
-            {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+            {"name": "report", "schedule": "0 0 * * *", "storage": False, "pause": False}, True)
     assert plans == []
     assert "my-group/my-env" in capsys.readouterr().out
 
@@ -91,7 +91,7 @@ def test_a_user_environment_in_another_region_fails_before_the_plan(monkeypatch,
                         lambda args: TAGGED | {"location": "West US"})
     with pytest.raises(SystemExit):
         deploy_azure_container_apps.deploy(
-            {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+            {"name": "report", "schedule": "0 0 * * *", "storage": False, "pause": False}, True)
     assert plans == []
     assert "westus" in capsys.readouterr().out
 
@@ -99,7 +99,7 @@ def test_a_user_environment_in_another_region_fails_before_the_plan(monkeypatch,
 def test_the_default_plan_creates_the_shared_group_workspace_and_environment(monkeypatch):
     plans, _ = plan_for(monkeypatch, deploy_settings(SHARED), lambda args: None)
     deploy_azure_container_apps.deploy(
-        {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+        {"name": "report", "schedule": "0 0 * * *", "storage": False, "pause": False}, True)
     plan = plans[0]
     assert "create resource group pdt-shared (shared by every pdt project in this subscription)" in plan
     assert "create Log Analytics workspace pdt-logs in pdt-shared" in plan

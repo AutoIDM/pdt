@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from pdt import storage_cli
@@ -20,6 +22,12 @@ def app():
 def test_ls_lists_the_folder(store, app, capsys):
     assert storage_cli.run(store, app, ["ls"], False) == 0
     assert "a.csv" in capsys.readouterr().out
+
+
+def test_ls_json_lists_each_entry_with_its_type(store, app, capsys):
+    assert storage_cli.run(store, app, ["ls", "--json"], False) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [(entry["name"], entry["type"]) for entry in entries] == [("a.csv", "file")]
 
 
 def test_no_subcommand_prints_the_usage(store, app, capsys):
