@@ -18,32 +18,6 @@
 <section class="card">
     <div class="card-head">
         <div>
-            <h2>Log</h2>
-            <p class="hint">
-                {% if errors_only %}
-                warnings, errors, and plain lines only · <a href="?">show every line</a>
-                {% else %}
-                {{ total_lines }} line{{ total_lines|pluralize }} · <a href="?errors=1">only warnings and errors</a>
-                {% endif %}
-                {% if run.status == "running" %} · read again on each visit while the run is going{% endif %}
-            </p>
-        </div>
-    </div>
-    {% if run.logs_error %}<pre class="error">{{ run.logs_error }}</pre>{% endif %}
-    {% if lines %}
-    <pre class="log" tabindex="0" aria-label="Log of run {{ number }}">{% for line in lines %}<span class="line {{ line.level|lower }}"><span class="time">{% if line.time %}{{ line.time|date:"H:i:s" }}{% endif %}</span> <span class="level">{{ line.level }}</span> {{ line.message }}</span>{% endfor %}</pre>
-    {% elif not run.logs_error %}
-    <p class="empty">No log lines{% if run.status == "running" %} yet{% endif %}.</p>
-    {% endif %}
-</section>
-<script>
-    // The last line logged is the one to read first.
-    document.querySelectorAll('.log').forEach(function (log) { log.scrollTop = log.scrollHeight; });
-</script>
-
-<section class="card">
-    <div class="card-head">
-        <div>
             <h2>Artifacts</h2>
             <p class="hint">
                 {% if run.artifacts_by_time %}
@@ -71,6 +45,32 @@
     <p class="empty">This run kept no files.</p>
     {% endif %}
 </section>
+
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2>Log</h2>
+            <p class="hint">
+                {% if errors_only %}
+                warnings, errors, and plain lines only · <a href="?">show every line</a>
+                {% else %}
+                {{ total_lines }} line{{ total_lines|pluralize }} · <a href="?errors=1">only warnings and errors</a>
+                {% endif %}
+                {% if run.status == "running" %} · read again on each visit while the run is going{% endif %}
+            </p>
+        </div>
+    </div>
+    {% if run.logs_error %}<pre class="error">{{ run.logs_error }}</pre>{% endif %}
+    {% if lines %}
+    <pre class="log" tabindex="0" aria-label="Log of run {{ number }}">{% for line in lines %}<span class="line {{ line.level|lower }}"><span class="time">{% if line.time %}{{ line.time|date:"H:i:s" }}{% endif %}</span> <span class="level">{{ line.level }}</span> {{ line.message }}</span>{% endfor %}</pre>
+    {% elif not run.logs_error %}
+    <p class="empty">No log lines{% if run.status == "running" %} yet{% endif %}.</p>
+    {% endif %}
+</section>
+<script>
+    // The last line logged is the one to read first.
+    document.querySelectorAll('.log').forEach(function (log) { log.scrollTop = log.scrollHeight; });
+</script>
 
 <section class="card" hidden data-ai-analysis>
     <div class="card-head"><h2>AI Analysis</h2></div>
