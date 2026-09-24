@@ -21,5 +21,24 @@
     {% endif %}
     {% block content %}{% endblock %}
 </main>
+<script>
+    // Every shown command gets a copy button. data-copy holds the text, or the
+    // element's own text when it is empty (the workbench line changes as you type).
+    document.querySelectorAll("[data-copy]").forEach(function (element) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "copy";
+        button.textContent = "copy";
+        button.setAttribute("aria-label", "Copy the command");
+        button.addEventListener("click", function () {
+            navigator.clipboard.writeText(element.dataset.copy || element.textContent).then(function () {
+                button.textContent = "copied";
+                button.classList.add("done");
+                setTimeout(function () { button.textContent = "copy"; button.classList.remove("done"); }, 1200);
+            });
+        });
+        element.insertAdjacentElement("afterend", button);
+    });
+</script>
 </body>
 </html>

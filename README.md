@@ -86,7 +86,7 @@ pdt login my-report
 | `pdt init [DIR]` | create a project here, or in DIR |
 | `pdt examples` | list the example apps bundled with pdt |
 | `pdt new APP --from EXAMPLE` | add an app to the project |
-| `pdt list` | show every app with its schedule and provider; `--names` prints only the enabled app names |
+| `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names |
 | `pdt validate` | check the config files and the required env vars |
 | `pdt run APP` | run an app on this machine |
 | `pdt run APP --deployed` | start one run of the deployed job now, on its platform |
@@ -99,7 +99,7 @@ pdt login my-report
 | `pdt secrets APP save` | send your `.env` values to the deployed app; the next run uses them |
 | `pdt secrets APP get` | copy the deployed values into a `.env.<provider>` file |
 | `pdt secrets APP set NAME` | put one value, read from stdin, into the deployed app's secrets |
-| `pdt login APP` | sign in again to the app's cloud provider |
+| `pdt login APP` | sign in again to the app's platform |
 | `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files; `ls PATH --recursive` lists every file under a folder |
 | `pdt runs APP` | list the deployed app's runs with each run's exit code: the 10 newest, or with `--since 3d` (or `12h`, `2w`, `2026-09-20`, `2026-09-20T14:00`) every run since then, `--span 1d` keeping only the runs within that long after `--since` and `--count N` keeping only the N newest; a run's number is its place among every run pdt can still find, so it stays the same whichever runs print |
 | `pdt logs APP [N]` | read the log of run N as `pdt runs` numbers it; with no N, the newest run, `--failed` picks the newest failed run instead, and `--id ID` picks a run by the id `pdt runs` shows (repeat it to read several runs; their `--json` is then an object keyed by id); `--since`, `--span`, and `--count` limit which runs those two choose from, `--errors` leaves out DEBUG and INFO lines; the last 20 lines print, `--lines N` prints N instead, `--head` prints the first lines instead of the last, and `--full` prints every line |
