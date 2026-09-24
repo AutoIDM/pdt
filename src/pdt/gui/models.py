@@ -37,6 +37,9 @@ class Run(models.Model):
     logs_error = models.TextField(blank=True, default="")
     artifacts_synced_at = models.DateTimeField(null=True)
     artifacts_error = models.TextField(blank=True, default="")
+    # True when the files were found by the time they were written, because
+    # the job ran a pdt older than 0.1.3 and named its folder at random.
+    artifacts_by_time = models.BooleanField(default=False)
 
     class Meta:
         unique_together = [("app", "run_id")]
@@ -66,3 +69,20 @@ class Artifact(models.Model):
 
     class Meta:
         ordering = ["path"]
+
+
+class Timing(models.Model):
+    """One page view or one pdt command and how long it took.
+
+    A page's time includes the pdt commands it waited for, so the two kinds
+    side by side on the Stats page show where the time goes.
+    """
+    kind = models.CharField(max_length=10)
+    name = models.CharField(max_length=200)
+    detail = models.CharField(max_length=1024)
+    started = models.DateTimeField()
+    ms = models.IntegerField()
+    ok = models.BooleanField()
+
+    class Meta:
+        ordering = ["-started"]

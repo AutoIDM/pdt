@@ -25,12 +25,9 @@
                 {% else %}
                 {{ total_lines }} line{{ total_lines|pluralize }} · <a href="?errors=1">only warnings and errors</a>
                 {% endif %}
-                {% if run.logs_synced_at %} · read {{ run.logs_synced_at|timesince }} ago{% endif %}
+                {% if run.status == "running" %} · read again on each visit while the run is going{% endif %}
             </p>
         </div>
-        <form class="actions" method="post" action="{% url 'run_action' app.name run.pk 'logs' %}">
-            {% csrf_token %}<button type="submit" title="pdt logs {{ app.name }} --id {{ run.run_id }} --full">Refresh log</button>
-        </form>
     </div>
     {% if run.logs_error %}<pre class="error">{{ run.logs_error }}</pre>{% endif %}
     {% if lines %}
@@ -45,11 +42,14 @@
     <div class="card-head">
         <div>
             <h2>Artifacts</h2>
-            <p class="hint">Files this run kept under <code>runs/…-{{ run.key }}/</code> in the app's storage.</p>
+            <p class="hint">
+                {% if run.artifacts_by_time %}
+                Files written to the app's storage while this run was going. The job runs a pdt older than 0.1.3, which names a run's folder at random; from 0.1.3 the folder ends with the run's id.
+                {% else %}
+                Files this run kept under <code>runs/…-{{ run.key }}/</code> in the app's storage.
+                {% endif %}
+            </p>
         </div>
-        <form class="actions" method="post" action="{% url 'run_action' app.name run.pk 'artifacts' %}">
-            {% csrf_token %}<button type="submit" title="pdt storage {{ app.name }} ls runs/">Refresh artifacts</button>
-        </form>
     </div>
     {% if run.artifacts_error %}<pre class="error">{{ run.artifacts_error }}</pre>{% endif %}
     {% if artifacts %}

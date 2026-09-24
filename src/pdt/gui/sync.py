@@ -22,6 +22,10 @@ FIRST_COUNT = 50
 OVERLAP = timedelta(hours=1)
 ARTIFACT_DEPTH = 5
 DONE_MARKER = "_done"
+FOLDER_STAMP = "%Y%m%dT%H%M%SZ"
+# A job names its runs/ folder at the moment it pushes, which is inside the
+# run; the slack covers clock skew between the job and the provider.
+FOLDER_SLACK = timedelta(minutes=1)
 
 
 def now() -> datetime:
@@ -108,9 +112,33 @@ def sync_logs(run: Run, force: bool = False) -> bool:
     return True
 
 
+def run_folders(run: Run, names: list[str]) -> tuple[list[str], bool]:
+    """The runs/ folders that belong to a run, and whether they were matched by time.
+
+    A job on pdt 0.1.3 or later ends the folder name with the run's id. An
+    older job names it at random, so its folders are the ones written while
+    the run was going.
+    """
+    exact = [name for name in names if name.endswith("-" + run.key)]
+    if exact:
+        return exact, False
+    begin = run.started - FOLDER_SLACK
+    finish = (run.ended or now()) + FOLDER_SLACK
+    matched = []
+    for name in names:
+        stamp = name.rsplit("/", 1)[-1].split("-", 1)[0]
+        try:
+            written = datetime.strptime(stamp, FOLDER_STAMP).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+        if begin <= written <= finish:
+            matched.append(name)
+    return matched, bool(matched)
+
+
 def sync_artifacts(run: Run, force: bool = False) -> bool:
-    """List the files under the run's storage folder(s) once, or on `force`."""
-    if not force and run.artifacts_synced_at is not None:
+    """List the files under the run's storage folder(s) once; again while it is running."""
+    if not force and run.artifacts_synced_at is not None and run.status != "running":
         return False
     app = run.app.name
     code, output = run_pdt("storage", app, "ls", "runs/", "--json")
@@ -120,8 +148,9 @@ def sync_artifacts(run: Run, force: bool = False) -> bool:
         run.save()
         return True
     run.artifacts_synced_at = now()
-    queue = [(entry["name"].rstrip("/"), 0) for entry in entries
-             if entry["name"].rstrip("/").endswith("-" + run.key)]
+    folders, run.artifacts_by_time = run_folders(
+        run, [entry["name"].rstrip("/") for entry in entries])
+    queue = [(folder, 0) for folder in folders]
     files = []
     while queue:
         folder, depth = queue.pop(0)
