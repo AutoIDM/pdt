@@ -31,12 +31,13 @@
     {% if run.artifacts_error %}<pre class="error">{{ run.artifacts_error }}</pre>{% endif %}
     {% if artifacts %}
     <table class="grid-table">
-        <thead><tr><th>Path</th><th>Size</th></tr></thead>
+        <thead><tr><th>Path</th><th>Size</th><th></th></tr></thead>
         <tbody>
         {% for file in artifacts %}
             <tr>
-                <td><a href="{% url 'artifact' app.name run.pk %}?path={{ file.path|urlencode }}">{{ file.path }}</a></td>
+                <td>{% if file.path|lower|slice:"-4:" == ".csv" %}<a href="{% url 'explore' app.name run.pk %}?path={{ file.path|urlencode }}" title="open in the SQL workbench">{{ file.path }}</a>{% else %}{{ file.path }}{% endif %}</td>
                 <td>{% if file.size is not None %}{{ file.size|filesizeformat }}{% endif %}</td>
+                <td><a href="{% url 'artifact' app.name run.pk %}?path={{ file.path|urlencode }}">Download</a></td>
             </tr>
         {% endfor %}
         </tbody>
