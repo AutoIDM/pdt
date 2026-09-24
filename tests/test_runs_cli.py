@@ -290,6 +290,19 @@ def test_logs_failed_picks_the_newest_failed_run(capsys):
     assert capsys.readouterr().out.startswith("run 2 of my-report:")
 
 
+def test_logs_id_reads_that_run_and_resolves_only_it(capsys):
+    resolved = []
+    assert runs_cli.logs(list_two, read, "my-report", ["--id", "stream-1"],
+                         resolve=resolved.extend) == 1
+    assert capsys.readouterr().out.startswith("run 2 of my-report:")
+    assert [run.id for run in resolved] == ["stream-1"]
+
+
+def test_logs_id_unknown_names_the_id(capsys):
+    assert runs_cli.logs(list_two, read, "my-report", ["--id", "stream-9"]) == 1
+    assert "knows no run with id stream-9" in capsys.readouterr().out
+
+
 def test_logs_failed_with_no_failed_run(capsys):
     assert runs_cli.logs(lambda: [NEWEST], read, "my-report", ["--failed"]) == 0
     assert capsys.readouterr().out == "my-report has no failed run in its last 1 runs.\n"

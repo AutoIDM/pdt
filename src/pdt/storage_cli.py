@@ -5,21 +5,27 @@ Each function takes a `pdt.utils.storage.Store` already scoped to one app.
 
 from __future__ import annotations
 
+import json
 import re
 import tempfile
 from pathlib import Path
 
 from pdt import console
 
-USAGE = "usage: pdt storage <app> ls [path] | get <path> [dest] | query <sql> | destroy [--yes]"
+USAGE = ("usage: pdt storage <app> ls [path] [--json] | get <path> [dest] | query <sql> "
+         "| destroy [--yes]")
 
 
-def ls(store, path) -> int:
+def ls(store, path, as_json: bool = False) -> int:
     fs = store.fs()
     try:
         entries = sorted(fs.ls(path, detail=True), key=lambda entry: entry["name"])
     except FileNotFoundError:
         entries = []
+    if as_json:
+        console.say(json.dumps([{"name": entry["name"], "size": entry.get("size"),
+                                 "type": entry.get("type", "file")} for entry in entries]))
+        return 0
     if not entries:
         console.say(f"nothing under {path or '/'}")
         return 0
@@ -75,8 +81,10 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
         console.error(f"storage is turned off for {name}; "
                       f"remove storage: false from {name}/config.yml")
         return 1
+    as_json = "--json" in rest
+    rest = [arg for arg in rest if arg != "--json"]
     handlers = {
-        "ls": (0, lambda args: ls(store, args[0] if args else "")),
+        "ls": (0, lambda args: ls(store, args[0] if args else "", as_json)),
         "get": (1, lambda args: get(store, args[0],
                                     Path(args[1] if len(args) > 1 else Path(args[0]).name))),
         "query": (1, lambda args: query(store, args[0])),

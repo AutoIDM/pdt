@@ -42,7 +42,8 @@ SCHEDULE_SHORTHAND = {
     "yearly": "0 0 1 1 *",
 }
 ROOT_KEYS = {"platform", "apps"}
-APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled"}
+APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
+            "pause"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
@@ -62,6 +63,7 @@ KEY_HOME = {
     "env": APP_LEVEL,
     "storage": APP_LEVEL,
     "enabled": APP_LEVEL,
+    "pause": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -224,7 +226,27 @@ def merged_app(name: str) -> dict:
         "env": mapping(own, "env", own_where) or mapping(entry, "env", entry_where),
         "storage": own.get("storage", entry.get("storage", True)),
         "enabled": own.get("enabled", entry.get("enabled", True)),
+        "pause": own.get("pause", entry.get("pause", False)),
     }
+
+
+def save_app_key(app: dict, key: str, value) -> Path:
+    """Write one top-level key into the app's config.yml, the most specific file.
+
+    Edits the text rather than rewriting the yaml, so the user's comments survive.
+    """
+    path = app["dir"] / APP_FILE
+    text = ("true" if value else "false") if isinstance(value, bool) else f'"{value}"'
+    lines = path.read_text().splitlines() if path.is_file() else []
+    existing = next((i for i, line in enumerate(lines)
+                     if not line.startswith((" ", "\t")) and line.split("#")[0].strip()
+                     .startswith(f"{key}:")), None)
+    if existing is not None:
+        lines[existing] = f"{key}: {text}"
+    else:
+        lines.append(f"{key}: {text}")
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def save_platform_key(app: dict, key: str, value: str) -> Path:
@@ -665,4 +687,6 @@ def validate_app(name: str) -> list[str]:
         problems.append(f"{where}: storage must be true or false")
     if not isinstance(app["enabled"], bool):
         problems.append(f"{where}: enabled must be true or false")
+    if not isinstance(app["pause"], bool):
+        problems.append(f"{where}: pause must be true or false")
     return problems

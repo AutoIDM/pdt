@@ -939,7 +939,8 @@ def main() -> int:
         return subprocess.run([*AZ, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
-                        choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
+                        choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
+                                 "pause", "unpause", "start"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -955,6 +956,10 @@ def main() -> int:
         return module.runs(app, preflight(app, azure_settings(app)), args.rest)
     if args.command == "logs":
         return module.logs(app, preflight(app, azure_settings(app)), args.rest)
+    if args.command in ("pause", "unpause"):
+        return module.pause(app, preflight(app, azure_settings(app)), args.command == "pause")
+    if args.command == "start":
+        return module.start(app, preflight(app, azure_settings(app)))
     if app["timezone"] not in ("Etc/UTC", "UTC"):
         fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
     if args.command == "secrets":

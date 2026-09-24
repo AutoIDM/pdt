@@ -254,6 +254,7 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
          resolve: Callable[[list[Run]], None] | None = None) -> int:
     parser = argparse.ArgumentParser(prog=f"pdt logs {app_name}")
     parser.add_argument("number", nargs="?", type=int)
+    parser.add_argument("--id")
     parser.add_argument("--failed", action="store_true")
     parser.add_argument("--errors", action="store_true")
     parser.add_argument("--lines", type=int)
@@ -275,10 +276,17 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
         return 1
     found = numbered(list_runs)
     shown = window(found, since, span, count)
-    if not shown and (not found or args.failed or args.number is None):
+    if args.id is not None:
+        run = next((run for run in found if run.id == args.id), None)
+        if run is None:
+            console.error(f"pdt runs {app_name} knows no run with id {args.id}")
+            return 1
+        if resolve is not None:
+            resolve([run])
+    elif not shown and (not found or args.failed or args.number is None):
         say_not_run(app_name, args, since, span)
         return 0
-    if args.failed:
+    elif args.failed:
         if resolve is not None:
             resolve(shown)
         failed = [run for run in shown if run.status == "failed"]

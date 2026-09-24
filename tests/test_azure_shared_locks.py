@@ -7,7 +7,7 @@ from pdt import deploy_azure, deploy_azure_container_apps
 SUBSCRIPTION = "11111111-1111-1111-1111-111111111111"
 SHARED = deploy_azure.Environment("pdt-shared", "pdt-eastus2", True)
 MANAGED = {"tags": {"managed-by": "pdt"}, "location": "East US 2"}
-APP = {"name": "report", "schedule": "0 0 * * *", "storage": False}
+APP = {"name": "report", "schedule": "0 0 * * *", "storage": False, "pause": False}
 LOCKED = (
     "ERROR: (ScopeLocked) The scope '/subscriptions/x/resourceGroups/pdt' cannot perform "
     "delete operation because following scope(s) are locked: '/subscriptions/x/resourceGroups"

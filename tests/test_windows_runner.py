@@ -63,6 +63,17 @@ def test_runner_sets_the_storage_url_for_the_child(folders, monkeypatch):
     assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_runner_names_the_run_after_its_log(folders, monkeypatch):
+    app_dir, logs, url = folders
+    calls = []
+    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run(calls, b"", 0))
+
+    assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
+
+    (_command, kwargs), = calls
+    assert kwargs["env"]["PDT_RUN_ID"] == only_log(logs).stem
+
+
 def test_runner_without_uv_logs_exit_127(folders, monkeypatch):
     app_dir, logs, url = folders
 

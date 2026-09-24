@@ -1,0 +1,49 @@
+{% extends "gui/base.html" %}
+{% block title %}{{ app.name }}{% endblock %}
+{% block crumbs %}<a href="{% url 'index' %}">Apps</a> › <span>{{ app.name }}</span>{% endblock %}
+{% block content %}
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h1>{{ app.name }}
+                <span class="status {{ health.status|slugify }}">{{ health.status }}</span>
+                {% if config.pause %}<span class="badge paused">paused</span>{% endif %}
+                {% if not config.deployed %}<span class="badge muted">not deployed</span>{% endif %}
+            </h1>
+            <p class="hint">
+                <code>{{ config.schedule }}</code> {{ config.timezone }} · {{ config.provider }}
+                {% if app.synced_at %} · runs read {{ app.synced_at|timesince }} ago{% endif %}
+            </p>
+            {% if config.error %}<p class="error">{{ config.error }}</p>{% endif %}
+            {% if app.sync_error %}<details class="error" open><summary>could not read runs</summary><pre>{{ app.sync_error }}</pre></details>{% endif %}
+        </div>
+        <div class="buttons">{% with next=request.path %}{% include "gui/_actions.html" %}{% endwith %}</div>
+    </div>
+</section>
+{% include "gui/_health.html" %}
+<section class="card">
+    <div class="card-head">
+        <h2>Runs</h2>
+        <p class="hint">Every run pdt has listed, newest first. A run's number is the one <code>pdt logs {{ app.name }} N</code> takes.</p>
+    </div>
+    {% if runs %}
+    <table class="grid-table">
+        <thead><tr><th>#</th><th>Started</th><th>Duration</th><th>Status</th><th>Exit code</th><th>Id</th></tr></thead>
+        <tbody>
+        {% for item in runs %}
+            <tr>
+                <td><a href="{% url 'run_detail' app.name item.run.pk %}">{{ item.number }}</a></td>
+                <td><a href="{% url 'run_detail' app.name item.run.pk %}">{{ item.run.started|date:"Y-m-d H:i:s" }}</a></td>
+                <td>{{ item.duration }}</td>
+                <td><span class="status {{ item.run.status }}">{{ item.run.status }}</span></td>
+                <td>{% if item.run.exit_code is None %}-{% else %}{{ item.run.exit_code }}{% endif %}</td>
+                <td class="dim">{{ item.run.run_id }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">{{ app.name }} has not run yet.</p>
+    {% endif %}
+</section>
+{% endblock %}

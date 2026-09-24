@@ -1,0 +1,23 @@
+{% comment %}
+The buttons that change an app. Each one runs the pdt command a user would
+type; the page says which, so the terminal is never a surprise.
+{% endcomment %}
+<form class="actions" method="post" action="{% url 'app_action' app.name 'refresh' %}">
+    {% csrf_token %}<input type="hidden" name="next" value="{{ next }}">
+    <button type="submit" title="pdt runs {{ app.name }}">Refresh</button>
+</form>
+{% if config.pause %}
+<form class="actions" method="post" action="{% url 'app_action' app.name 'unpause' %}">
+    {% csrf_token %}<input type="hidden" name="next" value="{{ next }}">
+    <button type="submit" title="pdt unpause {{ app.name }}">Unpause</button>
+</form>
+{% else %}
+<form class="actions" method="post" action="{% url 'app_action' app.name 'pause' %}">
+    {% csrf_token %}<input type="hidden" name="next" value="{{ next }}">
+    <button type="submit" title="pdt pause {{ app.name }}">Pause</button>
+</form>
+{% endif %}
+<form class="actions" method="post" action="{% url 'app_action' app.name 'start' %}">
+    {% csrf_token %}<input type="hidden" name="next" value="{{ next }}">
+    <button type="submit" title="pdt run {{ app.name }} --deployed"{% if not config.deployed %} disabled{% endif %}>Run now</button>
+</form>
