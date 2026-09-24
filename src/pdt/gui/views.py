@@ -8,17 +8,20 @@ shows its output as a message.
 
 from __future__ import annotations
 
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.db.models import Avg, Count, Max, Q
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.views.decorators.http import require_POST
 
-from pdt import config, runs_cli
+from pdt import config, duckdb_wasm, runs_cli
 from pdt.gui import health, sync
 from pdt.gui.models import Run, Timing
 from pdt.gui.pdt_cmd import run_pdt
@@ -30,6 +33,10 @@ APP_ACTIONS = {
     "unpause": ("unpause",),
     "start": ("run", "{name}", "--deployed"),
 }
+STATIC_TYPES = {"pdt.css": "text/css", "workbench.js": "text/javascript",
+                "arrow.mjs": "text/javascript"}
+DUCKDB_FILES = {"module": "duckdb-browser.mjs", "wasm": "duckdb-eh.wasm",
+                "worker": "duckdb-browser-eh.worker.js", "arrow": "Arrow.es2015.min.js"}
 
 
 def app_config(name: str) -> dict:
@@ -172,7 +179,53 @@ def artifact(request, name, pk):
         code, output = run_pdt("storage", name, "get", path, str(target))
         if code != 0 or not target.is_file():
             return HttpResponse(output, status=502, content_type="text/plain")
+        if request.GET.get("inline") == "1":
+            return FileResponse(open(target, "rb"), content_type=(
+                "text/csv" if target.suffix.lower() == ".csv" else "text/plain"))
         return FileResponse(open(target, "rb"), as_attachment=True, filename=target.name)
+
+
+def csv_files(run, name: str) -> list[dict]:
+    """The run's CSV files as the workbench loads them: one DuckDB view per file."""
+    files = []
+    taken = set()
+    base = reverse("artifact", args=[name, run.pk])
+    for file in run.artifacts.all():
+        if not file.path.lower().endswith(".csv"):
+            continue
+        short = file.path.split("/", 2)[-1] if file.path.startswith("runs/") else file.path
+        view = re.sub(r"[^a-z0-9]+", "_", short[:-4].lower()).strip("_") or "file"
+        if view[0].isdigit():
+            view = "_" + view
+        stem, n = view, 2
+        while view in taken:
+            view = f"{stem}_{n}"
+            n += 1
+        taken.add(view)
+        url = f"{base}?{urlencode({'path': file.path})}"
+        files.append({"path": file.path, "name": short, "view": view, "size": file.size,
+                      "url": url + "&inline=1", "download_url": url})
+    return files
+
+
+def explore(request, name, pk):
+    project = sync.project_row()
+    run = run_or_404(project, name, pk)
+    sync.sync_artifacts(run)
+    files = csv_files(run, name)
+    path = request.GET.get("path", "")
+    active = next((file for file in files if file["path"] == path), None)
+    if active is None:
+        raise Http404(f"no CSV file {path}")
+    return render(request, "gui/explore.html", {
+        "project": project, "project_name": Path(project.path).name, "app": run.app,
+        "run": run, "files": files, "active": active,
+        "number": next((item["number"] for item in numbered_runs(run.app)
+                        if item["run"].pk == pk), 0),
+        "duckdb": {key: reverse("duckdb_file", args=[file]) for key, file in DUCKDB_FILES.items()},
+        "installed": duckdb_wasm.installed(),
+        "query_command": f"pdt storage {name} query",
+    })
 
 
 def health_grid(request):
@@ -219,6 +272,15 @@ def stats(request):
     })
 
 
-def stylesheet(_request):
-    return FileResponse(open(Path(__file__).with_name("static") / "pdt.css", "rb"),
-                        content_type="text/css")
+def static_file(_request, name):
+    if name not in STATIC_TYPES:
+        raise Http404(f"no static file {name}")
+    return FileResponse(open(Path(__file__).with_name("static") / name, "rb"),
+                        content_type=STATIC_TYPES[name])
+
+
+def duckdb_file(_request, name):
+    path = duckdb_wasm.DIR / name
+    if name not in duckdb_wasm.FILES or not path.is_file():
+        raise Http404(f"no DuckDB file {name}")
+    return FileResponse(open(path, "rb"), content_type=duckdb_wasm.CONTENT_TYPES[path.suffix])
