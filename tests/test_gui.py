@@ -24,7 +24,7 @@ call_command("migrate", verbosity=0)
 setup_test_environment()
 
 from conftest import add_app  # noqa: E402
-from pdt import config  # noqa: E402
+from pdt import config, duckdb_wasm  # noqa: E402
 from pdt.gui import health, sync, views, worker  # noqa: E402
 from pdt.gui.models import Project, Run, Timing  # noqa: E402
 
@@ -327,3 +327,118 @@ def test_the_worker_counts_its_commands_apart_from_the_pages(gui):
     assert sorted(Timing.objects.values_list("kind", flat=True)) == ["pdt", "worker"]
     html = gui.client.get("/stats/").content.decode()
     assert "Background worker" in html
+
+
+FOLDER = "runs/20260923T100012Z-task2"
+
+
+@pytest.fixture
+def run_with_files(gui):
+    runs_answer(gui)
+    gui.answers[("storage", "my-report", "ls", "runs/")] = (0, json.dumps([
+        {"name": FOLDER, "size": None, "type": "directory"}]) + "\n")
+    gui.answers[("storage", "my-report", "ls", FOLDER + "/")] = (0, json.dumps([
+        {"name": f"{FOLDER}/report.csv", "size": 2048, "type": "file"},
+        {"name": f"{FOLDER}/report!.csv", "size": 10, "type": "file"},
+        {"name": f"{FOLDER}/2024 Sales.CSV", "size": 30, "type": "file"},
+        {"name": f"{FOLDER}/more/detail.txt", "size": 5, "type": "file"}]) + "\n")
+    gui.client.get("/apps/my-report/")
+    run = Run.objects.get(run_id="ecs/my-report/task2")
+    gui.client.get(f"/apps/my-report/runs/{run.pk}/")
+    return run
+
+
+@pytest.fixture
+def duckdb_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(duckdb_wasm, "DIR", tmp_path / "duckdb")
+    return duckdb_wasm.DIR
+
+
+def install_duckdb(folder):
+    folder.mkdir()
+    for name in duckdb_wasm.FILES:
+        (folder / name).write_bytes(b"\0asm" if name.endswith(".wasm") else b"export {};\n")
+
+
+def test_the_run_page_opens_a_csv_in_the_workbench_and_downloads_every_file(run_with_files, gui):
+    html = gui.client.get(f"/apps/my-report/runs/{run_with_files.pk}/").content.decode()
+    explore = f"/apps/my-report/runs/{run_with_files.pk}/explore/?path="
+    download = f"/apps/my-report/runs/{run_with_files.pk}/artifact/?path="
+    assert f"{explore}{FOLDER}/report.csv" in html
+    assert f"{explore}{FOLDER}/2024%20Sales.CSV" in html
+    assert f"{explore}{FOLDER}/more/detail.txt" not in html
+    assert html.count(download) == 4 and html.count(">Download<") == 4
+
+
+def test_the_explore_page_lists_the_csv_files_as_views_and_marks_the_open_one(
+        run_with_files, gui, duckdb_dir):
+    install_duckdb(duckdb_dir)
+    page = gui.client.get(f"/apps/my-report/runs/{run_with_files.pk}/explore/",
+                          {"path": f"{FOLDER}/report.csv"})
+    assert page.status_code == 200
+    html = page.content.decode()
+    assert page.context["active"]["view"] == "report_2"
+    files = page.context["files"]
+    assert [file["view"] for file in files] == ["_2024_sales", "report", "report_2"]
+    assert [file["name"] for file in files] == ["2024 Sales.CSV", "report!.csv", "report.csv"]
+    assert files[2]["url"].endswith("artifact/?path=runs%2F20260923T100012Z-task2%2Freport.csv&inline=1")
+    assert files[2]["download_url"].endswith("artifact/?path=runs%2F20260923T100012Z-task2%2Freport.csv")
+    assert 'data-active="report_2"' in html
+    assert 'data-command="pdt storage my-report query"' in html
+    assert 'data-module="/static/duckdb/duckdb-browser.mjs"' in html
+    assert 'data-wasm="/static/duckdb/duckdb-eh.wasm"' in html
+    assert 'data-worker="/static/duckdb/duckdb-browser-eh.worker.js"' in html
+    assert '<script src="/static/duckdb/Arrow.es2015.min.js"></script>' in html
+    assert 'id="files" type="application/json"' in html
+    assert 'src="/static/workbench.js"' in html
+    for path in (f"{FOLDER}/more/detail.txt", "runs/elsewhere.csv"):
+        assert gui.client.get(f"/apps/my-report/runs/{run_with_files.pk}/explore/",
+                              {"path": path}).status_code == 404
+
+
+def test_the_explore_page_says_when_duckdb_is_not_downloaded(run_with_files, gui, duckdb_dir):
+    html = gui.client.get(f"/apps/my-report/runs/{run_with_files.pk}/explore/",
+                          {"path": f"{FOLDER}/report.csv"}).content.decode()
+    assert "DuckDB is not installed yet" in html
+    assert "workbench.js" not in html
+    assert "%2Freport.csv\">Download</a>" in html
+
+
+def test_an_artifact_is_delivered_inline_for_the_workbench(run_with_files, gui, monkeypatch):
+    def fake_get(*args, timeout=900):
+        with open(args[4], "w") as f:
+            f.write("a,b\n1,2\n")
+        return 0, ""
+
+    monkeypatch.setattr(views, "run_pdt", fake_get)
+    url = f"/apps/my-report/runs/{run_with_files.pk}/artifact/"
+    inline = gui.client.get(url, {"path": f"{FOLDER}/report.csv", "inline": "1"})
+    assert inline.status_code == 200
+    assert inline["Content-Type"] == "text/csv"
+    assert "attachment" not in inline.get("Content-Disposition", "")
+    assert b"".join(inline.streaming_content) == b"a,b\n1,2\n"
+    text = gui.client.get(url, {"path": f"{FOLDER}/more/detail.txt", "inline": "1"})
+    assert text["Content-Type"] == "text/plain"
+    download = gui.client.get(url, {"path": f"{FOLDER}/report.csv"})
+    assert download["Content-Disposition"].startswith("attachment")
+
+
+def test_the_workbench_script_and_the_arrow_shim_are_served_from_the_package(gui):
+    for name in ("workbench.js", "arrow.mjs"):
+        response = gui.client.get(f"/static/{name}")
+        assert response.status_code == 200
+        assert response["Content-Type"].startswith("text/javascript")
+    assert b"globalThis.Arrow" in b"".join(gui.client.get("/static/arrow.mjs").streaming_content)
+    assert gui.client.get("/static/views.py").status_code == 404
+
+
+def test_the_duckdb_files_are_served_from_the_data_folder(gui, duckdb_dir):
+    assert gui.client.get("/static/duckdb/duckdb-eh.wasm").status_code == 404
+    install_duckdb(duckdb_dir)
+    wasm = gui.client.get("/static/duckdb/duckdb-eh.wasm")
+    assert wasm.status_code == 200 and wasm["Content-Type"] == "application/wasm"
+    assert b"".join(wasm.streaming_content) == b"\0asm"
+    for name in ("duckdb-browser.mjs", "duckdb-browser-eh.worker.js", "Arrow.es2015.min.js"):
+        response = gui.client.get(f"/static/duckdb/{name}")
+        assert response.status_code == 200 and response["Content-Type"] == "text/javascript"
+    assert gui.client.get("/static/duckdb/other.wasm").status_code == 404
