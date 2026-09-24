@@ -25,7 +25,7 @@ setup_test_environment()
 
 from conftest import add_app  # noqa: E402
 from pdt import config  # noqa: E402
-from pdt.gui import health, sync, views  # noqa: E402
+from pdt.gui import health, sync, views, worker  # noqa: E402
 from pdt.gui.models import Project, Run, Timing  # noqa: E402
 
 T0 = datetime(2026, 9, 23, 10, 0, 12, tzinfo=UTC)
@@ -269,3 +269,47 @@ def test_the_stylesheet_is_served_from_the_package(gui):
     assert response.status_code == 200
     assert response["Content-Type"].startswith("text/css")
     assert b".hg-bad" in b"".join(response.streaming_content)
+
+
+def test_the_worker_refreshes_runs_backfills_history_and_drains_newest_first(gui):
+    runs_answer(gui)
+    assert worker.tick() is True
+    fetches = [call for call in gui.calls if call[:2] == ("runs", "my-report")]
+    assert fetches[0] == ("runs", "my-report", "--json", "--count", "50")
+    assert fetches[1] == ("runs", "my-report", "--json", "--since", "2000-01-01")
+    logs = [call for call in gui.calls if call[0] == "logs"]
+    assert [call[3] for call in logs] == ["ecs/my-report/task2", "ecs/my-report/task1"]
+    files = [call for call in gui.calls if call[:4] == ("storage", "my-report", "ls", "runs/")]
+    assert len(files) == 2
+    assert Run.objects.filter(logs_synced_at__isnull=True).count() == 0
+    assert worker.tick() is False
+    assert len([call for call in gui.calls if call[:2] == ("runs", "my-report")]) == 2
+
+
+def test_the_worker_reads_a_running_run_again_but_reports_no_backlog(gui):
+    runs_answer(gui, [dict(RUNS[0], status="running", ended=None, exit_code=None)])
+    assert worker.tick() is True
+    assert worker.tick() is False
+    assert len([call for call in gui.calls if call[0] == "logs"]) == 2
+
+
+def test_the_worker_leaves_a_failed_fetch_to_the_page(gui):
+    runs_answer(gui)
+    gui.answers[("logs",)] = (1, "error: AWS credentials are unavailable\n")
+    assert worker.tick() is True
+    assert worker.tick() is False
+    assert len([call for call in gui.calls if call[0] == "logs"]) == 2
+
+
+def test_the_worker_counts_its_commands_apart_from_the_pages(gui):
+    from pdt.gui import timing
+    thread = worker.threading.current_thread()
+    thread.name = timing.WORKER_THREAD
+    try:
+        timing.record("pdt", "runs", "runs my-report", datetime.now(UTC), 0.5, True)
+    finally:
+        thread.name = "MainThread"
+    timing.record("pdt", "runs", "runs my-report", datetime.now(UTC), 0.5, True)
+    assert sorted(Timing.objects.values_list("kind", flat=True)) == ["pdt", "worker"]
+    html = gui.client.get("/stats/").content.decode()
+    assert "Background worker" in html
