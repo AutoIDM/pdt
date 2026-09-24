@@ -121,6 +121,8 @@ button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color:
 .hg-run.running { color: var(--run); }
 .hg-time { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
 .hg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.copy { margin-left: 6px; padding: 0 6px; font-size: 11px; line-height: 18px; color: var(--muted); border-color: var(--line); vertical-align: middle; }
+.copy.done { color: var(--ok); border-color: var(--ok); }
 .hidden { display: none; }
 
 /* The workbench: a run's CSV files queried in the browser. The results

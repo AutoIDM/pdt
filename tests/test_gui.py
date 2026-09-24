@@ -507,3 +507,19 @@ def test_the_worker_asks_again_sooner_while_a_run_is_going(gui):
     before = len([call for call in gui.calls if call[0] == "runs"])
     worker.tick()
     assert len([call for call in gui.calls if call[0] == "runs"]) == before
+
+
+def test_every_shown_command_has_a_copy_button(gui):
+    runs_answer(gui)
+    html = gui.client.get("/").content.decode()
+    assert '<code data-copy>pdt health</code>' in html
+    assert 'data-copy="pdt runs my-report"' in html
+    assert 'data-copy="pdt pause my-report"' in html
+    assert 'data-copy="pdt run my-report --deployed"' in html
+    assert 'querySelectorAll("[data-copy]")' in html
+    assert "<th>Platform</th>" in html
+    html = gui.client.get("/apps/my-report/").content.decode()
+    assert '<code data-copy>pdt runs my-report</code>' in html
+    run = Run.objects.get(run_id="ecs/my-report/task2")
+    html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
+    assert '<code data-copy>pdt logs my-report --id ecs/my-report/task2 --full</code>' in html

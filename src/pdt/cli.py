@@ -50,7 +50,7 @@ def say_no_apps() -> None:
 APP_QUESTIONS = {
     "run": "Which app do you want to run?",
     "deploy": "Which app do you want to deploy?",
-    "login": "Which app's cloud provider do you want to sign in to?",
+    "login": "Which app's platform do you want to sign in to?",
     "destroy": "Which app do you want to destroy?",
     "secrets": "Which app's secrets?",
     "runs": "Which app's runs do you want to see?",
@@ -112,7 +112,7 @@ def cmd_list(args) -> int:
                          "true" if app["pause"] else "false"])
         except ConfigError as e:
             rows.append([name, "-", f"config error: {e}", enabled, "-"])
-    console.table(["name", "schedule", "provider", "enabled", "paused"], rows, ["bold cyan"])
+    console.table(["name", "schedule", "platform", "enabled", "paused"], rows, ["bold cyan"])
     return 0
 
 
@@ -307,7 +307,7 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_deploy)
-    p = add_parser("login", help="sign in again to an app's cloud provider")
+    p = add_parser("login", help="sign in again to an app's platform")
     app = p.add_argument("app", nargs="?",
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
