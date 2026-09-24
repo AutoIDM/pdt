@@ -22,7 +22,7 @@ from django.urls import reverse
 from django.views.decorators.http import require_POST
 
 from pdt import config, duckdb_wasm, runs_cli
-from pdt.gui import health, sync
+from pdt.gui import health, sync, worker
 from pdt.gui.models import Run, Timing
 from pdt.gui.pdt_cmd import run_pdt
 
@@ -152,8 +152,9 @@ def run_or_404(project, name, pk):
 def run_detail(request, name, pk):
     project = sync.project_row()
     run = run_or_404(project, name, pk)
-    sync.sync_logs([run])
-    sync.sync_artifacts(run)
+    pending = sync.needs_logs(run) or sync.needs_artifacts(run)
+    if pending:
+        worker.ask(run)
     lines = run.lines.all()
     errors_only = request.GET.get("errors") == "1"
     if errors_only:
@@ -161,7 +162,7 @@ def run_detail(request, name, pk):
     number = next((item["number"] for item in numbered_runs(run.app) if item["run"].pk == pk), 0)
     return render(request, "gui/run.html", {
         "project": project, "project_name": Path(project.path).name, "app": run.app,
-        "run": run, "number": number, "errors_only": errors_only,
+        "run": run, "number": number, "errors_only": errors_only, "pending": pending,
         "duration": runs_cli.duration_text(
             runs_cli.Run(run.run_id, run.started, run.ended, run.status)),
         "lines": lines, "total_lines": run.lines.count(), "artifacts": run.artifacts.all(),
@@ -211,7 +212,8 @@ def csv_files(run, name: str) -> list[dict]:
 def explore(request, name, pk):
     project = sync.project_row()
     run = run_or_404(project, name, pk)
-    sync.sync_artifacts(run)
+    if sync.needs_artifacts(run):
+        worker.ask(run)
     files = csv_files(run, name)
     path = request.GET.get("path", "")
     active = next((file for file in files if file["path"] == path), None)
