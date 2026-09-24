@@ -50,9 +50,12 @@ TEMPLATES = [{
     ]},
 }]
 MESSAGE_STORAGE = "django.contrib.messages.storage.cookie.CookieStorage"
+# The worker thread and a page can write at the same moment; SQLite makes
+# one of them wait, and this is how long it may.
 DATABASES = {"default": {
     "ENGINE": "django.db.backends.sqlite3",
     "NAME": STATE / "gui.sqlite3" if STATE else ":memory:",
+    "OPTIONS": {"timeout": 30},
 }}
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Pages show the same local times `pdt runs` prints.
