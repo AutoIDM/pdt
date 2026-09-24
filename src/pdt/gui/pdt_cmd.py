@@ -11,22 +11,31 @@ import json
 import os
 import subprocess
 import sys
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pdt
 from pdt import config
+from pdt.gui import timing
 
 
 def run_pdt(*args: str, timeout: int = 900) -> tuple[int, str]:
     """The exit code and output of `pdt <args>`; stderr is added when it failed."""
     env = dict(os.environ, PDT_PROJECT=str(config.find_project()), NO_COLOR="1",
                PYTHONPATH=str(Path(pdt.__file__).resolve().parent.parent))
+    started = datetime.now(UTC)
+    clock = time.monotonic()
     try:
         proc = subprocess.run([sys.executable, "-m", "pdt.cli", *args], env=env,
                               stdin=subprocess.DEVNULL, capture_output=True, text=True,
                               timeout=timeout)
     except subprocess.TimeoutExpired:
+        timing.record("pdt", timing.command_name(args), " ".join(args), started,
+                      time.monotonic() - clock, False)
         return 1, f"pdt {' '.join(args)} did not finish within {timeout} seconds"
+    timing.record("pdt", timing.command_name(args), " ".join(args), started,
+                  time.monotonic() - clock, proc.returncode == 0)
     output = proc.stdout
     if proc.returncode != 0 and proc.stderr.strip():
         output += ("\n" if output and not output.endswith("\n") else "") + proc.stderr

@@ -11,6 +11,7 @@
     <a class="brand" href="{% url 'index' %}">pdt</a>
     <span class="project" title="{{ project.path }}">{{ project_name }}</span>
     <nav>{% block crumbs %}{% endblock %}</nav>
+    <a class="stats-link" href="{% url 'stats' %}">Stats</a>
 </header>
 <main>
     {% if messages %}

@@ -26,7 +26,7 @@ setup_test_environment()
 from conftest import add_app  # noqa: E402
 from pdt import config  # noqa: E402
 from pdt.gui import health, sync, views  # noqa: E402
-from pdt.gui.models import Project, Run  # noqa: E402
+from pdt.gui.models import Project, Run, Timing  # noqa: E402
 
 T0 = datetime(2026, 9, 23, 10, 0, 12, tzinfo=UTC)
 RUNS = [
@@ -60,6 +60,7 @@ def gui(project, monkeypatch):
     monkeypatch.setattr(views, "run_pdt", fake_run_pdt)
     yield state
     Project.objects.all().delete()
+    Timing.objects.all().delete()
 
 
 def runs_answer(state, runs=RUNS):
@@ -172,6 +173,52 @@ def test_the_run_page_lists_the_files_under_the_runs_folder(gui, monkeypatch):
     assert b"".join(download.streaming_content) == b"a,b\n"
     assert gui.client.get(f"/apps/my-report/runs/{run.pk}/artifact/",
                           {"path": "runs/elsewhere"}).status_code == 404
+
+
+def test_files_of_an_older_job_are_matched_by_the_time_they_were_written(gui):
+    runs_answer(gui)
+    gui.client.get("/apps/my-report/")
+    run = Run.objects.get(run_id="ecs/my-report/task2")
+    gui.answers[("storage", "my-report", "ls", "runs/")] = (0, json.dumps([
+        {"name": "runs/20260923T100020Z-4f1c9a2b", "size": None, "type": "directory"},
+        {"name": "runs/20260923T100100Z-9d8e7f6a", "size": None, "type": "directory"},
+        {"name": "runs/20260922T100015Z-1a2b3c4d", "size": None, "type": "directory"}]) + "\n")
+    gui.answers[("storage", "my-report", "ls", "runs/20260923T100020Z-4f1c9a2b/")] = (0, json.dumps([
+        {"name": "runs/20260923T100020Z-4f1c9a2b/report.csv", "size": 10, "type": "file"}]) + "\n")
+    gui.answers[("storage", "my-report", "ls", "runs/20260923T100100Z-9d8e7f6a/")] = (0, json.dumps([
+        {"name": "runs/20260923T100100Z-9d8e7f6a/late.csv", "size": 10, "type": "file"}]) + "\n")
+    html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
+    assert "report.csv" in html and "late.csv" in html
+    assert "older than 0.1.3" in html
+    assert ("storage", "my-report", "ls", "runs/20260922T100015Z-1a2b3c4d/") not in gui.calls
+
+
+def test_a_running_run_reads_its_log_and_files_again_on_each_visit(gui):
+    running = [dict(RUNS[0], status="running", ended=None, exit_code=None)]
+    runs_answer(gui, running)
+    gui.client.get("/apps/my-report/")
+    run = Run.objects.get(run_id="ecs/my-report/task2")
+    gui.client.get(f"/apps/my-report/runs/{run.pk}/")
+    gui.client.get(f"/apps/my-report/runs/{run.pk}/")
+    assert gui.calls.count(("logs", "my-report", "--id", "ecs/my-report/task2", "--full", "--json")) == 2
+    assert gui.calls.count(("storage", "my-report", "ls", "runs/", "--json")) == 2
+    html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
+    assert "Refresh" not in html
+
+
+def test_every_page_view_is_timed_and_shown_on_the_stats_page(gui):
+    gui.client.get("/")
+    gui.client.get("/apps/my-report/")
+    timed = list(Timing.objects.filter(kind="page").values_list("name", flat=True))
+    assert sorted(timed) == ["app_detail", "index"]
+    html = gui.client.get("/stats/").content.decode()
+    assert "app_detail" in html and "index" in html
+    assert Timing.objects.filter(name="stats").count() == 0
+
+
+def test_the_schedule_is_explained_on_hover(gui):
+    html = gui.client.get("/").content.decode()
+    assert 'title="daily at 00:00 (Etc/UTC)"' in html
 
 
 def test_pause_unpause_and_run_now_run_the_pdt_commands(gui):
