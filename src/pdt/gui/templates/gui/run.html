@@ -1,0 +1,75 @@
+{% extends "gui/base.html" %}
+{% block title %}{{ app.name }} run {{ number }}{% endblock %}
+{% block crumbs %}<a href="{% url 'index' %}">Apps</a> › <a href="{% url 'app_detail' app.name %}">{{ app.name }}</a> › <span>run {{ number }}</span>{% endblock %}
+{% block content %}
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h1>run {{ number }} of {{ app.name }} <span class="status {{ run.status }}">{{ run.status }}</span></h1>
+            <p class="hint">
+                started {{ run.started|date:"Y-m-d H:i:s" }} · {{ duration }}
+                {% if run.exit_code is not None %} · exit {{ run.exit_code }}{% endif %}
+                · <span class="dim">{{ run.run_id }}</span>
+            </p>
+        </div>
+    </div>
+</section>
+
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2>Log</h2>
+            <p class="hint">
+                {% if errors_only %}
+                warnings, errors, and plain lines only · <a href="?">show every line</a>
+                {% else %}
+                {{ total_lines }} line{{ total_lines|pluralize }} · <a href="?errors=1">only warnings and errors</a>
+                {% endif %}
+                {% if run.logs_synced_at %} · read {{ run.logs_synced_at|timesince }} ago{% endif %}
+            </p>
+        </div>
+        <form class="actions" method="post" action="{% url 'run_action' app.name run.pk 'logs' %}">
+            {% csrf_token %}<button type="submit" title="pdt logs {{ app.name }} --id {{ run.run_id }} --full">Refresh log</button>
+        </form>
+    </div>
+    {% if run.logs_error %}<pre class="error">{{ run.logs_error }}</pre>{% endif %}
+    {% if lines %}
+    <pre class="log">{% for line in lines %}<span class="line {{ line.level|lower }}"><span class="time">{% if line.time %}{{ line.time|date:"H:i:s" }}{% endif %}</span> <span class="level">{{ line.level }}</span> {{ line.message }}</span>
+{% endfor %}</pre>
+    {% elif not run.logs_error %}
+    <p class="empty">No log lines{% if run.status == "running" %} yet{% endif %}.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2>Artifacts</h2>
+            <p class="hint">Files this run kept under <code>runs/…-{{ run.key }}/</code> in the app's storage.</p>
+        </div>
+        <form class="actions" method="post" action="{% url 'run_action' app.name run.pk 'artifacts' %}">
+            {% csrf_token %}<button type="submit" title="pdt storage {{ app.name }} ls runs/">Refresh artifacts</button>
+        </form>
+    </div>
+    {% if run.artifacts_error %}<pre class="error">{{ run.artifacts_error }}</pre>{% endif %}
+    {% if artifacts %}
+    <table class="grid-table">
+        <thead><tr><th>Path</th><th>Size</th></tr></thead>
+        <tbody>
+        {% for file in artifacts %}
+            <tr>
+                <td><a href="{% url 'artifact' app.name run.pk %}?path={{ file.path|urlencode }}">{{ file.path }}</a></td>
+                <td>{% if file.size is not None %}{{ file.size|filesizeformat }}{% endif %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% elif not run.artifacts_error %}
+    <p class="empty">This run kept no files.</p>
+    {% endif %}
+</section>
+
+<section class="card" hidden data-ai-analysis>
+    <div class="card-head"><h2>AI Analysis</h2></div>
+</section>
+{% endblock %}
