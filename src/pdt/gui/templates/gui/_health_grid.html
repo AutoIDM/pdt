@@ -1,0 +1,57 @@
+{% comment %}
+Period (X) by sub-period (Y) health grid. Size shows how much ran, colour
+shows the share that failed. Hover detail, focus and paging live in
+_health.html.
+{% endcomment %}
+<div class="hg-root" data-health-root
+     data-detail-url="{% url 'health_grid' %}"
+     data-cell-url="{% url 'health_cell' %}"
+     data-app-url-template="{% url 'app_detail' '__APP__' %}"
+     data-run-url-template="{% url 'run_detail' '__APP__' 0 %}"
+     data-app="{{ grid.app }}"
+     data-gran="{{ grid.gran }}"
+     data-end="{{ grid.end }}"
+     data-zone="{{ grid.zone }}"
+     data-is-latest="{{ grid.is_latest|yesno:'1,0' }}">
+    <div class="hg-scroll">
+        <svg width="{{ grid.width }}" height="{{ grid.height }}" viewBox="0 0 {{ grid.width }} {{ grid.height }}"
+             role="img" aria-label="Runs by {{ grid.gran }}, {{ grid.range_label }}"
+             data-health-svg class="hg-svg">
+            {# Current period, shaded behind everything so the marks stay readable. #}
+            {% if grid.today_x %}
+            <rect x="{{ grid.today_x }}" y="{{ grid.data.gutterY }}" width="{{ grid.today_w }}" height="{{ grid.plot_height }}" fill="#dbeafe"/>
+            {% endif %}
+
+            {% for mark in grid.col_marks %}
+            {% if mark.d %}<path d="{{ mark.d }}" fill="none" stroke="#bdc8d7" stroke-width="1"/>
+            {% else %}<line x1="{{ mark.x }}" y1="{{ grid.data.gutterY }}" x2="{{ mark.x }}" y2="{{ grid.plot_bottom }}" stroke="#bdc8d7" stroke-width="1"/>
+            {% endif %}<text x="{{ mark.label_x }}" y="12" font-size="9" fill="#94a3b8" font-family="ui-sans-serif, system-ui, sans-serif">{{ mark.label }}</text>
+            {% endfor %}
+
+            {% for label in grid.row_labels %}
+            <line x1="{{ grid.data.gutterX }}" y1="{{ label.y }}" x2="{{ grid.width }}" y2="{{ label.y }}" stroke="#f1f5f9" stroke-width="1"/>
+            <text x="{{ grid.data.gutterX|add:'-8' }}" y="{{ label.y|add:'3' }}" text-anchor="end" font-size="9" fill="#94a3b8" font-family="ui-sans-serif, system-ui, sans-serif">{{ label.text }}</text>
+            {% endfor %}
+
+            {% for cell in grid.cells %}{% if cell.d %}<path class="{{ cell.cls }}" d="{{ cell.d }}"/>{% else %}<rect class="{{ cell.cls }}" x="{{ cell.x }}" y="{{ cell.y }}" width="{{ cell.w }}" height="{{ cell.h }}" rx="{{ cell.r }}" ry="{{ cell.r }}"/>{% endif %}{% endfor %}
+
+            {# Edges drawn over the marks: the fill alone disappears behind a
+               dense column, and on a single-app grid every mark is full size. #}
+            {% if grid.today_x %}
+            <line x1="{{ grid.today_x }}" y1="{{ grid.data.gutterY }}" x2="{{ grid.today_x }}" y2="{{ grid.plot_bottom }}" stroke="#3b82f6" stroke-width="1"/>
+            <line x1="{{ grid.today_x2 }}" y1="{{ grid.data.gutterY }}" x2="{{ grid.today_x2 }}" y2="{{ grid.plot_bottom }}" stroke="#3b82f6" stroke-width="1"/>
+            {% endif %}
+
+            <rect data-health-cursor x="0" y="0" width="{{ grid.data.colW }}" height="{{ grid.data.rowH }}"
+                  fill="none" stroke="#0f172a" stroke-width="1" opacity="0" pointer-events="none"/>
+            <rect data-health-surface x="{{ grid.data.gutterX }}" y="{{ grid.data.gutterY }}"
+                  width="{{ grid.plot_width }}" height="{{ grid.plot_height }}" fill="transparent"/>
+        </svg>
+    </div>
+
+    {{ grid.data|json_script:"health-data" }}
+
+    <p class="hint" data-health-range>{{ grid.range_label }} &middot; {{ grid.zone }}</p>
+
+    <div data-health-card class="hg-card hidden"></div>
+</div>

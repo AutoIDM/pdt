@@ -37,6 +37,7 @@ def test_task_action_is_powershell_running_an_encoded_script(project):
     assert "run --script run.py" in script
     assert "Out-File -Encoding utf8" in script
     assert "pdt: exit $code" in script
+    assert "$env:PDT_RUN_ID = $stamp" in script
     assert "AddDays(-30)" in script
     assert "exit $code" in script
 

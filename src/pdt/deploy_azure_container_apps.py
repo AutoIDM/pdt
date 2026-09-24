@@ -269,6 +269,10 @@ def average_run_seconds(job: str, rg: str) -> float | None:
 
 
 LOG_ANALYTICS_API = "https://api.loganalytics.io"
+# The CLI has no suspend or resume for a job; the resource manager API does,
+# from this api-version on, and it is what reports properties.runningState.
+MANAGEMENT_API = "https://management.azure.com"
+JOBS_API_VERSION = "2026-07-01"
 EXIT_CODE = re.compile(r"exit code '(\d+)'")
 RUN_STATUS = {"Succeeded": "succeeded", "Running": "running", "Processing": "running"}
 
@@ -326,6 +330,48 @@ def read_lines(settings: dict, job: str, execution: str) -> list[runs_cli.Line]:
 def runs(app: dict, settings: dict, rest: list[str]) -> int:
     job = clean_name(f"pdt-{app['name']}")
     return runs_cli.runs(lambda: list_runs(settings, job), app["name"], rest)
+
+
+def job_url(settings: dict, job: str, action: str = "") -> str:
+    path = resource_id(settings, "Microsoft.App", "jobs", job)
+    return f"{MANAGEMENT_API}{path}{action}?api-version={JOBS_API_VERSION}"
+
+
+def job_running_state(settings: dict, job: str) -> str:
+    """Ready, Progressing, or Suspended."""
+    result = json.loads(run_quiet("rest", "--method", "get", "--url", job_url(settings, job))
+                        or "{}")
+    return str((result.get("properties") or {}).get("runningState") or "")
+
+
+def set_job_paused(settings: dict, job: str, paused: bool) -> None:
+    if (job_running_state(settings, job) == "Suspended") == paused:
+        return
+    run_quiet("rest", "--method", "post",
+              "--url", job_url(settings, job, "/suspend" if paused else "/resume"))
+
+
+def pause(app: dict, settings: dict, paused: bool) -> int:
+    job = clean_name(f"pdt-{app['name']}")
+    set_job_paused(settings, job, paused)
+    console.done(f"{'Paused' if paused else 'Unpaused'} {app['name']}: "
+                 f"Container Apps Job {job} is {'Suspended' if paused else 'Ready'}.")
+    return 0
+
+
+def start(app: dict, settings: dict) -> int:
+    job = clean_name(f"pdt-{app['name']}")
+    output = run_quiet("containerapp", "job", "start", "--name", job,
+                       "--resource-group", settings["resource_group"], "--output", "json")
+    try:
+        execution = json.loads(output or "null")
+    except ValueError:
+        execution = None
+    name = (execution or {}).get("name")
+    console.done(f"Started {app['name']}: execution {name}." if name
+                 else f"Started {app['name']}.")
+    console.command(f"pdt runs {app['name']}", "see the run")
+    return 0
 
 
 def logs(app: dict, settings: dict, rest: list[str]) -> int:
@@ -516,7 +562,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if values:
         actions.append(f"allow {job} to update its own Key Vault secret {sid}")
     actions.append(("update" if current_job else "create")
-                   + f' Container Apps Job {job}: "{cron}" (UTC)')
+                   + f' Container Apps Job {job}: "{cron}" (UTC)'
+                   + (" (paused)" if app["pause"] else ""))
     if not confirm(actions, assume_yes, cost_estimate_for(
             settings["region"], cron, job, rg, current_job is not None,
             1 if values else 0, usage)):
@@ -562,6 +609,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     except SystemExit:
         report_job_failure(settings, job)
         raise
+    set_job_paused(settings, job, app["pause"])
     principal = job_principal_id(job, rg)
     if secret_uri:
         disable_old_secret_versions(settings, sid)

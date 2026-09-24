@@ -1,0 +1,307 @@
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2>Health</h2>
+            <p class="hint" data-health-caption>Every run by hour of day.</p>
+        </div>
+        <div class="hg-controls">
+            <div class="hg-grans" role="group" aria-label="Granularity">
+                {% for option in grid.granularities %}
+                <button type="button" data-health-gran="{{ option.key }}" aria-pressed="{{ option.active|yesno:'true,false' }}">{{ option.label }}</button>
+                {% endfor %}
+            </div>
+            <div class="hg-pages">
+                <button type="button" data-health-page="-1" aria-label="Back">&larr;</button>
+                <button type="button" data-health-now>Now</button>
+                <button type="button" data-health-page="1" aria-label="Forward">&rarr;</button>
+            </div>
+        </div>
+    </div>
+    <div class="hg-container" data-health-container>
+        {% include "gui/_health_grid.html" %}
+    </div>
+</section>
+
+<script>
+(function () {
+    var container = document.querySelector('[data-health-container]');
+    if (!container) return;
+
+    var detailUrl = null, cellUrl = null, appUrlTemplate = null, runUrlTemplate = null, appName = '';
+    var gran = null, currentEnd = null, zone = '';
+    var data, svg, card, cursor, surface, shownCell, frozen = false, expandToken = 0;
+
+    var DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    var CAPTIONS = {
+        hour: 'Every run by minute of hour.',
+        day: 'Every run by hour of day.',
+        week: 'Every run by day of week.',
+        month: 'Every run by week of month.',
+    };
+
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+    function escapeHtml(text) {
+        return String(text).replace(/[&<>"]/g, function (ch) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch];
+        });
+    }
+
+    function query(base, params) {
+        var pairs = [];
+        Object.keys(params).forEach(function (key) {
+            if (params[key] !== null && params[key] !== '') {
+                pairs.push(key + '=' + encodeURIComponent(params[key]));
+            }
+        });
+        return base + (pairs.length ? '?' + pairs.join('&') : '');
+    }
+
+    // Calendar maths only. The Date is built from plain parts and never crosses
+    // a timezone, so labels stay in the grid's own zone.
+    function columnDate(col) {
+        var p = data.startParts;
+        if (gran === 'month') return new Date(p[0], p[1] - 1 + col, 1);
+        var d = new Date(p[0], p[1] - 1, p[2], p[3]);
+        if (gran === 'hour') d.setHours(d.getHours() + col);
+        else if (gran === 'day') d.setDate(d.getDate() + col);
+        else d.setDate(d.getDate() + col * 7);
+        return d;
+    }
+
+    function dayLabel(d) {
+        return DAY_NAMES[d.getDay()] + ' ' + MONTH_NAMES[d.getMonth()] + ' ' + d.getDate();
+    }
+
+    function bucketLabel(col, row) {
+        var d = columnDate(col);
+        if (gran === 'hour') {
+            var endMin = row * 5 + 5, endHour = d.getHours();
+            if (endMin === 60) { endMin = 0; endHour = (endHour + 1) % 24; }
+            return dayLabel(d) + ' &middot; ' + pad(d.getHours()) + ':' + pad(row * 5) +
+                '–' + pad(endHour) + ':' + pad(endMin);
+        }
+        if (gran === 'day') {
+            return dayLabel(d) + ' &middot; ' + pad(row) + ':00–' + pad((row + 1) % 24) + ':00';
+        }
+        if (gran === 'week') {
+            d.setDate(d.getDate() + row);
+            return dayLabel(d) + ', ' + d.getFullYear();
+        }
+        return MONTH_NAMES[d.getMonth()] + ' ' + d.getFullYear() +
+            ' &middot; days ' + (row * 7 + 1) + '–' + (row * 7 + 7);
+    }
+
+    function cellAt(event) {
+        var point = svg.createSVGPoint();
+        point.x = event.clientX;
+        point.y = event.clientY;
+        var local = point.matrixTransform(svg.getScreenCTM().inverse());
+        var col = Math.floor((local.x - data.gutterX) / data.colW);
+        var row = Math.floor((local.y - data.gutterY) / data.rowH);
+        if (col < 0 || col >= data.cols || row < 0 || row >= data.rows) return null;
+        return { col: col, row: row };
+    }
+
+    function appLink(jobIndex, label) {
+        var job = data.jobs[jobIndex];
+        return '<a href="' + appUrlTemplate.replace('__APP__', encodeURIComponent(job[0])) +
+            '" class="hg-link">' + (label ? label + ' ' : '') + escapeHtml(job[1]) + '</a>';
+    }
+
+    function cardHtml(col, row) {
+        var html = '<div class="hg-title">' + bucketLabel(col, row) + '</div>';
+        var cell = data.cells[col + '|' + row];
+        if (!cell) return html + '<div class="hint">No runs.</div>';
+
+        var failures = cell.f || [];
+        if (cell.t) {
+            var rate = Math.round(failures.length / cell.t * 100);
+            html += '<div class="hint">' + cell.t + (cell.t === 1 ? ' run' : ' runs') +
+                (failures.length
+                    ? ' &middot; <span class="hg-failed">' + failures.length + ' failed (' + rate + '%)</span>'
+                    : ' &middot; all passed') +
+                (cell.r ? ' &middot; ' + cell.r + ' running' : '') + '</div>';
+        }
+        // Hovering shows just the failures; focusing replaces them with the
+        // full run list below, which already marks failures in red.
+        if (failures.length && !frozen) {
+            html += '<div class="hg-list">';
+            failures.forEach(function (failure) { html += appLink(failure[0], failure[1]); });
+            html += '</div>';
+        }
+        if (cell.s) {
+            var seen = {};
+            html += '<div class="hg-list hint">' + cell.s + ' scheduled</div><div class="hg-list">';
+            (cell.sj || []).forEach(function (index) {
+                if (seen[index]) return;
+                seen[index] = true;
+                html += appLink(index, '');
+            });
+            html += '</div>';
+        }
+        if (cell.t) {
+            html += '<div data-cell-runs class="hg-list hint">' +
+                (frozen ? 'Loading runs…' : 'Click to list every run') + '</div>';
+        }
+        return html;
+    }
+
+    function runsHtml(runs) {
+        if (!runs.length) return '<div class="hint">No runs.</div>';
+        return runs.map(function (run) {
+            return '<a href="' + runUrlTemplate.replace('__APP__', encodeURIComponent(run.name)).replace(/0\/$/, run.pk + '/') +
+                '" class="hg-run ' + run.status + '">' +
+                '<span class="hg-time">' + run.time + '</span>' +
+                '<span class="hg-name">' + escapeHtml(run.name) + '</span></a>';
+        }).join('');
+    }
+
+    // Focus expands the summary into every run in the bucket. The list is
+    // fetched rather than shipped with the grid: embedding it would triple the
+    // payload, and it grows with history.
+    function expand(col, row) {
+        var token = ++expandToken;
+        var url = query(cellUrl, {
+            gran: gran, start: data.start, col: col, row: row, app: appName,
+        });
+        fetch(url)
+            .then(function (response) { return response.json(); })
+            .then(function (payload) {
+                if (token !== expandToken) return;
+                var slot = card.querySelector('[data-cell-runs]');
+                if (!slot) return;
+                slot.className = 'hg-list hg-runs';
+                slot.innerHTML = runsHtml(payload.runs);
+            })
+            .catch(function () {
+                if (token !== expandToken) return;
+                var slot = card.querySelector('[data-cell-runs]');
+                if (slot) slot.textContent = 'Could not load runs.';
+            });
+    }
+
+    function show(col, row) {
+        // Rebuilding on every mousemove would drop clicks aimed at a card link.
+        if (shownCell === col + '|' + row) return;
+        shownCell = col + '|' + row;
+
+        var root = container.querySelector('[data-health-root]');
+        card.innerHTML = cardHtml(col, row);
+        card.classList.remove('hidden');
+
+        cursor.setAttribute('x', data.gutterX + col * data.colW);
+        cursor.setAttribute('y', data.gutterY + row * data.rowH);
+        cursor.setAttribute('opacity', '.35');
+
+        var rootRect = root.getBoundingClientRect();
+        var svgRect = svg.getBoundingClientRect();
+        var left = svgRect.left - rootRect.left + data.gutterX + col * data.colW + data.colW + 8;
+        var top = svgRect.top - rootRect.top + data.gutterY + row * data.rowH - card.offsetHeight / 2;
+        if (left + card.offsetWidth > rootRect.width) {
+            left = svgRect.left - rootRect.left + data.gutterX + col * data.colW - card.offsetWidth - 8;
+        }
+        card.style.left = Math.max(0, Math.min(left, rootRect.width - card.offsetWidth)) + 'px';
+        card.style.top = Math.max(0, Math.min(top, rootRect.height - card.offsetHeight)) + 'px';
+    }
+
+    function hide() {
+        frozen = false;
+        expandToken++;
+        shownCell = null;
+        card.classList.remove('frozen');
+        card.classList.add('hidden');
+        cursor.setAttribute('opacity', '0');
+    }
+
+    // Clicking a cell pins the card open so the pointer can travel to its
+    // links. Any click outside it goes back to plain hover.
+    function freeze() {
+        frozen = true;
+        card.classList.add('frozen');
+        cursor.setAttribute('opacity', '.8');
+    }
+
+    function load(params) {
+        container.style.opacity = '.4';
+        fetch(query(detailUrl, params))
+            .then(function (response) { return response.text(); })
+            .then(function (html) {
+                container.innerHTML = html;
+                container.style.opacity = '';
+                bind();
+            })
+            .catch(function () { container.style.opacity = ''; });
+    }
+
+    function bind() {
+        var root = container.querySelector('[data-health-root]');
+        if (!root) return;
+        detailUrl = root.getAttribute('data-detail-url');
+        cellUrl = root.getAttribute('data-cell-url');
+        appUrlTemplate = root.getAttribute('data-app-url-template');
+        runUrlTemplate = root.getAttribute('data-run-url-template');
+        appName = root.getAttribute('data-app') || '';
+        gran = root.getAttribute('data-gran');
+        currentEnd = root.getAttribute('data-end');
+        zone = root.getAttribute('data-zone');
+        data = JSON.parse(root.querySelector('#health-data').textContent);
+        svg = root.querySelector('[data-health-svg]');
+        card = root.querySelector('[data-health-card]');
+        cursor = root.querySelector('[data-health-cursor]');
+        frozen = false;
+        shownCell = null;
+
+        surface = root.querySelector('[data-health-surface]');
+        surface.addEventListener('mousemove', function (event) {
+            if (frozen) return;
+            var cell = cellAt(event);
+            if (cell) show(cell.col, cell.row); else hide();
+        });
+        surface.addEventListener('click', function (event) {
+            var cell = cellAt(event);
+            if (!cell) return;
+            freeze();
+            shownCell = null;  // force a rebuild so the card picks up the frozen layout
+            show(cell.col, cell.row);
+            expand(cell.col, cell.row);
+        });
+        root.addEventListener('mouseleave', function () { if (!frozen) hide(); });
+
+        document.querySelector('[data-health-caption]').textContent = CAPTIONS[gran] || '';
+        document.querySelector('[data-health-page="1"]').disabled = root.getAttribute('data-is-latest') === '1';
+        document.querySelectorAll('[data-health-gran]').forEach(function (button) {
+            button.setAttribute('aria-pressed', button.getAttribute('data-health-gran') === gran ? 'true' : 'false');
+        });
+    }
+
+    document.querySelectorAll('[data-health-page]').forEach(function (button) {
+        button.addEventListener('click', function () {
+            load({ gran: gran, end: currentEnd, page: button.getAttribute('data-health-page'), app: appName });
+        });
+    });
+    document.querySelector('[data-health-now]').addEventListener('click', function () {
+        load({ gran: gran, app: appName });
+    });
+    // Switching granularity returns to now, so each mode opens on the present.
+    document.querySelectorAll('[data-health-gran]').forEach(function (button) {
+        button.addEventListener('click', function () {
+            var next = button.getAttribute('data-health-gran');
+            if (next === gran) return;
+            load({ gran: next, app: appName });
+        });
+    });
+
+    document.addEventListener('click', function (event) {
+        if (!frozen || event.target === surface || card.contains(event.target)) return;
+        hide();
+    });
+    document.addEventListener('keydown', function (event) {
+        if (frozen && event.key === 'Escape') hide();
+    });
+
+    bind();
+})();
+</script>

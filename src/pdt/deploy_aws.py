@@ -562,7 +562,7 @@ def ensure_schedule_group(scheduler) -> None:
 
 
 def ensure_schedule(scheduler, name: str, expression: str, timezone: str,
-                    role_arn: str, target: dict) -> None:
+                    role_arn: str, target: dict, paused: bool = False) -> None:
     # Scheduler tags live on groups, not schedules: membership in the
     # tagged pdt group is the ownership marker.
     ensure_schedule_group(scheduler)
@@ -572,7 +572,7 @@ def ensure_schedule(scheduler, name: str, expression: str, timezone: str,
         "ScheduleExpression": expression,
         "ScheduleExpressionTimezone": timezone,
         "FlexibleTimeWindow": {"Mode": "OFF"},
-        "State": "ENABLED",
+        "State": "DISABLED" if paused else "ENABLED",
         "Target": {
             **target,
             "RoleArn": role_arn,
@@ -672,7 +672,8 @@ def main() -> int:
         return subprocess.run([*AWS_CLI, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
-        "deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
+        "deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
+        "pause", "unpause", "start"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -694,6 +695,10 @@ def main() -> int:
             return fargate.runs(app, ensure_session(app), args.rest)
         if args.command == "logs":
             return fargate.logs(app, ensure_session(app), args.rest)
+        if args.command in ("pause", "unpause"):
+            return fargate.pause(app, ensure_session(app), args.command == "pause")
+        if args.command == "start":
+            return fargate.start(app, ensure_session(app))
         return fargate.destroy(app, args.yes)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",
