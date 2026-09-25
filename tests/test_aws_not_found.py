@@ -17,3 +17,7 @@ def test_other_ecs_client_exceptions_still_raise():
 
 def test_the_named_not_found_codes_still_count():
     assert not_found(client_error("ResourceNotFoundException"))
+
+
+def test_a_missing_batch_job_queue_counts_as_not_found():
+    assert not_found(client_error("ClientException", "Job queue pdt does not exist"))
