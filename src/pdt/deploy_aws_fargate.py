@@ -299,9 +299,9 @@ def fargate_clients(session) -> dict:
 
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
     session = ensure_session(app)
-    expected_account, _region = aws_settings(app, session)
+    expected_account, region = aws_settings(app, session)
     clients = fargate_clients(session)
-    preflight(clients["sts"], clients["iam"], expected_account, DEPLOYER_ACTIONS)
+    preflight(clients["sts"], clients["iam"], expected_account, region, DEPLOYER_ACTIONS)
     client = clients["secretsmanager"]
     name = resource_names(app["name"])["secret"]
     current = None
@@ -321,7 +321,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     expected_account, region = aws_settings(app, session)
     clients = fargate_clients(session)
     account, _identity = preflight(
-        clients["sts"], clients["iam"], expected_account, DEPLOYER_ACTIONS)
+        clients["sts"], clients["iam"], expected_account, region, DEPLOYER_ACTIONS)
     names = resource_names(app["name"])
     cron = config.cron_expression(app["schedule"])
     expression = aws_schedule_expression(cron)
@@ -431,7 +431,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     expected_account, region = aws_settings(app, session)
     clients = fargate_clients(session)
     account, _identity = preflight(
-        clients["sts"], clients["iam"], expected_account, DEPLOYER_ACTIONS)
+        clients["sts"], clients["iam"], expected_account, region, DEPLOYER_ACTIONS)
     names = resource_names(app["name"])
     schedule_exists = resource_exists(
         clients["scheduler"], "get_schedule",
