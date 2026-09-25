@@ -12,7 +12,7 @@ def run_cli(monkeypatch, *argv):
     return cli.main()
 
 
-APP_COMMANDS = ["run", "deploy", "login", "destroy", "secrets", "runs", "logs"]
+APP_COMMANDS = ["run", "deploy", "login", "destroy", "secrets", "storage", "runs", "logs"]
 
 
 def test_no_command_prints_help(monkeypatch, capsys):
@@ -81,6 +81,16 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append((a, k)) or 0)
     assert run_cli(monkeypatch, "storage", "hello-world", "ls", "state/") == 0
     assert calls == [(("azure", "storage", "hello-world", False, ["ls", "state/"]), {})]
+
+
+def test_storage_with_an_unknown_app_lists_the_apps(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
+    assert run_cli(monkeypatch, "storage", "../hello-world", "ls") == 1
+    out = capsys.readouterr().out
+    assert "no app named '../hello-world'" in out
+    assert "hello-world" in out
+    assert "pdt storage <app>" in out
 
 
 def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatch):
