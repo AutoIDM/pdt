@@ -70,6 +70,9 @@ from pdt.utils.storage import Store
 
 GCLOUD = "gcloud"
 
+# The format Google enforces for a new project id.
+PROJECT_ID = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
+
 APIS = (
     "artifactregistry.googleapis.com",
     "cloudbilling.googleapis.com",
@@ -239,16 +242,18 @@ def choose_project(app: dict, requested: str) -> str:
     available = [line.split("\t") for line in
                  run_quiet("projects", "list", "--format=value(projectId,name)").splitlines()
                  if line.strip()]
-    if not available:
-        fail("your Google account has no project yet; create one at "
-             "https://console.cloud.google.com/projectcreate")
     if requested:
         console.warn(f"platform.project {requested!r} is not a real Google Cloud project id.")
-    console.heading("Your Google Cloud projects:")
-    for index, entry in enumerate(available, 1):
-        console.choice(index, entry[0], entry[-1])
+    if available:
+        console.heading("Your Google Cloud projects:")
+        for index, entry in enumerate(available, 1):
+            console.choice(index, entry[0], entry[-1])
+        choices = f"1-{len(available)}, or type a new project id to create it"
+    else:
+        console.note("Your Google account has no Google Cloud project yet.")
+        choices = "type a new project id to create it"
     try:
-        answer = input(f"Deploy to which one? [1-{len(available)}, or a project id] ").strip()
+        answer = input(f"Deploy to which one? [{choices}] ").strip()
     except EOFError:
         answer = ""
     ids = [entry[0] for entry in available]
@@ -256,11 +261,46 @@ def choose_project(app: dict, requested: str) -> str:
         project = ids[int(answer) - 1]
     elif answer in ids:
         project = answer
+    elif answer == "":
+        fail("no Google Cloud project selected")
     else:
-        fail("no Google Cloud project selected; type a number from the list or one of the project ids")
+        if not PROJECT_ID.fullmatch(answer):
+            fail(f"{answer} is not a valid Google Cloud project id: use 6 to 30 lowercase "
+                 "letters, digits, and hyphens, starting with a letter")
+        if not console.confirm(f"Create Google Cloud project {answer}?"):
+            fail("no Google Cloud project selected")
+        create_project(answer)
+        project = answer
     saved = config.save_platform_key(app, "project", project)
     console.done(f"Saved project {project} to {saved.relative_to(config.find_project())}.")
     return project
+
+
+def create_project(project: str) -> None:
+    console.step(f"creating project {project}")
+    run_quiet("projects", "create", project, "--name", project)
+    accounts = list_json("billing", "accounts", "list", "--filter=open=true")
+    if not accounts:
+        fail(f"project {project} was created but your account has no open billing account "
+             "to attach; add one at https://console.cloud.google.com/billing "
+             "and run the deploy again")
+    account = accounts[0]
+    if len(accounts) > 1:
+        console.heading("Your open billing accounts:")
+        for index, entry in enumerate(accounts, 1):
+            console.choice(index, entry["displayName"], entry["name"].removeprefix("billingAccounts/"))
+        try:
+            answer = input(f"Which billing account should pay for this project? "
+                           f"[1-{len(accounts)}] ").strip()
+        except EOFError:
+            answer = ""
+        if not (answer.isdigit() and 1 <= int(answer) <= len(accounts)):
+            fail(f"project {project} was created but no billing account was chosen; "
+                 "run the deploy again and pick one from the list")
+        account = accounts[int(answer) - 1]
+    account_id = account["name"].removeprefix("billingAccounts/")
+    run_quiet("billing", "projects", "link", project, "--billing-account", account_id)
+    console.done(f"Linked billing account {account['displayName']} to {project}.")
 
 
 def relogin(assume_yes: bool) -> int:

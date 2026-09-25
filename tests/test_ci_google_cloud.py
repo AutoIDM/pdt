@@ -121,10 +121,80 @@ def test_a_number_still_picks_a_project_by_position(project, monkeypatch):
     assert saved == [("project", "first-project")]
 
 
-def test_a_typed_project_id_not_in_the_list_says_what_to_type(project, monkeypatch, capsys):
-    saved = choose_project_answering(project, monkeypatch, "someone-elses-project")
+LISTED = Result(0, "first-project\tFirst\nsecond-project\tSecond\n")
+ONE_ACCOUNT = '[{"name": "billingAccounts/AAAA-1111", "displayName": "Main"}]'
+TWO_ACCOUNTS = ('[{"name": "billingAccounts/AAAA-1111", "displayName": "Main"},'
+                ' {"name": "billingAccounts/BBBB-2222", "displayName": "Side"}]')
+
+
+def create_answering(project, monkeypatch, answers, accounts, create=True):
+    add_app(project, "my-report", "schedule: daily\n")
+    monkeypatch.setattr(email_auth, "can_prompt", lambda interactive: True)
+    replies = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
+    monkeypatch.setattr(deploy_google_cloud.console, "confirm", lambda question="": create)
+    saved = []
+
+    def record_save(app, key, value):
+        saved.append((key, value))
+        return project / "pdt.yml"
+
+    monkeypatch.setattr(config, "save_platform_key", record_save)
+    calls = record_gcloud(monkeypatch, [
+        (["projects", "list"], LISTED),
+        (["projects", "create"], Result(0)),
+        (["billing", "accounts", "list"], Result(0, accounts)),
+        (["billing", "projects", "link"], Result(0)),
+    ])
+    return calls, saved
+
+
+def gcloud_calls(calls, *prefix):
+    return [call[1:] for call in calls if call[1:1 + len(prefix)] == list(prefix)]
+
+
+def test_a_typed_new_id_creates_the_project_and_links_the_only_billing_account(project, monkeypatch):
+    calls, saved = create_answering(project, monkeypatch, ["brand-new-project"], ONE_ACCOUNT)
+    assert deploy_google_cloud.choose_project({"name": "my-report"}, "") == "brand-new-project"
+    assert gcloud_calls(calls, "projects", "create") == [
+        ["projects", "create", "brand-new-project", "--name", "brand-new-project"]]
+    assert gcloud_calls(calls, "billing", "projects", "link") == [
+        ["billing", "projects", "link", "brand-new-project", "--billing-account", "AAAA-1111"]]
+    assert saved == [("project", "brand-new-project")]
+
+
+def test_a_typed_new_id_with_two_billing_accounts_links_the_chosen_one(project, monkeypatch):
+    calls, saved = create_answering(project, monkeypatch, ["brand-new-project", "2"], TWO_ACCOUNTS)
+    assert deploy_google_cloud.choose_project({"name": "my-report"}, "") == "brand-new-project"
+    assert gcloud_calls(calls, "billing", "projects", "link") == [
+        ["billing", "projects", "link", "brand-new-project", "--billing-account", "BBBB-2222"]]
+    assert saved == [("project", "brand-new-project")]
+
+
+def test_a_typed_new_id_with_no_open_billing_account_names_the_billing_console(
+        project, monkeypatch, capsys):
+    calls, saved = create_answering(project, monkeypatch, ["brand-new-project"], "[]")
     with pytest.raises(SystemExit):
         deploy_google_cloud.choose_project({"name": "my-report"}, "")
+    assert gcloud_calls(calls, "billing", "projects", "link") == []
     assert saved == []
-    message = capsys.readouterr().out
-    assert "type a number from the list or one of the project ids" in message
+    assert "https://console.cloud.google.com/billing" in capsys.readouterr().out
+
+
+def test_a_badly_formed_id_fails_before_any_other_gcloud_call(project, monkeypatch, capsys):
+    calls, saved = create_answering(project, monkeypatch, ["Bad_Project"], ONE_ACCOUNT)
+    with pytest.raises(SystemExit):
+        deploy_google_cloud.choose_project({"name": "my-report"}, "")
+    assert [call[1:3] for call in calls] == [["projects", "list"]]
+    assert saved == []
+    assert "Bad_Project is not a valid Google Cloud project id" in capsys.readouterr().out
+
+
+def test_declining_the_create_question_creates_nothing(project, monkeypatch, capsys):
+    calls, saved = create_answering(project, monkeypatch, ["brand-new-project"], ONE_ACCOUNT,
+                                    create=False)
+    with pytest.raises(SystemExit):
+        deploy_google_cloud.choose_project({"name": "my-report"}, "")
+    assert gcloud_calls(calls, "projects", "create") == []
+    assert saved == []
+    assert "no Google Cloud project selected" in capsys.readouterr().out
