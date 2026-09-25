@@ -54,7 +54,7 @@ def test_first_tab_offers_app_names_without_options(project, tmp_path):
 def test_typed_dash_offers_options(project, tmp_path):
     add_app(project, "daily-report")
 
-    assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "--yes"]
+    assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "--yes", "--all", "--skip-failures"]
 
 
 def test_install_preserves_content_and_replaces_owned_block(tmp_path):
