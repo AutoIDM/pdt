@@ -225,9 +225,10 @@ platform:
 
 apps:
   - name: my-report
-    timezone: local
     schedule: daily
 ```
+
+The Windows provider runs each job on the PC's local time, so `timezone` defaults to `local` there, the only value it accepts.
 
 The job runs as the SYSTEM account. Windows accepts these schedules:
 

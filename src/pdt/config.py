@@ -183,16 +183,18 @@ def merged_app(name: str) -> dict:
     own = load_yaml(app_dir / APP_FILE)
     entry_where = f"{PROJECT_FILE}: apps entry {name!r}"
     own_where = f"{name}/{APP_FILE}"
+    platform = {
+        **mapping(root_cfg, "platform", PROJECT_FILE),
+        **mapping(entry, "platform", entry_where),
+        **mapping(own, "platform", own_where),
+    }
+    default_timezone = "local" if platform.get("provider") == "windows" else "Etc/UTC"
     return {
         "name": name,
         "dir": app_dir,
         "schedule": own.get("schedule", entry.get("schedule")),
-        "timezone": own.get("timezone", entry.get("timezone", "Etc/UTC")),
-        "platform": {
-            **mapping(root_cfg, "platform", PROJECT_FILE),
-            **mapping(entry, "platform", entry_where),
-            **mapping(own, "platform", own_where),
-        },
+        "timezone": own.get("timezone", entry.get("timezone", default_timezone)),
+        "platform": platform,
         "config": {
             **mapping(entry, "config", entry_where),
             **mapping(own, "config", own_where),
