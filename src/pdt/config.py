@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
+
+from pdt import console
 
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
@@ -270,6 +273,22 @@ def _indent(line: str) -> str:
     return line[:len(line) - len(line.lstrip())]
 
 
+def write_text_atomically(path: Path, text: str) -> None:
+    # The temporary file sits in the same folder because a rename is atomic only
+    # within one filesystem.
+    tmp = tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=path.name + ".",
+                                      suffix=".tmp", delete=False)
+    try:
+        with tmp:
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp.name, path)
+    except BaseException:
+        os.unlink(tmp.name)
+        raise
+
+
 STATE_DIR = ".pdt"
 
 
@@ -281,7 +300,14 @@ def read_state() -> dict:
     path = _state_path()
     if not path.is_file():
         return {}
-    return json.loads(path.read_text() or "{}")
+    try:
+        state = json.loads(path.read_text() or "{}")
+    except ValueError:
+        state = None
+    if not isinstance(state, dict):
+        console.warn(f"{STATE_DIR}/{path.name} is not valid; treating every app as not deployed")
+        return {}
+    return state
 
 
 def write_state(state: dict) -> None:
@@ -289,7 +315,7 @@ def write_state(state: dict) -> None:
     path.parent.mkdir(exist_ok=True)
     # Self-ignoring, so projects created before this dir existed stay clean.
     (path.parent / ".gitignore").write_text("*\n")
-    path.write_text(json.dumps(state, indent=2) + "\n")
+    write_text_atomically(path, json.dumps(state, indent=2) + "\n")
 
 
 def mark_deployed(name: str, deployed: bool) -> None:
