@@ -43,6 +43,7 @@ PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
     "subscription", "resource_group", "environment",
+    "timezone",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
 # Where each known key belongs, so a key in the wrong section gets told
@@ -53,12 +54,12 @@ KEY_HOME = {
     "platform": f"the top level of {PROJECT_FILE} or of the app's {APP_FILE}",
     "name": f"the app's apps: entry in {PROJECT_FILE}",
     "schedule": APP_LEVEL,
-    "timezone": APP_LEVEL,
     "config": APP_LEVEL,
     "env": APP_LEVEL,
     "storage": APP_LEVEL,
     "enabled": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
+    "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
 }
 # Keys that belong nowhere any more. The message says what to do instead.
@@ -188,7 +189,8 @@ def merged_app(name: str) -> dict:
         **mapping(entry, "platform", entry_where),
         **mapping(own, "platform", own_where),
     }
-    default_timezone = "local" if platform.get("provider") == "windows" else "Etc/UTC"
+    default_timezone = platform.get(
+        "timezone", "local" if platform.get("provider") == "windows" else "Etc/UTC")
     return {
         "name": name,
         "dir": app_dir,
