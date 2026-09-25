@@ -102,6 +102,12 @@ def data_home() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
 
 
+def machine_data_home() -> Path:
+    """The machine-wide data folder on Windows, %ProgramData%\\pdt, where a scheduled
+    task that runs as SYSTEM and the user who deployed it both reach an app's files."""
+    return Path(os.environ.get("ProgramData") or r"C:\ProgramData") / "pdt"
+
+
 def find_project(start: Path | None = None) -> Path:
     override = os.environ.get("PDT_PROJECT", "").strip()
     if override != "":
@@ -238,6 +244,20 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
                           if lines[i].strip() and not lines[i].strip().startswith("#")), None)
             indent = _indent(lines[first]) if first is not None else "  "
             lines.insert((first if first is not None else start) + 1, f'{indent}{key}: "{value}"')
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def set_app_enabled(name: str, enabled: bool) -> Path:
+    # Edit the text rather than rewrite the yaml, so the user's comments survive.
+    path = find_project() / name / APP_FILE
+    lines = path.read_text().splitlines() if path.is_file() else []
+    value = f"enabled: {'true' if enabled else 'false'}"
+    existing = next((i for i, line in enumerate(lines) if line.startswith("enabled:")), None)
+    if existing is None:
+        lines.append(value)
+    else:
+        lines[existing] = value
     path.write_text("\n".join(lines) + "\n")
     return path
 
