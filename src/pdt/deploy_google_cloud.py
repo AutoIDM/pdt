@@ -50,6 +50,9 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# gRPC logs an info line on every gcloud subprocess once the store has been
+# used, and no child of this script uses gRPC.
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 from pdt import config
 from pdt import console
 from pdt import gcloud_sdk

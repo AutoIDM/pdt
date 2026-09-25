@@ -1,3 +1,4 @@
+import importlib
 import subprocess
 
 import pytest
@@ -39,3 +40,9 @@ def test_a_permission_error_fails_without_a_retry(monkeypatch):
     with pytest.raises(SystemExit):
         deploy_google_cloud.run_quiet("scheduler", "jobs", "delete", "pdt-a")
     assert len(calls) == 1
+
+
+def test_importing_the_script_turns_off_grpc_fork_support(monkeypatch):
+    monkeypatch.delenv("GRPC_ENABLE_FORK_SUPPORT", raising=False)
+    importlib.reload(deploy_google_cloud)
+    assert deploy_google_cloud.os.environ["GRPC_ENABLE_FORK_SUPPORT"] == "0"
