@@ -12,18 +12,27 @@
 # ///
 """Deploy an app locally as a Windows Task Scheduler task.
 
+Per app on this PC there is one folder, `%ProgramData%\\pdt\\<app>\\`, with
+`storage\\` (the app's files, kept after destroy) and `logs\\` (one log per
+run, removed on destroy), and one scheduled task `pdt-<app>` whose action
+runs `run_windows_task.py` through uv. The runner sets PDT_STORAGE_URL to the
+storage folder, runs run.py in the app folder, and writes both output streams
+to `logs\\<UTC start>.log`, ending with `pdt: exit N`; `pdt runs` and
+`pdt logs` read those files. A run is stopped after RUN_TIME_LIMIT.
+
+The task's action is `<uv> run --script run_windows_task.py <app dir>
+<logs folder> <storage url>`. SYSTEM sees only the machine PATH, so `<uv>`
+is the bare word `uv` when uv is on that PATH at deploy time and otherwise
+the absolute path deploy found. Either way `uv run` hands the runner the uv
+that started it in `UV`, so the runner never looks uv up again.
+
 The task runs as the SYSTEM account, so it does not depend on a user being
 logged on. Registering or removing it needs administrator rights; a
-non-elevated shell gets one UAC prompt. Deploy always registers the complete
-desired task definition with -Force, so rerunning it safely reconciles
-changes to the schedule or repository path. SYSTEM sees only the machine
-PATH. When uv is on it at deploy time, the task runs a bare `uv`; otherwise
-the task looks for uv on the PATH when it runs and falls back to the path
-deploy found.
-
-Each run writes its output to .pdt/runs/<app>/<UTC start>.log in the
-project and ends it with `pdt: exit N`; `pdt runs` and `pdt logs` read
-those files, and the task deletes files older than 30 days.
+non-elevated shell gets one UAC prompt. The same elevated script creates the
+app folder and gives SYSTEM full control and the deploying user modify
+rights, so that user can delete what the task wrote. Deploy always registers
+the complete desired task definition with -Force, so rerunning it safely
+reconciles changes to the schedule or repository path.
 """
 
 from __future__ import annotations
@@ -42,7 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, runs_cli
 from pdt.deploy import confirm
-from pdt.deploy_common import CostEstimate
+from pdt.deploy_common import CostEstimate, warn_if_locked
 
 
 class WindowsDeployError(Exception):
@@ -56,6 +65,9 @@ MONTHS = (
 DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday",
         "Thursday", "Friday", "Saturday")
 FORBIDDEN_TASK_NAME_CHARS = set('\\/:*?"<>|')
+RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
+# The same limit as --replica-timeout on Azure Container Apps.
+RUN_TIME_LIMIT = "PT30M"
 
 
 def _single_number(field: str, label: str, lo: int, hi: int) -> int:
@@ -162,12 +174,18 @@ def schedule_trigger(cron: str) -> tuple[str, str]:
         "or a fixed-time cron restricted by either day-of-week or day-of-month")
 
 
+def app_folder(app_name: str) -> Path:
+    """The app's folder under %ProgramData%\\pdt; the task name is unique per PC, so the
+    app name is too."""
+    return config.machine_data_home() / app_name
+
+
 def storage_folder(app_name: str) -> Path:
-    return config.find_project() / ".pdt" / "storage" / app_name
+    return app_folder(app_name) / "storage"
 
 
-def runs_folder(app_name: str) -> Path:
-    return config.find_project() / ".pdt" / "runs" / app_name
+def logs_folder(app_name: str) -> Path:
+    return app_folder(app_name) / "logs"
 
 
 def _task_name(app_name: str) -> str:
@@ -176,6 +194,19 @@ def _task_name(app_name: str) -> str:
         raise WindowsDeployError(
             f"app name {app_name!r} contains characters Windows forbids in task names")
     return name
+
+
+def storage_url(app_name: str) -> str:
+    """The `file:` URI `pdt.utils.storage.root()` reads from PDT_STORAGE_URL."""
+    return storage_folder(app_name).as_uri() + "/"
+
+
+def task_arguments(app: dict) -> str:
+    """The uv arguments the task runs: the runner, then the app folder, its log folder,
+    and its storage url. Quoted the way CreateProcess splits them."""
+    return subprocess.list2cmdline([
+        "run", "--script", str(RUNNER), str(Path(app["dir"]).resolve()),
+        str(logs_folder(app["name"])), storage_url(app["name"])])
 
 
 def uv_on_machine_path() -> bool:
@@ -194,41 +225,7 @@ def uv_on_machine_path() -> bool:
                for folder in os.path.expandvars(path).split(";") if folder)
 
 
-def _run_script(app: dict, uv: str, on_machine_path: bool) -> str:
-    """The script the scheduled task runs: log the app's run, then exit with its code."""
-    folder = _ps_string(str(runs_folder(app["name"])))
-    find_uv, uv_command = "", "uv"
-    if not on_machine_path:
-        uv_path = _ps_string(str(Path(uv).resolve()))
-        find_uv = (
-            "$uv = (Get-Command uv.exe, uv -ErrorAction SilentlyContinue | "
-            "Select-Object -First 1).Source; "
-            f"if (-not $uv -or -not (Test-Path $uv)) {{ $uv = {uv_path} }}; "
-            "if (-not (Test-Path $uv)) { "
-            "\"uv was not found on the PATH or at $uv; install uv and run pdt deploy again\" | "
-            "Out-File -Encoding utf8 -FilePath $log; "
-            "'pdt: exit 127' | Out-File -Encoding utf8 -Append -FilePath $log; "
-            "exit 127 }; "
-        )
-        uv_command = "$uv"
-    return (
-        f"$folder = {folder}; "
-        "New-Item -ItemType Directory -Force -Path $folder | Out-Null; "
-        "$log = Join-Path $folder ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.log'); "
-        f"{find_uv}"
-        f"& {uv_command} run --script run.py *>&1 | "
-        "ForEach-Object { \"$_\" } | "
-        "Out-File -Encoding utf8 -FilePath $log; "
-        "$code = $LASTEXITCODE; "
-        "\"pdt: exit $code\" | Out-File -Encoding utf8 -Append -FilePath $log; "
-        "Get-ChildItem -Path $folder -Filter *.log | "
-        "Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } | Remove-Item -Force; "
-        "exit $code"
-    )
-
-
-def task_xml(app: dict, uv: str, on_machine_path: bool,
-             powershell: str) -> tuple[str, str]:
+def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
     cron = config.cron_expression(app["schedule"])
     tz = str(app.get("timezone") or "").strip().lower()
     if tz != "local":
@@ -236,10 +233,8 @@ def task_xml(app: dict, uv: str, on_machine_path: bool,
             "the Windows provider uses the machine's local timezone; "
             "set timezone: local for this app")
     description, trigger = schedule_trigger(cron)
-    command = html.escape(str(Path(powershell).resolve()))
-    arguments = html.escape(
-        "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-        f"-EncodedCommand {_encoded(_run_script(app, uv, on_machine_path))}")
+    command = "uv" if on_machine_path else html.escape(str(Path(uv).resolve()))
+    arguments = html.escape(task_arguments(app))
     workdir = html.escape(str(Path(app["dir"]).resolve()))
     task_description = html.escape(
         f"Managed by pdt; runs {app['name']} from "
@@ -263,7 +258,7 @@ def task_xml(app: dict, uv: str, on_machine_path: bool,
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <Enabled>true</Enabled>
     <Hidden>false</Hidden>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <ExecutionTimeLimit>{RUN_TIME_LIMIT}</ExecutionTimeLimit>
     <Priority>7</Priority>
   </Settings>
   <Actions Context="Author">
@@ -326,6 +321,32 @@ def _ps_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _deploying_user() -> str:
+    """The account running deploy, as DOMAIN\\user. Read before elevation, because the
+    UAC prompt may switch to an administrator's account when this user is not one."""
+    proc = subprocess.run(["whoami"], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    user = proc.stdout.strip()
+    if proc.returncode != 0 or user == "":
+        raise WindowsDeployError("whoami could not name the current Windows user")
+    return user
+
+
+def _folder_script(app: dict, user: str) -> str:
+    """Create the app folder with the two rules its files need: SYSTEM (the task) has full
+    control, and the deploying user can change and delete what SYSTEM writes."""
+    folders = [app_folder(app["name"]), logs_folder(app["name"])]
+    if app["storage"]:
+        folders.append(storage_folder(app["name"]))
+    paths = ", ".join(_ps_string(str(folder)) for folder in folders)
+    return (
+        f"$folder = {_ps_string(str(app_folder(app['name'])))}; "
+        f"New-Item -ItemType Directory -Force -Path {paths} | Out-Null; "
+        f"icacls $folder /grant '*S-1-5-18:(OI)(CI)F' {_ps_string(user + ':(OI)(CI)M')} "
+        "| Out-Null; "
+        "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+    )
+
+
 def _task_state(powershell: str, name: str) -> str:
     quoted = _ps_string(name)
     script = (
@@ -363,18 +384,21 @@ def _task_running(powershell: str, name: str) -> bool:
     return proc.returncode == 0
 
 
-def plan(app: dict, verb: str, description: str, uv: str,
+def plan(app: dict, verb: str, description: str, user: str, uv: str,
          on_machine_path: bool) -> list[str]:
+    name = app["name"]
     actions = [
-        f"{verb} Windows scheduled task {_task_name(app['name'])} (runs as SYSTEM)",
-        f"run {app['name']} {description} (machine local time)",
+        f"{verb} Windows scheduled task {_task_name(name)} (runs as SYSTEM)",
+        f"run {name} {description} (machine local time)",
         f"working directory: {app['dir']}",
         "run uv from the system PATH" if on_machine_path else
         f"run uv from {Path(uv).resolve()} (uv is not on the system PATH; "
         "a machine-wide install drops the path from the task)",
+        f"keep the app's run data in {app_folder(name)} (SYSTEM: full control; {user}: modify)",
+        f"write one log per run under {logs_folder(name)} (removed on destroy)",
     ]
     if app["storage"]:
-        actions.append(f"use folder {storage_folder(app['name'])} for the app's files "
+        actions.append(f"use folder {storage_folder(name)} for the app's files "
                        "(kept after destroy)")
     return actions
 
@@ -385,7 +409,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
         assert uv is not None
         on_machine_path = uv_on_machine_path()
         name = _task_name(app["name"])
-        description, xml = task_xml(app, uv, on_machine_path, powershell)
+        user = _deploying_user()
+        description, xml = task_xml(app, uv, on_machine_path)
         state = _task_state(powershell, name)
         if state == "unmanaged":
             raise WindowsDeployError(
@@ -395,7 +420,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.error(str(exc))
         return 1
 
-    actions = plan(app, "update" if exists else "create", description, uv,
+    actions = plan(app, "update" if exists else "create", description, user, uv,
                    on_machine_path)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges")
@@ -403,11 +428,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.warn("Aborted; nothing was changed.")
         return 1
 
-    if app["storage"]:
-        storage_folder(app["name"]).mkdir(parents=True, exist_ok=True)
-
     payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     script = (
+        f"{_folder_script(app, user)}"
         f"$name = {_ps_string(name)}; "
         f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
         "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
@@ -422,6 +445,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.field("Run it once", f"Start-ScheduledTask -TaskName {_ps_string(name)}")
     console.field("Run history", f"Get-ScheduledTaskInfo -TaskName {_ps_string(name)}")
     console.bullet("or open Task Scheduler > Task Scheduler Library", indent=4)
+    console.field("Run logs", str(logs_folder(app["name"])))
     return 0
 
 
@@ -437,25 +461,37 @@ def destroy(app: dict, assume_yes: bool) -> int:
     except WindowsDeployError as exc:
         console.error(str(exc))
         return 1
-    if not exists:
+    logs = logs_folder(app["name"])
+    logs_exist = logs.is_dir()
+    if not exists and not logs_exist:
         console.done(f"Nothing to remove for {app['name']}; task {name} does not exist.")
         if app["storage"]:
             console.say(_kept_storage_line(app["name"]))
         return 0
-    if not confirm([f"delete Windows scheduled task {name}"], assume_yes):
+    actions = []
+    script = ""
+    if exists:
+        actions.append(f"delete Windows scheduled task {name}")
+        script += (f"Unregister-ScheduledTask -TaskName {_ps_string(name)} "
+                   "-Confirm:$false -ErrorAction Stop; ")
+    if logs_exist:
+        actions.append(f"delete run logs folder {logs}")
+        script += f"Remove-Item -Recurse -Force -Path {_ps_string(str(logs))} -ErrorAction Stop; "
+    if app["storage"]:
+        actions.append(f"keep folder {storage_folder(app['name'])} (the app's files)")
+        warn_if_locked(_store(app["name"]), app["name"])
+    if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 1
     try:
-        _run(
-            powershell,
-            f"Unregister-ScheduledTask -TaskName {_ps_string(name)} "
-            "-Confirm:$false -ErrorAction Stop",
-            elevate=True,
-        )
+        _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
         console.error(str(exc))
         return 1
-    console.done(f"Removed Windows task {name}.")
+    console.done(f"Removed Windows task {name}." if exists
+                 else f"Nothing to remove for {app['name']}; task {name} does not exist.")
+    if logs_exist:
+        console.say(f"removed: run logs folder {logs}")
     if app["storage"]:
         console.say(_kept_storage_line(app["name"]))
     return 0
@@ -467,25 +503,28 @@ def _kept_storage_line(app_name: str) -> str:
     return f"kept: folder {folder} ({count} files)"
 
 
-def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
-    from pdt import storage_cli
+def _store(app_name: str):
     from pdt.utils.storage import Store
 
-    folder = storage_folder(app["name"])
-    store = Store(folder.as_uri() + "/", None)
-    return storage_cli.run(store, app, rest, assume_yes)
+    return Store(storage_url(app_name), None)
+
+
+def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
+    from pdt import storage_cli
+
+    return storage_cli.run(_store(app["name"]), app, rest, assume_yes)
 
 
 def read_lines(app_name: str, run: runs_cli.Run) -> list[runs_cli.Line]:
     try:
-        text = (runs_folder(app_name) / f"{run.id}.log").read_text(encoding="utf-8-sig")
+        text = (logs_folder(app_name) / f"{run.id}.log").read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return []
     return [runs_cli.parse_line(line, None) for line in text.splitlines()]
 
 
 def list_runs(app_name: str) -> list[runs_cli.Run]:
-    folder = runs_folder(app_name)
+    folder = logs_folder(app_name)
     if not folder.is_dir():
         return []
     files = sorted(folder.glob("*.log"), key=lambda file: file.name, reverse=True)
