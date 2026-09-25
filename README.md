@@ -84,26 +84,30 @@ pdt login my-report
 | `pdt init [DIR]` | create a project here, or in DIR |
 | `pdt examples` | list the example apps bundled with pdt |
 | `pdt new APP --from EXAMPLE` | add an app to the project |
-| `pdt list` | show every app with its schedule and provider; `--names` prints only the enabled app names |
+| `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names |
 | `pdt validate` | check the config files and the required env vars |
 | `pdt run APP` | run an app on this machine |
+| `pdt run APP --deployed` | start one run of the deployed job now, on its platform |
 | `pdt deploy APP` | deploy an app to its configured platform |
 | `pdt deploy --all` | deploy every enabled app, in order; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
 | `pdt destroy APP` | remove everything deploy created |
+| `pdt pause APP` | stop the deployed schedule from starting runs; writes `pause: true` into the app's `config.yml` |
+| `pdt unpause APP` | let the schedule start runs again; writes `pause: false` |
 | `pdt secrets APP` | show which `.env` values differ from the deployed app |
 | `pdt secrets APP save` | send your `.env` values to the deployed app; the next run uses them |
 | `pdt secrets APP get` | copy the deployed values into a `.env.<provider>` file |
 | `pdt secrets APP set NAME` | put one value, read from stdin, into the deployed app's secrets |
-| `pdt login APP` | sign in again to the app's cloud provider |
-| `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files |
+| `pdt login APP` | sign in again to the app's platform |
+| `pdt storage APP ls|get|query|destroy` | look at, fetch, query, or delete the app's stored files; `ls PATH --recursive` lists every file under a folder |
 | `pdt runs APP` | list the deployed app's runs with each run's exit code: the 10 newest, or with `--since 3d` (or `12h`, `2w`, `2026-09-20`, `2026-09-20T14:00`) every run since then, `--span 1d` keeping only the runs within that long after `--since` and `--count N` keeping only the N newest; a run's number is its place among every run pdt can still find, so it stays the same whichever runs print |
-| `pdt logs APP [N]` | read the log of run N as `pdt runs` numbers it; with no N, the newest run, and `--failed` picks the newest failed run instead; `--since`, `--span`, and `--count` limit which runs those two choose from, `--errors` leaves out DEBUG and INFO lines; the last 20 lines print, `--lines N` prints N instead, `--head` prints the first lines instead of the last, and `--full` prints every line |
+| `pdt logs APP [N]` | read the log of run N as `pdt runs` numbers it; with no N, the newest run, `--failed` picks the newest failed run instead, and `--id ID` picks a run by the id `pdt runs` shows (repeat it to read several runs; their `--json` is then an object keyed by id); `--since`, `--span`, and `--count` limit which runs those two choose from, `--errors` leaves out DEBUG and INFO lines; the last 20 lines print, `--lines N` prints N instead, `--head` prints the first lines instead of the last, and `--full` prints every line |
 | `pdt health [APP]` | show whether each app's last run succeeded; exits 1 when one failed |
+| `pdt gui` | open the project's dashboard in your browser: every app's health, each app's run history, and each run's log and files, with buttons for pause, unpause, and run now; `--background` keeps the server up after the command returns and `pdt gui --stop` ends it; `--port N` and `--no-browser` are there for the rare case |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
 | `pdt completion [SHELL]` | turn on tab completion for a shell |
 
-Leave `APP` off `run`, `deploy`, `destroy`, `secrets`, or `login`, or mistype it, and pdt lists the apps in the project so you can pick one.
+Leave `APP` off `run`, `deploy`, `destroy`, `pause`, `unpause`, `secrets`, or `login`, or mistype it, and pdt lists the apps in the project so you can pick one.
 
 `pdt az` and `pdt gcloud` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
 
@@ -142,6 +146,12 @@ store.push(Path(".pdt-state"), "state/", lease)
 From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
 
 An app that is not ready sets `enabled: false` in its `config.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it.
+
+## The dashboard
+
+`pdt gui` starts a small web server on your own computer and opens it in your browser. The first page is `pdt health` as a table, with a grid of every run by hour, day, week, or month underneath it. Click an app for its run history, and click a run for its log and the files it kept in storage. A CSV file a run kept opens in a SQL workbench in the browser: a table you can sort, filter, and page, and a SQL view where every CSV of the run is a view you can query and join, with the matching `pdt storage APP query` command shown under it. The workbench runs on DuckDB, which the first `pdt gui` downloads once into the pdt data folder (`~/.local/share/pdt`); a Download link next to each file still saves it. Every number on a page came out of a pdt command (`pdt runs`, `pdt logs`, `pdt storage ls`), and every button runs one (`pdt pause`, `pdt unpause`, `pdt run --deployed`); hover a button to see which. The pages keep what they fetched in `.pdt/gui.sqlite3` inside the project and fetch again when it is older than five minutes or when you press Refresh, so a run stays in the history after the cloud has forgotten it. A worker inside the server checks for work every two minutes: it refreshes each app's runs, asks the provider once for every run it still keeps, and then fetches the log and files of each run that lacks them, newest first, until every run has them. A page shows what is there; it only waits when it asks for something the worker has not reached yet. The Stats link shows how long each page and each pdt command took. The server listens on localhost only and has no login. `pdt gui --background` leaves it running after the command returns; `pdt gui --stop` ends it.
+
+An app that should stay deployed but not run for a while sets `pause: true`. The schedule stays in place and does not fire until the key goes back to `false`. `pdt pause APP` and `pdt unpause APP` write the key into the app's `config.yml` and apply it to the deployed schedule in the same step; `pdt deploy` also honors it. A paused app still runs when you ask for it with `pdt run APP --deployed`.
 
 ## Running pdt from CI
 

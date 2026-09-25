@@ -126,7 +126,7 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
 
     with pytest.raises(SystemExit) as error:
         deploy_azure_container_apps.deploy(
-            {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+            {"name": "report", "schedule": "0 0 * * *", "storage": False, "pause": False}, True)
 
     assert error.value.code == 7
     assert reported and reported[0][1] == "pdt-report"

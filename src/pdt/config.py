@@ -42,7 +42,8 @@ SCHEDULE_SHORTHAND = {
     "yearly": "0 0 1 1 *",
 }
 ROOT_KEYS = {"platform", "apps"}
-APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled"}
+APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
+            "pause"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
@@ -62,6 +63,7 @@ KEY_HOME = {
     "env": APP_LEVEL,
     "storage": APP_LEVEL,
     "enabled": APP_LEVEL,
+    "pause": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -224,7 +226,27 @@ def merged_app(name: str) -> dict:
         "env": mapping(own, "env", own_where) or mapping(entry, "env", entry_where),
         "storage": own.get("storage", entry.get("storage", True)),
         "enabled": own.get("enabled", entry.get("enabled", True)),
+        "pause": own.get("pause", entry.get("pause", False)),
     }
+
+
+def save_app_key(app: dict, key: str, value) -> Path:
+    """Write one top-level key into the app's config.yml, the most specific file.
+
+    Edits the text rather than rewriting the yaml, so the user's comments survive.
+    """
+    path = app["dir"] / APP_FILE
+    text = ("true" if value else "false") if isinstance(value, bool) else f'"{value}"'
+    lines = path.read_text().splitlines() if path.is_file() else []
+    existing = next((i for i, line in enumerate(lines)
+                     if not line.startswith((" ", "\t")) and line.split("#")[0].strip()
+                     .startswith(f"{key}:")), None)
+    if existing is not None:
+        lines[existing] = f"{key}: {text}"
+    else:
+        lines.append(f"{key}: {text}")
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def save_platform_key(app: dict, key: str, value: str) -> Path:
@@ -432,6 +454,84 @@ def _cron_values(field: str, lo: int, hi: int, label: str) -> set[int]:
                 f"cron {label} field {field!r} must be between {lo} and {hi}")
         values.update(range(start, end + 1, step))
     return values
+
+
+DAY_WORDS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+MONTH_WORDS = ("January", "February", "March", "April", "May", "June", "July", "August",
+               "September", "October", "November", "December")
+
+
+def _words(items) -> str:
+    items = list(items)
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _ordinal(day: int) -> str:
+    suffix = "th" if 11 <= day % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return f"{day}{suffix}"
+
+
+def _minutes_past(minutes: list[int]) -> str:
+    if minutes == [0]:
+        return "on the hour"
+    return _words(f"{m} minute{'s' if m != 1 else ''}" if m else "0 minutes"
+                  for m in minutes) + " past the hour"
+
+
+def _day_words(days: list[int]) -> str:
+    """Monday to Friday for a run of days, else each day named."""
+    if len(days) >= 3 and days == list(range(days[0], days[-1] + 1)):
+        return f"{DAY_WORDS[days[0]]} to {DAY_WORDS[days[-1]]}"
+    return _words(DAY_WORDS[d] for d in days)
+
+
+def _clock_times(minute: str, hour: str) -> list[str] | None:
+    """The HH:MM times a minute and hour field name, or None when they are not plain lists."""
+    if any(mark in field for field in (minute, hour) for mark in ("*", "/")):
+        return None
+    minutes = sorted(_cron_values(minute, 0, 59, "minute"))
+    hours = sorted(_cron_values(hour, 0, 23, "hour"))
+    if len(minutes) * len(hours) > 12:
+        return None
+    return [f"{h:02d}:{m:02d}" for h in hours for m in minutes]
+
+
+def describe_schedule(schedule) -> str:
+    """A schedule in the words an administrator would use, for a tooltip or a listing.
+
+    Covers the shapes a job has: every N minutes, hourly, daily, on weekdays,
+    on days of the month. Anything else stays as the cron expression.
+    """
+    cron = cron_expression(schedule)
+    minute, hour, dom, month, dow = cron.split()
+    if hour == dom == month == dow == "*":
+        if minute == "*":
+            return "every minute"
+        if minute.startswith("*/"):
+            return f"every {minute[2:]} minutes"
+        if "/" not in minute:
+            minutes = sorted(_cron_values(minute, 0, 59, "minute"))
+            return f"{_minutes_past(minutes)}, every hour"
+    if hour.startswith("*/") and dom == month == dow == "*" and minute.isdigit():
+        return f"every {hour[2:]} hours, {_minutes_past([int(minute)])}"
+    times = _clock_times(minute, hour)
+    if times is None:
+        return f"cron {cron}"
+    when = "at " + _words(times)
+    if dom == month == dow == "*":
+        return f"every day {when}"
+    if dom == month == "*":
+        days = sorted({d % 7 for d in _cron_values(dow, 0, 7, "day-of-week")})
+        return f"every {_day_words(days)} {when}"
+    if dow == "*":
+        days = _words(_ordinal(d) for d in sorted(_cron_values(dom, 1, 31, "day-of-month")))
+        if month == "*":
+            return f"on the {days} of every month {when}"
+        months = _words(MONTH_WORDS[m - 1] for m in sorted(_cron_values(month, 1, 12, "month")))
+        return f"on the {days} of {months} {when}"
+    return f"cron {cron}"
 
 
 def runs_per_month(cron: str) -> float:
@@ -665,4 +765,6 @@ def validate_app(name: str) -> list[str]:
         problems.append(f"{where}: storage must be true or false")
     if not isinstance(app["enabled"], bool):
         problems.append(f"{where}: enabled must be true or false")
+    if not isinstance(app["pause"], bool):
+        problems.append(f"{where}: pause must be true or false")
     return problems

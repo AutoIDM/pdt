@@ -8,7 +8,9 @@ Windows scheduled task, gets it set). Without it the folder is
 behaves the same as a deployed job.
 
 Inside the folder pdt reserves `runs/` and `state/`. `state/lock` is
-the lock that pull takes and push releases.
+the lock that pull takes and push releases. A `runs/<time>-<id>/` folder
+ends with the run's id: PDT_RUN_ID when set, else the id the cloud gave
+the run (the one `pdt runs` lists), else a random one.
 
     from pdt.utils import storage
     s = storage.store()
@@ -29,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from functools import cached_property
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import url2pathname
+from urllib.request import url2pathname, urlopen
 
 from pdt import config
 
@@ -52,7 +54,28 @@ class Lease:
     lock: dict
 
 
-RUN_ID = os.environ.get("PDT_RUN_ID", "").strip() or uuid.uuid4().hex[:8]
+def cloud_run_id() -> str:
+    """The id the cloud gave this run, so a runs/ folder ends with the id `pdt runs` shows.
+
+    Google Cloud and Azure name the execution in an env var. AWS names the
+    task in the metadata endpoint; the last part of its ARN is the task id.
+    """
+    for name in ("CLOUD_RUN_EXECUTION", "CONTAINER_APP_JOB_EXECUTION_NAME"):
+        value = os.environ.get(name, "").strip()
+        if value != "":
+            return value
+    metadata = os.environ.get("ECS_CONTAINER_METADATA_URI_V4", "").strip()
+    if metadata != "":
+        try:
+            with urlopen(metadata + "/task", timeout=2) as response:
+                return json.loads(response.read())["TaskARN"].rsplit("/", 1)[-1]
+        except (OSError, ValueError, KeyError):
+            pass
+    return ""
+
+
+RUN_ID = (os.environ.get("PDT_RUN_ID", "").strip() or cloud_run_id()
+          or uuid.uuid4().hex[:8])
 
 
 def root() -> str:

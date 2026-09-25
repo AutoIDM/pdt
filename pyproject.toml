@@ -48,7 +48,7 @@ packages = ["src/pdt"]
 include = ["src/pdt", "README.md", "tests"]
 
 [dependency-groups]
-dev = ["pytest", "ruff", "fsspec", "boto3"]
+dev = ["pytest", "ruff", "fsspec", "boto3", "django>=5.2", "croniter", "tzlocal"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "ci/tests"]
