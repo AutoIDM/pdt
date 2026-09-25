@@ -37,7 +37,7 @@ from pdt.deploy_aws import (
     delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     deployer_store, ensure_session, ensure_store, find_log_group, has_managed_tag, iam_tags,
-    not_found,
+    delete_if_present, not_found,
     delete_schedule_group, other_schedules, preflight, resource_exists, secret_statements,
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
@@ -248,18 +248,26 @@ def ensure_shared(batch, resource: SharedResource, create: Callable[[], None]) -
     return ready[resource.arn]
 
 
-def remove(batch, resource: SharedResource) -> None:
+def remove(batch, resource: SharedResource) -> bool:
+    """Disable, then delete; False when a sibling destroy already removed the resource."""
     # Batch refuses to delete an enabled queue or compute environment, and
     # deletion is asynchronous, so each step waits for the one before it.
-    if settled(batch, resource) is None:
-        return
-    getattr(batch, resource.update)(**{resource.param: resource.name}, state="DISABLED")
-    wait_for_batch(lambda: describe(batch, resource),
-                   lambda item: item is None or (item["state"] == "DISABLED" and resting(item)),
-                   f"Batch {resource.label} {resource.name} to be disabled")
-    getattr(batch, resource.delete)(**{resource.param: resource.name})
+    try:
+        if settled(batch, resource) is None:
+            return False
+        getattr(batch, resource.update)(**{resource.param: resource.name}, state="DISABLED")
+        wait_for_batch(lambda: describe(batch, resource),
+                       lambda item: item is None or (item["state"] == "DISABLED" and resting(item)),
+                       f"Batch {resource.label} {resource.name} to be disabled")
+    except Exception as exc:
+        if not not_found(exc):
+            raise
+        return False
+    if not delete_if_present(getattr(batch, resource.delete), **{resource.param: resource.name}):
+        return False
     wait_for_batch(lambda: describe(batch, resource), lambda item: item is None,
                    f"Batch {resource.label} {resource.name} to be deleted")
+    return True
 
 
 def ensure_compute_environment(batch, subnets: list[str], security_group: str) -> str:
@@ -625,7 +633,8 @@ def legacy_fargate_cleanup(ecs, logs, iam, names: dict[str, str]) -> list[tuple[
     if cluster_unused_after(ecs, family):
         plan.append((f"delete ECS cluster {LEGACY_CLUSTER} "
                      "(older Fargate deployment, no other apps use it)",
-                     lambda: ecs.delete_cluster(cluster=LEGACY_CLUSTER)))
+                     lambda: note_if_gone(f"ECS cluster {LEGACY_CLUSTER}", delete_if_present(
+                         ecs.delete_cluster, cluster=LEGACY_CLUSTER))))
     return plan
 
 
@@ -640,12 +649,9 @@ def repository_unused_after(ecr, image_tag: str) -> bool:
     return all(item.get("imageTag") == image_tag for item in images)
 
 
-def delete_image(ecr, image_tag: str) -> None:
-    try:
-        ecr.batch_delete_image(repositoryName=REPOSITORY, imageIds=[{"imageTag": image_tag}])
-    except Exception as exc:
-        if not not_found(exc):
-            raise
+def note_if_gone(label: str, deleted: bool) -> None:
+    if not deleted:
+        console.note(f"{label} was already gone")
 
 
 def destroy(app: dict, assume_yes: bool) -> int:
@@ -678,19 +684,25 @@ def destroy(app: dict, assume_yes: bool) -> int:
          lambda: [delete_role(iam, role) for role in
                   (names["scheduler_role"], names["job_role"], names["execution_role"])]),
         (f"delete image tag {names['image_tag']} from ECR repository {REPOSITORY}",
-         lambda: delete_image(clients["ecr"], names["image_tag"])),
+         lambda: note_if_gone(
+             f"image tag {names['image_tag']} in ECR repository {REPOSITORY}",
+             delete_if_present(clients["ecr"].batch_delete_image, repositoryName=REPOSITORY,
+                               imageIds=[{"imageTag": names["image_tag"]}]))),
     ]
     plan += legacy_fargate_cleanup(clients["ecs"], clients["logs"], iam, names)
     if other_schedules(scheduler, names["schedule"]) == []:
         plan.append((f"delete schedule group {SCHEDULE_GROUP} (no other apps use it)",
-                     lambda: delete_schedule_group(scheduler)))
+                     lambda: note_if_gone(f"schedule group {SCHEDULE_GROUP}",
+                                          delete_schedule_group(scheduler))))
     for resource in shared_unused_after(batch, names["job_definition"]):
         plan.append((f"delete Batch {resource.label} {resource.name} (no other apps use it)",
-                     lambda resource=resource: remove(batch, resource)))
+                     lambda resource=resource: note_if_gone(
+                         f"Batch {resource.label} {resource.name}", remove(batch, resource))))
     if repository_unused_after(clients["ecr"], names["image_tag"]):
         plan.append((f"delete ECR repository {REPOSITORY} (no other apps use it)",
-                     lambda: clients["ecr"].delete_repository(
-                         repositoryName=REPOSITORY, force=True)))
+                     lambda: note_if_gone(f"ECR repository {REPOSITORY}", delete_if_present(
+                         clients["ecr"].delete_repository, repositoryName=REPOSITORY,
+                         force=True))))
     bucket = store_name(account)
     store = deployer_store(app, session, account) if app["storage"] else None
     store_present = store_exists(clients["s3"], bucket) if store else False
