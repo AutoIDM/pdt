@@ -195,12 +195,12 @@ def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
         console.error(f"{name} did not deploy.")
         if index < len(names) and not skip_failures and not (
                 ask and console.confirm(
-                    f"Would you like to skip the failing app {name} and deploy the rest?")):
+                    f"Skip the failing app {name} and deploy the rest?")):
             console.say("Fix the problem above and run pdt deploy --all again, "
                         "or add --skip-failures to go on past it.")
             return code
         if ask and not assume_yes and console.confirm(
-                f"Would you like to disable the failing app {name}?"):
+                f"Disable the failing app {name}?"):
             path = config.set_app_enabled(name, False)
             console.done(f"Disabled {name} in {path.relative_to(config.find_project())}. "
                          "Set enabled: true there to bring it back.")

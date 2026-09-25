@@ -187,7 +187,7 @@ def test_deploy_all_stops_when_the_person_will_not_skip(project, monkeypatch, ca
     questions = answer(monkeypatch, False)
     assert run_cli(monkeypatch, "deploy", "--all") == 3
     assert calls == [("alpha", False), ("bravo", False)]
-    assert questions == ["Would you like to skip the failing app bravo and deploy the rest?"]
+    assert questions == ["Skip the failing app bravo and deploy the rest?"]
     out = capsys.readouterr().out
     assert "bravo did not deploy." in out
     assert STOP_HINT in out
@@ -230,7 +230,7 @@ def test_deploy_all_with_yes_never_disables_an_app(project, monkeypatch, capsys)
     questions = answer(monkeypatch, True)
     assert run_cli(monkeypatch, "deploy", "--all", "--yes") == 1
     assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
-    assert questions == ["Would you like to skip the failing app bravo and deploy the rest?"]
+    assert questions == ["Skip the failing app bravo and deploy the rest?"]
     assert config.is_enabled("bravo")
     assert "Not deployed: bravo" in capsys.readouterr().out
 
@@ -241,8 +241,8 @@ def test_deploy_all_skips_without_disabling_the_app(project, monkeypatch, capsys
     questions = answer(monkeypatch, True, False)
     assert run_cli(monkeypatch, "deploy", "--all") == 1
     assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
-    assert questions == ["Would you like to skip the failing app bravo and deploy the rest?",
-                         "Would you like to disable the failing app bravo?"]
+    assert questions == ["Skip the failing app bravo and deploy the rest?",
+                         "Disable the failing app bravo?"]
     assert config.is_enabled("bravo")
     assert not (project / "bravo" / "config.yml").exists()
     assert "Not deployed: bravo" in capsys.readouterr().out
