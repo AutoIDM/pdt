@@ -132,7 +132,7 @@ def setup(shell: str | None = None) -> None:
 
 
 def configure(parser) -> None:
-    argcomplete.autocomplete(parser)
+    argcomplete.autocomplete(parser, always_complete_options=False)
     if not (sys.stdin.isatty() and sys.stderr.isatty()):
         return
     try:

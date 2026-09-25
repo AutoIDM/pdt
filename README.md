@@ -10,7 +10,6 @@ uv tool install pdt-cli
 
 That puts a `pdt` command on your PATH. To update it later, run `uv tool upgrade pdt-cli`.
 
-The first interactive `pdt` command turns on tab completion without a prompt. It works in every new terminal: Tab finishes pdt commands, their options, your app names, and example names for `new --from`. It supports bash, zsh, fish, and PowerShell. `pdt completion [SHELL]` sets up a second shell, and `pdt completion --script bash` prints the script instead of writing it, if you keep your own dotfiles.
 
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
 

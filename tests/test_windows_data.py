@@ -40,11 +40,14 @@ def test_app_folders_live_under_the_machine_data_home(project):
 def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
     app = windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report"
-    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon")
+    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
+                                  "uv.exe", False)
     assert actions == [
         "create Windows scheduled task pdt-my-report (runs as SYSTEM)",
         "run my-report hourly at minute 00 (machine local time)",
         f"working directory: {app['dir']}",
+        f"run uv from {project / 'uv.exe'} (uv is not on the system PATH; "
+        "a machine-wide install drops the path from the task)",
         f"keep the app's run data in {folder} (SYSTEM: full control; PC\\jon: modify)",
         f"write one log per run under {folder / 'logs'} (removed on destroy)",
         f"use folder {folder / 'storage'} for the app's files (kept after destroy)",
@@ -53,8 +56,9 @@ def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
 
 def test_plan_without_storage_has_no_storage_line(project):
     app = windows_app(project, "schedule: hourly\ntimezone: local\nstorage: false\n")
-    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon")
-    assert len(actions) == 5
+    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
+                                  "uv.exe", False)
+    assert len(actions) == 6
     assert not any("app's files" in action for action in actions)
 
 

@@ -20,6 +20,12 @@ storage folder, runs run.py in the app folder, and writes both output streams
 to `logs\\<UTC start>.log`, ending with `pdt: exit N`; `pdt runs` and
 `pdt logs` read those files. A run is stopped after RUN_TIME_LIMIT.
 
+The task's action is `<uv> run --script run_windows_task.py <app dir>
+<logs folder> <storage url>`. SYSTEM sees only the machine PATH, so `<uv>`
+is the bare word `uv` when uv is on that PATH at deploy time and otherwise
+the absolute path deploy found. Either way `uv run` hands the runner the uv
+that started it in `UV`, so the runner never looks uv up again.
+
 The task runs as the SYSTEM account, so it does not depend on a user being
 logged on. Registering or removing it needs administrator rights; a
 non-elevated shell gets one UAC prompt. The same elevated script creates the
@@ -35,6 +41,7 @@ import argparse
 import base64
 import ctypes
 import html
+import os
 import shutil
 import subprocess
 import sys
@@ -202,7 +209,23 @@ def task_arguments(app: dict) -> str:
         str(logs_folder(app["name"])), storage_url(app["name"])])
 
 
-def task_xml(app: dict, uv: str) -> tuple[str, str]:
+def uv_on_machine_path() -> bool:
+    """Whether the machine PATH, the only PATH the SYSTEM account sees, holds uv.exe."""
+    if os.name != "nt":
+        return False
+    import winreg
+    try:
+        with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
+            path, _type = winreg.QueryValueEx(key, "Path")
+    except OSError:
+        return False
+    return any((Path(folder) / "uv.exe").is_file()
+               for folder in os.path.expandvars(path).split(";") if folder)
+
+
+def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
     cron = config.cron_expression(app["schedule"])
     tz = str(app.get("timezone") or "").strip().lower()
     if tz != "local":
@@ -210,7 +233,7 @@ def task_xml(app: dict, uv: str) -> tuple[str, str]:
             "the Windows provider uses the machine's local timezone; "
             "set timezone: local for this app")
     description, trigger = schedule_trigger(cron)
-    command = html.escape(str(Path(uv).resolve()))
+    command = "uv" if on_machine_path else html.escape(str(Path(uv).resolve()))
     arguments = html.escape(task_arguments(app))
     workdir = html.escape(str(Path(app["dir"]).resolve()))
     task_description = html.escape(
@@ -361,12 +384,16 @@ def _task_running(powershell: str, name: str) -> bool:
     return proc.returncode == 0
 
 
-def plan(app: dict, verb: str, description: str, user: str) -> list[str]:
+def plan(app: dict, verb: str, description: str, user: str, uv: str,
+         on_machine_path: bool) -> list[str]:
     name = app["name"]
     actions = [
         f"{verb} Windows scheduled task {_task_name(name)} (runs as SYSTEM)",
         f"run {name} {description} (machine local time)",
         f"working directory: {app['dir']}",
+        "run uv from the system PATH" if on_machine_path else
+        f"run uv from {Path(uv).resolve()} (uv is not on the system PATH; "
+        "a machine-wide install drops the path from the task)",
         f"keep the app's run data in {app_folder(name)} (SYSTEM: full control; {user}: modify)",
         f"write one log per run under {logs_folder(name)} (removed on destroy)",
     ]
@@ -380,9 +407,10 @@ def deploy(app: dict, assume_yes: bool) -> int:
     try:
         powershell, uv = _preflight()
         assert uv is not None
+        on_machine_path = uv_on_machine_path()
         name = _task_name(app["name"])
         user = _deploying_user()
-        description, xml = task_xml(app, uv)
+        description, xml = task_xml(app, uv, on_machine_path)
         state = _task_state(powershell, name)
         if state == "unmanaged":
             raise WindowsDeployError(
@@ -392,7 +420,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.error(str(exc))
         return 1
 
-    actions = plan(app, "update" if exists else "create", description, user)
+    actions = plan(app, "update" if exists else "create", description, user, uv,
+                   on_machine_path)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges")
     if not confirm(actions, assume_yes, cost):
