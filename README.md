@@ -111,7 +111,7 @@ Leave `APP` off `run`, `deploy`, `destroy`, `secrets`, or `login`, or mistype it
 
 Your app runs, writes some files, and stops. Then the computer it ran on is thrown away, and the files go with it. So pdt gives every app a folder in your cloud account that stays. Deploy the app, destroy it, deploy it again: the folder and everything in it is still there.
 
-pdt creates one bucket per cloud account, named `pdt-data-` plus a short code, and gives each app its own folder inside it. When your app runs in the cloud, `PDT_STORAGE_URL` points at that folder. When you run `pdt run APP` on your own computer, it points at `.pdt/storage/APP/` inside your project instead. The app code is the same in both places.
+pdt creates one bucket per cloud account, named `pdt-data-` plus a short code, and gives each app its own folder inside it. When your app runs in the cloud, `PDT_STORAGE_URL` points at that folder. A Windows scheduled task points it at `%ProgramData%\pdt\APP\storage\`. When you run `pdt run APP` on your own computer, it points at `.pdt/storage/APP/` inside your project instead. The app code is the same in every place.
 
 Write and read files with `pdt.utils.storage`:
 
@@ -239,6 +239,8 @@ The job runs as the SYSTEM account. Windows accepts these schedules:
 
 Other cron forms are rejected, because they do not translate to Windows Task Scheduler.
 
+Each app keeps its run data in `%ProgramData%\pdt\<app>\`. The task writes one log file per run to the `logs\` folder in it, named by the run's UTC start time, and `pdt runs <app>` and `pdt logs <app>` read those files. The app's own files (see [Keeping files between runs](#keeping-files-between-runs)) live in the `storage\` folder next to it. Deploy creates the folder and gives the SYSTEM account full control and you modify rights, so `pdt storage <app> destroy` works without an administrator. `pdt destroy <app>` removes the task and the `logs\` folder and keeps `storage\`. A run is stopped after 30 minutes, the same limit as the cloud providers, and a run that is still going when the next one is due is left alone; the new start is skipped.
+
 ## The bundled examples
 
 Run `pdt examples` to list them, then `pdt new <name> --from <example>` to copy one.
@@ -265,6 +267,7 @@ Reports active Monday users whose email address does not match the `userPrincipa
 | the example apps | inside the pdt package, copied out by `pdt new` |
 | your apps, `pdt.yml`, `.env` | your project folder, under version control |
 | the Google Cloud CLI pdt downloads | `~/.local/share/pdt/gcloud`, or `%LOCALAPPDATA%\pdt\gcloud` |
+| a Windows scheduled task's run logs and files | `%ProgramData%\pdt\<app>\logs` and `%ProgramData%\pdt\<app>\storage` |
 | cloud sign-in state | `~/.azure` and `~/.config/gcloud`, as usual |
 
 Set `PDT_PROJECT` to name the project folder directly, instead of letting pdt search upward. Deployed jobs get it set for them.
