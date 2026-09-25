@@ -52,6 +52,9 @@ MONTHS = (
 DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday",
         "Thursday", "Friday", "Saturday")
 FORBIDDEN_TASK_NAME_CHARS = set('\\/:*?"<>|')
+RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
+# The same limit as --replica-timeout on Azure Container Apps.
+RUN_TIME_LIMIT = "PT30M"
 
 
 def _single_number(field: str, label: str, lo: int, hi: int) -> int:
@@ -180,25 +183,20 @@ def _task_name(app_name: str) -> str:
     return name
 
 
-def _run_script(app: dict, uv: str) -> str:
-    """The script the scheduled task runs: log the app's run, then exit with its code."""
-    folder = _ps_string(str(logs_folder(app["name"])))
-    uv_path = _ps_string(str(Path(uv).resolve()))
-    return (
-        f"$folder = {folder}; "
-        "New-Item -ItemType Directory -Force -Path $folder | Out-Null; "
-        "$log = Join-Path $folder ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.log'); "
-        f"& {uv_path} run --script run.py *>&1 | ForEach-Object {{ \"$_\" }} | "
-        "Out-File -Encoding utf8 -FilePath $log; "
-        "$code = $LASTEXITCODE; "
-        "\"pdt: exit $code\" | Out-File -Encoding utf8 -Append -FilePath $log; "
-        "Get-ChildItem -Path $folder -Filter *.log | "
-        "Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) } | Remove-Item -Force; "
-        "exit $code"
-    )
+def storage_url(app_name: str) -> str:
+    """The `file:` URI `pdt.utils.storage.root()` reads from PDT_STORAGE_URL."""
+    return storage_folder(app_name).as_uri() + "/"
 
 
-def task_xml(app: dict, uv: str, powershell: str) -> tuple[str, str]:
+def task_arguments(app: dict) -> str:
+    """The uv arguments the task runs: the runner, then the app folder, its log folder,
+    and its storage url. Quoted the way CreateProcess splits them."""
+    return subprocess.list2cmdline([
+        "run", "--script", str(RUNNER), str(Path(app["dir"]).resolve()),
+        str(logs_folder(app["name"])), storage_url(app["name"])])
+
+
+def task_xml(app: dict, uv: str) -> tuple[str, str]:
     cron = config.cron_expression(app["schedule"])
     tz = str(app.get("timezone") or "").strip().lower()
     if tz != "local":
@@ -206,10 +204,8 @@ def task_xml(app: dict, uv: str, powershell: str) -> tuple[str, str]:
             "the Windows provider uses the machine's local timezone; "
             "set timezone: local for this app")
     description, trigger = schedule_trigger(cron)
-    command = html.escape(str(Path(powershell).resolve()))
-    arguments = html.escape(
-        "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-        f"-EncodedCommand {_encoded(_run_script(app, uv))}")
+    command = html.escape(str(Path(uv).resolve()))
+    arguments = html.escape(task_arguments(app))
     workdir = html.escape(str(Path(app["dir"]).resolve()))
     task_description = html.escape(
         f"Managed by pdt; runs {app['name']} from "
@@ -233,7 +229,7 @@ def task_xml(app: dict, uv: str, powershell: str) -> tuple[str, str]:
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <Enabled>true</Enabled>
     <Hidden>false</Hidden>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <ExecutionTimeLimit>{RUN_TIME_LIMIT}</ExecutionTimeLimit>
     <Priority>7</Priority>
   </Settings>
   <Actions Context="Author">
@@ -380,7 +376,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         assert uv is not None
         name = _task_name(app["name"])
         user = _deploying_user()
-        description, xml = task_xml(app, uv, powershell)
+        description, xml = task_xml(app, uv)
         state = _task_state(powershell, name)
         if state == "unmanaged":
             raise WindowsDeployError(

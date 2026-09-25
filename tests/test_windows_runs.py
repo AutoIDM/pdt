@@ -1,6 +1,5 @@
-import base64
-import re
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -22,24 +21,39 @@ def windows_app(project):
     return config.merged_app("my-report")
 
 
-def encoded_command(xml: str) -> str:
-    match = re.search(r"-EncodedCommand ([A-Za-z0-9+/=]+)", xml)
-    assert match, xml
-    return base64.b64decode(match.group(1)).decode("utf-16-le")
-
-
-def test_task_action_is_powershell_running_an_encoded_script(project):
+def test_task_action_runs_the_runner_through_uv(project):
     app = windows_app(project)
-    description, xml = deploy_windows.task_xml(app, "uv.exe", "powershell.exe")
+    description, xml = deploy_windows.task_xml(app, "uv.exe")
     assert description == "hourly at minute 00"
-    assert "<Command>" in xml and "powershell.exe" in xml
-    assert "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass" in xml
-    script = encoded_command(xml)
-    assert "run --script run.py" in script
-    assert "Out-File -Encoding utf8" in script
-    assert "pdt: exit $code" in script
-    assert "AddDays(-30)" in script
-    assert "exit $code" in script
+    runner = Path(deploy_windows.__file__).resolve().with_name("run_windows_task.py")
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    assert f"<Command>{Path('uv.exe').resolve()}</Command>" in xml
+    assert (f"<Arguments>run --script {runner} {app['dir']} {folder / 'logs'} "
+            f"{(folder / 'storage').as_uri()}/</Arguments>") in xml
+    assert f"<WorkingDirectory>{app['dir']}</WorkingDirectory>" in xml
+    assert "powershell" not in xml.lower()
+
+
+def test_task_stops_a_run_after_30_minutes_and_skips_an_overlapping_start(project):
+    app = windows_app(project)
+    _description, xml = deploy_windows.task_xml(app, "uv.exe")
+    assert "<ExecutionTimeLimit>PT30M</ExecutionTimeLimit>" in xml
+    assert "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" in xml
+
+
+def test_task_arguments_quote_a_folder_with_a_space(project):
+    app = windows_app(project)
+    app["dir"] = str(project / "my report")
+    arguments = deploy_windows.task_arguments(app)
+    assert f'"{project / "my report"}"' in arguments
+    assert arguments.startswith("run --script ")
+
+
+def test_storage_url_is_the_file_uri_with_a_trailing_slash(project):
+    windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "storage"
+    assert deploy_windows.storage_url("my-report") == folder.as_uri() + "/"
+    assert deploy_windows.storage_url("my-report").startswith("file://")
 
 
 def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch):
