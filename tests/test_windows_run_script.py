@@ -7,12 +7,24 @@ DEPLOY_UV = "/Users/visch/AppData/Local/Microsoft/WinGet/Links/uv.exe"
 
 
 @pytest.fixture
-def script(tmp_path, monkeypatch):
+def app(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     (tmp_path / "pdt.yml").write_text("platform:\n  provider: windows\n")
     monkeypatch.chdir(tmp_path)
     add_app(tmp_path, "my-report", "schedule: hourly\ntimezone: local\n")
-    return deploy_windows._run_script(config.merged_app("my-report"), DEPLOY_UV)
+    return config.merged_app("my-report")
+
+
+@pytest.fixture
+def script(app):
+    return deploy_windows._run_script(app, DEPLOY_UV, on_machine_path=False)
+
+
+def test_uv_on_the_machine_path_runs_bare(app):
+    script = deploy_windows._run_script(app, DEPLOY_UV, on_machine_path=True)
+    assert "& uv run --script run.py" in script
+    assert "Get-Command" not in script
+    assert DEPLOY_UV not in script
 
 
 def test_uv_is_looked_up_on_the_path_before_the_fallback(script):
