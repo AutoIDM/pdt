@@ -23,7 +23,7 @@
         <div>
             <h2>Artifacts</h2>
             <p class="hint">
-                {% for folder in folders %}<code data-copy>pdt storage {{ app.name }} ls {{ folder }}/ --recursive</code>{% if not forloop.last %}<br>{% endif %}{% empty %}<code data-copy>pdt storage {{ app.name }} ls runs/</code>{% endfor %}
+                {% for folder in folders %}<button type="button" class="chip" data-copy>pdt storage {{ app.name }} ls {{ folder }}/ --recursive</button>{% if not forloop.last %}<br>{% endif %}{% empty %}<button type="button" class="chip" data-copy>pdt storage {{ app.name }} ls runs/</button>{% endfor %}
             </p>
         </div>
     </div>
@@ -56,7 +56,7 @@
                 {% else %}
                 {{ total_lines }} line{{ total_lines|pluralize }} · <a href="?errors=1">only warnings and errors</a>
                 {% endif %}
-                · <code data-copy>pdt logs {{ app.name }} --id {{ run.run_id }} --full</code>
+                · <button type="button" class="chip" data-copy>pdt logs {{ app.name }} --id {{ run.run_id }} --full</button>
             </p>
         </div>
     </div>
