@@ -102,6 +102,12 @@ def data_home() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
 
 
+def machine_data_home() -> Path:
+    """The machine-wide data folder on Windows, %ProgramData%\\pdt, where a scheduled
+    task that runs as SYSTEM and the user who deployed it both reach an app's files."""
+    return Path(os.environ.get("ProgramData") or r"C:\ProgramData") / "pdt"
+
+
 def find_project(start: Path | None = None) -> Path:
     override = os.environ.get("PDT_PROJECT", "").strip()
     if override != "":
