@@ -5,7 +5,8 @@ import subprocess
 import pytest
 
 from conftest import add_app
-from pdt.config import validate_app
+from pdt import deploy_windows
+from pdt.config import merged_app, validate_app
 from pdt.deploy_common import (
     DOCKERFILE, context_ignore_text, image_action, write_dockerfile)
 
@@ -59,10 +60,18 @@ def test_a_leftover_runtime_key_is_told_to_go(project):
         "Fargate and Azure on Container Apps Jobs; remove the key"]
 
 
-def test_a_dockerfile_on_a_provider_without_images_is_flagged(project):
+def test_a_dockerfile_is_fine_on_windows(project):
     app_with_dockerfile(project, "platform:\n  provider: windows\n")
-    assert validate_app("my-report") == [
-        "my-report/Dockerfile: not used by the windows provider; remove the file"]
+    assert validate_app("my-report") == []
+
+
+def test_the_windows_plan_names_an_ignored_dockerfile(project):
+    ignored = "ignore my-report/Dockerfile (this PC runs run.py directly)"
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    folder = add_app(project, "my-report", "schedule: daily\n")
+    assert ignored not in deploy_windows.plan(merged_app("my-report"), "create", "daily")
+    (folder / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    assert ignored in deploy_windows.plan(merged_app("my-report"), "create", "daily")
 
 
 def test_an_app_dockerignore_is_moved_to_the_context_root(tmp_path):
