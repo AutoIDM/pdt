@@ -282,8 +282,8 @@ def test_the_actions_name_the_commands_they_run(gui):
     config.mark_deployed("my-report", True)
     (gui.project / "my-report" / "config.yml").write_text("schedule: daily\npause: true\n")
     html = gui.client.get("/apps/my-report/").content.decode()
-    assert 'title="pdt unpause my-report"' in html
-    assert 'title="pdt run my-report --deployed"' in html
+    assert '<button type="submit">Unpause</button><button type="button" class="copy" data-copy="pdt unpause my-report">' in html
+    assert 'data-copy="pdt run my-report --deployed"' in html
     assert ">paused<" in html
 
 
@@ -509,17 +509,17 @@ def test_the_worker_asks_again_sooner_while_a_run_is_going(gui):
     assert len([call for call in gui.calls if call[0] == "runs"]) == before
 
 
-def test_every_shown_command_has_a_copy_button(gui):
+def test_every_shown_command_is_a_copy_button(gui):
     runs_answer(gui)
     html = gui.client.get("/").content.decode()
-    assert '<code data-copy>pdt health</code>' in html
-    assert 'data-copy="pdt runs my-report"' in html
-    assert 'data-copy="pdt pause my-report"' in html
-    assert 'data-copy="pdt run my-report --deployed"' in html
+    assert '<button type="button" class="chip" data-copy>pdt health</button>' in html
+    assert '<button type="submit">Refresh</button><button type="button" class="copy" data-copy="pdt runs my-report">' in html
+    assert 'class="copy" data-copy="pdt pause my-report"' in html
+    assert '<button type="submit" disabled>Run now</button><button type="button" class="copy" data-copy="pdt run my-report --deployed">' in html
     assert 'querySelectorAll("[data-copy]")' in html
     assert "<th>Platform</th>" in html
     html = gui.client.get("/apps/my-report/").content.decode()
-    assert '<code data-copy>pdt runs my-report</code>' in html
+    assert '<button type="button" class="chip" data-copy>pdt runs my-report</button>' in html
     run = Run.objects.get(run_id="ecs/my-report/task2")
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
-    assert '<code data-copy>pdt logs my-report --id ecs/my-report/task2 --full</code>' in html
+    assert '<button type="button" class="chip" data-copy>pdt logs my-report --id ecs/my-report/task2 --full</button>' in html
