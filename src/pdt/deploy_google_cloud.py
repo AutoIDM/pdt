@@ -40,6 +40,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -98,20 +99,28 @@ RECENT_RUNS = 3
 
 
 # A freshly enabled API reports SERVICE_DISABLED for a few minutes, and Cloud
-# Scheduler reports ABORTED when a job changed a moment ago. Both pass.
+# Scheduler reports ABORTED when a job changed a moment ago. Both pass, so every
+# gcloud call waits them out.
 TRANSIENT = ("SERVICE_DISABLED", "ABORTED")
+RETRY_WAITS = (10, 20, 40, 60, 60, 60)
+
+
+def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
+    stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
+    for wait in (*RETRY_WAITS, None):
+        proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
+        if proc.returncode == 0 or wait is None or not any(m in proc.stderr for m in TRANSIENT):
+            return proc
+        title = re.search(r"serviceTitle: (.+)", proc.stderr)
+        what = title.group(1).strip() if title else "Google Cloud"
+        console.bullet(f"{what} is not ready yet; retrying in {wait}s...", indent=4)
+        time.sleep(wait)
 
 
 def run_quiet(*args: str, data: str | None = None) -> str:
-    for wait in (10, 20, 40, 60, 60, 0):
-        proc = subprocess.run([GCLOUD, *args], input=data if data is not None else "",
-                              capture_output=True, text=True)
-        if proc.returncode == 0:
-            return proc.stdout
-        if wait == 0 or not any(marker in proc.stderr for marker in TRANSIENT):
-            break
-        console.bullet(f"Google Cloud is not ready yet; retrying in {wait}s...", indent=4)
-        time.sleep(wait)
+    proc = gcloud(*args, data=data)
+    if proc.returncode == 0:
+        return proc.stdout
     console.say(proc.stderr.strip())
     fail(f"pdt gcloud {' '.join(args[:4])} failed; fix the problem above and re-run the deploy")
 
@@ -123,8 +132,7 @@ def run_stream(*args: str) -> None:
 
 
 def describe_json(*args: str):
-    proc = subprocess.run([GCLOUD, *args, "--format=json"], stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True)
+    proc = gcloud(*args, "--format=json")
     if proc.returncode != 0:
         return None
     return json.loads(proc.stdout or "null")
@@ -137,8 +145,7 @@ def not_found(detail: str) -> bool:
 
 
 def read_json_or_none(*args: str):
-    proc = subprocess.run([GCLOUD, *args, "--format=json"], stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True)
+    proc = gcloud(*args, "--format=json")
     if proc.returncode == 0:
         return json.loads(proc.stdout or "null")
     detail = proc.stderr.strip()
@@ -904,7 +911,7 @@ def execution_run(execution: dict) -> runs_cli.Run:
     metadata = execution.get("metadata") or {}
     execution_id = str(execution.get("name") or metadata.get("name") or "").rsplit("/", 1)[-1]
     status = execution.get("status") or {}
-    started = datetime.datetime.fromisoformat(status["startTime"])
+    started = datetime.datetime.fromisoformat(status.get("startTime") or metadata["creationTimestamp"])
     completion = status.get("completionTime")
     if not completion:
         return runs_cli.Run(execution_id, started, None, "running")
