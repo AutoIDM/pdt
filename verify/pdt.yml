@@ -35,7 +35,6 @@ apps:
       region: us-central1
   - name: windows-a
     schedule: daily
-    timezone: local
     platform:
       provider: windows
   - name: windows-b
