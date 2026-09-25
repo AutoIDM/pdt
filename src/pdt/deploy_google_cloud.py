@@ -23,8 +23,9 @@ Shared across apps:
   Artifact Registry repo PDT_ARTIFACT_REGISTRY_REPO env var, default "pdt"
   Service account        PDT_CLOUD_RUN_SERVICE_ACCOUNT env var, default
                          pdt-runner@<project> (created if missing)
-  Storage bucket         pdt-data-<suffix> (kept after destroy; one folder
-                         per app, the runner may write only its own)
+  Storage bucket         pdt-data-<suffix> (kept after destroy; one managed
+                         folder per app, the runner may list and write only
+                         its own)
 
 If gcloud is not installed, pdt/gcloud_sdk.py downloads a
 pinned copy to the pdt data folder and every call here uses that copy.
@@ -327,7 +328,15 @@ def deployer_store(project: str, app_name: str) -> Store:
     return Store(store_url(store_bucket(project), app_name), Credentials(token))
 
 
-def store_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
+def folder_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
+    folder = store_url(bucket, app_name)
+    policy = describe_json("storage", "managed-folders", "get-iam-policy", folder) or {}
+    return any(binding.get("role") == STORE_ROLE
+               and f"serviceAccount:{sa}" in (binding.get("members") or [])
+               for binding in policy.get("bindings") or [])
+
+
+def bucket_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
     policy = describe_json("storage", "buckets", "get-iam-policy", f"gs://{bucket}") or {}
     for binding in policy.get("bindings") or []:
         condition = binding.get("condition") or {}
@@ -336,6 +345,29 @@ def store_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
                 and f"serviceAccount:{sa}" in (binding.get("members") or [])):
             return True
     return False
+
+
+def grant_store_access(bucket: str, app_name: str, sa: str) -> None:
+    folder = store_url(bucket, app_name)
+    console.step(f"granting {sa} write access to {bucket}/{app_name}/")
+    if describe_json("storage", "managed-folders", "describe", folder) is None:
+        run_quiet("storage", "managed-folders", "create", folder)
+    run_quiet("storage", "managed-folders", "add-iam-policy-binding", folder,
+              "--member", f"serviceAccount:{sa}", "--role", STORE_ROLE)
+
+
+def revoke_store_access(bucket: str, app_name: str, sa: str,
+                        folder: bool, bucket_binding: bool) -> None:
+    # The managed folder stays: it holds the app's data in the kept bucket,
+    # and gcloud refuses to delete a managed folder that is not empty.
+    console.step(f"removing {sa} write access to {bucket}/{app_name}/")
+    member = ("--member", f"serviceAccount:{sa}", "--role", STORE_ROLE)
+    if folder:
+        run_quiet("storage", "managed-folders", "remove-iam-policy-binding",
+                  store_url(bucket, app_name), *member)
+    if bucket_binding:
+        run_quiet("storage", "buckets", "remove-iam-policy-binding", f"gs://{bucket}",
+                  *member, "--condition", store_condition(bucket, app_name))
 
 
 def scheduler_description(app_name: str) -> str:
@@ -677,10 +709,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                       "--uniform-bucket-level-access", "--public-access-prevention")
             run_quiet("storage", "buckets", "update", f"gs://{bucket}", "--update-labels",
                       ",".join(f"{key}={value}" for key, value in STORE_TAGS.items()))
-        console.step(f"granting {sa} write access to {bucket}/{name}/")
-        run_quiet("storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
-                  "--member", f"serviceAccount:{sa}", "--role", STORE_ROLE,
-                  "--condition", store_condition(bucket, name))
+        grant_store_access(bucket, name, sa)
     if secret_state:
         if secret_state == "create":
             console.step(f"creating secret {sid}")
@@ -798,7 +827,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
     store = deployer_store(project, name) if app["storage"] else None
     store_present = store is not None and read_json_or_none(
         "storage", "buckets", "describe", f"gs://{bucket}") is not None
-    revoke_grant = store_present and store_grant_exists(bucket, name, sa)
+    revoke_folder = store_present and folder_grant_exists(bucket, name, sa)
+    revoke_bucket = store_present and bucket_grant_exists(bucket, name, sa)
+    revoke_grant = revoke_folder or revoke_bucket
     unmanaged_app_resource = ((scheduler is not None and not delete_scheduler)
                               or (run_job is not None and not delete_job))
     delete_repo = (repository_owned and not other_regional_jobs and not other_images
@@ -862,10 +893,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         return 1
 
     if revoke_grant:
-        console.step(f"removing {sa} write access to {bucket}/{name}/")
-        run_quiet("storage", "buckets", "remove-iam-policy-binding", f"gs://{bucket}",
-                  "--member", f"serviceAccount:{sa}", "--role", STORE_ROLE,
-                  "--condition", store_condition(bucket, name))
+        revoke_store_access(bucket, name, sa, revoke_folder, revoke_bucket)
     if delete_scheduler:
         console.step(f"deleting Cloud Scheduler job {job}")
         run_quiet("scheduler", "jobs", "delete", job,
