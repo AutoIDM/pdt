@@ -233,6 +233,20 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
     return path
 
 
+def set_app_enabled(name: str, enabled: bool) -> Path:
+    # Edit the text rather than rewrite the yaml, so the user's comments survive.
+    path = find_project() / name / APP_FILE
+    lines = path.read_text().splitlines() if path.is_file() else []
+    value = f"enabled: {'true' if enabled else 'false'}"
+    existing = next((i for i, line in enumerate(lines) if line.startswith("enabled:")), None)
+    if existing is None:
+        lines.append(value)
+    else:
+        lines[existing] = value
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
 def _indent(line: str) -> str:
     return line[:len(line) - len(line.lstrip())]
 
