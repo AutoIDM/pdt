@@ -16,7 +16,10 @@ The task runs as the SYSTEM account, so it does not depend on a user being
 logged on. Registering or removing it needs administrator rights; a
 non-elevated shell gets one UAC prompt. Deploy always registers the complete
 desired task definition with -Force, so rerunning it safely reconciles
-changes to the schedule or repository path.
+changes to the schedule or repository path. SYSTEM sees only the machine
+PATH. When uv is on it at deploy time, the task runs a bare `uv`; otherwise
+the task looks for uv on the PATH when it runs and falls back to the path
+deploy found.
 
 Each run writes its output to .pdt/runs/<app>/<UTC start>.log in the
 project and ends it with `pdt: exit N`; `pdt runs` and `pdt logs` read
@@ -29,6 +32,7 @@ import argparse
 import base64
 import ctypes
 import html
+import os
 import shutil
 import subprocess
 import sys
@@ -174,15 +178,46 @@ def _task_name(app_name: str) -> str:
     return name
 
 
-def _run_script(app: dict, uv: str) -> str:
+def uv_on_machine_path() -> bool:
+    """Whether the machine PATH, the only PATH the SYSTEM account sees, holds uv.exe."""
+    if os.name != "nt":
+        return False
+    import winreg
+    try:
+        with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
+            path, _type = winreg.QueryValueEx(key, "Path")
+    except OSError:
+        return False
+    return any((Path(folder) / "uv.exe").is_file()
+               for folder in os.path.expandvars(path).split(";") if folder)
+
+
+def _run_script(app: dict, uv: str, on_machine_path: bool) -> str:
     """The script the scheduled task runs: log the app's run, then exit with its code."""
     folder = _ps_string(str(runs_folder(app["name"])))
-    uv_path = _ps_string(str(Path(uv).resolve()))
+    find_uv, uv_command = "", "uv"
+    if not on_machine_path:
+        uv_path = _ps_string(str(Path(uv).resolve()))
+        find_uv = (
+            "$uv = (Get-Command uv.exe, uv -ErrorAction SilentlyContinue | "
+            "Select-Object -First 1).Source; "
+            f"if (-not $uv -or -not (Test-Path $uv)) {{ $uv = {uv_path} }}; "
+            "if (-not (Test-Path $uv)) { "
+            "\"uv was not found on the PATH or at $uv; install uv and run pdt deploy again\" | "
+            "Out-File -Encoding utf8 -FilePath $log; "
+            "'pdt: exit 127' | Out-File -Encoding utf8 -Append -FilePath $log; "
+            "exit 127 }; "
+        )
+        uv_command = "$uv"
     return (
         f"$folder = {folder}; "
         "New-Item -ItemType Directory -Force -Path $folder | Out-Null; "
         "$log = Join-Path $folder ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.log'); "
-        f"& {uv_path} run --script run.py *>&1 | ForEach-Object {{ \"$_\" }} | "
+        f"{find_uv}"
+        f"& {uv_command} run --script run.py *>&1 | "
+        "ForEach-Object { \"$_\" } | "
         "Out-File -Encoding utf8 -FilePath $log; "
         "$code = $LASTEXITCODE; "
         "\"pdt: exit $code\" | Out-File -Encoding utf8 -Append -FilePath $log; "
@@ -192,7 +227,8 @@ def _run_script(app: dict, uv: str) -> str:
     )
 
 
-def task_xml(app: dict, uv: str, powershell: str) -> tuple[str, str]:
+def task_xml(app: dict, uv: str, on_machine_path: bool,
+             powershell: str) -> tuple[str, str]:
     cron = config.cron_expression(app["schedule"])
     tz = str(app.get("timezone") or "").strip().lower()
     if tz != "local":
@@ -203,7 +239,7 @@ def task_xml(app: dict, uv: str, powershell: str) -> tuple[str, str]:
     command = html.escape(str(Path(powershell).resolve()))
     arguments = html.escape(
         "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-        f"-EncodedCommand {_encoded(_run_script(app, uv))}")
+        f"-EncodedCommand {_encoded(_run_script(app, uv, on_machine_path))}")
     workdir = html.escape(str(Path(app["dir"]).resolve()))
     task_description = html.escape(
         f"Managed by pdt; runs {app['name']} from "
@@ -327,12 +363,29 @@ def _task_running(powershell: str, name: str) -> bool:
     return proc.returncode == 0
 
 
+def plan(app: dict, verb: str, description: str, uv: str,
+         on_machine_path: bool) -> list[str]:
+    actions = [
+        f"{verb} Windows scheduled task {_task_name(app['name'])} (runs as SYSTEM)",
+        f"run {app['name']} {description} (machine local time)",
+        f"working directory: {app['dir']}",
+        "run uv from the system PATH" if on_machine_path else
+        f"run uv from {Path(uv).resolve()} (uv is not on the system PATH; "
+        "a machine-wide install drops the path from the task)",
+    ]
+    if app["storage"]:
+        actions.append(f"use folder {storage_folder(app['name'])} for the app's files "
+                       "(kept after destroy)")
+    return actions
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     try:
         powershell, uv = _preflight()
         assert uv is not None
+        on_machine_path = uv_on_machine_path()
         name = _task_name(app["name"])
-        description, xml = task_xml(app, uv, powershell)
+        description, xml = task_xml(app, uv, on_machine_path, powershell)
         state = _task_state(powershell, name)
         if state == "unmanaged":
             raise WindowsDeployError(
@@ -342,15 +395,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.error(str(exc))
         return 1
 
-    verb = "update" if exists else "create"
-    folder = storage_folder(app["name"])
-    actions = [
-        f"{verb} Windows scheduled task {name} (runs as SYSTEM)",
-        f"run {app['name']} {description} (machine local time)",
-        f"working directory: {app['dir']}",
-    ]
-    if app["storage"]:
-        actions.append(f"use folder {folder} for the app's files (kept after destroy)")
+    actions = plan(app, "update" if exists else "create", description, uv,
+                   on_machine_path)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges")
     if not confirm(actions, assume_yes, cost):
@@ -358,7 +404,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         return 1
 
     if app["storage"]:
-        folder.mkdir(parents=True, exist_ok=True)
+        storage_folder(app["name"]).mkdir(parents=True, exist_ok=True)
 
     payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     script = (
