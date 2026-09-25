@@ -155,7 +155,7 @@ Every command reads its values from the environment it runs in. A build server s
 
 ## Choosing where jobs run
 
-Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins.
+Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
 
 ### Azure
 
