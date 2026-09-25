@@ -183,9 +183,11 @@ def _save_cache(env_file: Path | None, data: dict,
 
 def _write_env(env_file: Path, name: str, value: str) -> None:
     from dotenv import set_key
+
+    from pdt.utils.env_secret import private_file
     try:
         env_file.parent.mkdir(parents=True, exist_ok=True)
-        env_file.touch(mode=0o600, exist_ok=True)
+        private_file(env_file)
         set_key(str(env_file), name, value, quote_mode="never")
     except OSError as e:
         raise OAuthError(f"could not save {name} in {env_file}: {e}")

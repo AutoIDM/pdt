@@ -37,7 +37,7 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_name)
+    STORE_PREFIX, STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_name)
 from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
@@ -93,6 +93,98 @@ COMMON_ACTIONS = [
     "s3:PutBucketPublicAccessBlock",
     "s3:PutBucketTagging",
 ]
+
+ROLE_ARN = "arn:aws:iam::{account}:role/pdt-*"
+LOG_GROUP_ARNS = [
+    "arn:aws:logs:{region}:{account}:log-group:/pdt/*",
+    "arn:aws:logs:{region}:{account}:log-group:/pdt/*:*",
+    # The /ecs/pdt-<app> name of a Fargate deployment, which destroy still removes.
+    "arn:aws:logs:{region}:{account}:log-group:/ecs/pdt-*",
+    "arn:aws:logs:{region}:{account}:log-group:/ecs/pdt-*:*",
+]
+BATCH_ARNS = {
+    "compute_environment": "arn:aws:batch:{region}:{account}:compute-environment/pdt",
+    "job_queue": "arn:aws:batch:{region}:{account}:job-queue/pdt",
+    "job_definition": "arn:aws:batch:{region}:{account}:job-definition/pdt-*",
+    "job_definition_revision": "arn:aws:batch:{region}:{account}:job-definition/pdt-*:*",
+}
+# Each action pdt calls, grouped with the ARNs of the pdt resources it touches.
+# deployer_policy prints these and preflight simulates them, so both agree.
+POLICY_SCOPES = [
+    {"Action": ["iam:CreateRole", "iam:DeleteRole", "iam:DeleteRolePolicy", "iam:GetRole",
+                "iam:ListRolePolicies", "iam:ListRoleTags", "iam:PutRolePolicy",
+                "iam:TagRole", "iam:UpdateAssumeRolePolicy"],
+     "Resource": [ROLE_ARN]},
+    # The job definition hands the execution and job roles to Batch, which runs them
+    # as ECS tasks; the schedule hands its role to the scheduler.
+    {"Action": ["iam:PassRole"], "Resource": [ROLE_ARN],
+     "Condition": {"StringEquals": {"iam:PassedToService": [
+         "batch.amazonaws.com", "ecs-tasks.amazonaws.com", "scheduler.amazonaws.com"]}}},
+    # Creating the compute environment creates Batch's service-linked role on first use.
+    {"Action": ["iam:CreateServiceLinkedRole"],
+     "Resource": ["arn:aws:iam::{account}:role/aws-service-role/batch.amazonaws.com/*"],
+     "Condition": {"StringEquals": {"iam:AWSServiceName": ["batch.amazonaws.com"]}}},
+    # preflight checks the operator's own login, which has no pdt name.
+    {"Action": ["iam:SimulatePrincipalPolicy"],
+     "Resource": ["arn:aws:iam::{account}:user/*", "arn:aws:iam::{account}:role/*"]},
+    {"Action": ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:DescribeLogStreams",
+                "logs:FilterLogEvents", "logs:GetLogEvents", "logs:ListTagsForResource",
+                "logs:PutRetentionPolicy", "logs:TagResource"],
+     "Resource": LOG_GROUP_ARNS},
+    {"Action": ["scheduler:CreateSchedule", "scheduler:DeleteSchedule",
+                "scheduler:GetSchedule", "scheduler:UpdateSchedule"],
+     "Resource": [f"arn:aws:scheduler:{{region}}:{{account}}:schedule/{SCHEDULE_GROUP}/*"]},
+    {"Action": ["scheduler:CreateScheduleGroup", "scheduler:DeleteScheduleGroup",
+                "scheduler:GetScheduleGroup", "scheduler:TagResource"],
+     "Resource": [f"arn:aws:scheduler:{{region}}:{{account}}:schedule-group/{SCHEDULE_GROUP}"]},
+    {"Action": ["secretsmanager:CreateSecret", "secretsmanager:DeleteSecret",
+                "secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue",
+                "secretsmanager:PutSecretValue", "secretsmanager:RestoreSecret",
+                "secretsmanager:TagResource"],
+     "Resource": ["arn:aws:secretsmanager:{region}:{account}:secret:pdt-*"]},
+    {"Action": ["s3:CreateBucket", "s3:GetBucketTagging", "s3:ListBucket",
+                "s3:PutBucketPublicAccessBlock", "s3:PutBucketTagging"],
+     "Resource": [f"arn:aws:s3:::{STORE_PREFIX}-*"]},
+    {"Action": ["s3:GetObject"], "Resource": [f"arn:aws:s3:::{STORE_PREFIX}-*/*"]},
+    {"Action": ["ecr:BatchCheckLayerAvailability", "ecr:BatchDeleteImage",
+                "ecr:CompleteLayerUpload", "ecr:CreateRepository", "ecr:DeleteRepository",
+                "ecr:DescribeImages", "ecr:DescribeRepositories", "ecr:InitiateLayerUpload",
+                "ecr:ListImages", "ecr:PutImage", "ecr:TagResource", "ecr:UploadLayerPart"],
+     "Resource": ["arn:aws:ecr:{region}:{account}:repository/pdt"]},
+    {"Action": ["batch:CreateComputeEnvironment", "batch:DeleteComputeEnvironment",
+                "batch:UpdateComputeEnvironment"],
+     "Resource": [BATCH_ARNS["compute_environment"]]},
+    # A job queue names the compute environment it feeds, so its calls touch both.
+    {"Action": ["batch:CreateJobQueue", "batch:DeleteJobQueue", "batch:UpdateJobQueue"],
+     "Resource": [BATCH_ARNS["job_queue"], BATCH_ARNS["compute_environment"]]},
+    {"Action": ["batch:DeregisterJobDefinition", "batch:RegisterJobDefinition"],
+     "Resource": [BATCH_ARNS["job_definition"], BATCH_ARNS["job_definition_revision"]]},
+    {"Action": ["batch:TagResource"], "Resource": list(BATCH_ARNS.values())},
+    # Destroy still clears the cluster a Fargate deployment of the same app left behind.
+    {"Action": ["ecs:DeleteCluster", "ecs:DescribeClusters", "ecs:ListTagsForResource"],
+     "Resource": ["arn:aws:ecs:{region}:{account}:cluster/pdt",
+                  "arn:aws:ecs:{region}:{account}:task-definition/pdt-*:*"]},
+    {"Action": [
+        "batch:DescribeComputeEnvironments",  # Batch Describe and List calls take no resource ARN.
+        "batch:DescribeJobDefinitions",
+        "batch:DescribeJobQueues",
+        "batch:DescribeJobs",
+        "batch:ListJobs",
+        "ec2:DescribeSecurityGroups",  # EC2 Describe calls take no resource ARN.
+        "ec2:DescribeSubnets",
+        "ec2:DescribeVpcs",
+        "ecr:GetAuthorizationToken",  # AWS allows only "*".
+        "ecs:DeregisterTaskDefinition",  # AWS allows only "*".
+        "ecs:ListTaskDefinitionFamilies",  # List calls take no resource ARN.
+        "ecs:ListTaskDefinitions",
+        "ecs:ListTasks",  # Scoped by container instance, not cluster; kept on "*" to be safe.
+        "logs:DescribeLogGroups",  # Unsure it honors a log group ARN; kept on "*" to be safe.
+        "scheduler:ListSchedules",  # List calls take no resource ARN.
+     ],
+     "Resource": ["*"]},
+]
+
+
 def error_code(exc: Exception) -> str:
     return getattr(exc, "response", {}).get("Error", {}).get("Code", "")
 
@@ -170,25 +262,49 @@ def has_managed_tag(tags: list[dict], key_name: str, value_name: str) -> bool:
                for tag in tags)
 
 
-def deployer_policy(actions: list[str]) -> dict:
-    return {
-        "Version": "2012-10-17",
-        "Statement": [{
-            "Effect": "Allow",
-            "Action": actions,
-            "Resource": "*",
-        }],
-    }
+def deployer_policy(actions: list[str], account: str, region: str) -> dict:
+    wanted = set(actions)
+    statements = []
+    for scope in POLICY_SCOPES:
+        granted = [action for action in scope["Action"] if action in wanted]
+        if not granted:
+            continue
+        statement = {"Effect": "Allow", "Action": granted, "Resource": [
+            arn.format(account=account, region=region) for arn in scope["Resource"]]}
+        if "Condition" in scope:
+            statement["Condition"] = scope["Condition"]
+        statements.append(statement)
+    unscoped = wanted - {action for scope in POLICY_SCOPES for action in scope["Action"]}
+    if unscoped:
+        raise AssertionError(f"POLICY_SCOPES has no resource for {sorted(unscoped)}")
+    return {"Version": "2012-10-17", "Statement": statements}
 
 
-def print_permission_help(identity: str, detail: str, actions: list[str]) -> None:
+def simulations(policy: dict) -> list[dict]:
+    """One SimulatePrincipalPolicy request per statement, with its ARNs and condition,
+    so a login holding exactly the printed policy passes."""
+    requests = []
+    for statement in policy["Statement"]:
+        request = {"ActionNames": statement["Action"]}
+        if statement["Resource"] != ["*"]:
+            request["ResourceArns"] = statement["Resource"]
+        passed = statement.get("Condition", {}).get("StringEquals", {})
+        requests += [
+            {**request, "ContextEntries": [{
+                "ContextKeyName": key, "ContextKeyValues": [value], "ContextKeyType": "string"}]}
+            for key, values in passed.items() for value in values] or [request]
+    return requests
+
+
+def print_permission_help(identity: str, detail: str, actions: list[str],
+                          account: str, region: str) -> None:
     console.warn("AWS blocked this deployment because the current login lacks a permission.")
     if detail:
         console.say(f"AWS said: {detail}")
     console.field("Current AWS login", identity)
     console.say("Send the policy below to the person who manages your AWS account.")
     console.say("Ask them to add it to this login, then run the same command again.")
-    console.say(json.dumps(deployer_policy(actions), indent=2))
+    console.say(json.dumps(deployer_policy(actions, account, region), indent=2))
 
 
 def principal_arn(identity_arn: str, account: str) -> str:
@@ -300,7 +416,8 @@ def ensure_session(app: dict):
     return session
 
 
-def preflight(sts, iam, expected_account: str, actions: list[str]) -> tuple[str, str]:
+def preflight(sts, iam, expected_account: str, region: str,
+              actions: list[str]) -> tuple[str, str]:
     try:
         identity = sts.get_caller_identity()
     except Exception as exc:  # noqa: BLE001 - credential providers raise several types
@@ -312,21 +429,22 @@ def preflight(sts, iam, expected_account: str, actions: list[str]) -> tuple[str,
     source_arn = principal_arn(identity_arn, account)
     if source_arn.endswith(":root"):
         return account, identity_arn
+    denied = set()
     try:
-        result = iam.simulate_principal_policy(
-            PolicySourceArn=source_arn,
-            ActionNames=actions,
-        )
+        for request in simulations(deployer_policy(actions, account, region)):
+            result = iam.simulate_principal_policy(PolicySourceArn=source_arn, **request)
+            denied |= {item["EvalActionName"] for item in result["EvaluationResults"]
+                       if item["EvalDecision"] != "allowed"
+                       or any(resource["EvalResourceDecision"] != "allowed"
+                              for resource in item.get("ResourceSpecificResults", []))}
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException"}:
-            print_permission_help(identity_arn, str(exc), actions)
+            print_permission_help(identity_arn, str(exc), actions, account, region)
             raise SystemExit(1) from exc
         raise
-    denied = sorted(item["EvalActionName"] for item in result["EvaluationResults"]
-                    if item["EvalDecision"] != "allowed")
     if denied:
         print_permission_help(identity_arn, "These required actions are not allowed: "
-                              + ", ".join(denied), actions)
+                              + ", ".join(sorted(denied)), actions, account, region)
         raise SystemExit(1)
     return account, identity_arn
 
@@ -703,12 +821,14 @@ def main() -> int:
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",
                                "UnauthorizedOperation"}:
+            session = boto3.Session(profile_name=app["platform"].get("profile") or None)
+            account, region = aws_settings(app, session)
             identity = "the current AWS login"
             try:
-                identity = boto3.client("sts").get_caller_identity()["Arn"]
+                identity = session.client("sts").get_caller_identity()["Arn"]
             except Exception:  # noqa: BLE001,S110 - retain the original permission error
                 pass
-            print_permission_help(identity, str(exc), batch.DEPLOYER_ACTIONS)
+            print_permission_help(identity, str(exc), batch.DEPLOYER_ACTIONS, account, region)
             return 1
         fail(f"AWS returned {error_code(exc) or 'an error'}: {exc}")
 
