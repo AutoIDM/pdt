@@ -23,6 +23,14 @@ from pdt.utils.log import log
 RESOURCE_ENV = "PDT_ENV_SECRET_RESOURCE"
 
 
+def private_file(path: Path) -> None:
+    """Make the file that holds secrets readable by its owner alone, creating it if missing."""
+    path.touch(mode=0o600, exist_ok=True)
+    # On Windows chmod only sets the read-only flag, so the folder's access list decides.
+    if os.name != "nt":
+        os.chmod(path, 0o600)
+
+
 def deployed() -> bool:
     return os.environ.get(RESOURCE_ENV, "").strip() != ""
 
@@ -174,7 +182,7 @@ class EnvFile(Backend):
         for name, new in changed.items():
             target = next((path for path in self.files()
                            if path.is_file() and name in dotenv_values(path)), self.files()[0])
-            target.touch(mode=0o600, exist_ok=True)
+            private_file(target)
             set_key(str(target), name, new, quote_mode="never")
             self.written.append(target)
 

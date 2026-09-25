@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from conftest import add_app
-from pdt import cli, deploy
+from pdt import cli, config, console, deploy
 
 
 def run_cli(monkeypatch, *argv):
@@ -133,6 +133,155 @@ def test_health_checks_every_enabled_app(project, monkeypatch, capsys):
     assert "not-ready" not in out
     assert "not yet run" in out
     assert "0 of 1 succeeded" in out
+
+
+def fake_deploys(monkeypatch, codes):
+    calls = []
+
+    def fake_deploy(name, assume_yes=False):
+        calls.append((name, assume_yes))
+        return codes.get(name, 0)
+
+    monkeypatch.setattr(deploy, "deploy", fake_deploy)
+    return calls
+
+
+def test_deploy_all_deploys_every_enabled_app_in_order(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    add_app(project, "not-ready", "enabled: false\n")
+    add_app(project, "daily-report")
+    calls = fake_deploys(monkeypatch, {})
+    assert run_cli(monkeypatch, "deploy", "--all", "--yes") == 0
+    assert calls == [("daily-report", True), ("hello-world", True)]
+    out = capsys.readouterr().out
+    assert "Deploying daily-report (1 of 2)" in out
+    assert "Deploying hello-world (2 of 2)" in out
+    assert "not-ready" not in out
+
+
+def answer(monkeypatch, *answers):
+    questions = []
+    queue = list(answers)
+
+    def fake_confirm(question="Proceed?"):
+        questions.append(question)
+        return queue.pop(0)
+
+    monkeypatch.setattr(cli, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(console, "confirm", fake_confirm)
+    return questions
+
+
+def four_apps(project):
+    for name in ("alpha", "bravo", "charlie", "delta"):
+        add_app(project, name)
+
+
+STOP_HINT = ("Fix the problem above and run pdt deploy --all again, "
+             "or add --skip-failures to go on past it.")
+
+
+def test_deploy_all_stops_when_the_person_will_not_skip(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch, False)
+    assert run_cli(monkeypatch, "deploy", "--all") == 3
+    assert calls == [("alpha", False), ("bravo", False)]
+    assert questions == ["Skip the failing app bravo and deploy the rest?"]
+    out = capsys.readouterr().out
+    assert "bravo did not deploy." in out
+    assert STOP_HINT in out
+
+
+def test_deploy_all_with_yes_and_no_terminal_stops_at_the_failure(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": 3})
+    monkeypatch.setattr(cli, "can_prompt", lambda interactive: False)
+    assert run_cli(monkeypatch, "deploy", "--all", "--yes") == 3
+    assert calls == [("alpha", True), ("bravo", True)]
+    assert config.is_enabled("bravo")
+    assert STOP_HINT in capsys.readouterr().out
+
+
+def test_deploy_all_with_skip_failures_runs_unattended(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch)
+    assert run_cli(monkeypatch, "deploy", "--all", "--yes", "--skip-failures") == 1
+    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
+    assert questions == []
+    assert config.is_enabled("bravo")
+    out = capsys.readouterr().out
+    assert "bravo did not deploy." in out
+    assert "Not deployed: bravo" in out
+
+
+def test_skip_failures_without_all_is_refused(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    calls = fake_deploys(monkeypatch, {})
+    assert run_cli(monkeypatch, "deploy", "hello-world", "--skip-failures") == 1
+    assert calls == []
+    assert "--skip-failures only works with --all" in capsys.readouterr().out
+
+
+def test_deploy_all_with_yes_never_disables_an_app(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch, True)
+    assert run_cli(monkeypatch, "deploy", "--all", "--yes") == 1
+    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
+    assert questions == ["Skip the failing app bravo and deploy the rest?"]
+    assert config.is_enabled("bravo")
+    assert "Not deployed: bravo" in capsys.readouterr().out
+
+
+def test_deploy_all_skips_without_disabling_the_app(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch, True, False)
+    assert run_cli(monkeypatch, "deploy", "--all") == 1
+    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
+    assert questions == ["Skip the failing app bravo and deploy the rest?",
+                         "Disable the failing app bravo?"]
+    assert config.is_enabled("bravo")
+    assert not (project / "bravo" / "config.yml").exists()
+    assert "Not deployed: bravo" in capsys.readouterr().out
+
+
+def test_deploy_all_disables_a_skipped_app(project, monkeypatch, capsys):
+    four_apps(project)
+    (project / "bravo" / "config.yml").write_text("# my notes\nschedule: daily\n")
+    fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch, True, True)
+    assert run_cli(monkeypatch, "deploy", "--all") == 1
+    assert "Skip the failing app bravo" in questions[0]
+    assert "Disable the failing app bravo" in questions[1]
+    assert not config.is_enabled("bravo")
+    text = (project / "bravo" / "config.yml").read_text()
+    assert "# my notes" in text
+    assert "schedule: daily" in text
+    out = capsys.readouterr().out
+    assert f"Disabled bravo in {Path('bravo', 'config.yml')}." in out
+    assert "Not deployed: bravo" in out
+
+
+def test_deploy_all_with_no_terminal_stops_at_the_failure(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch)
+    monkeypatch.setattr(cli, "can_prompt", lambda interactive: False)
+    assert run_cli(monkeypatch, "deploy", "--all") == 3
+    assert calls == [("alpha", False), ("bravo", False)]
+    assert questions == []
+    assert STOP_HINT in capsys.readouterr().out
+
+
+def test_deploy_all_with_an_app_name_is_refused(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    calls = fake_deploys(monkeypatch, {})
+    assert run_cli(monkeypatch, "deploy", "hello-world", "--all") == 1
+    assert calls == []
+    assert "pick an app or --all, not both" in capsys.readouterr().out
 
 
 def test_health_of_one_app_relays_a_provider_failure(project, monkeypatch, capsys):

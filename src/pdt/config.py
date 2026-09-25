@@ -45,6 +45,7 @@ PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
     "subscription", "resource_group", "environment",
+    "timezone",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
 # Where each known key belongs, so a key in the wrong section gets told
@@ -55,12 +56,12 @@ KEY_HOME = {
     "platform": f"the top level of {PROJECT_FILE} or of the app's {APP_FILE}",
     "name": f"the app's apps: entry in {PROJECT_FILE}",
     "schedule": APP_LEVEL,
-    "timezone": APP_LEVEL,
     "config": APP_LEVEL,
     "env": APP_LEVEL,
     "storage": APP_LEVEL,
     "enabled": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
+    "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
 }
 # Keys that belong nowhere any more. The message says what to do instead.
@@ -102,6 +103,12 @@ def data_home() -> Path:
     if os.name == "nt":
         return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+
+
+def machine_data_home() -> Path:
+    """The machine-wide data folder on Windows, %ProgramData%\\pdt, where a scheduled
+    task that runs as SYSTEM and the user who deployed it both reach an app's files."""
+    return Path(os.environ.get("ProgramData") or r"C:\ProgramData") / "pdt"
 
 
 def find_project(start: Path | None = None) -> Path:
@@ -185,16 +192,19 @@ def merged_app(name: str) -> dict:
     own = load_yaml(app_dir / APP_FILE)
     entry_where = f"{PROJECT_FILE}: apps entry {name!r}"
     own_where = f"{name}/{APP_FILE}"
+    platform = {
+        **mapping(root_cfg, "platform", PROJECT_FILE),
+        **mapping(entry, "platform", entry_where),
+        **mapping(own, "platform", own_where),
+    }
+    default_timezone = platform.get(
+        "timezone", "local" if platform.get("provider") == "windows" else "Etc/UTC")
     return {
         "name": name,
         "dir": app_dir,
         "schedule": own.get("schedule", entry.get("schedule")),
-        "timezone": own.get("timezone", entry.get("timezone", "Etc/UTC")),
-        "platform": {
-            **mapping(root_cfg, "platform", PROJECT_FILE),
-            **mapping(entry, "platform", entry_where),
-            **mapping(own, "platform", own_where),
-        },
+        "timezone": own.get("timezone", entry.get("timezone", default_timezone)),
+        "platform": platform,
         "config": {
             **mapping(entry, "config", entry_where),
             **mapping(own, "config", own_where),
@@ -233,6 +243,20 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
                 indent = _indent(lines[first]) if first is not None else "  "
                 lines.insert((first if first is not None else start) + 1, f"{indent}{key}: {yaml_quoted(value)}")
         write_text_atomically(path, "\n".join(lines) + "\n")
+    return path
+
+
+def set_app_enabled(name: str, enabled: bool) -> Path:
+    # Edit the text rather than rewrite the yaml, so the user's comments survive.
+    path = find_project() / name / APP_FILE
+    lines = path.read_text().splitlines() if path.is_file() else []
+    value = f"enabled: {'true' if enabled else 'false'}"
+    existing = next((i for i, line in enumerate(lines) if line.startswith("enabled:")), None)
+    if existing is None:
+        lines.append(value)
+    else:
+        lines[existing] = value
+    path.write_text("\n".join(lines) + "\n")
     return path
 
 

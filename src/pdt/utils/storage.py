@@ -2,9 +2,10 @@
 
 Used as a library (`from pdt.utils import storage`).
 
-PDT_STORAGE_URL names the app folder (deploy sets it). Without it the
-folder is <project>/.pdt/storage/<app>/, so `pdt run` on the user's own
-computer and the windows provider behave the same as a cloud job.
+PDT_STORAGE_URL names the app folder (every deployed job, including a
+Windows scheduled task, gets it set). Without it the folder is
+<project>/.pdt/storage/<app>/, so `pdt run` on the user's own computer
+behaves the same as a deployed job.
 
 Inside the folder pdt reserves `runs/` and `state/`. `state/lock` is
 the lock that pull takes and push releases.
