@@ -98,7 +98,7 @@ def fake_destroy(monkeypatch, answers, locked_by):
     module = deploy_azure_container_apps
 
     def read(*args):
-        return answers.get(args[:2])
+        return answers.get(args[:3], answers.get(args[:2]))
 
     def write(*args, **kwargs):
         events.append(args)
@@ -124,7 +124,8 @@ def fake_destroy(monkeypatch, answers, locked_by):
 
 
 LAST_APP = {
-    ("containerapp", "job"): MANAGED | {"tags": {"managed-by": "pdt", "pdt-app": "report"}},
+    ("containerapp", "job", "show"): {"tags": {"managed-by": "pdt", "pdt-app": "report"}},
+    ("containerapp", "job", "list"): [],
     ("containerapp", "env"): MANAGED,
     ("group", "show"): MANAGED,
     ("resource", "list"): [],

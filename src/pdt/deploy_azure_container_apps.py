@@ -11,6 +11,18 @@ own. Each app owns one tagged job.
 The shared identity pulls the image and reads the app's Key Vault
 secret. Each job's own system-assigned identity holds the grants that
 name one app: its secret, and its folder of the data store.
+
+Deploy holds a CanNotDelete lock per app on the environment and on the
+ACR before the image build (`shared_locks`), so a destroy of another app
+that runs meanwhile cannot delete either; Azure refuses the delete while a
+lock exists, and destroy reports the refusal as "kept". Destroy removes its
+own locks first and re-reads `environment_users` right before it deletes
+the environment. The project lock sits on the ACR rather than on the
+resource group, because a group lock is inherited by every resource in it
+and would stop a sibling app from deleting its own job; a locked ACR still
+blocks `az group delete`. The lock on the environment carries the
+project's resource group in its name, because two projects can each have
+an app of the same name.
 """
 
 from __future__ import annotations
@@ -27,9 +39,9 @@ from pdt import config, console, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
     AZ, ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az_json, az_tsv,
-    azure_settings, check_shared_names, clean_name, cost_estimate, deployer_store,
+    azure_settings, check_shared_names, clean_name, cost_estimate, delete_unless_locked, deployer_store,
     destroy_group, disable_old_secret_versions, ensure_group_and_vault, ensure_secret, ensure_shared_group,
-    ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item,
+    ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item, list_remaining,
     managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, run_stream, secret_actions, secret_name,
@@ -409,6 +421,51 @@ def environment_actions(settings: dict, exists: bool, logs_exist: bool,
     ]
 
 
+@dataclasses.dataclass(frozen=True)
+class Lock:
+    """One app's CanNotDelete lock on a shared resource."""
+
+    name: str
+    label: str
+    scope: tuple[str, ...]
+
+    def exists(self) -> bool:
+        return az_json("lock", "show", "--name", self.name, *self.scope) is not None
+
+    def create(self) -> None:
+        console.step(f"creating lock {self.name} on {self.label}")
+        run_quiet("lock", "create", "--name", self.name, "--lock-type", "CanNotDelete",
+                  *self.scope, "--notes", "managed-by=pdt")
+
+    def remove(self) -> None:
+        console.step(f"removing lock {self.name} from {self.label}")
+        run_quiet("lock", "delete", "--name", self.name, *self.scope)
+
+
+def registry_lock(settings: dict, job: str) -> Lock:
+    return Lock(job, f"ACR {settings['registry']}", (
+        "--resource-group", settings["resource_group"],
+        "--resource-name", settings["registry"],
+        "--resource-type", "Microsoft.ContainerRegistry/registries"))
+
+
+def environment_lock(settings: dict, job: str) -> Lock:
+    environment = settings["environment"]
+    return Lock(clean_name(f"{job}-in-{settings['resource_group']}"),
+                f"Container Apps environment {environment}", (
+                    "--resource-group", environment.resource_group,
+                    "--resource-name", environment.name,
+                    "--resource-type", ENVIRONMENT_TYPE))
+
+
+def shared_locks(settings: dict, job: str) -> list[Lock]:
+    """The locks one app holds while deployed. A user's own environment gets none."""
+    locks = [registry_lock(settings, job)]
+    if settings["environment"].managed:
+        locks.append(environment_lock(settings, job))
+    return locks
+
+
 def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
     environment = settings["environment"]
     if not environment.managed:
@@ -485,6 +542,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if current_job and not owned_by(current_job, name):
         fail(f"Container Apps Job {job} already exists but is not owned by "
              f"PDT app {name}; choose another resource group")
+    missing_locks = [lock for lock in shared_locks(settings, job) if not lock.exists()]
     vault_exists, current_secret = secret_state(settings, sid, name, bool(values))
     store = store_settings(settings) if app["storage"] else None
     store_present = store_exists(store) if store else False
@@ -502,6 +560,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         ("keep" if arm_auth_enabled else "enable")
         + f" ACR authentication-as-arm on {settings['registry']} "
         "(required for managed-identity image pulls)")
+    for lock in shared_locks(settings, job):
+        actions.append(f"create lock {lock.name} on {lock.label} (keeps it while {name} is deployed)"
+                       if lock in missing_locks else f"use existing lock {lock.name} on {lock.label}")
     actions.append(("use existing" if identity else "create")
                    + f" managed identity {settings['identity']}")
     actions.append(("use existing" if vault_exists else "create")
@@ -531,6 +592,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
                   "--resource-group", rg, "--location", settings["region"],
                   "--sku", "Basic", "--admin-enabled", "false",
                   "--tags", "managed-by=pdt")
+    for lock in missing_locks:
+        lock.create()
     if not identity:
         console.step(f"creating managed identity {settings['identity']}")
         identity = az_json("identity", "create", "--name", settings["identity"],
@@ -619,12 +682,15 @@ def environment_release(settings: dict) -> Release:
         return Release()
     users = environment_users(settings)
     if users:
-        count = sum(users.values())
-        return Release(note=f"Container Apps environment {environment} still runs {count} "
-                            f"job{'s' if count != 1 else ''} in resource group"
-                            f"{'s' if len(users) != 1 else ''} {', '.join(sorted(users))}; "
-                            "keeping it")
+        return Release(note=users_note(settings, users))
     return Release(environment=True, group=not other_environments(settings))
+
+
+def users_note(settings: dict, users: dict[str, int]) -> str:
+    count = sum(users.values())
+    return (f"Container Apps environment {settings['environment']} still runs {count} "
+            f"job{'s' if count != 1 else ''} in resource group"
+            f"{'s' if len(users) != 1 else ''} {', '.join(sorted(users))}; keeping it")
 
 
 def release_actions(settings: dict, release: Release) -> list[str]:
@@ -641,12 +707,22 @@ def release_actions(settings: dict, release: Release) -> list[str]:
 def release_environment(settings: dict, release: Release) -> None:
     environment = settings["environment"]
     if release.environment:
+        users = environment_users(settings)
+        if users:
+            console.note(users_note(settings, users))
+            return
         console.step(f"deleting Container Apps environment {environment}")
-        run_quiet("containerapp", "env", "delete", "--name", environment.name,
-                  "--resource-group", environment.resource_group, "--yes")
+        locked = delete_unless_locked(
+            "containerapp", "env", "delete", "--name", environment.name,
+            "--resource-group", environment.resource_group, "--yes")
+        if locked:
+            console.note(f"kept: Container Apps environment {environment} (locked by {locked})")
+            return
     if release.group:
         console.step(f"deleting resource group {environment.resource_group}")
-        run_quiet("group", "delete", "--name", environment.resource_group, "--yes")
+        locked = delete_unless_locked("group", "delete", "--name", environment.resource_group, "--yes")
+        if locked:
+            console.note(f"kept: resource group {environment.resource_group} (locked by {locked})")
 
 
 def kept_line(store: dict[str, str], deployer, name: str) -> str:
@@ -681,9 +757,11 @@ def destroy(app: dict, assume_yes: bool) -> int:
     # A run that stopped after the project group went may still owe the
     # environment, so a missing group takes the same path as a deletable one.
     group_exists = az_tsv("group", "exists", "--name", rg) == "true"
+    held = [lock for lock in shared_locks(settings, job) if lock.exists()]
+    unlock = [f"remove lock {lock.name} from {lock.label}" for lock in held]
     if not group_exists or group_can_be_deleted(settings, others):
         release = environment_release(settings)
-        actions = []
+        actions = unlock[:]
         if grant:
             actions.append(grant)
         if group_exists:
@@ -701,23 +779,23 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if not confirm(actions, assume_yes):
             console.warn("Aborted; nothing was changed.")
             return 1
+        for lock in held:
+            lock.remove()
         if grant:
             revoke_role(store["container_id"], principal_id, STORE_ROLE)
-        if group_exists:
-            destroy_group(settings)
-        release_environment(settings, release)
+        if group_exists and not destroy_group(settings, name):
+            # Another app joined the group meanwhile, so this one leaves the
+            # way it would have with a sibling: its own job, image, and secret.
+            remove_app(settings, name, job, sid, managed_job, secret_owned, principal_id,
+                       has_image(settings, name))
+            list_remaining(rg)
+        else:
+            release_environment(settings, release)
         if deployer:
             console.say(kept_line(store, deployer, name))
         return 0
-    registry = az_json("acr", "show", "--name", settings["registry"],
-                       "--resource-group", rg)
-    registry_owned = managed_by_pdt(registry)
-    if registry is not None and not registry_owned:
-        console.note(f"ACR {settings['registry']} is not managed by PDT; keeping its images")
-    image_exists = registry_owned and az_json(
-        "acr", "repository", "show", "--name", settings["registry"],
-        "--repository", name) is not None
-    actions = []
+    image_exists = has_image(settings, name)
+    actions = unlock[:]
     if grant:
         actions.append(grant)
     if managed_job:
@@ -732,8 +810,31 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 1
+    for lock in held:
+        lock.remove()
     if grant:
         revoke_role(store["container_id"], principal_id, STORE_ROLE)
+    remove_app(settings, name, job, sid, managed_job, secret_owned, principal_id, image_exists)
+    report_shared_kept(rg, others)
+    if deployer:
+        console.say(kept_line(store, deployer, name))
+    return 0
+
+
+def has_image(settings: dict, name: str) -> bool:
+    registry = az_json("acr", "show", "--name", settings["registry"],
+                       "--resource-group", settings["resource_group"])
+    registry_owned = managed_by_pdt(registry)
+    if registry is not None and not registry_owned:
+        console.note(f"ACR {settings['registry']} is not managed by PDT; keeping its images")
+    return registry_owned and az_json(
+        "acr", "repository", "show", "--name", settings["registry"],
+        "--repository", name) is not None
+
+
+def remove_app(settings: dict, name: str, job: str, sid: str, managed_job: bool,
+               secret_owned: bool, principal_id: str | None, image_exists: bool) -> None:
+    rg = settings["resource_group"]
     if secret_owned and managed_job and principal_id:
         revoke_role(secret_scope(settings, sid), principal_id, SECRET_ROLE)
     if managed_job:
@@ -744,7 +845,3 @@ def destroy(app: dict, assume_yes: bool) -> int:
                   "--repository", name, "--yes")
     if secret_owned:
         purge_secret(settings, sid)
-    report_shared_kept(rg, others)
-    if deployer:
-        console.say(kept_line(store, deployer, name))
-    return 0
