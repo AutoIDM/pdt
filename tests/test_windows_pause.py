@@ -10,6 +10,7 @@ from pdt import config, deploy_windows
 def project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     (tmp_path / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
