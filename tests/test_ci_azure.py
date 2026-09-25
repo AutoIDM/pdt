@@ -233,3 +233,36 @@ def test_a_discovered_subscription_names_the_vault_like_a_saved_one(azure_app, m
     saved = deploy_azure.shared_names(ACCOUNT["id"], settings["resource_group"])
     assert settings["vault"] == saved["vault"]
     assert settings["storage"] == saved["storage"]
+
+
+def choose_subscription_answering(monkeypatch, answer):
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: [ACCOUNT, OTHER])
+    monkeypatch.setattr("builtins.input", lambda prompt="": answer)
+    return saved(monkeypatch)
+
+
+def test_a_typed_subscription_id_from_the_list_is_saved(azure_app, monkeypatch):
+    calls = choose_subscription_answering(monkeypatch, OTHER["id"])
+    assert deploy_azure.choose_subscription(azure_app, "", True) == OTHER
+    assert calls == [OTHER["id"]]
+
+
+def test_a_typed_subscription_name_from_the_list_is_saved(azure_app, monkeypatch):
+    calls = choose_subscription_answering(monkeypatch, OTHER["name"])
+    assert deploy_azure.choose_subscription(azure_app, "", True) == OTHER
+    assert calls == [OTHER["id"]]
+
+
+def test_a_number_still_picks_a_subscription_by_position(azure_app, monkeypatch):
+    calls = choose_subscription_answering(monkeypatch, "1")
+    assert deploy_azure.choose_subscription(azure_app, "", True) == ACCOUNT
+    assert calls == [ACCOUNT["id"]]
+
+
+def test_a_typed_subscription_id_not_in_the_list_says_what_to_type(azure_app, monkeypatch, capsys):
+    calls = choose_subscription_answering(monkeypatch, "not-my-subscription")
+    with pytest.raises(SystemExit):
+        deploy_azure.choose_subscription(azure_app, "", True)
+    assert calls == []
+    message = capsys.readouterr().out
+    assert "type a number from the list or one of the subscription ids" in message
