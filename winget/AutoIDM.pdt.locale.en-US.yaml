@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+PackageIdentifier: AutoIDM.pdt
+PackageVersion: {version}
+PackageLocale: en-US
+Publisher: AutoIDM
+PublisherUrl: https://github.com/AutoIDM
+PackageName: pdt
+PackageUrl: https://github.com/AutoIDM/pdt
+License: MIT
+ShortDescription: Create, run, and deploy small scheduled jobs to AWS, Azure, Google Cloud, or Windows
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

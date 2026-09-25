@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+PackageIdentifier: AutoIDM.pdt
+PackageVersion: {version}
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: pdt.exe
+    PortableCommandAlias: pdt
+Commands:
+  - pdt
+Dependencies:
+  PackageDependencies:
+    - PackageIdentifier: astral-sh.uv
+ReleaseDate: {date}
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/AutoIDM/pdt/releases/download/v{version}/pdt-windows-x64.zip
+    InstallerSha256: {sha256}
+ManifestType: installer
+ManifestVersion: 1.10.0
