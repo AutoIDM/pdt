@@ -40,6 +40,16 @@ metadata instead, with underscores in the keys because metadata keys
 must be C# identifiers. RBAC scope stops at the container, so store_condition
 adds an attribute-based access control condition that holds the job
 inside its own <app>/ folder.
+
+A shared resource (the project's ACR, and the Container Apps environment in
+deploy_azure_container_apps.py) has a set of users, and destroy may delete
+it only while that set is empty and nobody can join it. Each deployed app
+holds a CanNotDelete management lock on the resource, so Azure refuses the
+delete while any other app is deployed: the check and the delete are one
+operation on Azure's side. `delete_unless_locked` turns that refusal into
+"kept", not a failure. Right before each delete, destroy also re-reads the
+users (`destroy_group`), which covers a deploy from an older pdt that takes
+no lock.
 """
 
 from __future__ import annotations
@@ -118,6 +128,22 @@ def run_stream(*args: str) -> None:
     proc = subprocess.run([*AZ, *args])
     if proc.returncode != 0:
         fail(f"pdt az {' '.join(args[:3])} failed; fix the problem above and re-run")
+
+
+LOCK_NAME = re.compile(r"Microsoft\.Authorization/locks/([^'\s,]+)", re.IGNORECASE)
+
+
+def delete_unless_locked(*args: str) -> str:
+    """Run an az delete. Return the lock names that refused it, or "" on success."""
+    proc = subprocess.run(
+        [*AZ, *args], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if proc.returncode == 0:
+        return ""
+    if "scopelocked" in proc.stderr.lower() or LOCK_NAME.search(proc.stderr):
+        return ", ".join(sorted(set(LOCK_NAME.findall(proc.stderr)))) or "a lock"
+    if proc.stderr.strip():
+        console.say(proc.stderr.strip())
+    fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
 
 
 def az_json(*args: str):
@@ -728,15 +754,25 @@ def purge_secret(settings: dict[str, str], sid: str) -> None:
               settings["vault"], "--name", sid, retry_access=True)
 
 
-def destroy_group(settings: dict[str, str]) -> None:
+def destroy_group(settings: dict[str, str], app_name: str) -> bool:
+    """Delete the project's group. False means another app holds it, so it stays."""
     rg = settings["resource_group"]
+    others = other_pdt_apps(rg, app_name)
+    if others:
+        console.note(f"kept: resource group {rg} (apps deployed since the plan: "
+                     f"{', '.join(others)})")
+        return False
     console.step(f"deleting resource group {rg} (takes a few minutes)")
-    run_quiet("group", "delete", "--name", rg, "--yes")
+    locked = delete_unless_locked("group", "delete", "--name", rg, "--yes")
+    if locked:
+        console.note(f"kept: resource group {rg} with its ACR and Key Vault (locked by {locked})")
+        return False
     if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
         console.step(f"purging soft-deleted Key Vault {settings['vault']}")
         run_quiet("keyvault", "purge", "--name", settings["vault"])
     if az_tsv("group", "exists", "--name", rg) == "false":
         console.done(f"Nothing remains in resource group {rg}.")
+    return True
 
 
 def report_shared_kept(rg: str, others: list[str]) -> None:
@@ -745,6 +781,10 @@ def report_shared_kept(rg: str, others: list[str]) -> None:
                      "Shared resources stay until the last app is destroyed.")
     else:
         console.note(f"resource group {rg} is not fully owned by PDT, so PDT kept it.")
+    list_remaining(rg)
+
+
+def list_remaining(rg: str) -> None:
     console.heading("Still present:")
     for resource in az_json("resource", "list", "--resource-group", rg) or []:
         console.bullet(f"{resource.get('name')}  ({resource.get('type')})")
