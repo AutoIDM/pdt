@@ -176,6 +176,20 @@ def not_found(exc: Exception) -> bool:
     return error_code(exc) == "ClientException" and "Unable to describe task definition" in message
 
 
+def delete_if_present(call, **kwargs) -> bool:
+    """Run a delete call; False when AWS answers that the resource is already gone.
+
+    A sibling app's destroy can remove a shared resource between our check and our delete.
+    """
+    try:
+        call(**kwargs)
+    except Exception as exc:
+        if not not_found(exc):
+            raise
+        return False
+    return True
+
+
 def role_propagation_error(exc: Exception) -> bool:
     code = error_code(exc)
     response_message = getattr(exc, "response", {}).get("Error", {}).get("Message", "")
@@ -717,7 +731,7 @@ def delete_log_group(logs, name: str) -> None:
         arn = group.get("logGroupArn") or group["arn"].removesuffix(":*")
         tags = logs.list_tags_for_resource(resourceArn=arn).get("tags", {})
         if tags.get("managed-by") == "pdt":
-            logs.delete_log_group(logGroupName=name)
+            delete_if_present(logs.delete_log_group, logGroupName=name)
 
 
 def other_schedules(scheduler, name: str) -> list[str] | None:
@@ -731,12 +745,8 @@ def other_schedules(scheduler, name: str) -> list[str] | None:
     return [item["Name"] for item in schedules if item["Name"] != name]
 
 
-def delete_schedule_group(scheduler) -> None:
-    try:
-        scheduler.delete_schedule_group(Name=SCHEDULE_GROUP)
-    except Exception as exc:
-        if not not_found(exc):
-            raise
+def delete_schedule_group(scheduler) -> bool:
+    return delete_if_present(scheduler.delete_schedule_group, Name=SCHEDULE_GROUP)
 
 
 def delete_role(iam, name: str) -> None:
