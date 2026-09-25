@@ -2,8 +2,8 @@ import pytest
 
 from pdt import deploy_aws_batch
 from pdt.deploy_aws_batch import (
-    COMPUTE_ENVIRONMENT, JOB_QUEUE, legacy_fargate_cleanup, remove, resource_names,
-    shared_unused_after,
+    COMPUTE_ENVIRONMENT, JOB_QUEUE, ensure_shared, legacy_fargate_cleanup, remove,
+    resource_names, shared_unused_after,
 )
 
 NAMES = resource_names("my-app")
@@ -15,10 +15,10 @@ def definition(name):
 
 
 class FakeBatch:
-    def __init__(self, definitions=(), queue=True, environment=True):
+    def __init__(self, definitions=(), queue=True, environment=True, state="ENABLED"):
         self.definitions = list(definitions)
-        self.items = {"jobQueues": [{"jobQueueName": "pdt", "status": "VALID",
-                                     "state": "ENABLED"}] if queue else [],
+        self.items = {"jobQueues": [{"jobQueueName": "pdt", "jobQueueArn": "arn:queue/pdt",
+                                     "status": "VALID", "state": state}] if queue else [],
                       "computeEnvironments": [{"computeEnvironmentName": "pdt",
                                                "status": "VALID",
                                                "state": "ENABLED"}] if environment else []}
@@ -66,6 +66,31 @@ def test_remove_of_an_absent_queue_does_nothing():
     batch = FakeBatch(queue=False)
     remove(batch, JOB_QUEUE)
     assert batch.calls == []
+
+
+def test_ensure_shared_reads_an_enabled_queue_without_touching_it():
+    batch = FakeBatch()
+    assert ensure_shared(batch, JOB_QUEUE, lambda: batch.calls.append("create")) == "arn:queue/pdt"
+    assert batch.calls == []
+
+
+def test_ensure_shared_re_enables_a_disabled_queue(monkeypatch):
+    monkeypatch.setattr(deploy_aws_batch, "BATCH_WAIT_DELAYS", (0,))
+    batch = FakeBatch(state="DISABLED")
+    assert ensure_shared(batch, JOB_QUEUE, lambda: batch.calls.append("create")) == "arn:queue/pdt"
+    assert batch.calls == [("update_job_queue", "ENABLED")]
+
+
+def test_ensure_shared_creates_an_absent_queue_and_waits_for_it():
+    batch = FakeBatch(queue=False)
+
+    def create():
+        batch.calls.append("create")
+        batch.items["jobQueues"] = [{"jobQueueName": "pdt", "jobQueueArn": "arn:queue/pdt",
+                                     "status": "VALID", "state": "ENABLED"}]
+
+    assert ensure_shared(batch, JOB_QUEUE, create) == "arn:queue/pdt"
+    assert batch.calls == ["create"]
 
 
 class FakeEcs:

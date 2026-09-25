@@ -10,6 +10,10 @@ schedule `pdt-<app>` whose target is the universal target
 `arn:aws:scheduler:::aws-sdk:batch:submitJob`. Every resource is tagged
 `managed-by=pdt` and named `pdt-<app>` or `pdt`.
 
+Destroy also clears what a Fargate deployment of the same app left behind
+(LEGACY_ACTIONS, legacy_fargate_cleanup); drop both once every project has
+moved to Batch.
+
 Entered through deploy_aws.py, which owns the uv script header, login, and
 permission handling.
 """
@@ -32,7 +36,8 @@ from pdt.deploy_aws import (
     aws_settings, clients_for, cost_estimate, delete_log_group, delete_role,
     delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
-    deployer_store, ensure_session, ensure_store, has_managed_tag, iam_tags, not_found,
+    deployer_store, ensure_session, ensure_store, find_log_group, has_managed_tag, iam_tags,
+    not_found,
     delete_schedule_group, other_schedules, preflight, resource_exists, secret_statements,
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
@@ -225,11 +230,17 @@ def settled(batch, resource: SharedResource) -> dict | None:
     return current
 
 
-def enable(batch, resource: SharedResource, current: dict) -> None:
-    if not managed(current):
+def ensure_shared(batch, resource: SharedResource, create: Callable[[], None]) -> str:
+    current = settled(batch, resource)
+    if current is None:
+        create()
+    elif not managed(current):
         fail(f"Batch {resource.label} {resource.name} exists but is not managed by PDT")
-    if current.get("state") != "ENABLED":
+    elif current.get("state") == "ENABLED":
+        return current[resource.arn]
+    else:
         getattr(batch, resource.update)(**{resource.param: resource.name}, state="ENABLED")
+    return settled(batch, resource)[resource.arn]
 
 
 def remove(batch, resource: SharedResource) -> None:
@@ -245,34 +256,24 @@ def remove(batch, resource: SharedResource) -> None:
 
 
 def ensure_compute_environment(batch, subnets: list[str], security_group: str) -> str:
-    current = settled(batch, COMPUTE_ENVIRONMENT)
-    if current is None:
-        batch.create_compute_environment(
-            computeEnvironmentName=COMPUTE_ENVIRONMENT.name,
-            type="MANAGED",
-            state="ENABLED",
-            computeResources={"type": "FARGATE", "maxvCpus": COMPUTE_MAX_VCPUS,
-                              "subnets": subnets, "securityGroupIds": [security_group]},
-            tags=shared_tags(),
-        )
-    else:
-        enable(batch, COMPUTE_ENVIRONMENT, current)
-    return settled(batch, COMPUTE_ENVIRONMENT)[COMPUTE_ENVIRONMENT.arn]
+    return ensure_shared(batch, COMPUTE_ENVIRONMENT, lambda: batch.create_compute_environment(
+        computeEnvironmentName=COMPUTE_ENVIRONMENT.name,
+        type="MANAGED",
+        state="ENABLED",
+        computeResources={"type": "FARGATE", "maxvCpus": COMPUTE_MAX_VCPUS,
+                          "subnets": subnets, "securityGroupIds": [security_group]},
+        tags=shared_tags(),
+    ))
 
 
 def ensure_job_queue(batch, environment_arn: str) -> str:
-    current = settled(batch, JOB_QUEUE)
-    if current is None:
-        batch.create_job_queue(
-            jobQueueName=JOB_QUEUE.name,
-            state="ENABLED",
-            priority=1,
-            computeEnvironmentOrder=[{"order": 1, "computeEnvironment": environment_arn}],
-            tags=shared_tags(),
-        )
-    else:
-        enable(batch, JOB_QUEUE, current)
-    return settled(batch, JOB_QUEUE)[JOB_QUEUE.arn]
+    return ensure_shared(batch, JOB_QUEUE, lambda: batch.create_job_queue(
+        jobQueueName=JOB_QUEUE.name,
+        state="ENABLED",
+        priority=1,
+        computeEnvironmentOrder=[{"order": 1, "computeEnvironment": environment_arn}],
+        tags=shared_tags(),
+    ))
 
 
 def ensure_roles(iam, names: dict[str, str], account: str, region: str,
@@ -592,11 +593,6 @@ def deregister_task_definitions(ecs, arns: list[str]) -> None:
             ecs.deregister_task_definition(taskDefinition=arn)
 
 
-def log_group_exists(logs, name: str) -> bool:
-    groups = logs.describe_log_groups(logGroupNamePrefix=name).get("logGroups", [])
-    return any(group["logGroupName"] == name for group in groups)
-
-
 def legacy_fargate_cleanup(ecs, logs, iam, names: dict[str, str]) -> list[tuple[str, Callable]]:
     """One plan line and its action per leftover of a Fargate deployment of the same app."""
     family = names["job_definition"]
@@ -606,7 +602,7 @@ def legacy_fargate_cleanup(ecs, logs, iam, names: dict[str, str]) -> list[tuple[
         plan.append((f"deregister {len(arns)} tagged ECS task definition(s) in family {family} "
                      "(older Fargate deployment)",
                      lambda: deregister_task_definitions(ecs, arns)))
-    if log_group_exists(logs, names["legacy_log_group"]):
+    if find_log_group(logs, names["legacy_log_group"]) is not None:
         plan.append((f"delete tagged log group {names['legacy_log_group']} "
                      "(older Fargate deployment)",
                      lambda: delete_log_group(logs, names["legacy_log_group"])))
