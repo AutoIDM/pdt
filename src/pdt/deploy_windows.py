@@ -158,12 +158,18 @@ def schedule_trigger(cron: str) -> tuple[str, str]:
         "or a fixed-time cron restricted by either day-of-week or day-of-month")
 
 
+def app_folder(app_name: str) -> Path:
+    """The app's folder under %ProgramData%\\pdt; the task name is unique per PC, so the
+    app name is too."""
+    return config.machine_data_home() / app_name
+
+
 def storage_folder(app_name: str) -> Path:
-    return config.find_project() / ".pdt" / "storage" / app_name
+    return app_folder(app_name) / "storage"
 
 
-def runs_folder(app_name: str) -> Path:
-    return config.find_project() / ".pdt" / "runs" / app_name
+def logs_folder(app_name: str) -> Path:
+    return app_folder(app_name) / "logs"
 
 
 def _task_name(app_name: str) -> str:
@@ -176,7 +182,7 @@ def _task_name(app_name: str) -> str:
 
 def _run_script(app: dict, uv: str) -> str:
     """The script the scheduled task runs: log the app's run, then exit with its code."""
-    folder = _ps_string(str(runs_folder(app["name"])))
+    folder = _ps_string(str(logs_folder(app["name"])))
     uv_path = _ps_string(str(Path(uv).resolve()))
     return (
         f"$folder = {folder}; "
@@ -290,6 +296,32 @@ def _ps_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _deploying_user() -> str:
+    """The account running deploy, as DOMAIN\\user. Read before elevation, because the
+    UAC prompt may switch to an administrator's account when this user is not one."""
+    proc = subprocess.run(["whoami"], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    user = proc.stdout.strip()
+    if proc.returncode != 0 or user == "":
+        raise WindowsDeployError("whoami could not name the current Windows user")
+    return user
+
+
+def _folder_script(app: dict, user: str) -> str:
+    """Create the app folder with the two rules its files need: SYSTEM (the task) has full
+    control, and the deploying user can change and delete what SYSTEM writes."""
+    folders = [app_folder(app["name"]), logs_folder(app["name"])]
+    if app["storage"]:
+        folders.append(storage_folder(app["name"]))
+    paths = ", ".join(_ps_string(str(folder)) for folder in folders)
+    return (
+        f"$folder = {_ps_string(str(app_folder(app['name'])))}; "
+        f"New-Item -ItemType Directory -Force -Path {paths} | Out-Null; "
+        f"icacls $folder /grant '*S-1-5-18:(OI)(CI)F' {_ps_string(user + ':(OI)(CI)M')} "
+        "| Out-Null; "
+        "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+    )
+
+
 def _task_state(powershell: str, name: str) -> str:
     quoted = _ps_string(name)
     script = (
@@ -327,11 +359,27 @@ def _task_running(powershell: str, name: str) -> bool:
     return proc.returncode == 0
 
 
+def plan(app: dict, verb: str, description: str, user: str) -> list[str]:
+    name = app["name"]
+    actions = [
+        f"{verb} Windows scheduled task {_task_name(name)} (runs as SYSTEM)",
+        f"run {name} {description} (machine local time)",
+        f"working directory: {app['dir']}",
+        f"keep the app's run data in {app_folder(name)} (SYSTEM: full control; {user}: modify)",
+        f"write one log per run under {logs_folder(name)} (removed on destroy)",
+    ]
+    if app["storage"]:
+        actions.append(f"use folder {storage_folder(name)} for the app's files "
+                       "(kept after destroy)")
+    return actions
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     try:
         powershell, uv = _preflight()
         assert uv is not None
         name = _task_name(app["name"])
+        user = _deploying_user()
         description, xml = task_xml(app, uv, powershell)
         state = _task_state(powershell, name)
         if state == "unmanaged":
@@ -342,26 +390,16 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.error(str(exc))
         return 1
 
-    verb = "update" if exists else "create"
-    folder = storage_folder(app["name"])
-    actions = [
-        f"{verb} Windows scheduled task {name} (runs as SYSTEM)",
-        f"run {app['name']} {description} (machine local time)",
-        f"working directory: {app['dir']}",
-    ]
-    if app["storage"]:
-        actions.append(f"use folder {folder} for the app's files (kept after destroy)")
+    actions = plan(app, "update" if exists else "create", description, user)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges")
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return 1
 
-    if app["storage"]:
-        folder.mkdir(parents=True, exist_ok=True)
-
     payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     script = (
+        f"{_folder_script(app, user)}"
         f"$name = {_ps_string(name)}; "
         f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
         "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
@@ -376,6 +414,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.field("Run it once", f"Start-ScheduledTask -TaskName {_ps_string(name)}")
     console.field("Run history", f"Get-ScheduledTaskInfo -TaskName {_ps_string(name)}")
     console.bullet("or open Task Scheduler > Task Scheduler Library", indent=4)
+    console.field("Run logs", str(logs_folder(app["name"])))
     return 0
 
 
@@ -432,14 +471,14 @@ def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
 
 def read_lines(app_name: str, run: runs_cli.Run) -> list[runs_cli.Line]:
     try:
-        text = (runs_folder(app_name) / f"{run.id}.log").read_text(encoding="utf-8-sig")
+        text = (logs_folder(app_name) / f"{run.id}.log").read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return []
     return [runs_cli.parse_line(line, None) for line in text.splitlines()]
 
 
 def list_runs(app_name: str) -> list[runs_cli.Run]:
-    folder = runs_folder(app_name)
+    folder = logs_folder(app_name)
     if not folder.is_dir():
         return []
     files = sorted(folder.glob("*.log"), key=lambda file: file.name, reverse=True)

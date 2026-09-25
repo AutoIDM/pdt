@@ -12,6 +12,7 @@ from pdt import config, deploy_windows, runs_cli
 def project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     (tmp_path / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -43,7 +44,7 @@ def test_task_action_is_powershell_running_an_encoded_script(project):
 
 def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch):
     windows_app(project)
-    folder = project / ".pdt" / "runs" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T090000Z.log").write_text("10:00:00 INFO   starting\npdt: exit 0\n")
     (folder / "20260923T100000Z.log").write_text("10:00:00 INFO   starting\n")
@@ -65,7 +66,7 @@ def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch)
 
 def test_list_runs_without_a_running_task_is_failed(project, monkeypatch):
     windows_app(project)
-    folder = project / ".pdt" / "runs" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T100000Z.log").write_text("10:00:00 ERROR   boom\n")
     monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
@@ -78,7 +79,7 @@ def test_list_runs_without_a_running_task_is_failed(project, monkeypatch):
 
 def test_list_runs_keeps_every_file(project):
     windows_app(project)
-    folder = project / ".pdt" / "runs" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
     folder.mkdir(parents=True)
     for minute in range(60):
         (folder / f"20260923T10{minute:02d}00Z.log").write_text("pdt: exit 0\n")
@@ -93,7 +94,7 @@ def test_list_runs_with_no_folder_is_empty(project):
 
 def test_read_lines_parses_the_log_file(project):
     windows_app(project)
-    folder = project / ".pdt" / "runs" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T100000Z.log").write_text("10:00:00 INFO   starting\npdt: exit 0\n")
     run = runs_cli.Run("20260923T100000Z", datetime.now(timezone.utc), None, "succeeded")
