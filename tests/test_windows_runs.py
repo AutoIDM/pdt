@@ -29,7 +29,7 @@ def encoded_command(xml: str) -> str:
 
 def test_task_action_is_powershell_running_an_encoded_script(project):
     app = windows_app(project)
-    description, xml = deploy_windows.task_xml(app, "uv.exe", "powershell.exe")
+    description, xml = deploy_windows.task_xml(app, "uv.exe", False, "powershell.exe")
     assert description == "hourly at minute 00"
     assert "<Command>" in xml and "powershell.exe" in xml
     assert "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass" in xml
@@ -39,6 +39,33 @@ def test_task_action_is_powershell_running_an_encoded_script(project):
     assert "pdt: exit $code" in script
     assert "AddDays(-30)" in script
     assert "exit $code" in script
+
+
+def deploy_plan(project, monkeypatch, on_machine_path: bool) -> list[str]:
+    app = windows_app(project)
+    shown = []
+    monkeypatch.setattr(deploy_windows, "_preflight", lambda: ("powershell.exe", "uv.exe"))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "uv_on_machine_path", lambda: on_machine_path)
+    monkeypatch.setattr(deploy_windows, "confirm",
+                        lambda actions, assume_yes, cost: shown.extend(actions))
+    assert deploy_windows.deploy(app, assume_yes=False) == 1
+    return shown
+
+
+def test_plan_names_the_system_path_when_uv_is_on_it(project, monkeypatch):
+    assert "run uv from the system PATH" in deploy_plan(project, monkeypatch, True)
+
+
+def test_plan_names_the_saved_path_when_uv_is_not_on_the_system_path(project, monkeypatch):
+    saved = project / "uv.exe"
+    assert (f"run uv from {saved} (uv is not on the system PATH; "
+            "a machine-wide install drops the path from the task)"
+            ) in deploy_plan(project, monkeypatch, False)
+
+
+def test_uv_is_never_on_the_machine_path_off_windows():
+    assert deploy_windows.uv_on_machine_path() is False
 
 
 def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch):
