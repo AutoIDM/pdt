@@ -91,3 +91,40 @@ def test_an_unattended_run_with_no_project_names_the_key_to_set(project, monkeyp
     message = capsys.readouterr().out
     assert "platform.project" in message
     assert "PDT_GOOGLE_CLOUD_PROJECT" in message
+
+
+def choose_project_answering(project, monkeypatch, answer):
+    add_app(project, "my-report", "schedule: daily\n")
+    monkeypatch.setattr(email_auth, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": answer)
+    saved = []
+
+    def record_save(app, key, value):
+        saved.append((key, value))
+        return project / "pdt.yml"
+
+    monkeypatch.setattr(config, "save_platform_key", record_save)
+    record_gcloud(monkeypatch, [(["projects", "list"],
+                                 Result(0, "first-project\tFirst\nsecond-project\tSecond\n"))])
+    return saved
+
+
+def test_a_typed_project_id_from_the_list_is_saved(project, monkeypatch):
+    saved = choose_project_answering(project, monkeypatch, "second-project")
+    assert deploy_google_cloud.choose_project({"name": "my-report"}, "") == "second-project"
+    assert saved == [("project", "second-project")]
+
+
+def test_a_number_still_picks_a_project_by_position(project, monkeypatch):
+    saved = choose_project_answering(project, monkeypatch, "1")
+    assert deploy_google_cloud.choose_project({"name": "my-report"}, "") == "first-project"
+    assert saved == [("project", "first-project")]
+
+
+def test_a_typed_project_id_not_in_the_list_says_what_to_type(project, monkeypatch, capsys):
+    saved = choose_project_answering(project, monkeypatch, "someone-elses-project")
+    with pytest.raises(SystemExit):
+        deploy_google_cloud.choose_project({"name": "my-report"}, "")
+    assert saved == []
+    message = capsys.readouterr().out
+    assert "type a number from the list or one of the project ids" in message
