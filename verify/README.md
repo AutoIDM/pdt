@@ -8,7 +8,7 @@ The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Ever
 
 | App | Provider | Runs on |
 | --- | --- | --- |
-| `aws-fargate-a`, `aws-fargate-b` | aws | Fargate |
+| `aws-fargate-a`, `aws-fargate-b` | aws | Batch job on Fargate |
 | `azure-container-apps-a`, `azure-container-apps-b` | azure | Container Apps job |
 | `google-cloud-a`, `google-cloud-b` | google-cloud | Cloud Run job |
 | `windows-a`, `windows-b` | windows | Task Scheduler |

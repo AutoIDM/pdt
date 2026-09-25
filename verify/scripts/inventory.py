@@ -165,6 +165,30 @@ def aws_schedules(region: str) -> Inventory:
     return found
 
 
+def aws_compute_environments(region: str) -> Inventory:
+    listed = aws(region, "batch", "describe-compute-environments",
+                 "--compute-environments", "pdt") or {}
+    return [Resource("batch compute environment", item["computeEnvironmentArn"],
+                     item.get("tags") or {}, item["computeEnvironmentName"])
+            for item in listed.get("computeEnvironments") or []
+            if item.get("status") != "DELETED"]
+
+
+def aws_job_queues(region: str) -> Inventory:
+    listed = aws(region, "batch", "describe-job-queues", "--job-queues", "pdt") or {}
+    return [Resource("batch job queue", item["jobQueueArn"], item.get("tags") or {},
+                     item["jobQueueName"])
+            for item in listed.get("jobQueues") or [] if item.get("status") != "DELETED"]
+
+
+def aws_job_definitions(region: str) -> Inventory:
+    listed = aws(region, "batch", "describe-job-definitions", "--status", "ACTIVE") or {}
+    return [Resource("batch job definition", item["jobDefinitionArn"], item.get("tags") or {},
+                     item["jobDefinitionName"])
+            for item in listed.get("jobDefinitions") or []
+            if item["jobDefinitionName"].startswith("pdt-")]
+
+
 def aws_ecs_tags(region: str, arn: str) -> dict[str, str]:
     listed = aws(region, "ecs", "list-tags-for-resource", "--resource-arn", arn) or {}
     return {tag["key"]: tag["value"] for tag in listed.get("tags") or []}
@@ -211,9 +235,10 @@ def aws_tagged(region: str) -> Inventory:
     found = []
     for item in listed.get("ResourceTagMappingList") or []:
         arn = item["ResourceARN"]
-        # ECS keeps a deleted cluster or task definition visible as INACTIVE,
-        # and this API still returns it. The ECS listings above decide those.
-        if arn.split(":")[2] == "ecs":
+        # ECS and Batch keep a deleted cluster, task definition, queue, or
+        # job definition visible after deletion, and this API still returns
+        # it. The ECS and Batch listings above decide those.
+        if arn.split(":")[2] in ("ecs", "batch"):
             continue
         tags = {tag["Key"]: tag["Value"] for tag in item.get("Tags") or []}
         found.append(Resource(arn.split(":")[2], arn, tags, arn.rsplit("/", 1)[-1]))
@@ -222,6 +247,7 @@ def aws_tagged(region: str) -> Inventory:
 
 AWS_SOURCES = (
     aws_functions, aws_roles, aws_log_groups, aws_secrets, aws_schedules,
+    aws_compute_environments, aws_job_queues, aws_job_definitions,
     aws_clusters, aws_task_definitions, aws_repositories, aws_tagged,
 )
 
