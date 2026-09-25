@@ -14,37 +14,57 @@ def definition(name):
             "jobDefinitionArn": f"arn:job-definition/{name}:1", "tags": {"managed-by": "pdt"}}
 
 
-def queue_item(state="ENABLED"):
-    return {"jobQueueName": "pdt", "jobQueueArn": "arn:queue/pdt", "status": "VALID",
-            "state": state, "tags": {"managed-by": "pdt"}}
+MANAGED = {"managed-by": "pdt"}
+
+
+def shared_item(resource, state="ENABLED", status="VALID", tags=MANAGED):
+    name_key = resource.param + "Name"
+    return {name_key: "pdt", resource.arn: f"arn:{resource.param}/pdt", "status": status,
+            "state": state, "tags": dict(tags)}
 
 
 class FakeBatch:
-    def __init__(self, definitions=(), queue=True, environment=True, state="ENABLED"):
+    """Batch as it behaves: an update flips the state, a delete leaves the item listed as DELETED."""
+
+    def __init__(self, definitions=(), queue=True, environment=True, state="ENABLED",
+                 status="VALID", tags=MANAGED):
         self.definitions = list(definitions)
-        self.items = {"jobQueues": [queue_item(state)] if queue else [],
-                      "computeEnvironments": [{"computeEnvironmentName": "pdt",
-                                               "status": "VALID", "state": "ENABLED",
-                                               "tags": {"managed-by": "pdt"}}]
-                      if environment else []}
+        self.items = {
+            JOB_QUEUE.key: [shared_item(JOB_QUEUE, state, status, tags)] if queue else [],
+            COMPUTE_ENVIRONMENT.key: [shared_item(COMPUTE_ENVIRONMENT, state, status, tags)]
+            if environment else [],
+        }
         self.calls = []
 
     def describe_job_definitions(self, **kwargs):
         return {"jobDefinitions": self.definitions}
 
     def describe_job_queues(self, jobQueues):
-        return {"jobQueues": self.items["jobQueues"]}
+        return {JOB_QUEUE.key: self.items[JOB_QUEUE.key]}
 
     def describe_compute_environments(self, computeEnvironments):
-        return {"computeEnvironments": self.items["computeEnvironments"]}
+        return {COMPUTE_ENVIRONMENT.key: self.items[COMPUTE_ENVIRONMENT.key]}
 
     def update_job_queue(self, jobQueue, state):
         self.calls.append(("update_job_queue", state))
-        self.items["jobQueues"][0]["state"] = state
+        self.items[JOB_QUEUE.key][0]["state"] = state
 
     def delete_job_queue(self, jobQueue):
         self.calls.append(("delete_job_queue",))
-        self.items["jobQueues"] = []
+        self.items[JOB_QUEUE.key][0]["status"] = "DELETED"
+
+    def update_compute_environment(self, computeEnvironment, state):
+        self.calls.append(("update_compute_environment", state))
+        self.items[COMPUTE_ENVIRONMENT.key][0]["state"] = state
+
+    def delete_compute_environment(self, computeEnvironment):
+        self.calls.append(("delete_compute_environment",))
+        self.items[COMPUTE_ENVIRONMENT.key][0]["status"] = "DELETED"
+
+
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    monkeypatch.setattr(deploy_aws_batch, "BATCH_WAIT_DELAYS", (0, 0))
 
 
 @pytest.mark.parametrize("others, queue, environment, expected", [
@@ -60,9 +80,15 @@ def test_the_shared_queue_and_environment_go_only_when_no_other_pdt_app_remains(
     assert shared_unused_after(batch, "pdt-my-app") == expected
 
 
-def test_remove_disables_then_deletes_then_waits_for_the_queue_to_disappear(monkeypatch):
-    monkeypatch.setattr(deploy_aws_batch, "BATCH_WAIT_DELAYS", (0,))
+@pytest.mark.parametrize("resource", [JOB_QUEUE, COMPUTE_ENVIRONMENT])
+def test_remove_disables_deletes_and_treats_the_deleted_listing_as_gone(resource):
     batch = FakeBatch()
+    remove(batch, resource)
+    assert batch.calls == [(resource.update, "DISABLED"), (resource.delete,)]
+
+
+def test_remove_still_deletes_an_invalid_queue():
+    batch = FakeBatch(status="INVALID")
     remove(batch, JOB_QUEUE)
     assert batch.calls == [("update_job_queue", "DISABLED"), ("delete_job_queue",)]
 
@@ -73,28 +99,58 @@ def test_remove_of_an_absent_queue_does_nothing():
     assert batch.calls == []
 
 
+def test_a_queue_still_listed_as_deleted_is_not_a_shared_resource_to_remove():
+    batch = FakeBatch([definition("pdt-my-app")], environment=False, status="DELETED")
+    assert shared_unused_after(batch, "pdt-my-app") == []
+
+
+def test_an_untagged_queue_is_left_alone_by_destroy():
+    batch = FakeBatch([definition("pdt-my-app")], environment=False, tags={})
+    assert shared_unused_after(batch, "pdt-my-app") == []
+
+
 def test_ensure_shared_reads_an_enabled_queue_without_touching_it():
     batch = FakeBatch()
-    assert ensure_shared(batch, JOB_QUEUE, lambda: batch.calls.append("create")) == "arn:queue/pdt"
+    assert ensure_shared(batch, JOB_QUEUE, lambda: batch.calls.append("create")) == "arn:jobQueue/pdt"
     assert batch.calls == []
 
 
-def test_ensure_shared_re_enables_a_disabled_queue(monkeypatch):
-    monkeypatch.setattr(deploy_aws_batch, "BATCH_WAIT_DELAYS", (0,))
+def test_ensure_shared_re_enables_a_disabled_queue():
     batch = FakeBatch(state="DISABLED")
-    assert ensure_shared(batch, JOB_QUEUE, lambda: batch.calls.append("create")) == "arn:queue/pdt"
+    assert ensure_shared(batch, JOB_QUEUE, lambda: batch.calls.append("create")) == "arn:jobQueue/pdt"
     assert batch.calls == [("update_job_queue", "ENABLED")]
 
 
-def test_ensure_shared_creates_an_absent_queue_and_waits_for_it():
+def test_ensure_shared_creates_a_queue_that_is_absent_or_still_listed_as_deleted():
+    for batch in (FakeBatch(queue=False), FakeBatch(status="DELETED")):
+        def create(batch=batch):
+            batch.calls.append("create")
+            batch.items[JOB_QUEUE.key] = [shared_item(JOB_QUEUE)]
+
+        assert ensure_shared(batch, JOB_QUEUE, create) == "arn:jobQueue/pdt"
+        assert batch.calls == ["create"]
+
+
+def test_ensure_shared_waits_for_a_created_queue_to_be_listed():
     batch = FakeBatch(queue=False)
+    describes = []
+    original = batch.describe_job_queues
 
-    def create():
-        batch.calls.append("create")
-        batch.items["jobQueues"] = [queue_item()]
+    def describe_job_queues(jobQueues):
+        describes.append(1)
+        if len(describes) == 2:
+            batch.items[JOB_QUEUE.key] = [shared_item(JOB_QUEUE)]
+        return original(jobQueues)
 
-    assert ensure_shared(batch, JOB_QUEUE, create) == "arn:queue/pdt"
-    assert batch.calls == ["create"]
+    batch.describe_job_queues = describe_job_queues
+    assert ensure_shared(batch, JOB_QUEUE, lambda: None) == "arn:jobQueue/pdt"
+
+
+def test_ensure_shared_refuses_an_invalid_environment_and_an_unmanaged_one():
+    with pytest.raises(SystemExit):
+        ensure_shared(FakeBatch(status="INVALID"), COMPUTE_ENVIRONMENT, lambda: None)
+    with pytest.raises(SystemExit):
+        ensure_shared(FakeBatch(tags={}), COMPUTE_ENVIRONMENT, lambda: None)
 
 
 class FakeEcs:

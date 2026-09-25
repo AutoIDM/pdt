@@ -3,7 +3,7 @@ import json
 
 from pdt.deploy_aws_batch import (
     desired_job_definition, ensure_job_definition, normalized_job_definition, resource_names,
-    same_job_definition, submit_job_target,
+    same_job_definition, submit_job_resources, submit_job_target,
 )
 
 NAMES = resource_names("my-app")
@@ -58,6 +58,14 @@ def test_the_schedule_submits_the_job_by_name_to_the_shared_queue():
         "JobName": "pdt-my-app", "JobQueue": "pdt", "JobDefinition": "pdt-my-app"}
 
 
+def test_the_scheduler_may_submit_the_job_definition_by_the_name_the_schedule_uses():
+    submitted = json.loads(submit_job_target(NAMES)["Input"])["JobDefinition"]
+    resources = submit_job_resources(NAMES, "123456789012", "us-east-1")
+    assert f"arn:aws:batch:us-east-1:123456789012:job-definition/{submitted}" in resources
+    assert f"arn:aws:batch:us-east-1:123456789012:job-definition/{submitted}:*" in resources
+    assert "arn:aws:batch:us-east-1:123456789012:job-queue/pdt" in resources
+
+
 def test_the_job_definition_runs_the_image_on_fargate_arm64_with_the_env_secret():
     container = desired()["containerProperties"]
     assert desired()["platformCapabilities"] == ["FARGATE"]
@@ -92,6 +100,13 @@ def test_ensure_keeps_the_current_revision_when_nothing_changed():
     assert arn.endswith(":1")
     assert batch.registered == []
     assert batch.deregistered == []
+
+
+def test_ensure_deregisters_older_revisions_left_by_an_interrupted_deploy():
+    batch = FakeBatch([described(desired(), revision=2), described(desired(), revision=1)])
+    ensure_job_definition(batch, desired(), DIGEST)
+    assert batch.registered == []
+    assert batch.deregistered == ["arn:aws:batch:us-east-1:1:job-definition/pdt-my-app:1"]
 
 
 def test_ensure_registers_a_revision_and_deregisters_the_tagged_older_ones():

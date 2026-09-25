@@ -57,7 +57,7 @@ FARGATE_MIN_SECONDS = 60
 COMPUTE_MAX_VCPUS = 16
 SUBMIT_JOB_TARGET = "arn:aws:scheduler:::aws-sdk:batch:submitJob"
 JOB_STATUSES = {"SUCCEEDED": "succeeded", "FAILED": "failed"}
-BATCH_WAIT_DELAYS = (2, 3, 5, 5, 10, 10, 10, 15, 15, 15, 15, 15)
+BATCH_WAIT_DELAYS = (2, 3, 5, 5, 10, 10, 15, 15, 15, *[30] * 18)
 BATCH_ACTIONS = [
     "batch:CreateComputeEnvironment",
     "batch:CreateJobQueue",
@@ -216,18 +216,18 @@ def wait_for_batch(describe: Callable[[], dict | None], ready: Callable[[dict | 
 
 def describe(batch, resource: SharedResource) -> dict | None:
     found = getattr(batch, resource.describe)(**{resource.key: [resource.name]})[resource.key]
-    return found[0] if found else None
+    # Batch keeps a deleted queue or environment listed as DELETED for a while.
+    return next((item for item in found if item.get("status") != "DELETED"), None)
+
+
+def resting(item: dict | None) -> bool:
+    return item is None or item["status"] in ("VALID", "INVALID")
 
 
 def settled(batch, resource: SharedResource) -> dict | None:
     """The shared resource once Batch has finished changing it, or None when it is gone."""
-    current = wait_for_batch(
-        lambda: describe(batch, resource),
-        lambda item: item is None or item["status"] in ("VALID", "INVALID"),
-        f"Batch {resource.label} {resource.name}")
-    if current is not None and current["status"] == "INVALID":
-        fail(f"Batch {resource.label} {resource.name} is invalid: {current.get('statusReason', '')}")
-    return current
+    return wait_for_batch(lambda: describe(batch, resource), resting,
+                          f"Batch {resource.label} {resource.name}")
 
 
 def ensure_shared(batch, resource: SharedResource, create: Callable[[], None]) -> str:
@@ -236,11 +236,16 @@ def ensure_shared(batch, resource: SharedResource, create: Callable[[], None]) -
         create()
     elif not managed(current):
         fail(f"Batch {resource.label} {resource.name} exists but is not managed by PDT")
-    elif current.get("state") == "ENABLED":
-        return current[resource.arn]
-    else:
+    elif current["state"] != "ENABLED":
         getattr(batch, resource.update)(**{resource.param: resource.name}, state="ENABLED")
-    return settled(batch, resource)[resource.arn]
+    elif current["status"] == "VALID":
+        return current[resource.arn]
+    ready = wait_for_batch(lambda: describe(batch, resource),
+                           lambda item: item is not None and resting(item),
+                           f"Batch {resource.label} {resource.name}")
+    if ready["status"] == "INVALID":
+        fail(f"Batch {resource.label} {resource.name} is invalid: {ready.get('statusReason', '')}")
+    return ready[resource.arn]
 
 
 def remove(batch, resource: SharedResource) -> None:
@@ -249,7 +254,9 @@ def remove(batch, resource: SharedResource) -> None:
     if settled(batch, resource) is None:
         return
     getattr(batch, resource.update)(**{resource.param: resource.name}, state="DISABLED")
-    settled(batch, resource)
+    wait_for_batch(lambda: describe(batch, resource),
+                   lambda item: item is None or (item["state"] == "DISABLED" and resting(item)),
+                   f"Batch {resource.label} {resource.name} to be disabled")
     getattr(batch, resource.delete)(**{resource.param: resource.name})
     wait_for_batch(lambda: describe(batch, resource), lambda item: item is None,
                    f"Batch {resource.label} {resource.name} to be deleted")
@@ -297,12 +304,16 @@ def ensure_roles(iam, names: dict[str, str], account: str, region: str,
     scheduler = ensure_role(
         iam, names["scheduler_role"], "scheduler.amazonaws.com", "pdt-scheduler", [
             {"Effect": "Allow", "Action": ["batch:SubmitJob"],
-             "Resource": [
-                 f"arn:aws:batch:{region}:{account}:job-definition/{names['job_definition']}:*",
-                 f"arn:aws:batch:{region}:{account}:job-queue/{JOB_QUEUE.name}",
-             ]},
+             "Resource": submit_job_resources(names, account, region)},
         ])
     return execution, job, scheduler
+
+
+def submit_job_resources(names: dict[str, str], account: str, region: str) -> list[str]:
+    """What the schedule may submit: the job definition by name or by revision, and the queue."""
+    definition = f"arn:aws:batch:{region}:{account}:job-definition/{names['job_definition']}"
+    return [definition, f"{definition}:*",
+            f"arn:aws:batch:{region}:{account}:job-queue/{JOB_QUEUE.name}"]
 
 
 def desired_job_definition(names: dict[str, str], image: str, region: str,
@@ -377,6 +388,7 @@ def ensure_job_definition(batch, desired: dict, image_digest: str) -> str:
             fail(f"Batch job definition {desired['jobDefinitionName']} exists "
                  "but is not managed by PDT")
         if same_job_definition(revisions[0], desired, image_digest):
+            deregister_job_definitions(batch, revisions[1:])
             return revisions[0]["jobDefinitionArn"]
     registered = with_role_propagation_retry(lambda: batch.register_job_definition(
         **desired, tags={**MANAGED_TAGS, "image-digest": image_digest}))
@@ -401,8 +413,8 @@ def shared_unused_after(batch, name: str) -> list[SharedResource]:
     """The shared Batch resources that exist and that no app needs once `name` is gone."""
     if other_job_definitions(batch, name):
         return []
-    return [resource for resource in (JOB_QUEUE, COMPUTE_ENVIRONMENT)
-            if describe(batch, resource) is not None]
+    found = {resource: describe(batch, resource) for resource in (JOB_QUEUE, COMPUTE_ENVIRONMENT)}
+    return [resource for resource, item in found.items() if item is not None and managed(item)]
 
 
 def submit_job_target(names: dict[str, str]) -> dict:
