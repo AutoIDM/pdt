@@ -165,22 +165,26 @@ def cmd_run(args) -> int:
 
 
 def cmd_deploy(args) -> int:
+    if args.skip_failures and not args.all:
+        console.error("--skip-failures only works with --all")
+        return 1
     if args.all:
         if args.app is not None:
             console.error("pick an app or --all, not both")
             return 1
-        return deploy_all(args.yes)
+        return deploy_all(args.yes, args.skip_failures)
     name = choose_app(args.app, "deploy")
     if name is None:
         return 1
     return deploy.deploy(name, assume_yes=args.yes)
 
 
-def deploy_all(assume_yes: bool) -> int:
+def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
     names = config.find_apps()
     if not names:
         say_no_apps()
         return 1
+    ask = not skip_failures and can_prompt(None)
     failed: list[str] = []
     for index, name in enumerate(names, 1):
         console.heading(f"Deploying {name} ({index} of {len(names)})")
@@ -189,16 +193,17 @@ def deploy_all(assume_yes: bool) -> int:
             continue
         failed.append(name)
         console.error(f"{name} did not deploy.")
-        remaining = names[index:]
-        ask = not assume_yes and can_prompt(None)
-        if remaining and not assume_yes:
-            if not ask or not console.confirm(f"Skip {name} and go on with {', '.join(remaining)}?"):
-                console.say("Fix the problem above and run pdt deploy --all again.")
-                return code
-        if ask and console.confirm(f"Set enabled: false for {name}, so pdt leaves it out "
-                                   f"until you change {name}/config.yml?"):
+        if index < len(names) and not skip_failures and not (
+                ask and console.confirm(
+                    f"Would you like to skip the failing app {name} and deploy the rest?")):
+            console.say("Fix the problem above and run pdt deploy --all again, "
+                        "or add --skip-failures to go on past it.")
+            return code
+        if ask and not assume_yes and console.confirm(
+                f"Would you like to disable the failing app {name}?"):
             path = config.set_app_enabled(name, False)
-            console.done(f"Saved enabled: false to {path.relative_to(config.find_project())}.")
+            console.done(f"Disabled {name} in {path.relative_to(config.find_project())}. "
+                         "Set enabled: true there to bring it back.")
     if failed:
         console.warn(f"Not deployed: {', '.join(failed)}")
         return 1
@@ -314,6 +319,8 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--all", action="store_true", help="deploy every enabled app, in order")
+    p.add_argument("--skip-failures", action="store_true",
+                   help="with --all, go on past an app that fails to deploy instead of asking")
     p.set_defaults(func=cmd_deploy)
     p = add_parser("login", help="sign in again to an app's cloud provider")
     app = p.add_argument("app", nargs="?",

@@ -90,7 +90,7 @@ pdt login my-report
 | `pdt validate` | check the config files and the required env vars |
 | `pdt run APP` | run an app on this machine |
 | `pdt deploy APP` | deploy an app to its configured platform |
-| `pdt deploy --all` | deploy every enabled app, in order; a failed app can be skipped and turned off with `enabled: false` |
+| `pdt deploy --all` | deploy every enabled app, in order; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
 | `pdt destroy APP` | remove everything deploy created |
 | `pdt secrets APP` | show which `.env` values differ from the deployed app |
 | `pdt secrets APP save` | send your `.env` values to the deployed app; the next run uses them |
