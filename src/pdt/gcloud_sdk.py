@@ -79,7 +79,14 @@ def archive_name(key: str) -> str:
     return f"google-cloud-cli-{VERSION}-{key}.tar.gz"
 
 
+# pdt pins its gcloud release, so the update nag cannot be acted on.
+def quiet_notices() -> None:
+    os.environ.setdefault("CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK", "true")
+    os.environ.setdefault("CLOUDSDK_SURVEY_DISABLE_PROMPTS", "true")
+
+
 def ensure_gcloud() -> str:
+    quiet_notices()
     found = shutil.which("gcloud")
     if found:
         return found
