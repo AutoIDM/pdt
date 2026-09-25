@@ -16,7 +16,9 @@ The task runs as the SYSTEM account, so it does not depend on a user being
 logged on. Registering or removing it needs administrator rights; a
 non-elevated shell gets one UAC prompt. Deploy always registers the complete
 desired task definition with -Force, so rerunning it safely reconciles
-changes to the schedule or repository path.
+changes to the schedule or repository path. SYSTEM's PATH seldom holds a
+user's uv, so the task looks for uv on the PATH when it runs and falls back
+to the path deploy found.
 
 Each run writes its output to .pdt/runs/<app>/<UTC start>.log in the
 project and ends it with `pdt: exit N`; `pdt runs` and `pdt logs` read
@@ -182,7 +184,15 @@ def _run_script(app: dict, uv: str) -> str:
         f"$folder = {folder}; "
         "New-Item -ItemType Directory -Force -Path $folder | Out-Null; "
         "$log = Join-Path $folder ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.log'); "
-        f"& {uv_path} run --script run.py *>&1 | ForEach-Object {{ \"$_\" }} | "
+        "$uv = (Get-Command uv.exe, uv -ErrorAction SilentlyContinue | "
+        "Select-Object -First 1).Source; "
+        f"if (-not $uv -or -not (Test-Path $uv)) {{ $uv = {uv_path} }}; "
+        "if (-not (Test-Path $uv)) { "
+        "\"uv was not found on the PATH or at $uv; install uv and run pdt deploy again\" | "
+        "Out-File -Encoding utf8 -FilePath $log; "
+        "'pdt: exit 127' | Out-File -Encoding utf8 -Append -FilePath $log; "
+        "exit 127 }; "
+        "& $uv run --script run.py *>&1 | ForEach-Object { \"$_\" } | "
         "Out-File -Encoding utf8 -FilePath $log; "
         "$code = $LASTEXITCODE; "
         "\"pdt: exit $code\" | Out-File -Encoding utf8 -Append -FilePath $log; "
