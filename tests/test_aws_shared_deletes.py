@@ -1,11 +1,16 @@
 import pytest
 from botocore.exceptions import ClientError
 
-from pdt import deploy_aws_fargate as fargate
+from pdt import deploy_aws_batch as batch_deploy
+from pdt.deploy_aws_batch import COMPUTE_ENVIRONMENT, JOB_QUEUE, LEGACY_CLUSTER, REPOSITORY
 
 
-def client_error(code: str) -> ClientError:
-    return ClientError({"Error": {"Code": code, "Message": ""}}, "Delete")
+def client_error(code: str, message: str = "") -> ClientError:
+    return ClientError({"Error": {"Code": code, "Message": message}}, "Delete")
+
+
+def batch_missing(resource) -> ClientError:
+    return client_error("ClientException", f"{resource.label} {resource.name} does not exist")
 
 
 class Fake:
@@ -21,18 +26,48 @@ class Fake:
         return call
 
 
-def fake_clients(ecs_raises=None, ecr_raises=None, scheduler_raises=None) -> dict:
+class FakeBatch(Fake):
+    """The shared queue and environment, listed until deleted."""
+
+    def __init__(self, raises: dict | None = None):
+        super().__init__({"describe_job_definitions": {"jobDefinitions": []}}, raises)
+        self.items = {resource: {"status": "VALID", "state": "ENABLED",
+                                 "tags": {"managed-by": "pdt"}}
+                      for resource in (JOB_QUEUE, COMPUTE_ENVIRONMENT)}
+
+    def __getattr__(self, operation):
+        resource = next((item for item in self.items
+                         if operation in (item.describe, item.update, item.delete)), None)
+        if resource is None:
+            return super().__getattr__(operation)
+
+        def call(**kwargs):
+            if operation in self.raises:
+                raise self.raises[operation]
+            if operation == resource.describe:
+                present = self.items[resource]
+                return {resource.key: [present] if present else []}
+            if operation == resource.update:
+                self.items[resource]["state"] = kwargs["state"]
+            else:
+                self.items[resource] = None
+            return {}
+        return call
+
+
+def fake_clients(batch_raises=None, ecs_raises=None, ecr_raises=None,
+                 scheduler_raises=None) -> dict:
     missing = client_error("ResourceNotFoundException")
     return {
         "sts": Fake({}),
         "s3": Fake({}),
+        "batch": FakeBatch(batch_raises),
         "scheduler": Fake({"list_schedules": {"Schedules": []}},
                           {"get_schedule": missing, **(scheduler_raises or {})}),
         "secretsmanager": Fake({}, {"describe_secret": missing}),
         "logs": Fake({"describe_log_groups": {"logGroups": []}}),
         "iam": Fake({}, {"get_role": client_error("NoSuchEntity")}),
-        "ecs": Fake({"describe_clusters": {"clusters": [{"status": "ACTIVE"}]}},
-                    ecs_raises),
+        "ecs": Fake({"describe_clusters": {"clusters": [{"status": "ACTIVE"}]}}, ecs_raises),
         "ecr": Fake({}, ecr_raises),
     }
 
@@ -40,41 +75,69 @@ def fake_clients(ecs_raises=None, ecr_raises=None, scheduler_raises=None) -> dic
 @pytest.fixture
 def destroy(monkeypatch):
     notes = []
-    monkeypatch.setattr(fargate.console, "note", notes.append)
-    monkeypatch.setattr(fargate.console, "done", lambda message: None)
-    monkeypatch.setattr(fargate, "ensure_session", lambda app: None)
-    monkeypatch.setattr(fargate, "aws_settings", lambda app, session: ("123456789012", "us-east-1"))
-    monkeypatch.setattr(fargate, "preflight", lambda *args: ("123456789012", {}))
-    monkeypatch.setattr(fargate, "confirm", lambda actions, assume_yes: True)
+    monkeypatch.setattr(batch_deploy, "BATCH_WAIT_DELAYS", (0, 0))
+    monkeypatch.setattr(batch_deploy.console, "note", notes.append)
+    monkeypatch.setattr(batch_deploy.console, "done", lambda message: None)
+    monkeypatch.setattr(batch_deploy, "ensure_session", lambda app: None)
+    monkeypatch.setattr(batch_deploy, "aws_settings",
+                        lambda app, session: ("123456789012", "us-east-1"))
+    monkeypatch.setattr(batch_deploy, "preflight", lambda *args: ("123456789012", {}))
+    monkeypatch.setattr(batch_deploy, "confirm", lambda actions, assume_yes: True)
 
     def run(clients):
-        monkeypatch.setattr(fargate, "fargate_clients", lambda session: clients)
-        return fargate.destroy({"name": "my-app", "storage": False}, assume_yes=True), notes
+        monkeypatch.setattr(batch_deploy, "batch_clients", lambda session: clients)
+        return batch_deploy.destroy({"name": "my-app", "storage": False}, assume_yes=True), notes
     return run
 
 
-def test_a_cluster_a_sibling_destroy_already_removed_counts_as_deleted(destroy):
-    code, notes = destroy(fake_clients(
-        ecs_raises={"delete_cluster": client_error("ClusterNotFoundException")}))
+def test_every_shared_resource_present_is_deleted_without_a_note(destroy):
+    clients = fake_clients()
+    code, notes = destroy(clients)
     assert code == 0
-    assert f"ECS cluster {fargate.CLUSTER} was already gone" in notes
+    assert notes == []
+    assert clients["batch"].items == {JOB_QUEUE: None, COMPUTE_ENVIRONMENT: None}
+
+
+def test_a_compute_environment_a_sibling_destroy_already_removed_counts_as_deleted(destroy):
+    code, notes = destroy(fake_clients(
+        batch_raises={COMPUTE_ENVIRONMENT.update: batch_missing(COMPUTE_ENVIRONMENT)}))
+    assert code == 0
+    assert f"Batch compute environment {COMPUTE_ENVIRONMENT.name} was already gone" in notes
+
+
+def test_a_job_queue_a_sibling_destroy_already_removed_counts_as_deleted(destroy):
+    code, notes = destroy(fake_clients(batch_raises={JOB_QUEUE.delete: batch_missing(JOB_QUEUE)}))
+    assert code == 0
+    assert f"Batch job queue {JOB_QUEUE.name} was already gone" in notes
 
 
 def test_a_repository_a_sibling_destroy_already_removed_counts_as_deleted(destroy):
     code, notes = destroy(fake_clients(
         ecr_raises={"delete_repository": client_error("RepositoryNotFoundException")}))
     assert code == 0
-    assert f"ECR repository {fargate.REPOSITORY} was already gone" in notes
+    assert f"ECR repository {REPOSITORY} was already gone" in notes
+
+
+def test_a_legacy_cluster_a_sibling_destroy_already_removed_counts_as_deleted(destroy):
+    code, notes = destroy(fake_clients(
+        ecs_raises={"delete_cluster": client_error("ClusterNotFoundException")}))
+    assert code == 0
+    assert f"ECS cluster {LEGACY_CLUSTER} was already gone" in notes
 
 
 def test_a_schedule_group_a_sibling_destroy_already_removed_counts_as_deleted(destroy):
     code, notes = destroy(fake_clients(
         scheduler_raises={"delete_schedule_group": client_error("ResourceNotFoundException")}))
     assert code == 0
-    assert f"schedule group {fargate.SCHEDULE_GROUP} was already gone" in notes
+    assert f"schedule group {batch_deploy.SCHEDULE_GROUP} was already gone" in notes
 
 
-def test_any_other_shared_delete_error_still_raises(destroy):
+@pytest.mark.parametrize("raises", [
+    {"batch_raises": {JOB_QUEUE.delete: client_error("ClientException", "queue has jobs")}},
+    {"batch_raises": {COMPUTE_ENVIRONMENT.update: client_error("ServerException")}},
+    {"ecs_raises": {"delete_cluster": client_error("ClusterContainsTasksException")}},
+    {"ecr_raises": {"delete_repository": client_error("RepositoryNotEmptyException")}},
+])
+def test_any_other_shared_delete_error_still_raises(destroy, raises):
     with pytest.raises(ClientError):
-        destroy(fake_clients(
-            ecs_raises={"delete_cluster": client_error("ClusterContainsTasksException")}))
+        destroy(fake_clients(**raises))
