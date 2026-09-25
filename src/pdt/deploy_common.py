@@ -15,6 +15,8 @@ app's run.py declares pdt in its script header, so every deployment
 installs the package from the index the same way a local run does.
 PDT_PROJECT names the project directory, so no job depends on its cwd.
 
+BUILD_EXCLUDES leaves secret shapes (env files, keys, certificates, credentials files, ssh and package-manager logins) and local state out of the context, and one note names what it left out. A symbolic link stays a link when its target is inside the app directory, and the build stops when one points outside, so no file from elsewhere on the machine reaches the image.
+
 The image is built from DOCKERFILE unless the app directory holds its own
 Dockerfile; write_dockerfile puts whichever applies at the root of the
 context, so every cloud provider builds the same way. An app's own
@@ -60,10 +62,13 @@ ENV PDT_PROJECT=/workspace NO_COLOR=1
 RUN uv sync --script run.py
 ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
 """
+# Secret shapes and local state that never belong in an image.
 BUILD_EXCLUDES = (
     ".env", ".env.*", ".secrets", ".git", ".venv", "__pycache__",
     ".DS_Store", ".gcloud", "*.json.key", "*-key.json",
-    "service-account*.json",
+    "service-account*.json", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks",
+    "credentials.json", "credentials", "id_rsa*", "id_ed25519*", "id_ecdsa*",
+    ".ssh", ".pgpass", ".netrc", ".npmrc", ".pypirc", ".pdt",
 )
 STORE_PREFIX = "pdt-data"
 STORE_TAGS = {"managed-by": "pdt", "pdt-lifecycle": "retain"}
@@ -392,15 +397,26 @@ def env_line(name: str, value: str) -> str:
 
 
 def stage_build_context(app: dict) -> Path:
-    # Stage a clean build context so .env and .secrets never reach the image.
-    stage = Path(tempfile.mkdtemp(prefix="pdt-build-"))
+    app_dir = Path(app["dir"]).resolve()
     skip = shutil.ignore_patterns(*BUILD_EXCLUDES)
+    for folder, dirs, files in os.walk(app_dir):
+        left_out = skip(folder, dirs + files)
+        dirs[:] = [name for name in dirs if name not in left_out]
+        for name in {*dirs, *files} - left_out:
+            path = Path(folder, name)
+            if path.is_symlink() and not (target := path.resolve()).is_relative_to(app_dir):
+                fail(f"{path.relative_to(app_dir)} is a link to {target}, "
+                     "outside the app folder; the image must not carry it")
+    stage = Path(tempfile.mkdtemp(prefix="pdt-build-"))
     try:
-        shutil.copytree(app["dir"], stage / app["name"], ignore=skip)
+        shutil.copytree(app_dir, stage / app["name"], ignore=skip, symlinks=True)
         project_file = config.find_project() / config.PROJECT_FILE
         if project_file.is_file():
             shutil.copy(project_file, stage / config.PROJECT_FILE)
-        return stage
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
+    left_out = sorted(skip(app_dir, os.listdir(app_dir)))
+    if left_out:
+        console.note(f"left out of the image: {', '.join(left_out)}")
+    return stage
