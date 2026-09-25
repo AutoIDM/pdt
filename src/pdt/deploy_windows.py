@@ -38,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, runs_cli
 from pdt.deploy import confirm
-from pdt.deploy_common import CostEstimate
+from pdt.deploy_common import CostEstimate, warn_if_locked
 
 
 class WindowsDeployError(Exception):
@@ -426,25 +426,37 @@ def destroy(app: dict, assume_yes: bool) -> int:
     except WindowsDeployError as exc:
         console.error(str(exc))
         return 1
-    if not exists:
+    logs = logs_folder(app["name"])
+    logs_exist = logs.is_dir()
+    if not exists and not logs_exist:
         console.done(f"Nothing to remove for {app['name']}; task {name} does not exist.")
         if app["storage"]:
             console.say(_kept_storage_line(app["name"]))
         return 0
-    if not confirm([f"delete Windows scheduled task {name}"], assume_yes):
+    actions = []
+    script = ""
+    if exists:
+        actions.append(f"delete Windows scheduled task {name}")
+        script += (f"Unregister-ScheduledTask -TaskName {_ps_string(name)} "
+                   "-Confirm:$false -ErrorAction Stop; ")
+    if logs_exist:
+        actions.append(f"delete run logs folder {logs}")
+        script += f"Remove-Item -Recurse -Force -Path {_ps_string(str(logs))} -ErrorAction Stop; "
+    if app["storage"]:
+        actions.append(f"keep folder {storage_folder(app['name'])} (the app's files)")
+        warn_if_locked(_store(app["name"]), app["name"])
+    if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 1
     try:
-        _run(
-            powershell,
-            f"Unregister-ScheduledTask -TaskName {_ps_string(name)} "
-            "-Confirm:$false -ErrorAction Stop",
-            elevate=True,
-        )
+        _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
         console.error(str(exc))
         return 1
-    console.done(f"Removed Windows task {name}.")
+    console.done(f"Removed Windows task {name}." if exists
+                 else f"Nothing to remove for {app['name']}; task {name} does not exist.")
+    if logs_exist:
+        console.say(f"removed: run logs folder {logs}")
     if app["storage"]:
         console.say(_kept_storage_line(app["name"]))
     return 0
@@ -456,13 +468,16 @@ def _kept_storage_line(app_name: str) -> str:
     return f"kept: folder {folder} ({count} files)"
 
 
-def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
-    from pdt import storage_cli
+def _store(app_name: str):
     from pdt.utils.storage import Store
 
-    folder = storage_folder(app["name"])
-    store = Store(folder.as_uri() + "/", None)
-    return storage_cli.run(store, app, rest, assume_yes)
+    return Store(storage_url(app_name), None)
+
+
+def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
+    from pdt import storage_cli
+
+    return storage_cli.run(_store(app["name"]), app, rest, assume_yes)
 
 
 def read_lines(app_name: str, run: runs_cli.Run) -> list[runs_cli.Line]:
