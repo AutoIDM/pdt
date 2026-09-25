@@ -53,6 +53,7 @@ APP_QUESTIONS = {
     "login": "Which app's cloud provider do you want to sign in to?",
     "destroy": "Which app do you want to destroy?",
     "secrets": "Which app's secrets?",
+    "storage": "Which app's files do you want to manage?",
     "runs": "Which app's runs do you want to see?",
     "logs": "Which app's log do you want to read?",
     "health": "Which app do you want to check?",
@@ -232,7 +233,10 @@ def cmd_secrets(args) -> int:
 
 
 def cmd_storage(args) -> int:
-    return deploy.storage(args.app, args.rest)
+    name = choose_app(args.app, "storage")
+    if name is None:
+        return 1
+    return deploy.storage(name, args.rest)
 
 
 def window_options(args) -> list[str]:
@@ -346,7 +350,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_secrets)
     p = add_parser("storage", help="read or manage an app's data store")
-    app = p.add_argument("app", help="the app's folder name")
+    app = p.add_argument("app", nargs="?",
+                         help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
     p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|destroy [args...]")
     p.set_defaults(func=cmd_storage)

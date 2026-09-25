@@ -185,7 +185,16 @@ def mapping(cfg: dict, key: str, where: str) -> dict:
     return value
 
 
+def app_name_problem(name: str) -> str:
+    if name in ("", ".", "..") or any(c in name for c in "/\\\0") or Path(name).name != name:
+        return f"{name!r} is not an app name; use one folder name with no path separators"
+    return ""
+
+
 def merged_app(name: str) -> dict:
+    problem = app_name_problem(name)
+    if problem != "":
+        raise ConfigError(problem)
     app_dir = find_project() / name
     if not (app_dir / "run.py").is_file():
         raise ConfigError(f"no app named {name!r} (no {name}/run.py)")
