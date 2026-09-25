@@ -115,3 +115,37 @@ def test_app_that_picks_windows_itself_defaults_to_local_time(project):
     (project / "pdt.yml").write_text("platform:\n  provider: google-cloud\n  region: us-central1\n")
     add_app(project, "my-report", "schedule: daily\nplatform:\n  provider: windows\n")
     assert merged_app("my-report")["timezone"] == "local"
+
+
+def test_platform_timezone_in_pdt_yml_reaches_an_app_without_one(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n  timezone: America/Chicago\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    assert merged_app("my-report")["timezone"] == "America/Chicago"
+
+
+def test_apps_entry_timezone_beats_platform_timezone(project):
+    (project / "pdt.yml").write_text(
+        "platform:\n  provider: google-cloud\n  region: us-central1\n  timezone: America/Chicago\n"
+        "apps:\n  - name: my-report\n    timezone: Europe/London\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    assert merged_app("my-report")["timezone"] == "Europe/London"
+
+
+def test_app_config_timezone_beats_the_apps_entry_and_platform(project):
+    (project / "pdt.yml").write_text(
+        "platform:\n  provider: google-cloud\n  region: us-central1\n  timezone: America/Chicago\n"
+        "apps:\n  - name: my-report\n    timezone: Europe/London\n")
+    add_app(project, "my-report", "schedule: daily\ntimezone: Asia/Tokyo\n")
+    assert merged_app("my-report")["timezone"] == "Asia/Tokyo"
+
+
+def test_validate_accepts_timezone_under_platform_and_rejects_schedule(project):
+    (project / "pdt.yml").write_text(
+        "platform:\n  provider: google-cloud\n  region: us-central1\n  timezone: America/Chicago\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    assert validate() == []
+    (project / "pdt.yml").write_text(
+        "platform:\n  provider: google-cloud\n  region: us-central1\n  schedule: daily\n")
+    assert validate() == [
+        "pdt.yml: platform: 'schedule' belongs in the top level of the app's config.yml, "
+        "or its apps: entry in pdt.yml, not here"]
