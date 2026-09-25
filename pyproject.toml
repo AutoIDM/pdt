@@ -58,7 +58,7 @@ include = ["src/**/*.py"]
 extend-exclude = ["src/pdt/examples"]
 
 [tool.ruff.lint]
-select = ["T20"]
+select = ["T20", "F821"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/pdt/utils/log.py" = ["T20"]
