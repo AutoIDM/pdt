@@ -42,6 +42,32 @@ def test_no_completion_time_means_running():
     assert run.ended is None
 
 
+def test_an_execution_that_has_not_started_is_running_from_its_creation_time():
+    execution = {
+        "metadata": {"name": "pdt-app-queued", "creationTimestamp": "2026-09-23T10:00:00Z"},
+        "status": {},
+    }
+    run = deploy_google_cloud.execution_run(execution)
+    assert run.id == "pdt-app-queued"
+    assert run.status == "running"
+    assert run.started == datetime(2026, 9, 23, 10, 0, 0, tzinfo=timezone.utc)
+    assert run.ended is None
+
+
+def test_an_execution_that_failed_before_starting_is_failed_from_its_creation_time():
+    execution = {
+        "metadata": {"name": "pdt-app-nostart", "creationTimestamp": "2026-09-23T10:00:00Z"},
+        "status": {
+            "completionTime": "2026-09-23T10:00:03Z",
+            "conditions": [{"type": "Completed", "status": "False"}],
+        },
+    }
+    run = deploy_google_cloud.execution_run(execution)
+    assert run.status == "failed"
+    assert run.started == datetime(2026, 9, 23, 10, 0, 0, tzinfo=timezone.utc)
+    assert run.ended == datetime(2026, 9, 23, 10, 0, 3, tzinfo=timezone.utc)
+
+
 def test_list_runs_sorts_newest_first_and_a_missing_job_is_empty(monkeypatch):
     older = {
         "name": "namespaces/p/executions/pdt-app-old",
@@ -60,6 +86,23 @@ def test_list_runs_sorts_newest_first_and_a_missing_job_is_empty(monkeypatch):
 
     monkeypatch.setattr(deploy_google_cloud, "describe_json", lambda *a: None)
     assert deploy_google_cloud.list_runs("p", "us-central1", "pdt-app") == []
+
+
+def test_list_runs_sorts_an_execution_with_no_start_time_by_its_creation_time(monkeypatch):
+    started = {
+        "metadata": {"name": "pdt-app-old", "creationTimestamp": "2026-09-23T08:59:58Z"},
+        "status": {"startTime": "2026-09-23T09:00:00Z", "completionTime": "2026-09-23T09:00:05Z",
+                   "conditions": [{"type": "Completed", "status": "True"}]},
+    }
+    queued = {
+        "metadata": {"name": "pdt-app-queued", "creationTimestamp": "2026-09-23T10:00:00Z"},
+        "status": {},
+    }
+    monkeypatch.setattr(deploy_google_cloud, "describe_json",
+                        lambda *a: [started, queued] if a[0] == "run" else [])
+    found = deploy_google_cloud.list_runs("p", "us-central1", "pdt-app")
+    assert [(run.id, run.status) for run in found] == [("pdt-app-queued", "running"),
+                                                        ("pdt-app-old", "succeeded")]
 
 
 def test_list_runs_reads_every_exit_code_in_one_logging_read(monkeypatch):
