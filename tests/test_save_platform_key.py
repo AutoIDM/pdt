@@ -1,7 +1,12 @@
+import os
+import threading
+
+import pytest
 import yaml
 
 from conftest import add_app
-from pdt.config import merged_app, save_platform_key
+from pdt import config
+from pdt.config import load_yaml, merged_app, save_platform_key
 
 COMMENTED = """\
 # The top of my project.
@@ -77,3 +82,57 @@ def test_saving_twice_leaves_one_key(project):
     saved = save_platform_key(merged_app("my-report"), "account", "222222222222")
     assert saved.read_text().count("account:") == 1
     assert yaml.safe_load(saved.read_text())["platform"]["account"] == "222222222222"
+
+
+def test_a_value_with_quotes_backslashes_and_newlines_reads_back_unchanged(project):
+    (project / "pdt.yml").write_text(COMMENTED)
+    add_app(project, "my-report")
+    value = 'say "hi"\\there\nnext line'
+    saved = save_platform_key(merged_app("my-report"), "profile", value)
+    assert load_yaml(saved)["platform"]["profile"] == value
+
+
+def test_a_failed_write_leaves_the_file_as_it_was(project, monkeypatch):
+    (project / "pdt.yml").write_text(COMMENTED)
+    add_app(project, "my-report")
+    app = merged_app("my-report")
+    before = sorted(p.name for p in project.iterdir())
+
+    def fail(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(OSError):
+        save_platform_key(app, "account", "123456789012")
+    assert (project / "pdt.yml").read_text() == COMMENTED
+    assert not [p.name for p in project.iterdir() if p.name.endswith(".tmp")]
+    assert sorted(p.name for p in project.iterdir() if p.name != "pdt.yml.lock") == before
+
+
+def test_two_writers_at_once_both_land(project):
+    (project / "pdt.yml").write_text(COMMENTED)
+    add_app(project, "my-report")
+    app = merged_app("my-report")
+    start = threading.Barrier(2)
+
+    def write(key):
+        start.wait()
+        for n in range(20):
+            save_platform_key(app, key, f"{key}-{n}")
+
+    threads = [threading.Thread(target=write, args=(key,)) for key in ("account", "profile")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    platform = load_yaml(project / "pdt.yml")["platform"]
+    assert platform["account"] == "account-19"
+    assert platform["profile"] == "profile-19"
+
+
+def test_write_text_atomically_leaves_only_the_target(tmp_path):
+    target = tmp_path / "pdt.yml"
+    target.write_text("old\n")
+    config.write_text_atomically(target, "new\n")
+    assert target.read_text() == "new\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["pdt.yml"]
