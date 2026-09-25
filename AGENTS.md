@@ -41,7 +41,7 @@ Both install routes must keep working, and a change is not done until both do:
 - `src/pdt/config.py` finds the project, then loads, merges, and validates config. A rule that both a prompt and validation need lives here once, as a function returning a message or `""` (see `aws_account_problem`). `save_platform_key` is the one way to write a value back into a config file; it edits text so comments survive, and quotes and escapes the value so an id with a leading zero does not become a number. It holds a lock on a `.lock` file next to the config file while it reads and rewrites it, and replaces the file through a temporary file, so two first deploys at once or a crash mid-write cannot corrupt it.
 - `src/pdt/scaffold.py` owns `init`, `examples`, and `new`. `STARTER` names the example that `init` copies into an empty project. `init` also writes `AGENTS.md` (and a `CLAUDE.md` pointing at it) into the user's project.
 - `src/pdt/deploy.py` is provider-neutral deploy and destroy. It validates, then dispatches to one module per provider.
-- `src/pdt/deploy_<provider>.py` is one module per provider. AWS and Azure keep the job itself in a module under the provider (`deploy_aws_fargate.py`, `deploy_azure_container_apps.py`); login, secrets, prices, and everything else the job shares with `login` and `destroy` stay in the provider module.
+- `src/pdt/deploy_<provider>.py` is one module per provider. AWS and Azure keep the job itself in a module under the provider (`deploy_aws_batch.py`, `deploy_azure_container_apps.py`); login, secrets, prices, and everything else the job shares with `login` and `destroy` stay in the provider module.
 - `src/pdt/deploy_common.py` holds code shared by every provider: `fail`, the `DOCKERFILE`, `gather_secrets`, and `stage_build_context`. A provider module imports from here. A provider module never imports from another provider module.
 - `src/pdt/utils/` is code the user's apps import. It is public API. Changing it breaks every deployed app, so treat a change here as breaking.
 - `src/pdt/examples/<name>/` ships inside the wheel. `pdt new` copies one into the user's project. An example never sets `name:` in its `config.yml`, because the copy takes the new folder's name.
@@ -53,7 +53,7 @@ Both install routes must keep working, and a change is not done until both do:
 - An app directory holds `config.yml`. It configures only that app. It does not list apps. The two filenames stay different, or the upward walk stops inside an app folder.
 - Merge order, lowest to highest: `pdt.yml` `platform:` defaults, the app's entry in the `pdt.yml` `apps:` list, the app directory's `config.yml`, environment variables. The app directory is more specific than the project.
 - Every config file passes the same validation.
-- `platform.provider` selects the provider module. Every cloud provider runs a job the same way: a container image built from the app folder, on AWS Fargate, Azure Container Apps Jobs, or Google Cloud Run Jobs. There is no zip runtime and no `platform.runtime` key; validation tells a user who still sets one to remove it. Do not add a second way to run a job on a provider.
+- `platform.provider` selects the provider module. Every cloud provider runs a job the same way: a container image built from the app folder, on AWS Batch (Fargate), Azure Container Apps Jobs, or Google Cloud Run Jobs. There is no zip runtime and no `platform.runtime` key; validation tells a user who still sets one to remove it. Do not add a second way to run a job on a provider.
 
 ## CLI rules
 

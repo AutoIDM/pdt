@@ -4,20 +4,23 @@ from fnmatch import fnmatchcase
 import pytest
 
 from pdt.deploy_aws import deployer_policy, preflight
-from pdt.deploy_aws_fargate import DEPLOYER_ACTIONS
+from pdt.deploy_aws_batch import DEPLOYER_ACTIONS
 
 ACCOUNT = "123456789012"
 REGION = "us-east-1"
 CALLER = f"arn:aws:iam::{ACCOUNT}:user/operator"
 # Actions AWS cannot scope to a resource ARN, so they must stay on "*".
 UNSCOPED = {
+    "batch:DescribeComputeEnvironments", "batch:DescribeJobDefinitions",
+    "batch:DescribeJobQueues", "batch:DescribeJobs", "batch:ListJobs",
     "ec2:DescribeSecurityGroups", "ec2:DescribeSubnets", "ec2:DescribeVpcs",
-    "ecr:GetAuthorizationToken", "ecs:RegisterTaskDefinition",
-    "ecs:DeregisterTaskDefinition", "ecs:DescribeTaskDefinition",
+    "ecr:GetAuthorizationToken", "ecs:DeregisterTaskDefinition",
     "ecs:ListTaskDefinitionFamilies", "ecs:ListTaskDefinitions", "ecs:ListTasks",
     "logs:DescribeLogGroups", "scheduler:ListSchedules",
 }
+# ARNs AWS names, not pdt: the operator's own login, and Batch's service-linked role.
 CALLER_ARNS = [f"arn:aws:iam::{ACCOUNT}:user/*", f"arn:aws:iam::{ACCOUNT}:role/*"]
+SERVICE_LINKED_ARN = f"arn:aws:iam::{ACCOUNT}:role/aws-service-role/batch.amazonaws.com/*"
 BROAD_POLICY = {"Version": "2012-10-17", "Statement": [
     {"Effect": "Allow", "Action": DEPLOYER_ACTIONS, "Resource": "*"}]}
 
@@ -52,18 +55,34 @@ def test_only_actions_aws_cannot_scope_use_a_wildcard_resource():
 def test_every_scoped_arn_names_a_pdt_resource():
     for statement in policy()["Statement"]:
         for arn in listed(statement["Resource"]):
-            if arn == "*" or arn in CALLER_ARNS:
+            if arn == "*" or arn in CALLER_ARNS or arn == SERVICE_LINKED_ARN:
                 continue
             assert "pdt" in arn, statement
             assert ACCOUNT in arn or arn.startswith("arn:aws:s3:::"), arn
 
 
-def test_pass_role_reaches_only_pdt_roles_for_ecs_and_the_scheduler():
+def test_pass_role_reaches_only_pdt_roles_for_batch_ecs_and_the_scheduler():
     [statement] = [s for s in policy()["Statement"] if "iam:PassRole" in listed(s["Action"])]
     assert listed(statement["Action"]) == ["iam:PassRole"]
     assert listed(statement["Resource"]) == [f"arn:aws:iam::{ACCOUNT}:role/pdt-*"]
     services = statement["Condition"]["StringEquals"]["iam:PassedToService"]
-    assert sorted(services) == ["ecs-tasks.amazonaws.com", "scheduler.amazonaws.com"]
+    assert sorted(services) == [
+        "batch.amazonaws.com", "ecs-tasks.amazonaws.com", "scheduler.amazonaws.com"]
+
+
+def test_the_service_linked_role_grant_is_for_batch_only():
+    [statement] = [s for s in policy()["Statement"]
+                   if "iam:CreateServiceLinkedRole" in listed(s["Action"])]
+    assert listed(statement["Action"]) == ["iam:CreateServiceLinkedRole"]
+    assert listed(statement["Resource"]) == [SERVICE_LINKED_ARN]
+    assert statement["Condition"] == {"StringEquals": {"iam:AWSServiceName": ["batch.amazonaws.com"]}}
+
+
+def test_batch_resources_are_scoped_to_the_pdt_environment_queue_and_definitions():
+    for statement in policy()["Statement"]:
+        for action in listed(statement["Action"]):
+            if action.startswith("batch:") and action not in UNSCOPED:
+                assert all(":batch:" in arn for arn in listed(statement["Resource"])), statement
 
 
 class Sts:
