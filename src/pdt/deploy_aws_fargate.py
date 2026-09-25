@@ -269,7 +269,7 @@ def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(
-            recent_stream_seconds(clients["logs"], names["log_group"])
+            recent_stream_seconds(logs, names["log_group"])
             if schedule_exists else None)
         seconds = max(seconds, FARGATE_MIN_SECONDS)
         vcpu = int(TASK_CPU) / 1024
