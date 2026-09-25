@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from conftest import add_app
-from pdt import cli, deploy
+from pdt import cli, config, console, deploy
 
 
 def run_cli(monkeypatch, *argv):
@@ -159,15 +159,85 @@ def test_deploy_all_deploys_every_enabled_app_in_order(project, monkeypatch, cap
     assert "not-ready" not in out
 
 
-def test_deploy_all_stops_at_the_first_failure(project, monkeypatch, capsys):
+def answer(monkeypatch, *answers):
+    questions = []
+    queue = list(answers)
+
+    def fake_confirm(question="Proceed?"):
+        questions.append(question)
+        return queue.pop(0)
+
+    monkeypatch.setattr(cli, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(console, "confirm", fake_confirm)
+    return questions
+
+
+def four_apps(project):
     for name in ("alpha", "bravo", "charlie", "delta"):
         add_app(project, name)
+
+
+def test_deploy_all_stops_when_the_person_will_not_skip(project, monkeypatch, capsys):
+    four_apps(project)
     calls = fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch, False)
     assert run_cli(monkeypatch, "deploy", "--all") == 3
     assert calls == [("alpha", False), ("bravo", False)]
+    assert questions == ["Skip bravo and go on with charlie, delta?"]
     out = capsys.readouterr().out
-    assert "bravo did not deploy. Not deployed yet: charlie, delta" in out
-    assert "pdt deploy --all again" in out
+    assert "bravo did not deploy." in out
+    assert "Fix the problem above and run pdt deploy --all again." in out
+
+
+def test_deploy_all_with_yes_skips_a_failed_app(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch)
+    assert run_cli(monkeypatch, "deploy", "--all", "--yes") == 1
+    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
+    assert questions == []
+    assert config.is_enabled("bravo")
+    assert "Not deployed: bravo" in capsys.readouterr().out
+
+
+def test_deploy_all_skips_without_turning_the_app_off(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch, True, False)
+    assert run_cli(monkeypatch, "deploy", "--all") == 1
+    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
+    assert all("bravo" in question for question in questions)
+    assert "Set enabled: false for bravo" in questions[1]
+    assert config.is_enabled("bravo")
+    assert not (project / "bravo" / "config.yml").exists()
+    assert "Not deployed: bravo" in capsys.readouterr().out
+
+
+def test_deploy_all_turns_a_skipped_app_off(project, monkeypatch, capsys):
+    four_apps(project)
+    (project / "bravo" / "config.yml").write_text("# my notes\nschedule: daily\n")
+    fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch, True, True)
+    assert run_cli(monkeypatch, "deploy", "--all") == 1
+    assert all("bravo" in question for question in questions)
+    assert not config.is_enabled("bravo")
+    text = (project / "bravo" / "config.yml").read_text()
+    assert "# my notes" in text
+    assert "schedule: daily" in text
+    out = capsys.readouterr().out
+    assert f"Saved enabled: false to {Path('bravo', 'config.yml')}." in out
+    assert "Not deployed: bravo" in out
+
+
+def test_deploy_all_with_no_terminal_stops_at_the_failure(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch)
+    monkeypatch.setattr(cli, "can_prompt", lambda interactive: False)
+    assert run_cli(monkeypatch, "deploy", "--all") == 3
+    assert calls == [("alpha", False), ("bravo", False)]
+    assert questions == []
+    assert "Fix the problem above and run pdt deploy --all again." in capsys.readouterr().out
 
 
 def test_deploy_all_with_an_app_name_is_refused(project, monkeypatch, capsys):
