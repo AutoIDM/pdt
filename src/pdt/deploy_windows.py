@@ -12,15 +12,21 @@
 # ///
 """Deploy an app locally as a Windows Task Scheduler task.
 
+Per app on this PC there is one folder, `%ProgramData%\\pdt\\<app>\\`, with
+`storage\\` (the app's files, kept after destroy) and `logs\\` (one log per
+run, removed on destroy), and one scheduled task `pdt-<app>` whose action
+runs `run_windows_task.py` through uv. The runner sets PDT_STORAGE_URL to the
+storage folder, runs run.py in the app folder, and writes both output streams
+to `logs\\<UTC start>.log`, ending with `pdt: exit N`; `pdt runs` and
+`pdt logs` read those files. A run is stopped after RUN_TIME_LIMIT.
+
 The task runs as the SYSTEM account, so it does not depend on a user being
 logged on. Registering or removing it needs administrator rights; a
-non-elevated shell gets one UAC prompt. Deploy always registers the complete
-desired task definition with -Force, so rerunning it safely reconciles
-changes to the schedule or repository path.
-
-Each run writes its output to .pdt/runs/<app>/<UTC start>.log in the
-project and ends it with `pdt: exit N`; `pdt runs` and `pdt logs` read
-those files, and the task deletes files older than 30 days.
+non-elevated shell gets one UAC prompt. The same elevated script creates the
+app folder and gives SYSTEM full control and the deploying user modify
+rights, so that user can delete what the task wrote. Deploy always registers
+the complete desired task definition with -Force, so rerunning it safely
+reconciles changes to the schedule or repository path.
 """
 
 from __future__ import annotations
