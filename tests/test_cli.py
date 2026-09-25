@@ -254,8 +254,8 @@ def test_deploy_all_disables_a_skipped_app(project, monkeypatch, capsys):
     fake_deploys(monkeypatch, {"bravo": 3})
     questions = answer(monkeypatch, True, True)
     assert run_cli(monkeypatch, "deploy", "--all") == 1
-    assert "skip the failing app bravo" in questions[0]
-    assert "disable the failing app bravo" in questions[1]
+    assert "Skip the failing app bravo" in questions[0]
+    assert "Disable the failing app bravo" in questions[1]
     assert not config.is_enabled("bravo")
     text = (project / "bravo" / "config.yml").read_text()
     assert "# my notes" in text
