@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -234,24 +235,25 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
         path = project_file
     else:
         path = app["dir"] / APP_FILE
-    lines = path.read_text().splitlines() if path.is_file() else []
-    start = next((i for i, line in enumerate(lines) if line.strip() == "platform:"), None)
-    if start is None:
-        lines += ["platform:", f'  {key}: "{value}"']
-    else:
-        end = start + 1
-        while end < len(lines) and (lines[end].startswith((" ", "\t")) or lines[end].strip() == ""):
-            end += 1
-        block = range(start + 1, end)
-        existing = next((i for i in block if lines[i].strip().startswith(f"{key}:")), None)
-        if existing is not None:
-            lines[existing] = f'{_indent(lines[existing])}{key}: "{value}"'
+    with locked(path):
+        lines = path.read_text().splitlines() if path.is_file() else []
+        start = next((i for i, line in enumerate(lines) if line.strip() == "platform:"), None)
+        if start is None:
+            lines += ["platform:", f"  {key}: {yaml_quoted(value)}"]
         else:
-            first = next((i for i in block
-                          if lines[i].strip() and not lines[i].strip().startswith("#")), None)
-            indent = _indent(lines[first]) if first is not None else "  "
-            lines.insert((first if first is not None else start) + 1, f'{indent}{key}: "{value}"')
-    path.write_text("\n".join(lines) + "\n")
+            end = start + 1
+            while end < len(lines) and (lines[end].startswith((" ", "\t")) or lines[end].strip() == ""):
+                end += 1
+            block = range(start + 1, end)
+            existing = next((i for i in block if lines[i].strip().startswith(f"{key}:")), None)
+            if existing is not None:
+                lines[existing] = f"{_indent(lines[existing])}{key}: {yaml_quoted(value)}"
+            else:
+                first = next((i for i in block
+                              if lines[i].strip() and not lines[i].strip().startswith("#")), None)
+                indent = _indent(lines[first]) if first is not None else "  "
+                lines.insert((first if first is not None else start) + 1, f"{indent}{key}: {yaml_quoted(value)}")
+        write_text_atomically(path, "\n".join(lines) + "\n")
     return path
 
 
@@ -273,6 +275,11 @@ def _indent(line: str) -> str:
     return line[:len(line) - len(line.lstrip())]
 
 
+def yaml_quoted(value: str) -> str:
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
 def write_text_atomically(path: Path, text: str) -> None:
     # The temporary file sits in the same folder because a rename is atomic only
     # within one filesystem.
@@ -287,6 +294,27 @@ def write_text_atomically(path: Path, text: str) -> None:
     except BaseException:
         os.unlink(tmp.name)
         raise
+
+
+@contextmanager
+def locked(path: Path):
+    # Hold an exclusive lock on a sibling .lock file while the caller reads and rewrites path.
+    with open(path.with_name(path.name + ".lock"), "w") as handle:
+        fd = handle.fileno()
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 STATE_DIR = ".pdt"
