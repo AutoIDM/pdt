@@ -439,11 +439,15 @@ def log_group_url(region: str, log_group: str) -> str:
             f"#logsV2:log-groups/log-group/{log_group.replace('/', '$252F')}")
 
 
-def ensure_log_group(logs, name: str) -> None:
+def find_log_group(logs, name: str) -> dict | None:
+    # describe_log_groups matches a prefix, so the exact name is filtered here.
     groups = logs.describe_log_groups(logGroupNamePrefix=name).get("logGroups", [])
-    exists = any(group["logGroupName"] == name for group in groups)
-    if exists:
-        group = next(group for group in groups if group["logGroupName"] == name)
+    return next((group for group in groups if group["logGroupName"] == name), None)
+
+
+def ensure_log_group(logs, name: str) -> None:
+    group = find_log_group(logs, name)
+    if group is not None:
         arn = group.get("logGroupArn") or group["arn"].removesuffix(":*")
         tags = logs.list_tags_for_resource(resourceArn=arn).get("tags", {})
         if tags.get("managed-by") != "pdt":
@@ -618,14 +622,13 @@ def delete_secret(secrets, name: str) -> None:
 
 
 def delete_log_group(logs, name: str) -> None:
-    groups = logs.describe_log_groups(logGroupNamePrefix=name).get("logGroups", [])
-    for group in groups:
-        if group["logGroupName"] != name:
-            continue
-        arn = group.get("logGroupArn") or group["arn"].removesuffix(":*")
-        tags = logs.list_tags_for_resource(resourceArn=arn).get("tags", {})
-        if tags.get("managed-by") == "pdt":
-            logs.delete_log_group(logGroupName=name)
+    group = find_log_group(logs, name)
+    if group is None:
+        return
+    arn = group.get("logGroupArn") or group["arn"].removesuffix(":*")
+    tags = logs.list_tags_for_resource(resourceArn=arn).get("tags", {})
+    if tags.get("managed-by") == "pdt":
+        logs.delete_log_group(logGroupName=name)
 
 
 def other_schedules(scheduler, name: str) -> list[str] | None:
