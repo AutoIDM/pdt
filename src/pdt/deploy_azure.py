@@ -345,12 +345,16 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
     for index, sub in enumerate(available, 1):
         console.choice(index, str(sub.get("name")), str(sub.get("id")))
     try:
-        answer = input(f"Deploy to which one? [1-{len(available)}] ").strip()
+        answer = input(f"Deploy to which one? [1-{len(available)}, or a subscription id] ").strip()
     except EOFError:
         answer = ""
-    if not answer.isdigit() or not 1 <= int(answer) <= len(available):
-        fail("no Azure subscription selected")
-    sub = available[int(answer) - 1]
+    typed = [sub for sub in available if answer in (sub.get("id"), sub.get("name"))]
+    if answer.isdigit() and 1 <= int(answer) <= len(available):
+        sub = available[int(answer) - 1]
+    elif typed:
+        sub = typed[0]
+    else:
+        fail("no Azure subscription selected; type a number from the list or one of the subscription ids")
     save_subscription(app, sub)
     return sub
 
