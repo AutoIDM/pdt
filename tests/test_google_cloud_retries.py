@@ -1,3 +1,4 @@
+import importlib
 import subprocess
 
 import pytest
@@ -115,3 +116,9 @@ def test_run_quiet_fails_after_every_wait_is_used(monkeypatch):
         deploy_google_cloud.run_quiet("artifacts", "repositories", "create", "pdt")
     assert len(calls) == 7
     assert sleeps == [10, 20, 40, 60, 60, 60]
+
+
+def test_importing_the_script_turns_off_grpc_fork_support(monkeypatch):
+    monkeypatch.delenv("GRPC_ENABLE_FORK_SUPPORT", raising=False)
+    importlib.reload(deploy_google_cloud)
+    assert deploy_google_cloud.os.environ["GRPC_ENABLE_FORK_SUPPORT"] == "0"
