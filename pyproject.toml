@@ -25,7 +25,7 @@ apps = [
     "boto3",
     "google-cloud-secret-manager",
     "fsspec",
-    "s3fs",
+    "s3fs>=2024",
     "gcsfs",
     "adlfs",
     "google-cloud-storage",

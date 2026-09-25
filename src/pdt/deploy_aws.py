@@ -8,7 +8,7 @@
 #     "python-dotenv",
 #     "backoff",
 #     "fsspec",
-#     "s3fs",
+#     "s3fs>=2024",
 #     "duckdb",
 # ]
 # ///
