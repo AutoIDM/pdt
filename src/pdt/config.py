@@ -26,10 +26,6 @@ PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
 
 PROVIDERS = ("google-cloud", "azure", "aws", "windows")
-# Every cloud provider runs a job as a container image built from the app
-# folder: AWS on Fargate, Azure on Container Apps Jobs, Google Cloud on
-# Cloud Run Jobs. The windows provider runs the app directly.
-CONTAINER_PROVIDERS = ("google-cloud", "aws", "azure")
 SCHEDULE_SHORTHAND = {
     "hourly": "0 * * * *",
     "daily": "0 0 * * *",
@@ -513,18 +509,6 @@ def validate() -> list[str]:
     return sorted(set(problems), key=problems.index)
 
 
-def builds_image(platform: dict) -> bool:
-    """True when deploying with this platform builds a container image."""
-    return platform.get("provider") in CONTAINER_PROVIDERS
-
-
-def dockerfile_problem(platform: dict) -> str:
-    """Why an app's own Dockerfile would be ignored, or "" when it is used."""
-    if builds_image(platform):
-        return ""
-    return f"not used by the {platform.get('provider')} provider; remove the file"
-
-
 def validate_app(name: str) -> list[str]:
     where = f"{name}/{APP_FILE}"
     try:
@@ -564,11 +548,6 @@ def validate_app(name: str) -> list[str]:
         problem = azure_environment_problem(str(app["platform"].get("environment") or ""))
         if problem != "":
             problems.append(f"{name}: platform.environment: {problem}")
-    dockerfile = find_project() / name / "Dockerfile"
-    if dockerfile.is_file():
-        problem = dockerfile_problem(app["platform"])
-        if problem != "":
-            problems.append(f"{name}/Dockerfile: {problem}")
     if app["schedule"] is not None:
         try:
             cron_expression(app["schedule"])

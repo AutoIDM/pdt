@@ -38,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, runs_cli
 from pdt.deploy import confirm
-from pdt.deploy_common import CostEstimate
+from pdt.deploy_common import CostEstimate, own_dockerfile
 
 
 class WindowsDeployError(Exception):
@@ -327,6 +327,20 @@ def _task_running(powershell: str, name: str) -> bool:
     return proc.returncode == 0
 
 
+def plan(app: dict, verb: str, description: str) -> list[str]:
+    actions = [
+        f"{verb} Windows scheduled task {_task_name(app['name'])} (runs as SYSTEM)",
+        f"run {app['name']} {description} (machine local time)",
+        f"working directory: {app['dir']}",
+    ]
+    if app["storage"]:
+        actions.append(f"use folder {storage_folder(app['name'])} for the app's files "
+                       "(kept after destroy)")
+    if own_dockerfile(app) is not None:
+        actions.append(f"ignore {app['name']}/Dockerfile (this PC runs run.py directly)")
+    return actions
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     try:
         powershell, uv = _preflight()
@@ -342,15 +356,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.error(str(exc))
         return 1
 
-    verb = "update" if exists else "create"
-    folder = storage_folder(app["name"])
-    actions = [
-        f"{verb} Windows scheduled task {name} (runs as SYSTEM)",
-        f"run {app['name']} {description} (machine local time)",
-        f"working directory: {app['dir']}",
-    ]
-    if app["storage"]:
-        actions.append(f"use folder {folder} for the app's files (kept after destroy)")
+    actions = plan(app, "update" if exists else "create", description)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges")
     if not confirm(actions, assume_yes, cost):
@@ -358,7 +364,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         return 1
 
     if app["storage"]:
-        folder.mkdir(parents=True, exist_ok=True)
+        storage_folder(app["name"]).mkdir(parents=True, exist_ok=True)
 
     payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     script = (
