@@ -10,7 +10,6 @@ uv tool install pdt-cli
 
 That puts a `pdt` command on your PATH. To update it later, run `uv tool upgrade pdt-cli`.
 
-
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
 
 ## Set up a project
@@ -155,7 +154,7 @@ Every command reads its values from the environment it runs in. A build server s
 
 ## Choosing where jobs run
 
-Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins.
+Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
 
 ### Azure
 
@@ -225,9 +224,10 @@ platform:
 
 apps:
   - name: my-report
-    timezone: local
     schedule: daily
 ```
+
+The Windows provider runs each job on the PC's local time, so `timezone` defaults to `local` there, the only value it accepts.
 
 The job runs as the SYSTEM account. Windows accepts these schedules:
 
