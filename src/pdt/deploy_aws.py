@@ -15,7 +15,7 @@
 """Deploy an app to AWS.
 
 Shared login, IAM, secret, log, and schedule code lives here. The job
-itself, a scheduled ECS task on Fargate, is in deploy_aws_fargate.py.
+itself, a scheduled AWS Batch job on Fargate, is in deploy_aws_batch.py.
 
 The deploy itself talks to AWS through boto3. `pdt aws` and the SSO login
 run AWS CLI v2 through `uvx`. Credentials live in ~/.aws.
@@ -96,12 +96,18 @@ COMMON_ACTIONS = [
 
 ROLE_ARN = "arn:aws:iam::{account}:role/pdt-*"
 LOG_GROUP_ARNS = [
-    "arn:aws:logs:{region}:{account}:log-group:/ecs/pdt-*",
-    "arn:aws:logs:{region}:{account}:log-group:/ecs/pdt-*:*",
-    # The older /pdt/<app> name, which destroy still removes.
     "arn:aws:logs:{region}:{account}:log-group:/pdt/*",
     "arn:aws:logs:{region}:{account}:log-group:/pdt/*:*",
+    # The /ecs/pdt-<app> name of a Fargate deployment, which destroy still removes.
+    "arn:aws:logs:{region}:{account}:log-group:/ecs/pdt-*",
+    "arn:aws:logs:{region}:{account}:log-group:/ecs/pdt-*:*",
 ]
+BATCH_ARNS = {
+    "compute_environment": "arn:aws:batch:{region}:{account}:compute-environment/pdt",
+    "job_queue": "arn:aws:batch:{region}:{account}:job-queue/pdt",
+    "job_definition": "arn:aws:batch:{region}:{account}:job-definition/pdt-*",
+    "job_definition_revision": "arn:aws:batch:{region}:{account}:job-definition/pdt-*:*",
+}
 # Each action pdt calls, grouped with the ARNs of the pdt resources it touches.
 # deployer_policy prints these and preflight simulates them, so both agree.
 POLICY_SCOPES = [
@@ -109,9 +115,15 @@ POLICY_SCOPES = [
                 "iam:ListRolePolicies", "iam:ListRoleTags", "iam:PutRolePolicy",
                 "iam:TagRole", "iam:UpdateAssumeRolePolicy"],
      "Resource": [ROLE_ARN]},
+    # The job definition hands the execution and job roles to Batch, which runs them
+    # as ECS tasks; the schedule hands its role to the scheduler.
     {"Action": ["iam:PassRole"], "Resource": [ROLE_ARN],
      "Condition": {"StringEquals": {"iam:PassedToService": [
-         "ecs-tasks.amazonaws.com", "scheduler.amazonaws.com"]}}},
+         "batch.amazonaws.com", "ecs-tasks.amazonaws.com", "scheduler.amazonaws.com"]}}},
+    # Creating the compute environment creates Batch's service-linked role on first use.
+    {"Action": ["iam:CreateServiceLinkedRole"],
+     "Resource": ["arn:aws:iam::{account}:role/aws-service-role/batch.amazonaws.com/*"],
+     "Condition": {"StringEquals": {"iam:AWSServiceName": ["batch.amazonaws.com"]}}},
     # preflight checks the operator's own login, which has no pdt name.
     {"Action": ["iam:SimulatePrincipalPolicy"],
      "Resource": ["arn:aws:iam::{account}:user/*", "arn:aws:iam::{account}:role/*"]},
@@ -139,21 +151,33 @@ POLICY_SCOPES = [
                 "ecr:DescribeImages", "ecr:DescribeRepositories", "ecr:InitiateLayerUpload",
                 "ecr:ListImages", "ecr:PutImage", "ecr:TagResource", "ecr:UploadLayerPart"],
      "Resource": ["arn:aws:ecr:{region}:{account}:repository/pdt"]},
-    {"Action": ["ecs:CreateCluster", "ecs:DeleteCluster", "ecs:DescribeClusters",
-                "ecs:ListTagsForResource", "ecs:TagResource"],
+    {"Action": ["batch:CreateComputeEnvironment", "batch:DeleteComputeEnvironment",
+                "batch:UpdateComputeEnvironment"],
+     "Resource": [BATCH_ARNS["compute_environment"]]},
+    # A job queue names the compute environment it feeds, so its calls touch both.
+    {"Action": ["batch:CreateJobQueue", "batch:DeleteJobQueue", "batch:UpdateJobQueue"],
+     "Resource": [BATCH_ARNS["job_queue"], BATCH_ARNS["compute_environment"]]},
+    {"Action": ["batch:DeregisterJobDefinition", "batch:RegisterJobDefinition"],
+     "Resource": [BATCH_ARNS["job_definition"], BATCH_ARNS["job_definition_revision"]]},
+    {"Action": ["batch:TagResource"], "Resource": list(BATCH_ARNS.values())},
+    # Destroy still clears the cluster a Fargate deployment of the same app left behind.
+    {"Action": ["ecs:DeleteCluster", "ecs:DescribeClusters", "ecs:ListTagsForResource"],
      "Resource": ["arn:aws:ecs:{region}:{account}:cluster/pdt",
                   "arn:aws:ecs:{region}:{account}:task-definition/pdt-*:*"]},
     {"Action": [
+        "batch:DescribeComputeEnvironments",  # Batch Describe and List calls take no resource ARN.
+        "batch:DescribeJobDefinitions",
+        "batch:DescribeJobQueues",
+        "batch:DescribeJobs",
+        "batch:ListJobs",
         "ec2:DescribeSecurityGroups",  # EC2 Describe calls take no resource ARN.
         "ec2:DescribeSubnets",
         "ec2:DescribeVpcs",
         "ecr:GetAuthorizationToken",  # AWS allows only "*".
         "ecs:DeregisterTaskDefinition",  # AWS allows only "*".
-        "ecs:DescribeTaskDefinition",  # AWS allows only "*".
         "ecs:ListTaskDefinitionFamilies",  # List calls take no resource ARN.
         "ecs:ListTaskDefinitions",
         "ecs:ListTasks",  # Scoped by container instance, not cluster; kept on "*" to be safe.
-        "ecs:RegisterTaskDefinition",  # AWS allows only "*".
         "logs:DescribeLogGroups",  # Unsure it honors a log group ARN; kept on "*" to be safe.
         "scheduler:ListSchedules",  # List calls take no resource ARN.
      ],
@@ -171,9 +195,11 @@ def not_found(exc: Exception) -> bool:
         "ClusterNotFoundException", "RepositoryNotFoundException",
     }:
         return True
-    # ECS reports a missing task definition family as a generic ClientException.
+    # ECS and Batch report a missing task definition family or job queue as a
+    # generic ClientException.
     message = getattr(exc, "response", {}).get("Error", {}).get("Message", "")
-    return error_code(exc) == "ClientException" and "Unable to describe task definition" in message
+    return error_code(exc) == "ClientException" and (
+        "Unable to describe task definition" in message or "does not exist" in message)
 
 
 def delete_if_present(call, **kwargs) -> bool:
@@ -545,11 +571,15 @@ def log_group_url(region: str, log_group: str) -> str:
             f"#logsV2:log-groups/log-group/{log_group.replace('/', '$252F')}")
 
 
-def ensure_log_group(logs, name: str) -> None:
+def find_log_group(logs, name: str) -> dict | None:
+    # describe_log_groups matches a prefix, so the exact name is filtered here.
     groups = logs.describe_log_groups(logGroupNamePrefix=name).get("logGroups", [])
-    exists = any(group["logGroupName"] == name for group in groups)
-    if exists:
-        group = next(group for group in groups if group["logGroupName"] == name)
+    return next((group for group in groups if group["logGroupName"] == name), None)
+
+
+def ensure_log_group(logs, name: str) -> None:
+    group = find_log_group(logs, name)
+    if group is not None:
         arn = group.get("logGroupArn") or group["arn"].removesuffix(":*")
         tags = logs.list_tags_for_resource(resourceArn=arn).get("tags", {})
         if tags.get("managed-by") != "pdt":
@@ -602,7 +632,7 @@ def list_price(offer: str, region: str, usagetype_suffix: str, **attributes: str
 
 
 def recent_stream_seconds(logs, log_group: str) -> float | None:
-    # One log stream per run (Fargate task); its first and last event bound the run.
+    # One log stream per run (Batch job); its first and last event bound the run.
     try:
         streams = logs.describe_log_streams(
             logGroupName=log_group, orderBy="LastEventTime", descending=True,
@@ -724,14 +754,13 @@ def delete_secret(secrets, name: str) -> None:
 
 
 def delete_log_group(logs, name: str) -> None:
-    groups = logs.describe_log_groups(logGroupNamePrefix=name).get("logGroups", [])
-    for group in groups:
-        if group["logGroupName"] != name:
-            continue
-        arn = group.get("logGroupArn") or group["arn"].removesuffix(":*")
-        tags = logs.list_tags_for_resource(resourceArn=arn).get("tags", {})
-        if tags.get("managed-by") == "pdt":
-            delete_if_present(logs.delete_log_group, logGroupName=name)
+    group = find_log_group(logs, name)
+    if group is None:
+        return
+    arn = group.get("logGroupArn") or group["arn"].removesuffix(":*")
+    tags = logs.list_tags_for_resource(resourceArn=arn).get("tags", {})
+    if tags.get("managed-by") == "pdt":
+        delete_if_present(logs.delete_log_group, logGroupName=name)
 
 
 def other_schedules(scheduler, name: str) -> list[str] | None:
@@ -788,17 +817,17 @@ def main() -> int:
         session = ensure_session(app)
         account, _region = aws_settings(app, session)
         return storage(app, session, account, args.rest, args.yes)
-    from pdt import deploy_aws_fargate as fargate
+    from pdt import deploy_aws_batch as batch
     try:
         if args.command == "secrets":
-            return fargate.secrets(app, args.rest[0], args.yes, *args.rest[1:])
+            return batch.secrets(app, args.rest[0], args.yes, *args.rest[1:])
         if args.command == "deploy":
-            return fargate.deploy(app, args.yes)
+            return batch.deploy(app, args.yes)
         if args.command == "runs":
-            return fargate.runs(app, ensure_session(app), args.rest)
+            return batch.runs(app, ensure_session(app), args.rest)
         if args.command == "logs":
-            return fargate.logs(app, ensure_session(app), args.rest)
-        return fargate.destroy(app, args.yes)
+            return batch.logs(app, ensure_session(app), args.rest)
+        return batch.destroy(app, args.yes)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",
                                "UnauthorizedOperation"}:
@@ -809,7 +838,7 @@ def main() -> int:
                 identity = session.client("sts").get_caller_identity()["Arn"]
             except Exception:  # noqa: BLE001,S110 - retain the original permission error
                 pass
-            print_permission_help(identity, str(exc), fargate.DEPLOYER_ACTIONS, account, region)
+            print_permission_help(identity, str(exc), batch.DEPLOYER_ACTIONS, account, region)
             return 1
         fail(f"AWS returned {error_code(exc) or 'an error'}: {exc}")
 
