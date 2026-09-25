@@ -14,14 +14,19 @@ def definition(name):
             "jobDefinitionArn": f"arn:job-definition/{name}:1", "tags": {"managed-by": "pdt"}}
 
 
+def queue_item(state="ENABLED"):
+    return {"jobQueueName": "pdt", "jobQueueArn": "arn:queue/pdt", "status": "VALID",
+            "state": state, "tags": {"managed-by": "pdt"}}
+
+
 class FakeBatch:
     def __init__(self, definitions=(), queue=True, environment=True, state="ENABLED"):
         self.definitions = list(definitions)
-        self.items = {"jobQueues": [{"jobQueueName": "pdt", "jobQueueArn": "arn:queue/pdt",
-                                     "status": "VALID", "state": state}] if queue else [],
+        self.items = {"jobQueues": [queue_item(state)] if queue else [],
                       "computeEnvironments": [{"computeEnvironmentName": "pdt",
-                                               "status": "VALID",
-                                               "state": "ENABLED"}] if environment else []}
+                                               "status": "VALID", "state": "ENABLED",
+                                               "tags": {"managed-by": "pdt"}}]
+                      if environment else []}
         self.calls = []
 
     def describe_job_definitions(self, **kwargs):
@@ -86,8 +91,7 @@ def test_ensure_shared_creates_an_absent_queue_and_waits_for_it():
 
     def create():
         batch.calls.append("create")
-        batch.items["jobQueues"] = [{"jobQueueName": "pdt", "jobQueueArn": "arn:queue/pdt",
-                                     "status": "VALID", "state": "ENABLED"}]
+        batch.items["jobQueues"] = [queue_item()]
 
     assert ensure_shared(batch, JOB_QUEUE, create) == "arn:queue/pdt"
     assert batch.calls == ["create"]
