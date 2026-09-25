@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 from pdt import __version__, console
-from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_project
+from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
 STARTER = "hello-world"
@@ -282,6 +282,9 @@ def list_examples() -> int:
 
 
 def new_app(name: str, source: str | None) -> int:
+    problem = app_name_problem(name)
+    if problem != "":
+        raise ConfigError(problem)
     root = find_project()
     destination = root / name
     if destination.exists():
