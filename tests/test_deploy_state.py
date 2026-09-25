@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from pdt import config, deploy, scaffold
 
 
@@ -50,3 +54,50 @@ def test_the_state_file_is_json(tmp_path, monkeypatch):
     config.mark_deployed(scaffold.STARTER, True)
     state = json.loads((tmp_path / ".pdt" / "state").read_text())
     assert state["deployed"] == [scaffold.STARTER]
+
+
+def write_raw_state(project, text):
+    (project / ".pdt").mkdir(exist_ok=True)
+    (project / ".pdt" / "state").write_text(text)
+
+
+def test_a_corrupt_state_file_means_not_deployed(tmp_path, monkeypatch, capsys):
+    project = project_with_starter(tmp_path, monkeypatch)
+    capsys.readouterr()
+    write_raw_state(project, '{"hello":')
+    assert not config.is_deployed("hello")
+    out = capsys.readouterr().out
+    assert out.count(".pdt/state is not valid; treating every app as not deployed") == 1
+
+
+def test_a_state_file_holding_a_list_is_treated_as_corrupt(tmp_path, monkeypatch, capsys):
+    project = project_with_starter(tmp_path, monkeypatch)
+    capsys.readouterr()
+    write_raw_state(project, '["hello"]\n')
+    assert not config.is_deployed("hello")
+    assert ".pdt/state is not valid" in capsys.readouterr().out
+
+
+def test_mark_deployed_rewrites_a_corrupt_state_file(tmp_path, monkeypatch):
+    import json
+
+    project = project_with_starter(tmp_path, monkeypatch)
+    write_raw_state(project, '{"hello":')
+    config.mark_deployed(scaffold.STARTER, True)
+    state = json.loads((project / ".pdt" / "state").read_text())
+    assert state == {"deployed": [scaffold.STARTER]}
+
+
+def test_a_failed_state_write_keeps_the_old_file(tmp_path, monkeypatch):
+    project = project_with_starter(tmp_path, monkeypatch)
+    config.mark_deployed(scaffold.STARTER, True)
+    before = (project / ".pdt" / "state").read_text()
+
+    def fail_replace(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError):
+        config.mark_deployed("another-app", True)
+    assert (project / ".pdt" / "state").read_text() == before
+    assert sorted(p.name for p in (project / ".pdt").iterdir()) == [".gitignore", "state"]
