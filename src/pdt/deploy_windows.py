@@ -230,8 +230,8 @@ def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
     tz = str(app.get("timezone") or "").strip().lower()
     if tz != "local":
         raise WindowsDeployError(
-            "the Windows provider uses the machine's local timezone; "
-            "set timezone: local for this app")
+            "the Windows provider runs on this PC's local time; remove timezone: "
+            f"{app.get('timezone')} from this app, or set timezone: local")
     description, trigger = schedule_trigger(cron)
     command = "uv" if on_machine_path else html.escape(str(Path(uv).resolve()))
     arguments = html.escape(task_arguments(app))

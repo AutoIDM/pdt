@@ -52,7 +52,6 @@ Both install routes must keep working, and a change is not done until both do:
 - The user's project holds `pdt.yml` with a `platform:` block of defaults for every app and an `apps:` list.
 - An app directory holds `config.yml`. It configures only that app. It does not list apps. The two filenames stay different, or the upward walk stops inside an app folder.
 - Merge order, lowest to highest: `pdt.yml` `platform:` defaults, the app's entry in the `pdt.yml` `apps:` list, the app directory's `config.yml`, environment variables. The app directory is more specific than the project.
-- `schedule` and `timezone` exist only per app. They never exist in `pdt.yml`.
 - Every config file passes the same validation.
 - `platform.provider` selects the provider module. Every cloud provider runs a job the same way: a container image built from the app folder, on AWS Fargate, Azure Container Apps Jobs, or Google Cloud Run Jobs. There is no zip runtime and no `platform.runtime` key; validation tells a user who still sets one to remove it. Do not add a second way to run a job on a provider.
 
