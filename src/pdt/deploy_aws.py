@@ -15,7 +15,7 @@
 """Deploy an app to AWS.
 
 Shared login, IAM, secret, log, and schedule code lives here. The job
-itself, a scheduled ECS task on Fargate, is in deploy_aws_fargate.py.
+itself, a scheduled AWS Batch job on Fargate, is in deploy_aws_batch.py.
 
 The deploy itself talks to AWS through boto3. `pdt aws` and the SSO login
 run AWS CLI v2 through `uvx`. Credentials live in ~/.aws.
@@ -496,7 +496,7 @@ def list_price(offer: str, region: str, usagetype_suffix: str, **attributes: str
 
 
 def recent_stream_seconds(logs, log_group: str) -> float | None:
-    # One log stream per run (Fargate task); its first and last event bound the run.
+    # One log stream per run (Batch job); its first and last event bound the run.
     try:
         streams = logs.describe_log_streams(
             logGroupName=log_group, orderBy="LastEventTime", descending=True,
@@ -686,17 +686,17 @@ def main() -> int:
         session = ensure_session(app)
         account, _region = aws_settings(app, session)
         return storage(app, session, account, args.rest, args.yes)
-    from pdt import deploy_aws_fargate as fargate
+    from pdt import deploy_aws_batch as batch
     try:
         if args.command == "secrets":
-            return fargate.secrets(app, args.rest[0], args.yes, *args.rest[1:])
+            return batch.secrets(app, args.rest[0], args.yes, *args.rest[1:])
         if args.command == "deploy":
-            return fargate.deploy(app, args.yes)
+            return batch.deploy(app, args.yes)
         if args.command == "runs":
-            return fargate.runs(app, ensure_session(app), args.rest)
+            return batch.runs(app, ensure_session(app), args.rest)
         if args.command == "logs":
-            return fargate.logs(app, ensure_session(app), args.rest)
-        return fargate.destroy(app, args.yes)
+            return batch.logs(app, ensure_session(app), args.rest)
+        return batch.destroy(app, args.yes)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",
                                "UnauthorizedOperation"}:
@@ -705,7 +705,7 @@ def main() -> int:
                 identity = boto3.client("sts").get_caller_identity()["Arn"]
             except Exception:  # noqa: BLE001,S110 - retain the original permission error
                 pass
-            print_permission_help(identity, str(exc), fargate.DEPLOYER_ACTIONS)
+            print_permission_help(identity, str(exc), batch.DEPLOYER_ACTIONS)
             return 1
         fail(f"AWS returned {error_code(exc) or 'an error'}: {exc}")
 
