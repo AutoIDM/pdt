@@ -50,6 +50,7 @@ import backoff
 
 from pdt import config, console
 from pdt.utils.email_auth import can_prompt
+from pdt.utils.env_secret import private_file
 
 DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -372,6 +373,7 @@ def get_secrets(app: dict, current: str, assume_yes: bool) -> int:
         if not proceed(assume_yes):
             console.warn("Aborted; nothing was written.")
             return 0
+    private_file(target)
     target.write_text("".join(env_line(name, values[name]) + "\n" for name in sorted(values)))
     console.done(f"Saved {len(values)} value(s) to {target}.")
     return 0
