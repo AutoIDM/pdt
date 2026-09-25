@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+
 import pytest
 
 from pdt import cli, completion, config
@@ -28,6 +32,29 @@ def test_build_parser_attaches_dynamic_completers():
 
     assert commands["run"]._actions[1].completer is completion.apps
     assert commands["new"]._option_string_actions["--from"].completer is completion.examples
+
+
+def _complete(line, tmp_path):
+    output = tmp_path / "completions"
+    environment = {**os.environ, "_ARGCOMPLETE": "1", "_ARGCOMPLETE_IFS": "\n",
+                   "_ARGCOMPLETE_STDOUT_FILENAME": str(output),
+                   "COMP_LINE": line, "COMP_POINT": str(len(line))}
+    subprocess.run([sys.executable, "-c", "from pdt import cli; cli.main()"],
+                   env=environment, stdin=subprocess.DEVNULL, capture_output=True)
+    return output.read_text().split("\n")
+
+
+def test_first_tab_offers_app_names_without_options(project, tmp_path):
+    add_app(project, "daily-report")
+    add_app(project, "weekly-report")
+
+    assert _complete("pdt deploy ", tmp_path) == ["daily-report", "weekly-report"]
+
+
+def test_typed_dash_offers_options(project, tmp_path):
+    add_app(project, "daily-report")
+
+    assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "--yes"]
 
 
 def test_install_preserves_content_and_replaces_owned_block(tmp_path):
