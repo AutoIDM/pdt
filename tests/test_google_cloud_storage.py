@@ -56,10 +56,6 @@ def test_the_legacy_bucket_condition_names_the_app_folder():
         ",title=pdt-hello-world")
 
 
-def test_the_store_folder_is_the_app_folder_in_the_bucket():
-    assert deploy_google_cloud.store_folder("pdt-data-abc", "hello-world") == FOLDER
-
-
 def test_the_folder_grant_is_found_by_role_and_member(monkeypatch):
     get_policy = ["storage", "managed-folders", "get-iam-policy", FOLDER]
     binding = {"role": deploy_google_cloud.STORE_ROLE, "members": [f"serviceAccount:{SA}"]}

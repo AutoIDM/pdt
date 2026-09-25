@@ -305,10 +305,6 @@ def store_url(bucket: str, app_name: str) -> str:
     return f"gs://{bucket}/{app_name}/"
 
 
-def store_folder(bucket: str, app_name: str) -> str:
-    return store_url(bucket, app_name)
-
-
 def store_condition(bucket: str, app_name: str) -> str:
     expression = f'resource.name.startsWith("projects/_/buckets/{bucket}/objects/{app_name}/")'
     return f"expression={expression},title=pdt-{app_name}"
@@ -322,7 +318,7 @@ def deployer_store(project: str, app_name: str) -> Store:
 
 
 def folder_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
-    folder = store_folder(bucket, app_name)
+    folder = store_url(bucket, app_name)
     policy = describe_json("storage", "managed-folders", "get-iam-policy", folder) or {}
     return any(binding.get("role") == STORE_ROLE
                and f"serviceAccount:{sa}" in (binding.get("members") or [])
@@ -341,7 +337,7 @@ def bucket_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
 
 
 def grant_store_access(bucket: str, app_name: str, sa: str) -> None:
-    folder = store_folder(bucket, app_name)
+    folder = store_url(bucket, app_name)
     console.step(f"granting {sa} write access to {bucket}/{app_name}/")
     if describe_json("storage", "managed-folders", "describe", folder) is None:
         run_quiet("storage", "managed-folders", "create", folder)
@@ -357,7 +353,7 @@ def revoke_store_access(bucket: str, app_name: str, sa: str,
     member = ("--member", f"serviceAccount:{sa}", "--role", STORE_ROLE)
     if folder:
         run_quiet("storage", "managed-folders", "remove-iam-policy-binding",
-                  store_folder(bucket, app_name), *member)
+                  store_url(bucket, app_name), *member)
     if bucket_binding:
         run_quiet("storage", "buckets", "remove-iam-policy-binding", f"gs://{bucket}",
                   *member, "--condition", store_condition(bucket, app_name))
