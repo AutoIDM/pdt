@@ -20,7 +20,7 @@ from pdt.deploy_aws import (
     delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     deployer_store, ensure_session, ensure_store, has_managed_tag, iam_tags, not_found,
-    delete_schedule_group, other_schedules, preflight, resource_exists, secret_statements,
+    delete_if_present, delete_schedule_group, other_schedules, preflight, resource_exists, secret_statements,
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
@@ -492,18 +492,17 @@ def destroy(app: dict, assume_yes: bool) -> int:
     iam = clients["iam"]
     for role in (names["scheduler_role"], names["task_role"], names["execution_role"]):
         delete_role(iam, role)
-    try:
-        clients["ecr"].batch_delete_image(
-            repositoryName=REPOSITORY, imageIds=[{"imageTag": names["image_tag"]}])
-    except Exception as exc:
-        if not not_found(exc):
-            raise
-    if others == []:
-        delete_schedule_group(clients["scheduler"])
-    if cluster_unused:
-        ecs.delete_cluster(cluster=CLUSTER)
-    if repository_unused:
-        clients["ecr"].delete_repository(repositoryName=REPOSITORY, force=True)
+    if not delete_if_present(clients["ecr"].batch_delete_image, repositoryName=REPOSITORY,
+                             imageIds=[{"imageTag": names["image_tag"]}]):
+        console.note(f"image tag {names['image_tag']} in ECR repository {REPOSITORY} "
+                     "was already gone")
+    if others == [] and not delete_schedule_group(clients["scheduler"]):
+        console.note(f"schedule group {SCHEDULE_GROUP} was already gone")
+    if cluster_unused and not delete_if_present(ecs.delete_cluster, cluster=CLUSTER):
+        console.note(f"ECS cluster {CLUSTER} was already gone")
+    if repository_unused and not delete_if_present(
+            clients["ecr"].delete_repository, repositoryName=REPOSITORY, force=True):
+        console.note(f"ECR repository {REPOSITORY} was already gone")
     console.done(f"Removed {app['name']} from account {account} ({region}).")
     if store_present:
         console.say(store_kept_line(f"bucket {bucket}", store.usage()[0], app["name"]))
