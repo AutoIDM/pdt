@@ -18,6 +18,7 @@ import rich_argparse
 
 from pdt import __version__, completion, config, console, deploy, deploy_common, scaffold
 from pdt.config import ConfigError
+from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
 CLOUD_CLIS = {
@@ -180,17 +181,27 @@ def deploy_all(assume_yes: bool) -> int:
     if not names:
         say_no_apps()
         return 1
+    failed: list[str] = []
     for index, name in enumerate(names, 1):
         console.heading(f"Deploying {name} ({index} of {len(names)})")
         code = deploy.deploy(name, assume_yes=assume_yes)
-        if code != 0:
-            remaining = names[index:]
-            message = f"{name} did not deploy."
-            if remaining:
-                message += f" Not deployed yet: {', '.join(remaining)}"
-            console.error(message)
-            console.say("Fix the problem above and run pdt deploy --all again.")
-            return code
+        if code == 0:
+            continue
+        failed.append(name)
+        console.error(f"{name} did not deploy.")
+        remaining = names[index:]
+        ask = not assume_yes and can_prompt(None)
+        if remaining and not assume_yes:
+            if not ask or not console.confirm(f"Skip {name} and go on with {', '.join(remaining)}?"):
+                console.say("Fix the problem above and run pdt deploy --all again.")
+                return code
+        if ask and console.confirm(f"Set enabled: false for {name}, so pdt leaves it out "
+                                   f"until you change {name}/config.yml?"):
+            path = config.set_app_enabled(name, False)
+            console.done(f"Saved enabled: false to {path.relative_to(config.find_project())}.")
+    if failed:
+        console.warn(f"Not deployed: {', '.join(failed)}")
+        return 1
     return 0
 
 
