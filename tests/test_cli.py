@@ -135,6 +135,49 @@ def test_health_checks_every_enabled_app(project, monkeypatch, capsys):
     assert "0 of 1 succeeded" in out
 
 
+def fake_deploys(monkeypatch, codes):
+    calls = []
+
+    def fake_deploy(name, assume_yes=False):
+        calls.append((name, assume_yes))
+        return codes.get(name, 0)
+
+    monkeypatch.setattr(deploy, "deploy", fake_deploy)
+    return calls
+
+
+def test_deploy_all_deploys_every_enabled_app_in_order(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    add_app(project, "not-ready", "enabled: false\n")
+    add_app(project, "daily-report")
+    calls = fake_deploys(monkeypatch, {})
+    assert run_cli(monkeypatch, "deploy", "--all", "--yes") == 0
+    assert calls == [("daily-report", True), ("hello-world", True)]
+    out = capsys.readouterr().out
+    assert "Deploying daily-report (1 of 2)" in out
+    assert "Deploying hello-world (2 of 2)" in out
+    assert "not-ready" not in out
+
+
+def test_deploy_all_stops_at_the_first_failure(project, monkeypatch, capsys):
+    for name in ("alpha", "bravo", "charlie", "delta"):
+        add_app(project, name)
+    calls = fake_deploys(monkeypatch, {"bravo": 3})
+    assert run_cli(monkeypatch, "deploy", "--all") == 3
+    assert calls == [("alpha", False), ("bravo", False)]
+    out = capsys.readouterr().out
+    assert "bravo did not deploy. Not deployed yet: charlie, delta" in out
+    assert "pdt deploy --all again" in out
+
+
+def test_deploy_all_with_an_app_name_is_refused(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    calls = fake_deploys(monkeypatch, {})
+    assert run_cli(monkeypatch, "deploy", "hello-world", "--all") == 1
+    assert calls == []
+    assert "pick an app or --all, not both" in capsys.readouterr().out
+
+
 def test_health_of_one_app_relays_a_provider_failure(project, monkeypatch, capsys):
     add_app(project, "hello-world", "schedule: daily\n")
     monkeypatch.setattr(deploy, "dispatch_output",
