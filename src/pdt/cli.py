@@ -164,10 +164,34 @@ def cmd_run(args) -> int:
 
 
 def cmd_deploy(args) -> int:
+    if args.all:
+        if args.app is not None:
+            console.error("pick an app or --all, not both")
+            return 1
+        return deploy_all(args.yes)
     name = choose_app(args.app, "deploy")
     if name is None:
         return 1
     return deploy.deploy(name, assume_yes=args.yes)
+
+
+def deploy_all(assume_yes: bool) -> int:
+    names = config.find_apps()
+    if not names:
+        say_no_apps()
+        return 1
+    for index, name in enumerate(names, 1):
+        console.heading(f"Deploying {name} ({index} of {len(names)})")
+        code = deploy.deploy(name, assume_yes=assume_yes)
+        if code != 0:
+            remaining = names[index:]
+            message = f"{name} did not deploy."
+            if remaining:
+                message += f" Not deployed yet: {', '.join(remaining)}"
+            console.error(message)
+            console.say("Fix the problem above and run pdt deploy --all again.")
+            return code
+    return 0
 
 
 def cmd_login(args) -> int:
@@ -278,6 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("--all", action="store_true", help="deploy every enabled app, in order")
     p.set_defaults(func=cmd_deploy)
     p = add_parser("login", help="sign in again to an app's cloud provider")
     app = p.add_argument("app", nargs="?",
