@@ -244,12 +244,16 @@ def choose_project(app: dict, requested: str) -> str:
     for index, entry in enumerate(available, 1):
         console.choice(index, entry[0], entry[-1])
     try:
-        answer = input(f"Deploy to which one? [1-{len(available)}] ").strip()
+        answer = input(f"Deploy to which one? [1-{len(available)}, or a project id] ").strip()
     except EOFError:
         answer = ""
-    if not answer.isdigit() or not 1 <= int(answer) <= len(available):
-        fail("no Google Cloud project selected")
-    project = available[int(answer) - 1][0]
+    ids = [entry[0] for entry in available]
+    if answer.isdigit() and 1 <= int(answer) <= len(ids):
+        project = ids[int(answer) - 1]
+    elif answer in ids:
+        project = answer
+    else:
+        fail("no Google Cloud project selected; type a number from the list or one of the project ids")
     saved = config.save_platform_key(app, "project", project)
     console.done(f"Saved project {project} to {saved.relative_to(config.find_project())}.")
     return project
