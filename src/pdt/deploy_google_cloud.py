@@ -901,7 +901,7 @@ def execution_run(execution: dict) -> runs_cli.Run:
     metadata = execution.get("metadata") or {}
     execution_id = str(execution.get("name") or metadata.get("name") or "").rsplit("/", 1)[-1]
     status = execution.get("status") or {}
-    started = datetime.datetime.fromisoformat(status["startTime"])
+    started = datetime.datetime.fromisoformat(status.get("startTime") or metadata["creationTimestamp"])
     completion = status.get("completionTime")
     if not completion:
         return runs_cli.Run(execution_id, started, None, "running")
