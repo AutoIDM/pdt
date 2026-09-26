@@ -845,6 +845,10 @@ def shared_group_id(settings: dict) -> str:
             f"{settings['environment'].resource_group}")
 
 
+def region_of(resource: dict) -> str:
+    return str(resource.get("location") or "").lower().replace(" ", "")
+
+
 def check_environment(settings: dict, resource: dict | None) -> None:
     environment = settings["environment"]
     if environment.managed:
@@ -854,7 +858,7 @@ def check_environment(settings: dict, resource: dict | None) -> None:
         fail(f"the Container Apps environment {console.value(environment)} named by "
              f"platform.environment in {console.value(config.PROJECT_FILE)} does not exist in "
              f"subscription {console.value(settings['subscription'])}")
-    location = str(resource.get("location") or "").lower().replace(" ", "")
+    location = region_of(resource)
     if location and location != settings["region"]:
         fail(f"the Container Apps environment {console.value(environment)} is in "
              f"{console.value(location)}, but platform.region in "
@@ -1085,6 +1089,20 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     return run_secrets(action, app, current, write, assume_yes, name)
 
 
+def moved_region_message(name: str, job: str, old: str, new: str) -> str:
+    where = (f"{console.value(config.PROJECT_FILE)} or "
+             f"{console.value(f'{name}/{config.APP_FILE}')}")
+    return (f"app {console.value(name)} already runs as Container Apps Job {console.value(job)} "
+            f"in {console.value(old)}, but platform.region in {where} is now {console.value(new)}. "
+            "Azure cannot move a job to another region.\n"
+            f"To keep the job where it is, set platform.region back to {console.value(old)} "
+            f"for {console.value(name)}.\n"
+            f"To move it to {console.value(new)}, set platform.region back to {console.value(old)}, "
+            f"run {console.value(f'pdt destroy {name}')}, then set platform.region to "
+            f"{console.value(new)} and run {console.value(f'pdt deploy {name}')}. Destroy must run "
+            f"with {console.value(old)} so it removes the lock on the old environment.")
+
+
 def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     cloud = build_in_cloud(app, "ACR Tasks", "linux/amd64")
     console.status("Checking your Azure sign-in...")
@@ -1136,9 +1154,17 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     if current_job and not owned_by(current_job, name):
         fail(f"Container Apps Job {console.value(job)} already exists but is not owned by "
              f"PDT app {console.value(name)}; choose another resource group")
-    missing_locks = state["missing_locks"]
     if not owned_by(legacy_job, name):
         legacy_job = None
+    job_region = region_of(current_job or legacy_job or {})
+    if job_region and job_region != settings["region"]:
+        # A deploy removes the job that .pdt/state records there (deploy.leave_old_place)
+        # before this runs; a plan runs before that removal.
+        if not plan_only or (config.deployed_platform(name) or {}).get("region") != job_region:
+            fail(moved_region_message(name, job if current_job else legacy, job_region,
+                                      settings["region"]))
+        current_job = legacy_job = None
+    missing_locks = state["missing_locks"]
     vault_exists, current_secret = secret_state(settings, sid, name, state["secret"])
     store_present = False
     usage = None
