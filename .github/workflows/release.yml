@@ -31,6 +31,7 @@ jobs:
 
   publish:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -41,3 +42,72 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  windows-launcher:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.zip.outputs.version }}
+      sha256: ${{ steps.zip.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Stamp the launcher with the release version
+        shell: bash
+        run: |
+          version="$(uv version --short)"
+          sed -i "s/^VERSION = \"0.0.0\"$/VERSION = \"${version}\"/" scripts/winget_launcher.py
+          grep -qx "VERSION = \"${version}\"" scripts/winget_launcher.py
+
+      - run: uv run --no-project --python 3.12 --with pyinstaller pyinstaller --onefile --name pdt --distpath dist/launcher scripts/winget_launcher.py
+
+      - id: zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/launcher/pdt.exe -DestinationPath pdt-windows-x64.zip
+          $hash = (Get-FileHash pdt-windows-x64.zip -Algorithm SHA256).Hash
+          "version=$(uv version --short)" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winget-launcher
+          path: pdt-windows-x64.zip
+
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: pdt-windows-x64.zip
+
+  # The first submission of AutoIDM.pdt is a manual `wingetcreate new` from
+  # the rendered manifests in the winget-manifests artifact. WINGET_TOKEN is a
+  # GitHub personal access token with public_repo scope on a fork of
+  # microsoft/winget-pkgs. A missing token fails only this job.
+  winget:
+    needs: [windows-launcher, publish]
+    if: startsWith(github.ref, 'refs/tags/')
+    continue-on-error: true
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.windows-launcher.outputs.version }}
+      SHA256: ${{ needs.windows-launcher.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - run: uv run --no-project --python 3.12 python scripts/render_winget_manifests.py --version ${{ env.VERSION }} --sha256 ${{ env.SHA256 }} --out winget/rendered
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifests
+          path: winget/rendered/
+
+      - shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          .\wingetcreate.exe update AutoIDM.pdt --urls "https://github.com/AutoIDM/pdt/releases/download/v$env:VERSION/pdt-windows-x64.zip" --version $env:VERSION --submit --token $env:WINGET_TOKEN

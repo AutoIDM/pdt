@@ -16,6 +16,7 @@ dist/
 .pytest_cache/
 .uv-cache/
 claude-task-report/
+winget/rendered/
 
 # OS / editor noise
 .DS_Store

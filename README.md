@@ -10,6 +10,8 @@ uv tool install pdt-cli
 
 That puts a `pdt` command on your PATH. To update it later, run `uv tool upgrade pdt-cli`.
 
+On Windows you can run `winget install AutoIDM.pdt` instead, which also installs `uv` if you do not have it and puts the same `pdt` command on your PATH. `winget upgrade AutoIDM.pdt` moves pdt to the latest release, and the first `pdt` command after an install or upgrade finishes setting up that version.
+
 The first interactive `pdt` command turns on tab completion without a prompt. It works in every new terminal: Tab finishes pdt commands, their options, your app names, and example names for `new --from`. It supports bash, zsh, fish, and PowerShell. `pdt completion [SHELL]` sets up a second shell, and `pdt completion --script bash` prints the script instead of writing it, if you keep your own dotfiles.
 
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
@@ -262,6 +264,7 @@ Reports active Monday users whose email address does not match the `userPrincipa
 | Item | Where |
 | --- | --- |
 | the `pdt` command and its code | the tool's own environment, from `uv tool install` |
+| the `pdt` launcher from winget | `%LOCALAPPDATA%\Microsoft\WinGet\Packages`, linked from `%LOCALAPPDATA%\Microsoft\WinGet\Links` |
 | the example apps | inside the pdt package, copied out by `pdt new` |
 | your apps, `pdt.yml`, `.env` | your project folder, under version control |
 | the Google Cloud CLI pdt downloads | `~/.local/share/pdt/gcloud`, or `%LOCALAPPDATA%\pdt\gcloud` |
