@@ -551,15 +551,20 @@ def register_providers(names: tuple[str, ...]) -> None:
             console.bullet(f"still waiting after {waited}s for: {', '.join(pending)}", indent=4)
 
 
+def ensure_group(name: str, region: str, *tags: str) -> None:
+    """Azure refuses to change a group's location, and a group's resources may be in any region."""
+    group = az_json("group", "show", "--name", name)
+    require_managed(group, f"resource group {name}")
+    if group is None:
+        console.step(f"creating resource group {name}")
+        run_quiet("group", "create", "--name", name, "--location", region, "--tags", *tags)
+
+
 def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
                            vault_exists: bool) -> str:
     rg = settings["resource_group"]
-    group = az_json("group", "show", "--name", rg)
-    require_managed(group, f"resource group {rg}")
     register_providers((*COMMON_PROVIDERS, *providers))
-    console.step(f"reconciling resource group {rg}")
-    run_quiet("group", "create", "--name", rg, "--location", settings["region"],
-              "--tags", "managed-by=pdt")
+    ensure_group(rg, settings["region"], "managed-by=pdt")
     if not vault_exists:
         purge_deleted_vault(settings)
         console.step(f"creating Key Vault {settings['vault']}")
@@ -606,14 +611,6 @@ def ensure_workspace(settings: dict, exists: bool) -> tuple[str, str]:
                       "--resource-group", group, "--workspace-name",
                       settings["workspace"], "--query", "primarySharedKey")
     return logs_id, logs_key
-
-
-def ensure_shared_group(settings: dict) -> None:
-    group = settings["environment"].resource_group
-    require_managed(az_json("group", "show", "--name", group), f"resource group {group}")
-    console.step(f"reconciling resource group {group}")
-    run_quiet("group", "create", "--name", group, "--location", settings["region"],
-              "--tags", "managed-by=pdt")
 
 
 def ensure_secret(settings: dict[str, str], sid: str, values: dict,
@@ -861,9 +858,8 @@ def store_plan(store: dict[str, str], exists: bool, app_name: str,
 def ensure_store(settings: dict[str, str], store: dict[str, str], exists: bool) -> None:
     if not exists:
         register_providers(("Microsoft.Storage",))
+        ensure_group(store["group"], settings["region"], *STORE_TAG_ARGS)
         console.step(f"creating {store_description(store)}")
-        run_quiet("group", "create", "--name", store["group"],
-                  "--location", settings["region"], "--tags", *STORE_TAG_ARGS)
         run_quiet("storage", "account", "create", "--name", store["account"],
                   "--resource-group", store["group"], "--location", settings["region"],
                   "--sku", "Standard_LRS", "--allow-blob-public-access", "false",

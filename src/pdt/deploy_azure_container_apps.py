@@ -40,7 +40,7 @@ from pdt.deploy import confirm
 from pdt.deploy_azure import (
     AZ, ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cost_estimate, delete_unless_locked, deployer_store,
-    destroy_group, disable_old_secret_versions, ensure_group_and_vault, ensure_secret, ensure_shared_group,
+    destroy_group, disable_old_secret_versions, ensure_group, ensure_group_and_vault, ensure_secret,
     ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item, list_remaining,
     managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
@@ -470,7 +470,7 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
     environment = settings["environment"]
     if not environment.managed:
         return
-    ensure_shared_group(settings)
+    ensure_group(environment.resource_group, settings["region"], "managed-by=pdt")
     logs_id, logs_key = ensure_workspace(settings, logs_exist)
     if exists:
         return
