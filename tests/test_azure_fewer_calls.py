@@ -108,7 +108,6 @@ def test_a_first_deploy_registers_providers_and_creates_and_reads_what_it_needs(
     (("keyvault", "show"), "Microsoft.KeyVault"),
     (("identity", "show"), "Microsoft.ManagedIdentity"),
     (("acr", "show"), "Microsoft.ContainerRegistry"),
-    (("monitor", "log-analytics", "workspace", "show"), "Microsoft.OperationalInsights"),
 ])
 def test_only_a_provider_with_no_resource_found_is_checked(monkeypatch, missing, provider):
     answers = {key: value for key, value in PRESENT.items() if key != missing} | MISSING
@@ -130,13 +129,12 @@ def test_a_group_in_another_region_is_used_as_it_is(monkeypatch):
     assert ran(calls, "group", "create") == []
 
 
-def test_a_workspace_missing_beside_an_existing_environment_is_created_with_no_key_read(
-        monkeypatch):
+def test_an_existing_environment_reads_and_creates_no_workspace(monkeypatch):
     answers = {key: value for key, value in PRESENT.items()
                if key != ("monitor", "log-analytics", "workspace", "show")}
     calls = deploy(monkeypatch, answers, job_after=JOB)
-    assert ran(calls, "monitor", "log-analytics", "workspace", "create")
-    assert ran(calls, "monitor", "log-analytics", "workspace", "get-shared-keys") == []
+    assert ran(calls, "monitor", "log-analytics") == []
+    assert ran(calls, "provider") == []
     assert ran(calls, "containerapp", "env", "create") == []
 
 

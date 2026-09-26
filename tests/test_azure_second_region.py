@@ -9,7 +9,7 @@ GROUP_IN_EASTUS2 = {"location": "eastus2", "tags": {"managed-by": "pdt"}}
 def westus2_settings() -> dict:
     return {
         "subscription": SUBSCRIPTION, "resource_group": "pdt", "region": "westus2",
-        "vault": "pdt-vault", "workspace": "pdt-logs", "deployer_object_id": "d",
+        "vault": "pdt-vault", "workspace": "pdt-logs-westus2", "deployer_object_id": "d",
         "deployer_principal_type": "User",
         "environment": deploy_azure.Environment("pdt-shared", "pdt-westus2", True),
     }

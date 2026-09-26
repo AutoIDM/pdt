@@ -20,7 +20,7 @@ def settings() -> dict:
     return {
         "subscription": SUBSCRIPTION, "resource_group": "pdt", "region": "eastus2",
         "registry": "pdtregistry", "environment": SHARED, "identity": "pdt-runner",
-        "workspace": "pdt-logs", "vault": "pdt-vault", "deployer_object_id": "d",
+        "workspace": "pdt-logs-eastus2", "vault": "pdt-vault", "deployer_object_id": "d",
         "deployer_principal_type": "User", "suffix": "abc1234def",
     }
 
@@ -50,7 +50,6 @@ def fake_deploy(monkeypatch, answers):
     monkeypatch.setattr(deploy_azure, "az_json", read)
     monkeypatch.setattr(module, "run_quiet", write)
     monkeypatch.setattr(deploy_azure, "run_quiet", write)
-    monkeypatch.setattr(module, "workspace_resource", lambda settings: MANAGED)
     monkeypatch.setattr(module, "acr_arm_auth_enabled", lambda registry: True)
     monkeypatch.setattr(module, "secret_state", lambda *args: (False, None))
     monkeypatch.setattr(module, "image_action", lambda app, text, cloud_builder="": text)
