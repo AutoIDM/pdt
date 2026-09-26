@@ -392,6 +392,10 @@ def environment_resource(settings: dict) -> dict | None:
                    "--resource-group", environment.resource_group)
 
 
+def region_of(resource: dict) -> str:
+    return str(resource.get("location") or "").lower().replace(" ", "")
+
+
 def check_environment(settings: dict, resource: dict | None) -> None:
     environment = settings["environment"]
     if environment.managed:
@@ -401,7 +405,7 @@ def check_environment(settings: dict, resource: dict | None) -> None:
         fail(f"the Container Apps environment {environment} named by "
              f"platform.environment in {config.PROJECT_FILE} does not exist in "
              f"subscription {settings['subscription']}")
-    location = str(resource.get("location") or "").lower().replace(" ", "")
+    location = region_of(resource)
     if location and location != settings["region"]:
         fail(f"the Container Apps environment {environment} is in {location}, but "
              f"platform.region in {config.PROJECT_FILE} is {settings['region']}. A "
@@ -502,6 +506,18 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     return run_secrets(action, app, current, write, assume_yes, name)
 
 
+def moved_region_message(name: str, job: str, old: str, new: str) -> str:
+    where = f"{config.PROJECT_FILE} or {name}/{config.APP_FILE}"
+    return (f"app {name} already runs as Container Apps Job {job} in {old}, but "
+            f"platform.region in {where} is now {new}. Azure cannot move a job to "
+            "another region.\n"
+            f"To keep the job where it is, set platform.region back to {old} for {name}.\n"
+            f"To move it to {new}, set platform.region back to {old}, run "
+            f"`pdt destroy {name}`, then set platform.region to {new} and run "
+            f"`pdt deploy {name}`. Destroy must run with {old} so it removes the "
+            "lock on the old environment.")
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     settings = preflight(app, azure_settings(app))
     name = app["name"]
@@ -544,6 +560,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if current_job and not owned_by(current_job, name):
         fail(f"Container Apps Job {job} already exists but is not owned by "
              f"PDT app {name}; choose another resource group")
+    job_region = region_of(current_job or {})
+    if job_region and job_region != settings["region"]:
+        fail(moved_region_message(name, job, job_region, settings["region"]))
     missing_locks = [lock for lock in shared_locks(settings, job) if not lock.exists()]
     vault_exists, current_secret = secret_state(settings, sid, name, bool(values))
     store = store_settings(settings) if app["storage"] else None

@@ -103,6 +103,32 @@ def test_a_user_environment_in_another_region_fails_before_the_plan(monkeypatch,
     assert "westus" in capsys.readouterr().out
 
 
+def job_in_east_us_2(args):
+    if args[:3] == ("containerapp", "job", "show"):
+        return {"tags": {"managed-by": "pdt", "pdt-app": "report"}, "location": "East US 2"}
+    return None
+
+
+def test_a_job_in_another_region_fails_before_the_plan(monkeypatch, capsys):
+    settings = deploy_settings(deploy_azure.Environment("pdt-shared", "pdt-westus2", True))
+    plans, _ = plan_for(monkeypatch, settings | {"region": "westus2"}, job_in_east_us_2)
+    with pytest.raises(SystemExit):
+        deploy_azure_container_apps.deploy(
+            {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+    assert plans == []
+    out = capsys.readouterr().out
+    assert "in eastus2" in out
+    assert "is now westus2" in out
+    assert "pdt destroy report" in out
+
+
+def test_a_job_in_the_same_region_reaches_the_plan(monkeypatch):
+    plans, _ = plan_for(monkeypatch, deploy_settings(SHARED), job_in_east_us_2)
+    deploy_azure_container_apps.deploy(
+        {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+    assert 'update Container Apps Job pdt-report: "0 0 * * *" (UTC)' in plans[0]
+
+
 def test_the_default_plan_creates_the_shared_group_workspace_and_environment(monkeypatch):
     plans, _ = plan_for(monkeypatch, deploy_settings(SHARED), lambda args: None)
     deploy_azure_container_apps.deploy(
