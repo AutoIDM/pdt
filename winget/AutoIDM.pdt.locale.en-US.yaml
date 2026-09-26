@@ -7,6 +7,6 @@ PublisherUrl: https://github.com/AutoIDM
 PackageName: pdt
 PackageUrl: https://github.com/AutoIDM/pdt
 License: MIT
-ShortDescription: Create, run, and deploy small scheduled jobs to AWS, Azure, Google Cloud, or Windows
+ShortDescription: Create, run, and deploy scheduled jobs to AWS, Azure, Google Cloud, or Windows
 ManifestType: defaultLocale
 ManifestVersion: 1.10.0
