@@ -9,28 +9,29 @@ spec = importlib.util.spec_from_file_location("winget_launcher", SCRIPT)
 launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
 
-BIN = Path("C:/Users/me/.local/bin")
+HOME = Path("C:/Users/me/AppData/Local/AutoIDM/pdt")
 INSTALL = ["uv", "tool", "install", f"pdt-cli=={launcher.VERSION}"]
 
 
 class FakeRun:
     def __init__(self, install_code=0, pdt_code=0):
         self.commands = []
+        self.install_env = None
         self.install_code = install_code
         self.pdt_code = pdt_code
 
     def __call__(self, command, **kwargs):
         self.commands.append(command)
         if command == INSTALL:
+            self.install_env = kwargs["env"]
             return subprocess.CompletedProcess(command, self.install_code, "", "no such version\n")
-        if command[1:3] == ["tool", "dir"]:
-            return subprocess.CompletedProcess(command, 0, f"{BIN}\n", "")
         return subprocess.CompletedProcess(command, self.pdt_code)
 
 
 @pytest.fixture
 def uv_on_path(monkeypatch):
     monkeypatch.setattr(launcher.shutil, "which", lambda name: "uv")
+    monkeypatch.setenv("LOCALAPPDATA", "C:/Users/me/AppData/Local")
 
 
 def test_missing_uv_prints_the_winget_hint(monkeypatch, capsys):
@@ -45,9 +46,16 @@ def test_installs_the_pinned_version_then_runs_pdt_with_the_same_arguments(monke
     assert launcher.main(["deploy", "my-report", "--yes"]) == 3
     assert run.commands == [
         INSTALL,
-        ["uv", "tool", "dir", "--bin"],
-        [str(BIN / "pdt.exe"), "deploy", "my-report", "--yes"],
+        [str(HOME / "bin" / "pdt.exe"), "deploy", "my-report", "--yes"],
     ]
+
+
+def test_installs_into_its_own_folders_off_the_path(monkeypatch, uv_on_path):
+    run = FakeRun()
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    launcher.main(["list"])
+    assert run.install_env["UV_TOOL_DIR"] == str(HOME / "tools")
+    assert run.install_env["UV_TOOL_BIN_DIR"] == str(HOME / "bin")
 
 
 def test_failed_install_shows_uv_error_and_exits_1(monkeypatch, uv_on_path, capsys):
