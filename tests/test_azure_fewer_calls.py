@@ -124,10 +124,10 @@ def test_the_app_provider_is_checked_when_neither_the_environment_nor_the_job_ex
     assert [call[3] for call in ran(calls, "provider", "show")] == ["Microsoft.App"]
 
 
-def test_a_group_in_another_region_goes_to_group_create_so_azure_reports_it(monkeypatch):
+def test_a_group_in_another_region_is_used_as_it_is(monkeypatch):
     calls = deploy(monkeypatch, PRESENT | {("group", "show"): MANAGED | {"location": "westus"}},
                    job_after=JOB)
-    assert [call[3] for call in ran(calls, "group", "create")] == ["pdt-shared", "pdt"]
+    assert ran(calls, "group", "create") == []
 
 
 def test_a_workspace_missing_beside_an_existing_environment_is_created_with_no_key_read(

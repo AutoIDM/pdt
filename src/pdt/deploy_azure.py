@@ -617,17 +617,18 @@ def register_providers(names: tuple[str, ...]) -> None:
                            f"{', '.join(console.value(name) for name in pending)}", indent=4)
 
 
-def ensure_group(settings: dict, name: str, group: dict | None) -> None:
-    """Create the group, or fail on one in another region as `az group create` does.
+def ensure_group(settings: dict, name: str, group: dict | None,
+                 tags: tuple[str, ...] = ("managed-by=pdt",)) -> None:
+    """Create the group when it is missing.
 
-    The plan read the group and stopped on one without the pdt tag, so a group in the
-    region needs no write; writing it again would also replace any tag a user added.
+    The plan read the group and stopped on one without the pdt tag. Azure refuses to
+    change a group's location, and a group's resources may be in any region, so an
+    existing group needs no write; writing it again would also replace any tag a user added.
     """
-    console.step(f"reconciling resource group {console.value(name)}")
-    location = str((group or {}).get("location") or "").lower().replace(" ", "")
-    if location != settings["region"]:
+    if group is None:
+        console.step(f"creating resource group {console.value(name)}")
         run_quiet("group", "create", "--name", name, "--location", settings["region"],
-                  "--tags", "managed-by=pdt")
+                  "--tags", *tags)
 
 
 def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
@@ -939,9 +940,9 @@ def store_plan(store: dict[str, str], exists: bool, app_name: str,
 def ensure_store(settings: dict[str, str], store: dict[str, str], exists: bool) -> None:
     if not exists:
         register_providers(("Microsoft.Storage",))
+        ensure_group(settings, store["group"], az_json("group", "show", "--name", store["group"]),
+                     STORE_TAG_ARGS)
         console.step(f"creating {store_description(store)}")
-        run_quiet("group", "create", "--name", store["group"],
-                  "--location", settings["region"], "--tags", *STORE_TAG_ARGS)
         run_quiet("storage", "account", "create", "--name", store["account"],
                   "--resource-group", store["group"], "--location", settings["region"],
                   "--sku", "Standard_LRS", "--allow-blob-public-access", "false",
