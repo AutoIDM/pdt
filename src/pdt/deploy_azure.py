@@ -215,11 +215,10 @@ def azure_settings(app: dict) -> dict:
         "identity": str(
             os.environ.get("PDT_AZURE_MANAGED_IDENTITY")
             or "pdt-runner"),
-        # Log Analytics workspace names must be 4 to 63 characters, so this
-        # default cannot be the bare "pdt" the other shared names start from.
+        # One per region, so an app's logs stay in the region that holds its data.
         "workspace": str(
             os.environ.get("PDT_AZURE_LOG_WORKSPACE")
-            or "pdt-logs"),
+            or f"pdt-logs-{region}"),
         **shared_names(subscription, resource_group),
     }
 

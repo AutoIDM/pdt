@@ -24,6 +24,13 @@ def test_the_default_environment_is_shared_per_region(monkeypatch):
         "/providers/Microsoft.App/managedEnvironments/pdt-eastus2")
 
 
+def test_the_default_workspace_is_one_per_region(monkeypatch):
+    monkeypatch.delenv("PDT_AZURE_LOG_WORKSPACE", raising=False)
+    assert settings_for({}, monkeypatch)["workspace"] == "pdt-logs-eastus2"
+    monkeypatch.setenv("PDT_AZURE_LOG_WORKSPACE", "my-logs")
+    assert settings_for({}, monkeypatch)["workspace"] == "my-logs"
+
+
 def test_a_configured_environment_is_the_users_own(monkeypatch):
     assert settings_for({"environment": "my-group/my-env"}, monkeypatch)["environment"] == OWN
 
@@ -38,7 +45,7 @@ def deploy_settings(environment) -> dict:
     return {
         "subscription": SUBSCRIPTION, "resource_group": "pdt", "region": "eastus2",
         "registry": "pdtregistry", "environment": environment, "identity": "pdt-runner",
-        "workspace": "pdt-logs", "vault": "pdt-vault", "deployer_object_id": "d",
+        "workspace": "pdt-logs-eastus2", "vault": "pdt-vault", "deployer_object_id": "d",
         "deployer_principal_type": "User",
     }
 
@@ -102,9 +109,26 @@ def test_the_default_plan_creates_the_shared_group_workspace_and_environment(mon
         {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
     plan = plans[0]
     assert "create resource group pdt-shared (shared by every pdt project in this subscription)" in plan
-    assert "create Log Analytics workspace pdt-logs in pdt-shared" in plan
+    assert "create Log Analytics workspace pdt-logs-eastus2 in pdt-shared" in plan
     assert any(line.startswith("create Container Apps environment pdt-shared/pdt-eastus2") for line in plan)
     assert plan.index("create resource group pdt-shared (shared by every pdt project in this subscription)") < plan.index("create resource group pdt")
+
+
+def test_an_existing_environment_keeps_its_workspace(monkeypatch):
+    existing = {("containerapp", "env"), ("group", "show")}
+    plans, calls = plan_for(monkeypatch, deploy_settings(SHARED),
+                            lambda args: TAGGED if args[:2] in existing else None)
+    deploy_azure_container_apps.deploy(
+        {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+    assert ("use existing Container Apps environment pdt-shared/pdt-eastus2 "
+            "(shared by every pdt project in this subscription)") in plans[0]
+    assert not any("workspace" in line for line in plans[0])
+    assert not any("log-analytics" in args for args in calls)
+    monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
+                        lambda *args, **kwargs: pytest.fail(f"changed {args}"))
+    monkeypatch.setattr(deploy_azure, "run_quiet",
+                        lambda *args, **kwargs: pytest.fail(f"changed {args}"))
+    deploy_azure_container_apps.ensure_environment(deploy_settings(SHARED), True, False)
 
 
 def job_in(group: str, environment) -> dict:
@@ -112,9 +136,11 @@ def job_in(group: str, environment) -> dict:
             "properties": {"environmentId": environment.resource_id(SUBSCRIPTION)}}
 
 
-def release_with(monkeypatch, jobs, other_environments=()):
+def release_with(monkeypatch, jobs, other_environments=(), environment=TAGGED):
     def read(*args):
         if args[:3] == ("containerapp", "env", "show"):
+            return environment
+        if args[:3] == ("monitor", "log-analytics", "workspace"):
             return TAGGED
         if args[:3] == ("containerapp", "job", "list"):
             return jobs
@@ -123,6 +149,7 @@ def release_with(monkeypatch, jobs, other_environments=()):
         return None
 
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
+    monkeypatch.setattr(deploy_azure, "az_json", read)
     return deploy_azure_container_apps.environment_release(deploy_settings(SHARED))
 
 
@@ -131,7 +158,7 @@ def test_destroy_releases_the_environment_and_the_shared_group_when_nothing_uses
     assert release == deploy_azure_container_apps.Release(environment=True, group=True)
     assert deploy_azure_container_apps.release_actions(deploy_settings(SHARED), release) == [
         "delete Container Apps environment pdt-shared/pdt-eastus2 (no other job uses it)",
-        "delete resource group pdt-shared and the Log Analytics workspace pdt-logs in it",
+        "delete resource group pdt-shared and the Log Analytics workspaces in it",
     ]
 
 
@@ -146,9 +173,41 @@ def test_destroy_releases_the_shared_group_when_the_environment_is_already_gone(
     assert release == deploy_azure_container_apps.Release(group=True)
 
 
-def test_destroy_keeps_the_shared_group_while_another_region_has_an_environment(monkeypatch):
+def test_destroy_keeps_the_shared_group_but_deletes_the_workspace_while_another_region_has_an_environment(
+        monkeypatch):
     release = release_with(monkeypatch, [], other_environments=["pdt-westus"])
-    assert release == deploy_azure_container_apps.Release(environment=True, group=False)
+    assert release == deploy_azure_container_apps.Release(environment=True, workspace=True)
+    assert deploy_azure_container_apps.release_actions(deploy_settings(SHARED), release) == [
+        "delete Container Apps environment pdt-shared/pdt-eastus2 (no other job uses it)",
+        "delete Log Analytics workspace pdt-logs-eastus2 in pdt-shared",
+    ]
+
+
+def test_destroy_deletes_the_workspace_of_an_environment_already_gone(monkeypatch):
+    release = release_with(monkeypatch, [], other_environments=["pdt-westus"], environment=None)
+    assert release == deploy_azure_container_apps.Release(workspace=True)
+
+
+def test_releasing_a_region_deletes_its_environment_then_its_workspace(monkeypatch):
+    deleted = []
+
+    def read(*args):
+        if args[:3] == ("containerapp", "env", "show"):
+            return None if deleted else TAGGED
+        return []
+
+    monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
+    monkeypatch.setattr(deploy_azure_container_apps, "delete_unless_locked",
+                        lambda *args: deleted.append(args[:3]) or "")
+    monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
+                        lambda *args, **kwargs: deleted.append(args))
+    deploy_azure_container_apps.release_environment(
+        deploy_settings(SHARED), deploy_azure_container_apps.Release(environment=True, workspace=True))
+    assert deleted == [
+        ("containerapp", "env", "delete"),
+        ("monitor", "log-analytics", "workspace", "delete", "--resource-group", "pdt-shared",
+         "--workspace-name", "pdt-logs-eastus2", "--force", "true", "--yes"),
+    ]
 
 
 def test_destroy_keeps_the_environment_another_project_uses(monkeypatch):
