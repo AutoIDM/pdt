@@ -485,14 +485,14 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
 
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
     settings = preflight(app, azure_settings(app))
-    name = app["name"]
-    job = clean_name(f"pdt-{name}")
-    sid = secret_name(name)
-    _vault_exists, current = secret_state(settings, sid, name, True)
+    app_name = app["name"]
+    job = clean_name(f"pdt-{app_name}")
+    sid = secret_name(app_name)
+    _vault_exists, current = secret_state(settings, sid, app_name, True)
 
     def write(values: dict[str, str]) -> None:
         payload = json.dumps(values, sort_keys=True)
-        secret_uri = ensure_secret(settings, sid, values, payload, current, name)
+        secret_uri = ensure_secret(settings, sid, values, payload, current, app_name)
         identity_id = az_tsv("identity", "show", "--name", settings["identity"],
                              "--resource-group", settings["resource_group"], "--query", "id")
         set_job_secret(job, settings["resource_group"], secret_uri, identity_id)
