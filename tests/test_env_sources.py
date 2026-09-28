@@ -225,3 +225,26 @@ def test_check_env_accepts_b64_in_place_of_path():
         "missing required env var PDT_KEY_PATH",
         "set one of: PDT_CERT_PATH",
     ]
+
+
+def test_a_shell_value_that_differs_from_dot_env_is_reported(project, monkeypatch):
+    folder = add_app(project, "my-report", APP_YAML)
+    clear(monkeypatch)
+    (folder / ".env").write_text("PDT_TOKEN=new\nPDT_NOTE=same\n")
+    monkeypatch.setenv("PDT_TOKEN", "old")
+    monkeypatch.setenv("PDT_NOTE", "same")
+    monkeypatch.setenv("PDT_SECRET", "only-in-shell")
+    config.load_env(folder)
+    names = ["PDT_TOKEN", "PDT_SECRET", "PDT_NOTE"]
+    assert config.shell_overrides(folder, names) == ["PDT_TOKEN"]
+
+
+def test_secrets_diff_warns_when_the_shell_hides_the_dot_env_value(project, monkeypatch, capsys):
+    folder = add_app(project, "my-report", APP_YAML)
+    clear(monkeypatch)
+    (folder / ".env").write_text("PDT_TOKEN=new\nPDT_SECRET=s-1\n")
+    monkeypatch.setenv("PDT_TOKEN", "old")
+    monkeypatch.setattr(deploy, "_load", lambda name: (config.merged_app(name), "azure"))
+    monkeypatch.setattr(deploy, "dispatch", lambda *args: 0)
+    assert deploy.secrets("my-report", "diff") == 0
+    assert "unset PDT_TOKEN" in capsys.readouterr().out

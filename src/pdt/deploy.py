@@ -73,6 +73,15 @@ def dispatch_output(provider: str, command: str, app_name: str,
     return proc.returncode, proc.stdout
 
 
+def warn_shell_overrides(app: dict) -> None:
+    spec = app["env"]
+    names = [*(spec.get("required") or []), *(n for group in spec.get("one_of") or [] for n in group),
+             *(spec.get("optional") or [])]
+    for name in config.shell_overrides(app["dir"], names):
+        console.warn(f"{name} is set in your shell to a different value than in .env; "
+                     f"pdt uses the shell value. Run `unset {name}` to use the .env value.")
+
+
 def deploy(app_name: str, assume_yes: bool = False) -> int:
     try:
         app, provider = _load(app_name)
@@ -81,6 +90,7 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
         return 1
     problems = config.validate_app(app_name)
     config.load_env(app["dir"])
+    warn_shell_overrides(app)
     for problem in config.check_env(app["env"]):
         problems.append(f"env: {problem}")
     if app["schedule"] is None:
@@ -109,6 +119,7 @@ def secrets(app_name: str, action: str, assume_yes: bool = False,
         return 1
     config.load_env(app["dir"])
     if action in ("diff", "save"):
+        warn_shell_overrides(app)
         problems = config.check_env(app["env"])
         if problems:
             for problem in problems:
