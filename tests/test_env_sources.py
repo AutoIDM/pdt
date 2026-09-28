@@ -236,7 +236,7 @@ def test_a_shell_value_that_differs_from_dot_env_is_reported(project, monkeypatc
     monkeypatch.setenv("PDT_SECRET", "only-in-shell")
     config.load_env(folder)
     names = ["PDT_TOKEN", "PDT_SECRET", "PDT_NOTE"]
-    assert config.shell_overrides(folder, names) == ["PDT_TOKEN"]
+    assert config.shell_overrides(folder, names) == [("PDT_TOKEN", folder.resolve() / ".env")]
 
 
 def test_secrets_diff_warns_when_the_shell_hides_the_dot_env_value(project, monkeypatch, capsys):
@@ -247,4 +247,6 @@ def test_secrets_diff_warns_when_the_shell_hides_the_dot_env_value(project, monk
     monkeypatch.setattr(deploy, "_load", lambda name: (config.merged_app(name), "azure"))
     monkeypatch.setattr(deploy, "dispatch", lambda *args: 0)
     assert deploy.secrets("my-report", "diff") == 0
-    assert "unset PDT_TOKEN" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "unset PDT_TOKEN" in out
+    assert ".env" in out

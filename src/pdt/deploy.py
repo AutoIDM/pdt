@@ -77,8 +77,8 @@ def warn_shell_overrides(app: dict) -> None:
     spec = app["env"]
     names = [*(spec.get("required") or []), *(n for group in spec.get("one_of") or [] for n in group),
              *(spec.get("optional") or [])]
-    for name in config.shell_overrides(app["dir"], names):
-        console.warn(f"{name} is set in your shell to a different value than in .env; "
+    for name, source in config.shell_overrides(app["dir"], names):
+        console.warn(f"{name} is set in your shell to a different value than in {source}; "
                      f"pdt uses the shell value. Run `unset {name}` to use the .env value.")
 
 
