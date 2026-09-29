@@ -50,3 +50,13 @@ def test_the_note_names_what_was_left_out(project, capsys):
     (app["dir"] / ".ssh").mkdir()
     stage_build_context(app)
     assert "left out of the image: .ssh, credentials.json" in capsys.readouterr().out
+
+
+def test_a_meltano_link_into_the_uv_cache_is_left_out(project, tmp_path_factory):
+    app = app_in(project)
+    outside = tmp_path_factory.mktemp("cache") / "meltano"
+    outside.write_text("binary")
+    (app["dir"] / ".meltano" / "run").mkdir(parents=True)
+    (app["dir"] / ".meltano" / "run" / "bin").symlink_to(outside)
+    staged = stage_build_context(app) / "my-report"
+    assert not (staged / ".meltano").exists()
