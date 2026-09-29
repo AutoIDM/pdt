@@ -43,6 +43,7 @@ Both install routes must keep working, and a change is not done until both do:
 - `src/pdt/deploy.py` is provider-neutral deploy and destroy. It validates, then dispatches to one module per provider.
 - `src/pdt/deploy_<provider>.py` is one module per provider. AWS and Azure keep the job itself in a module under the provider (`deploy_aws_batch.py`, `deploy_azure_container_apps.py`); login, secrets, prices, and everything else the job shares with `login` and `destroy` stay in the provider module.
 - `src/pdt/deploy_common.py` holds code shared by every provider: `fail`, the `DOCKERFILE`, `gather_secrets`, and `stage_build_context`. A provider module imports from here. A provider module never imports from another provider module.
+- `src/pdt/bug_report.py` is the `sys.excepthook` that `cli.main` and the `main` of each provider script install. On an uncaught exception, which is a pdt bug, it saves a report with private data removed and offers a prefilled GitHub issue. `ConfigError` and `deploy_common.fail` are user errors and never reach it.
 - `src/pdt/utils/` is code the user's apps import. It is public API. Changing it breaks every deployed app, so treat a change here as breaking.
 - `src/pdt/examples/<name>/` ships inside the wheel. `pdt new` copies one into the user's project. An example never sets `name:` in its `config.yml`, because the copy takes the new folder's name.
 - `tests/` runs with pytest and needs no network and no cloud account.
@@ -87,7 +88,7 @@ Both install routes must keep working, and a change is not done until both do:
 
 ## Anything written to disk outside the project
 
-The tool downloads the Google Cloud CLI to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). Never write it beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
+The tool downloads the Google Cloud CLI, and saves bug reports under `bug-reports`, to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). Never write them beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
 
 ## verify/
 

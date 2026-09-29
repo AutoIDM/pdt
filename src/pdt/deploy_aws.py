@@ -35,7 +35,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, storage_cli
+from pdt import bug_report, config, console, storage_cli
 from pdt.deploy_common import (
     STORE_PREFIX, STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_name)
 from pdt.utils import email_auth
@@ -807,6 +807,7 @@ def load_app(app_name: str) -> dict:
 
 
 def main() -> int:
+    bug_report.install()
     if len(sys.argv) > 1 and sys.argv[1] == "aws":
         return subprocess.run([*AWS_CLI, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)

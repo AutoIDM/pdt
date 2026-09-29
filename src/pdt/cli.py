@@ -16,7 +16,8 @@ from pathlib import Path
 
 import rich_argparse
 
-from pdt import __version__, completion, config, console, deploy, deploy_common, scaffold
+from pdt import __version__, bug_report, completion, config, console, deploy, deploy_common
+from pdt import scaffold
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -401,6 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    bug_report.install()
     parser = build_parser()
     completion.configure(parser)
     if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
