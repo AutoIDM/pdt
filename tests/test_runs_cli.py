@@ -8,6 +8,8 @@ import pytest
 from pdt import runs_cli
 from pdt.runs_cli import Line, Run
 
+pytestmark = pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset to set TZ")
+
 T0 = datetime(2026, 9, 23, 10, 0, 12, tzinfo=UTC)
 T1 = datetime(2026, 9, 23, 10, 0, 24, tzinfo=UTC)
 EARLIER = datetime(2026, 9, 22, 10, 0, 0, tzinfo=UTC)
