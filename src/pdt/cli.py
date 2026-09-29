@@ -404,10 +404,12 @@ def main() -> int:
     parser = build_parser()
     completion.configure(parser)
     if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
-        # Before argparse, so the cloud CLI parses its own flags.
+        # Before argparse, so the cloud CLI parses its own flags. --project keeps
+        # `uvx pdt aws` working; deploy.provider_command explains why.
         script = Path(__file__).with_name(CLOUD_CLIS[sys.argv[1]])
         return subprocess.run(
-            ["uv", "run", "--script", str(script), *sys.argv[1:]]).returncode
+            ["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
+             *sys.argv[1:]]).returncode
     args = parser.parse_args()
     if args.command is None:
         parser.print_help()

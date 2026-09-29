@@ -45,7 +45,13 @@ def _load(app_name: str):
 def provider_command(provider: str, command: str, app_name: str, assume_yes: bool,
                      extra: list[str] | None = None) -> list[str]:
     script = Path(__file__).with_name(PROVIDERS[provider])
-    args = ["uv", "run", "--script", str(script), command, app_name]
+    # When someone runs pdt with `uvx`, uv installs pdt inside its own cache
+    # folder, so this script is in the cache too. uv refuses to run a script
+    # from its cache, because it treats the script's folder as the project.
+    # --project names the current folder instead. The script still installs
+    # only the packages listed at its top.
+    args = ["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
+            command, app_name]
     if assume_yes:
         args.append("--yes")
     return args + (extra or [])
