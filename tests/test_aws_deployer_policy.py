@@ -23,6 +23,14 @@ CALLER_ARNS = [f"arn:aws:iam::{ACCOUNT}:user/*", f"arn:aws:iam::{ACCOUNT}:role/*
 SERVICE_LINKED_ARN = f"arn:aws:iam::{ACCOUNT}:role/aws-service-role/batch.amazonaws.com/*"
 BROAD_POLICY = {"Version": "2012-10-17", "Statement": [
     {"Effect": "Allow", "Action": DEPLOYER_ACTIONS, "Resource": "*"}]}
+# The resource types AWS accepts for these actions. SimulatePrincipalPolicy denies any
+# other type, even to a login granted "*", so a scope must not pair them.
+APPLIES_TO = {
+    "logs:GetLogEvents": "arn:aws:logs:*:log-group:*:*",
+    "batch:DeleteJobQueue": "arn:aws:batch:*:job-queue/*",
+    "ecs:DeleteCluster": "arn:aws:ecs:*:cluster/*",
+    "ecs:DescribeClusters": "arn:aws:ecs:*:cluster/*",
+}
 
 
 def policy() -> dict:
@@ -97,6 +105,8 @@ class PolicyIam:
         self.statements = granted["Statement"]
 
     def allows(self, action: str, resource: str, context: dict) -> bool:
+        if resource != "*" and not fnmatchcase(resource, APPLIES_TO.get(action, "*")):
+            return False
         for statement in self.statements:
             if not any(fnmatchcase(action, p) for p in listed(statement["Action"])):
                 continue

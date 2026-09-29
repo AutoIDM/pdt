@@ -128,9 +128,12 @@ POLICY_SCOPES = [
     {"Action": ["iam:SimulatePrincipalPolicy"],
      "Resource": ["arn:aws:iam::{account}:user/*", "arn:aws:iam::{account}:role/*"]},
     {"Action": ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:DescribeLogStreams",
-                "logs:FilterLogEvents", "logs:GetLogEvents", "logs:ListTagsForResource",
+                "logs:FilterLogEvents", "logs:ListTagsForResource",
                 "logs:PutRetentionPolicy", "logs:TagResource"],
      "Resource": LOG_GROUP_ARNS},
+    # GetLogEvents reads a log stream, which only the ":*" group ARNs cover.
+    {"Action": ["logs:GetLogEvents"],
+     "Resource": [arn for arn in LOG_GROUP_ARNS if arn.endswith(":*")]},
     {"Action": ["scheduler:CreateSchedule", "scheduler:DeleteSchedule",
                 "scheduler:GetSchedule", "scheduler:UpdateSchedule"],
      "Resource": [f"arn:aws:scheduler:{{region}}:{{account}}:schedule/{SCHEDULE_GROUP}/*"]},
@@ -155,13 +158,16 @@ POLICY_SCOPES = [
                 "batch:UpdateComputeEnvironment"],
      "Resource": [BATCH_ARNS["compute_environment"]]},
     # A job queue names the compute environment it feeds, so its calls touch both.
-    {"Action": ["batch:CreateJobQueue", "batch:DeleteJobQueue", "batch:UpdateJobQueue"],
+    {"Action": ["batch:CreateJobQueue", "batch:UpdateJobQueue"],
      "Resource": [BATCH_ARNS["job_queue"], BATCH_ARNS["compute_environment"]]},
+    {"Action": ["batch:DeleteJobQueue"], "Resource": [BATCH_ARNS["job_queue"]]},
     {"Action": ["batch:DeregisterJobDefinition", "batch:RegisterJobDefinition"],
      "Resource": [BATCH_ARNS["job_definition"], BATCH_ARNS["job_definition_revision"]]},
     {"Action": ["batch:TagResource"], "Resource": list(BATCH_ARNS.values())},
     # Destroy still clears the cluster a Fargate deployment of the same app left behind.
-    {"Action": ["ecs:DeleteCluster", "ecs:DescribeClusters", "ecs:ListTagsForResource"],
+    {"Action": ["ecs:DeleteCluster", "ecs:DescribeClusters"],
+     "Resource": ["arn:aws:ecs:{region}:{account}:cluster/pdt"]},
+    {"Action": ["ecs:ListTagsForResource"],
      "Resource": ["arn:aws:ecs:{region}:{account}:cluster/pdt",
                   "arn:aws:ecs:{region}:{account}:task-definition/pdt-*:*"]},
     {"Action": [
