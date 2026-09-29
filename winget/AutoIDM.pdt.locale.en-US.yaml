@@ -3,7 +3,7 @@ PackageIdentifier: AutoIDM.pdt
 PackageVersion: {version}
 PackageLocale: en-US
 Publisher: AutoIDM
-PublisherUrl: https://github.com/AutoIDM
+PublisherUrl: https://www.autoidm.com/service
 PackageName: pdt
 PackageUrl: https://github.com/AutoIDM/pdt
 License: MIT
