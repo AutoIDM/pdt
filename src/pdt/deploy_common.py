@@ -68,7 +68,7 @@ BUILD_EXCLUDES = (
     ".DS_Store", ".gcloud", "*.json.key", "*-key.json",
     "service-account*.json", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks",
     "credentials.json", "credentials", "id_rsa*", "id_ed25519*", "id_ecdsa*",
-    ".ssh", ".pgpass", ".netrc", ".npmrc", ".pypirc", ".pdt",
+    ".ssh", ".pgpass", ".netrc", ".npmrc", ".pypirc", ".pdt", ".meltano",
 )
 STORE_PREFIX = "pdt-data"
 STORE_TAGS = {"managed-by": "pdt", "pdt-lifecycle": "retain"}
