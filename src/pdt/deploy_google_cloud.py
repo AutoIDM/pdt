@@ -23,8 +23,9 @@ Shared across apps:
   Artifact Registry repo PDT_ARTIFACT_REGISTRY_REPO env var, default "pdt"
   Service account        PDT_CLOUD_RUN_SERVICE_ACCOUNT env var, default
                          pdt-runner@<project> (created if missing)
-  Storage bucket         pdt-data-<suffix> (kept after destroy; one folder
-                         per app, the runner may write only its own)
+  Storage bucket         pdt-data-<suffix> (kept after destroy; one managed
+                         folder per app, the runner may list and write only
+                         its own)
 
 If gcloud is not installed, pdt/gcloud_sdk.py downloads a
 pinned copy to the pdt data folder and every call here uses that copy.
@@ -40,6 +41,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -50,6 +52,9 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# gRPC logs an info line on every gcloud subprocess once the store has been
+# used, and no child of this script uses gRPC.
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 from pdt import config
 from pdt import console
 from pdt import gcloud_sdk
@@ -64,6 +69,9 @@ from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
 GCLOUD = "gcloud"
+
+# The format Google enforces for a new project id.
+PROJECT_ID = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
 
 APIS = (
     "artifactregistry.googleapis.com",
@@ -95,20 +103,28 @@ RECENT_RUNS = 3
 
 
 # A freshly enabled API reports SERVICE_DISABLED for a few minutes, and Cloud
-# Scheduler reports ABORTED when a job changed a moment ago. Both pass.
+# Scheduler reports ABORTED when a job changed a moment ago. Both pass, so every
+# gcloud call waits them out.
 TRANSIENT = ("SERVICE_DISABLED", "ABORTED")
+RETRY_WAITS = (10, 20, 40, 60, 60, 60)
+
+
+def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
+    stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
+    for wait in (*RETRY_WAITS, None):
+        proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
+        if proc.returncode == 0 or wait is None or not any(m in proc.stderr for m in TRANSIENT):
+            return proc
+        title = re.search(r"serviceTitle: (.+)", proc.stderr)
+        what = title.group(1).strip() if title else "Google Cloud"
+        console.bullet(f"{what} is not ready yet; retrying in {wait}s...", indent=4)
+        time.sleep(wait)
 
 
 def run_quiet(*args: str, data: str | None = None) -> str:
-    for wait in (10, 20, 40, 60, 60, 0):
-        proc = subprocess.run([GCLOUD, *args], input=data if data is not None else "",
-                              capture_output=True, text=True)
-        if proc.returncode == 0:
-            return proc.stdout
-        if wait == 0 or not any(marker in proc.stderr for marker in TRANSIENT):
-            break
-        console.bullet(f"Google Cloud is not ready yet; retrying in {wait}s...", indent=4)
-        time.sleep(wait)
+    proc = gcloud(*args, data=data)
+    if proc.returncode == 0:
+        return proc.stdout
     console.say(proc.stderr.strip())
     fail(f"pdt gcloud {' '.join(args[:4])} failed; fix the problem above and re-run the deploy")
 
@@ -120,8 +136,7 @@ def run_stream(*args: str) -> None:
 
 
 def describe_json(*args: str):
-    proc = subprocess.run([GCLOUD, *args, "--format=json"], stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True)
+    proc = gcloud(*args, "--format=json")
     if proc.returncode != 0:
         return None
     return json.loads(proc.stdout or "null")
@@ -134,8 +149,7 @@ def not_found(detail: str) -> bool:
 
 
 def read_json_or_none(*args: str):
-    proc = subprocess.run([GCLOUD, *args, "--format=json"], stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True)
+    proc = gcloud(*args, "--format=json")
     if proc.returncode == 0:
         return json.loads(proc.stdout or "null")
     detail = proc.stderr.strip()
@@ -228,24 +242,65 @@ def choose_project(app: dict, requested: str) -> str:
     available = [line.split("\t") for line in
                  run_quiet("projects", "list", "--format=value(projectId,name)").splitlines()
                  if line.strip()]
-    if not available:
-        fail("your Google account has no project yet; create one at "
-             "https://console.cloud.google.com/projectcreate")
     if requested:
         console.warn(f"platform.project {requested!r} is not a real Google Cloud project id.")
-    console.heading("Your Google Cloud projects:")
-    for index, entry in enumerate(available, 1):
-        console.choice(index, entry[0], entry[-1])
+    if available:
+        console.heading("Your Google Cloud projects:")
+        for index, entry in enumerate(available, 1):
+            console.choice(index, entry[0], entry[-1])
+        choices = f"1-{len(available)}, or type a new project id to create it"
+    else:
+        console.note("Your Google account has no Google Cloud project yet.")
+        choices = "type a new project id to create it"
     try:
-        answer = input(f"Deploy to which one? [1-{len(available)}] ").strip()
+        answer = input(f"Deploy to which one? [{choices}] ").strip()
     except EOFError:
         answer = ""
-    if not answer.isdigit() or not 1 <= int(answer) <= len(available):
+    ids = [entry[0] for entry in available]
+    if answer.isdigit() and 1 <= int(answer) <= len(ids):
+        project = ids[int(answer) - 1]
+    elif answer in ids:
+        project = answer
+    elif answer == "":
         fail("no Google Cloud project selected")
-    project = available[int(answer) - 1][0]
+    else:
+        if not PROJECT_ID.fullmatch(answer):
+            fail(f"{answer} is not a valid Google Cloud project id: use 6 to 30 lowercase "
+                 "letters, digits, and hyphens, starting with a letter")
+        if not console.confirm(f"Create Google Cloud project {answer}?"):
+            fail("no Google Cloud project selected")
+        create_project(answer)
+        project = answer
     saved = config.save_platform_key(app, "project", project)
     console.done(f"Saved project {project} to {saved.relative_to(config.find_project())}.")
     return project
+
+
+def create_project(project: str) -> None:
+    console.step(f"creating project {project}")
+    run_quiet("projects", "create", project, "--name", project)
+    accounts = list_json("billing", "accounts", "list", "--filter=open=true")
+    if not accounts:
+        fail(f"project {project} was created but your account has no open billing account "
+             "to attach; add one at https://console.cloud.google.com/billing "
+             "and run the deploy again")
+    account = accounts[0]
+    if len(accounts) > 1:
+        console.heading("Your open billing accounts:")
+        for index, entry in enumerate(accounts, 1):
+            console.choice(index, entry["displayName"], entry["name"].removeprefix("billingAccounts/"))
+        try:
+            answer = input(f"Which billing account should pay for this project? "
+                           f"[1-{len(accounts)}] ").strip()
+        except EOFError:
+            answer = ""
+        if not (answer.isdigit() and 1 <= int(answer) <= len(accounts)):
+            fail(f"project {project} was created but no billing account was chosen; "
+                 "run the deploy again and pick one from the list")
+        account = accounts[int(answer) - 1]
+    account_id = account["name"].removeprefix("billingAccounts/")
+    run_quiet("billing", "projects", "link", project, "--billing-account", account_id)
+    console.done(f"Linked billing account {account['displayName']} to {project}.")
 
 
 def relogin(assume_yes: bool) -> int:
@@ -316,7 +371,15 @@ def deployer_store(project: str, app_name: str) -> Store:
     return Store(store_url(store_bucket(project), app_name), Credentials(token))
 
 
-def store_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
+def folder_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
+    folder = store_url(bucket, app_name)
+    policy = describe_json("storage", "managed-folders", "get-iam-policy", folder) or {}
+    return any(binding.get("role") == STORE_ROLE
+               and f"serviceAccount:{sa}" in (binding.get("members") or [])
+               for binding in policy.get("bindings") or [])
+
+
+def bucket_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
     policy = describe_json("storage", "buckets", "get-iam-policy", f"gs://{bucket}") or {}
     for binding in policy.get("bindings") or []:
         condition = binding.get("condition") or {}
@@ -325,6 +388,29 @@ def store_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
                 and f"serviceAccount:{sa}" in (binding.get("members") or [])):
             return True
     return False
+
+
+def grant_store_access(bucket: str, app_name: str, sa: str) -> None:
+    folder = store_url(bucket, app_name)
+    console.step(f"granting {sa} write access to {bucket}/{app_name}/")
+    if describe_json("storage", "managed-folders", "describe", folder) is None:
+        run_quiet("storage", "managed-folders", "create", folder)
+    run_quiet("storage", "managed-folders", "add-iam-policy-binding", folder,
+              "--member", f"serviceAccount:{sa}", "--role", STORE_ROLE)
+
+
+def revoke_store_access(bucket: str, app_name: str, sa: str,
+                        folder: bool, bucket_binding: bool) -> None:
+    # The managed folder stays: it holds the app's data in the kept bucket,
+    # and gcloud refuses to delete a managed folder that is not empty.
+    console.step(f"removing {sa} write access to {bucket}/{app_name}/")
+    member = ("--member", f"serviceAccount:{sa}", "--role", STORE_ROLE)
+    if folder:
+        run_quiet("storage", "managed-folders", "remove-iam-policy-binding",
+                  store_url(bucket, app_name), *member)
+    if bucket_binding:
+        run_quiet("storage", "buckets", "remove-iam-policy-binding", f"gs://{bucket}",
+                  *member, "--condition", store_condition(bucket, app_name))
 
 
 def scheduler_description(app_name: str) -> str:
@@ -666,10 +752,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                       "--uniform-bucket-level-access", "--public-access-prevention")
             run_quiet("storage", "buckets", "update", f"gs://{bucket}", "--update-labels",
                       ",".join(f"{key}={value}" for key, value in STORE_TAGS.items()))
-        console.step(f"granting {sa} write access to {bucket}/{name}/")
-        run_quiet("storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
-                  "--member", f"serviceAccount:{sa}", "--role", STORE_ROLE,
-                  "--condition", store_condition(bucket, name))
+        grant_store_access(bucket, name, sa)
     if secret_state:
         if secret_state == "create":
             console.step(f"creating secret {sid}")
@@ -787,7 +870,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
     store = deployer_store(project, name) if app["storage"] else None
     store_present = store is not None and read_json_or_none(
         "storage", "buckets", "describe", f"gs://{bucket}") is not None
-    revoke_grant = store_present and store_grant_exists(bucket, name, sa)
+    revoke_folder = store_present and folder_grant_exists(bucket, name, sa)
+    revoke_bucket = store_present and bucket_grant_exists(bucket, name, sa)
+    revoke_grant = revoke_folder or revoke_bucket
     unmanaged_app_resource = ((scheduler is not None and not delete_scheduler)
                               or (run_job is not None and not delete_job))
     delete_repo = (repository_owned and not other_regional_jobs and not other_images
@@ -851,10 +936,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         return 1
 
     if revoke_grant:
-        console.step(f"removing {sa} write access to {bucket}/{name}/")
-        run_quiet("storage", "buckets", "remove-iam-policy-binding", f"gs://{bucket}",
-                  "--member", f"serviceAccount:{sa}", "--role", STORE_ROLE,
-                  "--condition", store_condition(bucket, name))
+        revoke_store_access(bucket, name, sa, revoke_folder, revoke_bucket)
     if delete_scheduler:
         console.step(f"deleting Cloud Scheduler job {job}")
         run_quiet("scheduler", "jobs", "delete", job,

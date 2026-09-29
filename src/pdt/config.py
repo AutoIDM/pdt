@@ -16,11 +16,15 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
 from dotenv import load_dotenv
+
+from pdt import console
 
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
@@ -43,6 +47,7 @@ PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
     "subscription", "resource_group", "environment",
+    "timezone",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
 # Where each known key belongs, so a key in the wrong section gets told
@@ -53,12 +58,12 @@ KEY_HOME = {
     "platform": f"the top level of {PROJECT_FILE} or of the app's {APP_FILE}",
     "name": f"the app's apps: entry in {PROJECT_FILE}",
     "schedule": APP_LEVEL,
-    "timezone": APP_LEVEL,
     "config": APP_LEVEL,
     "env": APP_LEVEL,
     "storage": APP_LEVEL,
     "enabled": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
+    "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
 }
 # Keys that belong nowhere any more. The message says what to do instead.
@@ -100,6 +105,12 @@ def data_home() -> Path:
     if os.name == "nt":
         return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+
+
+def machine_data_home() -> Path:
+    """The machine-wide data folder on Windows, %ProgramData%\\pdt, where a scheduled
+    task that runs as SYSTEM and the user who deployed it both reach an app's files."""
+    return Path(os.environ.get("ProgramData") or r"C:\ProgramData") / "pdt"
 
 
 def find_project(start: Path | None = None) -> Path:
@@ -174,7 +185,16 @@ def mapping(cfg: dict, key: str, where: str) -> dict:
     return value
 
 
+def app_name_problem(name: str) -> str:
+    if name in ("", ".", "..") or any(c in name for c in "/\\\0") or Path(name).name != name:
+        return f"{name!r} is not an app name; use one folder name with no path separators"
+    return ""
+
+
 def merged_app(name: str) -> dict:
+    problem = app_name_problem(name)
+    if problem != "":
+        raise ConfigError(problem)
     app_dir = find_project() / name
     if not (app_dir / "run.py").is_file():
         raise ConfigError(f"no app named {name!r} (no {name}/run.py)")
@@ -183,16 +203,19 @@ def merged_app(name: str) -> dict:
     own = load_yaml(app_dir / APP_FILE)
     entry_where = f"{PROJECT_FILE}: apps entry {name!r}"
     own_where = f"{name}/{APP_FILE}"
+    platform = {
+        **mapping(root_cfg, "platform", PROJECT_FILE),
+        **mapping(entry, "platform", entry_where),
+        **mapping(own, "platform", own_where),
+    }
+    default_timezone = platform.get(
+        "timezone", "local" if platform.get("provider") == "windows" else "Etc/UTC")
     return {
         "name": name,
         "dir": app_dir,
         "schedule": own.get("schedule", entry.get("schedule")),
-        "timezone": own.get("timezone", entry.get("timezone", "Etc/UTC")),
-        "platform": {
-            **mapping(root_cfg, "platform", PROJECT_FILE),
-            **mapping(entry, "platform", entry_where),
-            **mapping(own, "platform", own_where),
-        },
+        "timezone": own.get("timezone", entry.get("timezone", default_timezone)),
+        "platform": platform,
         "config": {
             **mapping(entry, "config", entry_where),
             **mapping(own, "config", own_where),
@@ -212,29 +235,86 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
         path = project_file
     else:
         path = app["dir"] / APP_FILE
-    lines = path.read_text().splitlines() if path.is_file() else []
-    start = next((i for i, line in enumerate(lines) if line.strip() == "platform:"), None)
-    if start is None:
-        lines += ["platform:", f'  {key}: "{value}"']
-    else:
-        end = start + 1
-        while end < len(lines) and (lines[end].startswith((" ", "\t")) or lines[end].strip() == ""):
-            end += 1
-        block = range(start + 1, end)
-        existing = next((i for i in block if lines[i].strip().startswith(f"{key}:")), None)
-        if existing is not None:
-            lines[existing] = f'{_indent(lines[existing])}{key}: "{value}"'
+    with locked(path):
+        lines = path.read_text().splitlines() if path.is_file() else []
+        start = next((i for i, line in enumerate(lines) if line.strip() == "platform:"), None)
+        if start is None:
+            lines += ["platform:", f"  {key}: {yaml_quoted(value)}"]
         else:
-            first = next((i for i in block
-                          if lines[i].strip() and not lines[i].strip().startswith("#")), None)
-            indent = _indent(lines[first]) if first is not None else "  "
-            lines.insert((first if first is not None else start) + 1, f'{indent}{key}: "{value}"')
+            end = start + 1
+            while end < len(lines) and (lines[end].startswith((" ", "\t")) or lines[end].strip() == ""):
+                end += 1
+            block = range(start + 1, end)
+            existing = next((i for i in block if lines[i].strip().startswith(f"{key}:")), None)
+            if existing is not None:
+                lines[existing] = f"{_indent(lines[existing])}{key}: {yaml_quoted(value)}"
+            else:
+                first = next((i for i in block
+                              if lines[i].strip() and not lines[i].strip().startswith("#")), None)
+                indent = _indent(lines[first]) if first is not None else "  "
+                lines.insert((first if first is not None else start) + 1, f"{indent}{key}: {yaml_quoted(value)}")
+        write_text_atomically(path, "\n".join(lines) + "\n")
+    return path
+
+
+def set_app_enabled(name: str, enabled: bool) -> Path:
+    # Edit the text rather than rewrite the yaml, so the user's comments survive.
+    path = find_project() / name / APP_FILE
+    lines = path.read_text().splitlines() if path.is_file() else []
+    value = f"enabled: {'true' if enabled else 'false'}"
+    existing = next((i for i, line in enumerate(lines) if line.startswith("enabled:")), None)
+    if existing is None:
+        lines.append(value)
+    else:
+        lines[existing] = value
     path.write_text("\n".join(lines) + "\n")
     return path
 
 
 def _indent(line: str) -> str:
     return line[:len(line) - len(line.lstrip())]
+
+
+def yaml_quoted(value: str) -> str:
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def write_text_atomically(path: Path, text: str) -> None:
+    # The temporary file sits in the same folder because a rename is atomic only
+    # within one filesystem.
+    tmp = tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=path.name + ".",
+                                      suffix=".tmp", delete=False)
+    try:
+        with tmp:
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp.name, path)
+    except BaseException:
+        os.unlink(tmp.name)
+        raise
+
+
+@contextmanager
+def locked(path: Path):
+    # Hold an exclusive lock on a sibling .lock file while the caller reads and rewrites path.
+    with open(path.with_name(path.name + ".lock"), "w") as handle:
+        fd = handle.fileno()
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 STATE_DIR = ".pdt"
@@ -248,7 +328,14 @@ def read_state() -> dict:
     path = _state_path()
     if not path.is_file():
         return {}
-    return json.loads(path.read_text() or "{}")
+    try:
+        state = json.loads(path.read_text() or "{}")
+    except ValueError:
+        state = None
+    if not isinstance(state, dict):
+        console.warn(f"{STATE_DIR}/{path.name} is not valid; treating every app as not deployed")
+        return {}
+    return state
 
 
 def write_state(state: dict) -> None:
@@ -256,7 +343,7 @@ def write_state(state: dict) -> None:
     path.parent.mkdir(exist_ok=True)
     # Self-ignoring, so projects created before this dir existed stay clean.
     (path.parent / ".gitignore").write_text("*\n")
-    path.write_text(json.dumps(state, indent=2) + "\n")
+    write_text_atomically(path, json.dumps(state, indent=2) + "\n")
 
 
 def mark_deployed(name: str, deployed: bool) -> None:

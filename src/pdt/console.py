@@ -35,8 +35,8 @@ def width() -> int:
 
 
 def say(message: str = "") -> None:
-    """A plain line. Square brackets in `message` stay literal."""
-    _console.print(message, markup=False)
+    """A plain line. Square brackets and :emoji: codes in `message` stay literal."""
+    _console.print(message, markup=False, emoji=False)
 
 
 def progress(text: str) -> None:

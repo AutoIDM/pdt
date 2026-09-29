@@ -8,7 +8,8 @@ import tempfile
 from pathlib import Path
 
 from pdt import __version__, console
-from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_project
+from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project
+from pdt.utils.env_secret import private_file
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
 STARTER = "hello-world"
@@ -53,6 +54,7 @@ GITIGNORE_TEXT = """\
 .env.*
 .secrets/
 .pdt/
+*.lock
 __pycache__/
 .venv/
 .DS_Store
@@ -223,6 +225,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
         path = target / name
         if not path.exists():
             path.write_text(body)
+    private_file(target / ".env")
     if starting_fresh:
         copy_example(target, STARTER, EXAMPLES / STARTER)
 
@@ -282,6 +285,9 @@ def list_examples() -> int:
 
 
 def new_app(name: str, source: str | None) -> int:
+    problem = app_name_problem(name)
+    if problem != "":
+        raise ConfigError(problem)
     root = find_project()
     destination = root / name
     if destination.exists():

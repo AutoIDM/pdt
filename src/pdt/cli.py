@@ -18,6 +18,7 @@ import rich_argparse
 
 from pdt import __version__, completion, config, console, deploy, deploy_common, scaffold
 from pdt.config import ConfigError
+from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
 CLOUD_CLIS = {
@@ -52,6 +53,7 @@ APP_QUESTIONS = {
     "login": "Which app's cloud provider do you want to sign in to?",
     "destroy": "Which app do you want to destroy?",
     "secrets": "Which app's secrets?",
+    "storage": "Which app's files do you want to manage?",
     "runs": "Which app's runs do you want to see?",
     "logs": "Which app's log do you want to read?",
     "health": "Which app do you want to check?",
@@ -164,10 +166,49 @@ def cmd_run(args) -> int:
 
 
 def cmd_deploy(args) -> int:
+    if args.skip_failures and not args.all:
+        console.error("--skip-failures only works with --all")
+        return 1
+    if args.all:
+        if args.app is not None:
+            console.error("pick an app or --all, not both")
+            return 1
+        return deploy_all(args.yes, args.skip_failures)
     name = choose_app(args.app, "deploy")
     if name is None:
         return 1
     return deploy.deploy(name, assume_yes=args.yes)
+
+
+def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
+    names = config.find_apps()
+    if not names:
+        say_no_apps()
+        return 1
+    ask = not skip_failures and can_prompt(None)
+    failed: list[str] = []
+    for index, name in enumerate(names, 1):
+        console.heading(f"Deploying {name} ({index} of {len(names)})")
+        code = deploy.deploy(name, assume_yes=assume_yes)
+        if code == 0:
+            continue
+        failed.append(name)
+        console.error(f"{name} did not deploy.")
+        if index < len(names) and not skip_failures and not (
+                ask and console.confirm(
+                    f"Skip the failing app {name} and deploy the rest?")):
+            console.say("Fix the problem above and run pdt deploy --all again, "
+                        "or add --skip-failures to go on past it.")
+            return code
+        if ask and not assume_yes and console.confirm(
+                f"Disable the failing app {name}?"):
+            path = config.set_app_enabled(name, False)
+            console.done(f"Disabled {name} in {path.relative_to(config.find_project())}. "
+                         "Set enabled: true there to bring it back.")
+    if failed:
+        console.warn(f"Not deployed: {', '.join(failed)}")
+        return 1
+    return 0
 
 
 def cmd_login(args) -> int:
@@ -192,7 +233,10 @@ def cmd_secrets(args) -> int:
 
 
 def cmd_storage(args) -> int:
-    return deploy.storage(args.app, args.rest)
+    name = choose_app(args.app, "storage")
+    if name is None:
+        return 1
+    return deploy.storage(name, args.rest)
 
 
 def window_options(args) -> list[str]:
@@ -278,6 +322,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("--all", action="store_true", help="deploy every enabled app, in order")
+    p.add_argument("--skip-failures", action="store_true",
+                   help="with --all, go on past an app that fails to deploy instead of asking")
     p.set_defaults(func=cmd_deploy)
     p = add_parser("login", help="sign in again to an app's cloud provider")
     app = p.add_argument("app", nargs="?",
@@ -303,7 +350,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_secrets)
     p = add_parser("storage", help="read or manage an app's data store")
-    app = p.add_argument("app", help="the app's folder name")
+    app = p.add_argument("app", nargs="?",
+                         help="the app's folder name; omit to see the choices")
     app.completer = completion.apps
     p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|destroy [args...]")
     p.set_defaults(func=cmd_storage)
