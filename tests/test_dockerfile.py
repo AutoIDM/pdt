@@ -49,6 +49,8 @@ def test_a_dockerfile_is_fine_on_every_cloud_provider(project):
     assert validate_app("my-report") == []
     (project / "pdt.yml").write_text("platform:\n  provider: aws\n  account: '123456789012'\n")
     assert validate_app("my-report") == []
+    (project / "pdt.yml").write_text("platform:\n  provider: snowflake\n  account: myorg-myacct\n")
+    assert validate_app("my-report") == []
 
 
 def test_a_leftover_runtime_key_is_told_to_go(project):

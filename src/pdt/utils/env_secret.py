@@ -4,9 +4,11 @@
     env_secret.update("TAP_SALESFORCE_REFRESH_TOKEN", new_token)
 
 PDT_ENV_SECRET_RESOURCE, set by deploy, names the app's env secret (see
-deploy_common.py). Without it, on the user's computer, `update` writes
-the nearest .env and then `pdt secrets <app> set`, because a rotated
-credential has one current value and the deployed job needs it too.
+deploy_common.py): an AWS Secrets Manager ARN, a Google Secret Manager
+name, an Azure Key Vault secret URL, or a Snowflake secret as
+snow://<database>.<schema>.<secret>. Without it, on the user's computer,
+`update` writes the nearest .env and then `pdt secrets <app> set`, because
+a rotated credential has one current value and the deployed job needs it too.
 """
 
 from __future__ import annotations
@@ -153,6 +155,28 @@ class KeyVault(Backend):
                 client.update_secret_properties(self.name, version.version, enabled=False)
 
 
+class SnowflakeSecret(Backend):
+    """Snowflake: snow://<database>.<schema>.<secret>, a GENERIC_STRING secret.
+
+    Snowflake mounts the secret into the job as PDT_ENV_JSON when the job
+    starts, and SQL cannot read a secret's value back, so the mounted copy
+    is the current value. A write changes the secret for the next run and
+    the job's own copy for this one.
+    """
+
+    def read(self) -> dict[str, str]:
+        return json.loads(os.environ.get("PDT_ENV_JSON", "").strip() or "{}")
+
+    def write(self, values: dict[str, str]) -> None:
+        from pdt.utils import snowflake_connection
+        name = self.resource.removeprefix("snow://")
+        payload = json.dumps(values, sort_keys=True)
+        with snowflake_connection.connect() as conn:
+            snowflake_connection.execute(
+                conn, f"ALTER SECRET {name} SET SECRET_STRING = "
+                      f"{snowflake_connection.literal(payload)}")
+
+
 class EnvFile(Backend):
     """No cloud secret: the nearest .env file that holds the var."""
 
@@ -195,6 +219,8 @@ def backend(resource: str | None = None) -> Backend:
         return SecretManager(resource)
     if resource.startswith("https://") and "/secrets/" in resource:
         return KeyVault(resource)
+    if resource.startswith("snow://"):
+        return SnowflakeSecret(resource)
     if resource == "":
         return EnvFile(resource)
     raise ValueError(f"{RESOURCE_ENV} names no secret store pdt knows: {resource}")

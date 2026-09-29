@@ -1,6 +1,6 @@
 # pdt
 
-Run scheduled jobs — reports, integrations, automations — and deploy them to AWS, Azure, Google Cloud, or Windows Task Scheduler with one command.
+Run scheduled jobs — reports, integrations, automations — and deploy them to AWS, Azure, Google Cloud, Snowflake, or Windows Task Scheduler with one command.
 
 ## Install
 
@@ -24,7 +24,7 @@ pdt init my-jobs
 
 `pdt init` asks where the project should live, which cloud you want, and which region. It warns you if you are about to create a project somewhere unwise, such as your home folder. The folder name is optional: `pdt init` with no name uses the current folder, and `pdt init DIR` uses `DIR`, creating it if it is not there yet. Add `--yes` to take the defaults and answer nothing.
 
-Region is the only setting it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it.
+Region is the only setting it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it. For Snowflake the one question is the account, written as `orgname-accountname`, because a Snowflake account has one region. The deploy asks for your Snowflake user name if it is not set, and writes the region it finds.
 
 Starting in an empty folder also gives you a working app called `hello-world`. Run it straight away:
 
@@ -103,17 +103,18 @@ pdt login my-report
 | `pdt health [APP]` | show whether each app's last run succeeded; exits 1 when one failed |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
+| `pdt snow ...` | run the Snowflake CLI that pdt installs |
 | `pdt completion [SHELL]` | turn on tab completion for a shell |
 
 Leave `APP` off `run`, `deploy`, `destroy`, `secrets`, or `login`, or mistype it, and pdt lists the apps in the project so you can pick one.
 
-`pdt az` and `pdt gcloud` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
+`pdt az`, `pdt gcloud`, and `pdt snow` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
 
 ## Keeping files between runs
 
 Your app runs, writes some files, and stops. Then the computer it ran on is thrown away, and the files go with it. So pdt gives every app a folder in your cloud account that stays. Deploy the app, destroy it, deploy it again: the folder and everything in it is still there.
 
-pdt creates one bucket per cloud account, named `pdt-data-` plus a short code, and gives each app its own folder inside it. When your app runs in the cloud, `PDT_STORAGE_URL` points at that folder. A Windows scheduled task points it at `%ProgramData%\pdt\APP\storage\`. When you run `pdt run APP` on your own computer, it points at `.pdt/storage/APP/` inside your project instead. The app code is the same in every place.
+pdt creates one bucket per cloud account, named `pdt-data-` plus a short code, and gives each app its own folder inside it. On Snowflake the store is the internal stage `PDT_DATA.PUBLIC.PDT_DATA` in the database `PDT_DATA`, with one folder per app. When your app runs in the cloud, `PDT_STORAGE_URL` points at that folder. A Windows scheduled task points it at `%ProgramData%\pdt\APP\storage\`. When you run `pdt run APP` on your own computer, it points at `.pdt/storage/APP/` inside your project instead. The app code is the same in every place.
 
 Write and read files with `pdt.utils.storage`:
 
@@ -199,9 +200,51 @@ platform:
 
 `project` is optional. When it is missing or wrong, the deploy lists your projects and asks you to choose one, then writes your answer here.
 
+### Snowflake
+
+```yaml
+platform:
+  provider: snowflake
+  account: myorg-myaccount
+  # Written for you if pdt has to ask.
+  user: jon
+  # Written for you on the first deploy.
+  region: AWS_US_EAST_1
+```
+
+`account` is your account identifier, `orgname-accountname`. When it or `user` is missing, the deploy asks for it and writes your answer here.
+
+By default pdt opens your browser to sign in, and keeps the login's cached token so the next command needs no browser. On a build server, set `SNOWFLAKE_ACCOUNT` and `SNOWFLAKE_USER`, and either `SNOWFLAKE_PRIVATE_KEY_FILE` (the path to a key pair's private key file) or `SNOWFLAKE_PASSWORD` (a programmatic access token). `SNOWFLAKE_ROLE` picks the role when you set it.
+
+Deploy creates these in your account. The database `PDT` holds one schema per app, and that schema holds the app's image repository, the job specification stage, the secret with your env vars, a small function that reads the secret back, and the task that runs the job on its schedule. The compute pool `PDT` is shared by every app: one `CPU_X64_XS` node that suspends after 60 seconds idle. The external access integration `PDT` lets jobs reach any host on port 443. The warehouse `PDT` (`XSMALL`, suspended after 60 seconds) is the one pdt uses to read logs. The database `PDT_DATA` is the data store. Destroying the last app removes everything except `PDT_DATA`.
+
+Snowflake names cannot hold a hyphen, so an app called `my-report` is named `PDT_MY_REPORT`: upper case, with underscores.
+
+Snowflake builds the image itself, so a Snowflake deploy needs no Docker on your computer.
+
+The role you deploy with needs privileges that only an `ACCOUNTADMIN` can grant. Deploy prints the statements when one is missing. Send them to your `ACCOUNTADMIN` once, with your role in place of `<role>`:
+
+```sql
+GRANT CREATE DATABASE ON ACCOUNT TO ROLE <role>;
+GRANT CREATE WAREHOUSE ON ACCOUNT TO ROLE <role>;
+GRANT CREATE COMPUTE POOL ON ACCOUNT TO ROLE <role>;
+GRANT CREATE INTEGRATION ON ACCOUNT TO ROLE <role>;
+GRANT EXECUTE TASK ON ACCOUNT TO ROLE <role>;
+GRANT EXECUTE MANAGED TASK ON ACCOUNT TO ROLE <role>;
+GRANT APPLICATION ROLE SNOWFLAKE.EVENTS_VIEWER TO ROLE <role>;
+```
+
+Optionally, an `ACCOUNTADMIN` can also run `GRANT DATABASE ROLE SNOWFLAKE.ORGANIZATION_BILLING_VIEWER TO ROLE <role>;` so the cost estimate uses your account's own rate sheet.
+
+The cost estimate uses the Snowflake Service Consumption Table of January 21, 2026, at the Standard edition list price, until your account's rate sheet is readable. Each run is billed for its minutes plus 60 seconds of idle time on the compute pool. The task that starts the run is billed for about 10 seconds.
+
+Job logs go to your account's event table, `SNOWFLAKE.TELEMETRY.EVENTS` by default, and `pdt logs` reads them from there.
+
+A trial account cannot create a compute pool, and its jobs have no internet access, so it cannot run pdt jobs. `pdt deploy` says so.
+
 ### Bringing your own Dockerfile
 
-Every cloud provider runs a job as a container: AWS on Batch (Fargate), Azure on Container Apps Jobs, Google Cloud on Cloud Run Jobs. The deploy builds an image for each app from a generated Dockerfile. It copies the app folder and `pdt.yml` into `/workspace`, installs the script-header dependencies of `run.py` with `uv sync --script`, and runs `run.py` as the entrypoint.
+Every cloud provider runs a job as a container: AWS on Batch (Fargate), Azure on Container Apps Jobs, Google Cloud on Cloud Run Jobs, Snowflake on Snowpark Container Services. The deploy builds an image for each app from a generated Dockerfile. It copies the app folder and `pdt.yml` into `/workspace`, installs the script-header dependencies of `run.py` with `uv sync --script`, and runs `run.py` as the entrypoint.
 
 Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
 
@@ -216,7 +259,7 @@ ENTRYPOINT ["uv", "run", "--script", "run.py"]
 
 A `.dockerignore` in the app folder keeps files out of the image. Write its patterns relative to the app folder (`.meltano`, `output`, `*.csv`); pdt moves them to the root of the build context for you. `.env` and the other secret files never reach the context, with or without a `.dockerignore`.
 
-The Windows provider never builds an image, so `pdt validate` reports a Dockerfile in an app that uses it.
+On Snowflake, Snowflake builds the image itself, so you need no Docker on your computer. The Windows provider never builds an image, so `pdt validate` reports a Dockerfile in an app that uses it.
 
 ### Windows Task Scheduler
 
@@ -272,6 +315,7 @@ Reports active Monday users whose email address does not match the `userPrincipa
 | the Google Cloud CLI pdt downloads | `~/.local/share/pdt/gcloud`, or `%LOCALAPPDATA%\pdt\gcloud` |
 | a Windows scheduled task's run logs and files | `%ProgramData%\pdt\<app>\logs` and `%ProgramData%\pdt\<app>\storage` |
 | cloud sign-in state | `~/.azure` and `~/.config/gcloud`, as usual |
+| Snowflake sign-in state | the browser login's cached token, in `~/.cache/snowflake` on Linux and the system keychain elsewhere |
 
 Set `PDT_PROJECT` to name the project folder directly, instead of letting pdt search upward. Deployed jobs get it set for them.
 

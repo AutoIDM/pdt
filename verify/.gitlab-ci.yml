@@ -151,6 +151,24 @@ verify:google-cloud:
   script:
     - uv run --no-project --with pyyaml python verify/scripts/verify.py google-cloud --report verify-google-cloud.xml
 
+# Snowflake builds the image itself, so this job needs no Docker. The account
+# must not be a trial account: a trial account cannot create a compute pool.
+# The provider signs in from SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, and the key
+# pair file SNOWFLAKE_PRIVATE_KEY_FILE; SNOWFLAKE_ROLE is optional.
+verify:snowflake:
+  extends: .verify:unix
+  resource_group: snowflake
+  # Without the account's variables the job cannot log in. It then waits as a
+  # manual job, so the pipeline shows the gap instead of failing at login.
+  rules:
+    - !reference [".verify:force-merge", rules]
+    - if: $SNOWFLAKE_ACCOUNT == null || $SNOWFLAKE_USER == null || $SNOWFLAKE_PRIVATE_KEY_FILE == null
+      when: manual
+      allow_failure: true
+    - !reference [.verify, rules]
+  script:
+    - uv run --no-project --with pyyaml python verify/scripts/verify.py snowflake --report verify-snowflake.xml
+
 # Deploys to the runner's own Task Scheduler, so it needs no cloud credentials.
 verify:windows:
   extends: .verify

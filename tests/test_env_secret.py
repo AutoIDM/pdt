@@ -13,12 +13,14 @@ from pdt.utils import env_secret
 ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:pdt-demo-env-AbCdEf"
 GOOGLE = "projects/my-project/secrets/pdt-demo-env"
 AZURE = "https://pdt-abc.vault.azure.net/secrets/pdt-demo-env"
+SNOWFLAKE = "snow://PDT.PDT_DEMO.ENV"
 
 
 def test_the_resource_name_picks_the_secret_store():
     assert isinstance(env_secret.backend(ARN), env_secret.SecretsManager)
     assert isinstance(env_secret.backend(GOOGLE), env_secret.SecretManager)
     assert isinstance(env_secret.backend(AZURE), env_secret.KeyVault)
+    assert isinstance(env_secret.backend(SNOWFLAKE), env_secret.SnowflakeSecret)
     assert isinstance(env_secret.backend(""), env_secret.EnvFile)
     with pytest.raises(ValueError):
         env_secret.backend("ftp://elsewhere")
