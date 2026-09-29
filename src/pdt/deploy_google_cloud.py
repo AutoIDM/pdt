@@ -75,6 +75,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # gRPC logs an info line on every gcloud subprocess once the store has been
 # used, and no child of this script uses gRPC.
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
+from pdt import bug_report
 from pdt import config
 from pdt import console
 from pdt import gcloud_sdk
@@ -1489,6 +1490,7 @@ def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
 
 
 def main() -> int:
+    bug_report.install()
     if len(sys.argv) > 1 and sys.argv[1] == "gcloud":
         try:
             binary = gcloud_sdk.ensure_gcloud()

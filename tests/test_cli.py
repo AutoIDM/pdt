@@ -1167,3 +1167,13 @@ def test_ctrl_c_in_a_cloud_cli_passthrough_exits_130(monkeypatch):
 
     monkeypatch.setattr(deploy, "run_provider", ctrl_c)
     assert run_cli(monkeypatch, "az", "version") == 130
+
+
+def test_a_crash_while_building_the_parser_reaches_the_bug_report_hook(monkeypatch):
+    def broken():
+        raise ValueError("parser")
+
+    monkeypatch.setattr(cli, "build_parser", broken)
+    with pytest.raises(ValueError):
+        cli.run()
+    assert sys.excepthook is cli.bug_report.hook

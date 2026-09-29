@@ -81,7 +81,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, storage_cli
+from pdt import bug_report, config, console, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,
     run_main, secret_contents, store_plan_lines, store_suffix)
@@ -1207,6 +1207,7 @@ def load_app(app_name: str) -> dict:
 
 
 def main() -> int:
+    bug_report.install()
     if len(sys.argv) > 1 and sys.argv[1] == "az":
         return subprocess.run([*AZ, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)

@@ -21,6 +21,12 @@ def console_on_stdout(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def excepthook(monkeypatch):
+    # cli.run installs the bug report hook for the rest of the process.
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
+
+
+@pytest.fixture(autouse=True)
 def price_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "PRICE_CACHE", tmp_path / "prices")
     return tmp_path / "prices"

@@ -53,7 +53,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError, MissingDependencyException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, storage_cli
+from pdt import bug_report, config, console, storage_cli
 from pdt.deploy_common import (
     STORE_PREFIX, STORE_TAGS, CostEstimate, cached_price, convert_from_usd, fail, fetch_json,
     run_main, store_cost_label, store_name)
@@ -1277,6 +1277,7 @@ def load_app(app_name: str) -> dict:
 
 
 def main() -> int:
+    bug_report.install()
     if len(sys.argv) > 1 and sys.argv[1] == "aws":
         return subprocess.run([*aws_cli(), *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)

@@ -61,6 +61,7 @@ my-jobs/
 | the Google Cloud CLI pdt downloads | `~/.local/share/pdt/gcloud`, or `%LOCALAPPDATA%\pdt\gcloud` |
 | the PowerShell 7 pdt downloads | `~/.local/share/pdt/pwsh`, or `%ProgramData%\pdt\pwsh` |
 | the DuckDB files of the `pdt gui` SQL workbench | `~/.local/share/pdt/duckdb-wasm`, or `%LOCALAPPDATA%\pdt\duckdb-wasm` |
+| the bug reports pdt saves | `~/.local/share/pdt/bug-reports`, or `%LOCALAPPDATA%\pdt\bug-reports` |
 | what `pdt gui` fetched | `.pdt/gui.sqlite3` in your project folder |
 | a Windows scheduled task's run logs and files | `%ProgramData%\pdt\<app>\logs` and `%ProgramData%\pdt\<app>\storage` |
 | cloud sign-in state | `~/.aws`, `~/.azure`, and `~/.config/gcloud`, as usual |

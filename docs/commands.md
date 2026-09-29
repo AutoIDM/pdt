@@ -41,3 +41,13 @@ Inside an app folder, or any folder below it, leave `APP` off any command that t
 With `--json`, `pdt list`, `pdt validate`, `pdt runs`, `pdt logs`, `pdt health`, and `pdt storage APP ls` print only JSON on stdout, and every other line, such as an error or a sign-in question, on stderr. In a project with no enabled apps, `pdt runs`, `pdt logs`, `pdt health`, and `pdt storage APP ls` print `[]`. A command that has no JSON to print exits with a code other than 0 and prints nothing on stdout.
 
 `pdt aws`, `pdt az`, and `pdt gcloud` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
+
+## When pdt fails
+
+Sometimes pdt stops with an error that is a mistake in pdt itself, not in your setup. pdt then prints the error, saves a report, and asks whether to open a GitHub page to report it.
+
+The report holds the command you ran, the pdt and Python versions, your operating system, the cloud provider of the app, and the error trace. pdt removes private data before it saves the report: the values in your `.env` files, the account, profile, subscription, and project names in your config, your app names, your user name and computer name, your home and project folder paths, email addresses, IP addresses, account numbers, ids, and text that looks like a key or token. The command keeps its options, but each name you typed shows as `<value>`.
+
+pdt sends nothing itself. It opens the GitHub page with the report filled in, and you can read and change the report there. Nothing reaches GitHub until you press Submit. You need a GitHub account to submit.
+
+pdt saves a copy of each report in `~/.local/share/pdt/bug-reports`, or `%LOCALAPPDATA%\pdt\bug-reports` on Windows. On a build server, or when you answer no, pdt prints where the copy is. To report the error yourself, open https://github.com/AutoIDM/pdt/issues/new and paste the file into it.

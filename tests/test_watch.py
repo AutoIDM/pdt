@@ -53,6 +53,16 @@ def test_a_crash_prints_its_traceback_then_the_help_line(said, capsys):
     assert plain(said) == [HELP]
 
 
+def test_a_crash_reaches_the_bug_report_hook(said, monkeypatch):
+    seen = []
+    monkeypatch.setattr("sys.excepthook", lambda exc_type, exc, tb: seen.append(exc_type))
+    def main():
+        raise ValueError("bad 7")
+    assert watch.watched(main, {"run"}) == 1
+    assert seen == [ValueError]
+    assert plain(said) == [HELP]
+
+
 def test_json_output_and_a_coding_agent_get_no_help_line(project, monkeypatch):
     monkeypatch.setattr("pdt.utils.email_auth.can_prompt", lambda interactive: True)
     monkeypatch.setattr("sys.stderr.isatty", lambda: True)

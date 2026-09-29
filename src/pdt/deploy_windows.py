@@ -60,7 +60,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, regions, runs_cli
+from pdt import bug_report, config, console, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import CostEstimate, run_main, warn_if_locked
@@ -717,6 +717,7 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
 
 
 def main() -> int:
+    bug_report.install()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets",

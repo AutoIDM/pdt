@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import sys
-import traceback
 from typing import Callable
 
 from pdt import config
@@ -62,7 +61,7 @@ def watched(main: Callable[[], int], commands: set[str] = frozenset()) -> int:
         offer(exit_code(e.code), commands)
         raise
     except Exception:
-        traceback.print_exc()
+        sys.excepthook(*sys.exc_info())
         offer(1, commands)
         return 1
     offer(exit_code(result), commands)

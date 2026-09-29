@@ -25,8 +25,8 @@ from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold,
-                     upgrade)
+    from pdt import (alerts_cli, bug_report, console, deploy, gui_cli, lifecycle, powershell, pwsh,
+                     scaffold, upgrade)
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -798,6 +798,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run() -> int:
+    if not completion.COMPLETING:
+        bug_report.install()
     parser = build_parser()
     completion.configure(parser)
     try:
