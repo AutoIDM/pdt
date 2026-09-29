@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from pdt import cli, completion, config
@@ -54,13 +56,16 @@ def test_install_preserves_symlink_and_permissions(tmp_path):
     completion._install(path, "# pdt completion start\nnew\n# pdt completion end\n")
 
     assert path.is_symlink()
-    assert target.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o600
     assert target.read_text().startswith("existing\n")
 
 
 def test_setup_writes_zsh_registration(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
     monkeypatch.setenv("ZDOTDIR", str(tmp_path / "zsh"))
     monkeypatch.setattr(completion, "_shell", lambda: "zsh")
 
@@ -79,7 +84,9 @@ def test_setup_writes_bash_interactive_and_login_registration(tmp_path, monkeypa
     profile = tmp_path / ".profile"
     profile.write_text("existing\n")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
     monkeypatch.setattr(completion, "_shell", lambda: "bash")
 
     completion.setup()
@@ -155,7 +162,9 @@ def test_data_home_is_shared_with_gcloud_sdk(tmp_path, monkeypatch):
 
 def test_install_command_sets_up_a_named_shell(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
     monkeypatch.delenv("ZDOTDIR", raising=False)
     monkeypatch.setattr(completion, "_shell", lambda: None)
 
