@@ -235,3 +235,30 @@ close_stale_drafts:
       variables:
         DRY_RUN: "false"
     - if: $CI_PIPELINE_SOURCE == "web" && $mode == "close_stale_drafts"
+
+# Copies master and each vX.Y.Z tag to github.com/AutoIDM/pdt, where GitHub
+# Actions runs the Windows tests and publishes to PyPI. Needs the masked,
+# protected variable GITHUB_DEPLOY_KEY: the base64 private half of a GitHub
+# deploy key with write access. GitHub rulesets let only deploy keys change
+# master and v* tags there, so a merge on GitHub cannot fork the two copies.
+# The v* tags must be protected tags here, or a tag pipeline gets no key.
+push-github:
+  stage: tasks
+  image: alpine:3.20
+  needs: []
+  cache: []
+  interruptible: false
+  resource_group: push-github
+  variables:
+    GIT_DEPTH: 0
+  script:
+    - apk add --no-cache git openssh-client
+    - mkdir -p ~/.ssh
+    - echo "$GITHUB_DEPLOY_KEY" | base64 -d > ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > ~/.ssh/known_hosts
+    - if [ -n "$CI_COMMIT_TAG" ]; then ref="refs/tags/$CI_COMMIT_TAG"; else ref="$CI_COMMIT_SHA:refs/heads/master"; fi
+    - git push git@github.com:AutoIDM/pdt.git "$ref"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
