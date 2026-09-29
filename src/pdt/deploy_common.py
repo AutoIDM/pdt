@@ -55,7 +55,7 @@ DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 COPY . /workspace
 WORKDIR /workspace/{app}
-ENV PDT_PROJECT=/workspace NO_COLOR=1
+ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
 RUN uv sync --script run.py
 ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
 """

@@ -210,7 +210,7 @@ Put a `Dockerfile` in the app folder to build the image your own way, for exampl
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 COPY . /workspace
 WORKDIR /workspace/my-app
-ENV PDT_PROJECT=/workspace
+ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
 RUN uv sync --script run.py
 ENTRYPOINT ["uv", "run", "--script", "run.py"]
 ```
