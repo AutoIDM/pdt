@@ -104,6 +104,7 @@ pdt login my-report
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
 | `pdt completion [SHELL]` | turn on tab completion for a shell |
+| `pdt settings` | show pdt's settings for this computer; `pdt settings usage-stats off` turns off usage stats |
 
 Leave `APP` off `run`, `deploy`, `destroy`, `secrets`, or `login`, or mistype it, and pdt lists the apps in the project so you can pick one.
 
@@ -153,6 +154,23 @@ Every command reads its values from the environment it runs in. A build server s
 - `PDT_ENV_JSON` holds every value as one JSON object, for a CI system that keeps one secret instead of many. For example, `PDT_ENV_JSON={"PDT_TOKEN": "abc", "PDT_SMTP_USER": "reports@example.com"}`.
 - pdt creates no `.env` file on a build server. It looks for the `CI` variable that build systems set, and for a missing terminal. Email authorization must therefore be done first: run `pdt run APP` once on a machine with a browser, then copy `PDT_SMTP_OAUTH_CACHE_B64` (or `PDT_GRAPH_MAIL_CACHE_B64` for Microsoft Graph) from your `.env` into the CI variables.
 - `pdt deploy APP` and `pdt destroy APP` ask before they change anything. Add `--yes` so they proceed without asking.
+
+## Usage stats
+
+pdt sends anonymous usage stats, so its makers can see which commands people use and which ones fail. The first time you run pdt in a terminal, it says so and creates its settings file.
+
+Each command sends one event that holds only these items:
+
+- the command name, such as `deploy`, without its arguments
+- whether it worked (its exit code) and how long it took
+- the cloud provider of the app, such as `aws`
+- the pdt version, the Python version, the operating system, and the processor type
+- whether it ran on a build server
+- a random id that pdt makes for this computer, so a count of computers is possible
+
+pdt never sends the names of your apps, files, or folders, your arguments, your config, your account ids, or your computer's name.
+
+To turn it off, run `pdt settings usage-stats off`, or set the environment variable `DO_NOT_TRACK=1`. A build server sends nothing until someone runs pdt there in a terminal, because only that creates the settings file.
 
 ## Choosing where jobs run
 
@@ -270,6 +288,7 @@ Reports active Monday users whose email address does not match the `userPrincipa
 | the example apps | inside the pdt package, copied out by `pdt new` |
 | your apps, `pdt.yml`, `.env` | your project folder, under version control |
 | the Google Cloud CLI pdt downloads | `~/.local/share/pdt/gcloud`, or `%LOCALAPPDATA%\pdt\gcloud` |
+| pdt's settings for this computer | `~/.local/share/pdt/settings.yml`, or `%LOCALAPPDATA%\pdt\settings.yml` |
 | a Windows scheduled task's run logs and files | `%ProgramData%\pdt\<app>\logs` and `%ProgramData%\pdt\<app>\storage` |
 | cloud sign-in state | `~/.azure` and `~/.config/gcloud`, as usual |
 

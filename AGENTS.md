@@ -40,6 +40,7 @@ Both install routes must keep working, and a change is not done until both do:
 - `src/pdt/cli.py` parses arguments and delegates. It holds no provider logic.
 - `src/pdt/config.py` finds the project, then loads, merges, and validates config. A rule that both a prompt and validation need lives here once, as a function returning a message or `""` (see `aws_account_problem`). `save_platform_key` is the one way to write a value back into a config file; it edits text so comments survive, and quotes and escapes the value so an id with a leading zero does not become a number. It holds a lock on a `.lock` file next to the config file while it reads and rewrites it, and replaces the file through a temporary file, so two first deploys at once or a crash mid-write cannot corrupt it.
 - `src/pdt/scaffold.py` owns `init`, `examples`, and `new`. `STARTER` names the example that `init` copies into an empty project. `init` also writes `AGENTS.md` (and a `CLAUDE.md` pointing at it) into the user's project.
+- `src/pdt/settings.py` owns `settings.yml`, pdt's settings for this computer, and the `pdt settings` command. `src/pdt/usage.py` sends one anonymous usage event per command, only after an interactive run has shown the notice and created that file; it never sends app names, arguments, paths, or account ids.
 - `src/pdt/deploy.py` is provider-neutral deploy and destroy. It validates, then dispatches to one module per provider.
 - `src/pdt/deploy_<provider>.py` is one module per provider. AWS and Azure keep the job itself in a module under the provider (`deploy_aws_batch.py`, `deploy_azure_container_apps.py`); login, secrets, prices, and everything else the job shares with `login` and `destroy` stay in the provider module.
 - `src/pdt/deploy_common.py` holds code shared by every provider: `fail`, the `DOCKERFILE`, `gather_secrets`, and `stage_build_context`. A provider module imports from here. A provider module never imports from another provider module.
@@ -87,7 +88,7 @@ Both install routes must keep working, and a change is not done until both do:
 
 ## Anything written to disk outside the project
 
-The tool downloads the Google Cloud CLI to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). Never write it beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
+The tool downloads the Google Cloud CLI to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`), and keeps its settings for this computer there in `settings.yml`. Never write either beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
 
 ## verify/
 

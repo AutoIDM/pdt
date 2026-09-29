@@ -8,6 +8,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "verify" / "scripts"))
 
 
+@pytest.fixture(autouse=True)
+def data_home(tmp_path_factory, monkeypatch):
+    folder = tmp_path_factory.mktemp("data-home")
+    monkeypatch.setenv("XDG_DATA_HOME", str(folder))
+    monkeypatch.setenv("LOCALAPPDATA", str(folder))
+    monkeypatch.setenv("DO_NOT_TRACK", "1")
+    return folder
+
+
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
