@@ -26,12 +26,12 @@ apps:
   - name: google-cloud-a
     schedule: daily
     platform:
-      provider: google-cloud
+      provider: gcloud
       region: us-central1
   - name: google-cloud-b
     schedule: daily
     platform:
-      provider: google-cloud
+      provider: gcloud
       region: us-central1
   - name: windows-a
     schedule: daily

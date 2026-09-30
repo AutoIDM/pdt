@@ -192,12 +192,14 @@ platform:
 
 ```yaml
 platform:
-  provider: google-cloud
+  provider: gcloud
   region: us-central1
   project: my-starter-project
 ```
 
 `project` is optional. When it is missing or wrong, the deploy lists your projects and asks you to choose one, then writes your answer here.
+
+A project made by an earlier pdt says `provider: google-cloud`. That name still works, so the file needs no change.
 
 ### Bringing your own Dockerfile
 

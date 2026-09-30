@@ -28,7 +28,7 @@ def test_azure_does_not_ask_for_the_subscription():
 
 @pytest.mark.parametrize("provider,expected", [
     ("aws", ["region"]),
-    ("google-cloud", ["region"]),
+    ("gcloud", ["region"]),
     ("windows", []),
     ("", []),
 ])
@@ -39,7 +39,7 @@ def test_the_other_providers_ask_only_what_pdt_cannot_supply(provider, expected)
 @pytest.mark.parametrize("provider,key", [
     ("azure", "subscription"),
     ("aws", "account"),
-    ("google-cloud", "project"),
+    ("gcloud", "project"),
 ])
 def test_no_provider_asks_for_something_deploy_can_discover(provider, key):
     assert key not in keys(provider)

@@ -136,3 +136,12 @@ def test_write_text_atomically_leaves_only_the_target(tmp_path):
     config.write_text_atomically(target, "new\n")
     assert target.read_text() == "new\n"
     assert [p.name for p in tmp_path.iterdir()] == ["pdt.yml"]
+
+
+def test_writes_to_the_project_file_when_it_uses_the_earlier_google_cloud_name(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: google-cloud\n  region: us-central1\n")
+    add_app(project, "my-report")
+    saved = save_platform_key(merged_app("my-report"), "project", "my-project")
+    assert saved == project / "pdt.yml"
+    assert yaml.safe_load(saved.read_text())["platform"] == {
+        "provider": "google-cloud", "region": "us-central1", "project": "my-project"}

@@ -17,7 +17,7 @@ STARTER = "hello-world"
 PROVIDER_CHOICES = [
     ("azure", "Microsoft Azure"),
     ("aws", "Amazon Web Services"),
-    ("google-cloud", "Google Cloud"),
+    ("gcloud", "Google Cloud"),
     ("windows", "This Windows PC, using Task Scheduler"),
     ("", "Decide later"),
 ]
@@ -37,7 +37,7 @@ PROVIDER_QUESTIONS = {
     "aws": [
         ("region", "Which AWS region should hold your jobs?", "us-east-1", _needed),
     ],
-    "google-cloud": [
+    "gcloud": [
         ("region", "Which Google Cloud region should hold your jobs?", "us-central1", _needed),
     ],
     "windows": [],
@@ -191,7 +191,7 @@ def project_yaml(platform: dict) -> str:
         lines += [
             "# Defaults for every app. Fill this in before you deploy.",
             "#platform:",
-            "#  provider: azure        # azure, aws, google-cloud, or windows",
+            "#  provider: azure        # azure, aws, gcloud, or windows",
             "#  region: eastus2",
         ]
     lines += [
