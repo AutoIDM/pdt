@@ -36,23 +36,23 @@ from pathlib import Path
 from pdt import config, console
 from pdt.utils.email_auth import can_prompt
 
-PROVIDERS = ("aws", "azure", "google-cloud")
-PROVIDER_NAMES = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
+PROVIDERS = ("aws", "azure", "gcloud")
+PROVIDER_NAMES = {"aws": "AWS", "azure": "Azure", "gcloud": "Google Cloud"}
 REGION_LISTS = {
     "aws": "https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html",
     "azure": "https://learn.microsoft.com/en-us/azure/reliability/regions-list",
-    "google-cloud": "https://docs.cloud.google.com/run/docs/locations",
+    "gcloud": "https://docs.cloud.google.com/run/docs/locations",
 }
 # An environment variable each provider module already reads for its region.
 REGION_ENV = {
     "aws": ("AWS_REGION", "AWS_DEFAULT_REGION"),
     "azure": ("PDT_AZURE_REGION",),
-    "google-cloud": ("PDT_GOOGLE_CLOUD_REGION",),
+    "gcloud": ("PDT_GOOGLE_CLOUD_REGION",),
 }
 
-# (aws, azure, google-cloud) when the time zone names no known place.
+# (aws, azure, gcloud) when the time zone names no known place.
 DEFAULT_REGIONS = ("us-east-1", "eastus2", "us-central1")
-# (aws, azure, google-cloud) for each country, by ISO 3166 code.
+# (aws, azure, gcloud) for each country, by ISO 3166 code.
 US_EAST = ("us-east-1", "eastus2", "us-east4")
 COUNTRY_REGIONS = {
     "US": US_EAST,

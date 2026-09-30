@@ -111,12 +111,12 @@ jobs:
           name: verify-azure
           path: verify-azure.xml
 
-  google-cloud:
+  gcloud:
     needs: build
     runs-on: ubuntu-latest
     environment: verify
     concurrency:
-      group: verify-google-cloud
+      group: verify-gcloud
       cancel-in-progress: false
     env:
       PDT_GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
@@ -135,12 +135,12 @@ jobs:
           pdt gcloud config set project "$PDT_GOOGLE_CLOUD_PROJECT"
         env:
           KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
-      - run: uv run --no-project --with pyyaml python verify/scripts/verify.py google-cloud --report verify-google-cloud.xml
+      - run: uv run --no-project --with pyyaml python verify/scripts/verify.py gcloud --report verify-gcloud.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: verify-google-cloud
-          path: verify-google-cloud.xml
+          name: verify-gcloud
+          path: verify-gcloud.xml
 
   # Deploys to the runner's own Task Scheduler, so it needs no cloud
   # credentials and no environment.

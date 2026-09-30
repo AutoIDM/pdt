@@ -59,7 +59,7 @@ READY = Tone("#2EB67D", ":white_check_mark:", "✅", "good")
 FIELDS = {"project": "Project", "app": "App", "provider": "Provider", "deployed": "Where",
           "trigger": "Trigger", "exit_code": "Exit code", "run_id": "Run id", "state": "Logs"}
 HIDDEN = {"url"}
-CLOUDS = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
+CLOUDS = {"aws": "AWS", "azure": "Azure", "gcloud": "Google Cloud"}
 MAX_FIELDS = 10
 SENTENCES = {
     "app:deploy-started": "Deploying {app}{to}",

@@ -356,7 +356,7 @@ def test_replace_platform_adds_a_block_when_there_is_none():
 @pytest.mark.parametrize("current,provider,kept", [
     ({"provider": "aws", "region": "us-east-1", "timezone": "America/Chicago"}, "aws",
      {"provider": "aws", "region": "us-east-1", "timezone": "America/Chicago"}),
-    ({"provider": "aws", "account": "1", "timezone": "America/Chicago"}, "google-cloud",
+    ({"provider": "aws", "account": "1", "timezone": "America/Chicago"}, "gcloud",
      {"timezone": "America/Chicago"}),
     ({"provider": "aws", "timezone": "America/Chicago"}, "azure", {}),
     ({"provider": "aws", "timezone": "America/Chicago"}, "windows", {}),
@@ -518,9 +518,20 @@ def test_init_again_moves_the_project_to_another_provider(project, monkeypatch):
     answer(monkeypatch, ["3", "us-east4", ""])
     assert scaffold.init(None, assume_yes=False) == 0
     assert yaml.safe_load((project / PROJECT_FILE).read_text()) == {
-        "platform": {"provider": "google-cloud", "timezone": "America/Chicago",
+        "platform": {"provider": "gcloud", "timezone": "America/Chicago",
                      "region": "us-east4"},
         "alerts": []}
+
+
+def test_init_again_reads_the_earlier_google_cloud_name_as_gcloud(project, monkeypatch):
+    (project / PROJECT_FILE).write_text(
+        "platform:\n  provider: google-cloud\n  region: us-east4\n  project: my-project\n"
+        "  timezone: America/Chicago\n")
+    answer(monkeypatch, ["", "", ""])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"] == {
+        "provider": "gcloud", "region": "us-east4", "project": "my-project",
+        "timezone": "America/Chicago"}
 
 
 def test_a_region_change_asks_too(project, monkeypatch, capsys):
@@ -532,13 +543,13 @@ def test_a_region_change_asks_too(project, monkeypatch, capsys):
 
 
 def test_an_app_with_its_own_provider_is_listed_without_a_number(project, monkeypatch, capsys):
-    deployed_app(project, "own", "platform:\n  provider: google-cloud\n  region: us-east4\n")
+    deployed_app(project, "own", "platform:\n  provider: gcloud\n  region: us-east4\n")
     answer(monkeypatch, ["2", "us-east-2", ""])
     assert scaffold.init(None, assume_yes=False) == 0
     out = capsys.readouterr().out
-    assert "\n  own  google-cloud, region us-east4; edit own/config.yml to move it\n" in out
+    assert "\n  own  gcloud, region us-east4; edit own/config.yml to move it\n" in out
     assert "What should happen" not in out
-    assert platform_of(project, "own") == {"provider": "google-cloud", "region": "us-east4"}
+    assert platform_of(project, "own") == {"provider": "gcloud", "region": "us-east4"}
 
 
 def test_no_answer_at_the_move_question_changes_nothing(project, monkeypatch):
@@ -628,14 +639,14 @@ def test_a_change_to_pdt_yml_during_the_questions_stops_the_move(project, monkey
     def ask(question, default=""):
         reply = next(replies, None)
         if reply is None:
-            (project / PROJECT_FILE).write_text("platform:\n  provider: google-cloud\n")
+            (project / PROJECT_FILE).write_text("platform:\n  provider: gcloud\n")
             return ""
         return reply
 
     monkeypatch.setattr(scaffold.console, "ask", ask)
     with pytest.raises(ConfigError, match="changed while pdt init was asking"):
         scaffold.init(None, assume_yes=False)
-    assert (project / PROJECT_FILE).read_text() == "platform:\n  provider: google-cloud\n"
+    assert (project / PROJECT_FILE).read_text() == "platform:\n  provider: gcloud\n"
 
 
 def test_keep_pins_every_setting_an_app_with_its_own_provider_inherits(project, monkeypatch, capsys):
