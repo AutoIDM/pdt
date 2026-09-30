@@ -83,8 +83,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,
-    run_main, secret_contents, store_plan_lines, store_suffix)
+    STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail,
+    fail_command, fetch_json, run_main, secret_contents, store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
@@ -194,18 +194,16 @@ def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = Fal
                 "does not have authorization",
             ))
             internal_error = retry_internal and "internalservererror" in output
-            retried = seconds != 0 and (access_error or internal_error)
-            if proc.stderr.strip():
-                console.say(console.escape(proc.stderr.strip()), stderr=retried)
-            if not retried:
+            if seconds == 0 or not (access_error or internal_error):
                 break
+            if proc.stderr.strip():
+                console.say(console.escape(proc.stderr.strip()), stderr=True)
             wait.now("Azure returned an access error" if access_error
                      else "Azure returned InternalServerError")
             time.sleep(seconds)
-        for text, hint in (hints or {}).items():
-            if text.lower() in output:
-                console.say(console.escape(hint))
-        fail(f"{console.value(command)} failed; fix the problem above and re-run")
+        hint = "\n".join(message for text, message in (hints or {}).items()
+                         if text.lower() in output)
+        fail_command(["pdt", "az", *args], proc, hint)
 
 
 LOCK_NAME = re.compile(r"Microsoft\.Authorization/locks/([^'\s,]+)", re.IGNORECASE)
@@ -219,10 +217,7 @@ def delete_unless_locked(*args: str, slow: str = "") -> str:
         return ""
     if "scopelocked" in proc.stderr.lower() or LOCK_NAME.search(proc.stderr):
         return ", ".join(sorted(set(LOCK_NAME.findall(proc.stderr)))) or "a lock"
-    if proc.stderr.strip():
-        console.say(console.escape(proc.stderr.strip()))
-    command = "pdt az " + " ".join(args[:4])
-    fail(f"{console.value(command)} failed; fix the problem above and re-run")
+    fail_command(["pdt", "az", *args], proc)
 
 
 STALLED_CONNECT_SECONDS = 0.5
@@ -547,8 +542,7 @@ def login(requested: str) -> None:
         return
     output = proc.stdout + proc.stderr
     if "No subscriptions found" not in output:
-        console.say(console.escape(output.strip()))
-        fail(f"{console.value('pdt az login')} failed; fix the problem above and re-run")
+        fail_command(["pdt", "az", "login"], proc)
     user = re.search(r"No subscriptions found for (\S+)\.", output)
     who = user.group(1) if user else "your Azure account"
     console.warn(f"The login worked, but {console.value(who)} has no Azure subscription.")
@@ -1222,9 +1216,9 @@ def main() -> int:
     try:
         return run_command(app, args)
     except ReadError as exc:
-        console.say(console.escape(str(exc)))
-        command = "pdt az " + " ".join(exc.az_command[:4])
-        fail(f"{console.value(command)} failed; fix the problem above and re-run")
+        # The read stands in for this az command, which exits 1 on the same error.
+        fail_command(["pdt", "az", *exc.az_command],
+                     subprocess.CompletedProcess(exc.az_command, 1, "", str(exc)))
 
 
 def run_command(app: dict, args: argparse.Namespace) -> int:
