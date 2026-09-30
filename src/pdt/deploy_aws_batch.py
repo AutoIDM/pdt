@@ -2,7 +2,8 @@
 
 The shape. Per project, shared by every app in the account and region: one
 Batch compute environment `pdt` (managed, Fargate, on demand), one job queue
-`pdt`, the ECR repository `pdt`, the schedule group `pdt`, and the store
+`pdt`, the security group `pdt` in the default VPC (no inbound rules, all
+outbound), the ECR repository `pdt`, the schedule group `pdt`, and the store
 bucket. Per app: one job definition `pdt-<app>` (the app's image, arm64,
 JOB_VCPU and JOB_MEMORY, the env secret through containerProperties.secrets,
 an execution role and a job role), one log group `/pdt/<app>`, and one
@@ -37,8 +38,8 @@ from pdt.deploy_aws import (
     delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     deployer_store, ensure_session, ensure_store, find_log_group, has_managed_tag, iam_tags,
-    delete_if_present, not_found,
-    delete_schedule_group, other_schedules, preflight, resource_exists, secret_statements,
+    delete_if_present, error_code, not_found,
+    delete_schedule_group, other_schedules, preflight, resource_exists, retry, secret_statements,
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
@@ -48,6 +49,7 @@ from pdt.deploy_common import (
 )
 
 REPOSITORY = "pdt"
+SECURITY_GROUP = "pdt"
 LEGACY_CLUSTER = "pdt"
 JOB_VCPU = "0.25"
 JOB_MEMORY = "512"
@@ -73,6 +75,9 @@ BATCH_ACTIONS = [
     "batch:TagResource",
     "batch:UpdateComputeEnvironment",
     "batch:UpdateJobQueue",
+    "ec2:CreateSecurityGroup",
+    "ec2:CreateTags",
+    "ec2:DeleteSecurityGroup",
     "ec2:DescribeSecurityGroups",
     "ec2:DescribeSubnets",
     "ec2:DescribeVpcs",
@@ -163,11 +168,15 @@ def docker_preflight() -> None:
         fail("Docker is installed but not running; start Docker and run the same command again")
 
 
-def default_network(ec2) -> tuple[list[str], str]:
+def default_vpc(ec2) -> str | None:
     vpcs = ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}])["Vpcs"]
-    if not vpcs:
+    return vpcs[0]["VpcId"] if vpcs else None
+
+
+def default_network(ec2) -> tuple[str, list[str]]:
+    vpc_id = default_vpc(ec2)
+    if vpc_id is None:
         fail("this account/region has no default VPC; custom VPC configuration is not supported yet")
-    vpc_id = vpcs[0]["VpcId"]
     subnets = ec2.describe_subnets(Filters=[
         {"Name": "vpc-id", "Values": [vpc_id]},
         {"Name": "state", "Values": ["available"]},
@@ -176,13 +185,43 @@ def default_network(ec2) -> tuple[list[str], str]:
     subnet_ids = sorted(subnet["SubnetId"] for subnet in subnets)
     if not subnet_ids:
         fail(f"default VPC {vpc_id} has no available default subnets")
+    return vpc_id, subnet_ids
+
+
+def find_security_group(ec2, vpc_id: str) -> dict | None:
     groups = ec2.describe_security_groups(Filters=[
         {"Name": "vpc-id", "Values": [vpc_id]},
-        {"Name": "group-name", "Values": ["default"]},
+        {"Name": "group-name", "Values": [SECURITY_GROUP]},
     ])["SecurityGroups"]
-    if not groups:
-        fail(f"default VPC {vpc_id} has no default security group")
-    return subnet_ids, groups[0]["GroupId"]
+    return groups[0] if groups else None
+
+
+def managed_group(group: dict | None) -> bool:
+    return group is not None and has_managed_tag(group.get("Tags", []), "Key", "Value")
+
+
+def ensure_security_group(ec2, vpc_id: str, group: dict | None) -> str:
+    # A new group has no inbound rules and allows all outbound traffic, which is what a job needs.
+    if group is not None:
+        if not managed_group(group):
+            fail(f"security group {SECURITY_GROUP} in VPC {vpc_id} exists but is not managed by PDT")
+        return group["GroupId"]
+    return ec2.create_security_group(
+        GroupName=SECURITY_GROUP,
+        Description="pdt jobs: no inbound, all outbound",
+        VpcId=vpc_id,
+        TagSpecifications=[{"ResourceType": "security-group", "Tags": iam_tags({"shared": "true"})}],
+    )["GroupId"]
+
+
+def delete_security_group(ec2, group_id: str) -> bool:
+    """Delete the group; False when it is already gone.
+
+    A job's network interface holds the group for a while after the job stops.
+    """
+    return retry(lambda: delete_if_present(ec2.delete_security_group, GroupId=group_id),
+                 lambda exc: error_code(exc) == "DependencyViolation",
+                 f"security group {SECURITY_GROUP} is still in use", BATCH_WAIT_DELAYS)
 
 
 def ensure_repository(ecr) -> str:
@@ -270,15 +309,29 @@ def remove(batch, resource: SharedResource) -> bool:
     return True
 
 
-def ensure_compute_environment(batch, subnets: list[str], security_group: str) -> str:
-    return ensure_shared(batch, COMPUTE_ENVIRONMENT, lambda: batch.create_compute_environment(
-        computeEnvironmentName=COMPUTE_ENVIRONMENT.name,
-        type="MANAGED",
-        state="ENABLED",
-        computeResources={"type": "FARGATE", "maxvCpus": COMPUTE_MAX_VCPUS,
-                          "subnets": subnets, "securityGroupIds": [security_group]},
-        tags=shared_tags(),
-    ))
+def environment_security_groups(item: dict | None) -> list[str]:
+    return sorted((item or {}).get("computeResources", {}).get("securityGroupIds") or [])
+
+
+def ensure_compute_environment(batch, subnets: list[str], security_group: str,
+                               move: bool) -> str:
+    """`move` switches an existing environment to `security_group`, as the plan said."""
+    def create():
+        batch.create_compute_environment(
+            computeEnvironmentName=COMPUTE_ENVIRONMENT.name,
+            type="MANAGED",
+            state="ENABLED",
+            computeResources={"type": "FARGATE", "maxvCpus": COMPUTE_MAX_VCPUS,
+                              "subnets": subnets, "securityGroupIds": [security_group]},
+            tags=shared_tags(),
+        )
+
+    arn = ensure_shared(batch, COMPUTE_ENVIRONMENT, create)
+    if not move:
+        return arn
+    batch.update_compute_environment(computeEnvironment=COMPUTE_ENVIRONMENT.name,
+                                     computeResources={"securityGroupIds": [security_group]})
+    return ensure_shared(batch, COMPUTE_ENVIRONMENT, create)
 
 
 def ensure_job_queue(batch, environment_arn: str) -> str:
@@ -417,10 +470,8 @@ def other_job_definitions(batch, name: str) -> list[str]:
                    and item["jobDefinitionName"] != name})
 
 
-def shared_unused_after(batch, name: str) -> list[SharedResource]:
-    """The shared Batch resources that exist and that no app needs once `name` is gone."""
-    if other_job_definitions(batch, name):
-        return []
+def shared_present(batch) -> list[SharedResource]:
+    """The shared Batch resources that exist and that pdt manages, queue first."""
     found = {resource: describe(batch, resource) for resource in (JOB_QUEUE, COMPUTE_ENVIRONMENT)}
     return [resource for resource, item in found.items() if item is not None and managed(item)]
 
@@ -531,7 +582,13 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.status(f"Checking current state in account {account} ({region})...")
     store_present = store_exists(clients["s3"], bucket) if store else False
     usage = (store.usage() if store_present else (0, 0)) if store else None
-    subnets, security_group = default_network(clients["ec2"])
+    vpc_id, subnets = default_network(clients["ec2"])
+    group = find_security_group(clients["ec2"], vpc_id)
+    group_id = group["GroupId"] if group else None
+    # An environment made before pdt owned a group uses the VPC's default group.
+    environment_groups = environment_security_groups(
+        describe(clients["batch"], COMPUTE_ENVIRONMENT))
+    move_environment = bool(environment_groups) and environment_groups != [group_id]
     schedule_exists = resource_exists(
         clients["scheduler"], "get_schedule",
         Name=names["schedule"], GroupName=SCHEDULE_GROUP)
@@ -549,8 +606,14 @@ def deploy(app: dict, assume_yes: bool) -> int:
         f"({float(JOB_VCPU):g} vCPU, {JOB_MEMORY} MiB, no time limit)",
         ("update" if schedule_exists else "create")
         + f" EventBridge schedule {names['schedule']}: {expression} ({app['timezone']})",
-        f"use default VPC subnets and security group {security_group} with a public IP",
+        (f"use security group {SECURITY_GROUP} ({group_id})" if group else
+         f"create security group {SECURITY_GROUP} (no inbound rules, all outbound)")
+        + f" in default VPC {vpc_id}",
+        "run jobs in the default VPC subnets with a public IP",
     ]
+    if move_environment:
+        actions.append(f"move Batch compute environment {COMPUTE_ENVIRONMENT.name} from "
+                       f"security group {', '.join(environment_groups)} to {SECURITY_GROUP}")
     if store:
         actions += store_plan_lines(f"bucket {bucket}", store_present, names["job_role"], app["name"])
     if not confirm(actions, assume_yes, cost_estimate_for(
@@ -560,7 +623,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
     console.step(f"reconciling AWS resources in {account} ({region})")
     repository_uri = ensure_repository(clients["ecr"])
-    environment_arn = ensure_compute_environment(clients["batch"], subnets, security_group)
+    security_group = ensure_security_group(clients["ec2"], vpc_id, group)
+    environment_arn = ensure_compute_environment(
+        clients["batch"], subnets, security_group, move_environment)
     ensure_job_queue(clients["batch"], environment_arn)
     ensure_log_group(clients["logs"], names["log_group"])
     secret_arn = ensure_secret(clients["secretsmanager"], names["secret"], payload)
@@ -694,10 +759,18 @@ def destroy(app: dict, assume_yes: bool) -> int:
         plan.append((f"delete schedule group {SCHEDULE_GROUP} (no other apps use it)",
                      lambda: note_if_gone(f"schedule group {SCHEDULE_GROUP}",
                                           delete_schedule_group(scheduler))))
-    for resource in shared_unused_after(batch, names["job_definition"]):
-        plan.append((f"delete Batch {resource.label} {resource.name} (no other apps use it)",
-                     lambda resource=resource: note_if_gone(
-                         f"Batch {resource.label} {resource.name}", remove(batch, resource))))
+    if not other_job_definitions(batch, names["job_definition"]):
+        for resource in shared_present(batch):
+            plan.append((f"delete Batch {resource.label} {resource.name} (no other apps use it)",
+                         lambda resource=resource: note_if_gone(
+                             f"Batch {resource.label} {resource.name}", remove(batch, resource))))
+        vpc_id = default_vpc(clients["ec2"])
+        group = find_security_group(clients["ec2"], vpc_id) if vpc_id else None
+        if managed_group(group):
+            plan.append((f"delete security group {SECURITY_GROUP} ({group['GroupId']}) "
+                         "(no other apps use it)",
+                         lambda: note_if_gone(f"security group {SECURITY_GROUP}",
+                                              delete_security_group(clients["ec2"], group["GroupId"]))))
     if repository_unused_after(clients["ecr"], names["image_tag"]):
         plan.append((f"delete ECR repository {REPOSITORY} (no other apps use it)",
                      lambda: note_if_gone(f"ECR repository {REPOSITORY}", delete_if_present(
