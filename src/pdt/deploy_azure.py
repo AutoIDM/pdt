@@ -76,7 +76,9 @@ from pdt.deploy_common import (
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
-AZ = [sys.executable, "-m", "azure.cli"]
+# -W ignore keeps the CLI's own Python warnings (telemetry's utcnow, unclosed
+# files) out of its output; its errors are not warnings and still print.
+AZ = [sys.executable, "-W", "ignore", "-m", "azure.cli"]
 COMMON_PROVIDERS = ("Microsoft.KeyVault", "Microsoft.ManagedIdentity")
 PLACEHOLDER_SUBSCRIPTION = "00000000-0000-0000-0000-000000000000"
 # A subscription allows a fixed number of Container Apps environments, so
