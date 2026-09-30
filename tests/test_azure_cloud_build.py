@@ -103,7 +103,9 @@ def test_a_failed_cloud_build_fails_once_and_shows_the_error(project, monkeypatc
     assert [call["args"][:2] for call in calls] == [("acr", "build")]
     out = said(capsys)
     assert "ERROR: Run failed" in out
-    assert "pdt az acr build failed; the build log and the error above say why" in out
+    assert ("pdt az acr build --registry pdtregistry --resource-group pdt --image report:latest "
+            "--platform linux/amd64 --no-format ") in out
+    assert "failed with exit code 1; fix the problem above and re-run" in out
 
 
 def test_paused_acr_tasks_get_a_plain_message(project, monkeypatch, capsys):

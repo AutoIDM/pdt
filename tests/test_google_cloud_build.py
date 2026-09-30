@@ -251,8 +251,12 @@ def test_a_failed_cloud_build_fails_once(project, monkeypatch, capsys):
         google.deploy(app, True)
     assert len(fake.ran("builds", "submit")) == 1
     assert fake.ran("run", "jobs", "deploy") == []
-    out = capsys.readouterr().out
-    assert "build step 0 failed" in out and "failed" in out
+    out = " ".join(capsys.readouterr().out.split())
+    assert "build step 0 failed" in out
+    assert "pdt gcloud builds submit " in out
+    assert ("--region us-central1 --project my-project --service-account "
+            f"projects/my-project/serviceAccounts/{BUILDER} --gcs-source-staging-dir "
+            f"gs://{BUILDS}/source failed with exit code 1; fix the problem above and re-run") in out
 
 
 @pytest.mark.parametrize("stderr, role, where", [
