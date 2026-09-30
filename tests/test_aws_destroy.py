@@ -3,7 +3,7 @@ import pytest
 from pdt import deploy_aws_batch
 from pdt.deploy_aws_batch import (
     COMPUTE_ENVIRONMENT, JOB_QUEUE, ensure_shared, legacy_fargate_cleanup, remove,
-    resource_names, shared_unused_after,
+    other_job_definitions, resource_names, shared_present,
 )
 
 NAMES = resource_names("my-app")
@@ -67,17 +67,23 @@ def no_waiting(monkeypatch):
     monkeypatch.setattr(deploy_aws_batch, "BATCH_WAIT_DELAYS", (0, 0))
 
 
-@pytest.mark.parametrize("others, queue, environment, expected", [
-    ([], True, True, [JOB_QUEUE, COMPUTE_ENVIRONMENT]),
-    (["pdt-other"], True, True, []),
-    ([], False, True, [COMPUTE_ENVIRONMENT]),
-    ([], False, False, []),
-    (["not-pdt"], True, True, [JOB_QUEUE, COMPUTE_ENVIRONMENT]),
+@pytest.mark.parametrize("others, expected", [
+    ([], []),
+    (["pdt-other"], ["pdt-other"]),
+    (["not-pdt"], []),
 ])
-def test_the_shared_queue_and_environment_go_only_when_no_other_pdt_app_remains(
-        others, queue, environment, expected):
-    batch = FakeBatch([definition("pdt-my-app"), *map(definition, others)], queue, environment)
-    assert shared_unused_after(batch, "pdt-my-app") == expected
+def test_only_other_pdt_apps_keep_the_shared_resources(others, expected):
+    batch = FakeBatch([definition("pdt-my-app"), *map(definition, others)])
+    assert other_job_definitions(batch, "pdt-my-app") == expected
+
+
+@pytest.mark.parametrize("queue, environment, expected", [
+    (True, True, [JOB_QUEUE, COMPUTE_ENVIRONMENT]),
+    (False, True, [COMPUTE_ENVIRONMENT]),
+    (False, False, []),
+])
+def test_shared_present_lists_the_queue_and_environment_that_exist(queue, environment, expected):
+    assert shared_present(FakeBatch(queue=queue, environment=environment)) == expected
 
 
 @pytest.mark.parametrize("resource", [JOB_QUEUE, COMPUTE_ENVIRONMENT])
@@ -100,13 +106,11 @@ def test_remove_of_an_absent_queue_does_nothing():
 
 
 def test_a_queue_still_listed_as_deleted_is_not_a_shared_resource_to_remove():
-    batch = FakeBatch([definition("pdt-my-app")], environment=False, status="DELETED")
-    assert shared_unused_after(batch, "pdt-my-app") == []
+    assert shared_present(FakeBatch(environment=False, status="DELETED")) == []
 
 
 def test_an_untagged_queue_is_left_alone_by_destroy():
-    batch = FakeBatch([definition("pdt-my-app")], environment=False, tags={})
-    assert shared_unused_after(batch, "pdt-my-app") == []
+    assert shared_present(FakeBatch(environment=False, tags={})) == []
 
 
 def test_ensure_shared_reads_an_enabled_queue_without_touching_it():

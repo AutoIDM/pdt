@@ -30,10 +30,15 @@ class FakeBatch(Fake):
     """The shared queue and environment, listed until deleted."""
 
     def __init__(self, raises: dict | None = None):
-        super().__init__({"describe_job_definitions": {"jobDefinitions": []}}, raises)
+        super().__init__({}, raises)
+        self.definitions = []
         self.items = {resource: {"status": "VALID", "state": "ENABLED",
                                  "tags": {"managed-by": "pdt"}}
                       for resource in (JOB_QUEUE, COMPUTE_ENVIRONMENT)}
+
+    def describe_job_definitions(self, status, jobDefinitionName=None):
+        return {"jobDefinitions": [item for item in self.definitions
+                                   if jobDefinitionName in (None, item["jobDefinitionName"])]}
 
     def __getattr__(self, operation):
         resource = next((item for item in self.items
@@ -55,13 +60,35 @@ class FakeBatch(Fake):
         return call
 
 
+class FakeEc2(Fake):
+    """The default VPC holding pdt's security group; each delete takes the next reply."""
+
+    def __init__(self, batch: FakeBatch, deletes=()):
+        super().__init__({"describe_vpcs": {"Vpcs": [{"VpcId": "vpc-1"}]}})
+        self.batch = batch
+        self.deletes = list(deletes)
+        self.group = {"GroupId": "sg-pdt", "Tags": [{"Key": "managed-by", "Value": "pdt"}]}
+        self.environment_at_delete = "not deleted"
+
+    def describe_security_groups(self, Filters):
+        return {"SecurityGroups": [self.group] if self.group else []}
+
+    def delete_security_group(self, GroupId):
+        self.environment_at_delete = self.batch.items[COMPUTE_ENVIRONMENT]
+        if self.deletes:
+            raise self.deletes.pop(0)
+        self.group = None
+
+
 def fake_clients(batch_raises=None, ecs_raises=None, ecr_raises=None,
-                 scheduler_raises=None) -> dict:
+                 scheduler_raises=None, group_deletes=()) -> dict:
     missing = client_error("ResourceNotFoundException")
+    batch = FakeBatch(batch_raises)
     return {
         "sts": Fake({}),
         "s3": Fake({}),
-        "batch": FakeBatch(batch_raises),
+        "batch": batch,
+        "ec2": FakeEc2(batch, group_deletes),
         "scheduler": Fake({"list_schedules": {"Schedules": []}},
                           {"get_schedule": missing, **(scheduler_raises or {})}),
         "secretsmanager": Fake({}, {"describe_secret": missing}),
@@ -96,6 +123,40 @@ def test_every_shared_resource_present_is_deleted_without_a_note(destroy):
     assert code == 0
     assert notes == []
     assert clients["batch"].items == {JOB_QUEUE: None, COMPUTE_ENVIRONMENT: None}
+    assert clients["ec2"].group is None
+    assert clients["ec2"].environment_at_delete is None
+
+
+def test_another_app_keeps_the_shared_batch_resources_and_the_security_group(destroy):
+    clients = fake_clients()
+    clients["batch"].definitions = [
+        {"jobDefinitionName": "pdt-other", "revision": 1, "tags": {"managed-by": "pdt"}}]
+    code, _notes = destroy(clients)
+    assert code == 0
+    assert None not in clients["batch"].items.values()
+    assert clients["ec2"].group is not None
+
+
+def test_destroy_leaves_a_same_named_group_pdt_did_not_create(destroy):
+    clients = fake_clients()
+    clients["ec2"].group["Tags"] = []
+    code, _notes = destroy(clients)
+    assert code == 0
+    assert clients["ec2"].environment_at_delete == "not deleted"
+
+
+def test_the_security_group_is_deleted_once_the_last_job_releases_it(destroy):
+    clients = fake_clients(group_deletes=[client_error("DependencyViolation")])
+    code, notes = destroy(clients)
+    assert code == 0
+    assert notes == []
+    assert clients["ec2"].group is None
+
+
+def test_a_security_group_a_sibling_destroy_already_removed_counts_as_deleted(destroy):
+    code, notes = destroy(fake_clients(group_deletes=[client_error("InvalidGroup.NotFound")]))
+    assert code == 0
+    assert f"security group {batch_deploy.SECURITY_GROUP} was already gone" in notes
 
 
 def test_a_compute_environment_a_sibling_destroy_already_removed_counts_as_deleted(destroy):
@@ -137,6 +198,7 @@ def test_a_schedule_group_a_sibling_destroy_already_removed_counts_as_deleted(de
     {"batch_raises": {COMPUTE_ENVIRONMENT.update: client_error("ServerException")}},
     {"ecs_raises": {"delete_cluster": client_error("ClusterContainsTasksException")}},
     {"ecr_raises": {"delete_repository": client_error("RepositoryNotEmptyException")}},
+    {"group_deletes": [client_error("DependencyViolation")] * 3},
 ])
 def test_any_other_shared_delete_error_still_raises(destroy, raises):
     with pytest.raises(ClientError):
