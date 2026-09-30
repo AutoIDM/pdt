@@ -195,10 +195,10 @@ def test_runs_span_with_no_run_in_the_window(capsys):
 def test_runs_count_caps_the_list_and_lifts_the_default_with_since(capsys):
     assert runs_cli.runs(lambda: hourly_runs(12), "my-report", ["--count", "3"]) == 0
     assert len(capsys.readouterr().out.splitlines()) == 1 + 3
-    assert runs_cli.runs(lambda: hourly_runs(12), "my-report", ["--since", "1w"]) == 0
+    assert runs_cli.runs(lambda: hourly_runs(12), "my-report", ["--since", "2026-09-01"]) == 0
     assert len(capsys.readouterr().out.splitlines()) == 1 + 12
     assert runs_cli.runs(lambda: hourly_runs(12), "my-report",
-                         ["--since", "1w", "--count", "2", "--json"]) == 0
+                         ["--since", "2026-09-01", "--count", "2", "--json"]) == 0
     assert [run["id"] for run in json.loads(capsys.readouterr().out)] == ["run-0", "run-1"]
 
 
