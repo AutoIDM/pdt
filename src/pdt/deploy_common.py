@@ -38,6 +38,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -130,6 +131,22 @@ def image_action(app: dict, what: str) -> str:
 
 def fail(message: str) -> None:
     console.error(message)
+    raise SystemExit(1)
+
+
+def fail_command(command: list[str], proc: subprocess.CompletedProcess, hint: str = "") -> None:
+    """Stop on a failed command: its own output, the full command line, then `hint`.
+
+    `command` is the line the user can run again, such as `pdt az ...`. Output
+    the command streamed is on the terminal already, so only captured text prints.
+    """
+    for output in (proc.stdout, proc.stderr):
+        if output and output.strip():
+            console.say(output.strip())
+    console.error(f"{shlex.join(command)} failed with exit code {proc.returncode}; "
+                  "fix the problem above and re-run")
+    if hint:
+        console.say(hint)
     raise SystemExit(1)
 
 
@@ -232,11 +249,7 @@ def run_build(command: list[str]) -> None:
     proc = subprocess.run(
         command, capture_output=True, text=True, check=False)
     if proc.returncode:
-        if proc.stdout.strip():
-            console.say(proc.stdout.strip())
-        if proc.stderr.strip():
-            console.say(proc.stderr.strip())
-        fail(f"{' '.join(command[:3])} failed")
+        fail_command(command, proc)
 
 
 def gather_secrets(app: dict) -> dict[str, str]:
