@@ -77,6 +77,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -88,7 +89,9 @@ from pdt.deploy_common import (
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
-AZ = [sys.executable, "-m", "azure.cli"]
+# -W ignore keeps the CLI's own Python warnings (telemetry's utcnow, unclosed
+# files) out of its output; its errors are not warnings and still print.
+AZ = [sys.executable, "-W", "ignore", "-m", "azure.cli"]
 COMMON_PROVIDERS = ("Microsoft.KeyVault", "Microsoft.ManagedIdentity")
 PLACEHOLDER_SUBSCRIPTION = "00000000-0000-0000-0000-000000000000"
 # A subscription allows a fixed number of Container Apps environments, so
@@ -143,6 +146,9 @@ def az(*args: str) -> subprocess.CompletedProcess:
     """Run one Azure CLI command in this process and return what it printed."""
     from azure.cli.core import get_default_cli
     from knack.log import cli_logger_names
+    # The CLI runs in this process, so its Python warnings (telemetry's utcnow, unclosed
+    # files) would land in the error text it captures. Its errors are not warnings.
+    warnings.simplefilter("ignore")
     loggers = [logging.getLogger(name) for name in ("", *cli_logger_names)]
     before = [list(logger.handlers) for logger in loggers]
     out, err = io.StringIO(), io.StringIO()

@@ -139,7 +139,10 @@ class FakeCli:
         logger.propagate = False
         if not logger.handlers:
             logger.addHandler(logging.StreamHandler())
-        if args[0] == "fail":
+        if args[0] == "warn":
+            import warnings
+            warnings.warn("datetime.datetime.utcnow() is deprecated", DeprecationWarning)
+        if args[0] in ("fail", "warn"):
             logger.error("ERROR: %s", args[1])
             raise SystemExit(2)
         out_file.write(" ".join(args))
@@ -168,6 +171,22 @@ def test_az_runs_in_process_and_keeps_each_call_output_apart(fake_cli):
     assert (first.returncode, first.stderr) == (2, "ERROR: one\n")
     assert (second.returncode, second.stderr) == (2, "ERROR: two\n")
     assert (third.returncode, third.stdout, third.stderr) == (0, "group list", "")
+
+
+def test_az_keeps_the_cli_python_warnings_out_of_its_error_text(fake_cli, monkeypatch):
+    import sys
+    import warnings
+
+    def show(message, category, filename, lineno, file=None, line=None):
+        sys.stderr.write(warnings.formatwarning(message, category, filename, lineno, line))
+
+    monkeypatch.setattr(warnings, "showwarning", show)
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        proc = deploy_azure.az("warn", "one")
+
+    assert proc.returncode == 2
+    assert "utcnow" not in proc.stderr
 
 
 SETTINGS = {"subscription": "123456789012", "resource_group": "pdt", "workspace": "pdt-logs",
