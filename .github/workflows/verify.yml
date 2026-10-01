@@ -112,7 +112,7 @@ jobs:
           name: dist
           path: dist/
       - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - run: pdt az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
+      - run: pdt az login --service-principal -u "$AZURE_CLIENT_ID" --password="$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
         env:
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
