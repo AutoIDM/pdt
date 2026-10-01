@@ -106,7 +106,8 @@ button[aria-pressed="true"] { background: var(--ink); color: #fff; border-color:
 .hg-run { fill: #7c3aed; }
 .hg-sched { fill: none; stroke: #94a3b8; stroke-width: 1; }
 .hg-card {
-    position: absolute; z-index: 20; width: 360px; padding: 10px 12px; font-size: 12px;
+    position: fixed; z-index: 20; width: 360px; max-height: calc(100vh - 16px); overflow-y: auto;
+    padding: 10px 12px; font-size: 12px;
     background: var(--card); border: 1px solid var(--line); border-radius: 6px;
     box-shadow: 0 8px 24px rgba(15, 23, 42, .12);
 }
