@@ -23,11 +23,23 @@ from pathlib import Path
 
 import yaml
 
-from inventory import INVENTORIES, SETTINGS, SHARED, UNTAGGED, classify
+from inventory import INVENTORIES, SETTINGS, SHARED, UNTAGGED, aws, classify
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEADLINE_SECONDS = 180
 POLL_SECONDS = 10
+RETIRED_AWS_APP = "salesforce-netsuite-customer-sync"
+RETIRED_AWS_RESOURCES = {
+    ("ecr repository", "pdt"),
+    ("ecs cluster", "pdt"),
+    ("iam role", f"pdt-{RETIRED_AWS_APP}-execution"),
+    ("iam role", f"pdt-{RETIRED_AWS_APP}-scheduler"),
+    ("iam role", f"pdt-{RETIRED_AWS_APP}-task"),
+    ("log group", f"/ecs/pdt-{RETIRED_AWS_APP}"),
+    ("schedule group", "pdt"),
+    ("schedule", f"pdt-{RETIRED_AWS_APP}"),
+    ("secret", f"pdt-{RETIRED_AWS_APP}-env"),
+}
 
 
 @dataclass
@@ -150,11 +162,62 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
     check("account is empty after destroy", empty_check)
 
 
-def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
+def cleanup_retired_aws(resources, settings):
+    found = {(resource.kind, resource.name or resource.id) for resource in resources}
+    if not found or not found <= RETIRED_AWS_RESOURCES:
+        return
+    if any(classify(resource, []) == UNTAGGED for resource in resources):
+        return
+
+    region = settings["region"]
+    base = f"pdt-{RETIRED_AWS_APP}"
+    if ("schedule", base) in found:
+        aws(region, "scheduler", "delete-schedule", "--name", base, "--group-name", "pdt")
+    if ("secret", f"{base}-env") in found:
+        aws(region, "secretsmanager", "delete-secret", "--secret-id", f"{base}-env",
+            "--force-delete-without-recovery")
+    if ("log group", f"/ecs/{base}") in found:
+        aws(region, "logs", "delete-log-group", "--log-group-name", f"/ecs/{base}")
+    for suffix in ("scheduler", "task", "execution"):
+        role = f"{base}-{suffix}"
+        if ("iam role", role) not in found:
+            continue
+        policies = aws(region, "iam", "list-role-policies", "--role-name", role) or {}
+        for policy in policies.get("PolicyNames") or []:
+            aws(region, "iam", "delete-role-policy", "--role-name", role,
+                "--policy-name", policy)
+        aws(region, "iam", "delete-role", "--role-name", role)
+    if ("schedule group", "pdt") in found:
+        aws(region, "scheduler", "delete-schedule-group", "--name", "pdt")
+    if ("ecs cluster", "pdt") in found:
+        aws(region, "ecs", "delete-cluster", "--cluster", "pdt")
+    if ("ecr repository", "pdt") in found:
+        aws(region, "ecr", "delete-repository", "--repository-name", "pdt", "--force")
+
+
+def recover(steps, apps, run_pdt, inventory, report, cleanup_leftovers):
+    leftovers = inventory()
+    if not leftovers or untagged_check(apps)(leftovers):
+        return
+    detail = "\n".join(f"{resource.kind} {resource.name or resource.id} "
+                       "is left over from an earlier run"
+                       for resource in leftovers)
+    for app in apps:
+        run_pdt("destroy", app, "--yes")
+    cleanup_leftovers(inventory())
+    step = Step("leftovers from an earlier run are destroyed", True, detail)
+    steps.append(step)
+    report(step)
+
+
+def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for,
+           cleanup_leftovers=None):
     steps: list[Step] = []
     cleanup = False
     try:
         try:
+            if cleanup_leftovers is not None:
+                recover(steps, apps, run_pdt, inventory, report, cleanup_leftovers)
             problems = wait(inventory, empty_check)
             if not record(steps, report, "account is empty before deploy", problems):
                 return steps
@@ -212,7 +275,10 @@ def main(argv=None) -> int:
         return 1
     settings = SETTINGS[args.provider](rows[0].get("platform") or {})
     inventory = functools.partial(listing, functools.partial(INVENTORIES[args.provider], settings))
-    steps = verify([row["name"] for row in rows], run_pdt, inventory)
+    cleanup_leftovers = (functools.partial(cleanup_retired_aws, settings=settings)
+                         if args.provider == "aws" else None)
+    steps = verify([row["name"] for row in rows], run_pdt, inventory,
+                   cleanup_leftovers=cleanup_leftovers)
     if args.report:
         write_report(args.report, args.provider, steps)
     return 0 if all(step.ok for step in steps) else 1
