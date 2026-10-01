@@ -628,13 +628,16 @@ def test_score_mrs_job_runs_on_a_webhook_trigger_and_its_schedule():
 
 
 def test_a_mode_pipeline_runs_only_its_own_task():
-    ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
-    for name, job in ci.items():
-        if not isinstance(job, dict) or "rules" not in job:
-            continue
-        for rule in job["rules"]:
-            condition = rule.get("if", "")
-            if "$mode ==" in condition and "$mode == null" not in condition:
-                continue  # the job a mode pipeline is for
-            if "CI_DEFAULT_BRANCH" in condition:
-                assert "$mode == null" in condition, name
+    loader = type("GitLabLoader", (yaml.SafeLoader,), {})
+    loader.add_constructor("!reference", lambda load, node: load.construct_sequence(node))
+    for path in (".gitlab-ci.yml", "verify/.gitlab-ci.yml"):
+        ci = yaml.load((REPO / path).read_text(), Loader=loader)
+        for name, job in ci.items():
+            if not isinstance(job, dict) or "rules" not in job:
+                continue
+            for rule in job["rules"]:
+                condition = rule.get("if", "") if isinstance(rule, dict) else ""
+                if "$mode ==" in condition and "$mode == null" not in condition:
+                    continue  # the job a mode pipeline is for
+                if "CI_DEFAULT_BRANCH" in condition or '"schedule"' in condition:
+                    assert "$mode == null" in condition, f"{path}: {name}"

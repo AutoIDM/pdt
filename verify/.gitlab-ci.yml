@@ -9,7 +9,7 @@ variables:
 # The files a cloud run can prove anything about. A merge request or master
 # pipeline that changes none of them (docs, the Claude tasks, the unit tests)
 # gets no cloud job, so the per-provider queue stays free for the ones that do.
-# A schedule always runs.
+# A schedule without a mode always runs.
 .verify-paths:
   changes:
     - src/pdt/**/*
@@ -56,7 +56,7 @@ verify:
       changes: !reference [.verify-paths, changes]
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
       changes: !reference [.verify-paths, changes]
-    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $mode == null
 
 .verify:unix:
   extends: .verify
