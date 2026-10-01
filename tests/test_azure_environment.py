@@ -188,6 +188,40 @@ def test_destroy_with_the_project_group_already_gone_still_releases_the_environm
     assert deleted == [("containerapp", "env"), ("group", "delete")]
 
 
+def test_destroy_with_the_project_group_already_gone_purges_its_soft_deleted_vault(monkeypatch):
+    plans, purged = [], []
+    deleted_vault = {"properties": {"tags": {"managed-by": "pdt"}}}
+    monkeypatch.setattr(deploy_azure_container_apps, "preflight",
+                        lambda app, requested: deploy_settings(OWN))
+    monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
+    monkeypatch.setattr(
+        deploy_azure_container_apps, "az_json",
+        lambda *args: deleted_vault if args[:2] == ("keyvault", "show-deleted") else None)
+    monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "false")
+    monkeypatch.setattr(deploy_azure_container_apps, "managed_secret", lambda *args: False)
+    monkeypatch.setattr(deploy_azure_container_apps, "confirm",
+                        lambda actions, *args: plans.append(actions) or True)
+    monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
+                        lambda *args, **kwargs: purged.append(args) or "")
+    assert deploy_azure_container_apps.destroy({"name": "report", "storage": False}, True) == 0
+    assert plans == [["purge the soft-deleted Key Vault pdt-vault"]]
+    assert purged == [("keyvault", "purge", "--name", "pdt-vault")]
+
+
+def test_destroy_leaves_a_soft_deleted_vault_pdt_did_not_make(monkeypatch):
+    monkeypatch.setattr(deploy_azure_container_apps, "preflight",
+                        lambda app, requested: deploy_settings(OWN))
+    monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
+    monkeypatch.setattr(
+        deploy_azure_container_apps, "az_json",
+        lambda *args: {"properties": {"tags": {}}} if args[:2] == ("keyvault", "show-deleted") else None)
+    monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "false")
+    monkeypatch.setattr(deploy_azure_container_apps, "managed_secret", lambda *args: False)
+    monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
+                        lambda *args, **kwargs: pytest.fail(f"ran {args}"))
+    assert deploy_azure_container_apps.destroy({"name": "report", "storage": False}, True) == 0
+
+
 def test_the_quota_error_gets_a_hint(monkeypatch, capsys):
     stderr = ('ERROR: (EnvironmentsInSubExceeded) Subscription is over quota '
               'for Managed Environments. Current usage: 1, allowed: 1')
