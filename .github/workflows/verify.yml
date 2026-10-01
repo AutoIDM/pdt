@@ -5,7 +5,7 @@
 #
 # A cloud job runs in the `verify` environment. Its required reviewers are
 # the manual start for a pull request, and fork pull requests never get its
-# secrets. A job whose account variables are not set is skipped.
+# secrets.
 
 name: verify
 
@@ -62,7 +62,6 @@ jobs:
   # trust policy names this repository's `verify` environment.
   aws:
     needs: build
-    if: vars.AWS_ROLE_ARN != ''
     runs-on: ubuntu-24.04-arm
     environment: verify
     concurrency:
@@ -95,7 +94,6 @@ jobs:
 
   azure:
     needs: build
-    if: vars.AZURE_CLIENT_ID != ''
     runs-on: ubuntu-latest
     environment: verify
     concurrency:
@@ -128,7 +126,6 @@ jobs:
 
   google-cloud:
     needs: build
-    if: vars.GOOGLE_CLOUD_PROJECT != ''
     runs-on: ubuntu-latest
     environment: verify
     concurrency:

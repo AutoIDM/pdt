@@ -46,7 +46,7 @@ The Azure job builds container images with Docker on the GitHub Actions runner a
 | `GOOGLE_CLOUD_PROJECT` | variable | google-cloud | Google Cloud project ID |
 | `GOOGLE_APPLICATION_CREDENTIALS` | secret | google-cloud | Service account key, the JSON file's content |
 
-A cloud job whose variable is not set is skipped, so a repository without an account for that provider still merges. The environment's required reviewers are the manual start for a pull request. A pull request from a fork never gets the environment's secrets, so the workflow skips it.
+The environment's required reviewers are the manual start for a pull request. A pull request from a fork never gets the environment's secrets, so the workflow skips it.
 
 The AWS job stores no key. It trades the job's GitHub OIDC token for credentials that expire after one hour. The role's trust policy must allow `sts:AssumeRoleWithWebIdentity` from the `token.actions.githubusercontent.com` identity provider when `token.actions.githubusercontent.com:aud` is `sts.amazonaws.com` and `token.actions.githubusercontent.com:sub` is `repo:AutoIDM/pdt:environment:verify`, and its permission policy needs the actions pdt prints in `deployer_policy` plus the read actions the inventory uses: `tag:GetResources`, `lambda:ListFunctions`, `lambda:ListTags`, `iam:ListRoles`, `secretsmanager:ListSecrets`, `scheduler:ListScheduleGroups`, `scheduler:ListTagsForResource`, `ecs:ListClusters`, `ecr:ListTagsForResource`, `sts:GetCallerIdentity`.
 
