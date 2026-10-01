@@ -97,6 +97,20 @@ def test_a_missing_resource_reads_as_none_without_a_retry(monkeypatch):
     assert sleeps == []
 
 
+def test_a_service_account_created_a_moment_ago_is_waited_for(monkeypatch):
+    calls, sleeps = fake_gcloud(monkeypatch, [
+        subprocess.CompletedProcess(
+            [], 1, "", "ERROR: (gcloud.storage.managed-folders.add-iam-policy-binding) "
+            "HTTPError 400: Service account pdt-runner@p.iam.gserviceaccount.com does not exist."),
+        subprocess.CompletedProcess([], 0, "{}", ""),
+    ])
+
+    assert deploy_google_cloud.run_quiet(
+        "storage", "managed-folders", "add-iam-policy-binding", "gs://b/a/") == "{}"
+    assert len(calls) == 2
+    assert sleeps == [10]
+
+
 def test_the_waiting_message_names_the_api(monkeypatch, capsys):
     fake_gcloud(monkeypatch, [
         subprocess.CompletedProcess([], 1, "", SERVICE_DISABLED),
