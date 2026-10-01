@@ -48,21 +48,21 @@ def test_item_carries_what_prompt_and_check_need():
 
 
 def test_classify_unchanged_branch_needs_human():
-    status, message = check.classify("old", "old", "main", "base", 3, 3)
+    status, message = check.classify("old", "old", False, 3, 3)
     assert status == "needs_human" and "did not push" in message
 
 
 def test_classify_clean_rebase_is_ok():
-    assert check.classify("old", "new", "main", "main", 3, 3)[0] == "ok"
-    assert check.classify("old", "new", "main", "main", 3, 2)[0] == "ok"
+    assert check.classify("old", "new", True, 3, 3)[0] == "ok"
+    assert check.classify("old", "new", True, 3, 2)[0] == "ok"
 
 
 def test_classify_extra_commits_or_wrong_base_needs_human():
-    status, message = check.classify("old", "new", "main", "main", 3, 4)
+    status, message = check.classify("old", "new", True, 3, 4)
     assert status == "needs_human" and "old" in message
-    status, message = check.classify("old", "new", "main", "other", 3, 3)
+    status, message = check.classify("old", "new", False, 3, 3)
     assert status == "needs_human" and "old" in message
-    assert check.classify("old", "new", "main", "main", 3, 0)[0] == "needs_human"
+    assert check.classify("old", "new", True, 3, 0)[0] == "needs_human"
 
 
 def test_comment_only_when_someone_must_look():
@@ -331,3 +331,32 @@ def test_a_pushed_rebase_is_still_judged(repo, monkeypatch):
             "before_sha": before, "ahead": 1}
     assert check.verdict({}, item, "master", "clean") == (
         "ok", "rebased onto the default branch (1 commit(s))", True)
+
+
+@needs_git
+def test_a_merge_that_lands_during_the_rebase_is_not_a_wrong_base(repo, monkeypatch):
+    repo.branch("clean", {"a.txt": "a"})
+    before = repo.sha("origin/clean")
+    repo.advance_master("base.txt", "base changed")
+    start = repo.sha("origin/master")
+    assert select.rebase_with_git("master", "clean", before, 1, push=True)
+    repo.advance_master("later.txt", "merged while Claude worked")
+    monkeypatch.setattr(check.time, "sleep", lambda seconds: None)
+    item = {"iid": 64, "source_branch": "clean", "target_branch": "master",
+            "before_sha": before, "ahead": 1}
+    assert check.verdict({"CI_COMMIT_SHA": start}, item, "master", "clean") == (
+        "ok", "rebased onto the default branch (1 commit(s))", True)
+
+
+@needs_git
+def test_a_branch_left_on_an_older_base_still_needs_a_person(repo, monkeypatch):
+    repo.branch("stale", {"a.txt": "a"})
+    before = repo.sha("origin/stale")
+    repo.advance_master("base.txt", "base changed")
+    start = repo.sha("origin/master")
+    repo.git("push", "-q", "origin", f"{before}:refs/heads/stale-copy")
+    monkeypatch.setattr(check.time, "sleep", lambda seconds: None)
+    item = {"iid": 64, "source_branch": "stale-copy", "target_branch": "master",
+            "before_sha": "something-else", "ahead": 1}
+    status, message, checked = check.verdict({"CI_COMMIT_SHA": start}, item, "master", "stale-copy")
+    assert status == "needs_human" and "does not sit" in message

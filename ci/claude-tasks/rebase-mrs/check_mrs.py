@@ -44,12 +44,12 @@ GONE_STATES = ("merged", "closed")
 MISSING_REF_SIGNS = ("couldn't find remote ref", "could not find remote ref")
 
 
-def classify(before_sha: str, after_sha: str, default_sha: str, merge_base: str,
+def classify(before_sha: str, after_sha: str, on_target: bool,
              ahead: int, after_count: int) -> tuple[str, str]:
     """Pure verdict on one branch. Returns (status, message)."""
     if after_sha == before_sha:
         return "needs_human", "Claude did not push; the branch is unchanged"
-    if merge_base != default_sha:
+    if not on_target:
         return "needs_human", (f"the branch was pushed but does not sit on the default branch; "
                                f"restore it with: git push --force-with-lease origin {before_sha}:")
     if after_count < 1 or after_count > ahead:
@@ -184,10 +184,15 @@ def verdict(env, item: dict, target: str, branch: str) -> tuple[str, str, bool]:
         default_sha = git("rev-parse", f"origin/{target}")
         merge_base = git("merge-base", f"origin/{target}", f"origin/{branch}")
         after_count = int(git("rev-list", "--count", f"origin/{target}..origin/{branch}"))
+        # Another merge can land while Claude works, so a base at or after the
+        # commit this pipeline started on also sits on the default branch.
+        start = env.get("CI_COMMIT_SHA") or default_sha
+        on_target = merge_base == default_sha or subprocess.run(
+            ["git", "merge-base", "--is-ancestor", start, merge_base]).returncode == 0
     except (subprocess.CalledProcessError, ValueError) as trouble:
         return "error", (f"could not compare origin/{branch} with origin/{target}, so "
                          f"Claude's push was not checked: {trouble}"), False
-    return (*classify(item["before_sha"], after_sha, default_sha, merge_base,
+    return (*classify(item["before_sha"], after_sha, on_target,
                       int(item["ahead"]), after_count), True)
 
 
