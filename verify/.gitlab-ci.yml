@@ -126,7 +126,8 @@ verify:azure:
   before_script:
     - apt-get update && apt-get install -y --no-install-recommends docker.io
     - !reference [".verify:unix", before_script]
-    - pdt az login --service-principal -u "$AZURE_CLIENT_ID" -p "$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
+    # The secret may start with "-", which az reads as an option unless = joins it.
+    - pdt az login --service-principal -u "$AZURE_CLIENT_ID" --password="$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
   script:
     - uv run --no-project --with pyyaml python verify/scripts/verify.py azure --report verify-azure.xml
 
