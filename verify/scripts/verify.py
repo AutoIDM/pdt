@@ -3,14 +3,15 @@
     verify.py <provider> [--report FILE]
 
 The scenario is fixed. The account may hold other pdt apps, so the run
-checks only what its own apps make. It asserts that no resource of its apps
-exists, records everything else the account holds, deploys every app in
-verify/pdt.yml order, reads each app's run history with `pdt health` and
+checks only what its own apps make. It first destroys every app, so a
+leftover of an earlier run is logged and removed instead of failing the run,
+then asserts that no resource of its apps exists, records everything else
+the account holds, deploys every app in verify/pdt.yml order, reads each app's run history with `pdt health` and
 `pdt runs` (no app has run yet, so this proves the read path), records which resource each app owns and which
 resources the apps share, then destroys the apps one at a time and checks
 after each one that the destroyed app is gone and that nothing else moved.
 At the end the account must hold exactly what it held before the run.
-If the initial check fails, the run exits without changing resources.
+If the initial check fails, the run exits without deploying anything.
 After that check passes, a failure attempts to destroy every app and exits 1.
 """
 
@@ -63,13 +64,38 @@ def describe(resource):
     return f"{resource.kind} {resource.name or resource.id}"
 
 
+def belongs(resource, apps):
+    """Named or tagged for one of these apps, tagged managed-by=pdt or not."""
+    return (resource.tags.get("pdt-app") in apps
+            or any(names(resource, app) for app in apps))
+
+
 def leftover_check(apps):
-    """No resource named or tagged for one of these apps, tagged or not."""
     def check(resources):
         return [f"{describe(resource)} still exists" for resource in resources
-                if resource.tags.get("pdt-app") in apps
-                or any(names(resource, app) for app in apps)]
+                if belongs(resource, apps)]
     return check
+
+
+def clear_leftovers(steps, apps, run_pdt, inventory, report):
+    """Destroy every app, so the run starts from what destroy leaves behind.
+
+    A cancelled run leaks what it made. Destroy removes a shared resource only
+    when no app uses it, so this also takes away a shared leftover of these
+    apps and leaves one that another app still uses.
+    """
+    found = [f"{describe(resource)} is left over from an earlier run"
+             for resource in inventory() if belongs(resource, apps)]
+    failures = []
+    for app in apps:
+        code = run_pdt("destroy", app, "--yes")
+        if code != 0:
+            failures.append(f"pdt destroy {app} exited {code}")
+    step = Step("destroy what an earlier run left", not failures,
+                "\n".join(failures + found))
+    steps.append(step)
+    report(step)
+    return step.ok
 
 
 def untagged_check(apps, baseline):
@@ -177,6 +203,8 @@ def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
     cleanup = False
     try:
         try:
+            if not clear_leftovers(steps, apps, run_pdt, inventory, report):
+                return steps
             problems = wait(inventory, leftover_check(apps))
             if not record(steps, report, "no resource of these apps exists before deploy",
                           problems):

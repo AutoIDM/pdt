@@ -22,6 +22,7 @@ class FakeCloud:
         self.extra = []
         self.keep_shared = False
         self.deploy_fails = ()
+        self.destroy_fails = ()
 
     def run_pdt(self, verb, *args):
         self.calls.append((verb, *args[:1]))
@@ -31,6 +32,8 @@ class FakeCloud:
                 return 1
             self.deploy(app)
         elif verb == "destroy":
+            if app in self.destroy_fails:
+                return 1
             self.destroy(app)
         return 0
 
@@ -45,12 +48,13 @@ class FakeCloud:
         self.deployed.append(app)
 
     def destroy(self, app):
-        if app not in self.deployed:
-            return
-        self.deployed.remove(app)
-        self.resources.pop(f"pdt-{app}", None)
-        for identifier in self.also_removes.get(app, ()):
-            self.resources.pop(identifier, None)
+        if app in self.deployed:
+            self.deployed.remove(app)
+            for identifier in self.also_removes.get(app, ()):
+                self.resources.pop(identifier, None)
+        own = self.resources.get(f"pdt-{app}")
+        if own and own.tags.get("managed-by") == "pdt":
+            del self.resources[own.id]
         if not self.deployed and not self.keep_shared:
             self.resources.pop("pdt-registry", None)
             for resource in self.extra:
@@ -112,6 +116,7 @@ def test_happy_path_leaves_the_account_empty():
     assert failed(steps) == []
     assert cloud.resources == {}
     assert [step.name for step in steps] == [
+        "destroy what an earlier run left",
         "no resource of these apps exists before deploy",
         "deploy app-one",
         "deploy app-two",
@@ -189,6 +194,7 @@ def test_an_exception_after_deploy_destroys_every_app():
     assert [step.name for step in failed(steps)] == ["unexpected error"]
     assert "the cloud said no" in failed(steps)[0].detail
     assert cloud.calls == [
+        ("destroy", "app-one"), ("destroy", "app-two"),
         ("deploy", "app-one"), ("deploy", "app-two"),
         ("health", "app-one"), ("runs", "app-one"),
         ("health", "app-two"), ("runs", "app-two"),
@@ -197,14 +203,43 @@ def test_an_exception_after_deploy_destroys_every_app():
     assert cloud.resources == {}
 
 
-def test_a_leftover_of_these_apps_is_left_untouched():
+def test_a_leftover_of_these_apps_is_destroyed_and_logged_first():
     cloud = FakeCloud()
     cloud.deploy("app-one")
-    before = dict(cloud.resources)
     steps = run(cloud)
-    assert [step.name for step in failed(steps)] == ["no resource of these apps exists before deploy"]
-    assert cloud.calls == []
-    assert cloud.resources == before
+    assert failed(steps) == []
+    assert steps[0].name == "destroy what an earlier run left"
+    assert steps[0].detail == "job pdt-app-one is left over from an earlier run"
+    assert cloud.calls[:3] == [("destroy", "app-one"), ("destroy", "app-two"),
+                               ("deploy", "app-one")]
+    assert cloud.resources == {}
+
+
+def test_a_shared_leftover_no_app_uses_is_destroyed_before_the_baseline():
+    cloud = FakeCloud()
+    cloud.add(Resource("registry", "pdt-registry", tagged(), "pdt-registry"))
+    steps = run(cloud)
+    assert failed(steps) == []
+    assert cloud.resources == {}
+
+
+def test_a_rerun_after_a_cancel_passes():
+    cloud = FakeCloud()
+    cloud.deploy("app-one")
+    cloud.deploy("app-two")
+    cloud.destroy("app-one")
+    assert failed(run(cloud)) == []
+    assert cloud.resources == {}
+
+
+def test_a_failing_cleanup_destroy_stops_before_deploy():
+    cloud = FakeCloud()
+    cloud.deploy("app-one")
+    cloud.destroy_fails = ("app-one",)
+    steps = run(cloud)
+    assert [step.name for step in failed(steps)] == ["destroy what an earlier run left"]
+    assert failed(steps)[0].detail.splitlines()[0] == "pdt destroy app-one exited 1"
+    assert cloud.calls == [("destroy", "app-one"), ("destroy", "app-two")]
 
 
 def test_another_apps_resources_are_ignored_and_kept():
@@ -234,7 +269,8 @@ def test_an_untagged_leftover_of_these_apps_counts():
     cloud.add(Resource("job", "pdt-app-two", {}, "pdt-app-two"))
     steps = run(cloud)
     assert [step.name for step in failed(steps)] == ["no resource of these apps exists before deploy"]
-    assert cloud.calls == []
+    assert cloud.calls == [("destroy", "app-one"), ("destroy", "app-two")]
+    assert "pdt-app-two" in cloud.resources
 
 
 def test_an_initial_inventory_exception_leaves_the_account_untouched():

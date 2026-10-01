@@ -96,7 +96,7 @@ The tool downloads the Google Cloud CLI to the user's data folder (`~/.local/sha
 - The `apps:` list in `verify/pdt.yml` is the matrix and the single source of truth. Add a target by adding a row there.
 - The app directories are generated. Never edit `verify/<app>/run.py` or `verify/<app>/config.yml` by hand. Edit `verify/scripts/templates/` and run `uv run --with pyyaml python verify/scripts/sync_apps.py`.
 - Never pin `pdt-cli` in `verify/.gitlab-ci.yml`. Each job installs the wheel the `build` job produced, so a run tests the commit it belongs to.
-- A verify account may also hold other pdt apps, so a run checks only what its own apps make. It fails when a resource of its apps exists before the first deploy, so a leftover is never hidden. After the last destroy, the account must hold exactly what it held before the first deploy, so a run that deletes another app's resource also fails.
+- A verify account may also hold other pdt apps, so a run checks only what its own apps make. It starts by destroying each of its apps, so a leftover of an earlier run is logged and removed, never a failure. It fails when a resource of its apps survives that destroy, because a user would hit the same orphan; fix destroy so it reaches it. After the last destroy, the account must hold exactly what it held before the first deploy, so a run that deletes another app's resource also fails.
 - The cloud jobs create and destroy real resources and cost real money. They are `interruptible: false`, because a cancelled run leaks what it made.
 
 ## Writing Markdown
