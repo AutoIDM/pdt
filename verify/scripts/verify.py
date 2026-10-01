@@ -3,7 +3,7 @@
     verify.py <provider> [--report FILE]
 
 The scenario is fixed. It asserts the account is empty, deploys every app
-in verify/pdt.yml order, reads the run history with `pdt health` and
+in verify/pdt.yml order, reads each app's run history with `pdt health` and
 `pdt runs` (no app has run yet, so this proves the read path), records which resource each app owns and which
 resources the apps share, then destroys the apps one at a time and checks
 after each one that the destroyed app is gone and that nothing else moved.
@@ -130,10 +130,8 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
     for app in apps:
         if not command("deploy", app, "--yes"):
             return
-    if not command("health"):
-        return
     for app in apps:
-        if not command("runs", app):
+        if not command("health", app) or not command("runs", app):
             return
     if not check("every resource is tagged", untagged_check(apps)):
         return

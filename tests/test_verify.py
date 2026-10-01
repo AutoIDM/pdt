@@ -109,8 +109,9 @@ def test_happy_path_leaves_the_account_empty():
         "account is empty before deploy",
         "deploy app-one",
         "deploy app-two",
-        "health",
+        "health app-one",
         "runs app-one",
+        "health app-two",
         "runs app-two",
         "every resource is tagged",
         "every resource has an owner",
@@ -164,8 +165,8 @@ def test_a_failing_health_check_fails_and_destroys_every_app():
         return 1 if verb == "health" else cloud.run_pdt(verb, *args)
 
     steps = verify(cloud.apps, run_pdt, cloud.inventory, report=lambda step: None, wait=now)
-    assert [step.name for step in failed(steps)] == ["health"]
-    assert failed(steps)[0].detail == "pdt health exited 1"
+    assert [step.name for step in failed(steps)] == ["health app-one"]
+    assert failed(steps)[0].detail == "pdt health app-one exited 1"
     assert cloud.resources == {}
 
 
@@ -183,7 +184,8 @@ def test_an_exception_after_deploy_destroys_every_app():
     assert "the cloud said no" in failed(steps)[0].detail
     assert cloud.calls == [
         ("deploy", "app-one"), ("deploy", "app-two"),
-        ("health",), ("runs", "app-one"), ("runs", "app-two"),
+        ("health", "app-one"), ("runs", "app-one"),
+        ("health", "app-two"), ("runs", "app-two"),
         ("destroy", "app-one"), ("destroy", "app-two"),
     ]
     assert cloud.resources == {}
