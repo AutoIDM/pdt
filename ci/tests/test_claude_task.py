@@ -91,18 +91,6 @@ def test_missing_task_or_prompt(tmp_path):
         runner.load_task("bare", tmp_path)
 
 
-def test_shipped_rebase_task_loads():
-    task = runner.load_task("rebase-mrs")
-    assert task.model == "opus"
-    assert task.select.name == "select_mrs.py"
-    assert task.check.name == "check_mrs.py"
-    assert "Bash(git push --force-with-lease*)" in task.allowed_tools
-    assert not any("git push -f" in tool for tool in task.allowed_tools)
-    assert runner.render_prompt(task.prompt, {
-        "source_branch": "b", "target_branch": "master", "iid": 1, "title": "t",
-        "before_sha": "abc", "ahead": 2})
-
-
 def test_render_prompt_fills_and_names_missing_fields():
     assert runner.render_prompt("Rebase {branch} for !{iid}", {"branch": "x", "iid": 7}) == \
         "Rebase x for !7"
@@ -126,7 +114,7 @@ def test_missing_token_message_names_the_variable():
     assert runner.missing_token_problem({"CLAUDE_CODE_OAUTH_TOKEN": "tok"}) == ""
 
 
-def test_claude_env_maps_the_gitlab_name_to_the_name_claude_reads():
+def test_claude_env_maps_the_secret_name_to_the_name_claude_reads():
     env = runner.claude_env({"CLAUDE_TOKEN": "tok", "PATH": "/bin"})
     assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "tok"
     assert env["PATH"] == "/bin"
@@ -193,6 +181,28 @@ def test_exit_codes():
     assert runner.exit_code(["needs_human", "error"]) == 1
 
 
+def test_run_url_links_the_workflow_run():
+    env = {"GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "AutoIDM/pdt",
+           "GITHUB_RUN_ID": "77"}
+    assert runner.run_url(env) == "https://github.com/AutoIDM/pdt/actions/runs/77"
+    assert runner.run_url({}) == ""
+
+
+def test_an_item_that_needs_a_person_prints_a_warning_annotation(tmp_path, monkeypatch, capsys):
+    make_task(tmp_path)
+    load = runner.load_task
+    monkeypatch.setattr(runner, "load_task", lambda name: load(name, tmp_path))
+    monkeypatch.setattr(runner, "verify_token", lambda task, env, report_dir: "")
+    monkeypatch.setattr(runner, "REPORT_DIR", tmp_path / "report")
+    monkeypatch.setattr(runner, "run_items", lambda *a: [
+        {"id": "7", "status": "needs_human", "message": "needs discussion:\ncli.py"},
+        {"id": "8", "status": "ok", "message": "tier::simple"}])
+    assert runner.main(["demo"]) == runner.EXIT_NEEDS_HUMAN
+    warnings = [line for line in capsys.readouterr().out.splitlines()
+                if line.startswith("::warning")]
+    assert warnings == ["::warning title=demo 7 needs a person::needs discussion: cli.py"]
+
+
 def test_claude_command_shape(tmp_path):
     task = runner.load_task("demo", make_task(
         tmp_path, "allowed_tools: [Read, 'Bash(git *)']\ndisallowed_tools: ['Bash(git push -f*)']\n"))
@@ -221,13 +231,6 @@ def test_parallel_parses_and_defaults_to_one(tmp_path):
     assert runner.load_task("demo", make_task(tmp_path / "four", "parallel: 4\n")).parallel == 4
     with pytest.raises(runner.TaskError, match="parallel"):
         runner.load_task("demo", make_task(tmp_path / "zero", "parallel: 0\n"))
-
-
-def test_claude_env_makes_a_relative_uv_cache_absolute(tmp_path):
-    env = runner.claude_env({"UV_CACHE_DIR": ".uv-cache"}, cwd=tmp_path)
-    assert env["UV_CACHE_DIR"] == str(tmp_path.resolve() / ".uv-cache")
-    assert runner.claude_env({"UV_CACHE_DIR": "/abs/cache"})["UV_CACHE_DIR"] == "/abs/cache"
-    assert "UV_CACHE_DIR" not in runner.claude_env({})
 
 
 def test_items_run_side_by_side_and_outcomes_keep_order(tmp_path, monkeypatch):

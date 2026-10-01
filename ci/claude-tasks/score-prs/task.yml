@@ -1,0 +1,25 @@
+# Score every open pull request into tier::simple, tier::review, or
+# tier::architectural. select_prs.py sets a floor from path rules and merges
+# simple PRs scored on an earlier run; Claude reads the diff and may raise the
+# floor; check_prs.py labels the PR and comments the reasons.
+model: opus
+budget_usd: 2
+timeout_minutes: 10
+# A daily sweep scores every open PR. Sessions are read-only and short, so
+# four at a time keeps a sweep of 15 PRs under five minutes.
+parallel: 4
+permission_mode: dontAsk
+select: select_prs.py
+check: check_prs.py
+allowed_tools:
+  - Read
+  - Grep
+  - Glob
+  - "Bash(git diff*)"
+  - "Bash(git log*)"
+  - "Bash(git show*)"
+disallowed_tools:
+  - Edit
+  - Write
+  - "Bash(git push*)"
+  - "Bash(git checkout*)"

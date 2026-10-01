@@ -1,0 +1,33 @@
+# Closes any Draft PR that no person touched for more than 5 business days,
+# and posts the list to Slack. The schedule runs armed. A manual run is a dry
+# run unless its dry_run box is cleared. Needs the secret SLACK_WEBHOOK_URL.
+
+name: close-stale-drafts
+
+on:
+  schedule:
+    - cron: "37 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List the stale Drafts, and change nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  close-stale-drafts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.PDT_BOT_TOKEN || github.token }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run --no-project --python 3.13 python ci/close_stale_drafts.py
