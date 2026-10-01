@@ -61,7 +61,8 @@ def listing(inventory):
 
 
 def describe(resource):
-    return f"{resource.kind} {resource.name or resource.id}"
+    text = f"{resource.kind} {resource.name or resource.id}"
+    return f"{text} ({resource.note})" if resource.note else text
 
 
 def belongs(resource, apps):

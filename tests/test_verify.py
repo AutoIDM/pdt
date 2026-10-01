@@ -273,6 +273,15 @@ def test_an_untagged_leftover_of_these_apps_counts():
     assert "pdt-app-two" in cloud.resources
 
 
+def test_a_leftover_names_why_its_listing_could_not_confirm_it():
+    cloud = FakeCloud()
+    cloud.add(Resource("secret", "pdt-app-two-env", {}, "pdt-app-two-env",
+                       "describe failed: PERMISSION_DENIED"))
+    steps = run(cloud)
+    assert failed(steps)[0].detail == (
+        "secret pdt-app-two-env (describe failed: PERMISSION_DENIED) still exists")
+
+
 def test_an_initial_inventory_exception_leaves_the_account_untouched():
     cloud = FakeCloud()
     cloud.deploy("app-one")
