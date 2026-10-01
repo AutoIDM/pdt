@@ -91,18 +91,6 @@ def test_missing_task_or_prompt(tmp_path):
         runner.load_task("bare", tmp_path)
 
 
-def test_shipped_rebase_task_loads():
-    task = runner.load_task("rebase-mrs")
-    assert task.model == "opus"
-    assert task.select.name == "select_mrs.py"
-    assert task.check.name == "check_mrs.py"
-    assert "Bash(git push --force-with-lease*)" in task.allowed_tools
-    assert not any("git push -f" in tool for tool in task.allowed_tools)
-    assert runner.render_prompt(task.prompt, {
-        "source_branch": "b", "target_branch": "master", "iid": 1, "title": "t",
-        "before_sha": "abc", "ahead": 2})
-
-
 def test_render_prompt_fills_and_names_missing_fields():
     assert runner.render_prompt("Rebase {branch} for !{iid}", {"branch": "x", "iid": 7}) == \
         "Rebase x for !7"

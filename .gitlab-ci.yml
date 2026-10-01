@@ -141,18 +141,6 @@ examples:
       - claude-task-report/
     expire_in: 30 days
 
-# After every merge to the default branch, Claude rebases each open MR onto
-# it. Label an MR `no-autorebase` to leave it alone. A pipeline that sets the
-# `mode` variable (a schedule or web run picking one job) does not rebase.
-rebase-mrs:
-  extends: .claude-task
-  needs: []
-  resource_group: rebase-mrs
-  variables:
-    CLAUDE_TASK: rebase-mrs
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
-
 # Scores every open MR into tier::simple / tier::review / tier::architectural,
 # comments the reasons, and merges a tier::simple MR once its pipeline passes.
 # Runs on a master pipeline whose `mode` variable is score_mrs: a project
