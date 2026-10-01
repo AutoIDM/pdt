@@ -30,30 +30,31 @@ Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one
 
 The `windows` provider deploys to the computer you run it on, so run it only on a Windows machine you are willing to add scheduled tasks to.
 
-The Azure job builds container images with Docker on the GitLab runner and uploads them to Azure Container Registry. It does not use ACR Tasks.
+The Azure job builds container images with Docker on the GitHub Actions runner and uploads them to Azure Container Registry. It does not use ACR Tasks.
 
-## CI/CD variables
+## GitHub Actions settings
 
-Set these in the project's CI/CD settings.
+`.github/workflows/verify.yml` runs one job per provider. Each cloud job runs in the GitHub environment `verify`. Set these in the repository settings under Environments > `verify`.
 
-| Variable | Job | Value | Setting |
+| Name | Kind | Job | Value |
 | --- | --- | --- | --- |
-| `AWS_ROLE_ARN` | verify:aws | ARN of an IAM role that trusts this project's GitLab OIDC token | Not protected |
-| `AZURE_CLIENT_ID` | verify:azure | Service principal client ID | Not protected |
-| `AZURE_CLIENT_SECRET` | verify:azure | Service principal secret | Masked; not protected |
-| `AZURE_TENANT_ID` | verify:azure | Azure tenant ID | Not protected |
-| `GOOGLE_APPLICATION_CREDENTIALS` | verify:google-cloud | Service account key | File type; not protected |
-| `GOOGLE_CLOUD_PROJECT` | verify:google-cloud | Google Cloud project ID | Not protected |
+| `AWS_ROLE_ARN` | variable | aws | ARN of the `pdt-verify` IAM role |
+| `AZURE_CLIENT_ID` | variable | azure | Service principal client ID |
+| `AZURE_TENANT_ID` | variable | azure | Azure tenant ID |
+| `PDT_AZURE_SUBSCRIPTION` | variable | azure | Azure subscription ID |
+| `AZURE_CLIENT_SECRET` | secret | azure | Service principal secret |
+| `GOOGLE_CLOUD_PROJECT` | variable | google-cloud | Google Cloud project ID |
+| `GOOGLE_APPLICATION_CREDENTIALS` | secret | google-cloud | Service account key, the JSON file's content |
 
-No variable is protected, because a merge request pipeline runs on an unprotected branch, and GitLab hides a protected variable from it. A cloud job whose variables are absent becomes a manual job that is allowed to fail. The pipeline stays green and shows the job as not run, so a project without an account for that provider still merges. Add the variables and the job runs on every merge request.
+A cloud job whose variable is not set is skipped, so a repository without an account for that provider still merges. The environment's required reviewers are the manual start for a pull request. A pull request from a fork never gets the environment's secrets, so the workflow skips it.
 
-The AWS job stores no key. It sends the job's OIDC token to `sts assume-role-with-web-identity` and receives credentials that expire after one hour. The role's trust policy must allow `sts:AssumeRoleWithWebIdentity` from the `gitlab.com` identity provider when `gitlab.com:sub` matches `project_path:autoidm/pdt:ref_type:branch:ref:*`, and its permission policy needs the actions pdt prints in `deployer_policy` plus the read actions the inventory uses: `tag:GetResources`, `lambda:ListFunctions`, `lambda:ListTags`, `iam:ListRoles`, `secretsmanager:ListSecrets`, `scheduler:ListScheduleGroups`, `scheduler:ListTagsForResource`, `ecs:ListClusters`, `ecr:ListTagsForResource`, `sts:GetCallerIdentity`.
+The AWS job stores no key. It trades the job's GitHub OIDC token for credentials that expire after one hour. The role's trust policy must allow `sts:AssumeRoleWithWebIdentity` from the `token.actions.githubusercontent.com` identity provider when `token.actions.githubusercontent.com:aud` is `sts.amazonaws.com` and `token.actions.githubusercontent.com:sub` is `repo:AutoIDM/pdt:environment:verify`, and its permission policy needs the actions pdt prints in `deployer_policy` plus the read actions the inventory uses: `tag:GetResources`, `lambda:ListFunctions`, `lambda:ListTags`, `iam:ListRoles`, `secretsmanager:ListSecrets`, `scheduler:ListScheduleGroups`, `scheduler:ListTagsForResource`, `ecs:ListClusters`, `ecr:ListTagsForResource`, `sts:GetCallerIdentity`.
 
 The Azure service principal holds `Contributor` and `Locks Contributor` on the subscription, because deploy puts a management lock on the shared environment and the ACR. It also holds `Role Based Access Control Administrator` with a condition that limits the roles it may assign to the ones pdt assigns: Key Vault Secrets Officer (`b86a8fe4-44ce-4948-aee5-eccb2c155cd7`), Key Vault Secrets User (`4633458b-17de-408a-b874-0445c86b69e6`), AcrPull (`7f951dda-4ed3-4680-a7ca-43fe172d538d`), and Storage Blob Data Contributor (`ba92f5b4-2d11-453d-a403-e96b0029c9fe`). When pdt starts assigning a new role, add its id to that condition, or the deploy fails at `role assignment create` with `AuthorizationFailed`.
 
-`PDT_SMOKE_TOKEN` is set in `verify/.gitlab-ci.yml`, so it needs no CI/CD variable. Each app declares it as required, so a deployed job fails unless pdt delivered it through `PDT_ENV_JSON`.
+`PDT_SMOKE_TOKEN` is set in `verify.yml`, so it needs no setting. Each app declares it as required, so a deployed job fails unless pdt delivered it through `PDT_ENV_JSON`.
 
-`PDT_INSTALL` is optional. Each job installs the wheel the `build` job produced. Set `PDT_INSTALL` to a git ref or to `pdt-cli` to verify a different build instead.
+`pdt_install` is an optional input of a manual run. Each job installs the wheel the `build` job produced. Set `pdt_install` to a git ref or to `pdt-cli` to verify a different build instead.
 
 ## What the listings read
 

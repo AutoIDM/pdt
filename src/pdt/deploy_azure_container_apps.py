@@ -69,7 +69,7 @@ def build_image(app: dict, registry: str, image_name: str) -> None:
     stage = stage_build_context(app)
     try:
         write_dockerfile(stage, app)
-        if os.environ.get("GITLAB_CI") == "true":
+        if os.environ.get("GITHUB_ACTIONS") == "true":
             image = f"{registry}.azurecr.io/{image_name}:latest"
             run_quiet("acr", "login", "--name", registry)
             run_build(["docker", "build", "--platform", "linux/amd64",
