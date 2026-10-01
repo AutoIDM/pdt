@@ -7,7 +7,8 @@ in verify/pdt.yml order, reads each app's run history with `pdt health` and
 `pdt runs` (no app has run yet, so this proves the read path), records which resource each app owns and which
 resources the apps share, then destroys the apps one at a time and checks
 after each one that the destroyed app is gone and that nothing else moved.
-If the initial check fails, the run exits without changing resources.
+Azure first purges soft-deleted pdt vaults. If the initial check then fails,
+the run exits without changing any active resources.
 After that check passes, a failure attempts to destroy every app and exits 1.
 """
 
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import yaml
 
-from inventory import INVENTORIES, SETTINGS, SHARED, UNTAGGED, classify
+from inventory import INVENTORIES, PREFLIGHTS, SETTINGS, SHARED, UNTAGGED, classify
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEADLINE_SECONDS = 180
@@ -150,11 +151,13 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
     check("account is empty after destroy", empty_check)
 
 
-def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
+def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for, preflight=None):
     steps: list[Step] = []
     cleanup = False
     try:
         try:
+            if preflight:
+                preflight()
             problems = wait(inventory, empty_check)
             if not record(steps, report, "account is empty before deploy", problems):
                 return steps
@@ -212,7 +215,8 @@ def main(argv=None) -> int:
         return 1
     settings = SETTINGS[args.provider](rows[0].get("platform") or {})
     inventory = functools.partial(listing, functools.partial(INVENTORIES[args.provider], settings))
-    steps = verify([row["name"] for row in rows], run_pdt, inventory)
+    steps = verify([row["name"] for row in rows], run_pdt, inventory,
+                   preflight=PREFLIGHTS.get(args.provider))
     if args.report:
         write_report(args.report, args.provider, steps)
     return 0 if all(step.ok for step in steps) else 1

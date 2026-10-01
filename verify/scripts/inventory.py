@@ -274,6 +274,13 @@ def azure_deleted_vaults() -> Inventory:
     return found
 
 
+def purge_azure_deleted_vaults() -> None:
+    for item in az("keyvault", "list-deleted", "--resource-type", "vault") or []:
+        name = item["name"]
+        if name.startswith("pdt-"):
+            az("keyvault", "purge", "--name", name)
+
+
 def azure_inventory(settings: dict[str, str]) -> Inventory:
     found = azure_deleted_vaults()
     # A named environment is the user's own, so its group is not pdt's to empty.
@@ -350,6 +357,10 @@ INVENTORIES = {
     "azure": azure_inventory,
     "google-cloud": google_cloud_inventory,
     "windows": windows_inventory,
+}
+
+PREFLIGHTS = {
+    "azure": purge_azure_deleted_vaults,
 }
 
 # Each entry reads the same places the matching provider module reads.

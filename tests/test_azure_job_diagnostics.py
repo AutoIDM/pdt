@@ -87,7 +87,7 @@ def test_malformed_job_fields_do_not_raise(monkeypatch, capsys):
     assert "user assigned identities: []" in output
 
 
-def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
+def test_deploy_preserves_original_failure_after_reporting(monkeypatch, tmp_path):
     def reconcile(*args):
         raise SystemExit(7)
 
@@ -126,7 +126,7 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
 
     with pytest.raises(SystemExit) as error:
         deploy_azure_container_apps.deploy(
-            {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+            {"name": "report", "dir": tmp_path, "schedule": "0 0 * * *", "storage": False}, True)
 
     assert error.value.code == 7
     assert reported and reported[0][1] == "pdt-report"

@@ -50,6 +50,8 @@ verify:
     when: always
     reports:
       junit: verify-*.xml
+  # A pipeline that sets `mode` runs only that task's job, and it does not
+  # build the wheel these jobs need.
   rules:
     - !reference [".verify:force-merge", rules]
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
