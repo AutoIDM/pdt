@@ -79,7 +79,7 @@ pdt itself never needs this API. It exists only so verification can ask the proj
 
 ### The Cloud Asset index keeps deleted resources
 
-`gcloud asset search-all-resources` answers from a search index, and that index can report a deleted resource for hours. On GitHub Actions run 36920344855 it still returned the secret `pdt-google-cloud-b-env` hours after `gcloud secrets delete` had removed it, so the run failed its first check. The listing therefore asks the owning service about each asset the index returns (`run jobs describe`, `secrets describe`, `artifacts repositories describe`) and drops the asset when the service answers that it does not exist. A describe that fails for any other reason, such as a missing permission or a network error, keeps the asset, and a failed check prints the describe error next to its name. These are the calls deploy and destroy already make, so the CI service account needs no extra role.
+The Cloud Asset index can list a deleted resource for hours. The listing confirms each asset with its service's describe call and drops it on NOT_FOUND. Any other describe error keeps the asset and shows the error.
 
 ### The AWS tagging API omits untagged resources
 
