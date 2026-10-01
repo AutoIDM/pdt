@@ -102,10 +102,11 @@ ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 
 
-# A freshly enabled API reports SERVICE_DISABLED for a few minutes, and Cloud
-# Scheduler reports ABORTED when a job changed a moment ago. Both pass, so every
+# A freshly enabled API reports SERVICE_DISABLED for a few minutes, Cloud
+# Scheduler reports ABORTED when a job changed a moment ago, and IAM says a
+# service account created a moment ago does not exist. All three pass, so every
 # gcloud call waits them out.
-TRANSIENT = ("SERVICE_DISABLED", "ABORTED")
+TRANSIENT = re.compile(r"SERVICE_DISABLED|ABORTED|Service account \S+ does not exist")
 RETRY_WAITS = (10, 20, 40, 60, 60, 60)
 
 
@@ -113,7 +114,7 @@ def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
     stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
     for wait in (*RETRY_WAITS, None):
         proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
-        if proc.returncode == 0 or wait is None or not any(m in proc.stderr for m in TRANSIENT):
+        if proc.returncode == 0 or wait is None or not TRANSIENT.search(proc.stderr):
             return proc
         title = re.search(r"serviceTitle: (.+)", proc.stderr)
         what = title.group(1).strip() if title else "Google Cloud"
