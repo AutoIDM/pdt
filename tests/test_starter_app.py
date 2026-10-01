@@ -53,7 +53,7 @@ def test_a_named_new_folder_gets_the_starter(tmp_path, monkeypatch):
 
 def test_the_starter_needs_no_env_vars(tmp_path, monkeypatch):
     root = init_into(tmp_path, monkeypatch)
-    config = yaml.safe_load((root / scaffold.STARTER / "config.yml").read_text())
+    config = yaml.safe_load((root / scaffold.STARTER / "pdt.yml").read_text())
     assert config["env"]["required"] == []
     assert not (root / scaffold.STARTER / "env.template").exists()
 

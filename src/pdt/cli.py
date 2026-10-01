@@ -3,7 +3,7 @@
 Leave <app> off any command that takes one, or mistype it, and pdt lists the apps it found.
 
 Every command except init, examples, completion, aws, az, and gcloud needs a project.
-pdt finds it by walking up from the working directory to the nearest pdt.yml.
+pdt finds it by walking up from the working directory to the nearest pdt.yml that has no run.py beside it (an app folder holds both).
 """
 
 from __future__ import annotations

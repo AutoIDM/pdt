@@ -12,7 +12,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = Path(__file__).resolve().parent / "templates"
-FILES = ("run.py", "config.yml")
+FILES = ("run.py", "pdt.yml")
 
 
 def main():

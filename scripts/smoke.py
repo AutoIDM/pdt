@@ -27,10 +27,10 @@ WHEEL_MUST_HOLD = (
     "pdt/deploy_azure.py",
     "pdt/utils/send_email.py",
     "pdt/examples/impossible-travel-report/run.py",
-    "pdt/examples/impossible-travel-report/config.yml",
+    "pdt/examples/impossible-travel-report/pdt.yml",
     "pdt/examples/impossible-travel-report/env.template",
     "pdt/examples/hello-world/run.py",
-    "pdt/examples/hello-world/config.yml",
+    "pdt/examples/hello-world/pdt.yml",
 )
 
 failures = []

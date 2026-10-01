@@ -44,14 +44,14 @@ Both install routes must keep working, and a change is not done until both do:
 - `src/pdt/deploy_<provider>.py` is one module per provider. AWS and Azure keep the job itself in a module under the provider (`deploy_aws_batch.py`, `deploy_azure_container_apps.py`); login, secrets, prices, and everything else the job shares with `login` and `destroy` stay in the provider module.
 - `src/pdt/deploy_common.py` holds code shared by every provider: `fail`, the `DOCKERFILE`, `gather_secrets`, and `stage_build_context`. A provider module imports from here. A provider module never imports from another provider module.
 - `src/pdt/utils/` is code the user's apps import. It is public API. Changing it breaks every deployed app, so treat a change here as breaking.
-- `src/pdt/examples/<name>/` ships inside the wheel. `pdt new` copies one into the user's project. An example never sets `name:` in its `config.yml`, because the copy takes the new folder's name.
+- `src/pdt/examples/<name>/` ships inside the wheel. `pdt new` copies one into the user's project. An example never sets `name:` in its `pdt.yml`, because the copy takes the new folder's name.
 - `tests/` runs with pytest and needs no network and no cloud account.
 
 ## Config rules
 
 - The user's project holds `pdt.yml` with a `platform:` block of defaults for every app and an `apps:` list.
-- An app directory holds `config.yml`. It configures only that app. It does not list apps. The two filenames stay different, or the upward walk stops inside an app folder.
-- Merge order, lowest to highest: `pdt.yml` `platform:` defaults, the app's entry in the `pdt.yml` `apps:` list, the app directory's `config.yml`, environment variables. The app directory is more specific than the project.
+- An app directory holds its own `pdt.yml`. It configures only that app. It does not list apps. `config.is_project` tells the two files apart: a folder holding `pdt.yml` and `run.py` is an app, so `find_project` and `find_env_files` walk past it. A leftover `config.yml` in an app folder is never read; validation tells the user to rename it.
+- Merge order, lowest to highest: the project `pdt.yml` `platform:` defaults, the app's entry in the project `pdt.yml` `apps:` list, the app directory's `pdt.yml`, environment variables. The app directory is more specific than the project.
 - Every config file passes the same validation.
 - `platform.provider` selects the provider module. Every cloud provider runs a job the same way: a container image built from the app folder, on AWS Batch (Fargate), Azure Container Apps Jobs, or Google Cloud Run Jobs. There is no zip runtime and no `platform.runtime` key; validation tells a user who still sets one to remove it. Do not add a second way to run a job on a provider.
 
@@ -94,7 +94,7 @@ The tool downloads the Google Cloud CLI to the user's data folder (`~/.local/sha
 `verify/` is a pdt project used as a live test. It deploys to real cloud accounts, so it is the one directory in this repo that holds a `pdt.yml`.
 
 - The `apps:` list in `verify/pdt.yml` is the matrix and the single source of truth. Add a target by adding a row there.
-- The app directories are generated. Never edit `verify/<app>/run.py` or `verify/<app>/config.yml` by hand. Edit `verify/scripts/templates/` and run `uv run --with pyyaml python verify/scripts/sync_apps.py`.
+- The app directories are generated. Never edit `verify/<app>/run.py` or `verify/<app>/pdt.yml` by hand. Edit `verify/scripts/templates/` and run `uv run --with pyyaml python verify/scripts/sync_apps.py`.
 - Never pin `pdt-cli` in `verify/.gitlab-ci.yml`. Each job installs the wheel the `build` job produced, so a run tests the commit it belongs to.
 - Every run asserts the account is empty before the first deploy and after the last destroy. A run that starts on a dirty account fails instead of hiding the leftovers.
 - The cloud jobs create and destroy real resources and cost real money. They are `interruptible: false`, because a cancelled run leaks what it made.

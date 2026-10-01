@@ -21,5 +21,5 @@ def add_app(root, name, config_text="", run_body="def main():\n    return 0\n"):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "run.py").write_text(run_body)
     if config_text:
-        (folder / "config.yml").write_text(config_text)
+        (folder / "pdt.yml").write_text(config_text)
     return folder

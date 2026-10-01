@@ -1,14 +1,16 @@
 """Load, merge, and validate pdt configuration.
 
 A project is a directory holding pdt.yml. An app is a directory inside it
-that contains run.py. Commands find the project by walking up from the
-working directory, so pdt works the same whether it was installed from
-PyPI or run from a clone of this repository.
+that contains run.py, and its own settings live in a pdt.yml next to that
+run.py. Commands find the project by walking up from the working directory,
+skipping any folder that holds run.py (that is an app, not the project), so
+pdt works the same whether it was installed from PyPI or run from a clone of
+this repository.
 
 Merge order for one app, least to most specific:
   1. `platform:` defaults in the project pdt.yml
-  2. the app's entry under `apps:` in pdt.yml
-  3. the app's own config.yml
+  2. the app's entry under `apps:` in the project pdt.yml
+  3. the app's own pdt.yml
   4. PDT_<APP>_<KEY> environment variables (config keys only)
 """
 
@@ -27,7 +29,13 @@ from dotenv import load_dotenv
 from pdt import console
 
 PROJECT_FILE = "pdt.yml"
-APP_FILE = "config.yml"
+APP_FILE = "pdt.yml"
+# The name an app's settings file had before it became pdt.yml. Validation
+# tells a user who still has one to rename it; nothing reads it.
+OLD_APP_FILE = "config.yml"
+# The first pdt-cli release that reads the app's pdt.yml. An app whose run.py
+# pins an older release still looks for config.yml.
+APP_FILE_SINCE = "0.1.2"
 
 PROVIDERS = ("google-cloud", "azure", "aws", "windows")
 # Every cloud provider runs a job as a container image built from the app
@@ -52,11 +60,12 @@ PLATFORM_KEYS = {
 ENV_KEYS = {"required", "one_of", "optional"}
 # Where each known key belongs, so a key in the wrong section gets told
 # where to move instead of "unknown key".
-APP_LEVEL = f"the top level of the app's {APP_FILE}, or its apps: entry in {PROJECT_FILE}"
+APP_LEVEL = (f"the top level of the app's {APP_FILE}, "
+             f"or its apps: entry in the project's {PROJECT_FILE}")
 KEY_HOME = {
-    "apps": f"the top level of {PROJECT_FILE}",
-    "platform": f"the top level of {PROJECT_FILE} or of the app's {APP_FILE}",
-    "name": f"the app's apps: entry in {PROJECT_FILE}",
+    "apps": f"the top level of the project's {PROJECT_FILE}",
+    "platform": f"the top level of the project's {PROJECT_FILE} or of the app's {APP_FILE}",
+    "name": f"the app's apps: entry in the project's {PROJECT_FILE}",
     "schedule": APP_LEVEL,
     "config": APP_LEVEL,
     "env": APP_LEVEL,
@@ -113,16 +122,22 @@ def machine_data_home() -> Path:
     return Path(os.environ.get("ProgramData") or r"C:\ProgramData") / "pdt"
 
 
+def is_project(folder: Path) -> bool:
+    """A folder holding pdt.yml and no run.py. An app holds both, and its
+    pdt.yml configures that app alone."""
+    return (folder / PROJECT_FILE).is_file() and not (folder / "run.py").is_file()
+
+
 def find_project(start: Path | None = None) -> Path:
     override = os.environ.get("PDT_PROJECT", "").strip()
     if override != "":
         folder = Path(override).expanduser().resolve()
-        if not (folder / PROJECT_FILE).is_file():
-            raise ConfigError(f"PDT_PROJECT is {folder}, which has no {PROJECT_FILE}")
+        if not is_project(folder):
+            raise ConfigError(f"PDT_PROJECT is {folder}, which has no project {PROJECT_FILE}")
         return folder
     folder = (start or Path.cwd()).resolve()
     while True:
-        if (folder / PROJECT_FILE).is_file():
+        if is_project(folder):
             return folder
         if folder.parent == folder:
             raise ConfigError(
@@ -466,7 +481,7 @@ def find_env_files(start: Path) -> list[Path]:
         candidate = folder / ".env"
         if candidate.is_file():
             files.append(candidate)
-        at_root = (folder / PROJECT_FILE).is_file() or (folder / ".git").exists()
+        at_root = is_project(folder) or (folder / ".git").exists()
         if at_root or folder.parent == folder:
             break
         folder = folder.parent
@@ -620,6 +635,11 @@ def validate_app(name: str) -> list[str]:
     except ConfigError as e:
         return [str(e)]
     problems = []
+    if (find_project() / name / OLD_APP_FILE).is_file():
+        problems.append(
+            f"{name}/{OLD_APP_FILE}: an app's settings now live in {name}/{APP_FILE}. "
+            f"Rename the file, and pin pdt-cli {APP_FILE_SINCE} or newer in {name}/run.py, "
+            f"because older versions read {OLD_APP_FILE}")
     try:
         platform = mapping(root_cfg, "platform", PROJECT_FILE)
     except ConfigError as e:
@@ -642,7 +662,7 @@ def validate_app(name: str) -> list[str]:
     if provider not in PROVIDERS:
         problems.append(
             f"{name}: platform.provider must be one of: {', '.join(PROVIDERS)}. "
-            f"Set it under platform: in {PROJECT_FILE}, or in {name}/{APP_FILE}.")
+            f"Set it under platform: in the project's {PROJECT_FILE}, or in {name}/{APP_FILE}.")
     if provider == "aws":
         problem = aws_account_problem(str(app["platform"].get("account") or ""))
         if problem != "":

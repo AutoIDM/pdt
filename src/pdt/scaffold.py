@@ -68,13 +68,13 @@ ENV_TEXT = """\
 AGENTS_TEXT = """\
 # AGENTS.md
 
-This folder is a pdt project: a set of small scheduled jobs. Every folder holding a `run.py` and a `config.yml` is one app. `pdt.yml` holds the settings shared by every app.
+This folder is a pdt project: a set of small scheduled jobs. Every folder holding a `run.py` is one app, and the `pdt.yml` next to that `run.py` configures that one app. The `pdt.yml` at the top of the project holds the settings shared by every app.
 
 ## Working here
 
 - Start a new app with `pdt new <name> --from <example>`; `pdt examples` lists the starting points. Do not copy an app folder by hand.
 - An app declares its dependencies in the script header at the top of its `run.py`. The pinned `pdt-cli` version is the version a deployed job keeps running, so leave it alone unless the app is being redeployed.
-- List the env vars an app reads under `env:` in its `config.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets.
+- List the env vars an app reads under `env:` in its own `pdt.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets.
 - Check work with `pdt validate`, try it with `pdt run <name>`, ship it with `pdt deploy <name>`.
 - Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all); add `--json` to any of them for machine-readable output.
 - Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
@@ -183,7 +183,7 @@ def project_yaml(platform: dict) -> str:
     ]
     if platform:
         lines += [
-            "# Defaults for every app. An app's own config.yml can override them.",
+            "# Defaults for every app. An app's own pdt.yml can override them.",
             "platform:",
         ]
         lines += [f"  {key}: {value}" for key, value in platform.items()]
@@ -196,7 +196,7 @@ def project_yaml(platform: dict) -> str:
         ]
     lines += [
         "",
-        "# Settings for one app. The app's own config.yml can hold these instead.",
+        "# Settings for one app. The app's own pdt.yml can hold these instead.",
         "apps: []",
         "",
     ]
@@ -304,7 +304,7 @@ def new_app(name: str, source: str | None) -> int:
     copy_example(root, name, example)
     console.done(f"Created {name}/ from the {example.name} example.")
     console.command(f"{name}/run.py", "the job itself")
-    console.command(f"{name}/config.yml", "how often it runs and what it needs")
+    console.command(f"{name}/{APP_FILE}", "how often it runs and what it needs")
     needs_secrets = (destination / "env.template").is_file()
     if needs_secrets:
         console.command(f"{name}/env.template", "the secrets to copy into .env")

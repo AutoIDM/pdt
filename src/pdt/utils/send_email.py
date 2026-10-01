@@ -201,12 +201,12 @@ def _configured() -> list[str]:
 
 
 def email_problems(cfg: dict, check_oauth: bool = True) -> list[str]:
-    """Env and config.yml problems for an app that sends email."""
+    """Env and app pdt.yml problems for an app that sends email."""
     problems = email_config_problems(check_authorization=True,
                                      check_oauth=check_oauth)
     email_from = str(cfg.get("email_from") or "").strip()
     if _configured() and email_from == "":
-        problems.append("email_from is required when sending email; set it in config.yml")
+        problems.append("email_from is required when sending email; set it in the app's pdt.yml")
     mismatch = send_email_graph.sender_mismatch(email_from)
     if mismatch is not None:
         problems.append(mismatch)

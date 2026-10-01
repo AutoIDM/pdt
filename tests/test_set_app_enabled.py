@@ -14,7 +14,7 @@ platform:
 def test_appends_the_key_to_a_file_that_lacks_it(project):
     add_app(project, "my-report", "schedule: daily\n")
     saved = set_app_enabled("my-report", False)
-    assert saved == project / "my-report" / "config.yml"
+    assert saved == project / "my-report" / "pdt.yml"
     assert saved.read_text() == "schedule: daily\nenabled: false\n"
 
 
