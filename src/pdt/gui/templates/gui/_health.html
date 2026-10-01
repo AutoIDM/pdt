@@ -29,7 +29,7 @@
 
     var detailUrl = null, cellUrl = null, appUrlTemplate = null, runUrlTemplate = null, appName = '';
     var gran = null, currentEnd = null, zone = '';
-    var data, svg, card, cursor, surface, shownCell, frozen = false, expandToken = 0;
+    var data, svg, card, cursor, surface, shownCell, shownCol, shownRow, frozen = false, expandToken = 0;
 
     var DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     var MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -175,6 +175,7 @@
                 if (!slot) return;
                 slot.className = 'hg-list hg-runs';
                 slot.innerHTML = runsHtml(payload.runs);
+                place();
             })
             .catch(function () {
                 if (token !== expandToken) return;
@@ -187,24 +188,30 @@
         // Rebuilding on every mousemove would drop clicks aimed at a card link.
         if (shownCell === col + '|' + row) return;
         shownCell = col + '|' + row;
+        shownCol = col;
+        shownRow = row;
 
-        var root = container.querySelector('[data-health-root]');
         card.innerHTML = cardHtml(col, row);
         card.classList.remove('hidden');
 
         cursor.setAttribute('x', data.gutterX + col * data.colW);
         cursor.setAttribute('y', data.gutterY + row * data.rowH);
         cursor.setAttribute('opacity', '.35');
+        place();
+    }
 
-        var rootRect = root.getBoundingClientRect();
+    // The card is fixed to the viewport so the bordered panel around the grid
+    // cannot clip it; it is clamped to the window instead.
+    function place() {
         var svgRect = svg.getBoundingClientRect();
-        var left = svgRect.left - rootRect.left + data.gutterX + col * data.colW + data.colW + 8;
-        var top = svgRect.top - rootRect.top + data.gutterY + row * data.rowH - card.offsetHeight / 2;
-        if (left + card.offsetWidth > rootRect.width) {
-            left = svgRect.left - rootRect.left + data.gutterX + col * data.colW - card.offsetWidth - 8;
-        }
-        card.style.left = Math.max(0, Math.min(left, rootRect.width - card.offsetWidth)) + 'px';
-        card.style.top = Math.max(0, Math.min(top, rootRect.height - card.offsetHeight)) + 'px';
+        var cellLeft = svgRect.left + data.gutterX + shownCol * data.colW;
+        var cellTop = svgRect.top + data.gutterY + shownRow * data.rowH;
+        if (cellTop + data.rowH < 0 || cellTop > window.innerHeight) { hide(); return; }
+        var left = cellLeft + data.colW + 8;
+        if (left + card.offsetWidth > window.innerWidth - 8) left = cellLeft - card.offsetWidth - 8;
+        var top = cellTop + data.rowH / 2 - card.offsetHeight / 2;
+        card.style.left = Math.max(8, Math.min(left, window.innerWidth - card.offsetWidth - 8)) + 'px';
+        card.style.top = Math.max(8, Math.min(top, window.innerHeight - card.offsetHeight - 8)) + 'px';
     }
 
     function hide() {
@@ -300,6 +307,11 @@
     });
     document.addEventListener('keydown', function (event) {
         if (frozen && event.key === 'Escape') hide();
+    });
+    ['scroll', 'resize'].forEach(function (type) {
+        window.addEventListener(type, function () {
+            if (frozen) place(); else if (shownCell) hide();
+        });
     });
 
     bind();
