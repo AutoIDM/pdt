@@ -33,6 +33,14 @@ apps:
     platform:
       provider: google-cloud
       region: us-central1
+  - name: snowflake-a
+    schedule: daily
+    platform:
+      provider: snowflake
+  - name: snowflake-b
+    schedule: daily
+    platform:
+      provider: snowflake
   - name: windows-a
     schedule: daily
     platform:

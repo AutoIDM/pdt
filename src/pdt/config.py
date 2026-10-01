@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from contextlib import contextmanager
 from datetime import date, timedelta
@@ -29,11 +30,12 @@ from pdt import console
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
 
-PROVIDERS = ("google-cloud", "azure", "aws", "windows")
+PROVIDERS = ("google-cloud", "azure", "aws", "snowflake", "windows")
 # Every cloud provider runs a job as a container image built from the app
 # folder: AWS on Fargate, Azure on Container Apps Jobs, Google Cloud on
-# Cloud Run Jobs. The windows provider runs the app directly.
-CONTAINER_PROVIDERS = ("google-cloud", "aws", "azure")
+# Cloud Run Jobs, Snowflake on Snowpark Container Services job services.
+# The windows provider runs the app directly.
+CONTAINER_PROVIDERS = ("google-cloud", "aws", "azure", "snowflake")
 SCHEDULE_SHORTHAND = {
     "hourly": "0 * * * *",
     "daily": "0 0 * * *",
@@ -47,6 +49,7 @@ PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
     "subscription", "resource_group", "environment",
+    "user",
     "timezone",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
@@ -381,6 +384,28 @@ def azure_environment_problem(environment: str) -> str:
             "<resource-group>/<name>, for example my-group/my-environment.")
 
 
+SNOWFLAKE_ACCOUNT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
+SNOWFLAKE_APP_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+
+
+def snowflake_account_problem(account: str) -> str:
+    # Deploy checks the value against the login; validate only judges its shape.
+    account = account.strip()
+    if account == "" or SNOWFLAKE_ACCOUNT.fullmatch(account):
+        return ""
+    return ("That is not a Snowflake account identifier. Write it as orgname-accountname, "
+            "for example myorg-myaccount.")
+
+
+def snowflake_app_name_problem(name: str) -> str:
+    # Snowflake objects are named PDT_<APP> as unquoted identifiers, so the
+    # app name must fit one once hyphens become underscores.
+    if SNOWFLAKE_APP_NAME.fullmatch(name):
+        return ""
+    return (f"{name!r} cannot name Snowflake objects; use letters, digits, hyphens, and "
+            "underscores, starting with a letter")
+
+
 def cron_expression(schedule) -> str:
     if not isinstance(schedule, str) or schedule.strip() == "":
         raise ConfigError("schedule is missing")
@@ -651,6 +676,13 @@ def validate_app(name: str) -> list[str]:
         problem = azure_environment_problem(str(app["platform"].get("environment") or ""))
         if problem != "":
             problems.append(f"{name}: platform.environment: {problem}")
+    if provider == "snowflake":
+        problem = snowflake_account_problem(str(app["platform"].get("account") or ""))
+        if problem != "":
+            problems.append(f"{name}: platform.account: {problem}")
+        problem = snowflake_app_name_problem(name)
+        if problem != "":
+            problems.append(f"{name}: {problem}")
     dockerfile = find_project() / name / "Dockerfile"
     if dockerfile.is_file():
         problem = dockerfile_problem(app["platform"])

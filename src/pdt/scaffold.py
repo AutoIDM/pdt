@@ -8,7 +8,9 @@ import tempfile
 from pathlib import Path
 
 from pdt import __version__, console
-from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project
+from pdt.config import (
+    APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
+    snowflake_account_problem)
 from pdt.utils.env_secret import private_file
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
@@ -18,6 +20,7 @@ PROVIDER_CHOICES = [
     ("azure", "Microsoft Azure"),
     ("aws", "Amazon Web Services"),
     ("google-cloud", "Google Cloud"),
+    ("snowflake", "Snowflake"),
     ("windows", "This Windows PC, using Task Scheduler"),
     ("", "Decide later"),
 ]
@@ -27,9 +30,14 @@ def _needed(answer: str) -> str:
     return "" if answer.strip() != "" else "This one is needed. Please type a value."
 
 
+def _snowflake_account(answer: str) -> str:
+    return _needed(answer) or snowflake_account_problem(answer)
+
+
 # Ask only what pdt cannot supply. Every provider learns its own account,
 # subscription, or project from the credentials at deploy time and writes the
 # answer back, so region is the only thing left that the user must choose.
+# A Snowflake account has one region, so the account is its one question.
 PROVIDER_QUESTIONS = {
     "azure": [
         ("region", "Which Azure region should hold your jobs?", "eastus2", _needed),
@@ -39,6 +47,10 @@ PROVIDER_QUESTIONS = {
     ],
     "google-cloud": [
         ("region", "Which Google Cloud region should hold your jobs?", "us-central1", _needed),
+    ],
+    "snowflake": [
+        ("account", "Which Snowflake account should hold your jobs? (orgname-accountname)",
+         "", _snowflake_account),
     ],
     "windows": [],
     "": [],
@@ -191,7 +203,7 @@ def project_yaml(platform: dict) -> str:
         lines += [
             "# Defaults for every app. Fill this in before you deploy.",
             "#platform:",
-            "#  provider: azure        # azure, aws, google-cloud, or windows",
+            "#  provider: azure        # azure, aws, google-cloud, snowflake, or windows",
             "#  region: eastus2",
         ]
     lines += [

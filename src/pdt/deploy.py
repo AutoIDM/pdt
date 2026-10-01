@@ -28,6 +28,7 @@ PROVIDERS = {
     "google-cloud": "deploy_google_cloud.py",
     "aws": "deploy_aws.py",
     "azure": "deploy_azure.py",
+    "snowflake": "deploy_snowflake.py",
     "windows": "deploy_windows.py",
 }
 

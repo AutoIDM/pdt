@@ -2,7 +2,7 @@
 
 Leave <app> off any command that takes one, or mistype it, and pdt lists the apps it found.
 
-Every command except init, examples, completion, aws, az, and gcloud needs a project.
+Every command except init, examples, completion, aws, az, gcloud, and snow needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
 """
 
@@ -25,6 +25,7 @@ CLOUD_CLIS = {
     "aws": "deploy_aws.py",
     "az": "deploy_azure.py",
     "gcloud": "deploy_google_cloud.py",
+    "snow": "deploy_snowflake.py",
 }
 
 
@@ -394,7 +395,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--script", action="store_true",
                    help="print the completion script instead of installing it")
     p.set_defaults(func=cmd_completion)
-    for name, label in (("aws", "AWS"), ("az", "Azure"), ("gcloud", "Google Cloud")):
+    for name, label in (("aws", "AWS"), ("az", "Azure"), ("gcloud", "Google Cloud"),
+                        ("snow", "Snowflake")):
         p = add_parser(name, help=f"run the {label} CLI that pdt installs")
         p.add_argument("args", nargs=argparse.REMAINDER)
     return parser

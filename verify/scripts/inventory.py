@@ -1,7 +1,7 @@
 """List what a real cloud account holds, one function per provider.
 
 Every cloud listing runs through pdt's own CLI passthroughs (`pdt aws`,
-`pdt az`, `pdt gcloud`), so verifying a provider needs nothing installed
+`pdt az`, `pdt gcloud`, `pdt snow`), so verifying a provider needs nothing installed
 that deploying it does not already install. The Windows provider deploys
 to the runner itself, so it reads Task Scheduler through PowerShell.
 
@@ -26,6 +26,24 @@ GOOGLE_ASSET_TYPES = (
     "run.googleapis.com/Job",
     "secretmanager.googleapis.com/Secret",
     "artifactregistry.googleapis.com/Repository",
+)
+SNOWFLAKE_DATABASE = "PDT"
+SNOWFLAKE_APP_OBJECTS = (
+    ("task", "TASKS"),
+    ("secret", "SECRETS"),
+    ("image repository", "IMAGE REPOSITORIES"),
+    ("stage", "STAGES"),
+    ("function", "USER FUNCTIONS"),
+    ("job service", "JOB SERVICES"),
+)
+SNOWFLAKE_PUBLIC_OBJECTS = (
+    ("network rule", "NETWORK RULES"),
+    ("tag", "TAGS"),
+)
+SNOWFLAKE_ACCOUNT_OBJECTS = (
+    ("compute pool", "COMPUTE POOLS"),
+    ("integration", "INTEGRATIONS"),
+    ("warehouse", "WAREHOUSES"),
 )
 WINDOWS_TASKS = (
     "$tasks = @(Get-ScheduledTask -TaskPath '\\' | "
@@ -82,6 +100,13 @@ def az(*args: str):
 
 def gcloud(*args: str):
     return run_json(["pdt", "gcloud", *args, "--format", "json"])
+
+
+def snow(sql: str):
+    # A temporary connection takes its account, user, and key from the
+    # SNOWFLAKE_* environment variables the deploy signs in with.
+    return run_json(["pdt", "snow", "sql", "-q", sql, "--format", "json",
+                     "--temporary-connection"])
 
 
 def aws_functions(region: str) -> Inventory:
@@ -329,6 +354,49 @@ def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
     return found
 
 
+def snowflake_tags(row: dict) -> dict[str, str]:
+    # pdt writes its markers into the comment as space-separated key=value words.
+    # SHOW USER FUNCTIONS names that column description.
+    comment = str(row.get("comment") or row.get("description") or "")
+    return dict(word.split("=", 1) for word in comment.split() if "=" in word)
+
+
+def snowflake_objects(kind: str, listing: str, scope: str, extra: dict[str, str]) -> Inventory:
+    found = []
+    for row in snow(f"SHOW {listing} IN SCHEMA {scope}") or []:
+        name = str(row["name"])
+        found.append(Resource(kind, f"{kind}:{scope}.{name}", snowflake_tags(row) | extra, name))
+    return found
+
+
+def snowflake_inventory(_settings: dict[str, str]) -> Inventory:
+    found = []
+    databases = snow(f"SHOW DATABASES LIKE '{SNOWFLAKE_DATABASE}%'") or []
+    for row in databases:
+        name = str(row["name"])
+        found.append(Resource("database", f"database:{name}", snowflake_tags(row), name))
+    if any(str(row["name"]).upper() == SNOWFLAKE_DATABASE for row in databases):
+        for row in snow(f"SHOW SCHEMAS IN DATABASE {SNOWFLAKE_DATABASE}") or []:
+            name = str(row["name"])
+            if name.upper() in ("PUBLIC", "INFORMATION_SCHEMA"):
+                continue
+            tags = snowflake_tags(row)
+            scope = f"{SNOWFLAKE_DATABASE}.{name}"
+            found.append(Resource("schema", f"schema:{scope}", tags, name))
+            if not name.upper().startswith("PDT_"):
+                continue
+            extra = {"pdt-app": tags["pdt-app"]} if "pdt-app" in tags else {}
+            for kind, listing in SNOWFLAKE_APP_OBJECTS:
+                found += snowflake_objects(kind, listing, scope, extra)
+        for kind, listing in SNOWFLAKE_PUBLIC_OBJECTS:
+            found += snowflake_objects(kind, listing, f"{SNOWFLAKE_DATABASE}.PUBLIC", {})
+    for kind, listing in SNOWFLAKE_ACCOUNT_OBJECTS:
+        for row in snow(f"SHOW {listing} LIKE '{SNOWFLAKE_DATABASE}'") or []:
+            name = str(row["name"])
+            found.append(Resource(kind, f"{kind}:{name}", snowflake_tags(row), name))
+    return found
+
+
 def windows_inventory(_settings: dict[str, str]) -> Inventory:
     tasks = run_json([
         "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
@@ -349,6 +417,7 @@ INVENTORIES = {
     "aws": aws_inventory,
     "azure": azure_inventory,
     "google-cloud": google_cloud_inventory,
+    "snowflake": snowflake_inventory,
     "windows": windows_inventory,
 }
 
@@ -369,6 +438,9 @@ SETTINGS = {
         or os.environ.get("PDT_GOOGLE_CLOUD_PROJECT") or "",
         "region": platform.get("region")
         or os.environ.get("PDT_GOOGLE_CLOUD_REGION") or "us-central1",
+    },
+    "snowflake": lambda platform: {
+        "account": platform.get("account") or os.environ.get("SNOWFLAKE_ACCOUNT") or "",
     },
     "windows": lambda _platform: {},
 }

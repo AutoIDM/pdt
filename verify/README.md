@@ -11,6 +11,7 @@ The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Ever
 | `aws-fargate-a`, `aws-fargate-b` | aws | Batch job on Fargate |
 | `azure-container-apps-a`, `azure-container-apps-b` | azure | Container Apps job |
 | `google-cloud-a`, `google-cloud-b` | google-cloud | Cloud Run job |
+| `snowflake-a`, `snowflake-b` | snowflake | Snowpark Container Services job service |
 | `windows-a`, `windows-b` | windows | Task Scheduler |
 
 The app directories are generated. Edit `scripts/templates/`, then run `uv run --with pyyaml python verify/scripts/sync_apps.py` from the repository root.
@@ -44,6 +45,10 @@ Set these in the project's CI/CD settings.
 | `AZURE_TENANT_ID` | verify:azure | Azure tenant ID | Not protected |
 | `GOOGLE_APPLICATION_CREDENTIALS` | verify:google-cloud | Service account key | File type; not protected |
 | `GOOGLE_CLOUD_PROJECT` | verify:google-cloud | Google Cloud project ID | Not protected |
+| `SNOWFLAKE_ACCOUNT` | verify:snowflake | Account identifier as `orgname-accountname` | Not protected |
+| `SNOWFLAKE_USER` | verify:snowflake | Snowflake user name | Not protected |
+| `SNOWFLAKE_PRIVATE_KEY_FILE` | verify:snowflake | Private key of the user's key pair | File type; masking does not apply; not protected |
+| `SNOWFLAKE_ROLE` | verify:snowflake | Optional. The role the run uses; leave it out to use the user's default role | Not protected |
 
 No variable is protected, because a merge request pipeline runs on an unprotected branch, and GitLab hides a protected variable from it. A cloud job whose variables are absent becomes a manual job that is allowed to fail. The pipeline stays green and shows the job as not run, so a project without an account for that provider still merges. Add the variables and the job runs on every merge request.
 
@@ -51,19 +56,32 @@ The AWS job stores no key. It sends the job's OIDC token to `sts assume-role-wit
 
 The Azure service principal holds `Contributor` on the subscription, and `Role Based Access Control Administrator` with a condition that limits the roles it may assign to the ones pdt assigns: Key Vault Secrets Officer (`b86a8fe4-44ce-4948-aee5-eccb2c155cd7`), Key Vault Secrets User (`4633458b-17de-408a-b874-0445c86b69e6`), AcrPull (`7f951dda-4ed3-4680-a7ca-43fe172d538d`), and Storage Blob Data Contributor (`ba92f5b4-2d11-453d-a403-e96b0029c9fe`). When pdt starts assigning a new role, add its id to that condition, or the deploy fails at `role assignment create` with `AuthorizationFailed`.
 
+The Snowflake job signs in with a key pair, so it stores no password. The job builds no image on the runner: Snowflake builds it. The account must be a paid account, because a trial account cannot create a compute pool and its jobs cannot reach the internet, so pdt deploy stops with a message that says so. The account's `ACCOUNTADMIN` runs these statements once for the role the run uses (`<role>`):
+
+```sql
+GRANT CREATE DATABASE ON ACCOUNT TO ROLE <role>;
+GRANT CREATE WAREHOUSE ON ACCOUNT TO ROLE <role>;
+GRANT CREATE COMPUTE POOL ON ACCOUNT TO ROLE <role>;
+GRANT CREATE INTEGRATION ON ACCOUNT TO ROLE <role>;
+GRANT EXECUTE TASK ON ACCOUNT TO ROLE <role>;
+GRANT EXECUTE MANAGED TASK ON ACCOUNT TO ROLE <role>;
+GRANT APPLICATION ROLE SNOWFLAKE.EVENTS_VIEWER TO ROLE <role>;
+```
+
 `PDT_SMOKE_TOKEN` is set in `verify/.gitlab-ci.yml`, so it needs no CI/CD variable. Each app declares it as required, so a deployed job fails unless pdt delivered it through `PDT_ENV_JSON`.
 
 `PDT_INSTALL` is optional. Each job installs the wheel the `build` job produced. Set `PDT_INSTALL` to a git ref or to `pdt-cli` to verify a different build instead.
 
 ## What the listings read
 
-Every listing drops resources tagged `pdt-lifecycle: retain`. The data store (an S3 bucket, an Azure storage account, or a Cloud Storage bucket) outlives its apps by design, so the empty-account checks do not expect it to go.
+Every listing drops resources tagged `pdt-lifecycle: retain`. The data store (an S3 bucket, an Azure storage account, a Cloud Storage bucket, or the Snowflake database `PDT_DATA`) outlives its apps by design, so the empty-account checks do not expect it to go.
 
 | Provider | Listing |
 | --- | --- |
 | aws | `resourcegroupstaggingapi get-resources`, plus one list per kind filtered on the `pdt` name prefix |
 | azure | `az resource list --resource-group pdt-verify`, plus the resource group itself. The Container Apps environment `pdt-shared/pdt-eastus2` is named in `PDT_AZURE_CONTAINER_APPS_ENVIRONMENT`, so the run treats it as the user's own and never creates, lists, or deletes it. Create it once by hand before the first run |
 | google-cloud | `gcloud asset search-all-resources`, plus `scheduler jobs list` and `iam service-accounts list` |
+| snowflake | `pdt snow sql` running `SHOW` commands over the database `PDT` (its schemas, and in each app schema the tasks, secrets, image repositories, stages, functions, and job services), plus the compute pool, the integration, and the warehouse named `PDT`. The database `PDT_DATA` is the retained data store |
 | windows | `Get-ScheduledTask` filtered on `pdt-` task names |
 
 ### Google Cloud needs the Cloud Asset API
@@ -88,5 +106,7 @@ Four kinds cannot hold a tag, so pdt marks each one another way and the listing 
 - A Cloud Scheduler job. pdt writes `Managed by PDT app <name>` in its description.
 - A Google Cloud service account. pdt sets its display name to `pdt job runner`.
 - A Windows scheduled task. pdt starts its description with `Managed by pdt;`.
+
+A Snowflake object is marked by its `COMMENT`, and the listing reads the `key=value` words in it as tags. An app schema's comment is `managed-by=pdt pdt-app=<app>`, and every object inside that schema counts as that app's. The data store's comment adds `pdt-lifecycle=retain`.
 
 An Azure Key Vault secret is not a resource either. `az resource list` returns the vault, not what is inside it, so the vault stands for the secrets pdt put in it.
