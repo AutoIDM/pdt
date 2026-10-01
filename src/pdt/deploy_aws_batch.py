@@ -42,9 +42,9 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_secrets, stage_build_context,
-    store_kept_line, store_name, store_plan_lines, warn_if_locked,
-    write_dockerfile,
+    CostEstimate, docker_preflight, fail, gather_secrets, image_action,
+    run_secrets, stage_build_context, store_kept_line, store_name,
+    store_plan_lines, warn_if_locked, write_dockerfile,
 )
 
 REPOSITORY = "pdt"
@@ -152,15 +152,6 @@ def managed(item: dict) -> bool:
 
 def shared_tags() -> dict[str, str]:
     return {**MANAGED_TAGS, "shared": "true"}
-
-
-def docker_preflight() -> None:
-    if not shutil.which("docker"):
-        fail("Docker is required to deploy to AWS; install Docker Desktop "
-             "and run the same command again")
-    proc = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False)
-    if proc.returncode:
-        fail("Docker is installed but not running; start Docker and run the same command again")
 
 
 def default_network(ec2) -> tuple[list[str], str]:
@@ -514,7 +505,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
-    docker_preflight()
+    docker_preflight("AWS")
     session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
     clients = batch_clients(session)
