@@ -106,7 +106,7 @@ def test_happy_path_leaves_the_account_empty():
     assert failed(steps) == []
     assert cloud.resources == {}
     assert [step.name for step in steps] == [
-        "account is empty before deploy",
+        "no resource of these apps exists before deploy",
         "deploy app-one",
         "deploy app-two",
         "health app-one",
@@ -121,7 +121,7 @@ def test_happy_path_leaves_the_account_empty():
         "destroy app-two",
         "app-two resources are gone",
         "other apps are untouched after destroy app-two",
-        "account is empty after destroy",
+        "account holds what it held before deploy",
     ]
 
 
@@ -145,7 +145,7 @@ def test_a_shared_resource_left_behind_fails():
     cloud = FakeCloud()
     cloud.keep_shared = True
     steps = run(cloud)
-    assert [step.name for step in failed(steps)] == ["account is empty after destroy"]
+    assert [step.name for step in failed(steps)] == ["account holds what it held before deploy"]
     assert "pdt-registry" in failed(steps)[0].detail
 
 
@@ -191,14 +191,44 @@ def test_an_exception_after_deploy_destroys_every_app():
     assert cloud.resources == {}
 
 
-def test_a_nonempty_account_is_left_untouched():
+def test_a_leftover_of_these_apps_is_left_untouched():
     cloud = FakeCloud()
     cloud.deploy("app-one")
     before = dict(cloud.resources)
     steps = run(cloud)
-    assert [step.name for step in failed(steps)] == ["account is empty before deploy"]
+    assert [step.name for step in failed(steps)] == ["no resource of these apps exists before deploy"]
     assert cloud.calls == []
     assert cloud.resources == before
+
+
+def test_another_apps_resources_are_ignored_and_kept():
+    cloud = FakeCloud()
+    cloud.keep_shared = True
+    other = [Resource("job", "pdt-payroll", tagged(), "pdt-payroll"),
+             Resource("plan", "legacy-plan", {}, "legacy-plan"),
+             Resource("registry", "pdt-registry", tagged(), "pdt-registry")]
+    for resource in other:
+        cloud.add(resource)
+    steps = run(cloud)
+    assert failed(steps) == []
+    assert sorted(cloud.resources) == ["legacy-plan", "pdt-payroll", "pdt-registry"]
+
+
+def test_removing_a_resource_that_existed_before_fails():
+    cloud = FakeCloud()
+    cloud.add(Resource("job", "pdt-payroll", tagged(), "pdt-payroll"))
+    cloud.also_removes = {"app-one": ["pdt-payroll"]}
+    steps = run(cloud)
+    assert [step.name for step in failed(steps)] == ["other apps are untouched after destroy app-one"]
+    assert "pdt-payroll is gone" in failed(steps)[0].detail
+
+
+def test_an_untagged_leftover_of_these_apps_counts():
+    cloud = FakeCloud()
+    cloud.add(Resource("job", "pdt-app-two", {}, "pdt-app-two"))
+    steps = run(cloud)
+    assert [step.name for step in failed(steps)] == ["no resource of these apps exists before deploy"]
+    assert cloud.calls == []
 
 
 def test_an_initial_inventory_exception_leaves_the_account_untouched():

@@ -2,7 +2,7 @@
 
 A pdt project used to prove that deploy and destroy do what they say on a real cloud account. It is not a unit test: every run creates and deletes real resources, and it costs real money.
 
-One run covers one provider. It asserts the account is empty, deploys every app the provider owns, lists the account through the provider's own API, and checks two things: every resource pdt made carries `managed-by=pdt`, and every resource belongs either to one app or to the set the apps share. It then destroys the apps one at a time. After each destroy it checks that the destroyed app's resources are gone and that every other app's resources, and the shared ones, are still there. The last destroy must leave the account empty again.
+One run covers one provider. The account may also hold other pdt apps, so the run checks only what its own apps make. It asserts that no resource of its apps exists, records everything else the account holds, deploys every app the provider owns, lists the account through the provider's own API, and checks two things: every resource pdt made carries `managed-by=pdt`, and every resource belongs either to one app or to the set the apps share. It then destroys the apps one at a time. After each destroy it checks that the destroyed app's resources are gone and that every other app's resources, and the shared ones, are still there. After the last destroy, the account must hold exactly what it held before the run: nothing the run made remains, and nothing that was there before is gone. A resource that existed before the run is not checked for a tag.
 
 The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Every provider gets two apps, so a shared resource always has a second owner while the first one is destroyed.
 
@@ -57,7 +57,7 @@ The Azure service principal holds `Contributor` on the subscription, and `Role B
 
 ## What the listings read
 
-Every listing drops resources tagged `pdt-lifecycle: retain`. The data store (an S3 bucket, an Azure storage account, or a Cloud Storage bucket) outlives its apps by design, so the empty-account checks do not expect it to go.
+Every listing drops resources tagged `pdt-lifecycle: retain`. The data store (an S3 bucket, an Azure storage account, or a Cloud Storage bucket) outlives its apps by design, so the checks do not expect it to go.
 
 | Provider | Listing |
 | --- | --- |
