@@ -1,4 +1,4 @@
-"""Run one Claude Code task from GitLab CI on the team's Claude subscription.
+"""Run one Claude Code task from GitHub Actions on the team's Claude subscription.
 
 A task is a folder under ci/claude-tasks/<name>/:
 
@@ -14,8 +14,8 @@ A task is a folder under ci/claude-tasks/<name>/:
               with an empty item. An empty list means nothing to do.
   check       optional after-hook. Gets ``{"item", "result", "job_url"}`` on
               stdin and prints ``{"status": "ok"|"needs_human"|"error",
-              "message": "..."}``. It may have side effects, for example an
-              MR comment. Absent means ``ok`` unless Claude reported an error.
+              "message": "..."}``. It may have side effects, for example a
+              PR comment. Absent means ``ok`` unless Claude reported an error.
 
 Each item runs in its own git worktree, a detached copy of the checkout at
 HEAD, so items can run side by side without stepping on each other's
@@ -29,14 +29,18 @@ Usage: ci/claude_task.py <task-name> [--dry-run] [--only ID]
 A dry run sets CLAUDE_TASK_DRY_RUN=1 for the select hook, so a hook with
 side effects can only report.
 
-Exit codes: 0 every item ok, 2 an item needs a person (the CI job shows a
-warning), 1 the token is bad, the task is misconfigured, or an item errored.
+Exit codes: 0 every item ok, 2 an item needs a person, 1 the token is bad,
+the task is misconfigured, or an item errored. GitHub Actions has no exit
+code that only warns, so each item that needs a person prints a ``::warning::``
+annotation and the workflow step turns exit 2 into a green job.
 
 Environment:
   CLAUDE_TOKEN   the Claude Code OAuth token from ``claude setup-token``. The
-                 CI job exports it as CLAUDE_CODE_OAUTH_TOKEN, which is the
+                 workflow passes it as CLAUDE_CODE_OAUTH_TOKEN, which is the
                  name Claude Code reads. Both names are accepted here.
-  CI_JOB_URL     handed to the check hook so an MR comment can link the log.
+  GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID
+                 make the run link handed to the check hook, so a PR comment
+                 can link the log.
 
 The token is verified before anything else runs: the variable must be set,
 ``claude auth status`` must report a logged-in subscription, and a tiny probe
@@ -353,21 +357,21 @@ def run_hook(script: Path, stdin: str, env, cwd: Path | None = None) -> tuple[in
     return done.returncode, done.stdout, done.stderr
 
 
-def claude_env(env, cwd: Path | None = None) -> dict:
-    """The environment Claude and the hooks run with.
-
-    CLAUDE_TOKEN is mapped to the name Claude Code reads. A relative
-    UV_CACHE_DIR (the CI job sets .uv-cache) is made absolute against ``cwd``
-    so `uv run` inside a per-item worktree still hits the job's cache.
-    """
+def claude_env(env) -> dict:
+    """The environment Claude and the hooks run with: CLAUDE_TOKEN is mapped
+    to the name Claude Code reads."""
     out = dict(env)
     token = token_from(env)
     if token:
         out["CLAUDE_CODE_OAUTH_TOKEN"] = token
-    cache = out.get("UV_CACHE_DIR", "")
-    if cache and not os.path.isabs(cache):
-        out["UV_CACHE_DIR"] = str((Path(cwd) if cwd else Path.cwd()).resolve() / cache)
     return out
+
+
+def run_url(env) -> str:
+    if not env.get("GITHUB_RUN_ID"):
+        return ""
+    server = env.get("GITHUB_SERVER_URL", "https://github.com")
+    return f"{server}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}"
 
 
 # --- per-item worktrees -------------------------------------------------------
@@ -402,7 +406,7 @@ def verify_token(task: Task, env, report_dir: Path) -> str:
         done = subprocess.run(["claude", "auth", "status", "--json"], capture_output=True,
                               text=True, timeout=60, env=env, check=False)
     except FileNotFoundError:
-        return "claude is not installed or not on PATH; the CI job installs it in before_script"
+        return "claude is not installed or not on PATH; the workflow installs it before this step"
     problem = auth_status_problem(done.stdout)
     if problem:
         return problem
@@ -442,7 +446,7 @@ def select_items(task: Task, env) -> list[dict]:
 def check_item(task: Task, item: dict, result: dict, env, cwd: Path | None = None) -> dict:
     if task.check is None:
         return default_status(result)
-    payload = json.dumps({"item": item, "result": result, "job_url": env.get("CI_JOB_URL", "")})
+    payload = json.dumps({"item": item, "result": result, "job_url": run_url(env)})
     code, out, err = run_hook(task.check, payload, env, cwd)
     if err.strip():
         print(err.strip())
@@ -533,10 +537,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"--- {task.name}: {len(outcomes)} item(s)")
     for outcome in outcomes:
         print(f"  {outcome['status']:11} {outcome['id']}  {outcome['message']}")
-    code = exit_code([o["status"] for o in outcomes])
-    if code == EXIT_NEEDS_HUMAN:
-        print("some items need a person; the job ends with a warning")
-    return code
+    for outcome in outcomes:
+        if outcome["status"] == "needs_human":
+            message = " ".join(outcome["message"].split())
+            print(f"::warning title={task.name} {outcome['id']} needs a person::{message}")
+    return exit_code([o["status"] for o in outcomes])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,87 @@
+# Scores open pull requests into tier::simple, tier::review, or
+# tier::architectural with the ci/claude-tasks/score-prs task, and merges a
+# scored tier::simple PR once every check on its head commit passed.
+# A pull_request event scores that PR alone. The schedule sweeps every open
+# PR. A manual run is a dry run unless its dry_run box is cleared.
+# Needs the secret CLAUDE_TOKEN (from `claude setup-token`). The optional
+# secret PDT_BOT_TOKEN merges as a user, because a merge made with
+# GITHUB_TOKEN starts no workflow on the default branch.
+
+name: score-prs
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would change, and change nothing
+        type: boolean
+        default: true
+
+concurrency:
+  group: score-prs
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  checks: read
+  statuses: read
+
+env:
+  CLAUDE_CLI_VERSION: "2.1.266"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  # select_prs.py finds this job's own check run by this id (OWN_CHECK).
+  score-prs:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.PDT_BOT_TOKEN || github.token }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+    steps:
+      # A pull_request run would check out the PR itself, so the PR could
+      # change the rules that score and merge it. The rules come from the
+      # default branch instead.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/cache@v4
+        with:
+          path: ~/.claude-cli
+          key: claude-cli-${{ env.CLAUDE_CLI_VERSION }}
+      - name: Install Claude Code
+        run: |
+          if [ ! -x ~/.claude-cli/claude ]; then
+            curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_CLI_VERSION"
+            mkdir -p ~/.claude-cli && cp -L ~/.local/bin/claude ~/.claude-cli/claude
+          fi
+          echo "$HOME/.claude-cli" >> "$GITHUB_PATH"
+      - run: claude --version
+      # Exit 2 means a PR needs a person. claude_task.py printed a ::warning::
+      # for it, and the job stays green.
+      - name: Score pull requests
+        run: >
+          uv run --python 3.13 python ci/claude_task.py score-prs
+          ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }} || [ $? -eq 2 ]
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: claude-task-report
+          path: claude-task-report/
+          retention-days: 30
+          if-no-files-found: ignore
