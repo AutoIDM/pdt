@@ -105,7 +105,7 @@ Do not hard-wrap prose at a column. Write each paragraph and each list item as o
 
 ## Making a change
 
-Never commit on `master`. Start every change in a git worktree on its own branch (in a Claude Code session, use EnterWorktree before editing), push the branch, and open a merge request with `glab mr create`. Changes land through the MR.
+Never commit on `main`. Start every change in a git worktree on its own branch (in a Claude Code session, use EnterWorktree before editing), push the branch, and open a pull request with `gh pr create`. Changes land through the PR.
 
 ## Tests and CI
 

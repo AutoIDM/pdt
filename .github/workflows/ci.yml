@@ -1,11 +1,11 @@
-# Runs the same checks as .gitlab-ci.yml, and adds the Windows and macOS
-# coverage that pdt needs because it targets Windows Task Scheduler.
+# Tests run on Windows and macOS too, because pdt targets Windows Task
+# Scheduler.
 
 name: ci
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -49,3 +49,28 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv run --python 3.12 python scripts/smoke.py
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv run --group dev ruff check
+
+  # Everything the verify matrix can prove without a cloud account.
+  verify-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --check
+      - run: uv run pdt validate
+        env:
+          PDT_PROJECT: verify
+          PDT_SMOKE_TOKEN: pdt-verify
