@@ -10,7 +10,7 @@ The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Ever
 | --- | --- | --- |
 | `aws-fargate-a`, `aws-fargate-b` | aws | Batch job on Fargate |
 | `azure-container-apps-a`, `azure-container-apps-b` | azure | Container Apps job |
-| `google-cloud-a`, `google-cloud-b` | google-cloud | Cloud Run job |
+| `google-cloud-a`, `google-cloud-b` | gcloud | Cloud Run job |
 | `windows-a`, `windows-b` | windows | Task Scheduler |
 
 The app directories are generated. Edit `scripts/templates/`, then run `uv run --with pyyaml python verify/scripts/sync_apps.py` from the repository root.
@@ -42,8 +42,8 @@ Set these in the project's CI/CD settings.
 | `AZURE_CLIENT_ID` | verify:azure | Service principal client ID | Not protected |
 | `AZURE_CLIENT_SECRET` | verify:azure | Service principal secret | Masked; not protected |
 | `AZURE_TENANT_ID` | verify:azure | Azure tenant ID | Not protected |
-| `GOOGLE_APPLICATION_CREDENTIALS` | verify:google-cloud | Service account key | File type; not protected |
-| `GOOGLE_CLOUD_PROJECT` | verify:google-cloud | Google Cloud project ID | Not protected |
+| `GOOGLE_APPLICATION_CREDENTIALS` | verify:gcloud | Service account key | File type; not protected |
+| `GOOGLE_CLOUD_PROJECT` | verify:gcloud | Google Cloud project ID | Not protected |
 
 No variable is protected, because a merge request pipeline runs on an unprotected branch, and GitLab hides a protected variable from it. A cloud job whose variables are absent becomes a manual job that is allowed to fail. The pipeline stays green and shows the job as not run, so a project without an account for that provider still merges. Add the variables and the job runs on every merge request.
 
@@ -63,7 +63,7 @@ Every listing drops resources tagged `pdt-lifecycle: retain`. The data store (an
 | --- | --- |
 | aws | `resourcegroupstaggingapi get-resources`, plus one list per kind filtered on the `pdt` name prefix |
 | azure | `az resource list --resource-group pdt-verify`, plus the resource group itself. The Container Apps environment `pdt-shared/pdt-eastus2` is named in `PDT_AZURE_CONTAINER_APPS_ENVIRONMENT`, so the run treats it as the user's own and never creates, lists, or deletes it. Create it once by hand before the first run |
-| google-cloud | `gcloud asset search-all-resources`, plus `scheduler jobs list` and `iam service-accounts list` |
+| gcloud | `gcloud asset search-all-resources`, plus `scheduler jobs list` and `iam service-accounts list` |
 | windows | `Get-ScheduledTask` filtered on `pdt-` task names |
 
 ### Google Cloud needs the Cloud Asset API

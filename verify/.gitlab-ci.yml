@@ -131,9 +131,9 @@ verify:azure:
   script:
     - uv run --no-project --with pyyaml python verify/scripts/verify.py azure --report verify-azure.xml
 
-verify:google-cloud:
+verify:gcloud:
   extends: .verify:unix
-  resource_group: google-cloud
+  resource_group: gcloud
   # Without the account's variables the job cannot log in. It then waits as a
   # manual job, so the pipeline shows the gap instead of failing at login.
   rules:
@@ -149,7 +149,7 @@ verify:google-cloud:
     - pdt gcloud auth activate-service-account --key-file "$GOOGLE_APPLICATION_CREDENTIALS"
     - pdt gcloud config set project "$GOOGLE_CLOUD_PROJECT"
   script:
-    - uv run --no-project --with pyyaml python verify/scripts/verify.py google-cloud --report verify-google-cloud.xml
+    - uv run --no-project --with pyyaml python verify/scripts/verify.py gcloud --report verify-gcloud.xml
 
 # Deploys to the runner's own Task Scheduler, so it needs no cloud credentials.
 verify:windows:

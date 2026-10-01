@@ -29,11 +29,11 @@ from pdt import console
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
 
-PROVIDERS = ("google-cloud", "azure", "aws", "windows")
+PROVIDERS = ("gcloud", "azure", "aws", "windows")
 # Every cloud provider runs a job as a container image built from the app
 # folder: AWS on Fargate, Azure on Container Apps Jobs, Google Cloud on
 # Cloud Run Jobs. The windows provider runs the app directly.
-CONTAINER_PROVIDERS = ("google-cloud", "aws", "azure")
+CONTAINER_PROVIDERS = ("gcloud", "aws", "azure")
 SCHEDULE_SHORTHAND = {
     "hourly": "0 * * * *",
     "daily": "0 0 * * *",
@@ -185,6 +185,12 @@ def mapping(cfg: dict, key: str, where: str) -> dict:
     return value
 
 
+def provider_name(value):
+    """The provider's current name. Earlier releases named Google Cloud google-cloud,
+    and a config file that still says so keeps working."""
+    return "gcloud" if value == "google-cloud" else value
+
+
 def app_name_problem(name: str) -> str:
     if name in ("", ".", "..") or any(c in name for c in "/\\\0") or Path(name).name != name:
         return f"{name!r} is not an app name; use one folder name with no path separators"
@@ -208,6 +214,8 @@ def merged_app(name: str) -> dict:
         **mapping(entry, "platform", entry_where),
         **mapping(own, "platform", own_where),
     }
+    if "provider" in platform:
+        platform["provider"] = provider_name(platform["provider"])
     default_timezone = platform.get(
         "timezone", "local" if platform.get("provider") == "windows" else "Etc/UTC")
     return {
@@ -231,7 +239,7 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
     # Edit the text rather than rewrite the yaml, so the user's comments survive.
     project_file = find_project() / PROJECT_FILE
     root_cfg = load_yaml(project_file)
-    if (root_cfg.get("platform") or {}).get("provider") == app["platform"].get("provider"):
+    if provider_name((root_cfg.get("platform") or {}).get("provider")) == app["platform"].get("provider"):
         path = project_file
     else:
         path = app["dir"] / APP_FILE

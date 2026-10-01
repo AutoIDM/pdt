@@ -45,7 +45,7 @@ def app_with_dockerfile(project, platform_text):
 def test_a_dockerfile_is_fine_on_every_cloud_provider(project):
     app_with_dockerfile(project, "platform:\n  provider: azure\n")
     assert validate_app("my-report") == []
-    (project / "pdt.yml").write_text("platform:\n  provider: google-cloud\n")
+    (project / "pdt.yml").write_text("platform:\n  provider: gcloud\n")
     assert validate_app("my-report") == []
     (project / "pdt.yml").write_text("platform:\n  provider: aws\n  account: '123456789012'\n")
     assert validate_app("my-report") == []
