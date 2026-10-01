@@ -26,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from inventory import INVENTORIES, SETTINGS, SHARED, UNTAGGED, classify
+from inventory import INVENTORIES, SETTINGS, SHARED, UNTAGGED, classify, names
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEADLINE_SECONDS = 180
@@ -68,7 +68,7 @@ def leftover_check(apps):
     def check(resources):
         return [f"{describe(resource)} still exists" for resource in resources
                 if resource.tags.get("pdt-app") in apps
-                or any(f"pdt-{app}" in f"{resource.id} {resource.name}" for app in apps)]
+                or any(names(resource, app) for app in apps)]
     return check
 
 

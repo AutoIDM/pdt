@@ -91,6 +91,12 @@ def test_classify_falls_back_to_the_name():
     assert classify(resource, APPS) == "app-two"
 
 
+def test_classify_reads_a_batch_log_group_path():
+    resource = Resource("log group", "arn:aws:logs:r:1:log-group:/pdt/app-two", tagged(),
+                        "/pdt/app-two")
+    assert classify(resource, APPS) == "app-two"
+
+
 def test_classify_calls_an_ambiguous_name_shared():
     resource = Resource("group", "pdt-app-one-pdt-app-two", tagged())
     assert classify(resource, APPS) == "shared"

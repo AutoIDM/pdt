@@ -51,14 +51,19 @@ Inventory = list[Resource]
 Owner = str
 
 
+def names(resource: Resource, app: str) -> bool:
+    # AWS Batch logs to /pdt/<app>; every other per-app name holds pdt-<app>.
+    return any(marker in text for marker in (f"pdt-{app}", f"/pdt/{app}")
+               for text in (resource.id, resource.name))
+
+
 def classify(resource: Resource, apps: list[str]) -> Owner:
     if resource.tags.get("managed-by") != "pdt":
         return UNTAGGED
     tagged = resource.tags.get("pdt-app")
     if tagged in apps:
         return tagged
-    named = [app for app in apps
-             if f"pdt-{app}" in resource.id or f"pdt-{app}" in resource.name]
+    named = [app for app in apps if names(resource, app)]
     if len(named) == 1:
         return named[0]
     return SHARED
