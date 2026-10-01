@@ -25,6 +25,11 @@ which Cloud Build reads instead), so its patterns keep meaning paths
 inside the app directory. The generated image ends every run's output
 with the line `pdt: exit N`, which `pdt runs` reads for the run's status.
 
+A build run by docker on the deploying machine forwards that machine's
+SSH agent when one is running, so a RUN step marked
+`--mount=type=ssh` can install a private git dependency. Remote
+builders (`az acr build`, Cloud Build) have no agent to forward.
+
 Every provider also shares one data store per account, named
 `pdt-data-<suffix>` by `store_name` and tagged with `STORE_TAGS`; it
 outlives any single app's deploy/destroy cycle.
@@ -71,6 +76,12 @@ BUILD_EXCLUDES = (
     ".ssh", ".pgpass", ".netrc", ".npmrc", ".pypirc", ".pdt", ".meltano",
 )
 STORE_PREFIX = "pdt-data"
+
+
+def ssh_build_args() -> list[str]:
+    if os.environ.get("SSH_AUTH_SOCK", "").strip():
+        return ["--ssh", "default"]
+    return []
 STORE_TAGS = {"managed-by": "pdt", "pdt-lifecycle": "retain"}
 
 

@@ -50,7 +50,7 @@ from pdt.deploy_azure import (
 )
 from pdt.deploy_common import (
     CostEstimate, fail, gather_secrets, image_action, run_build, run_secrets,
-    stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
+    ssh_build_args, stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -72,7 +72,7 @@ def build_image(app: dict, registry: str, image_name: str) -> None:
         if os.environ.get("GITLAB_CI") == "true":
             image = f"{registry}.azurecr.io/{image_name}:latest"
             run_quiet("acr", "login", "--name", registry)
-            run_build(["docker", "build", "--platform", "linux/amd64",
+            run_build(["docker", "build", *ssh_build_args(), "--platform", "linux/amd64",
                        "-t", image, str(stage)])
             run_build(["docker", "push", image])
         else:
