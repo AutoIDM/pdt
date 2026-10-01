@@ -10,11 +10,11 @@ def app_at(tmp_path):
     return {"name": "report", "dir": app_dir}
 
 
-def test_gitlab_builds_and_pushes_with_docker(tmp_path, monkeypatch):
+def test_github_actions_builds_and_pushes_with_docker(tmp_path, monkeypatch):
     stage = tmp_path / "stage"
     stage.mkdir()
     calls = []
-    monkeypatch.setenv("GITLAB_CI", "true")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setattr(azure, "stage_build_context", lambda app: stage)
     monkeypatch.setattr(azure, "run_quiet", lambda *args: calls.append(args))
     monkeypatch.setattr(azure, "run_stream", lambda *args: calls.append(args))
@@ -29,11 +29,11 @@ def test_gitlab_builds_and_pushes_with_docker(tmp_path, monkeypatch):
     assert not stage.exists()
 
 
-def test_outside_gitlab_uses_azure_builds(tmp_path, monkeypatch):
+def test_outside_github_actions_uses_azure_builds(tmp_path, monkeypatch):
     stage = tmp_path / "stage"
     stage.mkdir()
     calls = []
-    monkeypatch.delenv("GITLAB_CI", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.setattr(azure, "stage_build_context", lambda app: stage)
     monkeypatch.setattr(azure, "run_stream", lambda *args: calls.append(args))
     azure.build_image(app_at(tmp_path), "pdtregistry", "report")
@@ -52,7 +52,7 @@ def test_a_failed_docker_build_does_not_push_and_removes_the_context(tmp_path, m
         calls.append(command[:2])
         raise SystemExit(1)
 
-    monkeypatch.setenv("GITLAB_CI", "true")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setattr(azure, "stage_build_context", lambda app: stage)
     monkeypatch.setattr(azure, "run_quiet", lambda *args: None)
     monkeypatch.setattr(azure, "run_build", build)

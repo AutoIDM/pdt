@@ -1,0 +1,181 @@
+# The apps: list in verify/pdt.yml is the matrix. One job here per provider.
+# Each job deploys to a real cloud account and destroys what it made. A
+# cancelled run leaks what it made, so no job here is ever cancelled by a
+# newer run.
+#
+# A cloud job runs in the `verify` environment. Its required reviewers are
+# the manual start for a pull request, and fork pull requests never get its
+# secrets.
+
+name: verify
+
+on:
+  pull_request:
+    paths:
+      - src/pdt/**
+      - verify/**
+      - scripts/**
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/verify.yml
+  push:
+    branches: [main]
+    paths:
+      - src/pdt/**
+      - verify/**
+      - scripts/**
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/verify.yml
+  schedule:
+    - cron: "52 7 * * *"
+  workflow_dispatch:
+    inputs:
+      pdt_install:
+        description: A git ref or pdt-cli to verify instead of this commit's wheel
+        required: false
+
+env:
+  # A fake secret. Each app declares it as required, so a deployed job fails
+  # unless deploy delivered it as PDT_ENV_JSON.
+  PDT_SMOKE_TOKEN: pdt-verify
+  PDT_INSTALL: ${{ inputs.pdt_install }}
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  build:
+    if: >-
+      !contains(github.event.pull_request.labels.*.name, 'force-merge')
+      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build --wheel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # Fargate builds for linux/arm64, so the AWS job uses an arm64 runner. The
+  # job trades its OIDC token for one hour of AWS credentials; the role's
+  # trust policy names this repository's `verify` environment.
+  aws:
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    environment: verify
+    concurrency:
+      group: verify-aws
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-session-name: verify-${{ github.run_id }}
+          role-duration-seconds: 3600
+          aws-region: us-east-1
+      - run: pdt aws sts get-caller-identity
+      - run: uv run --no-project --with pyyaml python verify/scripts/verify.py aws --report verify-aws.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-aws
+          path: verify-aws.xml
+
+  azure:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: verify
+    concurrency:
+      group: verify-azure
+      cancel-in-progress: false
+    env:
+      # The subscription allows one Container Apps environment. It is created
+      # once by hand and named here, so no run creates or deletes it.
+      PDT_AZURE_CONTAINER_APPS_ENVIRONMENT: pdt-shared/pdt-eastus2
+      PDT_AZURE_SUBSCRIPTION: ${{ vars.PDT_AZURE_SUBSCRIPTION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: pdt az login --service-principal -u "$AZURE_CLIENT_ID" --password="$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      - run: uv run --no-project --with pyyaml python verify/scripts/verify.py azure --report verify-azure.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-azure
+          path: verify-azure.xml
+
+  google-cloud:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: verify
+    concurrency:
+      group: verify-google-cloud
+      cancel-in-progress: false
+    env:
+      PDT_GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: |
+          printf '%s' "$KEY" > "$RUNNER_TEMP/google-key.json"
+          pdt gcloud auth activate-service-account --key-file "$RUNNER_TEMP/google-key.json"
+          pdt gcloud config set project "$PDT_GOOGLE_CLOUD_PROJECT"
+        env:
+          KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
+      - run: uv run --no-project --with pyyaml python verify/scripts/verify.py google-cloud --report verify-google-cloud.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-google-cloud
+          path: verify-google-cloud.xml
+
+  # Deploys to the runner's own Task Scheduler, so it needs no cloud
+  # credentials and no environment.
+  windows:
+    needs: build
+    runs-on: windows-latest
+    concurrency:
+      group: verify-windows
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$USERPROFILE/.local/bin" >> "$GITHUB_PATH"
+      - run: uv run --no-project --with pyyaml python verify/scripts/verify.py windows --report verify-windows.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-windows
+          path: verify-windows.xml
