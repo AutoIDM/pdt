@@ -191,9 +191,19 @@ def test_an_exception_after_deploy_destroys_every_app():
     assert cloud.resources == {}
 
 
-def test_a_nonempty_account_is_left_untouched():
+def test_managed_leftovers_are_destroyed_before_deploy():
     cloud = FakeCloud()
+    cloud.extra = [Resource("ecs cluster", "arn:cluster/pdt", tagged(), "pdt")]
     cloud.deploy("app-one")
+    steps = run(cloud)
+    assert failed(steps) == []
+    assert cloud.calls[:2] == [("destroy", "app-one"), ("destroy", "app-two")]
+    assert cloud.resources == {}
+
+
+def test_an_untagged_initial_resource_is_left_untouched():
+    cloud = FakeCloud()
+    cloud.add(Resource("cluster", "pdt", {}, "pdt"))
     before = dict(cloud.resources)
     steps = run(cloud)
     assert [step.name for step in failed(steps)] == ["account is empty before deploy"]

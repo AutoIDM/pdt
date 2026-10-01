@@ -2,12 +2,12 @@
 
     verify.py <provider> [--report FILE]
 
-The scenario is fixed. It asserts the account is empty, deploys every app
+The scenario is fixed. It cleans managed leftovers, asserts the account is empty, deploys every app
 in verify/pdt.yml order, reads each app's run history with `pdt health` and
 `pdt runs` (no app has run yet, so this proves the read path), records which resource each app owns and which
 resources the apps share, then destroys the apps one at a time and checks
 after each one that the destroyed app is gone and that nothing else moved.
-If the initial check fails, the run exits without changing resources.
+An untagged initial resource is never changed.
 After that check passes, a failure attempts to destroy every app and exits 1.
 """
 
@@ -155,6 +155,10 @@ def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
     cleanup = False
     try:
         try:
+            initial = inventory()
+            if initial and not untagged_check(apps)(initial):
+                for app in apps:
+                    run_pdt("destroy", app, "--yes")
             problems = wait(inventory, empty_check)
             if not record(steps, report, "account is empty before deploy", problems):
                 return steps
