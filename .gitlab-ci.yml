@@ -78,8 +78,11 @@ smoke:
     - if: $CI_COMMIT_TAG
 
 # Runs the pdt-examples pipeline against this commit and takes its result, so
-# a pdt change that breaks a customer-shaped app fails here. On a merge
-# request, pdt-examples tests its branch of the same name when one exists.
+# a pdt change that breaks a customer-shaped app fails here. The apps call
+# real Salesforce and NetSuite accounts with a daily API quota, so it runs on
+# a merge to master that changes the code, and on a merge request only when a
+# person starts it. On a merge request, pdt-examples tests its branch of the
+# same name when one exists.
 examples:
   stage: verify
   needs: []
@@ -92,7 +95,10 @@ examples:
     strategy: depend
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $mode == null
+      changes: !reference [.verify-paths, changes]
     - if: $CI_PIPELINE_SOURCE == "schedule" && $mode == null
 
 # Runs one Claude Code task from ci/claude-tasks/<CLAUDE_TASK>/ on the team's

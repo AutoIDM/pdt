@@ -24,6 +24,17 @@ def load_script(path: Path, name: str):
     return module
 
 
+class GitLabLoader(yaml.SafeLoader):
+    pass
+
+
+GitLabLoader.add_constructor("!reference", lambda load, node: load.construct_sequence(node))
+
+
+def load_ci(path=".gitlab-ci.yml"):
+    return yaml.load((REPO / path).read_text(), Loader=GitLabLoader)
+
+
 select = load_script(TASK / "select_mrs.py", "score_select")
 check = load_script(TASK / "check_mrs.py", "score_check")
 runner = load_script(CI / "claude_task.py", "claude_task_for_score")
@@ -447,7 +458,7 @@ def job_runs(job: str, variables: dict) -> bool:
     everything. The first matching rule decides; no match means the job does
     not run.
     """
-    ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
+    ci = load_ci()
     for rule in ci[job]["rules"]:
         matched = True
         for clause in rule["if"].split(" && ") if "if" in rule else ():
@@ -487,7 +498,7 @@ def test_a_webhook_event_scores_only_when_the_mr_opens_or_leaves_draft():
 def test_every_webhook_event_gets_a_pipeline_so_the_hook_never_sees_a_4xx():
     # The trigger API answers 400 when a pipeline has no job or workflow rules
     # filter it out, and GitLab disables a webhook after four 4xx in a row.
-    ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
+    ci = load_ci()
     assert "workflow" not in ci, "workflow rules would filter trigger pipelines out"
     for variables in SCORED_EVENTS + SKIPPED_EVENTS:
         assert job_runs("score-mrs", variables) != job_runs("score-mrs-skip", variables), variables
@@ -609,7 +620,7 @@ def test_shipped_score_task_loads_and_is_read_only():
 
 
 def test_score_mrs_job_runs_on_a_webhook_trigger_and_its_schedule():
-    ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
+    ci = load_ci()
     assert "$CLAUDE_TASK_ARGS" in ci[".claude-task"]["script"][0]
     job = ci["score-mrs"]
     assert job["extends"] == ".claude-task"
@@ -628,10 +639,8 @@ def test_score_mrs_job_runs_on_a_webhook_trigger_and_its_schedule():
 
 
 def test_a_mode_pipeline_runs_only_its_own_task():
-    loader = type("GitLabLoader", (yaml.SafeLoader,), {})
-    loader.add_constructor("!reference", lambda load, node: load.construct_sequence(node))
     for path in (".gitlab-ci.yml", "verify/.gitlab-ci.yml"):
-        ci = yaml.load((REPO / path).read_text(), Loader=loader)
+        ci = load_ci(path)
         for name, job in ci.items():
             if not isinstance(job, dict) or "rules" not in job:
                 continue
