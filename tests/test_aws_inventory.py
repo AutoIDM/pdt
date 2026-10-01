@@ -1,7 +1,7 @@
 import pytest
 
 import inventory
-from verify import empty_check, wait_for
+from verify import baseline_check, wait_for
 
 
 @pytest.mark.parametrize("operation", ["list-tags-for-resource", "list-schedules"])
@@ -21,7 +21,7 @@ def test_a_deleted_schedule_group_is_rechecked_until_it_disappears(monkeypatch, 
         return {"Tags": [{"Key": "managed-by", "Value": "pdt"}]}
 
     monkeypatch.setattr(inventory, "aws", aws)
-    problems = wait_for(lambda: inventory.aws_schedules("us-east-1"), empty_check,
+    problems = wait_for(lambda: inventory.aws_schedules("us-east-1"), baseline_check(frozenset()),
                         sleep=slept.append, clock=lambda: 0)
     assert problems == []
     assert slept == [10]

@@ -2,11 +2,14 @@
 
     verify.py <provider> [--report FILE]
 
-The scenario is fixed. It asserts the account is empty, deploys every app
-in verify/pdt.yml order, reads each app's run history with `pdt health` and
+The scenario is fixed. The account may hold other pdt apps, so the run
+checks only what its own apps make. It asserts that no resource of its apps
+exists, records everything else the account holds, deploys every app in
+verify/pdt.yml order, reads each app's run history with `pdt health` and
 `pdt runs` (no app has run yet, so this proves the read path), records which resource each app owns and which
 resources the apps share, then destroys the apps one at a time and checks
 after each one that the destroyed app is gone and that nothing else moved.
+At the end the account must hold exactly what it held before the run.
 If the initial check fails, the run exits without changing resources.
 After that check passes, a failure attempts to destroy every app and exits 1.
 """
@@ -23,7 +26,7 @@ from pathlib import Path
 
 import yaml
 
-from inventory import INVENTORIES, SETTINGS, SHARED, UNTAGGED, classify
+from inventory import INVENTORIES, SETTINGS, SHARED, UNTAGGED, classify, names
 
 PROJECT = Path(__file__).resolve().parent.parent
 DEADLINE_SECONDS = 180
@@ -56,16 +59,24 @@ def listing(inventory):
     return [resource for resource in inventory() if not kept_by_design(resource)]
 
 
-def empty_check(resources):
-    return [f"{resource.kind} {resource.name or resource.id} still exists"
-            for resource in resources]
+def describe(resource):
+    return f"{resource.kind} {resource.name or resource.id}"
 
 
-def untagged_check(apps):
+def leftover_check(apps):
+    """No resource named or tagged for one of these apps, tagged or not."""
     def check(resources):
-        return [f"{resource.kind} {resource.name or resource.id} "
-                "carries no managed-by=pdt tag"
-                for resource in resources if classify(resource, apps) == UNTAGGED]
+        return [f"{describe(resource)} still exists" for resource in resources
+                if resource.tags.get("pdt-app") in apps
+                or any(names(resource, app) for app in apps)]
+    return check
+
+
+def untagged_check(apps, baseline):
+    def check(resources):
+        return [f"{describe(resource)} carries no managed-by=pdt tag"
+                for resource in resources
+                if resource.id not in baseline and classify(resource, apps) == UNTAGGED]
     return check
 
 
@@ -76,8 +87,8 @@ def gone_check(ids):
     return check
 
 
-def untouched_check(owned, shared, remaining):
-    expected = set(shared) if remaining else set()
+def untouched_check(owned, shared, remaining, baseline):
+    expected = set(baseline) | (set(shared) if remaining else set())
     for app in remaining:
         expected |= owned[app]
 
@@ -85,6 +96,16 @@ def untouched_check(owned, shared, remaining):
         present = {resource.id for resource in resources}
         return [f"{item} is gone but should still exist"
                 for item in sorted(expected - present)]
+    return check
+
+
+def baseline_check(baseline):
+    def check(resources):
+        present = {resource.id for resource in resources}
+        return ([f"{describe(resource)} still exists" for resource in resources
+                 if resource.id not in baseline]
+                + [f"{item} existed before the run and is gone"
+                   for item in sorted(baseline - present)])
     return check
 
 
@@ -117,7 +138,7 @@ def record(steps, report, name, problems):
     return step.ok
 
 
-def scenario(steps, apps, run_pdt, inventory, report, wait):
+def scenario(steps, apps, run_pdt, inventory, report, wait, baseline):
     def check(name, checker):
         return record(steps, report, name, wait(inventory, checker))
 
@@ -133,9 +154,10 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
     for app in apps:
         if not command("health", app) or not command("runs", app):
             return
-    if not check("every resource is tagged", untagged_check(apps)):
+    if not check("every resource is tagged", untagged_check(apps, baseline)):
         return
-    owned, shared = ownership(inventory(), apps)
+    owned, shared = ownership(
+        [resource for resource in inventory() if resource.id not in baseline], apps)
     if not record(steps, report, "every resource has an owner",
                   owner_problems(owned, apps)):
         return
@@ -145,9 +167,9 @@ def scenario(steps, apps, run_pdt, inventory, report, wait):
         if not check(f"{app} resources are gone", gone_check(owned[app])):
             return
         if not check(f"other apps are untouched after destroy {app}",
-                     untouched_check(owned, shared, apps[index + 1:])):
+                     untouched_check(owned, shared, apps[index + 1:], baseline)):
             return
-    check("account is empty after destroy", empty_check)
+    check("account holds what it held before deploy", baseline_check(baseline))
 
 
 def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
@@ -155,11 +177,13 @@ def verify(apps, run_pdt, inventory, report=print_step, wait=wait_for):
     cleanup = False
     try:
         try:
-            problems = wait(inventory, empty_check)
-            if not record(steps, report, "account is empty before deploy", problems):
+            problems = wait(inventory, leftover_check(apps))
+            if not record(steps, report, "no resource of these apps exists before deploy",
+                          problems):
                 return steps
+            baseline = frozenset(resource.id for resource in inventory())
             cleanup = True
-            scenario(steps, apps, run_pdt, inventory, report, wait)
+            scenario(steps, apps, run_pdt, inventory, report, wait, baseline)
         except Exception as exc:
             record(steps, report, "unexpected error",
                    [f"{type(exc).__name__}: {exc}"])
