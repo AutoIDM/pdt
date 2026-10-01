@@ -759,6 +759,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
     group_exists = az_tsv("group", "exists", "--name", rg) == "true"
     held = [lock for lock in shared_locks(settings, job) if lock.exists()]
     unlock = [f"remove lock {lock.name} from {lock.label}" for lock in held]
+    # A run stopped between the group delete and the purge leaves the vault
+    # soft-deleted, still holding its global name.
+    orphan_vault = not group_exists and managed_by_pdt((az_json(
+        "keyvault", "show-deleted", "--name", settings["vault"]) or {}).get("properties"))
     if not group_exists or group_can_be_deleted(settings, others):
         release = environment_release(settings)
         actions = unlock[:]
@@ -770,6 +774,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
                 "shared ACR (with images), managed identity, and Key Vault",
                 f"purge the soft-deleted Key Vault {settings['vault']}",
             ]
+        if orphan_vault:
+            actions.append(f"purge the soft-deleted Key Vault {settings['vault']}")
         actions += release_actions(settings, release)
         if release.note:
             console.note(release.note)
@@ -783,6 +789,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
             lock.remove()
         if grant:
             revoke_role(store["container_id"], principal_id, STORE_ROLE)
+        if orphan_vault:
+            console.step(f"purging soft-deleted Key Vault {settings['vault']}")
+            run_quiet("keyvault", "purge", "--name", settings["vault"])
         if group_exists and not destroy_group(settings, name):
             # Another app joined the group meanwhile, so this one leaves the
             # way it would have with a sibling: its own job, image, and secret.
