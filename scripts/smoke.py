@@ -6,8 +6,8 @@ With WHEEL it installs that file instead of building one, so a pipeline
 that already built the wheel does not build it twice.
 
 The unit tests import pdt directly, so they cannot catch a packaging
-mistake. GitLab CI and GitHub Actions both call it, so keep it free of
-shell syntax and working on Windows.
+mistake. GitHub Actions calls it on Linux and Windows, so keep it free of
+shell syntax.
 """
 
 from __future__ import annotations
