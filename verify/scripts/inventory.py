@@ -22,11 +22,17 @@ SHARED = "shared"
 AWS_LOG_PREFIXES = ("/aws/lambda/pdt-", "/ecs/pdt-", "/pdt/")
 # The Container Apps environment every pdt project in a subscription shares.
 AZURE_SHARED_GROUP = "pdt-shared"
-GOOGLE_ASSET_TYPES = (
-    "run.googleapis.com/Job",
-    "secretmanager.googleapis.com/Secret",
-    "artifactregistry.googleapis.com/Repository",
-)
+# The asset search answers from an index that keeps a deleted resource for
+# hours, so each asset type names the describe call that confirms it.
+GOOGLE_DESCRIBE = {
+    "run.googleapis.com/Job":
+        lambda name, location: ("run", "jobs", "describe", name, "--region", location),
+    "secretmanager.googleapis.com/Secret":
+        lambda name, location: ("secrets", "describe", name),
+    "artifactregistry.googleapis.com/Repository":
+        lambda name, location: ("artifacts", "repositories", "describe", name,
+                                "--location", location),
+}
 WINDOWS_TASKS = (
     "$tasks = @(Get-ScheduledTask -TaskPath '\\' | "
     "Where-Object { $_.TaskName -like 'pdt-*' } | "
@@ -45,6 +51,7 @@ class Resource:
     id: str
     tags: dict[str, str] = field(default_factory=dict)
     name: str = ""
+    note: str = ""
 
 
 Inventory = list[Resource]
@@ -87,6 +94,19 @@ def az(*args: str):
 
 def gcloud(*args: str):
     return run_json(["pdt", "gcloud", *args, "--format", "json"])
+
+
+def google_not_found(detail: str) -> bool:
+    # The same rule as not_found in src/pdt/deploy_google_cloud.py.
+    lowered = detail.lower()
+    return any(marker in lowered for marker in ("not found", "not_found", "cannot find"))
+
+
+def gcloud_error(*args: str) -> str:
+    """The error gcloud printed, or "" when the call succeeded."""
+    proc = subprocess.run(["pdt", "gcloud", *args, "--format", "json"],
+                          capture_output=True, text=True, check=False)
+    return "" if proc.returncode == 0 else (proc.stderr or proc.stdout).strip() or "failed"
 
 
 def aws_functions(region: str) -> Inventory:
@@ -302,13 +322,18 @@ def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
     found = []
     assets = gcloud("asset", "search-all-resources",
                     f"--scope=projects/{project}",
-                    "--asset-types=" + ",".join(GOOGLE_ASSET_TYPES)) or []
+                    "--asset-types=" + ",".join(GOOGLE_DESCRIBE)) or []
     for item in assets:
         name = str(item.get("displayName") or item["name"]).rsplit("/", 1)[-1]
         if not name.startswith("pdt"):
             continue
+        describe = GOOGLE_DESCRIBE[item["assetType"]](name, item.get("location") or region)
+        error = gcloud_error(*describe, "--project", project)
+        if google_not_found(error):
+            continue
+        note = f"describe failed: {error}" if error else ""
         found.append(Resource(item["assetType"], item["name"],
-                              dict(item.get("labels") or {}), name))
+                              dict(item.get("labels") or {}), name, note))
     jobs = gcloud("scheduler", "jobs", "list",
                   "--location", region, "--project", project) or []
     for item in jobs:

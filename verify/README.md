@@ -64,7 +64,7 @@ Every listing drops resources tagged `pdt-lifecycle: retain`. The data store (an
 | --- | --- |
 | aws | `resourcegroupstaggingapi get-resources`, plus one list per kind filtered on the `pdt` name prefix |
 | azure | `az resource list --resource-group pdt-verify`, plus the resource group itself. The Container Apps environment `pdt-shared/pdt-eastus2` is named in `PDT_AZURE_CONTAINER_APPS_ENVIRONMENT`, so the run treats it as the user's own and never creates, lists, or deletes it. Create it once by hand before the first run |
-| google-cloud | `gcloud asset search-all-resources`, plus `scheduler jobs list` and `iam service-accounts list` |
+| google-cloud | `gcloud asset search-all-resources`, each result confirmed with its service's describe call, plus `scheduler jobs list` and `iam service-accounts list` |
 | windows | `Get-ScheduledTask` filtered on `pdt-` task names |
 
 ### Google Cloud needs the Cloud Asset API
@@ -76,6 +76,10 @@ pdt gcloud services enable cloudasset.googleapis.com --project <project>
 ```
 
 pdt itself never needs this API. It exists only so verification can ask the project what it holds instead of asking pdt.
+
+### The Cloud Asset index keeps deleted resources
+
+`gcloud asset search-all-resources` answers from a search index, and that index can report a deleted resource for hours. On GitHub Actions run 36920344855 it still returned the secret `pdt-google-cloud-b-env` hours after `gcloud secrets delete` had removed it, so the run failed its first check. The listing therefore asks the owning service about each asset the index returns (`run jobs describe`, `secrets describe`, `artifacts repositories describe`) and drops the asset when the service answers that it does not exist. A describe that fails for any other reason, such as a missing permission or a network error, keeps the asset, and a failed check prints the describe error next to its name. These are the calls deploy and destroy already make, so the CI service account needs no extra role.
 
 ### The AWS tagging API omits untagged resources
 
