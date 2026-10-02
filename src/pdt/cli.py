@@ -16,7 +16,7 @@ from pathlib import Path
 
 import rich_argparse
 
-from pdt import __version__, completion, config, console, deploy, deploy_common, scaffold
+from pdt import __version__, completion, config, console, deploy, deploy_common, migrate, scaffold
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -138,9 +138,15 @@ def cmd_validate(_args) -> int:
         for problem in problems:
             console.error(problem)
         console.failed(f"{len(problems)} problem(s) found.")
+        if migrate.findings():
+            console.command("pdt migrate", "update what an older pdt release wrote")
         return 1
     console.done("Configuration is valid.")
     return 0
+
+
+def cmd_migrate(args) -> int:
+    return migrate.run(args.yes)
 
 
 def cmd_run(args) -> int:
@@ -312,6 +318,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print only the name of each enabled app, one per line")
     p.set_defaults(func=cmd_list)
     add_parser("validate", help="check config and env").set_defaults(func=cmd_validate)
+    p = add_parser("migrate", help="update a project that an older pdt release set up")
+    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.set_defaults(func=cmd_migrate)
     p = add_parser("run", help="run an app locally")
     app = p.add_argument("app", nargs="?",
                          help="the app's folder name; omit to see the choices")

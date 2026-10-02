@@ -12,6 +12,8 @@ That puts a `pdt` command on your PATH. To update it later, run `uv tool upgrade
 
 On Windows you can run `winget install AutoIDM.pdt` instead, which also installs `uv` if you do not have it and puts the same `pdt` command on your PATH. `winget upgrade AutoIDM.pdt` moves pdt to the latest release, and the first `pdt` command after an install or upgrade finishes setting up that version.
 
+After an upgrade, run `pdt migrate` in your project. It finds what an older pdt release wrote that the new release reads differently, such as a setting that no longer exists. It shows the changes, asks before it makes them, and then lists anything you must still do by hand. Running it again changes nothing.
+
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
 
 ## Set up a project
@@ -88,6 +90,7 @@ pdt login my-report
 | `pdt new APP --from EXAMPLE` | add an app to the project |
 | `pdt list` | show every app with its schedule and provider; `--names` prints only the enabled app names |
 | `pdt validate` | check the config files and the required env vars |
+| `pdt migrate` | update a project that an older pdt release set up; `--yes` skips the question |
 | `pdt run APP` | run an app on this machine |
 | `pdt deploy APP` | deploy an app to its configured platform |
 | `pdt deploy --all` | deploy every enabled app, in order; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
