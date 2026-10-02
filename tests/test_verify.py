@@ -169,15 +169,32 @@ def test_a_failure_destroys_every_app():
     assert cloud.resources == {}
 
 
-def test_a_failing_health_check_fails_and_destroys_every_app():
+def test_unknown_apps_from_other_providers_do_not_fail_health():
+    cloud = FakeCloud()
+    health_calls = []
+
+    def run_pdt(verb, *args):
+        if verb == "health":
+            health_calls.append(args)
+            checked = args or (*cloud.apps, "other-provider-app")
+            return 1 if "other-provider-app" in checked else 0
+        return cloud.run_pdt(verb, *args)
+
+    steps = verify(cloud.apps, run_pdt, cloud.inventory, report=lambda step: None, wait=now)
+    assert failed(steps) == []
+    assert health_calls == [("app-one",), ("app-two",)]
+
+
+def test_a_failing_provider_app_health_check_fails_and_destroys_every_app():
     cloud = FakeCloud()
 
     def run_pdt(verb, *args):
-        return 1 if verb == "health" else cloud.run_pdt(verb, *args)
+        code = cloud.run_pdt(verb, *args)
+        return 1 if verb == "health" and args == ("app-two",) else code
 
     steps = verify(cloud.apps, run_pdt, cloud.inventory, report=lambda step: None, wait=now)
-    assert [step.name for step in failed(steps)] == ["health app-one"]
-    assert failed(steps)[0].detail == "pdt health app-one exited 1"
+    assert [step.name for step in failed(steps)] == ["health app-two"]
+    assert failed(steps)[0].detail == "pdt health app-two exited 1"
     assert cloud.resources == {}
 
 
