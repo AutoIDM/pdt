@@ -18,6 +18,11 @@ dependencies = [
     "shellingham",
 ]
 
+[project.urls]
+Homepage = "https://www.autoidm.com/service"
+Source = "https://github.com/AutoIDM/pdt"
+Issues = "https://github.com/AutoIDM/pdt/issues"
+
 [project.optional-dependencies]
 apps = [
     "cryptography",
