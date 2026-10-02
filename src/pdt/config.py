@@ -22,7 +22,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 from pdt import console
 
@@ -471,6 +471,21 @@ def find_env_files(start: Path) -> list[Path]:
             break
         folder = folder.parent
     return files
+
+
+def shell_overrides(start: Path, names: list[str]) -> list[tuple[str, Path]]:
+    """Each name set in the shell to a value other than the one in the nearest .env file, with that file.
+
+    The shell wins over .env, so a stale export hides a value the user just saved.
+    """
+    files = [(path, dotenv_values(path)) for path in find_env_files(start)]
+    hidden = []
+    for name in names:
+        source = next((path for path, values in files if values.get(name)), None)
+        in_shell = os.environ.get(name)
+        if source is not None and in_shell and in_shell != dict(files)[source][name]:
+            hidden.append((name, source))
+    return hidden
 
 
 def load_env(start: Path) -> list[Path]:
