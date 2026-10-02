@@ -267,7 +267,7 @@ def preflight(app: dict, settings: dict) -> dict:
         if not account:
             fail("Azure login failed")
     if requested and requested not in (account.get("id"), account.get("name")):
-        account = choose_subscription(app, requested, can_ask)
+        account = switch_subscription(app, requested, account, can_ask)
         run_quiet("account", "set", "--subscription", account["id"])
     elif not requested and can_ask:
         save_subscription(app, account)
@@ -329,34 +329,72 @@ def save_subscription(app: dict, sub: dict) -> None:
     console.done(f"Saved subscription: {sub['id']} to {saved.relative_to(config.find_project())}.")
 
 
-def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
-    available = az_json("account", "list", "--all") or []
-    if not available:
-        fail(f"your Azure account has no subscription yet; create one at {SUBSCRIPTIONS_URL}")
-    for sub in available:
+def find_subscription(requested: str) -> dict | None:
+    for sub in az_json("account", "list", "--all") or []:
         if requested in (sub.get("id"), sub.get("name")):
             return sub
-    console.warn(f"platform.subscription {requested!r} in pdt.yml is not one of your subscriptions.")
+    return None
+
+
+def signed_in_as(account: dict) -> str:
+    user = account.get("user") or {}
+    who = str(user.get("name") or "unknown")
+    if str(user.get("type", "")).lower() == "user":
+        return f"The signed-in Azure account {who}"
+    return f"The signed-in Azure service principal {who}"
+
+
+def switch_subscription(app: dict, requested: str, account: dict, can_ask: bool) -> dict:
+    """Make the subscription recorded in pdt.yml the active one, or stop.
+
+    pdt.yml records where the project's jobs live, and the shared storage,
+    vault, and registry names hash that id. A login that cannot see it is
+    almost always the wrong login, so deploy offers to sign in again and
+    never rewrites the id or deploys somewhere else.
+    """
+    sub = find_subscription(requested)
+    if sub is not None:
+        return sub
+    console.warn(f"{signed_in_as(account)} cannot use platform.subscription "
+                 f"{requested!r} from pdt.yml.")
     if not can_ask:
-        fail("no Azure subscription selected; set platform.subscription in "
-             "pdt.yml, or set PDT_AZURE_SUBSCRIPTION, to a subscription id "
-             "this login can use")
-    console.heading("Your Azure subscriptions:")
-    for index, sub in enumerate(available, 1):
-        console.choice(index, str(sub.get("name")), str(sub.get("id")))
+        fail("sign in as the account that owns that subscription (a service "
+             "principal needs a role on it), or change platform.subscription in "
+             "pdt.yml, or set PDT_AZURE_SUBSCRIPTION, to a subscription this "
+             "login can use")
     try:
-        answer = input(f"Deploy to which one? [1-{len(available)}, or a subscription id] ").strip()
+        answer = input("Sign in as a different account (opens a browser)? [y/N] ").strip().lower()
     except EOFError:
         answer = ""
-    typed = [sub for sub in available if answer in (sub.get("id"), sub.get("name"))]
-    if answer.isdigit() and 1 <= int(answer) <= len(available):
-        sub = available[int(answer) - 1]
-    elif typed:
-        sub = typed[0]
-    else:
-        fail("no Azure subscription selected; type a number from the list or one of the subscription ids")
-    save_subscription(app, sub)
+    if answer not in ("y", "yes"):
+        available = az_json("account", "list", "--all") or []
+        if available:
+            console.heading("Subscriptions this login can use:")
+            for index, sub in enumerate(available, 1):
+                console.choice(index, str(sub.get("name")), str(sub.get("id")))
+        fail(f"run `pdt login {app['name']}` to sign in as the account that owns "
+             f"{requested}, or change platform.subscription in pdt.yml if the "
+             "project has moved to another subscription")
+    account = sign_in_again(requested)
+    sub = find_subscription(requested)
+    if sub is None:
+        fail(f"{signed_in_as(account)} cannot use platform.subscription "
+             f"{requested!r} either; sign in as the account that owns it, or change "
+             "platform.subscription in pdt.yml if the project has moved")
     return sub
+
+
+def sign_in_again(requested: str) -> dict:
+    console.status("Clearing the cached Azure login on this computer...")
+    subprocess.run([*AZ, "account", "clear"], stdin=subprocess.DEVNULL,
+                   capture_output=True, text=True)
+    console.say("Choose a different account in the browser to sign in as someone else.")
+    login(requested)
+    account = az_json("account", "show")
+    if not account:
+        fail("Azure login failed")
+    console.done(f"Signed in as {(account.get('user') or {}).get('name') or 'unknown'}")
+    return account
 
 
 def login(requested: str) -> None:
@@ -382,16 +420,13 @@ def login(requested: str) -> None:
 
 
 def relogin(requested: str) -> int:
-    console.status("Clearing the cached Azure login on this computer...")
-    subprocess.run([*AZ, "account", "clear"], stdin=subprocess.DEVNULL,
-                   capture_output=True, text=True)
-    console.say("Choose a different account in the browser to sign in as someone else.")
-    login(requested)
-    account = az_json("account", "show")
-    if not account:
-        fail("Azure login failed")
-    console.done(f"Signed in as {(account.get('user') or {}).get('name') or 'unknown'}")
+    account = sign_in_again(requested)
     console.field("Subscription", f"{account.get('name')} ({account.get('id')})")
+    if requested and requested not in (account.get("id"), account.get("name")) \
+            and find_subscription(requested) is None:
+        console.warn(f"{signed_in_as(account)} cannot use platform.subscription "
+                     f"{requested!r} from pdt.yml, so deploy will stop until you sign "
+                     "in as the account that owns it or change the id.")
     return 0
 
 
