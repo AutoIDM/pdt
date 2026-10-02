@@ -159,12 +159,62 @@ def az_tsv(*args: str) -> str:
     return run_quiet(*args, "--output", "tsv").strip()
 
 
+# Azure caps a Container Apps (job) name at 32 characters.
+JOB_NAME_LIMIT = 32
+JOB_PREFIX = "pdt-"
+
+
+def azure_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-")
+
+
 def clean_name(value: str, limit: int = 32) -> str:
-    name = re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-")
+    name = azure_name(value)
     if len(name) <= limit:
         return name
     suffix = hashlib.sha256(name.encode()).hexdigest()[:7]
     return f"{name[:limit - 8].rstrip('-')}-{suffix}"
+
+
+def job_name(app_name: str) -> str:
+    """The Container Apps Job for an app is pdt-<app>, cut to fit Azure's limit.
+
+    An app name grows more specific toward its end
+    (salesforce-netsuite-opportunities), so a long name drops whole words from
+    its start until it fits. A 4-character hash of the whole name keeps two
+    apps with the same ending apart.
+    """
+    name = azure_name(app_name)
+    room = JOB_NAME_LIMIT - len(JOB_PREFIX)
+    if len(name) <= room:
+        return f"{JOB_PREFIX}{name}"
+    suffix = hashlib.sha256(name.encode()).hexdigest()[:4]
+    room -= len(suffix) + 1
+    words = name.split("-")
+    while len(words) > 1 and len("-".join(words)) > room:
+        words.pop(0)
+    tail = "-".join(words)[-room:].lstrip("-")
+    return f"{JOB_PREFIX}{tail}-{suffix}"
+
+
+def legacy_job_name(app_name: str) -> str:
+    """The job name a deploy before pdt 0.2 gave a long app, or "" if unchanged.
+
+    Those deploys kept the start of the name and a 7-character hash, so every
+    app with a shared start looked the same in the portal.
+    """
+    legacy = clean_name(f"{JOB_PREFIX}{app_name}", JOB_NAME_LIMIT)
+    return "" if legacy == job_name(app_name) else legacy
+
+
+def legacy_job(rg: str, app_name: str) -> tuple[str, dict | None]:
+    """The app's job under the name an older pdt gave it, if that job exists."""
+    old_job = legacy_job_name(app_name)
+    if not old_job:
+        return "", None
+    resource = az_json("containerapp", "job", "show", "--name", old_job,
+                       "--resource-group", rg)
+    return (old_job, resource) if owned_by(resource, app_name) else ("", None)
 
 
 @dataclass(frozen=True)
