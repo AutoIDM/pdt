@@ -60,9 +60,9 @@ from pdt import console
 from pdt import gcloud_sdk
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action, run_secrets,
-    stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
-    warn_if_locked, write_dockerfile)
+    STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, heartbeat, image_action,
+    run_secrets, stage_build_context, store_cost_label, store_kept_line, store_name,
+    store_plan_lines, warn_if_locked, write_dockerfile)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -113,7 +113,8 @@ RETRY_WAITS = (10, 20, 40, 60, 60, 60)
 def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
     stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
     for wait in (*RETRY_WAITS, None):
-        proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
+        with heartbeat():
+            proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
         if proc.returncode == 0 or wait is None or not TRANSIENT.search(proc.stderr):
             return proc
         title = re.search(r"serviceTitle: (.+)", proc.stderr)
