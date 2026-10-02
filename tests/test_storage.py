@@ -147,3 +147,37 @@ def test_usage_counts_files_and_bytes(store):
     write(store, "runs/a/report.csv", "abc")
     write(store, "state/count.txt", "12")
     assert store.usage() == (2, 5)
+
+
+def test_the_cloud_names_the_run(monkeypatch):
+    for name in ("CLOUD_RUN_EXECUTION", "CONTAINER_APP_JOB_EXECUTION_NAME",
+                 "AWS_BATCH_JOB_ID", "ECS_CONTAINER_METADATA_URI_V4"):
+        monkeypatch.delenv(name, raising=False)
+    assert storage.cloud_run_id() == ""
+    monkeypatch.setenv("AWS_BATCH_JOB_ID", "6c3f2b1a-0000-4c2e-9a7d-000000000001")
+    assert storage.cloud_run_id() == "6c3f2b1a-0000-4c2e-9a7d-000000000001"
+    monkeypatch.setenv("CONTAINER_APP_JOB_EXECUTION_NAME", "pdt-my-report-abc12")
+    assert storage.cloud_run_id() == "pdt-my-report-abc12"
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", "pdt-my-report-xyz")
+    assert storage.cloud_run_id() == "pdt-my-report-xyz"
+
+
+def test_an_aws_task_id_comes_from_the_metadata_endpoint(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"TaskARN": "arn:aws:ecs:us-east-1:1:task/pdt/abc123"}).encode()
+
+    asked = []
+    monkeypatch.delenv("CLOUD_RUN_EXECUTION", raising=False)
+    monkeypatch.delenv("CONTAINER_APP_JOB_EXECUTION_NAME", raising=False)
+    monkeypatch.delenv("AWS_BATCH_JOB_ID", raising=False)
+    monkeypatch.setenv("ECS_CONTAINER_METADATA_URI_V4", "http://169.254.170.2/v4/x")
+    monkeypatch.setattr(storage, "urlopen", lambda url, timeout: asked.append(url) or Response())
+    assert storage.cloud_run_id() == "abc123"
+    assert asked == ["http://169.254.170.2/v4/x/task"]

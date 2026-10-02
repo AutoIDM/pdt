@@ -1,0 +1,57 @@
+{% extends "gui/base.html" %}
+{% block title %}{{ active.name }} · {{ app.name }} run {{ number }}{% endblock %}
+{% block crumbs %}<a href="{% url 'index' %}">Apps</a> › <a href="{% url 'app_detail' app.name %}">{{ app.name }}</a> › <a href="{% url 'run_detail' app.name run.pk %}">run {{ number }}</a> › <span>{{ active.name }}</span>{% endblock %}
+{% block content %}
+{% if installed %}
+<script type="importmap">{"imports": {"apache-arrow": "{% url 'static_file' 'arrow.mjs' %}"}}</script>
+<script src="{{ duckdb.arrow }}"></script>
+{{ files|json_script:"files" }}
+<section class="card workbench" id="workbench" data-active="{{ active.view }}" data-command="{{ query_command }}" data-module="{{ duckdb.module }}" data-wasm="{{ duckdb.wasm }}" data-worker="{{ duckdb.worker }}">
+    <div class="card-head">
+        <div>
+            <h1>{{ active.name }}</h1>
+            <p class="hint">
+                {{ files|length }} CSV file{{ files|length|pluralize }} of run {{ number }}, each a view you can query and join in the browser
+                · <a href="{{ active.download_url }}" data-download>Download</a>
+            </p>
+        </div>
+        <div class="buttons" role="group" aria-label="View">
+            <button type="button" data-mode="simple" aria-pressed="true">Simple</button>
+            <button type="button" data-mode="sql" aria-pressed="false">SQL</button>
+        </div>
+    </div>
+    <div class="wb-controls">
+        <label>File <select data-file>{% for file in files %}<option value="{{ file.view }}"{% if file.view == active.view %} selected{% endif %}>{{ file.name }}</option>{% endfor %}</select></label>
+        <input type="search" data-filter placeholder="filter rows" aria-label="Filter rows">
+        <span class="wb-status dim" data-status>loading DuckDB…</span>
+    </div>
+    <div class="wb-sql" hidden>
+        <textarea data-sql rows="6" spellcheck="false" aria-label="SQL"></textarea>
+        <div class="wb-controls">
+            <button type="button" data-run>Run</button>
+            <span class="dim">Ctrl+Enter runs it</span>
+        </div>
+        <button type="button" class="chip wb-command" data-copy><span data-command-line></span></button>
+    </div>
+    <pre class="error" hidden data-error></pre>
+    <div class="wb-results">
+        <table class="grid-table wb-table"><thead></thead><tbody></tbody></table>
+    </div>
+    <div class="wb-controls wb-paging">
+        <button type="button" data-prev>Prev</button>
+        <button type="button" data-next>Next</button>
+        <span class="dim" data-rows></span>
+    </div>
+</section>
+<script type="module" src="{% url 'static_file' 'workbench.js' %}"></script>
+{% else %}
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h1>{{ active.name }}</h1>
+            <p class="hint">DuckDB is not installed yet, so this file cannot open in the browser. Start <code>pdt gui</code> again to download it; until then, <a href="{{ active.download_url }}">Download</a> the file.</p>
+        </div>
+    </div>
+</section>
+{% endif %}
+{% endblock %}

@@ -251,9 +251,14 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
 
 def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Line]],
          app_name: str, rest: list[str],
-         resolve: Callable[[list[Run]], None] | None = None) -> int:
+         resolve: Callable[[list[Run]], None] | None = None,
+         read_many: Callable[[list[Run]], dict[str, list[Line]]] | None = None) -> int:
+    """`--id` may repeat: every named run prints, and `--json` then gives an object
+    keyed by id instead of one run's list. `read_many` reads them in one go for a
+    provider that can, such as one Log Analytics query."""
     parser = argparse.ArgumentParser(prog=f"pdt logs {app_name}")
     parser.add_argument("number", nargs="?", type=int)
+    parser.add_argument("--id", action="append")
     parser.add_argument("--failed", action="store_true")
     parser.add_argument("--errors", action="store_true")
     parser.add_argument("--lines", type=int)
@@ -275,38 +280,54 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
         return 1
     found = numbered(list_runs)
     shown = window(found, since, span, count)
-    if not shown and (not found or args.failed or args.number is None):
+    if args.id:
+        chosen = []
+        for wanted in args.id:
+            run = next((run for run in found if run.id == wanted), None)
+            if run is None:
+                console.error(f"pdt runs {app_name} knows no run with id {wanted}")
+                return 1
+            chosen.append(run)
+        if resolve is not None:
+            resolve(chosen)
+    elif not shown and (not found or args.failed or args.number is None):
         say_not_run(app_name, args, since, span)
         return 0
-    if args.failed:
+    elif args.failed:
         if resolve is not None:
             resolve(shown)
         failed = [run for run in shown if run.status == "failed"]
         if not failed:
             console.say(f"{app_name} has no failed run in its last {len(shown)} runs.")
             return 0
-        run = failed[0]
+        chosen = [failed[0]]
     else:
         if args.number is not None and not 1 <= args.number <= len(found):
             console.error(f"pdt runs {app_name} knows {len(found)} runs; "
                           f"pick a number from 1 to {len(found)}")
             return 1
-        run = shown[0] if args.number is None else found[args.number - 1]
+        chosen = [shown[0] if args.number is None else found[args.number - 1]]
         if resolve is not None:
-            resolve([run])
-    lines = in_time_order([line for line in read_lines(run)
-                           if not line.message.startswith(EXIT_MARKER)])
-    if args.errors:
-        lines = [line for line in lines if line.level not in ("DEBUG", "INFO")]
-    total = len(lines)
-    if not args.full:
-        keep = args.lines or TAIL_LINES
-        lines = lines[:keep] if args.head else lines[-keep:]
-    if args.json:
-        console.say(json.dumps([{"time": line.time.isoformat() if line.time else None,
-                                 "level": line.level, "message": line.message}
-                                for line in lines]))
+            resolve(chosen)
+    if read_many is not None:
+        lines_by_id = read_many(chosen)
     else:
+        lines_by_id = {run.id: read_lines(run) for run in chosen}
+    output = {}
+    for run in chosen:
+        lines = in_time_order([line for line in lines_by_id.get(run.id, [])
+                               if not line.message.startswith(EXIT_MARKER)])
+        if args.errors:
+            lines = [line for line in lines if line.level not in ("DEBUG", "INFO")]
+        total = len(lines)
+        if not args.full:
+            keep = args.lines or TAIL_LINES
+            lines = lines[:keep] if args.head else lines[-keep:]
+        if args.json:
+            output[run.id] = [{"time": line.time.isoformat() if line.time else None,
+                               "level": line.level, "message": line.message}
+                              for line in lines]
+            continue
         exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
         console.heading(f"run {run.number} of {app_name}: started {started_text(run)}, "
                         f"{duration_text(run)}, {run.status}{exit_part}")
@@ -316,7 +337,9 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
         for line in lines:
             console.log_line(local_text(line.time, "%H:%M:%S") if line.time else "",
                              line.level, line.message)
-    return 1 if run.status == "failed" else 0
+    if args.json:
+        console.say(json.dumps(output if len(args.id or []) > 1 else output[chosen[0].id]))
+    return 1 if any(run.status == "failed" for run in chosen) else 0
 
 
 def health_row(app_name: str, found: list[Run] | None) -> dict:

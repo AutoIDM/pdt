@@ -8,8 +8,10 @@
 usage: uv run --script run_windows_task.py <app dir> <logs folder> <storage url>
 
 Task Scheduler discards stdout and stderr, so the task `pdt-<app>` runs this
-script instead of run.py. It sets PDT_STORAGE_URL, runs `uv run --script run.py`
-in the app folder with the uv that started it, writes both streams to
+script instead of run.py. It sets PDT_STORAGE_URL and PDT_RUN_ID (the UTC start,
+so the app's `runs/` folder is named after the run `pdt runs` lists), runs
+`uv run --script run.py` in the app folder with the uv that started it, writes
+both streams to
 <logs folder>\\<UTC start>.log, ends the file with `pdt: exit N` (the marker
 `pdt runs` reads), and exits with the child's exit code so
 `Get-ScheduledTaskInfo` shows it.
@@ -39,8 +41,9 @@ def main(argv: list[str]) -> int:
     app_dir, logs, storage_url = argv
     folder = Path(logs)
     folder.mkdir(parents=True, exist_ok=True)
-    log = folder / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.log"
-    env = {**os.environ, "PDT_STORAGE_URL": storage_url}
+    stamp = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
+    log = folder / f"{stamp}.log"
+    env = {**os.environ, "PDT_STORAGE_URL": storage_url, "PDT_RUN_ID": stamp}
     env.setdefault("PYTHONIOENCODING", "utf-8")
     uv = os.environ.get("UV") or "uv"
     with log.open("wb") as out:
