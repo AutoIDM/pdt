@@ -257,10 +257,10 @@ def preflight(app: dict, settings: dict) -> dict:
                  "before this command")
         console.warn("You are not logged in to Azure yet.")
         try:
-            answer = input("Log in now (opens a browser)? [y/N] ").strip().lower()
+            answer = console.confirm("Log in now (opens a browser)?")
         except EOFError:
-            answer = ""
-        if answer not in ("y", "yes"):
+            answer = False
+        if not answer:
             fail("Azure login is required; run the same command again and answer y")
         login(requested)
         account = az_json("account", "show")
@@ -345,7 +345,7 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
     for index, sub in enumerate(available, 1):
         console.choice(index, str(sub.get("name")), str(sub.get("id")))
     try:
-        answer = input(f"Deploy to which one? [1-{len(available)}, or a subscription id] ").strip()
+        answer = console.ask(f"Deploy to which one? [1-{len(available)}, or a subscription id]")
     except EOFError:
         answer = ""
     typed = [sub for sub in available if answer in (sub.get("id"), sub.get("name"))]

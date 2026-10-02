@@ -152,8 +152,10 @@ def ask(question: str, default: str = "") -> str:
     return _console.input(f"{question}{suffix}: ", markup=False).strip()
 
 
-def confirm(question: str = "Proceed?") -> bool:
-    return _console.input(f"[bold]{escape(question)}[/] \\[y/N] ").strip().lower() in ("y", "yes")
+def confirm(question: str = "Proceed?", default: bool = False) -> bool:
+    options = "Y/n" if default else "y/N"
+    answer = _console.input(f"[bold]{escape(question)}[/] \\[{options}] ").strip().lower()
+    return default if answer == "" else answer in ("y", "yes")
 
 
 def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:

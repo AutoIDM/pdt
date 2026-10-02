@@ -75,7 +75,7 @@ def prompt_client(env_file: Path) -> bool:
         console.say(line)
     console.say()
     console.say("Paste the value now, or press Enter to stop.")
-    value = email_auth._ask(f"{CLIENT_ID_ENV}: ")
+    value = email_auth._ask(CLIENT_ID_ENV)
     if value == "":
         return False
     email_auth._write_env(env_file, CLIENT_ID_ENV, value)
@@ -126,10 +126,10 @@ def _confirm(user: str) -> None:
     console.say("PDT will not request permission to read email.")
     console.say()
     try:
-        answer = input("Open Microsoft sign-in now? [Y/n] ").strip().lower()
+        answer = console.confirm("Open Microsoft sign-in now?", default=True)
     except EOFError:
-        answer = "n"
-    if answer not in ("", "y", "yes"):
+        answer = False
+    if not answer:
         raise email_auth.OAuthError("OAuth authorization was not completed")
 
 
