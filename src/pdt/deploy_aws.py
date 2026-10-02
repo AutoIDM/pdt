@@ -42,7 +42,6 @@ from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
 AWS_CLI_V2 = "awscli @ https://github.com/aws/aws-cli/archive/refs/tags/2.36.49.tar.gz"
-AWS_CLI = ["uvx", "--from", AWS_CLI_V2, "aws"]
 MANAGED_TAGS = {"managed-by": "pdt"}
 SCHEDULE_GROUP = "pdt"
 ASSUMED_RUN_MINUTES = 5.0
@@ -376,8 +375,17 @@ def choose_profile(app: dict, session) -> str:
     return profile
 
 
+def aws_cli() -> list[str]:
+    """The pinned AWS CLI. uv asks GitHub again for the archive on every
+    online call, so one failed request would fail the command; once the CLI
+    is in uv's cache it runs offline."""
+    cached = subprocess.run(["uvx", "--offline", "--from", AWS_CLI_V2, "python", "-c", ""],
+                            capture_output=True).returncode == 0
+    return ["uvx", *(["--offline"] if cached else []), "--from", AWS_CLI_V2, "aws"]
+
+
 def sso_login(profile: str | None) -> bool:
-    command = [*AWS_CLI, "sso", "login"]
+    command = [*aws_cli(), "sso", "login"]
     shown = "pdt aws sso login"
     if profile:
         command += ["--profile", profile]
@@ -398,7 +406,7 @@ def relogin(app: dict) -> int:
     if name not in session.available_profiles:
         name = choose_profile(app, session)
     console.status(f"Logging in to AWS profile {name}...")
-    if subprocess.run([*AWS_CLI, "sso", "login", "--profile", name]).returncode != 0:
+    if subprocess.run([*aws_cli(), "sso", "login", "--profile", name]).returncode != 0:
         console.warn(f"If {name} uses access keys instead of SSO there is no login to "
                      f"refresh; run `pdt aws configure --profile {name}` to replace the keys.")
         fail("pdt aws sso login failed")
@@ -808,7 +816,7 @@ def load_app(app_name: str) -> dict:
 
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "aws":
-        return subprocess.run([*AWS_CLI, *sys.argv[2:]]).returncode
+        return subprocess.run([*aws_cli(), *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
         "deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
