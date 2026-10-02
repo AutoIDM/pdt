@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, runs_cli
+from pdt import bug_report, config, console, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_common import CostEstimate, warn_if_locked
 
@@ -545,6 +545,7 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
 
 
 def main() -> int:
+    bug_report.install()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets",
