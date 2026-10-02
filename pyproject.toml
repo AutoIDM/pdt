@@ -34,6 +34,12 @@ apps = [
     "azure-keyvault-secrets",
 ]
 
+[project.urls]
+Homepage = "https://autoidm.com/?utm_source=pypi"
+Documentation = "https://gitlab.com/autoidm/pdt/-/blob/master/docs/guide.md"
+Source = "https://gitlab.com/autoidm/pdt"
+Issues = "https://gitlab.com/autoidm/pdt/-/issues"
+
 [project.scripts]
 pdt = "pdt.cli:main"
 
