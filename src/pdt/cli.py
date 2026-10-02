@@ -2,7 +2,7 @@
 
 Leave <app> off any command that takes one, or mistype it, and pdt lists the apps it found.
 
-Every command except init, examples, completion, aws, az, and gcloud needs a project.
+Every command except init, examples, settings, completion, aws, az, and gcloud needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
 """
 
@@ -12,11 +12,13 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import rich_argparse
 
-from pdt import __version__, completion, config, console, deploy, deploy_common, scaffold
+from pdt import (__version__, completion, config, console, deploy, deploy_common, scaffold,
+                 settings, usage)
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -277,6 +279,10 @@ def cmd_health(args) -> int:
     return deploy.health(names, args.json)
 
 
+def cmd_settings(args) -> int:
+    return settings.run(args.name, args.value)
+
+
 def cmd_completion(args) -> int:
     return completion.install(args.shell, print_only=args.script)
 
@@ -388,6 +394,12 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_health)
+    p = add_parser("settings", help="show or change pdt's settings for this computer")
+    p.add_argument("name", nargs="?", choices=settings.SETTINGS,
+                   help="; ".join(f"{name}: {text}"
+                                  for name, (_, text) in settings.SETTINGS.items()))
+    p.add_argument("value", nargs="?", choices=("on", "off"), help="turn it on or off")
+    p.set_defaults(func=cmd_settings)
     p = add_parser("completion", help="turn on tab completion in your shell")
     p.add_argument("shell", nargs="?", choices=completion.SHELLS,
                    help="which shell; pdt works it out when left off")
@@ -414,14 +426,21 @@ def main() -> int:
     if args.command is None:
         parser.print_help()
         return 0
+    usage.notice(args.command)
+    started = time.monotonic()
+    code = 1
     try:
-        return args.func(args)
+        code = args.func(args)
+        return code
     except ConfigError as e:
         console.error(str(e))
         return 1
     except KeyboardInterrupt:
         console.say()
-        return 130
+        code = 130
+        return code
+    finally:
+        usage.record(args, code, time.monotonic() - started)
 
 
 if __name__ == "__main__":
