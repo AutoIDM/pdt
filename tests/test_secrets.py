@@ -1,3 +1,4 @@
+import io
 import json
 
 from dotenv import dotenv_values
@@ -108,3 +109,19 @@ def test_get_uses_the_file_name_the_user_types(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common.console, "ask", lambda question, default: ".env.prod")
     deploy_common.run_secrets("get", app_dir(tmp_path), json.dumps({"A": "1"}), None, True)
     assert (tmp_path / ".env.prod").read_text() == "A=1\n"
+
+
+def test_azure_set_stores_the_value_under_the_env_var_name(monkeypatch):
+    from pdt import deploy_azure_container_apps as aca
+    written = {}
+    monkeypatch.setattr(aca, "preflight", lambda app, settings: {"identity": "id", "resource_group": "rg"})
+    monkeypatch.setattr(aca, "azure_settings", lambda app: {})
+    monkeypatch.setattr(aca, "secret_state", lambda *args: (True, json.dumps({"TOKEN": "old"})))
+    monkeypatch.setattr(aca, "ensure_secret",
+                        lambda settings, sid, values, *args: written.update(values) or URI)
+    monkeypatch.setattr(aca, "az_tsv", lambda *args: "identity-id")
+    monkeypatch.setattr(aca, "set_job_secret", lambda *args: None)
+    monkeypatch.setattr(aca, "disable_old_secret_versions", lambda *args: None)
+    monkeypatch.setattr("sys.stdin", io.StringIO("new\n"))
+    assert aca.secrets({"name": "demo"}, "set", True, "TOKEN") == 0
+    assert written == {"TOKEN": "new"}
