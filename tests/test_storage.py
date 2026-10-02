@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -39,8 +40,9 @@ def test_pull_then_push_round_trip(store, tmp_path):
 
 
 def test_a_second_pull_within_the_ttl_is_refused(store, tmp_path, monkeypatch):
-    monkeypatch.setenv("PDT_RUN_ID", "run1")
+    monkeypatch.setattr(storage, "RUN_ID", "run1")
     store.pull("state/", tmp_path / "a")
+    monkeypatch.setattr(storage, "RUN_ID", "run2")
     with pytest.raises(StorageLocked) as caught:
         store.pull("state/", tmp_path / "b")
     assert "another run of my-report started at" in str(caught.value)
@@ -147,3 +149,172 @@ def test_usage_counts_files_and_bytes(store):
     write(store, "runs/a/report.csv", "abc")
     write(store, "state/count.txt", "12")
     assert store.usage() == (2, 5)
+
+
+def test_abort_releases_the_lock_without_pushing(store, tmp_path):
+    write(store, "state/meltano.db", "v1")
+    local = tmp_path / "local"
+    lease = store.pull("state/", local)
+    (local / "meltano.db").write_text("v2")
+    store.abort(lease)
+    assert LOCK not in store.ls("state")
+    assert store.open("state/meltano.db").read() == b"v1"
+    store.pull("state/", tmp_path / "again")
+
+
+def test_abort_leaves_a_lock_another_run_took_over(store, tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "RUN_ID", "run1")
+    lease = store.pull("state/", tmp_path / "a")
+    monkeypatch.setattr(storage, "RUN_ID", "run2")
+    store.pull("state/", tmp_path / "b", lock_ttl=timedelta(0))
+    store.abort(lease)
+    assert json.loads(store.open(LOCK).read())["run"] == "run2"
+
+
+def test_push_leaves_a_lock_another_run_took_over(store, tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "RUN_ID", "run1")
+    lease = store.pull("state/", tmp_path / "a")
+    monkeypatch.setattr(storage, "RUN_ID", "run2")
+    store.pull("state/", tmp_path / "b", lock_ttl=timedelta(0))
+    store.push(tmp_path / "a", "state/", lease)
+    assert json.loads(store.open(LOCK).read())["run"] == "run2"
+
+
+def test_a_lock_from_the_same_run_id_is_taken_over_at_once(store, tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "RUN_ID", "retry")
+    store.pull("state/", tmp_path / "a")
+    lease = store.pull("state/", tmp_path / "b")
+    assert lease.lock["run"] == "retry"
+
+
+def test_a_lock_from_a_dead_process_on_this_machine_is_taken_over(store, tmp_path, monkeypatch):
+    fresh = datetime.now(timezone.utc).isoformat()
+    write(store, LOCK, json.dumps({"run": "old", "host": storage.HOST, "boot": storage.BOOT_ID,
+                                   "pid": 4_000_000, "started": fresh}))
+    monkeypatch.setattr(storage, "_process_alive", lambda pid: False)
+    monkeypatch.setattr(storage, "RUN_ID", "run2")
+    lease = store.pull("state/", tmp_path / "a")
+    assert lease.lock["run"] == "run2"
+
+
+def test_a_lock_from_a_live_process_on_this_machine_is_refused(store, tmp_path, monkeypatch):
+    fresh = datetime.now(timezone.utc).isoformat()
+    write(store, LOCK, json.dumps({"run": "old", "host": storage.HOST, "boot": storage.BOOT_ID,
+                                   "pid": os.getpid(), "started": fresh}))
+    monkeypatch.setattr(storage, "RUN_ID", "run2")
+    with pytest.raises(StorageLocked) as caught:
+        store.pull("state/", tmp_path / "a")
+    assert f"on {storage.HOST}" in str(caught.value)
+    assert "pdt storage my-report unlock" in str(caught.value)
+
+
+def test_a_lock_from_another_machine_is_refused_even_when_the_pid_is_dead(
+        store, tmp_path, monkeypatch):
+    fresh = datetime.now(timezone.utc).isoformat()
+    write(store, LOCK, json.dumps({"run": "old", "host": "elsewhere", "boot": "",
+                                   "pid": 4_000_000, "started": fresh}))
+    monkeypatch.setattr(storage, "_process_alive", lambda pid: False)
+    with pytest.raises(StorageLocked):
+        store.pull("state/", tmp_path / "a")
+
+
+def test_a_lock_with_no_machine_details_is_refused_until_the_ttl(store, tmp_path, monkeypatch):
+    fresh = datetime.now(timezone.utc).isoformat()
+    write(store, LOCK, json.dumps({"run": "old", "started": fresh}))
+    monkeypatch.setattr(storage, "RUN_ID", "run2")
+    with pytest.raises(StorageLocked):
+        store.pull("state/", tmp_path / "a")
+
+
+def test_process_alive_sees_this_process_and_not_a_missing_one():
+    assert storage._process_alive(os.getpid())
+    assert not storage._process_alive(4_000_000)
+
+
+def test_pull_releases_the_lock_when_the_download_fails(store, tmp_path, monkeypatch):
+    write(store, "state/x", "x")
+    monkeypatch.setattr("fsspec.implementations.dirfs.DirFileSystem.get_file",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("network")))
+    with pytest.raises(OSError):
+        store.pull("state/", tmp_path / "a")
+    assert LOCK not in store.ls("state")
+
+
+def test_unlock_removes_any_lock(store):
+    store.unlock()
+    write(store, LOCK, json.dumps({"run": "old", "started": "2020-01-01T00:00:00+00:00"}))
+    store.unlock()
+    assert LOCK not in store.ls("state")
+
+
+def test_sync_pushes_output_and_state_and_releases_the_lock(store, tmp_path, monkeypatch):
+    write(store, "state/count.txt", "1")
+    monkeypatch.setattr(storage, "RUN_ID", "run1")
+    with store.sync(tmp_path / "run") as run:
+        assert run.store is store
+        assert (run.state / "count.txt").read_text() == "1"
+        assert run.output.is_dir()
+        assert run.folder.startswith("runs/") and run.folder.endswith("-run1/")
+        (run.state / "count.txt").write_text("2")
+        (run.output / "report.csv").write_text("a,b\n")
+        assert LOCK in store.ls("state")
+    assert store.open("state/count.txt").read() == b"2"
+    assert store.open(run.folder + "report.csv").read() == b"a,b\n"
+    assert store.open(run.folder + storage.DONE).read() == b""
+    assert LOCK not in store.ls("state")
+
+
+def test_sync_on_error_keeps_state_saves_output_and_releases_the_lock(store, tmp_path):
+    write(store, "state/count.txt", "1")
+    with pytest.raises(RuntimeError, match="boom"):
+        with store.sync(tmp_path / "run") as run:
+            (run.state / "count.txt").write_text("2")
+            (run.output / "partial.csv").write_text("a\n")
+            raise RuntimeError("boom")
+    assert store.open("state/count.txt").read() == b"1"
+    assert store.open(run.folder + "partial.csv").read() == b"a\n"
+    assert LOCK not in store.ls("state")
+
+
+def test_sync_releases_the_lock_on_keyboard_interrupt(store, tmp_path):
+    with pytest.raises(KeyboardInterrupt):
+        with store.sync(tmp_path / "run"):
+            raise KeyboardInterrupt
+    assert LOCK not in store.ls("state")
+
+
+def test_sync_with_no_output_creates_no_run_folder(store, tmp_path):
+    with store.sync(tmp_path / "run"):
+        pass
+    assert not store.fs().exists("runs")
+
+
+def test_sync_defaults_to_a_run_folder_under_dot_pdt(project, monkeypatch):
+    app = add_app(project, "my-report")
+    monkeypatch.chdir(app)
+    monkeypatch.delenv("PDT_STORAGE_URL", raising=False)
+    monkeypatch.setattr(storage, "RUN_ID", "run1")
+    with storage.sync() as run:
+        assert run.state == Path(".pdt") / "runs" / "run1" / "state"
+        assert run.store.url == root()
+    assert (app / ".pdt" / "runs" / "run1" / "output").is_dir()
+
+
+def test_sync_can_push_state_on_error(store, tmp_path):
+    write(store, "state/token.enc", "old")
+    with pytest.raises(RuntimeError):
+        with store.sync(tmp_path / "run", push_state_on_error=True) as run:
+            (run.state / "token.enc").write_text("rotated")
+            raise RuntimeError("load failed")
+    assert store.open("state/token.enc").read() == b"rotated"
+    assert LOCK not in store.ls("state")
+
+
+def test_sync_releases_the_lock_when_the_final_push_fails(store, tmp_path):
+    write(store, "state/count.txt", "1")
+    with pytest.raises(StorageConflict):
+        with store.sync(tmp_path / "run") as run:
+            write(store, "state/count.txt", "someone else")
+            (run.state / "count.txt").write_text("2")
+    assert LOCK not in store.ls("state")
+    assert store.open("state/count.txt").read() == b"someone else"
