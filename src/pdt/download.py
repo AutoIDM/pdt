@@ -7,6 +7,7 @@ own version, checksum table, and final folder.
 from __future__ import annotations
 
 import hashlib
+import sys
 import tarfile
 import tempfile
 import urllib.error
@@ -35,9 +36,12 @@ def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
                 digest.update(chunk)
                 tmp.write(chunk)
                 done += len(chunk)
-                if total:
+                if total and sys.stdout.isatty():
                     console.progress(f"  {done // 2**20} / {total // 2**20} MB")
-        console.say()
+        if sys.stdout.isatty():
+            console.say()
+        else:
+            console.status(f"downloaded {Path(url).name}")
         if digest.hexdigest() != sha256:
             raise error(
                 f"checksum mismatch for {url}\n"

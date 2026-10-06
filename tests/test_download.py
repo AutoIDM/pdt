@@ -5,6 +5,7 @@ import zipfile
 
 import pytest
 
+from pdt import download
 from pdt.download import fetch_verified
 
 
@@ -47,3 +48,36 @@ def test_a_checksum_mismatch_raises_the_callers_error_and_unpacks_nothing(tmp_pa
 def test_a_failed_download_raises_the_callers_error(tmp_path):
     with pytest.raises(FetchError, match="download failed: "):
         fetch_verified((tmp_path / "missing.tar.gz").as_uri(), "00", tmp_path, FetchError)
+
+
+def test_a_download_without_a_terminal_has_no_per_mb_progress(tmp_path, monkeypatch):
+    path, digest = archive(tmp_path, "tool-1.0.tar.gz")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    status = []
+    monkeypatch.setattr(download.sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(download.console, "status", status.append)
+    monkeypatch.setattr(download.console, "progress", lambda text: pytest.fail(text))
+    monkeypatch.setattr(download.console, "say", lambda: pytest.fail("pdt ended a progress line"))
+
+    fetch_verified(path.as_uri(), digest, stage, FetchError)
+
+    assert status == [
+        f"downloading {path.as_uri()}",
+        f"downloaded {path.name}",
+        f"unpacking {path.name}",
+    ]
+
+
+def test_a_download_with_a_terminal_keeps_its_progress_display(tmp_path, monkeypatch):
+    path, digest = archive(tmp_path, "tool-1.0.tar.gz")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    progress = []
+    monkeypatch.setattr(download.sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(download.console, "progress", progress.append)
+    monkeypatch.setattr(download.console, "say", lambda: progress.append("ended"))
+
+    fetch_verified(path.as_uri(), digest, stage, FetchError)
+
+    assert progress == ["  0 / 0 MB", "ended"]
