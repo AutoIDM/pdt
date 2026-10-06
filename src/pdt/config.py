@@ -2,9 +2,9 @@
 
 A project is a directory holding pdt.yml. An app is a directory inside it
 that contains run.py, or one that holds PowerShell scripts (.ps1) and no
-run.py; `pdt.powershell` describes how those run. Commands find the project by walking up from the
-working directory, so pdt works the same whether it was installed from
-PyPI or run from a clone of this repository.
+run.py; `pdt.powershell` describes how those run. Commands find the
+project by walking up from the working directory, so pdt works the same
+whether it was installed from PyPI or run from a clone of this repository.
 
 Merge order for one app, least to most specific:
   1. `platform:` defaults in the project pdt.yml
@@ -137,9 +137,10 @@ def find_project(start: Path | None = None) -> Path:
 
 def powershell_scripts(app_dir: Path) -> list[str]:
     """The .ps1 files of an app that has no run.py, in name order; [] for a Python app."""
-    if (app_dir / "run.py").is_file():
+    if not app_dir.is_dir() or (app_dir / "run.py").is_file():
         return []
-    return sorted(path.name for path in app_dir.glob("*.ps1") if path.is_file())
+    return sorted(path.name for path in app_dir.iterdir()
+                  if path.is_file() and path.suffix.lower() == ".ps1")
 
 
 def is_app(folder: Path) -> bool:
@@ -710,7 +711,10 @@ def run_scripts_problems(app: dict) -> list[str]:
     available = powershell_scripts(app["dir"])
     if not available:
         return ["run_scripts only applies to an app made of .ps1 files; remove the key"]
-    if not (isinstance(scripts, list) and all(isinstance(s, str) for s in scripts)) or not scripts:
-        return ["run_scripts must be a list of .ps1 file names in the order to run them"]
+    not_a_list = "run_scripts must be a list of .ps1 file names in the order to run them"
+    if not isinstance(scripts, list) or scripts == []:
+        return [not_a_list]
+    if not all(isinstance(script, str) for script in scripts):
+        return [not_a_list]
     return [f"run_scripts names {script!r}, which is not a .ps1 file in {app['name']}/"
             for script in scripts if script not in available]

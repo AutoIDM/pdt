@@ -53,3 +53,12 @@ def test_run_scripts_must_be_a_list(project):
     ps_app(project, config_text="schedule: daily\nrun_scripts: report.ps1\n")
     assert config.validate_app("ad-report") == [
         "ad-report/config.yml: run_scripts must be a list of .ps1 file names in the order to run them"]
+    for value in ("[]", "[1]"):
+        (project / "ad-report" / "config.yml").write_text(f"schedule: daily\nrun_scripts: {value}\n")
+        assert config.validate_app("ad-report") == [
+            "ad-report/config.yml: run_scripts must be a list of .ps1 file names in the order to run them"]
+
+
+def test_ps1_files_match_in_any_case(project):
+    ps_app(project, scripts=("Report.PS1",))
+    assert config.powershell_scripts(project / "ad-report") == ["Report.PS1"]
