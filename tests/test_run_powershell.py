@@ -1,7 +1,7 @@
 """The wrapper that runs a PowerShell app: `src/pdt/run_powershell.py`."""
 
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -39,7 +39,7 @@ def fake_pwsh(calls, codes):
 
 
 def test_the_pwsh_command_quotes_the_path_and_keeps_the_exit_code(wrapper):
-    command = wrapper.pwsh_command(Path("/apps/it's here/report.ps1"))
+    command = wrapper.pwsh_command(PurePosixPath("/apps/it's here/report.ps1"))
     assert command == (
         "$ErrorActionPreference='Stop'; $PSNativeCommandUseErrorActionPreference=$true; "
         "try { & '/apps/it''s here/report.ps1' } catch { "

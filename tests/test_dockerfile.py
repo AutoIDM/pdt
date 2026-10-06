@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 
@@ -157,7 +158,8 @@ def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modul
     assert "pdt.run_powershell" not in text
 
 
-@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+@pytest.mark.skipif(os.name == "nt" or shutil.which("sh") is None,
+                    reason="runs a Linux image's entrypoint with POSIX paths")
 def test_the_powershell_entrypoint_ends_the_log_with_the_exit_code(tmp_path, powershell_app):
     app, stage, _scans = powershell_app
     write_dockerfile(stage, app)

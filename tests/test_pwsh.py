@@ -36,7 +36,7 @@ def test_an_unknown_platform_names_the_install_page(monkeypatch):
 
 def test_the_install_lives_in_the_machine_folder_on_windows_only(monkeypatch):
     monkeypatch.setenv("ProgramData", r"C:\ProgramData")
-    monkeypatch.setenv("XDG_DATA_HOME", "/data")
+    monkeypatch.setattr(pwsh, "data_home", lambda: Path("/data"))
     assert pwsh.install_dir(windows=True) == Path(r"C:\ProgramData") / "pdt" / "pwsh"
     assert pwsh.local_pwsh(windows=True) == Path(r"C:\ProgramData") / "pdt" / "pwsh" / "pwsh.exe"
     assert pwsh.install_dir(windows=False) == Path("/data/pdt/pwsh")
