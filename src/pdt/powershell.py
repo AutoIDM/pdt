@@ -111,6 +111,7 @@ WINDOWS_ONLY_COMMAND_PATTERN = re.compile(
     r"|GP(O|Link|Permission|Inheritance|RegistryValue|Report|Starter)|WindowsFeature"
     r"|WindowsOptionalFeature|Appx|BitLocker|MpPreference|MpComputerStatus)")
 INTERACTIVE_COMMANDS = lower({"Read-Host", "Get-Credential", "Out-GridView", "Show-Command", "Pause"})
+CLEAR_HOST_COMMANDS = lower({"Clear-Host", "cls", "clear"})
 INSTALL_COMMANDS = lower({"Install-Module", "Install-PSResource", "Update-Module",
                           "Update-PSResource", "Install-Package", "Save-Module"})
 AZURE_AUTOMATION_COMMANDS = lower({"Get-AutomationConnection", "Get-AutomationVariable",
@@ -473,6 +474,11 @@ def command_findings(c: dict, path: str, on_windows: bool, defined: set[str]) ->
     key = name.lower()
     if key in defined:
         return found
+    if key in CLEAR_HOST_COMMANDS:
+        found.append(Finding(
+            "clear-host", path, line,
+            "Clear-Host clears the screen, but a scheduled job has no screen, so the run fails "
+            "here. Remove this line.", True))
     if key in INTERACTIVE_COMMANDS:
         found.append(Finding(
             "interactive", path, line,
@@ -591,7 +597,8 @@ def module_for(name: str, known: str | None, declared: set[str],
             return family_module(name, module, found.get(name, []))
     if is_windows_command(name) or is_path(name):
         return None, None
-    if key in WINDOWS_EXES or key in AZURE_AUTOMATION_COMMANDS or key in INTERACTIVE_COMMANDS:
+    if (key in WINDOWS_EXES or key in AZURE_AUTOMATION_COMMANDS or key in INTERACTIVE_COMMANDS
+            or key in CLEAR_HOST_COMMANDS):
         return None, None
     if known is not None:
         if known == "" or known.lower() in BUILT_IN_MODULES:
