@@ -192,7 +192,7 @@ def test_the_run_page_lists_the_files_under_the_runs_folder(gui, monkeypatch):
 
     def fake_get(*args, timeout=900):
         gui.calls.append(args)
-        with open(args[4], "w") as f:
+        with open(args[4], "w", newline="") as f:
             f.write("a,b\n")
         return 0, ""
 
@@ -443,7 +443,7 @@ def test_the_explore_page_says_when_duckdb_is_not_downloaded(run_with_files, gui
 
 def test_an_artifact_is_delivered_inline_for_the_workbench(run_with_files, gui, monkeypatch):
     def fake_get(*args, timeout=900):
-        with open(args[4], "w") as f:
+        with open(args[4], "w", newline="") as f:
             f.write("a,b\n1,2\n")
         return 0, ""
 
