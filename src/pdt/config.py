@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import date, timedelta
@@ -471,6 +472,14 @@ def find_env_files(start: Path) -> list[Path]:
             break
         folder = folder.parent
     return files
+
+
+def running_app_dir() -> Path:
+    """The app folder of this process: where the running run.py is, else the working folder."""
+    main = getattr(sys.modules.get("__main__"), "__file__", None)
+    if main is not None and Path(main).name == "run.py":
+        return Path(main).resolve().parent
+    return Path.cwd()
 
 
 def load_env(start: Path) -> list[Path]:

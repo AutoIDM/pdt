@@ -59,7 +59,7 @@ def root() -> str:
     url = os.environ.get("PDT_STORAGE_URL", "").strip()
     if url != "":
         return url
-    folder = config.find_project() / ".pdt" / "storage" / Path.cwd().name
+    folder = config.find_project() / ".pdt" / "storage" / config.running_app_dir().name
     return folder.as_uri() + "/"
 
 

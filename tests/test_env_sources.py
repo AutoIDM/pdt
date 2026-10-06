@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 import pytest
+from dotenv import dotenv_values
 
 from conftest import add_app
 from pdt import cli, config, deploy, deploy_common
@@ -139,6 +140,49 @@ def test_pdt_run_from_the_project_root_reads_the_app_dot_env(project, monkeypatc
     monkeypatch.setattr("sys.argv", ["pdt", "run", "vendor_status_alerts"])
     assert cli.main() == 0
     assert json.loads(report.read_text()) == {"token": "from-vendor"}
+
+
+ROTATE_TOKEN = """\
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from pdt.utils import env_secret, storage
+
+commands = []
+
+
+def record(command, **kwargs):
+    commands.append(command)
+    return subprocess.CompletedProcess(command, 0, "", "")
+
+
+env_secret.subprocess.run = record
+env_secret.update("PDT_TOKEN", "rotated")
+Path(sys.argv[1]).write_text(json.dumps({
+    "secrets_app": commands[0][4],
+    "storage": storage.root(),
+}))
+"""
+
+
+def test_a_run_py_started_from_the_project_root_uses_its_own_app_folder(project, monkeypatch,
+                                                                         tmp_path):
+    clear(monkeypatch)
+    monkeypatch.delenv("PDT_ENV_SECRET_RESOURCE", raising=False)
+    monkeypatch.delenv("PDT_STORAGE_URL", raising=False)
+    (project / ".env").write_text("PDT_TOKEN=from-root\n")
+    vendor = add_app(project, "vendor_status_alerts", run_body=ROTATE_TOKEN)
+    (vendor / ".env").write_text("PDT_TOKEN=from-vendor\n")
+    report = tmp_path / "report.json"
+    subprocess.run([sys.executable, "vendor_status_alerts/run.py", str(report)], check=True)
+    assert dotenv_values(vendor / ".env") == {"PDT_TOKEN": "rotated"}
+    assert dotenv_values(project / ".env") == {"PDT_TOKEN": "from-root"}
+    assert json.loads(report.read_text()) == {
+        "secrets_app": "vendor_status_alerts",
+        "storage": (project / ".pdt" / "storage" / "vendor_status_alerts").as_uri() + "/",
+    }
 
 
 def test_gather_secrets_is_the_same_from_a_file_and_from_the_environment(project, monkeypatch):
