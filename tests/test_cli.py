@@ -219,6 +219,49 @@ def test_health_checks_every_enabled_app(project, monkeypatch, capsys):
     assert "0 of 1 succeeded" in out
 
 
+def fake_health(monkeypatch):
+    calls = []
+    monkeypatch.setattr(deploy, "health", lambda names, as_json: calls.append(names) or 0)
+    return calls
+
+
+def test_health_inside_an_app_folder_checks_only_that_app(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    monkeypatch.chdir(add_app(project, "daily-report"))
+    calls = fake_health(monkeypatch)
+    assert run_cli(monkeypatch, "health") == 0
+    assert run_cli(monkeypatch, "health", "--all") == 0
+    assert calls == [["daily-report"], ["daily-report", "hello-world"]]
+    out = capsys.readouterr().out
+    assert "Using app daily-report (current folder)." in out
+    assert "pdt health --all" in out
+
+
+def test_health_at_the_project_root_checks_every_app(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    add_app(project, "daily-report")
+    calls = fake_health(monkeypatch)
+    assert run_cli(monkeypatch, "health") == 0
+    assert calls == [["daily-report", "hello-world"]]
+    assert "current folder" not in capsys.readouterr().out
+
+
+def test_health_json_inside_an_app_folder_has_no_extra_line(project, monkeypatch, capsys):
+    monkeypatch.chdir(add_app(project, "daily-report"))
+    calls = fake_health(monkeypatch)
+    assert run_cli(monkeypatch, "health", "--json") == 0
+    assert calls == [["daily-report"]]
+    assert capsys.readouterr().out == ""
+
+
+def test_health_with_an_app_and_all_is_refused(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    calls = fake_health(monkeypatch)
+    assert run_cli(monkeypatch, "health", "hello-world", "--all") == 1
+    assert calls == []
+    assert "pick an app or --all, not both" in capsys.readouterr().out
+
+
 def fake_deploys(monkeypatch, codes):
     calls = []
 

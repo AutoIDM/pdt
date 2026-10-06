@@ -274,15 +274,20 @@ def cmd_logs(args) -> int:
 
 
 def cmd_health(args) -> int:
-    if args.app is None:
+    if args.all and args.app is not None:
+        console.error("pick an app or --all, not both")
+        return 1
+    if args.app is None and (args.all or config.current_app() is None):
         names = config.find_apps()
         if not names:
             say_no_apps()
             return 0
     else:
-        name = choose_app(args.app, "health")
+        name = choose_app(args.app, "health", quiet=args.json)
         if name is None:
             return 1
+        if args.app is None and not args.json:
+            console.command("pdt health --all", "check every app")
         names = [name]
     return deploy.health(names, args.json)
 
@@ -386,8 +391,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_logs)
     p = add_parser("health", help="show whether each deployed app's last run succeeded")
-    app = p.add_argument("app", nargs="?", help="one app's folder name; omit to check every app")
+    app = p.add_argument("app", nargs="?",
+                         help="one app's folder name; leave it off inside an app folder to "
+                              "check that app, or anywhere else to check every app")
     app.completer = completion.apps
+    p.add_argument("--all", action="store_true",
+                   help="check every enabled app, even inside an app folder")
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_health)
     p = add_parser("completion", help="turn on tab completion in your shell")
