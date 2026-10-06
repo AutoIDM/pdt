@@ -16,7 +16,7 @@ Per app on this PC there is one folder, `%ProgramData%\\pdt\\<app>\\`, with
 `storage\\` (the app's files, kept after destroy) and `logs\\` (one log per
 run, removed on destroy), and one scheduled task `pdt-<app>` whose action
 runs `run_windows_task.py` through uv. The runner sets PDT_STORAGE_URL to the
-storage folder, runs run.py in the app folder, and writes both output streams
+storage folder, runs the app in its folder, and writes both output streams
 to `logs\\<UTC start>.log`, ending with `pdt: exit N`; `pdt runs` and
 `pdt logs` read those files. A run is stopped after RUN_TIME_LIMIT.
 
@@ -33,6 +33,13 @@ app folder and gives SYSTEM full control and the deploying user modify
 rights, so that user can delete what the task wrote. Deploy always registers
 the complete desired task definition with -Force, so rerunning it safely
 reconciles changes to the schedule or repository path.
+
+A PowerShell app (.ps1 files, no run.py) runs through run_powershell.py
+instead of run.py. Before the plan, deploy finds pwsh (`pdt.pwsh` installs the
+pinned version under %ProgramData%\\pdt\\pwsh when none is on the PATH),
+scans the scripts, and stops with the Windows feature to add when a module
+that comes with Windows (`powershell.WINDOWS_IN_BOX_MODULES`) is missing. The
+elevated script installs the other modules for all users, so SYSTEM sees them.
 """
 
 from __future__ import annotations
@@ -50,8 +57,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, runs_cli
+from pdt import powershell as ps
 from pdt.deploy import confirm
 from pdt.deploy_common import CostEstimate, warn_if_locked
+from pdt.pwsh import ensure_pwsh
 
 
 class WindowsDeployError(Exception):
@@ -317,8 +326,21 @@ def _run(powershell: str, script: str, *, not_found_ok: bool = False,
         + (f": {detail}" if detail else f" (exit {proc.returncode})"))
 
 
+def _run_output(powershell: str, script: str) -> str:
+    proc = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        raise WindowsDeployError(
+            "PowerShell command failed"
+            + (f": {detail}" if detail else f" (exit {proc.returncode})"))
+    return proc.stdout
+
+
 def _ps_string(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+    return ps.quoted(value)
 
 
 def _deploying_user() -> str:
@@ -384,8 +406,42 @@ def _task_running(powershell: str, name: str) -> bool:
     return proc.returncode == 0
 
 
+def _missing_host_modules(pwsh: str, names: list[str]) -> list[str]:
+    """The modules Windows itself provides (an optional feature) that this PC lacks."""
+    if not names:
+        return []
+    listed = ",".join(map(_ps_string, names))
+    script = (f"$have = Get-Module -ListAvailable -Name {listed} | "
+              "Select-Object -ExpandProperty Name; "
+              f"{listed} | Where-Object {{ $have -notcontains $_ }}")
+    return _run_output(pwsh, script).split()
+
+
+def _host_module_problem(name: str) -> str:
+    feature = ps.WINDOWS_IN_BOX_MODULES.get(name.lower())
+    if feature is None:
+        return (f"the scripts use the PowerShell module {name}, which ships with Windows, "
+                "and this Windows edition lacks it; remove it from the scripts")
+    return (f"the scripts use the PowerShell module {name}, which this PC does not have; "
+            f"add the Windows feature \"{feature}\" in Settings > System > Optional "
+            "features, then deploy again")
+
+
+def _prepare_powershell(app: dict) -> tuple[str | None, list]:
+    """The pwsh that runs a PowerShell app and the gallery modules to install; (None, [])
+    for a Python app."""
+    if not config.powershell_scripts(app["dir"]):
+        return None, []
+    pwsh = ensure_pwsh()
+    scan = ps.scan(app, "windows")
+    missing = _missing_host_modules(pwsh, scan.host_modules)
+    if missing:
+        raise WindowsDeployError("; ".join(map(_host_module_problem, missing)))
+    return pwsh, scan.modules
+
+
 def plan(app: dict, verb: str, description: str, user: str, uv: str,
-         on_machine_path: bool) -> list[str]:
+         on_machine_path: bool, pwsh: str | None = None, modules: list = ()) -> list[str]:
     name = app["name"]
     actions = [
         f"{verb} Windows scheduled task {_task_name(name)} (runs as SYSTEM)",
@@ -400,6 +456,11 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
     if app["storage"]:
         actions.append(f"use folder {storage_folder(name)} for the app's files "
                        "(kept after destroy)")
+    if pwsh is not None:
+        actions.append(f"run the app's .ps1 files with PowerShell from {pwsh}")
+    if modules:
+        actions.append(f"install PowerShell modules {', '.join(need.name for need in modules)} "
+                       "(all users)")
     return actions
 
 
@@ -416,12 +477,13 @@ def deploy(app: dict, assume_yes: bool) -> int:
             raise WindowsDeployError(
                 f"Windows scheduled task {name} exists but is not managed by PDT")
         exists = state == "managed"
+        pwsh, modules = _prepare_powershell(app)
     except (config.ConfigError, WindowsDeployError) as exc:
         console.error(str(exc))
         return 1
 
     actions = plan(app, "update" if exists else "create", description, user, uv,
-                   on_machine_path)
+                   on_machine_path, pwsh, modules)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges")
     if not confirm(actions, assume_yes, cost):
@@ -429,8 +491,15 @@ def deploy(app: dict, assume_yes: bool) -> int:
         return 1
 
     payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
+    install = ""
+    if modules:
+        command = _encoded(ps.install_command(modules))
+        install = (f"& {_ps_string(pwsh)} -NoProfile -NonInteractive -EncodedCommand {command}; "
+                   "if ($LASTEXITCODE -ne 0) { throw \"PowerShell module install failed "
+                   "with exit $LASTEXITCODE\" }; ")
     script = (
         f"{_folder_script(app, user)}"
+        f"{install}"
         f"$name = {_ps_string(name)}; "
         f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
         "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
