@@ -8,7 +8,8 @@ import tempfile
 from pathlib import Path
 
 from pdt import __version__, console
-from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project
+from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
+                        powershell_scripts)
 from pdt.utils.env_secret import private_file
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
@@ -68,7 +69,7 @@ ENV_TEXT = """\
 AGENTS_TEXT = """\
 # AGENTS.md
 
-This folder is a pdt project: a set of small scheduled jobs. Every folder holding a `run.py` and a `config.yml` is one app. `pdt.yml` holds the settings shared by every app.
+This folder is a pdt project: a set of small scheduled jobs. Every folder holding a `config.yml` and a `run.py` is one Python app. Every folder holding a `config.yml` and one or more `.ps1` files but no `run.py` is one PowerShell app. `pdt.yml` holds the settings shared by every app.
 
 ## Working here
 
@@ -256,7 +257,8 @@ def copy_example(root: Path, name: str, example: Path) -> None:
     shutil.copytree(example, destination,
                     ignore=shutil.ignore_patterns("__pycache__", ".env"))
     run_py = destination / "run.py"
-    run_py.write_text(run_py.read_text().replace("PDT_VERSION", __version__))
+    if run_py.is_file():
+        run_py.write_text(run_py.read_text().replace("PDT_VERSION", __version__))
 
 
 def summary_of(example: Path) -> str:
@@ -303,7 +305,8 @@ def new_app(name: str, source: str | None) -> int:
             f"there is no example named {source!r}. Run `pdt examples` to see them.")
     copy_example(root, name, example)
     console.done(f"Created {name}/ from the {example.name} example.")
-    console.command(f"{name}/run.py", "the job itself")
+    for job in powershell_scripts(destination) or ["run.py"]:
+        console.command(f"{name}/{job}", "the job itself")
     console.command(f"{name}/config.yml", "how often it runs and what it needs")
     needs_secrets = (destination / "env.template").is_file()
     if needs_secrets:

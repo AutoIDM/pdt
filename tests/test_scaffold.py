@@ -106,7 +106,7 @@ def test_every_bundled_example_is_complete():
     examples = sorted(p for p in scaffold.EXAMPLES.iterdir() if p.is_dir())
     assert examples, "the wheel ships no examples"
     for example in examples:
-        assert (example / "run.py").is_file()
+        assert (example / "run.py").is_file() or any(example.glob("*.ps1")), example.name
         config = yaml.safe_load((example / "config.yml").read_text())
         assert config["schedule"], f"{example.name} has no schedule"
         assert "name" not in config, f"{example.name} pins a name, so it cannot be renamed"
@@ -136,6 +136,14 @@ def test_new_app_pins_the_installed_version(project):
     header = (project / "my-report" / "run.py").read_text()
     assert f"pdt-cli[apps]=={__version__}" in header
     assert "PDT_VERSION" not in header
+
+
+def test_new_app_copies_a_powershell_example(project, capsys):
+    assert scaffold.new_app("my-report", "powershell-report") == 0
+    assert (project / "my-report" / "report.ps1").is_file()
+    assert not (project / "my-report" / "run.py").exists()
+    assert find_apps() == ["my-report"]
+    assert "my-report/report.ps1" in capsys.readouterr().out
 
 
 def test_new_app_refuses_an_unknown_example(project):
