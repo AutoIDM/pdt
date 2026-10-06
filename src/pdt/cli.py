@@ -1,6 +1,7 @@
 """pdt — set up, run, and deploy scheduled jobs.
 
-Leave <app> off any command that takes one, or mistype it, and pdt lists the apps it found.
+Inside an app folder, leave <app> off any command that takes one and pdt uses that app.
+Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
 Every command except init, examples, completion, aws, az, and gcloud needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
@@ -63,14 +64,18 @@ SINCE_HELP = ("show every run that started at or after this: 12h, 3d, 2w, 2026-0
               "or 2026-09-20T14:00 (default: the 10 newest runs)")
 SPAN_HELP = "with --since, show only the runs that started within this long after it: 12h, 3d, 2w"
 COUNT_HELP = "show at most this many runs (default: 10 without --since, else every run)"
+APP_HELP = ("the app's folder name; leave it off inside an app folder to use that app, "
+            "or anywhere else to see the choices")
 
 
-def choose_app(name: str | None, command: str) -> str | None:
+def choose_app(name: str | None, command: str, quiet: bool = False) -> str | None:
     """Return the app `pdt <command>` should act on, or None after guiding the user.
 
-    Every command that takes an app name goes through here, so leaving the name
-    off or mistyping it gives the same answer everywhere: the apps this project
-    has, and the exact command to run next.
+    Every command that takes an app name goes through here. Inside an app folder
+    a missing name means that app. Elsewhere, leaving the name off or mistyping
+    it gives the same answer everywhere: the apps this project has, and the
+    exact command to run next. `quiet` keeps --json output free of the line
+    that names the app pdt picked.
     """
     apps = config.find_apps()
     if not apps:
@@ -78,6 +83,11 @@ def choose_app(name: str | None, command: str) -> str | None:
         return None
     if name in apps:
         return name
+    here = config.current_app() if name is None else None
+    if here is not None:
+        if not quiet:
+            console.status(f"Using app {here} (current folder).")
+        return here
     if name is None:
         console.heading(f"{APP_QUESTIONS[command]} This project has:")
     else:
@@ -246,14 +256,14 @@ def window_options(args) -> list[str]:
 
 
 def cmd_runs(args) -> int:
-    name = choose_app(args.app, "runs")
+    name = choose_app(args.app, "runs", quiet=args.json)
     if name is None:
         return 1
     return deploy.runs(name, [*window_options(args), *(["--json"] if args.json else [])])
 
 
 def cmd_logs(args) -> int:
-    name = choose_app(args.app, "logs")
+    name = choose_app(args.app, "logs", quiet=args.json)
     if name is None:
         return 1
     flags = [flag for flag, on in (("--failed", args.failed), ("--errors", args.errors),
@@ -313,13 +323,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_list)
     add_parser("validate", help="check config and env").set_defaults(func=cmd_validate)
     p = add_parser("run", help="run an app locally")
-    app = p.add_argument("app", nargs="?",
-                         help="the app's folder name; omit to see the choices")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.set_defaults(func=cmd_run)
     p = add_parser("deploy", help="deploy an app")
-    app = p.add_argument("app", nargs="?",
-                         help="the app's folder name; omit to see the choices")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--all", action="store_true", help="deploy every enabled app, in order")
@@ -327,19 +335,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="with --all, go on past an app that fails to deploy instead of asking")
     p.set_defaults(func=cmd_deploy)
     p = add_parser("login", help="sign in again to an app's cloud provider")
-    app = p.add_argument("app", nargs="?",
-                         help="the app's folder name; omit to see the choices")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.set_defaults(func=cmd_login)
     p = add_parser("destroy", help="tear down an app's deployed resources")
-    app = p.add_argument("app", nargs="?",
-                         help="the app's folder name; omit to see the choices")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_destroy)
     p = add_parser("secrets", help="compare, send, or fetch a deployed app's .env values")
-    app = p.add_argument("app", nargs="?",
-                         help="the app's folder name; omit to see the choices")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.add_argument("action", nargs="?", choices=deploy_common.SECRET_ACTIONS, default="diff",
                    help="diff shows what save would change (the default); "
@@ -350,14 +355,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_secrets)
     p = add_parser("storage", help="read or manage an app's data store")
-    app = p.add_argument("app", nargs="?",
-                         help="the app's folder name; omit to see the choices")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|destroy [args...]")
     p.set_defaults(func=cmd_storage)
     p = add_parser("runs", help="list a deployed app's recent runs")
-    app = p.add_argument("app", nargs="?",
-                         help="the app's folder name; omit to see the choices")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.add_argument("--since", help=SINCE_HELP)
     p.add_argument("--span", help=SPAN_HELP)
@@ -365,8 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_runs)
     p = add_parser("logs", help="read the log of one of a deployed app's runs")
-    app = p.add_argument("app", nargs="?",
-                         help="the app's folder name; omit to see the choices")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.add_argument("number", nargs="?", type=int, default=1,
                    help="which run, as `pdt runs` numbers them (default: 1, the newest)")
