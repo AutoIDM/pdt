@@ -15,7 +15,8 @@ app's run.py declares pdt in its script header, so every deployment
 installs the package from the index the same way a local run does. An app
 made of .ps1 files has no run.py; POWERSHELL_DOCKERFILE installs
 pdt-cli[apps] at this pdt's version, then pwsh through that pdt's own
-`pdt.pwsh` (the pinned, checksum-verified archive), then the PowerShell
+`pdt.pwsh` (the pinned, checksum-verified archive; its powershell.config.json
+turns off the startup trace lines pwsh otherwise writes to the job's log), then the PowerShell
 modules its scripts need (each one exercised, so a broken module fails the
 build), and runs `pdt.run_powershell`, or the app's own run.py when
 `pdt new APP --from-scripts` wrote one.
@@ -74,7 +75,7 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1
 RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
-RUN ln -s "$(/opt/pdt/bin/python -m pdt.pwsh)" /usr/local/bin/pwsh
+RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh && echo '{{"LogLevel":"Critical"}}' > "$(dirname "$pwsh")/powershell.config.json"
 {modules}COPY . /workspace
 WORKDIR /workspace/{app}
 {sync}ENTRYPOINT ["sh", "-c", "{start}; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
