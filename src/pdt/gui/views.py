@@ -8,6 +8,7 @@ shows its output as a message.
 
 from __future__ import annotations
 
+import io
 import re
 import tempfile
 from datetime import datetime
@@ -183,10 +184,11 @@ def artifact(request, name, pk):
         code, output = run_pdt("storage", name, "get", path, str(target))
         if code != 0 or not target.is_file():
             return HttpResponse(output, status=502, content_type="text/plain")
-        if request.GET.get("inline") == "1":
-            return FileResponse(open(target, "rb"), content_type=(
-                "text/csv" if target.suffix.lower() == ".csv" else "text/plain"))
-        return FileResponse(open(target, "rb"), as_attachment=True, filename=target.name)
+        data = io.BytesIO(target.read_bytes())
+    if request.GET.get("inline") == "1":
+        return FileResponse(data, content_type=(
+            "text/csv" if target.suffix.lower() == ".csv" else "text/plain"))
+    return FileResponse(data, as_attachment=True, filename=target.name)
 
 
 def csv_files(run, name: str) -> list[dict]:

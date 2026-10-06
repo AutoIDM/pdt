@@ -35,6 +35,7 @@ def launcher(project, monkeypatch):
     monkeypatch.setattr(gui_cli, "is_up", lambda port: calls.up)
     monkeypatch.setattr(gui_cli.webbrowser, "open", lambda url: calls.opened.append(url) or True)
     monkeypatch.setattr(gui_cli.os, "kill", lambda pid, sig: calls.killed.append(pid))
+    monkeypatch.setattr(gui_cli.subprocess, "run", lambda command, **kwargs: calls.killed.append(int(command[2])))
     monkeypatch.setattr(gui_cli, "POLL", 0)
     return calls
 
