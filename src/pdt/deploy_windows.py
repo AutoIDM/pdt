@@ -558,7 +558,7 @@ def main() -> int:
     except config.ConfigError as exc:
         console.error(str(exc))
         return 1
-    if not app["platform"].get("host") and sys.platform != "win32":
+    if sys.platform != "win32":
         console.error(
             "the windows provider targets this computer, but the current operating system "
             "is not Windows. Run this command on the Windows PC.")

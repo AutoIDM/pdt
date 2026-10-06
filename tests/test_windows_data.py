@@ -53,18 +53,6 @@ def test_local_windows_commands_stop_off_windows(
         "system is not Windows. Run this command on the Windows PC.\n")
 
 
-def test_remote_windows_target_can_bypass_the_local_platform_check(monkeypatch):
-    app = {"dir": Path("remote-app"), "platform": {"host": "jobs-01"}}
-    monkeypatch.setattr(deploy_windows.config, "merged_app", lambda name: app)
-    monkeypatch.setattr(deploy_windows.config, "load_env", lambda path: None)
-    monkeypatch.setattr(deploy_windows.sys, "platform", "darwin")
-    monkeypatch.setattr(deploy_windows.sys, "argv",
-                        ["deploy_windows.py", "deploy", "my-report"])
-    monkeypatch.setattr(deploy_windows, "deploy", lambda loaded, assume_yes: 23)
-
-    assert deploy_windows.main() == 23
-
-
 def test_app_folders_live_under_the_machine_data_home(project):
     folder = project / "ProgramData" / "pdt" / "my-report"
     assert deploy_windows.app_folder("my-report") == folder
