@@ -30,6 +30,28 @@ def windows_app(project, config_text="schedule: hourly\ntimezone: local\n"):
     return config.merged_app("my-report")
 
 
+@pytest.mark.parametrize(("command", "rest"), [
+    ("storage", ["ls", "state/"]),
+    ("runs", []),
+    ("logs", []),
+])
+def test_machine_data_commands_point_to_the_windows_pc_off_windows(
+        project, monkeypatch, capsys, command, rest):
+    windows_app(project)
+    monkeypatch.setattr(deploy_windows.sys, "platform", "darwin")
+    monkeypatch.setattr(deploy_windows.sys, "argv",
+                        ["deploy_windows.py", command, "my-report", *rest])
+
+    assert deploy_windows.main() == 1
+
+    shown = " ".join(["pdt", command, "my-report", *rest])
+    assert capsys.readouterr().out == (
+        "note: the windows provider stores my-report's files in "
+        "%ProgramData%\\pdt\\my-report\\storage and run logs in "
+        f"%ProgramData%\\pdt\\my-report\\logs on the Windows PC. Run `{shown}` on that PC "
+        "instead.\n")
+
+
 def test_app_folders_live_under_the_machine_data_home(project):
     folder = project / "ProgramData" / "pdt" / "my-report"
     assert deploy_windows.app_folder("my-report") == folder
