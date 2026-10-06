@@ -14,22 +14,23 @@ from pdt import pwsh
     ("Darwin", "x86_64", "osx-x64"),
     ("Darwin", "arm64", "osx-arm64"),
     ("Windows", "AMD64", "win-x64"),
+    ("Windows", "ARM64", "win-arm64"),
 ])
 def test_platform_key_and_archive_name(monkeypatch, system, machine, key):
     monkeypatch.setattr(pwsh.platform, "system", lambda: system)
     monkeypatch.setattr(pwsh.platform, "machine", lambda: machine)
     assert pwsh.platform_key() == key
     assert key in pwsh.CHECKSUMS
-    if key == "win-x64":
-        assert pwsh.archive_name(key) == "PowerShell-7.6.6-win-x64.zip"
+    if key.startswith("win-"):
+        assert pwsh.archive_name(key) == f"PowerShell-7.6.6-{key}.zip"
     else:
         assert pwsh.archive_name(key) == f"powershell-7.6.6-{key}.tar.gz"
 
 
 def test_an_unknown_platform_names_the_install_page(monkeypatch):
-    monkeypatch.setattr(pwsh.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(pwsh.platform, "machine", lambda: "ARM64")
-    with pytest.raises(pwsh.PwshError, match="no pinned archive for Windows ARM64"):
+    monkeypatch.setattr(pwsh.platform, "system", lambda: "FreeBSD")
+    monkeypatch.setattr(pwsh.platform, "machine", lambda: "amd64")
+    with pytest.raises(pwsh.PwshError, match="no pinned archive for FreeBSD amd64"):
         pwsh.platform_key()
 
 

@@ -8,7 +8,7 @@ install lives in the user's data folder. On Windows it lives in
 %ProgramData%\\pdt\\pwsh, because the scheduled task runs as SYSTEM and
 must reach the same pwsh the deploying user installed.
 
-To bump the pin, take the new version number and the five checksums from
+To bump the pin, take the new version number and the six checksums from
 the `hashes.sha256` asset of the release at
 https://github.com/PowerShell/PowerShell/releases
 """
@@ -34,6 +34,7 @@ CHECKSUMS = {
     "osx-x64": "e325ed9f666894eb39a5ea52800b602da2fb4242bbe9747ceddb39cdc66de805",
     "osx-arm64": "6df833d094ebac1c1a74340d7b3437f4aaf5e03ce640484a1c4359f3ce8b3db1",
     "win-x64": "02fe458be20493fbdf43f61ea20610b811ee6c738ab1676c61b9cfcd1a33c860",
+    "win-arm64": "bbde9dda31d148415eccb5fbe1638e6400a144187b006e5b3fd8ec2f39d781be",
 }
 INSTALL_DOCS = "https://learn.microsoft.com/powershell/scripting/install/installing-powershell"
 
@@ -50,8 +51,11 @@ def platform_key() -> str:
         return "linux-arm64" if arm else "linux-x64"
     if system == "darwin":
         return "osx-arm64" if arm else "osx-x64"
-    if system == "windows" and machine in ("amd64", "x86_64"):
-        return "win-x64"
+    if system == "windows":
+        if arm:
+            return "win-arm64"
+        if machine in ("amd64", "x86_64"):
+            return "win-x64"
     raise PwshError(
         f"no pinned archive for {platform.system()} {platform.machine()}; "
         f"install PowerShell 7 from {INSTALL_DOCS}")
@@ -59,8 +63,8 @@ def platform_key() -> str:
 
 def archive_name(key: str) -> str:
     # Microsoft capitalises the Windows zip and not the tar.gz files.
-    if key == "win-x64":
-        return f"PowerShell-{VERSION}-win-x64.zip"
+    if key.startswith("win-"):
+        return f"PowerShell-{VERSION}-{key}.zip"
     return f"powershell-{VERSION}-{key}.tar.gz"
 
 
