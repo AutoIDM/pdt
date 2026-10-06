@@ -102,6 +102,12 @@ def test_windows_signals_are_certain_on_a_cloud_only():
         ("windows-program", "r.ps1", 4), ("windows-drive", "r.ps1", 10), ("windows-drive", "r.ps1", 11),
         ("windows-type", "r.ps1", 5), ("com-object", "r.ps1", 7), ("windows-type", "r.ps1", 8),
         ("windows-assembly", "r.ps1", 9)]
+    assert report(cloud)[0][0] == (
+        "r.ps1: #Requires -PSEdition Desktop asks for Windows PowerShell 5.1, but pdt runs "
+        "PowerShell 7. Make the script run on PowerShell 7; most current modules, such as "
+        "Microsoft.Graph, Az, ExchangeOnlineManagement, and ActiveDirectory, work there. Or, only "
+        "on the windows provider, load the Windows PowerShell module with Import-Module <name> "
+        "-UseWindowsPowerShell and remove the #Requires -PSEdition Desktop line.")
     assert warnings(cloud) == [("windows-path", "r.ps1", 12), ("windows-path", "r.ps1", 13)]
     windows = verdict(seen, "windows")
     assert certain(windows) == [("desktop-edition", "r.ps1", 0)]

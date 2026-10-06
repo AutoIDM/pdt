@@ -349,8 +349,12 @@ def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
         if "Desktop" in requires.get("editions", []):
             findings.append(Finding(
                 "desktop-edition", path, 0,
-                "#Requires -PSEdition Desktop asks for Windows PowerShell 5.1, and pdt runs "
-                "PowerShell 7. Remove the line or change Desktop to Core.", True))
+                "#Requires -PSEdition Desktop asks for Windows PowerShell 5.1, but pdt runs "
+                "PowerShell 7. Make the script run on PowerShell 7; most current modules, such as "
+                "Microsoft.Graph, Az, ExchangeOnlineManagement, and ActiveDirectory, work there. "
+                "Or, only on the windows provider, load the Windows PowerShell module with "
+                "Import-Module <name> -UseWindowsPowerShell and remove the #Requires -PSEdition "
+                "Desktop line.", True))
         for spec in requires.get("modules", []):
             need(spec["name"], requires_version(spec), f"#Requires in {path}", path)
             if not on_windows and spec["name"].lower() in WINDOWS_ONLY_MODULES:
