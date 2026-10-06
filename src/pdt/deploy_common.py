@@ -12,14 +12,20 @@ it and no other, through `pdt.utils.env_secret`.
 
 A build context holds the app directory and pdt.yml, nothing else. The
 app's run.py declares pdt in its script header, so every deployment
-installs the package from the index the same way a local run does.
+installs the package from the index the same way a local run does. An app
+made of .ps1 files has no run.py; POWERSHELL_DOCKERFILE installs
+pdt-cli[apps] at this pdt's version, then pwsh through that pdt's own
+`pdt.pwsh` (the pinned, checksum-verified archive), then the PowerShell
+modules its scripts need (each one exercised, so a broken module fails the
+build), and runs `pdt.run_powershell`.
 PDT_PROJECT names the project directory, so no job depends on its cwd.
 
 BUILD_EXCLUDES leaves secret shapes (env files, keys, certificates, credentials files, ssh and package-manager logins) and local state out of the context, and one note names what it left out. A symbolic link stays a link when its target is inside the app directory, and the build stops when one points outside, so no file from elsewhere on the machine reaches the image.
 
-The image is built from DOCKERFILE unless the app directory holds its own
-Dockerfile; write_dockerfile puts whichever applies at the root of the
-context, so every cloud provider builds the same way. An app's own
+The image is built from DOCKERFILE (or POWERSHELL_DOCKERFILE) unless the
+app directory holds its own Dockerfile; write_dockerfile puts whichever
+applies at the root of the context, so every cloud provider builds the
+same way. An app's own
 .dockerignore is rewritten to the context root too (and as .gcloudignore,
 which Cloud Build reads instead), so its patterns keep meaning paths
 inside the app directory. The generated image ends every run's output
@@ -62,6 +68,16 @@ ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
 RUN uv sync --script run.py
 ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
 """
+POWERSHELL_DOCKERFILE = """\
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
+ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1
+RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
+RUN ln -s "$(/opt/pdt/bin/python -m pdt.pwsh)" /usr/local/bin/pwsh
+{modules}COPY . /workspace
+WORKDIR /workspace/{app}
+ENTRYPOINT ["sh", "-c", "/opt/pdt/bin/python -m pdt.run_powershell .; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
+"""
 # Secret shapes and local state that never belong in an image.
 BUILD_EXCLUDES = (
     ".env", ".env.*", ".secrets", ".git", ".venv", "__pycache__",
@@ -88,16 +104,28 @@ def own_dockerfile(app: dict) -> Path | None:
     return path if path.is_file() else None
 
 
+def powershell_dockerfile(app: dict) -> str:
+    from pdt import __version__, powershell
+    modules = powershell.scan(app, app["platform"]["provider"]).modules
+    # Exec form, because the install command holds $ and quotes that sh would expand.
+    command = json.dumps(["pwsh", "-NoProfile", "-Command", powershell.install_command(modules)])
+    return POWERSHELL_DOCKERFILE.format(
+        app=app["name"], version=__version__, modules=f"RUN {command}\n" if modules else "")
+
+
 def write_dockerfile(stage: Path, app: dict) -> None:
     """Put the Dockerfile to build at the root of the staged build context.
 
-    An app's own Dockerfile is used as is. Any other app gets DOCKERFILE.
+    An app's own Dockerfile is used as is. An app made of .ps1 files gets
+    POWERSHELL_DOCKERFILE, any other app DOCKERFILE.
     The context is the same either way: the app directory under its own
     name next to pdt.yml, so a custom file starts from the generated one.
     """
     own = own_dockerfile(app)
     if own is not None:
         shutil.copy(own, stage / "Dockerfile")
+    elif config.powershell_scripts(app["dir"]):
+        (stage / "Dockerfile").write_text(powershell_dockerfile(app))
     else:
         (stage / "Dockerfile").write_text(DOCKERFILE.format(app=app["name"]))
     ignore = Path(app["dir"]) / ".dockerignore"

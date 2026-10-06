@@ -5,9 +5,10 @@ import subprocess
 import pytest
 
 from conftest import add_app
+from pdt import __version__, powershell
 from pdt.config import validate_app
 from pdt.deploy_common import (
-    DOCKERFILE, context_ignore_text, image_action, write_dockerfile)
+    DOCKERFILE, POWERSHELL_DOCKERFILE, context_ignore_text, image_action, write_dockerfile)
 
 
 def staged(tmp_path, name, own=None):
@@ -95,3 +96,60 @@ def test_the_entrypoint_ends_the_log_with_the_exit_code(tmp_path):
                           env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
     assert proc.stdout == "working\npdt: exit 3\n"
     assert proc.returncode == 3
+
+
+@pytest.fixture
+def powershell_app(tmp_path, monkeypatch):
+    scans = []
+
+    def scan(app, provider):
+        scans.append(provider)
+        return powershell.ScriptScan(["report.ps1"], [], list(app["modules"]), [])
+
+    monkeypatch.setattr(powershell, "scan", scan)
+    app_dir = tmp_path / "project" / "my-report"
+    app_dir.mkdir(parents=True)
+    (app_dir / "report.ps1").write_text("Write-Output hi\n")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    app = {"name": "my-report", "dir": app_dir, "platform": {"provider": "aws"}, "modules": []}
+    return app, stage, scans
+
+
+def test_a_powershell_app_gets_the_powershell_dockerfile_with_its_modules(powershell_app):
+    app, stage, scans = powershell_app
+    app["modules"] = [powershell.ModuleNeed("ImportExcel", "7.8.6", "#Requires in report.ps1")]
+    write_dockerfile(stage, app)
+    text = (stage / "Dockerfile").read_text()
+    command = powershell.install_command(app["modules"])
+    install = f'RUN {json.dumps(["pwsh", "-NoProfile", "-Command", command])}\n'
+    assert text == POWERSHELL_DOCKERFILE.format(app="my-report", version=__version__, modules=install)
+    assert scans == ["aws"]
+    pdt_line = f'RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={__version__}"\n'
+    pwsh_line = 'RUN ln -s "$(/opt/pdt/bin/python -m pdt.pwsh)" /usr/local/bin/pwsh\n'
+    assert text.index(pdt_line) < text.index(pwsh_line) < text.index(install)
+    assert "curl" not in text
+
+
+def test_a_powershell_app_without_modules_has_no_empty_install_step(powershell_app):
+    app, stage, _scans = powershell_app
+    write_dockerfile(stage, app)
+    text = (stage / "Dockerfile").read_text()
+    assert "-Command" not in text
+    assert all(line.strip() != "RUN" for line in text.splitlines())
+    assert "\nCOPY . /workspace\n" in text
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+def test_the_powershell_entrypoint_ends_the_log_with_the_exit_code(tmp_path):
+    python = tmp_path / "opt" / "pdt" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\necho \"args: $*\"\nexit 4\n")
+    python.chmod(0o755)
+    line = next(line for line in POWERSHELL_DOCKERFILE.splitlines() if line.startswith("ENTRYPOINT "))
+    command = json.loads(line.removeprefix("ENTRYPOINT "))
+    command[-1] = command[-1].replace("/opt/pdt/bin/python", str(python))
+    proc = subprocess.run(command, capture_output=True, text=True,
+                          env={"PATH": "/usr/bin:/bin"})
+    assert proc.stdout == "args: -m pdt.run_powershell .\npdt: exit 4\n"
+    assert proc.returncode == 4
