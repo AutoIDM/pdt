@@ -102,6 +102,19 @@ def test_continue_on_error_runs_every_script_and_returns_the_first_failure(
     assert "second.ps1 failed  exit_code=4" in out
 
 
+def test_run_ps1_is_the_only_script_that_runs(app_dir, wrapper, monkeypatch):
+    for name in ("run.ps1", "report.ps1", "helper.ps1"):
+        (app_dir / name).write_text("")
+    calls = []
+    monkeypatch.setattr(wrapper.subprocess, "run",
+                        fake_pwsh(calls, {"run.ps1": 0, "report.ps1": 0, "helper.ps1": 0}))
+
+    assert wrapper.main([str(app_dir)]) == 0
+
+    assert len(calls) == 1
+    assert str(app_dir / "run.ps1") in calls[0][0][-1]
+
+
 def test_storage_false_keeps_nothing(app_dir, wrapper, monkeypatch):
     (app_dir / "a.ps1").write_text("")
     (app_dir / "config.yml").write_text("schedule: daily\nstorage: false\n")

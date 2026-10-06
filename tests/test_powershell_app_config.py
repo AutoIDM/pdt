@@ -75,6 +75,13 @@ def test_continue_on_error_must_be_a_bool(project):
     assert config.merged_app("ad-report")["continue_on_error"] is True
 
 
+def test_run_ps1_and_run_scripts_cannot_both_be_present(project):
+    ps_app(project, scripts=("run.ps1", "report.ps1"),
+           config_text="schedule: daily\nrun_scripts: [report.ps1]\n")
+    assert config.validate_app("ad-report") == [
+        "ad-report/config.yml: run.ps1 and run_scripts cannot both be present; keep one"]
+
+
 def test_ps1_files_match_in_any_case(project):
     ps_app(project, scripts=("Report.PS1",))
     assert config.powershell_scripts(project / "ad-report") == ["Report.PS1"]

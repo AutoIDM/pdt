@@ -425,8 +425,11 @@ def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
 
 
 def split_files(files: list[dict], run_scripts: list[str] | None) -> tuple[list[str], list[str]]:
-    """Entries are top-level .ps1 files no other file runs or imports; the rest are helpers."""
+    """Entries are run.ps1, configured scripts, or unreferenced top-level scripts."""
     names = [f["file"] for f in files]
+    run_script = next((name for name in names if name.lower() == "run.ps1"), None)
+    if run_script is not None:
+        return [run_script], [name for name in names if name != run_script]
     if run_scripts:
         return list(run_scripts), [n for n in names if n not in run_scripts]
     referenced = set()

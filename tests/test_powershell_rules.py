@@ -61,6 +61,12 @@ def test_run_scripts_sets_the_entries_and_their_order():
     assert scan.helpers == ["b.ps1"]
 
 
+def test_run_ps1_is_the_only_entry_script():
+    scan = verdict(facts(script("run.ps1"), script("report.ps1"), script("helpers.ps1")))
+    assert scan.entries == ["run.ps1"]
+    assert scan.helpers == ["report.ps1", "helpers.ps1"]
+
+
 def test_a_windows_only_command_is_certain_on_a_cloud_and_absent_on_windows():
     seen = facts(script("r.ps1", commands=[cmd("Get-ADUser", 5), cmd("Get-WmiObject", 6)]))
     assert certain(verdict(seen)) == [("windows-command", "r.ps1", 5), ("windows-command", "r.ps1", 6)]

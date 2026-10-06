@@ -719,6 +719,8 @@ def run_scripts_problems(app: dict) -> list[str]:
     available = powershell_scripts(app["dir"])
     if not available:
         return ["run_scripts only applies to an app made of .ps1 files; remove the key"]
+    if any(script.lower() == "run.ps1" for script in available):
+        return ["run.ps1 and run_scripts cannot both be present; keep one"]
     not_a_list = "run_scripts must be a list of .ps1 file names in the order to run them"
     if not isinstance(scripts, list) or scripts == []:
         return [not_a_list]
