@@ -17,7 +17,8 @@ from pathlib import Path
 
 import rich_argparse
 
-from pdt import __version__, completion, config, console, deploy, deploy_common, scaffold
+from pdt import (__version__, completion, config, console, deploy, deploy_common, scaffold,
+                 storage_cli)
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -235,14 +236,41 @@ def cmd_destroy(args) -> int:
     return deploy.destroy(name, assume_yes=args.yes)
 
 
+def use_app_folder(args) -> None:
+    """Inside an app folder, read `pdt logs 3` as `pdt logs <that app> 3`.
+
+    argparse fills the app slot first, so a value meant for the next slot lands
+    in it. Move that value along when it names no app but fits the next slot.
+    """
+    value = args.app
+    if value is None or value in config.find_apps() or config.current_app() is None:
+        return
+    if args.command == "secrets" and value in deploy_common.SECRET_ACTIONS and args.name is None:
+        args.action, args.name = value, args.action
+    elif args.command == "logs" and value.isdigit() and args.number is None:
+        args.number = int(value)
+    elif args.command == "storage" and value in storage_cli.COMMANDS:
+        args.rest = [value, *args.rest]
+    else:
+        return
+    args.app = None
+
+
 def cmd_secrets(args) -> int:
+    use_app_folder(args)
+    action = args.action or "diff"
+    if action not in deploy_common.SECRET_ACTIONS:
+        console.error(f"no secrets action named {action!r}; "
+                      f"choose {', '.join(deploy_common.SECRET_ACTIONS)}")
+        return 1
     name = choose_app(args.app, "secrets")
     if name is None:
         return 1
-    return deploy.secrets(name, args.action, assume_yes=args.yes, name=args.name)
+    return deploy.secrets(name, action, assume_yes=args.yes, name=args.name)
 
 
 def cmd_storage(args) -> int:
+    use_app_folder(args)
     name = choose_app(args.app, "storage")
     if name is None:
         return 1
@@ -263,6 +291,7 @@ def cmd_runs(args) -> int:
 
 
 def cmd_logs(args) -> int:
+    use_app_folder(args)
     name = choose_app(args.app, "logs", quiet=args.json)
     if name is None:
         return 1
@@ -270,7 +299,8 @@ def cmd_logs(args) -> int:
                                    ("--head", args.head), ("--full", args.full),
                                    ("--json", args.json)) if on]
     lines = [] if args.lines is None else ["--lines", str(args.lines)]
-    return deploy.logs(name, [str(args.number), *window_options(args), *lines, *flags])
+    number = 1 if args.number is None else args.number
+    return deploy.logs(name, [str(number), *window_options(args), *lines, *flags])
 
 
 def cmd_health(args) -> int:
@@ -351,11 +381,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = add_parser("secrets", help="compare, send, or fetch a deployed app's .env values")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
-    p.add_argument("action", nargs="?", choices=deploy_common.SECRET_ACTIONS, default="diff",
-                   help="diff shows what save would change (the default); "
-                        "save sends your .env values to the deployed app; "
-                        "get copies the deployed values into a file; "
-                        "set NAME puts one value, read from stdin, into the deployed app")
+    action = p.add_argument("action", nargs="?",
+                            metavar="{" + ",".join(deploy_common.SECRET_ACTIONS) + "}",
+                            help="diff shows what save would change (the default); "
+                                 "save sends your .env values to the deployed app; "
+                                 "get copies the deployed values into a file; "
+                                 "set NAME puts one value, read from stdin, into the deployed app")
+    action.completer = completion.secret_actions
     p.add_argument("name", nargs="?", help="the env var that set changes")
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_secrets)
@@ -375,7 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = add_parser("logs", help="read the log of one of a deployed app's runs")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
-    p.add_argument("number", nargs="?", type=int, default=1,
+    p.add_argument("number", nargs="?", type=int,
                    help="which run, as `pdt runs` numbers them (default: 1, the newest)")
     p.add_argument("--since", help=SINCE_HELP)
     p.add_argument("--span", help=SPAN_HELP)

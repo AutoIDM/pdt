@@ -141,6 +141,38 @@ def test_json_output_inside_an_app_folder_has_no_extra_line(project, monkeypatch
     assert capsys.readouterr().out == ""
 
 
+@pytest.mark.parametrize("argv, sent", [
+    (["secrets", "save"], ("secrets", "daily-report", False, ["save"])),
+    (["secrets", "set", "API_KEY"], ("secrets", "daily-report", False, ["set", "API_KEY"])),
+    (["logs", "3"], ("logs", "daily-report", False, ["--", "3"])),
+    (["storage", "ls", "state/"], ("storage", "daily-report", False, ["ls", "state/"])),
+])
+def test_the_next_argument_moves_past_the_app_inside_an_app_folder(project, monkeypatch,
+                                                                    argv, sent):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.chdir(add_app(project, "daily-report", "schedule: daily\n"))
+    monkeypatch.setattr(config, "check_env", lambda env: [])
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda provider, *a: calls.append(a) or 0)
+    assert run_cli(monkeypatch, *argv) == 0
+    assert calls == [sent]
+
+
+def test_a_run_number_at_the_project_root_is_not_an_app(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a: pytest.fail("dispatched"))
+    assert run_cli(monkeypatch, "logs", "3") == 1
+    assert "no app named '3'" in capsys.readouterr().out
+
+
+def test_an_unknown_secrets_action_is_an_error(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a: pytest.fail("dispatched"))
+    assert run_cli(monkeypatch, "secrets", "hello-world", "sav") == 1
+    assert "no secrets action named 'sav'; choose diff, save, get, set" in (
+        capsys.readouterr().out)
+
+
 def test_every_app_command_goes_through_choose_app():
     parser = cli.build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
