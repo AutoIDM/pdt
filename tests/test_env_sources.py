@@ -1,11 +1,13 @@
 import base64
 import json
 import os
+import subprocess
+import sys
 
 import pytest
 
 from conftest import add_app
-from pdt import config, deploy, deploy_common
+from pdt import cli, config, deploy, deploy_common
 from pdt.utils import email_auth
 from pdt.utils.send_email import auth_env_file
 
@@ -78,6 +80,65 @@ def test_the_environment_beats_a_dot_env_file_that_sets_the_same_name(project, m
     monkeypatch.setenv("PDT_TOKEN", "from-environment")
     config.load_env(folder)
     assert os.environ["PDT_TOKEN"] == "from-environment"
+
+
+DEPLOY_YAML = "schedule: '0 6 * * *'\nenv:\n  required: [PDT_TOKEN]\n"
+
+
+@pytest.mark.parametrize("first_env, first_token", [
+    ("PDT_TOKEN=from-alerts\n", "from-alerts"),
+    (None, "from-root"),
+])
+def test_deploy_all_gives_each_app_its_own_dot_env(project, monkeypatch, first_env, first_token):
+    clear(monkeypatch)
+    (project / ".env").write_text("PDT_TOKEN=from-root\n")
+    first = add_app(project, "alerts", DEPLOY_YAML)
+    if first_env is not None:
+        (first / ".env").write_text(first_env)
+    vendor = add_app(project, "vendor_status_alerts", DEPLOY_YAML)
+    (vendor / ".env").write_text("PDT_TOKEN=from-vendor\n")
+    deployed = {}
+
+    def fake_dispatch(provider, command, app_name, assume_yes, extra=None):
+        deployed[app_name] = os.environ.get("PDT_TOKEN")
+        return 0
+
+    monkeypatch.setattr(deploy, "dispatch", fake_dispatch)
+    monkeypatch.setattr("sys.argv", ["pdt", "deploy", "--all", "--yes"])
+    assert cli.main() == 0
+    assert deployed == {"alerts": first_token, "vendor_status_alerts": "from-vendor"}
+
+
+RUN_REPORT = """\
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from pdt.config import load_env
+
+load_env(Path(__file__).resolve().parent)
+Path(sys.argv[1]).write_text(json.dumps({"token": os.environ.get("PDT_TOKEN")}))
+"""
+
+
+def test_pdt_run_from_the_project_root_reads_the_app_dot_env(project, monkeypatch, tmp_path):
+    clear(monkeypatch)
+    (project / ".env").write_text("PDT_TOKEN=from-root\n")
+    vendor = add_app(project, "vendor_status_alerts", run_body=RUN_REPORT)
+    (vendor / ".env").write_text("PDT_TOKEN=from-vendor\n")
+    report = tmp_path / "report.json"
+    real_run = subprocess.run
+
+    def run_without_uv(args, **kwargs):
+        assert args == ["uv", "run", "--script", "run.py"]
+        return real_run([sys.executable, "run.py", str(report)], **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", run_without_uv)
+    monkeypatch.setattr("sys.argv", ["pdt", "run", "vendor_status_alerts"])
+    assert cli.main() == 0
+    assert json.loads(report.read_text()) == {"token": "from-vendor"}
 
 
 def test_gather_secrets_is_the_same_from_a_file_and_from_the_environment(project, monkeypatch):
