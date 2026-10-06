@@ -136,8 +136,12 @@ def find_project(start: Path | None = None) -> Path:
 
 
 def powershell_scripts(app_dir: Path) -> list[str]:
-    """The .ps1 files of an app that has no run.py, in name order; [] for a Python app."""
-    if not app_dir.is_dir() or (app_dir / "run.py").is_file():
+    """The .ps1 files of a PowerShell app, in name order; [] for a Python app. A folder with a
+    run.py is a Python app, unless it also holds the requirements.psd1 that
+    `pdt new APP --from-scripts` writes next to it."""
+    if not app_dir.is_dir():
+        return []
+    if (app_dir / "run.py").is_file() and not (app_dir / "requirements.psd1").is_file():
         return []
     return sorted(path.name for path in app_dir.iterdir()
                   if path.is_file() and path.suffix.lower() == ".ps1")

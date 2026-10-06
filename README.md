@@ -298,6 +298,14 @@ def main() -> int:
 
 The pinned version matters. A deployed job keeps using the version in its header, so upgrading pdt on your machine does not change a job already running in the cloud.
 
+### PowerShell apps
+
+A folder of `.ps1` files with no `run.py` is a PowerShell app: pdt reads the scripts to find the modules to install, then runs them in order through pwsh. To change either step, run `pdt new <app> --from-scripts`. It writes `requirements.psd1`, which lists the modules with pinned versions, and `run.py`, which runs the scripts. Once they exist, pdt installs exactly the modules in `requirements.psd1` (`pdt validate` warns about a module the scripts need that it leaves out), and `pdt run` and deploy run your `run.py`.
+
+```
+pdt new my-report --from-scripts
+```
+
 # Utilities
 
 `pdt.utils` provides built-in support for common functionality:

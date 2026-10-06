@@ -35,10 +35,11 @@ the complete desired task definition with -Force, so rerunning it safely
 reconciles changes to the schedule or repository path.
 
 A PowerShell app (.ps1 files, no run.py) runs through run_powershell.py
-instead of run.py. Before the plan, deploy finds pwsh (`pdt.pwsh` installs the
-pinned version under %ProgramData%\\pdt\\pwsh when none is on the PATH),
-scans the scripts, and stops with the Windows feature to add when a module
-that comes with Windows (`powershell.WINDOWS_IN_BOX_MODULES`) is missing. The
+instead of run.py, unless `pdt new APP --from-scripts` wrote it one. Before
+the plan, deploy finds pwsh (`pdt.pwsh` installs the pinned version under
+%ProgramData%\\pdt\\pwsh when none is on the PATH), scans the scripts, and
+stops with the Windows feature to add when a module that comes with Windows
+(`powershell.WINDOWS_IN_BOX_MODULES`) is missing. The
 elevated script installs the other modules for all users, so SYSTEM sees them.
 """
 

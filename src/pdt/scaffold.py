@@ -7,9 +7,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pdt import __version__, console
+from pdt import __version__, console, powershell, pwsh
 from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
-                        powershell_scripts)
+                        merged_app, powershell_scripts)
 from pdt.utils.env_secret import private_file
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
@@ -79,8 +79,67 @@ This folder is a pdt project: a set of small scheduled jobs. Every folder holdin
 - Check work with `pdt validate`, try it with `pdt run <name>`, ship it with `pdt deploy <name>`.
 - Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all); add `--json` to any of them for machine-readable output.
 - Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
+- `pdt new <name> --from-scripts` writes `requirements.psd1` (the modules to install) and `run.py` (how the scripts run) into a PowerShell app's folder; once there, `requirements.psd1` replaces the modules pdt finds in the scripts, and `run.py` replaces how pdt runs them.
 - An app folder holding a `Dockerfile` is built from that file instead of the generated one when it deploys to a cloud provider. The build context is the app folder under its own name next to `pdt.yml`; a `.dockerignore` in the app folder, with patterns relative to it, keeps files out of the image.
 """
+
+RUN_PY_TEXT = '''\
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["pdt-cli[apps]==PDT_VERSION"]
+# ///
+"""`pdt new --from-scripts` wrote this file. It runs the .ps1 scripts in this
+folder the way pdt runs an app with no run.py: each entry script in order
+through pwsh, stopping at the first that fails, then it stores the files the
+scripts leave in PDT_OUTPUT_DIR. Edit it to change how they run.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+from pdt import config, powershell
+from pdt.pwsh import ensure_pwsh
+from pdt.run_powershell import pwsh_command
+from pdt.utils import storage
+from pdt.utils.log import log
+
+
+def main() -> int:
+    app_dir = Path(__file__).resolve().parent
+    app = config.merged_app(app_dir.name)
+    config.load_env(app_dir)
+    pwsh = ensure_pwsh()
+    entries = app["run_scripts"] or powershell.split_files(
+        powershell.extract(app_dir)["files"], None)[0]
+    code = 0
+    with tempfile.TemporaryDirectory(prefix="pdt-output-") as output:
+        env = {**os.environ, "PDT_OUTPUT_DIR": output}
+        for script in entries:
+            log("info", f"starting {script}")
+            code = subprocess.run(
+                [pwsh, "-NoProfile", "-NonInteractive", "-Command", pwsh_command(app_dir / script)],
+                cwd=app_dir, env=env, stdin=subprocess.DEVNULL).returncode
+            log("info", f"{script} ended", exit_code=code)
+            if code != 0:
+                break
+        files = [file for file in Path(output).rglob("*") if file.is_file()]
+        if app["storage"] and files:
+            store = storage.store()
+            folder = store.run_folder() + "output/"
+            store.push(Path(output), folder)
+            log("info", f"uploaded {len(files)} output file(s) to {store.url}{folder}")
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
 
 CLAUDE_TEXT = """\
 @AGENTS.md
@@ -315,6 +374,41 @@ def new_app(name: str, source: str | None) -> int:
     console.heading("Next steps:")
     if needs_secrets:
         console.bullet(f"open {name}/env.template and copy the names you need into .env")
+    console.command("pdt validate")
+    console.command(f"pdt run {name}")
+    return 0
+
+
+def from_scripts(name: str) -> int:
+    problem = app_name_problem(name)
+    if problem != "":
+        raise ConfigError(problem)
+    folder = find_project() / name
+    if not folder.is_dir():
+        raise ConfigError(f"there is no folder {name}/ in the project {folder.parent}.")
+    for file in ("run.py", "requirements.psd1"):
+        if (folder / file).exists():
+            raise ConfigError(f"{name}/{file} already exists. Delete it first to write a new one.")
+    if not powershell_scripts(folder):
+        raise ConfigError(f"{name}/ holds no .ps1 file, so there is nothing to write files for.")
+    app = merged_app(name)
+    try:
+        modules = powershell.scan(app, app["platform"].get("provider", "")).modules
+        latest = powershell.latest_versions([m.name for m in modules if m.version is None])
+    except (pwsh.PwshError, powershell.PowerShellError) as e:
+        raise ConfigError(str(e))
+    lines = [f"# pdt installs these modules before the scripts run. "
+             f"`pdt new {name} --from-scripts` wrote this file.", "@{"]
+    for m in modules:
+        version = m.version or latest[m.name]
+        lines.append(f"    {powershell.quoted(m.name)} = {powershell.quoted(version)}")
+    (folder / "requirements.psd1").write_text("\n".join(lines + ["}", ""]))
+    (folder / "run.py").write_text(RUN_PY_TEXT.replace("PDT_VERSION", __version__))
+    console.done(f"Wrote requirements.psd1 and run.py for the scripts in {name}/.")
+    console.command(f"{name}/requirements.psd1", "the modules pdt installs before the scripts run")
+    console.command(f"{name}/run.py", "how the scripts run")
+    console.say()
+    console.heading("Next steps:")
     console.command("pdt validate")
     console.command(f"pdt run {name}")
     return 0

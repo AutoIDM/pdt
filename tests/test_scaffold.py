@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from pdt import scaffold
-from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_apps, validate_app
+from pdt import __version__, powershell, scaffold
+from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_apps, powershell_scripts, validate_app
 
 POSIX_SYSTEM_FOLDERS = ["/", "/usr", "/usr/local/bin", "/etc"]
 WINDOWS_SYSTEM_FOLDERS = ["C:\\", "C:\\Windows", "C:\\Windows\\System32", "C:\\Program Files"]
@@ -170,3 +170,72 @@ def test_new_app_without_from_names_a_real_example(project, capsys):
     listed = [example.name for example in scaffold.examples()]
     assert any(name in str(caught.value) for name in listed)
     assert listed[0] in capsys.readouterr().out
+
+
+@pytest.fixture
+def scripts_app(project, monkeypatch):
+    folder = project / "ad-report"
+    folder.mkdir()
+    (folder / "report.ps1").write_text("Write-Output hi\n")
+    scans = []
+
+    def scan(app, provider):
+        scans.append((app["name"], provider))
+        return powershell.ScriptScan(["report.ps1"], [], [
+            powershell.ModuleNeed("ImportExcel", "7.8.10", "#Requires in report.ps1"),
+            powershell.ModuleNeed("Microsoft.Graph.Users", None, "command Get-MgUser"),
+            powershell.ModuleNeed("not.on.the.gallery", None, "using module in report.ps1")], [])
+
+    monkeypatch.setattr(powershell, "scan", scan)
+    monkeypatch.setattr(powershell, "latest_versions", lambda names: {
+        "Microsoft.Graph.Users": "2.25.0", "not.on.the.gallery": "latest"})
+    return folder, scans
+
+
+def test_from_scripts_writes_requirements_psd1_and_run_py(scripts_app, capsys):
+    folder, scans = scripts_app
+    assert scaffold.from_scripts("ad-report") == 0
+    assert scans == [("ad-report", "azure")]
+    assert (folder / "requirements.psd1").read_text() == (
+        "# pdt installs these modules before the scripts run. "
+        "`pdt new ad-report --from-scripts` wrote this file.\n"
+        "@{\n"
+        "    'ImportExcel' = '7.8.10'\n"
+        "    'Microsoft.Graph.Users' = '2.25.0'\n"
+        "    'not.on.the.gallery' = 'latest'\n"
+        "}\n")
+    run_py = (folder / "run.py").read_text()
+    assert f'"pdt-cli[apps]=={__version__}"' in run_py
+    assert "PDT_VERSION" not in run_py
+    assert find_apps() == ["ad-report"]
+    out = capsys.readouterr().out
+    assert "ad-report/requirements.psd1" in out and "pdt run ad-report" in out
+
+
+def test_from_scripts_keeps_the_ps1_files_a_powershell_app(scripts_app):
+    folder, _scans = scripts_app
+    scaffold.from_scripts("ad-report")
+    assert powershell_scripts(folder) == ["report.ps1"]
+
+
+@pytest.mark.parametrize("existing", ["run.py", "requirements.psd1"])
+def test_from_scripts_refuses_to_overwrite(scripts_app, existing):
+    folder, scans = scripts_app
+    (folder / existing).write_text("")
+    with pytest.raises(ConfigError, match=f"ad-report/{existing} already exists. Delete it first"):
+        scaffold.from_scripts("ad-report")
+    assert scans == []
+
+
+def test_from_scripts_needs_an_existing_folder_in_the_project(scripts_app):
+    with pytest.raises(ConfigError, match="there is no folder no-such-app/"):
+        scaffold.from_scripts("no-such-app")
+    with pytest.raises(ConfigError, match="not an app name"):
+        scaffold.from_scripts("../ad-report")
+
+
+def test_from_scripts_needs_a_ps1_file(scripts_app, project):
+    (project / "notes").mkdir()
+    (project / "notes" / "readme.txt").write_text("")
+    with pytest.raises(ConfigError, match="notes/ holds no .ps1 file"):
+        scaffold.from_scripts("notes")

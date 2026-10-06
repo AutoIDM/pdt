@@ -205,6 +205,27 @@ def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
     assert kwargs["env"]["PDT_PROJECT"] == str(project)
 
 
+def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
+    folder = project / "ps-report"
+    folder.mkdir()
+    for name in ("report.ps1", "requirements.psd1", "run.py"):
+        (folder / name).write_text("")
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run", lambda command, **kwargs: calls.append(
+        (command, kwargs)) or subprocess.CompletedProcess(command, 0))
+    assert run_cli(monkeypatch, "run", "ps-report") == 0
+    assert calls == [(["uv", "run", "--script", "run.py"], {"cwd": folder})]
+
+
+def test_new_takes_from_scripts_but_not_together_with_from(monkeypatch, capsys):
+    parser = cli.build_parser()
+    args = parser.parse_args(["new", "ad-report", "--from-scripts"])
+    assert args.from_scripts and args.source is None
+    with pytest.raises(SystemExit):
+        parser.parse_args(["new", "ad-report", "--from-scripts", "--from", "hello-world"])
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
 def test_storage_with_an_unknown_app_lists_the_apps(project, monkeypatch, capsys):
     add_app(project, "hello-world", "schedule: daily\n")
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))

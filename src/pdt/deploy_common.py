@@ -17,7 +17,8 @@ made of .ps1 files has no run.py; POWERSHELL_DOCKERFILE installs
 pdt-cli[apps] at this pdt's version, then pwsh through that pdt's own
 `pdt.pwsh` (the pinned, checksum-verified archive), then the PowerShell
 modules its scripts need (each one exercised, so a broken module fails the
-build), and runs `pdt.run_powershell`.
+build), and runs `pdt.run_powershell`, or the app's own run.py when
+`pdt new APP --from-scripts` wrote one.
 PDT_PROJECT names the project directory, so no job depends on its cwd.
 
 BUILD_EXCLUDES leaves secret shapes (env files, keys, certificates, credentials files, ssh and package-manager logins) and local state out of the context, and one note names what it left out. A symbolic link stays a link when its target is inside the app directory, and the build stops when one points outside, so no file from elsewhere on the machine reaches the image.
@@ -76,7 +77,7 @@ RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={versio
 RUN ln -s "$(/opt/pdt/bin/python -m pdt.pwsh)" /usr/local/bin/pwsh
 {modules}COPY . /workspace
 WORKDIR /workspace/{app}
-ENTRYPOINT ["sh", "-c", "/opt/pdt/bin/python -m pdt.run_powershell .; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
+{sync}ENTRYPOINT ["sh", "-c", "{start}; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
 """
 # Secret shapes and local state that never belong in an image.
 BUILD_EXCLUDES = (
@@ -109,8 +110,12 @@ def powershell_dockerfile(app: dict) -> str:
     modules = powershell.scan(app, app["platform"]["provider"]).modules
     # Exec form, because the install command holds $ and quotes that sh would expand.
     command = json.dumps(["pwsh", "-NoProfile", "-Command", powershell.install_command(modules)])
+    sync, start = "", "/opt/pdt/bin/python -m pdt.run_powershell ."
+    if (Path(app["dir"]) / "run.py").is_file():
+        sync, start = "RUN uv sync --script run.py\n", "uv run --script run.py"
     return POWERSHELL_DOCKERFILE.format(
-        app=app["name"], version=__version__, modules=f"RUN {command}\n" if modules else "")
+        app=app["name"], version=__version__, modules=f"RUN {command}\n" if modules else "",
+        sync=sync, start=start)
 
 
 def write_dockerfile(stage: Path, app: dict) -> None:

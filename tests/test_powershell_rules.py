@@ -142,8 +142,8 @@ def test_a_module_used_without_its_login_is_a_warning():
         "so the job has no session. Add Connect-ExchangeOnline with an app-only parameter."]
 
 
-def test_modules_come_from_requires_import_module_and_requirements_psd1():
-    scan = verdict(facts(
+def scripts_asking_for_modules():
+    return (
         script("a.ps1", requires={"version": "7.0", "editions": [], "modules": [
             {"name": "ImportExcel", "requiredVersion": "7.8.10", "version": None, "maximumVersion": None},
             {"name": "Pester", "requiredVersion": None, "version": "5.0", "maximumVersion": "5.9"},
@@ -153,21 +153,62 @@ def test_modules_come_from_requires_import_module_and_requirements_psd1():
              "maximumVersion": None, "line": 4},
             {"name": "./lib.psm1", "requiredVersion": None, "minimumVersion": None,
              "maximumVersion": None, "line": 5}],
-            usingModules=["PnP.PowerShell"]),
-        requirements={"Az.Accounts": "4.*", "ExchangeOnlineManagement": "latest",
-                      "Microsoft.Graph.Groups": {"Version": "2.25.0"},
-                      "MicrosoftTeams": {"ModuleVersion": "6.0"}}))
+            usingModules=["PnP.PowerShell"]))
+
+
+def test_modules_come_from_requires_import_module_and_using_module():
+    scan = verdict(facts(*scripts_asking_for_modules()))
     assert scan.modules == [
-        ModuleNeed("Az.Accounts", "[4,5)", "requirements.psd1"),
-        ModuleNeed("ExchangeOnlineManagement", None, "requirements.psd1"),
         ModuleNeed("ImportExcel", "7.8.10", "#Requires in a.ps1"),
-        ModuleNeed("Microsoft.Graph.Groups", "2.25.0", "requirements.psd1"),
         ModuleNeed("Microsoft.Graph.Users", "2.25.0", "Import-Module in b.ps1"),
-        ModuleNeed("MicrosoftTeams", "[6.0,)", "requirements.psd1"),
         ModuleNeed("Pester", "[5.0,5.9]", "#Requires in a.ps1"),
         ModuleNeed("PnP.PowerShell", None, "using module in b.ps1"),
         ModuleNeed("PSScriptAnalyzer", "[1.2,)", "#Requires in a.ps1")]
     assert scan.findings == []
+
+
+def test_modules_come_from_requires_import_module_and_requirements_psd1():
+    scan = verdict(facts(
+        *scripts_asking_for_modules(),
+        requirements={"Az.Accounts": "4.*", "ExchangeOnlineManagement": "latest",
+                      "ImportExcel": "7.8.9", "Microsoft.Graph.Users": {"Version": "2.25.0"},
+                      "MicrosoftTeams": {"ModuleVersion": "6.0"}, "Pester": "5.5.0",
+                      "PnP.PowerShell": "2.*", "PSScriptAnalyzer": "latest"}))
+    assert scan.modules == [
+        ModuleNeed("Az.Accounts", "[4,5)", "requirements.psd1"),
+        ModuleNeed("ExchangeOnlineManagement", None, "requirements.psd1"),
+        ModuleNeed("ImportExcel", "7.8.9", "requirements.psd1"),
+        ModuleNeed("Microsoft.Graph.Users", "2.25.0", "requirements.psd1"),
+        ModuleNeed("MicrosoftTeams", "[6.0,)", "requirements.psd1"),
+        ModuleNeed("Pester", "5.5.0", "requirements.psd1"),
+        ModuleNeed("PnP.PowerShell", "[2,3)", "requirements.psd1"),
+        ModuleNeed("PSScriptAnalyzer", None, "requirements.psd1")]
+    assert scan.findings == []
+
+
+def test_a_module_the_scripts_need_and_requirements_psd1_leaves_out_is_a_warning():
+    scan = verdict(facts(
+        *scripts_asking_for_modules(),
+        requirements={"importexcel": "7.8.9", "Microsoft.Graph.Users": "2.25.0", "Pester": "5.5.0",
+                      "PnP.PowerShell": "latest"}))
+    assert [m.name for m in scan.modules] == [
+        "importexcel", "Microsoft.Graph.Users", "Pester", "PnP.PowerShell"]
+    assert [(f.kind, f.file, f.line, f.reason, f.certain) for f in scan.findings] == [
+        ("requirements", "requirements.psd1", 0,
+         "the scripts need the module PSScriptAnalyzer (#Requires in a.ps1), and requirements.psd1 "
+         "does not list it, so pdt will not install it. Add it to requirements.psd1.", False)]
+
+
+def test_latest_versions_pins_what_the_gallery_answers_and_leaves_the_rest_latest():
+    asked = []
+
+    def lookup(names):
+        asked.append(names)
+        return {"importexcel": "7.8.10"}
+
+    assert powershell.latest_versions(["ImportExcel", "NotOnTheGallery"], lookup) == {
+        "ImportExcel": "7.8.10", "NotOnTheGallery": "latest"}
+    assert asked == [["ImportExcel", "NotOnTheGallery"]]
 
 
 def test_two_versions_of_one_module_keep_the_first_and_warn():

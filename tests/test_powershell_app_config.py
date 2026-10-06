@@ -26,6 +26,14 @@ def test_a_folder_with_run_py_is_a_python_app_even_with_ps1_files(project):
     assert not config.uses_email(config.merged_app("ad-report"))
 
 
+def test_requirements_psd1_next_to_run_py_keeps_a_powershell_app(project):
+    folder = ps_app(project)
+    (folder / "run.py").write_text("")
+    (folder / "requirements.psd1").write_text("@{}\n")
+    assert config.powershell_scripts(folder) == ["report.ps1"]
+    assert config.app_folders() == ["ad-report"]
+
+
 def test_an_empty_folder_is_not_an_app(project):
     (project / "notes").mkdir()
     assert config.app_folders() == []

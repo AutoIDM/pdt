@@ -123,7 +123,9 @@ def test_a_powershell_app_gets_the_powershell_dockerfile_with_its_modules(powers
     text = (stage / "Dockerfile").read_text()
     command = powershell.install_command(app["modules"])
     install = f'RUN {json.dumps(["pwsh", "-NoProfile", "-Command", command])}\n'
-    assert text == POWERSHELL_DOCKERFILE.format(app="my-report", version=__version__, modules=install)
+    assert text == POWERSHELL_DOCKERFILE.format(
+        app="my-report", version=__version__, modules=install, sync="",
+        start="/opt/pdt/bin/python -m pdt.run_powershell .")
     assert scans == ["aws"]
     pdt_line = f'RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={__version__}"\n'
     pwsh_line = 'RUN ln -s "$(/opt/pdt/bin/python -m pdt.pwsh)" /usr/local/bin/pwsh\n'
@@ -140,13 +142,31 @@ def test_a_powershell_app_without_modules_has_no_empty_install_step(powershell_a
     assert "\nCOPY . /workspace\n" in text
 
 
+def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modules(powershell_app):
+    app, stage, _scans = powershell_app
+    app["modules"] = [powershell.ModuleNeed("ImportExcel", "7.8.6", "requirements.psd1")]
+    (app["dir"] / "run.py").write_text("")
+    (app["dir"] / "requirements.psd1").write_text("@{ 'ImportExcel' = '7.8.6' }\n")
+    write_dockerfile(stage, app)
+    text = (stage / "Dockerfile").read_text()
+    tail = ("WORKDIR /workspace/my-report\nRUN uv sync --script run.py\n"
+            'ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; '
+            'echo \\"pdt: exit $code\\"; exit $code"]\n')
+    assert text.endswith(tail)
+    assert text.index("Install-PSResource") < text.index("RUN uv sync")
+    assert "pdt.run_powershell" not in text
+
+
 @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
-def test_the_powershell_entrypoint_ends_the_log_with_the_exit_code(tmp_path):
+def test_the_powershell_entrypoint_ends_the_log_with_the_exit_code(tmp_path, powershell_app):
+    app, stage, _scans = powershell_app
+    write_dockerfile(stage, app)
     python = tmp_path / "opt" / "pdt" / "bin" / "python"
     python.parent.mkdir(parents=True)
     python.write_text("#!/bin/sh\necho \"args: $*\"\nexit 4\n")
     python.chmod(0o755)
-    line = next(line for line in POWERSHELL_DOCKERFILE.splitlines() if line.startswith("ENTRYPOINT "))
+    text = (stage / "Dockerfile").read_text()
+    line = next(line for line in text.splitlines() if line.startswith("ENTRYPOINT "))
     command = json.loads(line.removeprefix("ENTRYPOINT "))
     command[-1] = command[-1].replace("/opt/pdt/bin/python", str(python))
     proc = subprocess.run(command, capture_output=True, text=True,

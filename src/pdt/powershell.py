@@ -4,7 +4,8 @@
 A `Finding` with `certain=True` fails `pdt validate`, because the job would
 fail for sure; the rest are warnings. A `ModuleNeed` is a module the job's
 image or PC must install before the scripts run. The tables below decide
-both; `judge` only walks the facts.
+both; `judge` only walks the facts. A requirements.psd1 in the app folder
+replaces the modules the scripts ask for.
 
 Modules named only by a command (Get-MgUser, Get-AzVM) come from the
 PowerShell Gallery through `find_in_gallery`, which `judge` calls once with
@@ -313,6 +314,7 @@ def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
     entries, helpers = split_files(files, app.get("run_scripts"))
     defined = {name.lower() for f in files for name in f["definedFunctions"]}
     all_commands = {c["name"].lower() for f in files for c in f["commands"]}
+    requirements = facts.get("requirements")
     findings: list[Finding] = []
     needs: dict[str, ModuleNeed] = {}
     host: dict[str, str] = {}
@@ -331,7 +333,7 @@ def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
         held = needs.get(name.lower())
         if held is None or (held.version is None and version is not None):
             needs[name.lower()] = ModuleNeed(name, version, source)
-        elif version is not None and held.version != version:
+        elif version is not None and held.version != version and requirements is None:
             findings.append(Finding(
                 "module-version", file, 0,
                 f"two versions are asked for the module {name}: {held.version} ({held.source}) and "
@@ -377,10 +379,7 @@ def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
         if not on_windows:
             findings.extend(windows_findings(f))
 
-    for name, spec in (facts.get("requirements") or {}).items():
-        need(name, requirements_version(spec), "requirements.psd1", "requirements.psd1")
-
-    declared = {n.lower() for n in needs}
+    declared = {n.lower() for n in needs} | {n.lower() for n in requirements or {}}
     known = facts["known"]
     first_uses: dict[str, tuple[str, str, int]] = {}
     for f in files:
@@ -407,6 +406,18 @@ def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
                 "no-login", "", 0,
                 f"the scripts use {', '.join(users)} commands but never call {login}, so the "
                 f"job has no session. Add {login} with an app-only parameter.", False))
+
+    if requirements is not None:
+        scanned, needs = needs, {}
+        for name, spec in requirements.items():
+            need(name, requirements_version(spec), "requirements.psd1", "requirements.psd1")
+        for key, m in scanned.items():
+            if key not in needs:
+                findings.append(Finding(
+                    "requirements", "requirements.psd1", 0,
+                    f"the scripts need the module {m.name} ({m.source}), and requirements.psd1 "
+                    "does not list it, so pdt will not install it. Add it to requirements.psd1.",
+                    False))
 
     modules = sorted(needs.values(), key=lambda m: m.name.lower())
     return ScriptScan(entries, helpers, modules, list(dict.fromkeys(findings)),
@@ -667,6 +678,27 @@ def find_in_gallery(commands: list[str]) -> dict[str, list[dict]]:
             with locked(GALLERY_CACHE):
                 write_text_atomically(GALLERY_CACHE, json.dumps(cache, indent=1))
     return {command: cache.get(command, []) for command in commands}
+
+
+def latest_versions(names: list[str], lookup=None) -> dict[str, str]:
+    """The newest version of each module on the PowerShell Gallery, or `latest` for a name
+    the gallery does not answer. `lookup` replaces `gallery_versions`."""
+    found = lower((lookup or gallery_versions)(names))
+    return {name: found.get(name.lower(), "latest") for name in names}
+
+
+def gallery_versions(names: list[str]) -> dict[str, str]:
+    """{name: newest version} for the modules the gallery holds, from one pwsh."""
+    if not names:
+        return {}
+    script = (f"ConvertTo-Json -InputObject @(Find-PSResource -Name {', '.join(map(quoted, names))} "
+              "-Repository PSGallery -ErrorAction SilentlyContinue | "
+              "Select-Object Name, @{Name = 'Version'; Expression = { \"$($_.Version)\" }})")
+    proc = subprocess.run([pwsh.ensure_pwsh(), "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True)
+    if proc.returncode != 0 or proc.stdout.strip() == "":
+        return {}
+    return {hit["Name"]: hit["Version"] for hit in json.loads(proc.stdout)}
 
 
 def quoted(value: str) -> str:
