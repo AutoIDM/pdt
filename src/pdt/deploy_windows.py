@@ -561,12 +561,11 @@ def main() -> int:
                      "so there is nothing to compare, save, get, or set.")
         return 0
     if args.command in ("storage", "runs", "logs") and sys.platform != "win32":
-        command = subprocess.list2cmdline(["pdt", args.command, args.app, *args.rest])
         console.note(
             f"the windows provider stores {args.app}'s files in "
             f"%ProgramData%\\pdt\\{args.app}\\storage and run logs in "
             f"%ProgramData%\\pdt\\{args.app}\\logs on the Windows PC. "
-            f"Run `{command}` on that PC instead.")
+            "Run pdt on that PC to read them.")
         return 1
     try:
         app = config.merged_app(args.app)

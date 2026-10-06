@@ -44,12 +44,11 @@ def test_machine_data_commands_point_to_the_windows_pc_off_windows(
 
     assert deploy_windows.main() == 1
 
-    shown = " ".join(["pdt", command, "my-report", *rest])
     assert capsys.readouterr().out == (
         "note: the windows provider stores my-report's files in "
         "%ProgramData%\\pdt\\my-report\\storage and run logs in "
-        f"%ProgramData%\\pdt\\my-report\\logs on the Windows PC. Run `{shown}` on that PC "
-        "instead.\n")
+        "%ProgramData%\\pdt\\my-report\\logs on the Windows PC. Run pdt on that PC "
+        "to read them.\n")
 
 
 def test_app_folders_live_under_the_machine_data_home(project):
