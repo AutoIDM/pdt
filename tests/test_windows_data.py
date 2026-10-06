@@ -31,11 +31,15 @@ def windows_app(project, config_text="schedule: hourly\ntimezone: local\n"):
 
 
 @pytest.mark.parametrize(("command", "rest"), [
+    ("deploy", []),
+    ("destroy", []),
+    ("login", []),
+    ("secrets", ["diff"]),
     ("storage", ["ls", "state/"]),
-    ("runs", []),
-    ("logs", []),
+    ("runs", ["--", "--json"]),
+    ("logs", ["--", "1"]),
 ])
-def test_machine_data_commands_point_to_the_windows_pc_off_windows(
+def test_local_windows_commands_stop_off_windows(
         project, monkeypatch, capsys, command, rest):
     windows_app(project)
     monkeypatch.setattr(deploy_windows.sys, "platform", "darwin")
@@ -45,10 +49,20 @@ def test_machine_data_commands_point_to_the_windows_pc_off_windows(
     assert deploy_windows.main() == 1
 
     assert capsys.readouterr().out == (
-        "note: the windows provider stores my-report's files in "
-        "%ProgramData%\\pdt\\my-report\\storage and run logs in "
-        "%ProgramData%\\pdt\\my-report\\logs on the Windows PC. Run pdt on that PC "
-        "to read them.\n")
+        "error: the windows provider targets this computer, but the current operating "
+        "system is not Windows. Run this command on the Windows PC.\n")
+
+
+def test_remote_windows_target_can_bypass_the_local_platform_check(monkeypatch):
+    app = {"dir": Path("remote-app"), "platform": {"host": "jobs-01"}}
+    monkeypatch.setattr(deploy_windows.config, "merged_app", lambda name: app)
+    monkeypatch.setattr(deploy_windows.config, "load_env", lambda path: None)
+    monkeypatch.setattr(deploy_windows.sys, "platform", "darwin")
+    monkeypatch.setattr(deploy_windows.sys, "argv",
+                        ["deploy_windows.py", "deploy", "my-report"])
+    monkeypatch.setattr(deploy_windows, "deploy", lambda loaded, assume_yes: 23)
+
+    assert deploy_windows.main() == 23
 
 
 def test_app_folders_live_under_the_machine_data_home(project):
