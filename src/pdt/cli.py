@@ -17,8 +17,8 @@ from pathlib import Path
 
 import rich_argparse
 
-from pdt import (__version__, completion, config, console, deploy, deploy_common, scaffold,
-                 storage_cli)
+from pdt import (__version__, completion, config, console, deploy, deploy_common, powershell,
+                 pwsh, scaffold, storage_cli)
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -142,6 +142,8 @@ def cmd_validate(_args) -> int:
             if config.uses_email(app):
                 for problem in email_problems(app["config"]):
                     problems.append(f"{name}: {problem}")
+            if config.powershell_scripts(app["dir"]):
+                problems.extend(powershell_problems(name, app))
     finally:
         os.environ.clear()
         os.environ.update(original_env)
@@ -152,6 +154,21 @@ def cmd_validate(_args) -> int:
         return 1
     console.done("Configuration is valid.")
     return 0
+
+
+def powershell_problems(name: str, app: dict) -> list[str]:
+    """Scan a PowerShell app, print what it runs and needs, and return the certain findings."""
+    try:
+        scan = powershell.scan(app, app["platform"].get("provider", ""))
+    except (pwsh.PwshError, powershell.PowerShellError) as e:
+        return [f"{name}: {e}"]
+    console.name(name)
+    for line in powershell.summary_lines(scan):
+        console.detail(line)
+    problems, warnings = powershell.report(scan)
+    for warning in warnings:
+        console.warn(f"{name}: {warning}")
+    return [f"{name}: {problem}" for problem in problems]
 
 
 def cmd_run(args) -> int:
@@ -167,7 +184,13 @@ def cmd_run(args) -> int:
                 console.error(f"{name}: {problem}")
             return 1
         prepare_email_auth(auth_env_file(app["dir"]))
-    proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
+    if config.powershell_scripts(app["dir"]):
+        wrapper = Path(__file__).with_name("run_powershell.py")
+        proc = subprocess.run(
+            ["uv", "run", "--project", str(Path.cwd()), "--script", str(wrapper), str(app["dir"])],
+            cwd=app["dir"], env=dict(os.environ, PDT_PROJECT=str(config.find_project())))
+    else:
+        proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
     if (proc.returncode == 0 and name == scaffold.STARTER
             and not config.is_deployed(name)):
         console.say()

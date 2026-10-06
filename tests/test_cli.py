@@ -1,4 +1,5 @@
 import argparse
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -187,6 +188,21 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append((a, k)) or 0)
     assert run_cli(monkeypatch, "storage", "hello-world", "ls", "state/") == 0
     assert calls == [(("azure", "storage", "hello-world", False, ["ls", "state/"]), {})]
+
+
+def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
+    folder = project / "ps-report"
+    folder.mkdir()
+    (folder / "report.ps1").write_text("")
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "run", lambda command, **kwargs: calls.append(
+        (command, kwargs)) or subprocess.CompletedProcess(command, 0))
+    assert run_cli(monkeypatch, "run", "ps-report") == 0
+    (command, kwargs), = calls
+    assert command == ["uv", "run", "--project", str(project), "--script",
+                       str(Path(cli.__file__).with_name("run_powershell.py")), str(folder)]
+    assert kwargs["cwd"] == folder
+    assert kwargs["env"]["PDT_PROJECT"] == str(project)
 
 
 def test_storage_with_an_unknown_app_lists_the_apps(project, monkeypatch, capsys):
