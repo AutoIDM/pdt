@@ -174,13 +174,13 @@ def cell_runs(project, gran, start, col, row, app_name=None):
     if app_name:
         runs = runs.filter(app__name=app_name)
 
-    stamp = '%H:%M' if gran in ('hour', 'day') else '%b %-d %H:%M'
+    stamp = '{0:%H:%M}' if gran in ('hour', 'day') else '{0:%b} {0.day} {0:%H:%M}'
     return [
         {
             'pk': pk,
             'name': name,
             'status': status,
-            'time': started_at.astimezone(DISPLAY_TZ).strftime(stamp),
+            'time': stamp.format(started_at.astimezone(DISPLAY_TZ)),
         }
         for pk, name, status, started_at in runs.order_by('started').values_list(
             'pk', 'app__name', 'status', 'started'
@@ -518,11 +518,11 @@ def _col_marks(gran, start, spec):
         if gran == 'hour':
             if moment.hour % 6:
                 continue
-            label = moment.strftime('%-I%p').lower() if moment.hour else moment.strftime('%b %-d')
+            label = f'{moment.hour % 12 or 12}{moment:%p}'.lower() if moment.hour else f'{moment:%b} {moment.day}'
         elif gran == 'day':
             if moment.weekday():
                 continue
-            label = moment.strftime('%b %-d') if moment.day <= 7 else moment.strftime('%-d')
+            label = f'{moment:%b} {moment.day}' if moment.day <= 7 else str(moment.day)
         elif gran == 'week':
             monday = moment.date()
             sunday = monday + timedelta(days=6)
@@ -574,7 +574,7 @@ def _today_x(gran, now, start, spec):
 
 def _range_label(gran, start, end):
     if gran == 'hour':
-        return '%s – %s' % (start.strftime('%b %-d, %-I%p'), end.strftime('%b %-d, %-I%p'))
+        return '%s – %s' % tuple(f'{t:%b} {t.day}, {t.hour % 12 or 12}{t:%p}' for t in (start, end))
     if gran == 'month':
         return '%s – %s' % (start.strftime('%b %Y'), end.strftime('%b %Y'))
-    return '%s – %s' % (start.strftime('%b %-d, %Y'), end.strftime('%b %-d, %Y'))
+    return '%s – %s' % tuple(f'{t:%b} {t.day}, {t:%Y}' for t in (start, end))
