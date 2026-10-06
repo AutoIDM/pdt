@@ -19,7 +19,8 @@ runner, and the container image start it there; it also runs as
 
 It loads the app's config and env (PDT_ENV_JSON secrets become env vars),
 exports an empty folder as PDT_OUTPUT_DIR, then runs each entry script in
-order through pwsh, stopping at the first that fails. The entry scripts are
+order through pwsh. It stops at the first failure unless `continue_on_error`
+is true. The entry scripts are
 `run_scripts` from config when set, otherwise what `pdt.powershell` finds:
 every .ps1 in name order except those another file runs or imports. After
 the scripts, also after a failure, every file left in PDT_OUTPUT_DIR goes
@@ -74,11 +75,15 @@ def main(argv: list[str]) -> int:
         env = {**os.environ, "PDT_OUTPUT_DIR": output}
         for script in entries:
             log("info", f"starting {script}")
-            code = subprocess.run(
+            result = subprocess.run(
                 [pwsh, "-NoProfile", "-NonInteractive", "-Command", pwsh_command(app_dir / script)],
                 cwd=app_dir, env=env, stdin=subprocess.DEVNULL).returncode
-            log("info", f"{script} ended", exit_code=code)
-            if code != 0:
+            log("info", f"{script} ended", exit_code=result)
+            if result != 0:
+                log("error", f"{script} failed", exit_code=result)
+                if code == 0:
+                    code = result
+            if result != 0 and not app["continue_on_error"]:
                 break
         files = [file for file in Path(output).rglob("*") if file.is_file()]
         if app["storage"] and files:

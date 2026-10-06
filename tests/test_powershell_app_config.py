@@ -67,6 +67,14 @@ def test_run_scripts_must_be_a_list(project):
             "ad-report/config.yml: run_scripts must be a list of .ps1 file names in the order to run them"]
 
 
+def test_continue_on_error_must_be_a_bool(project):
+    ps_app(project, config_text="schedule: daily\ncontinue_on_error: yes please\n")
+    assert config.validate_app("ad-report") == [
+        "ad-report/config.yml: continue_on_error must be true or false"]
+    (project / "ad-report" / "config.yml").write_text("schedule: daily\ncontinue_on_error: true\n")
+    assert config.merged_app("ad-report")["continue_on_error"] is True
+
+
 def test_ps1_files_match_in_any_case(project):
     ps_app(project, scripts=("Report.PS1",))
     assert config.powershell_scripts(project / "ad-report") == ["Report.PS1"]

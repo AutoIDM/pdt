@@ -84,6 +84,24 @@ def test_the_first_failure_stops_the_run_and_its_output_is_still_stored(
     assert sorted(path.name for path in (run / "output").iterdir()) == ["_done", "second.csv", "third.csv"]
 
 
+def test_continue_on_error_runs_every_script_and_returns_the_first_failure(
+        app_dir, wrapper, monkeypatch, capsys):
+    for name in ("first.ps1", "second.ps1", "third.ps1"):
+        (app_dir / name).write_text("")
+    (app_dir / "config.yml").write_text(
+        "schedule: daily\ncontinue_on_error: true\n")
+    calls = []
+    monkeypatch.setattr(wrapper.subprocess, "run",
+                        fake_pwsh(calls, {"first.ps1": 3, "second.ps1": 4, "third.ps1": 0}))
+
+    assert wrapper.main([str(app_dir)]) == 3
+
+    assert len(calls) == 3
+    out = capsys.readouterr().out
+    assert "first.ps1 failed  exit_code=3" in out
+    assert "second.ps1 failed  exit_code=4" in out
+
+
 def test_storage_false_keeps_nothing(app_dir, wrapper, monkeypatch):
     (app_dir / "a.ps1").write_text("")
     (app_dir / "config.yml").write_text("schedule: daily\nstorage: false\n")

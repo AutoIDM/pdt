@@ -45,7 +45,7 @@ SCHEDULE_SHORTHAND = {
 }
 ROOT_KEYS = {"platform", "apps"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
-            "run_scripts"}
+            "run_scripts", "continue_on_error"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
@@ -66,6 +66,7 @@ KEY_HOME = {
     "storage": APP_LEVEL,
     "enabled": APP_LEVEL,
     "run_scripts": APP_LEVEL,
+    "continue_on_error": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -255,6 +256,7 @@ def merged_app(name: str) -> dict:
         "storage": own.get("storage", entry.get("storage", True)),
         "enabled": own.get("enabled", entry.get("enabled", True)),
         "run_scripts": own.get("run_scripts", entry.get("run_scripts")),
+        "continue_on_error": own.get("continue_on_error", entry.get("continue_on_error", False)),
     }
 
 
@@ -704,6 +706,8 @@ def validate_app(name: str) -> list[str]:
         problems.append(f"{where}: storage must be true or false")
     if not isinstance(app["enabled"], bool):
         problems.append(f"{where}: enabled must be true or false")
+    if not isinstance(app["continue_on_error"], bool):
+        problems.append(f"{where}: continue_on_error must be true or false")
     problems.extend(f"{where}: {problem}" for problem in run_scripts_problems(app))
     return problems
 

@@ -122,11 +122,15 @@ def main() -> int:
         env = {**os.environ, "PDT_OUTPUT_DIR": output}
         for script in entries:
             log("info", f"starting {script}")
-            code = subprocess.run(
+            result = subprocess.run(
                 [pwsh, "-NoProfile", "-NonInteractive", "-Command", pwsh_command(app_dir / script)],
                 cwd=app_dir, env=env, stdin=subprocess.DEVNULL).returncode
-            log("info", f"{script} ended", exit_code=code)
-            if code != 0:
+            log("info", f"{script} ended", exit_code=result)
+            if result != 0:
+                log("error", f"{script} failed", exit_code=result)
+                if code == 0:
+                    code = result
+            if result != 0 and not app["continue_on_error"]:
                 break
         files = [file for file in Path(output).rglob("*") if file.is_file()]
         if app["storage"] and files:
