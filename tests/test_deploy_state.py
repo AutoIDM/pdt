@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from pdt import config, deploy, scaffold
+from pdt import config, deploy, powershell, scaffold
 
 
 def project_with_starter(tmp_path, monkeypatch):
@@ -101,3 +101,16 @@ def test_a_failed_state_write_keeps_the_old_file(tmp_path, monkeypatch):
         config.mark_deployed("another-app", True)
     assert (project / ".pdt" / "state").read_text() == before
     assert sorted(p.name for p in (project / ".pdt").iterdir()) == [".gitignore", "state"]
+
+
+def test_deploy_refuses_a_powershell_app_whose_scripts_certainly_fail(tmp_path, monkeypatch, capsys):
+    project_with_starter(tmp_path, monkeypatch)
+    (tmp_path / "report").mkdir()
+    (tmp_path / "report" / "report.ps1").write_text("Read-Host 'name'\n")
+    (tmp_path / "report" / "config.yml").write_text("schedule: daily\n")
+    finding = powershell.Finding("interactive", "report.ps1", 1, "Read-Host waits for a person", True)
+    monkeypatch.setattr(powershell, "scan", lambda app, provider: powershell.ScriptScan(
+        ["report.ps1"], [], [], [finding]))
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
+    assert deploy.deploy("report") == 1
+    assert "report.ps1:1: Read-Host waits for a person" in capsys.readouterr().out
