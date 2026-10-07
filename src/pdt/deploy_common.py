@@ -2,17 +2,22 @@
 
 Every env var the app declares goes into one json secret, mounted on the
 job as PDT_ENV_JSON and expanded back into env vars by
-pdt.config.load_env_json. A var that ends in _PATH and names a local
-file is replaced by <NAME>_B64 holding the file's base64, because the
-cloud job gets no files, only string secrets. One that names no file is
+pdt.config.load_env_json. An app that sends email, from run.py or as a
+failure email, also gets each email setting (send_email.EMAIL_VARS) that
+is set. A var that ends in _PATH and names a local file is replaced by
+<NAME>_B64 holding the file's base64, because the cloud job gets no
+files, only string secrets. One that names no file is
 a run-time location the app sets itself and goes through as is.
 
 PDT_ENV_SECRET_RESOURCE names that secret. The job's identity may update
 it and no other, through `pdt.utils.env_secret`.
 
-A build context holds the app directory and pdt.yml, nothing else. The
-app's run.py declares pdt in its script header, so every deployment
-installs the package from the index the same way a local run does. An app
+A build context holds the app directory, pdt.yml, and the deploying pdt
+package. The app's run.py declares pdt in its script header, so every
+deployment installs the package from the index the same way a local run does.
+The copied package sends a failure notice without depending on that pinned
+version. It is in `.pdt-runtime/pdt`, because app discovery skips a folder
+whose name starts with a dot, so no app folder has that name. An app
 made of .ps1 files has no run.py; POWERSHELL_DOCKERFILE installs
 pdt-cli[apps] at this pdt's version, then pwsh through that pdt's own
 `pdt.pwsh` (the pinned, checksum-verified archive; its powershell.config.json
@@ -71,14 +76,16 @@ import backoff
 from pdt import config, console, docker_setup
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
+from pdt.utils.send_email import EMAIL_VARS
 
 DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 COPY . /workspace
+COPY .pdt-runtime/pdt /opt/pdt/pdt
 WORKDIR /workspace/{app}
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false PYTHONUNBUFFERED=1
-RUN uv sync --script run.py
-ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
+RUN uv sync --script run.py && uv sync --script /opt/pdt/pdt/notify.py
+ENTRYPOINT ["sh", "-c", "started=$(date -u +%Y-%m-%dT%H:%M:%SZ); run_id=${{AWS_BATCH_JOB_ID:-${{CONTAINER_APP_JOB_EXECUTION_NAME:-${{CLOUD_RUN_EXECUTION:-$started}}}}}}; export PDT_APP={app} PDT_RUN_ID=$run_id; uv run --script run.py; code=$?; ended=$(date -u +%Y-%m-%dT%H:%M:%SZ); if [ $code -ne 0 ]; then uv run --script /opt/pdt/pdt/notify.py --app-dir /workspace/{app} --exit-code $code --started $started --ended $ended; fi; echo \\"pdt: exit $code\\"; exit $code"]
 """
 POWERSHELL_DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -87,8 +94,10 @@ ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFF
 RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
 RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh && echo '{{"LogLevel":"Critical"}}' > "$(dirname "$pwsh")/powershell.config.json"
 {modules}COPY . /workspace
+COPY .pdt-runtime/pdt /opt/pdt/pdt
 WORKDIR /workspace/{app}
-{sync}ENTRYPOINT ["sh", "-c", "{start}; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
+{sync}RUN uv sync --script /opt/pdt/pdt/notify.py
+ENTRYPOINT ["sh", "-c", "started=$(date -u +%Y-%m-%dT%H:%M:%SZ); run_id=${{AWS_BATCH_JOB_ID:-${{CONTAINER_APP_JOB_EXECUTION_NAME:-${{CLOUD_RUN_EXECUTION:-$started}}}}}}; export PDT_APP={app} PDT_RUN_ID=$run_id; {start}; code=$?; ended=$(date -u +%Y-%m-%dT%H:%M:%SZ); if [ $code -ne 0 ]; then uv run --script /opt/pdt/pdt/notify.py --app-dir /workspace/{app} --exit-code $code --started $started --ended $ended; fi; echo \\"pdt: exit $code\\"; exit $code"]
 """
 # Secret shapes and local state that never belong in an image.
 BUILD_EXCLUDES = (
@@ -392,6 +401,8 @@ def gather_secrets(app: dict) -> dict[str, str]:
     for group in spec.get("one_of") or []:
         names.extend(group)
     names.extend(spec.get("optional") or [])
+    if config.uses_email(app) or config.sends_failure_email(app):
+        names.extend(EMAIL_VARS)
     values = {}
     for name in names:
         value = os.environ.get(name, "").strip()
@@ -565,6 +576,9 @@ def stage_build_context(app: dict) -> Path:
     stage = Path(tempfile.mkdtemp(prefix="pdt-build-"))
     try:
         shutil.copytree(app_dir, stage / app["name"], ignore=skip, symlinks=True)
+        package = Path(__file__).resolve().parent
+        shutil.copytree(package, stage / ".pdt-runtime" / "pdt",
+                        ignore=shutil.ignore_patterns("__pycache__"))
         project_file = config.find_project() / config.PROJECT_FILE
         if project_file.is_file():
             shutil.copy(project_file, stage / config.PROJECT_FILE)

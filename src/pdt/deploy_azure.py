@@ -131,9 +131,9 @@ def az(*args: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args, code, out.getvalue(), err.getvalue())
 
 
-def run_quiet(*args: str, retry_access: bool = False,
-              retry_internal: bool = False, hints: dict[str, str] | None = None) -> str:
-    waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
+def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = False,
+              retry_purge: bool = False, hints: dict[str, str] | None = None) -> str:
+    waits = (10, 20, 40, 0) if retry_access or retry_internal or retry_purge else (0,)
     for wait in waits:
         proc = az(*args)
         if proc.returncode == 0:
@@ -144,12 +144,19 @@ def run_quiet(*args: str, retry_access: bool = False,
             "does not have authorization",
         ))
         internal_error = retry_internal and "internalservererror" in output
+        # Right after a group delete, show-deleted can list a vault that purge
+        # does not find yet; a later purge finds it.
+        purge_pending = retry_purge and "no deleted vault or hsm was found" in output
         if proc.stderr.strip():
             console.say(console.escape(proc.stderr.strip()))
-        if wait == 0 or not (access_error or internal_error):
+        if wait == 0 or not (access_error or internal_error or purge_pending):
             break
-        reason = ("Azure returned an access error" if access_error
-                  else "Azure returned InternalServerError")
+        if access_error:
+            reason = "Azure returned an access error"
+        elif internal_error:
+            reason = "Azure returned InternalServerError"
+        else:
+            reason = "Azure does not list the deleted Key Vault yet"
         console.bullet(f"{reason}; retrying in {wait}s...", indent=4)
         time.sleep(wait)
     for text, hint in (hints or {}).items():
@@ -639,7 +646,7 @@ def purge_deleted_vault(settings: dict[str, str]) -> None:
         fail(f"a soft-deleted Key Vault named {console.value(settings['vault'])} exists but is not "
              "managed by PDT; purge it or deploy to another subscription")
     console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-    run_quiet("keyvault", "purge", "--name", settings["vault"])
+    run_quiet("keyvault", "purge", "--name", settings["vault"], retry_purge=True)
 
 
 def workspace_resource(settings: dict) -> dict | None:
@@ -827,7 +834,7 @@ def destroy_group(settings: dict[str, str], app_name: str) -> bool:
         return False
     if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
         console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-        run_quiet("keyvault", "purge", "--name", settings["vault"])
+        run_quiet("keyvault", "purge", "--name", settings["vault"], retry_purge=True)
     if az_tsv("group", "exists", "--name", rg) == "false":
         console.done(f"Nothing remains in resource group {console.value(rg)}.")
     return True

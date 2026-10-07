@@ -148,3 +148,18 @@ def test_az_runs_in_process_and_keeps_each_call_output_apart(monkeypatch):
     assert (first.returncode, first.stderr) == (2, "ERROR: one\n")
     assert (second.returncode, second.stderr) == (2, "ERROR: two\n")
     assert (third.returncode, third.stdout, third.stderr) == (0, "group list", "")
+
+
+def test_a_vault_purge_retries_while_azure_does_not_list_the_deleted_vault(monkeypatch, capsys):
+    attempts = iter([
+        subprocess.CompletedProcess([], 1, "", "ERROR: No deleted Vault or HSM was found with name pdt-abc"),
+        subprocess.CompletedProcess([], 0, "", ""),
+    ])
+    sleeps = []
+    monkeypatch.setattr(deploy_azure, "az", lambda *args: next(attempts))
+    monkeypatch.setattr(deploy_azure.time, "sleep", sleeps.append)
+
+    deploy_azure.run_quiet("keyvault", "purge", "--name", "pdt-abc", retry_purge=True)
+
+    assert sleeps == [10]
+    assert "Azure does not list the deleted Key Vault yet; retrying in 10s..." in capsys.readouterr().out

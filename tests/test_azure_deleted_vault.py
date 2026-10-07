@@ -9,7 +9,7 @@ def recorded(monkeypatch, deleted):
     calls = []
     monkeypatch.setattr(deploy_azure, "az_json", lambda *args: deleted)
     monkeypatch.setattr(deploy_azure, "run_quiet",
-                        lambda *args, **kwargs: calls.append(args) or "")
+                        lambda *args, **kwargs: calls.append((args, kwargs)) or "")
     return calls
 
 
@@ -22,7 +22,7 @@ def test_no_deleted_vault_means_nothing_to_purge(monkeypatch):
 def test_a_pdt_vault_in_soft_delete_is_purged(monkeypatch):
     calls = recorded(monkeypatch, {"properties": {"tags": {"managed-by": "pdt"}}})
     deploy_azure.purge_deleted_vault(SETTINGS)
-    assert calls == [("keyvault", "purge", "--name", "pdt-abc")]
+    assert calls == [(("keyvault", "purge", "--name", "pdt-abc"), {"retry_purge": True})]
 
 
 def test_someone_elses_deleted_vault_is_left_alone(monkeypatch):
@@ -47,12 +47,12 @@ def test_destroy_does_not_purge_another_groups_legacy_vault(monkeypatch):
     monkeypatch.setattr(deploy_azure, "az_json", deleted)
     monkeypatch.setattr(deploy_azure, "az_tsv", lambda *args: "false")
     monkeypatch.setattr(deploy_azure, "run_quiet",
-                        lambda *args: calls.append(args))
+                        lambda *args, **kwargs: calls.append((args, kwargs)))
     monkeypatch.setattr(deploy_azure, "delete_unless_locked",
-                        lambda *args: calls.append(args) or "")
+                        lambda *args: calls.append((args, {})) or "")
     assert deploy_azure.destroy_group(settings, "report") is True
     assert reads == [("keyvault", "show-deleted", "--name", "pdt-current")]
     assert calls == [
-        ("group", "delete", "--name", "pdt-verify", "--yes"),
-        ("keyvault", "purge", "--name", "pdt-current"),
+        (("group", "delete", "--name", "pdt-verify", "--yes"), {}),
+        (("keyvault", "purge", "--name", "pdt-current"), {"retry_purge": True}),
     ]

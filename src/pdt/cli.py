@@ -184,8 +184,9 @@ def cmd_validate(args) -> int:
             missing = config.missing_env(app)
             if missing != "":
                 problems.append((name, f"{name}: {missing}"))
-            if config.uses_email(app):
-                for problem in email_problems(app["config"]):
+            failure_email = config.sends_failure_email(app)
+            if config.uses_email(app) or failure_email:
+                for problem in email_problems(app["config"], failure_email=failure_email):
                     problems.append((name, f"{name}: {problem}"))
     finally:
         os.environ.clear()

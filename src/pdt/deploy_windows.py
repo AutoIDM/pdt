@@ -41,6 +41,11 @@ the plan, deploy finds pwsh (`pdt.pwsh` installs the pinned version under
 stops with the Windows feature to add when a module that comes with Windows
 (`powershell.WINDOWS_IN_BOX_MODULES`) is missing. The
 elevated script installs the other modules for all users, so SYSTEM sees them.
+
+SYSTEM does not use the deploying user's uv cache. The runner gives the
+failure notice the uv cache `%ProgramData%\\pdt\\notify-cache\\`, and the same
+elevated script creates it with the same two rules and installs the notice's
+packages into it.
 """
 
 from __future__ import annotations
@@ -76,6 +81,9 @@ DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday",
         "Thursday", "Friday", "Saturday")
 FORBIDDEN_TASK_NAME_CHARS = set('\\/:*?"<>|')
 RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
+NOTICE = RUNNER.with_name("notify.py")
+# The elevated script exits with this code when only the notice cache failed.
+NOTICE_CACHE_FAILED = 5
 # The same limit as --replica-timeout on Azure Container Apps.
 RUN_TIME_LIMIT = "PT30M"
 
@@ -305,7 +313,7 @@ def _is_admin() -> bool:
 
 
 def _run(powershell: str, script: str, *, not_found_ok: bool = False,
-         elevate: bool = False) -> bool:
+         elevate: bool = False, warn_exit: int | None = None) -> bool:
     if elevate and not _is_admin():
         script = (
             "$p = Start-Process powershell -Verb RunAs -Wait -PassThru "
@@ -320,6 +328,8 @@ def _run(powershell: str, script: str, *, not_found_ok: bool = False,
     if proc.returncode == 0:
         return True
     if not_found_ok and proc.returncode == 3:
+        return False
+    if proc.returncode == warn_exit:
         return False
     detail = (proc.stderr or proc.stdout).strip()
     raise WindowsDeployError(
@@ -367,6 +377,28 @@ def _folder_script(app: dict, user: str) -> str:
         f"icacls $folder /grant '*S-1-5-18:(OI)(CI)F' {_ps_string(user + ':(OI)(CI)M')} "
         "| Out-Null; "
         "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+    )
+
+
+def notice_cache() -> Path:
+    """The uv cache of the failure notice. The task runs as SYSTEM, whose own uv cache
+    is not the deploying user's, so deploy fills this machine folder for both."""
+    return config.machine_data_home() / "notify-cache"
+
+
+def _notice_cache_script(user: str, uv: str) -> str:
+    """Create the notice cache with the app folder's two rules and install the notice's
+    packages into it. A failure exits NOTICE_CACHE_FAILED, because a failed run can
+    still install them."""
+    return (
+        f"$cache = {_ps_string(str(notice_cache()))}; "
+        "New-Item -ItemType Directory -Force -Path $cache | Out-Null; "
+        f"icacls $cache /grant '*S-1-5-18:(OI)(CI)F' {_ps_string(user + ':(OI)(CI)M')} "
+        "| Out-Null; "
+        f"if ($LASTEXITCODE -ne 0) {{ exit {NOTICE_CACHE_FAILED} }}; "
+        "$env:UV_CACHE_DIR = $cache; "
+        f"& {_ps_string(uv)} sync --script {_ps_string(str(NOTICE))} | Out-Null; "
+        f"if ($LASTEXITCODE -ne 0) {{ exit {NOTICE_CACHE_FAILED} }}"
     )
 
 
@@ -458,6 +490,8 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
                        f"(SYSTEM: full control; {console.value(user)}: modify)"),
         console.Markup(f"write one log per run under {console.value(logs_folder(name))} "
                        "(removed on destroy)"),
+        console.Markup(f"install the failure notice's packages in {console.value(notice_cache())} "
+                       f"(SYSTEM: full control; {console.value(user)}: modify)"),
     ]
     if app["storage"]:
         actions.append(console.Markup(f"use folder {console.value(storage_folder(name))} for "
@@ -511,16 +545,20 @@ def deploy(app: dict, assume_yes: bool) -> int:
         f"$name = {_ps_string(name)}; "
         f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
         "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
-        "-ErrorAction Stop | Out-Null"
+        "-ErrorAction Stop | Out-Null; "
+        f"{_notice_cache_script(user, uv)}"
     )
     console.status(f"{'Updating' if exists else 'Creating'} Windows scheduled task "
                    f"{console.value(name)}...")
     try:
-        _run(powershell, script, elevate=True)
+        cached = _run(powershell, script, elevate=True, warn_exit=NOTICE_CACHE_FAILED)
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
     console.done(f"Deployed {console.value(app['name'])} as Windows task {console.value(name)}.")
+    if not cached:
+        console.warn(f"The failure notice's packages could not be installed in "
+                     f"{console.value(notice_cache())}; a failed run installs them itself.")
     return 0
 
 

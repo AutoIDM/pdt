@@ -208,10 +208,10 @@ def test_destroy_with_the_project_group_already_gone_purges_its_soft_deleted_vau
     monkeypatch.setattr(deploy_azure_container_apps, "confirm",
                         lambda actions, *args: plans.append(plain(actions)) or True)
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
-                        lambda *args, **kwargs: purged.append(args) or "")
+                        lambda *args, **kwargs: purged.append((args, kwargs)) or "")
     assert deploy_azure_container_apps.destroy({"name": "report", "storage": False}, True) == 0
     assert plans == [["purge the soft-deleted Key Vault pdt-vault"]]
-    assert purged == [("keyvault", "purge", "--name", "pdt-vault")]
+    assert purged == [(("keyvault", "purge", "--name", "pdt-vault"), {"retry_purge": True})]
 
 
 def test_destroy_leaves_a_soft_deleted_vault_pdt_did_not_make(monkeypatch):
