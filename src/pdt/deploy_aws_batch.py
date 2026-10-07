@@ -42,8 +42,8 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_secrets, stage_build_context,
-    store_kept_line, store_name, store_plan_lines, warn_if_locked,
+    CostEstimate, fail, fail_command, gather_secrets, image_action, run_secrets,
+    stage_build_context, store_kept_line, store_name, store_plan_lines, warn_if_locked,
     write_dockerfile,
 )
 
@@ -453,7 +453,7 @@ def build_and_push(app: dict, image: str, ecr) -> str:
         for command, stdin in commands:
             proc = subprocess.run(command, input=stdin, text=True, check=False)
             if proc.returncode:
-                fail(f"{' '.join(command[:2])} failed")
+                fail_command(command, proc)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     images = ecr.describe_images(

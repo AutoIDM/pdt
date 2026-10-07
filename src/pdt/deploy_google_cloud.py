@@ -60,9 +60,9 @@ from pdt import console
 from pdt import gcloud_sdk
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action, run_secrets,
-    stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
-    warn_if_locked, write_dockerfile)
+    STORE_TAGS, CostEstimate, fail, fail_command, fetch_json, gather_secrets, image_action,
+    run_secrets, stage_build_context, store_cost_label, store_kept_line, store_name,
+    store_plan_lines, warn_if_locked, write_dockerfile)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -126,14 +126,13 @@ def run_quiet(*args: str, data: str | None = None) -> str:
     proc = gcloud(*args, data=data)
     if proc.returncode == 0:
         return proc.stdout
-    console.say(proc.stderr.strip())
-    fail(f"pdt gcloud {' '.join(args[:4])} failed; fix the problem above and re-run the deploy")
+    fail_command(["pdt", "gcloud", *args], proc)
 
 
 def run_stream(*args: str) -> None:
     proc = subprocess.run([GCLOUD, *args])
     if proc.returncode != 0:
-        fail(f"pdt gcloud {' '.join(args[:2])} failed; fix the problem above and re-run the deploy")
+        fail_command(["pdt", "gcloud", *args], proc)
 
 
 def describe_json(*args: str):
@@ -153,12 +152,9 @@ def read_json_or_none(*args: str):
     proc = gcloud(*args, "--format=json")
     if proc.returncode == 0:
         return json.loads(proc.stdout or "null")
-    detail = proc.stderr.strip()
-    if not_found(detail):
+    if not_found(proc.stderr):
         return None
-    if detail:
-        console.say(detail)
-    fail(f"pdt gcloud {' '.join(args[:4])} failed while checking resource ownership")
+    fail_command(["pdt", "gcloud", *args, "--format=json"], proc)
 
 
 def list_json(*args: str) -> list:
@@ -221,7 +217,7 @@ def ensure_credentials() -> None:
         fail(f"log in first: {GCLOUD} auth login")
     login = subprocess.run([GCLOUD, "auth", "login"])
     if login.returncode != 0:
-        fail("gcloud auth login failed")
+        fail_command(["pdt", "gcloud", "auth", "login"], login)
 
 
 def preflight(app: dict, project: str, assume_yes: bool) -> str:
@@ -313,8 +309,9 @@ def relogin(assume_yes: bool) -> int:
     console.status("Revoking the cached Google Cloud logins on this computer...")
     subprocess.run([GCLOUD, "auth", "revoke", "--all"], stdin=subprocess.DEVNULL,
                    capture_output=True, text=True)
-    if subprocess.run([GCLOUD, "auth", "login"]).returncode != 0:
-        fail("pdt gcloud auth login failed")
+    login = subprocess.run([GCLOUD, "auth", "login"])
+    if login.returncode != 0:
+        fail_command(["pdt", "gcloud", "auth", "login"], login)
     account = subprocess.run(
         [GCLOUD, "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
         stdin=subprocess.DEVNULL, capture_output=True, text=True).stdout.strip()

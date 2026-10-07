@@ -37,7 +37,8 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_PREFIX, STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_name)
+    STORE_PREFIX, STORE_TAGS, CostEstimate, fail, fail_command, fetch_json, store_cost_label,
+    store_name)
 from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
@@ -398,10 +399,11 @@ def relogin(app: dict) -> int:
     if name not in session.available_profiles:
         name = choose_profile(app, session)
     console.status(f"Logging in to AWS profile {name}...")
-    if subprocess.run([*AWS_CLI, "sso", "login", "--profile", name]).returncode != 0:
-        console.warn(f"If {name} uses access keys instead of SSO there is no login to "
+    login = subprocess.run([*AWS_CLI, "sso", "login", "--profile", name])
+    if login.returncode != 0:
+        fail_command(["pdt", "aws", "sso", "login", "--profile", name], login,
+                     hint=f"If {name} uses access keys instead of SSO there is no login to "
                      f"refresh; run `pdt aws configure --profile {name}` to replace the keys.")
-        fail("pdt aws sso login failed")
     identity = boto3.Session(profile_name=name).client("sts").get_caller_identity()
     console.done(f"Signed in as {identity['Arn']}")
     console.field("Account", identity["Account"])

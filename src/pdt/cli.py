@@ -458,7 +458,7 @@ def main() -> int:
         # `uvx pdt aws` working; deploy.provider_command explains why.
         script = Path(__file__).with_name(CLOUD_CLIS[sys.argv[1]])
         return subprocess.run(
-            ["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
+            ["uv", "run", "--quiet", "--project", str(Path.cwd()), "--script", str(script),
              *sys.argv[1:]]).returncode
     args = parser.parse_args()
     if args.command is None:

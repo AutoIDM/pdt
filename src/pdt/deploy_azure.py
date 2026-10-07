@@ -71,12 +71,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_plan_lines,
-    store_suffix)
+    STORE_TAGS, CostEstimate, fail, fail_command, fetch_json, store_cost_label,
+    store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
-AZ = [sys.executable, "-m", "azure.cli"]
+# -W ignore keeps the CLI's own Python warnings (telemetry's utcnow, unclosed
+# files) out of its output; its errors are not warnings and still print.
+AZ = [sys.executable, "-W", "ignore", "-m", "azure.cli"]
 COMMON_PROVIDERS = ("Microsoft.KeyVault", "Microsoft.ManagedIdentity")
 PLACEHOLDER_SUBSCRIPTION = "00000000-0000-0000-0000-000000000000"
 # A subscription allows a fixed number of Container Apps environments, so
@@ -110,24 +112,23 @@ def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
             "does not have authorization",
         ))
         internal_error = retry_internal and "internalservererror" in output
-        if proc.stderr.strip():
-            console.say(proc.stderr.strip())
         if wait == 0 or not (access_error or internal_error):
             break
+        if proc.stderr.strip():
+            console.say(proc.stderr.strip())
         reason = ("Azure returned an access error" if access_error
                   else "Azure returned InternalServerError")
         console.bullet(f"{reason}; retrying in {wait}s...", indent=4)
         time.sleep(wait)
-    for text, hint in (hints or {}).items():
-        if text.lower() in output:
-            console.say(hint)
-    fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
+    hint = "\n".join(message for text, message in (hints or {}).items()
+                     if text.lower() in output)
+    fail_command(["pdt", "az", *args], proc, hint)
 
 
 def run_stream(*args: str) -> None:
     proc = subprocess.run([*AZ, *args])
     if proc.returncode != 0:
-        fail(f"pdt az {' '.join(args[:3])} failed; fix the problem above and re-run")
+        fail_command(["pdt", "az", *args], proc)
 
 
 LOCK_NAME = re.compile(r"Microsoft\.Authorization/locks/([^'\s,]+)", re.IGNORECASE)
@@ -141,9 +142,7 @@ def delete_unless_locked(*args: str) -> str:
         return ""
     if "scopelocked" in proc.stderr.lower() or LOCK_NAME.search(proc.stderr):
         return ", ".join(sorted(set(LOCK_NAME.findall(proc.stderr)))) or "a lock"
-    if proc.stderr.strip():
-        console.say(proc.stderr.strip())
-    fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
+    fail_command(["pdt", "az", *args], proc)
 
 
 def az_json(*args: str):
@@ -366,8 +365,7 @@ def login(requested: str) -> None:
         return
     output = proc.stdout + proc.stderr
     if "No subscriptions found" not in output:
-        console.say(output.strip())
-        fail("pdt az login failed; fix the problem above and re-run")
+        fail_command(["pdt", "az", "login"], proc)
     user = re.search(r"No subscriptions found for (\S+)\.", output)
     who = user.group(1) if user else "your Azure account"
     console.warn(f"The login worked, but {who} has no Azure subscription.")
