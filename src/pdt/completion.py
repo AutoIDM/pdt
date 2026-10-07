@@ -8,9 +8,10 @@ from pathlib import Path
 
 import argcomplete
 import shellingham
-from argcomplete.completers import DirectoriesCompleter
+from argcomplete.completers import ChoicesCompleter, DirectoriesCompleter
 
 from pdt import config, console, scaffold
+from pdt.deploy_common import SECRET_ACTIONS
 
 SHELLS = ("bash", "zsh", "fish", "powershell")
 
@@ -31,6 +32,7 @@ def examples(prefix: str, **_kwargs) -> list[str]:
 
 
 directories = DirectoriesCompleter()
+secret_actions = ChoicesCompleter(SECRET_ACTIONS)
 
 
 def _shell() -> str | None:

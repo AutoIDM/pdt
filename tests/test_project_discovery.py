@@ -1,7 +1,7 @@
 import pytest
 
 from conftest import add_app
-from pdt.config import PROJECT_FILE, ConfigError, find_apps, find_project
+from pdt.config import PROJECT_FILE, ConfigError, current_app, find_apps, find_project
 
 
 def test_finds_the_project_in_the_current_folder(project):
@@ -57,3 +57,32 @@ def test_find_apps_leaves_out_a_disabled_app(project):
     add_app(project, "report-two")
     (project / "report-two" / "config.yml").write_text("enabled: false\n")
     assert find_apps() == ["report-one"]
+
+
+def test_current_app_is_the_app_folder_holding_the_working_folder(project, monkeypatch):
+    nested = add_app(project, "my-report") / "sub" / "deeper"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+    assert current_app() == "my-report"
+
+
+def test_current_app_is_none_at_the_root_or_in_a_non_app_folder(project, monkeypatch):
+    add_app(project, "my-report")
+    assert current_app() is None
+    (project / "notes").mkdir()
+    monkeypatch.chdir(project / "notes")
+    assert current_app() is None
+
+
+def test_current_app_is_none_in_a_disabled_app(project, monkeypatch):
+    monkeypatch.chdir(add_app(project, "not-ready", "enabled: false\n"))
+    assert current_app() is None
+
+
+def test_current_app_is_none_outside_the_pdt_project_folder(project, tmp_path, monkeypatch):
+    add_app(project, "my-report")
+    elsewhere = tmp_path.parent / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setenv("PDT_PROJECT", str(project))
+    monkeypatch.chdir(elsewhere)
+    assert current_app() is None

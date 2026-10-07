@@ -11,6 +11,7 @@ from pathlib import Path
 
 from pdt import console
 
+COMMANDS = ("ls", "get", "query", "destroy")
 USAGE = "usage: pdt storage <app> ls [path] | get <path> [dest] | query <sql> | destroy [--yes]"
 
 

@@ -67,6 +67,112 @@ def test_command_without_app_in_empty_project(project, monkeypatch, capsys, comm
     assert "pdt new" in out
 
 
+def record_app(monkeypatch, command):
+    picked = []
+    if command == "run":
+        monkeypatch.setattr(cli.subprocess, "run", lambda argv, cwd: picked.append(cwd.name)
+                            or cli.subprocess.CompletedProcess(argv, 0))
+    else:
+        monkeypatch.setattr(deploy, command, lambda app, *a, **k: picked.append(app) or 0)
+    return picked
+
+
+@pytest.mark.parametrize("command", APP_COMMANDS)
+def test_command_inside_an_app_folder_uses_that_app(project, monkeypatch, capsys, command):
+    add_app(project, "hello-world")
+    nested = add_app(project, "daily-report") / "data"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+    picked = record_app(monkeypatch, command)
+    assert run_cli(monkeypatch, command) == 0
+    assert picked == ["daily-report"]
+    assert "Using app daily-report (current folder)." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", APP_COMMANDS)
+def test_a_named_app_wins_over_the_app_folder(project, monkeypatch, capsys, command):
+    add_app(project, "hello-world")
+    monkeypatch.chdir(add_app(project, "daily-report"))
+    picked = record_app(monkeypatch, command)
+    assert run_cli(monkeypatch, command, "hello-world") == 0
+    assert picked == ["hello-world"]
+    assert "current folder" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", APP_COMMANDS)
+def test_a_mistyped_app_inside_an_app_folder_is_an_error(project, monkeypatch, capsys, command):
+    add_app(project, "hello-world")
+    monkeypatch.chdir(add_app(project, "daily-report"))
+    picked = record_app(monkeypatch, command)
+    assert run_cli(monkeypatch, command, "hello-wrld") == 1
+    assert picked == []
+    out = capsys.readouterr().out
+    assert "error: no app named 'hello-wrld'" in out
+    assert "current folder" not in out
+
+
+def test_a_disabled_app_folder_picks_no_app(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    monkeypatch.chdir(add_app(project, "not-ready", "enabled: false\n"))
+    picked = record_app(monkeypatch, "deploy")
+    assert run_cli(monkeypatch, "deploy") == 1
+    assert picked == []
+    assert cli.APP_QUESTIONS["deploy"] in capsys.readouterr().out
+
+
+def test_pdt_project_with_the_working_folder_outside_it_lists_apps(project, tmp_path,
+                                                                    monkeypatch, capsys):
+    add_app(project, "hello-world")
+    outside = tmp_path.parent / "outside-the-project"
+    outside.mkdir()
+    monkeypatch.setenv("PDT_PROJECT", str(project))
+    monkeypatch.chdir(outside)
+    assert run_cli(monkeypatch, "deploy") == 1
+    assert cli.APP_QUESTIONS["deploy"] in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", ["runs", "logs"])
+def test_json_output_inside_an_app_folder_has_no_extra_line(project, monkeypatch, capsys,
+                                                            command):
+    monkeypatch.chdir(add_app(project, "daily-report"))
+    picked = record_app(monkeypatch, command)
+    assert run_cli(monkeypatch, command, "--json") == 0
+    assert picked == ["daily-report"]
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("argv, sent", [
+    (["secrets", "save"], ("secrets", "daily-report", False, ["save"])),
+    (["secrets", "set", "API_KEY"], ("secrets", "daily-report", False, ["set", "API_KEY"])),
+    (["logs", "3"], ("logs", "daily-report", False, ["--", "3"])),
+    (["storage", "ls", "state/"], ("storage", "daily-report", False, ["ls", "state/"])),
+])
+def test_the_next_argument_moves_past_the_app_inside_an_app_folder(project, monkeypatch,
+                                                                    argv, sent):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.chdir(add_app(project, "daily-report", "schedule: daily\n"))
+    monkeypatch.setattr(config, "check_env", lambda env: [])
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda provider, *a: calls.append(a) or 0)
+    assert run_cli(monkeypatch, *argv) == 0
+    assert calls == [sent]
+
+
+def test_a_run_number_at_the_project_root_is_not_an_app(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a: pytest.fail("dispatched"))
+    assert run_cli(monkeypatch, "logs", "3") == 1
+    assert "no app named '3'" in capsys.readouterr().out
+
+
+def test_an_unknown_secrets_action_is_an_error(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a: pytest.fail("dispatched"))
+    assert run_cli(monkeypatch, "secrets", "hello-world", "sav") == 1
+    assert "no secrets action named 'sav'; choose diff, save, get, set" in (
+        capsys.readouterr().out)
+
+
 def test_every_app_command_goes_through_choose_app():
     parser = cli.build_parser()
     sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
@@ -143,6 +249,49 @@ def test_health_checks_every_enabled_app(project, monkeypatch, capsys):
     assert "not-ready" not in out
     assert "not yet run" in out
     assert "0 of 1 succeeded" in out
+
+
+def fake_health(monkeypatch):
+    calls = []
+    monkeypatch.setattr(deploy, "health", lambda names, as_json: calls.append(names) or 0)
+    return calls
+
+
+def test_health_inside_an_app_folder_checks_only_that_app(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    monkeypatch.chdir(add_app(project, "daily-report"))
+    calls = fake_health(monkeypatch)
+    assert run_cli(monkeypatch, "health") == 0
+    assert run_cli(monkeypatch, "health", "--all") == 0
+    assert calls == [["daily-report"], ["daily-report", "hello-world"]]
+    out = capsys.readouterr().out
+    assert "Using app daily-report (current folder)." in out
+    assert "pdt health --all" in out
+
+
+def test_health_at_the_project_root_checks_every_app(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    add_app(project, "daily-report")
+    calls = fake_health(monkeypatch)
+    assert run_cli(monkeypatch, "health") == 0
+    assert calls == [["daily-report", "hello-world"]]
+    assert "current folder" not in capsys.readouterr().out
+
+
+def test_health_json_inside_an_app_folder_has_no_extra_line(project, monkeypatch, capsys):
+    monkeypatch.chdir(add_app(project, "daily-report"))
+    calls = fake_health(monkeypatch)
+    assert run_cli(monkeypatch, "health", "--json") == 0
+    assert calls == [["daily-report"]]
+    assert capsys.readouterr().out == ""
+
+
+def test_health_with_an_app_and_all_is_refused(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    calls = fake_health(monkeypatch)
+    assert run_cli(monkeypatch, "health", "hello-world", "--all") == 1
+    assert calls == []
+    assert "pick an app or --all, not both" in capsys.readouterr().out
 
 
 def fake_deploys(monkeypatch, codes):

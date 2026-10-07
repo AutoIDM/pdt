@@ -156,6 +156,15 @@ def find_apps() -> list[str]:
     return [name for name in app_folders() if is_enabled(name)]
 
 
+def current_app() -> str | None:
+    """The enabled app whose folder holds the working folder, or None."""
+    try:
+        parts = Path.cwd().resolve().relative_to(find_project()).parts
+    except ValueError:
+        return None
+    return parts[0] if parts and parts[0] in find_apps() else None
+
+
 def uses_email(app: dict) -> bool:
     return "pdt.utils.send_email" in (app["dir"] / "run.py").read_text()
 
