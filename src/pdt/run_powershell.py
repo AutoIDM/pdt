@@ -48,7 +48,9 @@ USAGE = "usage: run_powershell.py <app dir>"
 def pwsh_command(script: Path) -> str:
     """Fail on any error the script does not silence itself, and keep the script's own
     `exit N`. A bare `& script; exit $LASTEXITCODE` exits 0 after a `throw`."""
-    return ("$ErrorActionPreference='Stop'; $PSNativeCommandUseErrorActionPreference=$true; "
+    return ("function Clear-Host {}; Set-Alias -Name cls -Value Clear-Host -Force; "
+            "Set-Alias -Name clear -Value Clear-Host -Force; "
+            "$ErrorActionPreference='Stop'; $PSNativeCommandUseErrorActionPreference=$true; "
             f"try {{ & {powershell.quoted(str(script))} }} catch {{ "
             "[Console]::Error.WriteLine(($_ | Out-String).TrimEnd()); "
             "[Console]::Error.WriteLine($_.ScriptStackTrace); exit 1 }; exit $LASTEXITCODE")

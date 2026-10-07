@@ -1,5 +1,6 @@
 """The wrapper that runs a PowerShell app: `src/pdt/run_powershell.py`."""
 
+import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -41,10 +42,24 @@ def fake_pwsh(calls, codes):
 def test_the_pwsh_command_quotes_the_path_and_keeps_the_exit_code(wrapper):
     command = wrapper.pwsh_command(PurePosixPath("/apps/it's here/report.ps1"))
     assert command == (
+        "function Clear-Host {}; Set-Alias -Name cls -Value Clear-Host -Force; "
+        "Set-Alias -Name clear -Value Clear-Host -Force; "
         "$ErrorActionPreference='Stop'; $PSNativeCommandUseErrorActionPreference=$true; "
         "try { & '/apps/it''s here/report.ps1' } catch { "
         "[Console]::Error.WriteLine(($_ | Out-String).TrimEnd()); "
         "[Console]::Error.WriteLine($_.ScriptStackTrace); exit 1 }; exit $LASTEXITCODE")
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs pwsh")
+def test_the_pwsh_command_shadows_clear_host_aliases(tmp_path, wrapper):
+    script = tmp_path / "report.ps1"
+    script.write_text("Clear-Host\ncls\nclear\n")
+
+    result = subprocess.run(
+        [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command",
+         wrapper.pwsh_command(script)], capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_scripts_run_in_order_and_the_output_is_stored(app_dir, wrapper, monkeypatch, capsys):

@@ -133,16 +133,6 @@ def test_rules_that_hold_on_every_provider(provider):
     assert warnings(scan) == []
 
 
-@pytest.mark.parametrize("name", ["Clear-Host", "cls", "clear", "CLEAR-HOST", "CLS", "CLEAR"])
-@pytest.mark.parametrize("provider", ["google-cloud", "windows"])
-def test_clear_host_is_certain_on_every_provider(name, provider):
-    scan = verdict(facts(script("r.ps1", commands=[cmd(name, 4)])), provider)
-    assert certain(scan) == [("clear-host", "r.ps1", 4)]
-    assert report(scan)[0] == [
-        "r.ps1:4: Clear-Host clears the screen, but a scheduled job has no screen, so the run "
-        "fails here. Remove this line."]
-
-
 def test_a_login_needs_an_app_only_parameter():
     person = facts(script("r.ps1", commands=[cmd("Connect-MgGraph", 2, ["Scopes"])]))
     assert certain(verdict(person)) == [("login", "r.ps1", 2)]
@@ -424,21 +414,6 @@ def test_the_extractor_reads_a_real_script(tmp_path, monkeypatch):
     assert scan.helpers == ["helpers.ps1", "lib.psm1"]
     assert [(f.kind, f.line, f.certain) for f in scan.findings][:2] == [
         ("mandatory-parameter", 3, True), ("windows-path", 8, False)]
-
-
-@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs pwsh")
-def test_the_extractor_finds_clear_host_commands_but_not_text(tmp_path, monkeypatch):
-    (tmp_path / "report.ps1").write_text(
-        "# Clear-Host\n"
-        "'cls'\n"
-        '"clear"\n'
-        "Clear-Host\n"
-        "cls\n"
-        "CLEAR\n")
-    monkeypatch.setattr(powershell.pwsh, "ensure_pwsh", lambda: shutil.which("pwsh"))
-    seen = powershell.extract(tmp_path)
-    assert [(c["name"], c["line"]) for c in seen["files"][0]["commands"]] == [
-        ("Clear-Host", 4), ("cls", 5), ("CLEAR", 6)]
 
 
 def test_in_box_and_built_in_modules_are_never_installed():
