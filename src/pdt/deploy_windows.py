@@ -553,6 +553,16 @@ def main() -> int:
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     args = parser.parse_intermixed_args()
+    try:
+        app = config.merged_app(args.app)
+    except config.ConfigError as exc:
+        console.error(str(exc))
+        return 1
+    if sys.platform != "win32":
+        console.error(
+            "the windows provider targets this computer, but the current operating system "
+            "is not Windows. Run this command on the Windows PC.")
+        return 1
     if args.command == "login":
         console.note("the windows provider deploys to this computer, so it needs no login.")
         return 0
@@ -560,11 +570,6 @@ def main() -> int:
         console.note("the windows provider reads your .env file at every run, "
                      "so there is nothing to compare, save, get, or set.")
         return 0
-    try:
-        app = config.merged_app(args.app)
-    except config.ConfigError as exc:
-        console.error(str(exc))
-        return 1
     config.load_env(app["dir"])
     if args.command == "storage":
         return storage(app, args.rest, args.yes)

@@ -30,6 +30,29 @@ def windows_app(project, config_text="schedule: hourly\ntimezone: local\n"):
     return config.merged_app("my-report")
 
 
+@pytest.mark.parametrize(("command", "rest"), [
+    ("deploy", []),
+    ("destroy", []),
+    ("login", []),
+    ("secrets", ["diff"]),
+    ("storage", ["ls", "state/"]),
+    ("runs", ["--", "--json"]),
+    ("logs", ["--", "1"]),
+])
+def test_local_windows_commands_stop_off_windows(
+        project, monkeypatch, capsys, command, rest):
+    windows_app(project)
+    monkeypatch.setattr(deploy_windows.sys, "platform", "darwin")
+    monkeypatch.setattr(deploy_windows.sys, "argv",
+                        ["deploy_windows.py", command, "my-report", *rest])
+
+    assert deploy_windows.main() == 1
+
+    assert capsys.readouterr().out == (
+        "error: the windows provider targets this computer, but the current operating "
+        "system is not Windows. Run this command on the Windows PC.\n")
+
+
 def test_app_folders_live_under_the_machine_data_home(project):
     folder = project / "ProgramData" / "pdt" / "my-report"
     assert deploy_windows.app_folder("my-report") == folder
