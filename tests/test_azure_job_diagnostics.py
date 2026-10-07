@@ -98,7 +98,7 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
     settings = SETTINGS | {
         "region": "eastus", "registry": "pdtregistry",
         "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
-        "identity": "pdt-runner", "workspace": "pdt-logs", "vault": "pdt-vault",
+        "identity": "pdt-runner", "workspace": "pdt-logs-eastus", "vault": "pdt-vault",
     }
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",
                         lambda app, requested: settings)

@@ -4,7 +4,7 @@ import json
 from pdt import deploy_azure, deploy_azure_container_apps, runs_cli
 
 SETTINGS = {
-    "resource_group": "pdt", "workspace": "pdt-logs",
+    "resource_group": "pdt",
     "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
 }
 
@@ -80,7 +80,7 @@ def test_list_runs_reads_every_exit_code_in_one_query(monkeypatch):
     assert "Reason_s == 'ContainerTerminated'" in query
 
 
-def test_read_lines_queries_the_shared_workspace(monkeypatch):
+def test_read_lines_queries_the_workspace_the_environment_logs_to(monkeypatch):
     calls = []
 
     def az_tsv(*args):
@@ -98,9 +98,11 @@ def test_read_lines_queries_the_shared_workspace(monkeypatch):
     assert lines == [runs_cli.Line(
         datetime.datetime(2026, 9, 23, 10, 0, 1, 123456, tzinfo=datetime.UTC), "INFO", "hello")]
     workspace_call = calls[0]
-    assert workspace_call[:3] == ("monitor", "log-analytics", "workspace")
+    assert workspace_call[:3] == ("containerapp", "env", "show")
+    assert workspace_call[workspace_call.index("--name") + 1] == "pdt-eastus"
     assert workspace_call[workspace_call.index("--resource-group") + 1] == "pdt-shared"
-    assert workspace_call[workspace_call.index("--workspace-name") + 1] == "pdt-logs"
+    assert workspace_call[workspace_call.index("--query") + 1] == (
+        "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId")
     query_call = calls[1]
     assert query_call[query_call.index("--url") + 1] == (
         "https://api.loganalytics.io/v1/workspaces/workspace-customer-id/query")

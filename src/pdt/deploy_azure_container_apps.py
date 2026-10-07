@@ -3,10 +3,11 @@
 Entered through
 deploy_azure.py, which owns the uv script header, login, and Key Vault.
 The resource group, ACR, Key Vault, and user-assigned identity are shared
-by the project's apps. The Container Apps environment and its Log
-Analytics workspace are shared by every pdt project in the subscription,
-one environment per region, unless the user names an environment of their
-own. Each app owns one tagged job.
+by the project's apps. Every pdt project in the subscription shares one
+Container Apps environment and one Log Analytics workspace per region,
+unless the user names an environment of their own. Logs are read from the
+workspace the environment names, so an older environment that logs to
+pdt-logs keeps working. Each app owns one tagged job.
 
 The shared identity pulls the image and reads the app's Key Vault
 secret. Each job's own system-assigned identity holds the grants that
@@ -40,7 +41,7 @@ from pdt.deploy import confirm
 from pdt.deploy_azure import (
     AZ, ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cost_estimate, delete_unless_locked, deployer_store,
-    destroy_group, disable_old_secret_versions, ensure_group_and_vault, ensure_secret, ensure_shared_group,
+    destroy_group, disable_old_secret_versions, ensure_group, ensure_group_and_vault, ensure_secret,
     ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item, list_remaining,
     managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
@@ -316,9 +317,11 @@ def list_runs(settings: dict, job: str) -> list[runs_cli.Run]:
 
 
 def log_query(settings: dict, query: str) -> list[list]:
-    workspace_id = az_tsv("monitor", "log-analytics", "workspace", "show",
-                          "--resource-group", settings["environment"].resource_group,
-                          "--workspace-name", settings["workspace"], "--query", "customerId")
+    environment = settings["environment"]
+    workspace_id = az_tsv(
+        "containerapp", "env", "show", "--name", environment.name,
+        "--resource-group", environment.resource_group, "--query",
+        "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId")
     # `az monitor log-analytics query` needs an extension that pip cannot install
     # into pdt's uv environment, so this calls the query API directly.
     result = az_json("rest", "--method", "post", "--resource", LOG_ANALYTICS_API,
@@ -389,6 +392,10 @@ def environment_resource(settings: dict) -> dict | None:
                    "--resource-group", environment.resource_group)
 
 
+def region_of(resource: dict) -> str:
+    return str(resource.get("location") or "").lower().replace(" ", "")
+
+
 def check_environment(settings: dict, resource: dict | None) -> None:
     environment = settings["environment"]
     if environment.managed:
@@ -398,7 +405,7 @@ def check_environment(settings: dict, resource: dict | None) -> None:
         fail(f"the Container Apps environment {environment} named by "
              f"platform.environment in {config.PROJECT_FILE} does not exist in "
              f"subscription {settings['subscription']}")
-    location = str(resource.get("location") or "").lower().replace(" ", "")
+    location = region_of(resource)
     if location and location != settings["region"]:
         fail(f"the Container Apps environment {environment} is in {location}, but "
              f"platform.region in {config.PROJECT_FILE} is {settings['region']}. A "
@@ -411,14 +418,14 @@ def environment_actions(settings: dict, exists: bool, logs_exist: bool,
     if not environment.managed:
         return [f"use your own Container Apps environment {environment}"]
     shared = "(shared by every pdt project in this subscription)"
-    return [
-        ("use existing" if shared_group_exists else "create")
-        + f" resource group {environment.resource_group} {shared}",
-        ("use existing" if logs_exist else "create")
-        + f" Log Analytics workspace {settings['workspace']} in {environment.resource_group}",
-        ("use existing" if exists else "create")
-        + f" Container Apps environment {environment} {shared}",
-    ]
+    actions = [("use existing" if shared_group_exists else "create")
+               + f" resource group {environment.resource_group} {shared}"]
+    if not exists:
+        actions.append(("use existing" if logs_exist else "create")
+                       + f" Log Analytics workspace {settings['workspace']} in {environment.resource_group}")
+    actions.append(("use existing" if exists else "create")
+                   + f" Container Apps environment {environment} {shared}")
+    return actions
 
 
 @dataclasses.dataclass(frozen=True)
@@ -468,12 +475,10 @@ def shared_locks(settings: dict, job: str) -> list[Lock]:
 
 def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
     environment = settings["environment"]
-    if not environment.managed:
+    if not environment.managed or exists:
         return
-    ensure_shared_group(settings)
+    ensure_group(environment.resource_group, settings["region"], "managed-by=pdt")
     logs_id, logs_key = ensure_workspace(settings, logs_exist)
-    if exists:
-        return
     console.step(f"creating Container Apps environment {environment}")
     run_quiet("containerapp", "env", "create", "--name", environment.name,
               "--resource-group", environment.resource_group,
@@ -499,6 +504,18 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
         disable_old_secret_versions(settings, sid)
 
     return run_secrets(action, app, current, write, assume_yes, name)
+
+
+def moved_region_message(name: str, job: str, old: str, new: str) -> str:
+    where = f"{config.PROJECT_FILE} or {name}/{config.APP_FILE}"
+    return (f"app {name} already runs as Container Apps Job {job} in {old}, but "
+            f"platform.region in {where} is now {new}. Azure cannot move a job to "
+            "another region.\n"
+            f"To keep the job where it is, set platform.region back to {old} for {name}.\n"
+            f"To move it to {new}, set platform.region back to {old}, run "
+            f"`pdt destroy {name}`, then set platform.region to {new} and run "
+            f"`pdt deploy {name}`. Destroy must run with {old} so it removes the "
+            "lock on the old environment.")
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
@@ -532,9 +549,10 @@ def deploy(app: dict, assume_yes: bool) -> int:
         shared_group = az_json("group", "show", "--name", settings["environment"].resource_group)
         require_managed(shared_group, f"resource group {settings['environment'].resource_group}")
         shared_group_exists = shared_group is not None
-        workspace = workspace_resource(settings)
-        require_managed(workspace, f"Log Analytics workspace {settings['workspace']}")
-        logs_exist = workspace is not None
+        if not environment_exists:
+            workspace = workspace_resource(settings)
+            require_managed(workspace, f"Log Analytics workspace {settings['workspace']}")
+            logs_exist = workspace is not None
     arm_auth_enabled = (
         acr_arm_auth_enabled(settings["registry"]) if registry_exists else False)
     current_job = az_json("containerapp", "job", "show", "--name", job,
@@ -542,6 +560,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if current_job and not owned_by(current_job, name):
         fail(f"Container Apps Job {job} already exists but is not owned by "
              f"PDT app {name}; choose another resource group")
+    job_region = region_of(current_job or {})
+    if job_region and job_region != settings["region"]:
+        fail(moved_region_message(name, job, job_region, settings["region"]))
     missing_locks = [lock for lock in shared_locks(settings, job) if not lock.exists()]
     vault_exists, current_secret = secret_state(settings, sid, name, bool(values))
     store = store_settings(settings) if app["storage"] else None
@@ -665,6 +686,7 @@ class Release:
     """What destroy may let go of after the last app in the project is gone."""
 
     environment: bool = False
+    workspace: bool = False
     group: bool = False
     note: str = ""
 
@@ -675,15 +697,16 @@ def environment_release(settings: dict) -> Release:
         return Release(note=f"Container Apps environment {environment} is your own; "
                             "pdt leaves it as it is")
     resource = environment_resource(settings)
-    if resource is None:
-        group = az_json("group", "show", "--name", environment.resource_group)
-        return Release(group=managed_by_pdt(group) and not other_environments(settings))
-    if not managed_by_pdt(resource):
+    exists = resource is not None
+    if exists and not managed_by_pdt(resource):
         return Release()
-    users = environment_users(settings)
+    users = environment_users(settings) if exists else {}
     if users:
         return Release(note=users_note(settings, users))
-    return Release(environment=True, group=not other_environments(settings))
+    if other_environments(settings):
+        return Release(environment=exists, workspace=managed_by_pdt(workspace_resource(settings)))
+    group = exists or managed_by_pdt(az_json("group", "show", "--name", environment.resource_group))
+    return Release(environment=exists, group=group)
 
 
 def users_note(settings: dict, users: dict[str, int]) -> str:
@@ -698,9 +721,12 @@ def release_actions(settings: dict, release: Release) -> list[str]:
     actions = []
     if release.environment:
         actions.append(f"delete Container Apps environment {environment} (no other job uses it)")
+    if release.workspace:
+        actions.append(f"delete Log Analytics workspace {settings['workspace']} "
+                       f"in {environment.resource_group}")
     if release.group:
         actions.append(f"delete resource group {environment.resource_group} and the Log "
-                       f"Analytics workspace {settings['workspace']} in it")
+                       "Analytics workspaces in it")
     return actions
 
 
@@ -718,6 +744,15 @@ def release_environment(settings: dict, release: Release) -> None:
         if locked:
             console.note(f"kept: Container Apps environment {environment} (locked by {locked})")
             return
+    if release.workspace:
+        if environment_resource(settings) is not None:
+            console.note(f"kept: Log Analytics workspace {settings['workspace']} "
+                         f"(Container Apps environment {environment} was created since the plan)")
+            return
+        console.step(f"deleting Log Analytics workspace {settings['workspace']}")
+        run_quiet("monitor", "log-analytics", "workspace", "delete",
+                  "--resource-group", environment.resource_group,
+                  "--workspace-name", settings["workspace"], "--force", "true", "--yes")
     if release.group:
         console.step(f"deleting resource group {environment.resource_group}")
         locked = delete_unless_locked("group", "delete", "--name", environment.resource_group, "--yes")
