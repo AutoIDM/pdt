@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -73,6 +74,8 @@ def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
         "a machine-wide install drops the path from the task)",
         f"keep the app's run data in {folder} (SYSTEM: full control; PC\\jon: modify)",
         f"write one log per run under {folder / 'logs'} (removed on destroy)",
+        f"install the failure notice's packages in {folder.parent / 'notify-cache'} "
+        "(SYSTEM: full control; PC\\jon: modify)",
         f"use folder {folder / 'storage'} for the app's files (kept after destroy)",
     ]
 
@@ -81,7 +84,7 @@ def test_plan_without_storage_has_no_storage_line(project):
     app = windows_app(project, "schedule: hourly\ntimezone: local\nstorage: false\n")
     actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
                                   "uv.exe", False)
-    assert len(actions) == 6
+    assert len(actions) == 7
     assert not any("app's files" in action for action in actions)
 
 
@@ -107,9 +110,41 @@ def test_deploy_creates_the_folders_before_registering_the_task(project, monkeyp
                         lambda powershell, script, **kw: scripts.append((script, kw)) or True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
     (script, kw), = scripts
-    assert kw == {"elevate": True}
+    assert kw == {"elevate": True, "warn_exit": deploy_windows.NOTICE_CACHE_FAILED}
     assert script.index("New-Item") < script.index("icacls") < script.index(
-        "Register-ScheduledTask")
+        "Register-ScheduledTask") < script.index("UV_CACHE_DIR")
+
+
+def test_deploy_fills_the_notice_cache_with_the_folder_rules(project):
+    cache = project / "ProgramData" / "pdt" / "notify-cache"
+    script = deploy_windows._notice_cache_script(r"PC\jon", r"C:\tools\uv.exe")
+    assert deploy_windows.notice_cache() == cache
+    assert f"$cache = '{cache}'; New-Item -ItemType Directory -Force -Path $cache" in script
+    assert "icacls $cache /grant '*S-1-5-18:(OI)(CI)F' 'PC\\jon:(OI)(CI)M'" in script
+    assert "$env:UV_CACHE_DIR = $cache; " in script
+    assert f"& 'C:\\tools\\uv.exe' sync --script '{deploy_windows.NOTICE}'" in script
+    assert script.endswith(f"exit {deploy_windows.NOTICE_CACHE_FAILED} }}")
+
+
+def test_deploy_warns_and_succeeds_when_the_notice_cache_fails(project, monkeypatch, capsys):
+    app = windows_app(project)
+    monkeypatch.setattr(deploy_windows, "_preflight",
+                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_run", lambda powershell, script, **kw: False)
+    assert deploy_windows.deploy(app, assume_yes=True) == 0
+    out = capsys.readouterr().out
+    assert "Deployed my-report" in out
+    assert "a failed run installs them itself" in out
+
+
+def test_run_returns_false_for_the_warn_exit_code(monkeypatch):
+    monkeypatch.setattr(deploy_windows.subprocess, "run",
+                        lambda *args, **kwargs: subprocess.CompletedProcess(args, 5, "", ""))
+    assert deploy_windows._run("powershell.exe", "exit 5", warn_exit=5) is False
+    with pytest.raises(deploy_windows.WindowsDeployError):
+        deploy_windows._run("powershell.exe", "exit 5")
 
 
 def test_deploy_prints_the_run_logs_folder(project, monkeypatch, capsys):

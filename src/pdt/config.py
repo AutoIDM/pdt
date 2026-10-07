@@ -43,7 +43,8 @@ SCHEDULE_SHORTHAND = {
     "yearly": "0 0 1 1 *",
 }
 ROOT_KEYS = {"platform", "apps"}
-APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled"}
+APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
+            "on_failure", "notify"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
@@ -63,6 +64,8 @@ KEY_HOME = {
     "env": APP_LEVEL,
     "storage": APP_LEVEL,
     "enabled": APP_LEVEL,
+    "on_failure": APP_LEVEL,
+    "notify": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -234,6 +237,11 @@ def merged_app(name: str) -> dict:
         "env": mapping(own, "env", own_where) or mapping(entry, "env", entry_where),
         "storage": own.get("storage", entry.get("storage", True)),
         "enabled": own.get("enabled", entry.get("enabled", True)),
+        "on_failure": own.get("on_failure", entry.get("on_failure", ["email"])),
+        "notify": {
+            **mapping(entry, "notify", entry_where),
+            **mapping(own, "notify", own_where),
+        },
     }
 
 
@@ -567,7 +575,8 @@ def key_problems(where: str, section: dict, allowed: set[str] | None) -> list[st
 
 def app_section_problems(where: str, section: dict) -> list[str]:
     problems = key_problems(where, section, APP_KEYS)
-    for key, allowed in (("platform", PLATFORM_KEYS), ("config", None), ("env", ENV_KEYS)):
+    for key, allowed in (("platform", PLATFORM_KEYS), ("config", None), ("env", ENV_KEYS),
+                         ("notify", {"email"})):
         try:
             block = mapping(section, key, where)
         except ConfigError as e:
@@ -576,6 +585,25 @@ def app_section_problems(where: str, section: dict) -> list[str]:
         problems.extend(key_problems(f"{where}: {key}", block, allowed))
         if key == "env":
             problems.extend(env_shape_problems(f"{where}: env", block))
+        if key == "notify":
+            try:
+                email = mapping(block, "email", f"{where}: notify")
+            except ConfigError as e:
+                problems.append(str(e))
+            else:
+                problems.extend(key_problems(f"{where}: notify: email", email, {"to"}))
+                to = email.get("to")
+                if to is not None and not (isinstance(to, str) or (
+                        isinstance(to, list) and all(isinstance(item, str) for item in to))):
+                    problems.append(f"{where}: notify: email: to must be a string or list of strings")
+    on_failure = section.get("on_failure")
+    if on_failure is not None:
+        if not isinstance(on_failure, list) or not all(isinstance(item, str) for item in on_failure):
+            problems.append(f"{where}: on_failure must be a list of strings")
+        else:
+            for item in on_failure:
+                if item != "email":
+                    problems.append(f"{where}: on_failure value {item!r} is not supported yet")
     return problems
 
 

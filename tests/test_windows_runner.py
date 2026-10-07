@@ -13,6 +13,21 @@ from pdt import run_windows_task
 RUNNER = Path(run_windows_task.__file__)
 
 
+def test_runner_needs_only_the_standard_library():
+    text = RUNNER.read_text()
+    assert "# dependencies = []" in text
+    assert "from pdt" not in text
+
+
+def test_the_notice_cache_is_under_the_machine_data_home(monkeypatch):
+    from pdt import config
+
+    monkeypatch.setenv("ProgramData", r"D:\ProgramData")
+    assert run_windows_task.notice_cache() == config.machine_data_home() / "notify-cache"
+    monkeypatch.delenv("ProgramData")
+    assert run_windows_task.notice_cache() == config.machine_data_home() / "notify-cache"
+
+
 @pytest.fixture
 def folders(tmp_path):
     app_dir = tmp_path / "my-report"
@@ -23,6 +38,8 @@ def folders(tmp_path):
 def fake_run(calls, output: bytes, code: int):
     def run(command, **kwargs):
         calls.append((command, kwargs))
+        if command[3] != "run.py":
+            return subprocess.CompletedProcess(command, 0)
         kwargs["stdout"].write(output)
         return subprocess.CompletedProcess(command, code)
     return run
@@ -42,11 +59,32 @@ def test_runner_logs_both_streams_and_exits_with_the_child_code(folders, monkeyp
 
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 3
 
-    (command, kwargs), = calls
+    command, kwargs = calls[0]
     assert command == ["uv", "run", "--script", "run.py"]
     assert kwargs["cwd"] == str(app_dir)
     assert kwargs["stderr"] is subprocess.STDOUT
+    notice, notice_kwargs = calls[1]
+    assert notice[:5] == ["uv", "run", "--script", str(run_windows_task.NOTICE), "--app-dir"]
+    assert notice_kwargs["timeout"] == 30
+    assert notice_kwargs["env"]["UV_CACHE_DIR"] == str(run_windows_task.notice_cache())
+    assert kwargs["env"].get("UV_CACHE_DIR") == os.environ.get("UV_CACHE_DIR")
     assert only_log(logs).read_text() == "hello\npdt: exit 3\n"
+
+
+def test_runner_keeps_the_child_exit_code_when_the_notice_fails(folders, monkeypatch):
+    app_dir, logs, url = folders
+    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run([], b"", 3))
+    def fail(command, **kwargs):
+        if command[3] == str(run_windows_task.NOTICE):
+            raise OSError("mail server is down")
+        return subprocess.CompletedProcess(command, 3)
+
+    monkeypatch.setattr(run_windows_task.subprocess, "run", fail)
+
+    assert run_windows_task.main([str(app_dir), str(logs), url]) == 3
+    text = only_log(logs).read_text()
+    assert "failure notice failed: mail server is down" in text
+    assert text.endswith("pdt: exit 3\n")
 
 
 def test_runner_sets_the_storage_url_for_the_child(folders, monkeypatch):
@@ -93,4 +131,8 @@ def test_runner_process_exit_code_is_the_child_exit_code(folders, tmp_path):
 
     assert proc.returncode == 5
     assert proc.stdout == b"" and proc.stderr == b""
-    assert only_log(logs).read_text() == "args: run --script run.py\noops\npdt: exit 5\n"
+    text = only_log(logs).read_text()
+    assert text.startswith("args: run --script run.py\noops\n")
+    assert "args: run --script " + str(run_windows_task.NOTICE) in text
+    assert "failure notice exited 5\n" in text
+    assert text.endswith("pdt: exit 5\n")

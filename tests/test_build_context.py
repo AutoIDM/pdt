@@ -24,6 +24,14 @@ def test_credential_files_stay_out_of_the_build_context(project):
     (app["dir"] / ".ssh" / "config").write_text("secret")
     staged = stage_build_context(app) / "my-report"
     assert sorted(p.name for p in staged.iterdir()) == ["run.py"]
+    assert (staged.parent / ".pdt-runtime" / "pdt" / "notify.py").is_file()
+
+
+def test_an_app_named_pdt_keeps_its_own_folder_in_the_build_context(project):
+    folder = add_app(project, "pdt")
+    stage = stage_build_context({"name": "pdt", "dir": folder})
+    assert sorted(p.name for p in (stage / "pdt").iterdir()) == ["run.py"]
+    assert (stage / ".pdt-runtime" / "pdt" / "notify.py").is_file()
 
 
 def test_a_link_outside_the_app_folder_stops_the_build(project, tmp_path_factory, capsys):

@@ -10,10 +10,13 @@ a run-time location the app sets itself and goes through as is.
 PDT_ENV_SECRET_RESOURCE names that secret. The job's identity may update
 it and no other, through `pdt.utils.env_secret`.
 
-A build context holds the app directory and pdt.yml, nothing else. The
-app's run.py declares pdt in its script header, so every deployment
-installs the package from the index the same way a local run does.
-PDT_PROJECT names the project directory, so no job depends on its cwd.
+A build context holds the app directory, pdt.yml, and the deploying pdt
+package. The app's run.py declares pdt in its script header, so every
+deployment installs the package from the index the same way a local run does.
+The copied package sends a failure notice without depending on that pinned
+version. It is in `.pdt-runtime/pdt`, because app discovery skips a folder
+whose name starts with a dot, so no app folder has that name. PDT_PROJECT
+names the project directory, so no job depends on its cwd.
 
 BUILD_EXCLUDES leaves secret shapes (env files, keys, certificates, credentials files, ssh and package-manager logins) and local state out of the context, and one note names what it left out. A symbolic link stays a link when its target is inside the app directory, and the build stops when one points outside, so no file from elsewhere on the machine reaches the image.
 
@@ -57,10 +60,11 @@ from pdt.utils.env_secret import private_file
 DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 COPY . /workspace
+COPY .pdt-runtime/pdt /opt/pdt/pdt
 WORKDIR /workspace/{app}
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
-RUN uv sync --script run.py
-ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
+RUN uv sync --script run.py && uv sync --script /opt/pdt/pdt/notify.py
+ENTRYPOINT ["sh", "-c", "started=$(date -u +%Y-%m-%dT%H:%M:%SZ); run_id=${{AWS_BATCH_JOB_ID:-${{CONTAINER_APP_JOB_EXECUTION_NAME:-${{CLOUD_RUN_EXECUTION:-$started}}}}}}; export PDT_APP={app} PDT_RUN_ID=$run_id; uv run --script run.py; code=$?; ended=$(date -u +%Y-%m-%dT%H:%M:%SZ); if [ $code -ne 0 ]; then uv run --script /opt/pdt/pdt/notify.py --app-dir /workspace/{app} --exit-code $code --started $started --ended $ended; fi; echo \\"pdt: exit $code\\"; exit $code"]
 """
 # Secret shapes and local state that never belong in an image.
 BUILD_EXCLUDES = (
@@ -410,6 +414,9 @@ def stage_build_context(app: dict) -> Path:
     stage = Path(tempfile.mkdtemp(prefix="pdt-build-"))
     try:
         shutil.copytree(app_dir, stage / app["name"], ignore=skip, symlinks=True)
+        package = Path(__file__).resolve().parent
+        shutil.copytree(package, stage / ".pdt-runtime" / "pdt",
+                        ignore=shutil.ignore_patterns("__pycache__"))
         project_file = config.find_project() / config.PROJECT_FILE
         if project_file.is_file():
             shutil.copy(project_file, stage / config.PROJECT_FILE)
