@@ -472,3 +472,11 @@ def test_list_shows_a_disabled_app_and_names_leaves_it_out(project, monkeypatch,
     assert capsys.readouterr().out.split() == ["hello-world"]
     assert run_cli(monkeypatch, "run", "not-ready") == 1
     assert "no app named 'not-ready'" in capsys.readouterr().out
+
+
+def test_every_command_is_in_exactly_one_help_group():
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    grouped = [name for names in cli.COMMAND_GROUPS.values() for name in names]
+    assert sorted(grouped) == sorted(sub.choices)
+    assert len(grouped) == len(set(grouped))
