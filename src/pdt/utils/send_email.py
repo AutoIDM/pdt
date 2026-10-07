@@ -454,7 +454,8 @@ def send_email(from_addr: str, to_addrs, subject: str, body: str, html: str = ""
 
 
 def main() -> int:
-    config.load_env(Path.cwd())
+    app_dir = config.running_app_dir()
+    config.load_env(app_dir)
     parser = argparse.ArgumentParser(
         description="Send a plain-text email (smtp / ses / resend / graph / stdout).")
     parser.add_argument("--from", dest="from_addr", default=optional_env("PDT_EMAIL_FROM"))
@@ -462,7 +463,7 @@ def main() -> int:
     parser.add_argument("--subject", default="Notification")
     args = parser.parse_args()
     body = sys.stdin.read()
-    prepare_email_auth(auth_env_file(Path.cwd()))
+    prepare_email_auth(auth_env_file(app_dir))
     transport = pick_transport()
     if transport != "stdout" and args.from_addr == "":
         die(EXIT_CONFIG, "need --from or PDT_EMAIL_FROM")

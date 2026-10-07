@@ -58,7 +58,7 @@ def update(name: str, new_value: str) -> None:
 
 
 def set_deployed(name: str, new_value: str) -> None:
-    app = Path.cwd().name
+    app = config.running_app_dir().name
     try:
         project = config.find_project()
     except config.ConfigError:
@@ -161,8 +161,8 @@ class EnvFile(Backend):
         self.written: list[Path] = []
 
     def files(self) -> list[Path]:
-        files = config.find_env_files(Path.cwd())
-        return files or [Path.cwd() / ".env"]
+        folder = config.running_app_dir()
+        return config.find_env_files(folder) or [folder / ".env"]
 
     def describe(self) -> str:
         return ", ".join(str(path) for path in self.written) or "no .env file (value unchanged)"

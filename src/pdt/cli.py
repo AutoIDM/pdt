@@ -198,24 +198,31 @@ def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
         return 1
     ask = not skip_failures and can_prompt(None)
     failed: list[str] = []
-    for index, name in enumerate(names, 1):
-        console.heading(f"Deploying {name} ({index} of {len(names)})")
-        code = deploy.deploy(name, assume_yes=assume_yes)
-        if code == 0:
-            continue
-        failed.append(name)
-        console.error(f"{name} did not deploy.")
-        if index < len(names) and not skip_failures and not (
-                ask and console.confirm(
-                    f"Skip the failing app {name} and deploy the rest?")):
-            console.say("Fix the problem above and run pdt deploy --all again, "
-                        "or add --skip-failures to go on past it.")
-            return code
-        if ask and not assume_yes and console.confirm(
-                f"Disable the failing app {name}?"):
-            path = config.set_app_enabled(name, False)
-            console.done(f"Disabled {name} in {path.relative_to(config.find_project())}. "
-                         "Set enabled: true there to bring it back.")
+    original_env = os.environ.copy()
+    try:
+        for index, name in enumerate(names, 1):
+            os.environ.clear()
+            os.environ.update(original_env)
+            console.heading(f"Deploying {name} ({index} of {len(names)})")
+            code = deploy.deploy(name, assume_yes=assume_yes)
+            if code == 0:
+                continue
+            failed.append(name)
+            console.error(f"{name} did not deploy.")
+            if index < len(names) and not skip_failures and not (
+                    ask and console.confirm(
+                        f"Skip the failing app {name} and deploy the rest?")):
+                console.say("Fix the problem above and run pdt deploy --all again, "
+                            "or add --skip-failures to go on past it.")
+                return code
+            if ask and not assume_yes and console.confirm(
+                    f"Disable the failing app {name}?"):
+                path = config.set_app_enabled(name, False)
+                console.done(f"Disabled {name} in {path.relative_to(config.find_project())}. "
+                             "Set enabled: true there to bring it back.")
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
     if failed:
         console.warn(f"Not deployed: {', '.join(failed)}")
         return 1
