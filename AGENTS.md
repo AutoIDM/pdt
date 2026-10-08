@@ -13,6 +13,7 @@ Ease of use and simplification of the process is the top guiding principle. Ever
 - Prompts use plain words. The reader is an IT administrator. Say "Which AWS region should hold your jobs?", not "platform.region is required".
 - An error names the file and the key the user must change.
 - Every cloud provider is at parity. Deploying to AWS, Google Cloud, or Azure asks the same number of questions and needs the same user knowledge. When one provider gains a convenience, add it to the other providers in the same change. When one provider needs a manual step the others do not, that is a bug. The `windows` provider runs on the user's own PC, so it asks nothing and has no cloud parity to hold.
+- Every pdt behavior is the same for every provider and every app type (Python or PowerShell), unless an overriding reason exists, and the code or the docs name that reason.
 - The simplest behavior is the default. A convenience is on for every app, and a user turns it off with one key. A user never has to opt in.
 - A shared resource follows one pattern on every provider: the same name prefix, the same tag, and the same lifecycle scope. If one provider keeps a resource in its own group, bucket, or account scope, every provider does.
 - Fewer config keys beat more. A key exists only when the user must choose a value. Names for shared resources get stable defaults; they are not config.
