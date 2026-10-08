@@ -45,9 +45,26 @@ def _load(app_name: str):
     return app, provider
 
 
+# A provider script whose packages take minutes to install on its first run,
+# and the name of what they are.
+SLOW_INSTALLS = {"deploy_azure.py": "the Azure CLI"}
+
+
+def announce_install(script: Path) -> None:
+    """Say so before uv installs a slow provider script's packages for the first time."""
+    tool = SLOW_INSTALLS.get(script.name)
+    if tool is None:
+        return
+    ready = subprocess.run(["uv", "sync", "--script", str(script), "--offline", "--check"],
+                           capture_output=True).returncode == 0
+    if not ready:
+        console.status(f"Installing {tool}. This happens once and can take several minutes...")
+
+
 def provider_command(provider: str, command: str, app_name: str, assume_yes: bool,
                      extra: list[str] | None = None) -> list[str]:
     script = Path(__file__).with_name(PROVIDERS[provider])
+    announce_install(script)
     # When someone runs pdt with `uvx`, uv installs pdt inside its own cache
     # folder, so this script is in the cache too. uv refuses to run a script
     # from its cache, because it treats the script's folder as the project.

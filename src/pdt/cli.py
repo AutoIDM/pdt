@@ -554,6 +554,7 @@ def main() -> int:
         # Before argparse, so the cloud CLI parses its own flags. --project keeps
         # `uvx pdt aws` working; deploy.provider_command explains why.
         script = Path(__file__).with_name(CLOUD_CLIS[sys.argv[1]])
+        deploy.announce_install(script)
         return subprocess.run(
             ["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
              *sys.argv[1:]]).returncode
