@@ -33,6 +33,7 @@ outlives any single app's deploy/destroy cycle.
 from __future__ import annotations
 
 import base64
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -42,6 +43,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.request
 from http import HTTPStatus
@@ -131,6 +134,39 @@ def image_action(app: dict, what: str) -> str:
 def fail(message: str) -> None:
     console.error(message)
     raise SystemExit(1)
+
+
+def elapsed_text(seconds: float) -> str:
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    return f"{minutes}m {secs}s"
+
+
+@contextlib.contextmanager
+def heartbeat(every: float = 15.0):
+    """Tick an in-place progress line while the body runs a silent blocking call."""
+    started = time.monotonic()
+    stop = threading.Event()
+    ticked = False
+
+    def tick() -> None:
+        nonlocal ticked
+        while not stop.wait(every):
+            ticked = True
+            text = f"    still working... {elapsed_text(time.monotonic() - started)}"
+            console.progress(text.ljust(40))
+
+    thread = threading.Thread(target=tick, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+        if ticked:
+            console.say(f"    took {elapsed_text(time.monotonic() - started)}")
 
 
 @dataclasses.dataclass
