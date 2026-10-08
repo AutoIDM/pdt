@@ -77,13 +77,22 @@ jobs:
           name: winget-launcher
           path: pdt-windows-x64.zip
 
+      # GitHub lists the PR titles merged since the previous release. The
+      # awk drops its "New Contributors" section. Upgrade notes for a change
+      # in behavior are added by hand.
+      - if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${GITHUB_REF_NAME}" --jq .body \
+            | awk '/^## New Contributors/ {skip = 1; next} /^(## |\*\*Full Changelog)/ {skip = 0} !skip' > release-notes.md
+
       - if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: pdt-windows-x64.zip
-          # GitHub lists the PR titles merged since the previous release.
-          # Upgrade notes for a change in behavior are added by hand.
-          generate_release_notes: true
+          body_path: release-notes.md
 
   # The first submission of AutoIDM.pdt is a manual `wingetcreate new` from
   # the rendered manifests in the winget-manifests artifact. WINGET_TOKEN is a
