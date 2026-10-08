@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pdt import __version__, console, powershell, pwsh
+from pdt import __version__, console, powershell, pwsh, regions
 from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
                         merged_app, powershell_scripts)
 from pdt.utils.env_secret import private_file
@@ -31,15 +31,18 @@ def _needed(answer: str) -> str:
 # Ask only what pdt cannot supply. Every provider learns its own account,
 # subscription, or project from the credentials at deploy time and writes the
 # answer back, so region is the only thing left that the user must choose.
+# Each default is a function, so the region suggested from this computer's
+# time zone is read only when the question is asked.
 PROVIDER_QUESTIONS = {
     "azure": [
-        ("region", "Which Azure region should hold your jobs?", "eastus2", _needed),
+        ("region", regions.question("azure"), lambda: regions.suggest_region("azure"), _needed),
     ],
     "aws": [
-        ("region", "Which AWS region should hold your jobs?", "us-east-1", _needed),
+        ("region", regions.question("aws"), lambda: regions.suggest_region("aws"), _needed),
     ],
     "google-cloud": [
-        ("region", "Which Google Cloud region should hold your jobs?", "us-central1", _needed),
+        ("region", regions.question("google-cloud"),
+         lambda: regions.suggest_region("google-cloud"), _needed),
     ],
     "windows": [],
     "": [],
@@ -231,7 +234,7 @@ def ask_platform(assume_yes: bool) -> dict:
     settings = {"provider": provider}
     for key, question, default, check in PROVIDER_QUESTIONS[provider]:
         while True:
-            answer = _ask(question, default)
+            answer = _ask(question, default())
             problem = check(answer)
             if problem == "":
                 break

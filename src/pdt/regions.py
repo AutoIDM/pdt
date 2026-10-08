@@ -1,0 +1,254 @@
+"""Where this computer is, guessed from its time zone.
+
+`suggest_region` names the nearest region of each cloud provider. On the
+first deploy of a project, `choose_region` offers that region, lets the
+user pick another, and saves the answer, so later deploys do not ask.
+
+The region lists the tables below are drawn from:
+
+- AWS: https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html
+  Only Regions enabled by default appear, because an opt-in Region is a
+  manual step in the AWS console before anything can deploy there.
+- Azure: https://learn.microsoft.com/en-us/azure/reliability/regions-list
+- Google Cloud: https://docs.cloud.google.com/run/docs/locations
+
+macOS and Linux name the time zone the IANA way ("Europe/London").
+Windows names it its own way ("GMT Standard Time"); `WINDOWS_ZONES` maps
+those names to IANA names with the "001" rows of the CLDR table
+https://github.com/unicode-org/cldr/blob/main/common/supplemental/windowsZones.xml
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from pdt import config, console
+from pdt.utils.email_auth import can_prompt
+
+PROVIDERS = ("aws", "azure", "google-cloud")
+PROVIDER_NAMES = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
+REGION_LISTS = {
+    "aws": "https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html",
+    "azure": "https://learn.microsoft.com/en-us/azure/reliability/regions-list",
+    "google-cloud": "https://docs.cloud.google.com/run/docs/locations",
+}
+# An environment variable each provider module already reads for its region.
+REGION_ENV = {
+    "aws": ("AWS_REGION", "AWS_DEFAULT_REGION"),
+    "azure": ("PDT_AZURE_REGION",),
+    "google-cloud": ("PDT_GOOGLE_CLOUD_REGION",),
+}
+
+# (aws, azure, google-cloud) when the time zone names no known place.
+DEFAULT_REGIONS = ("us-east-1", "eastus2", "us-central1")
+# (aws, azure, google-cloud) for each country, by ISO 3166 code.
+US_EAST = ("us-east-1", "eastus2", "us-east4")
+COUNTRY_REGIONS = {
+    "US": US_EAST,
+    "CA": ("ca-central-1", "canadacentral", "northamerica-northeast2"),
+    "MX": ("us-east-1", "mexicocentral", "northamerica-south1"),
+    "BR": ("sa-east-1", "brazilsouth", "southamerica-east1"),
+    "AR": ("sa-east-1", "brazilsouth", "southamerica-east1"),
+    "CL": ("sa-east-1", "chilecentral", "southamerica-west1"),
+    "CO": ("us-east-1", "brazilsouth", "southamerica-east1"),
+    "GB": ("eu-west-2", "uksouth", "europe-west2"),
+    "IE": ("eu-west-1", "northeurope", "europe-west1"),
+    "DE": ("eu-central-1", "germanywestcentral", "europe-west3"),
+    "AT": ("eu-central-1", "austriaeast", "europe-west3"),
+    "CH": ("eu-central-1", "switzerlandnorth", "europe-west6"),
+    "FR": ("eu-west-3", "francecentral", "europe-west9"),
+    "BE": ("eu-west-3", "belgiumcentral", "europe-west1"),
+    "LU": ("eu-central-1", "belgiumcentral", "europe-west1"),
+    "NL": ("eu-central-1", "westeurope", "europe-west4"),
+    "IT": ("eu-central-1", "italynorth", "europe-west8"),
+    "ES": ("eu-west-3", "spaincentral", "europe-southwest1"),
+    "PT": ("eu-west-3", "spaincentral", "europe-southwest1"),
+    "SE": ("eu-north-1", "swedencentral", "europe-north2"),
+    "NO": ("eu-north-1", "norwayeast", "europe-north1"),
+    "DK": ("eu-north-1", "denmarkeast", "europe-north1"),
+    "FI": ("eu-north-1", "swedencentral", "europe-north1"),
+    "PL": ("eu-central-1", "polandcentral", "europe-central2"),
+    "CZ": ("eu-central-1", "germanywestcentral", "europe-central2"),
+    "IL": ("eu-central-1", "israelcentral", "me-west1"),
+    "AE": ("ap-south-1", "uaenorth", "me-central1"),
+    "QA": ("ap-south-1", "qatarcentral", "me-central1"),
+    "SA": ("ap-south-1", "uaenorth", "me-central2"),
+    "ZA": ("eu-west-1", "southafricanorth", "africa-south1"),
+    "IN": ("ap-south-1", "centralindia", "asia-south1"),
+    "SG": ("ap-southeast-1", "southeastasia", "asia-southeast1"),
+    "MY": ("ap-southeast-1", "malaysiawest", "asia-southeast1"),
+    "ID": ("ap-southeast-1", "indonesiacentral", "asia-southeast2"),
+    "TH": ("ap-southeast-1", "southeastasia", "asia-southeast3"),
+    "PH": ("ap-southeast-1", "southeastasia", "asia-southeast1"),
+    "VN": ("ap-southeast-1", "southeastasia", "asia-southeast1"),
+    "HK": ("ap-southeast-1", "eastasia", "asia-east2"),
+    "CN": ("ap-southeast-1", "eastasia", "asia-east2"),
+    "TW": ("ap-northeast-1", "eastasia", "asia-east1"),
+    "JP": ("ap-northeast-1", "japaneast", "asia-northeast1"),
+    "KR": ("ap-northeast-2", "koreacentral", "asia-northeast3"),
+    "AU": ("ap-southeast-2", "australiaeast", "australia-southeast1"),
+    "NZ": ("ap-southeast-2", "newzealandnorth", "australia-southeast1"),
+}
+# The United States spans four time zones, so its zone picks a region.
+ZONE_REGIONS = {
+    "America/Chicago": ("us-east-2", "centralus", "us-central1"),
+    "America/Denver": ("us-west-2", "westus3", "us-central1"),
+    "America/Phoenix": ("us-west-2", "westus3", "us-west1"),
+    "America/Los_Angeles": ("us-west-2", "westus2", "us-west1"),
+    "America/Anchorage": ("us-west-2", "westus2", "us-west1"),
+    "Pacific/Honolulu": ("us-west-2", "westus2", "us-west1"),
+    "America/Vancouver": ("us-west-2", "westus2", "us-west1"),
+    "America/Edmonton": ("us-west-2", "canadacentral", "northamerica-northeast2"),
+}
+ZONE_COUNTRY = {
+    "America/New_York": "US", "America/Detroit": "US", "America/Chicago": "US",
+    "America/Denver": "US", "America/Phoenix": "US", "America/Los_Angeles": "US",
+    "America/Anchorage": "US", "Pacific/Honolulu": "US", "America/Indiana/Indianapolis": "US",
+    "America/Toronto": "CA", "America/Montreal": "CA", "America/Vancouver": "CA",
+    "America/Edmonton": "CA", "America/Winnipeg": "CA", "America/Halifax": "CA",
+    "America/St_Johns": "CA", "America/Regina": "CA",
+    "America/Mexico_City": "MX", "America/Sao_Paulo": "BR",
+    "America/Argentina/Buenos_Aires": "AR", "America/Buenos_Aires": "AR",
+    "America/Santiago": "CL", "America/Bogota": "CO",
+    "Europe/London": "GB", "Europe/Belfast": "GB", "Europe/Dublin": "IE",
+    "Europe/Berlin": "DE", "Europe/Vienna": "AT", "Europe/Zurich": "CH", "Europe/Paris": "FR",
+    "Europe/Brussels": "BE", "Europe/Luxembourg": "LU", "Europe/Amsterdam": "NL",
+    "Europe/Rome": "IT", "Europe/Madrid": "ES", "Europe/Lisbon": "PT", "Europe/Stockholm": "SE",
+    "Europe/Oslo": "NO", "Europe/Copenhagen": "DK", "Europe/Helsinki": "FI",
+    "Europe/Warsaw": "PL", "Europe/Prague": "CZ",
+    "Asia/Jerusalem": "IL", "Asia/Tel_Aviv": "IL", "Asia/Dubai": "AE", "Asia/Qatar": "QA",
+    "Asia/Riyadh": "SA", "Africa/Johannesburg": "ZA",
+    "Asia/Kolkata": "IN", "Asia/Calcutta": "IN", "Asia/Singapore": "SG",
+    "Asia/Kuala_Lumpur": "MY", "Asia/Jakarta": "ID", "Asia/Bangkok": "TH",
+    "Asia/Manila": "PH", "Asia/Ho_Chi_Minh": "VN", "Asia/Hong_Kong": "HK",
+    "Asia/Shanghai": "CN", "Asia/Taipei": "TW", "Asia/Tokyo": "JP", "Asia/Seoul": "KR",
+    "Australia/Sydney": "AU", "Australia/Melbourne": "AU", "Australia/Brisbane": "AU",
+    "Australia/Adelaide": "AU", "Australia/Perth": "AU", "Australia/Hobart": "AU",
+    "Pacific/Auckland": "NZ",
+}
+# A zone missing from ZONE_COUNTRY still names its continent.
+CONTINENT_COUNTRY = {
+    "America": "US", "Europe": "DE", "Africa": "ZA", "Asia": "SG", "Australia": "AU",
+}
+WINDOWS_ZONES = {
+    "Eastern Standard Time": "America/New_York",
+    "Central Standard Time": "America/Chicago",
+    "Mountain Standard Time": "America/Denver",
+    "US Mountain Standard Time": "America/Phoenix",
+    "Pacific Standard Time": "America/Los_Angeles",
+    "Alaskan Standard Time": "America/Anchorage",
+    "Hawaiian Standard Time": "Pacific/Honolulu",
+    "Atlantic Standard Time": "America/Halifax",
+    "Newfoundland Standard Time": "America/St_Johns",
+    "Canada Central Standard Time": "America/Regina",
+    "Central Standard Time (Mexico)": "America/Mexico_City",
+    "E. South America Standard Time": "America/Sao_Paulo",
+    "Argentina Standard Time": "America/Buenos_Aires",
+    "Pacific SA Standard Time": "America/Santiago",
+    "SA Pacific Standard Time": "America/Bogota",
+    "GMT Standard Time": "Europe/London",
+    "W. Europe Standard Time": "Europe/Berlin",
+    "Romance Standard Time": "Europe/Paris",
+    "Central Europe Standard Time": "Europe/Budapest",
+    "Central European Standard Time": "Europe/Warsaw",
+    "GTB Standard Time": "Europe/Bucharest",
+    "FLE Standard Time": "Europe/Kiev",
+    "Israel Standard Time": "Asia/Jerusalem",
+    "Arabian Standard Time": "Asia/Dubai",
+    "Arab Standard Time": "Asia/Riyadh",
+    "South Africa Standard Time": "Africa/Johannesburg",
+    "India Standard Time": "Asia/Calcutta",
+    "Singapore Standard Time": "Asia/Singapore",
+    "SE Asia Standard Time": "Asia/Bangkok",
+    "China Standard Time": "Asia/Shanghai",
+    "Taipei Standard Time": "Asia/Taipei",
+    "Tokyo Standard Time": "Asia/Tokyo",
+    "Korea Standard Time": "Asia/Seoul",
+    "AUS Eastern Standard Time": "Australia/Sydney",
+    "E. Australia Standard Time": "Australia/Brisbane",
+    "Cen. Australia Standard Time": "Australia/Adelaide",
+    "W. Australia Standard Time": "Australia/Perth",
+    "Tasmania Standard Time": "Australia/Hobart",
+    "New Zealand Standard Time": "Pacific/Auckland",
+    "UTC": "Etc/UTC",
+}
+
+
+def windows_zone_id() -> str:
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SYSTEM\CurrentControlSet\Control\TimeZoneInformation") as key:
+            return str(winreg.QueryValueEx(key, "TimeZoneKeyName")[0])
+    except OSError:
+        return ""
+
+
+def local_timezone() -> str:
+    """The IANA name of this computer's time zone, or "" when it cannot be read."""
+    if os.name == "nt":
+        return WINDOWS_ZONES.get(windows_zone_id(), "")
+    zone = os.environ.get("TZ", "").lstrip(":")
+    if zone != "" and not zone.startswith("/"):
+        return zone
+    try:
+        target = os.readlink(zone or "/etc/localtime")
+    except OSError:
+        target = ""
+    if "zoneinfo/" in target:
+        return target.split("zoneinfo/", 1)[1]
+    try:
+        return Path("/etc/timezone").read_text().strip()
+    except OSError:
+        return ""
+
+
+def country(zone: str) -> str:
+    return ZONE_COUNTRY.get(zone) or CONTINENT_COUNTRY.get(zone.split("/", 1)[0], "")
+
+
+def suggest_region(provider: str, zone: str | None = None) -> str:
+    zone = local_timezone() if zone is None else zone
+    regions = ZONE_REGIONS.get(zone) or COUNTRY_REGIONS.get(country(zone)) or DEFAULT_REGIONS
+    return regions[PROVIDERS.index(provider)]
+
+
+def question(provider: str) -> str:
+    return f"Which {PROVIDER_NAMES[provider]} region should hold your jobs?"
+
+
+def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
+    """On a project's first deploy, ask for the region and save the answer.
+
+    Returns a problem for the user, or "". --yes takes the suggested region,
+    the same way it takes every other default. A run with no one to ask
+    and no --yes stops, because the region decides where the data lives.
+    """
+    if provider not in PROVIDERS or str(app["platform"].get("region") or "") != "":
+        return ""
+    if any(os.environ.get(name, "").strip() != "" for name in REGION_ENV[provider]):
+        return ""
+    zone = local_timezone()
+    region = suggest_region(provider, zone)
+    if zone != "":
+        reason = f"this computer's time zone is {zone}"
+    else:
+        reason = "pdt could not read this computer's time zone"
+    if assume_yes:
+        console.say(f"Using {PROVIDER_NAMES[provider]} region {region}, because {reason}.")
+    elif not can_prompt(None):
+        return (f"no {PROVIDER_NAMES[provider]} region is set. Add `region: {region}` under "
+                f"platform: in {config.PROJECT_FILE}, or run again with --yes to use {region}.")
+    else:
+        console.say()
+        console.say(f"pdt suggests {region}, because {reason}.")
+        console.field(f"All {PROVIDER_NAMES[provider]} regions", REGION_LISTS[provider])
+        try:
+            region = console.ask(question(provider), region) or region
+        except EOFError:
+            return (f"no {PROVIDER_NAMES[provider]} region is set. Add `region: {region}` under "
+                    f"platform: in {config.PROJECT_FILE}.")
+    saved = config.save_platform_key(app, "region", region)
+    console.done(f"Saved region {region} to {saved.relative_to(config.find_project())}.")
+    return ""

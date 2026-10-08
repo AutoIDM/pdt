@@ -21,7 +21,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from pdt import __version__, config, console, powershell, pwsh, runs_cli
+from pdt import __version__, config, console, powershell, pwsh, regions, runs_cli
 from pdt.config import ConfigError
 from pdt.deploy_common import CostEstimate
 from pdt.utils.email_auth import can_prompt
@@ -101,6 +101,10 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
     if problems:
         for problem in problems:
             console.error(f"{app_name}: {problem}")
+        return 1
+    problem = regions.choose_region(app, provider, assume_yes)
+    if problem != "":
+        console.error(f"{app_name}: {problem}")
         return 1
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))

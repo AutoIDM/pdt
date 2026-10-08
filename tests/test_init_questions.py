@@ -54,5 +54,5 @@ def test_no_question_accepts_an_empty_answer(provider):
 @pytest.mark.parametrize("provider", list(PROVIDER_QUESTIONS))
 def test_every_question_default_passes_its_own_check(provider):
     for key, _q, default, check in PROVIDER_QUESTIONS[provider]:
-        if default != "":
-            assert check(default) == "", f"{provider}.{key} offers a default it rejects"
+        if default() != "":
+            assert check(default()) == "", f"{provider}.{key} offers a default it rejects"
