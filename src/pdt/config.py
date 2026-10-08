@@ -549,12 +549,17 @@ def is_set(values, name: str) -> bool:
 
 
 def env_spec(app: dict) -> dict:
-    """The app's env spec. A PowerShell app's scripts take the place of run.py, so each
-    env var they read that config.yml does not list is required, and `read_by` names the
-    file and line of its first read."""
+    """The app's env spec, with each env var the app's code reads that config.yml does not
+    list: required, with `read_by` naming the file and line of its first read, or optional
+    for a Python read that has a fallback (`os.environ.get`, `os.getenv`)."""
     spec = app["env"]
     if not powershell_scripts(app["dir"]):
-        return spec
+        from pdt import python_env
+        read_by, optional = python_env.unlisted_env_reads(app["dir"], spec)
+        if not read_by and not optional:
+            return spec
+        return {**spec, "required": [*(spec.get("required") or []), *read_by],
+                "optional": [*(spec.get("optional") or []), *optional], "read_by": read_by}
     from pdt import powershell, pwsh
     try:
         read_by = powershell.unlisted_env_reads(powershell.extract(app["dir"]), spec)
@@ -572,7 +577,8 @@ def check_env(env_spec: dict, values=None) -> list[str]:
         if is_set(values, name):
             continue
         if name in read_by:
-            problems.append(f"missing required env var {name} ({read_by[name]} reads $env:{name})")
+            read = f'os.environ["{name}"]' if read_by[name].split(":")[0].endswith(".py") else f"$env:{name}"
+            problems.append(f"missing required env var {name} ({read_by[name]} reads {read})")
         else:
             problems.append(f"missing required env var {name}")
     groups = env_spec.get("one_of") or []
