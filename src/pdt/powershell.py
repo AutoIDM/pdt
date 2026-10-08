@@ -117,6 +117,12 @@ INSTALL_COMMANDS = lower({"Install-Module", "Install-PSResource", "Update-Module
 AZURE_AUTOMATION_COMMANDS = lower({"Get-AutomationConnection", "Get-AutomationVariable",
                                    "Get-AutomationCertificate", "Get-AutomationPSCredential",
                                    "Set-AutomationVariable"})
+# Env vars the operating system or pdt sets, which a script may read without config.yml listing them.
+SYSTEM_ENV_VARS = lower({
+    "APPDATA", "COMPUTERNAME", "HOME", "HOSTNAME", "LOCALAPPDATA", "OS", "PATH", "ProgramData",
+    "ProgramFiles", "ProgramFiles(x86)", "PSModulePath", "PUBLIC", "PWD", "SystemDrive",
+    "SystemRoot", "TEMP", "TMP", "TMPDIR", "USER", "USERDOMAIN", "USERNAME", "USERPROFILE", "windir",
+})
 # Login command -> the parameter a message names, and every parameter that signs in
 # without a person.
 LOGIN_COMMANDS = {command.lower(): (params[0], lower(params)) for command, params in {
@@ -323,6 +329,10 @@ def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
     requirements = facts.get("requirements")
     findings: list[Finding] = []
     needs: dict[str, ModuleNeed] = {}
+    env = app.get("env") or {}
+    listed = {name.lower() for key in ("required", "optional") for name in env.get(key) or []}
+    listed |= {name.lower() for group in env.get("one_of") or [] for name in group}
+    assigned = {read["name"].lower() for f in files for read in f["envReads"] if read["set"]}
     host: dict[str, str] = {}
 
     def need(name: str, version: str | None, source: str, file: str) -> None:
@@ -388,6 +398,19 @@ def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
             findings.extend(command_findings(c, path, on_windows, defined))
         if not on_windows:
             findings.extend(windows_findings(f))
+        for read in f["envReads"]:
+            key = read["name"].lower()
+            if read["set"] or key in listed or key in assigned or key in SYSTEM_ENV_VARS \
+                    or key.startswith("pdt_"):
+                continue
+            listed.add(key)
+            findings.append(Finding(
+                "unlisted-env", path, read["line"],
+                f"the script reads $env:{read['name']}, and config.yml does not list "
+                f"{read['name']} under env:, so pdt does not check it before a run and "
+                "pdt deploy does not send it to the job. Add it to env: required: in "
+                "config.yml, or to env: optional: when the script works without it.",
+                not on_windows))
 
     declared = {n.lower() for n in needs} | {n.lower() for n in requirements or {}}
     known = facts["known"]

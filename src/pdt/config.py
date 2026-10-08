@@ -571,6 +571,37 @@ def check_env(env_spec: dict, values=None) -> list[str]:
     return problems
 
 
+def missing_env(app: dict) -> str:
+    """check_env's problems for `app` as one message, or "" when nothing is missing.
+
+    The message names each missing var, where pdt looked, and the fix. A
+    deployed job (PDT_ENV_SECRET_RESOURCE set) reads the app's cloud secret,
+    so its fix is `pdt secrets <app> save`; anywhere else the fix is a .env line.
+    """
+    problems = check_env(app["env"])
+    if not problems:
+        return ""
+    secret = os.environ.get("PDT_ENV_SECRET_RESOURCE", "").strip()
+    files = find_env_files(app["dir"])
+    if secret != "":
+        looked = f"the app's cloud secret {secret}"
+        fix = (f"add each one as NAME=value to the .env file in your pdt project, "
+               f"then run `pdt secrets {app['name']} save`")
+    else:
+        if files:
+            looked = f"{', '.join(str(path) for path in files)} and the environment"
+            target = files[0]
+        else:
+            try:
+                target = find_project(app["dir"]) / ".env"
+            except ConfigError:
+                target = app["dir"] / ".env"
+            looked = (f"the environment; there is no .env file in {app['dir']} "
+                      "or a folder above it")
+        fix = f"add each one as NAME=value to {target}, then run the command again"
+    return f"{'; '.join(problems)}. pdt looked in {looked}. To fix it, {fix}."
+
+
 def key_problems(where: str, section: dict, allowed: set[str] | None) -> list[str]:
     # allowed=None means free-form (the config: section).
     problems = []

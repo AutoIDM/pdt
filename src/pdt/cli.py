@@ -139,8 +139,9 @@ def cmd_validate(_args) -> int:
             except ConfigError:
                 continue
             config.load_env(app["dir"])
-            for problem in config.check_env(app["env"]):
-                problems.append(f"{name}: {problem}")
+            missing = config.missing_env(app)
+            if missing != "":
+                problems.append(f"{name}: {missing}")
             if config.uses_email(app):
                 for problem in email_problems(app["config"]):
                     problems.append(f"{name}: {problem}")
@@ -178,8 +179,12 @@ def cmd_run(args) -> int:
     if name is None:
         return 1
     app = config.merged_app(name)
+    config.load_env(app["dir"])
+    missing = config.missing_env(app)
+    if missing != "":
+        console.error(f"{name}: {missing}")
+        return 1
     if config.uses_email(app):
-        config.load_env(app["dir"])
         problems = email_problems(app["config"], check_oauth=False)
         if problems:
             for problem in problems:

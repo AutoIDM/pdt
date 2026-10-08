@@ -36,7 +36,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from pdt.config import ConfigError, check_env, load_env, merged_app
+from pdt.config import ConfigError, load_env, merged_app, missing_env
 from pdt.utils.entra import graph_pages, graph_token
 from pdt.utils.log import die, log
 from pdt.utils.send_email import pick_transport, send_email
@@ -188,9 +188,9 @@ def main() -> int:
         app = merged_app(app_dir.name)
     except ConfigError as e:
         die(EXIT_CONFIG, "config error", error=str(e))
-    problems = check_env(app["env"])
-    if problems:
-        die(EXIT_CONFIG, "env vars missing", problems="; ".join(problems))
+    missing = missing_env(app)
+    if missing != "":
+        die(EXIT_CONFIG, f"env vars missing: {missing}")
     cfg = app["config"]
 
     lookback_hours = cfg_float(cfg, "lookback_hours")

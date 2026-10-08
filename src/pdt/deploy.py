@@ -86,8 +86,9 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
         return 1
     problems = config.validate_app(app_name)
     config.load_env(app["dir"])
-    for problem in config.check_env(app["env"]):
-        problems.append(f"env: {problem}")
+    missing = config.missing_env(app)
+    if missing != "":
+        problems.append(missing)
     if app["schedule"] is None:
         problems.append("schedule is required to deploy")
     if config.uses_email(app):
@@ -119,10 +120,9 @@ def secrets(app_name: str, action: str, assume_yes: bool = False,
         return 1
     config.load_env(app["dir"])
     if action in ("diff", "save"):
-        problems = config.check_env(app["env"])
-        if problems:
-            for problem in problems:
-                console.error(f"{app_name}: env: {problem}")
+        missing = config.missing_env(app)
+        if missing != "":
+            console.error(f"{app_name}: {missing}")
             return 1
     return dispatch(provider, "secrets", app_name, assume_yes, [action, *([name] if name else [])])
 

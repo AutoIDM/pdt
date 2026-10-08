@@ -330,3 +330,41 @@ def test_check_env_accepts_b64_in_place_of_path():
         "missing required env var PDT_KEY_PATH",
         "set one of: PDT_CERT_PATH",
     ]
+
+
+def test_missing_env_names_each_var_where_pdt_looked_and_the_fix(project, monkeypatch):
+    folder = add_app(project, "my-report", APP_YAML)
+    clear(monkeypatch)
+    monkeypatch.delenv("PDT_ENV_SECRET_RESOURCE", raising=False)
+    app = config.merged_app("my-report")
+    assert config.missing_env(app) == (
+        "missing required env var PDT_TOKEN; set one of: PDT_SECRET or PDT_KEY_B64. "
+        f"pdt looked in the environment; there is no .env file in {folder} or a folder above it. "
+        f"To fix it, add each one as NAME=value to {project / '.env'}, then run the command again.")
+
+    (project / ".env").write_text("PDT_SECRET=s\n")
+    config.load_env(folder)
+    assert config.missing_env(app) == (
+        f"missing required env var PDT_TOKEN. pdt looked in {project / '.env'} and the "
+        f"environment. To fix it, add each one as NAME=value to {project / '.env'}, "
+        "then run the command again.")
+
+    monkeypatch.setenv("PDT_ENV_SECRET_RESOURCE", "https://vault.example/secrets/pdt-env")
+    assert config.missing_env(app) == (
+        "missing required env var PDT_TOKEN. pdt looked in the app's cloud secret "
+        "https://vault.example/secrets/pdt-env. To fix it, add each one as NAME=value to the "
+        ".env file in your pdt project, then run `pdt secrets my-report save`.")
+
+    monkeypatch.setenv("PDT_TOKEN", "t")
+    assert config.missing_env(app) == ""
+
+
+def test_run_reports_a_missing_env_var_before_the_app_starts(project, monkeypatch, capsys):
+    add_app(project, "my-report", APP_YAML)
+    clear(monkeypatch)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("the app started"))
+    monkeypatch.setattr("sys.argv", ["pdt", "run", "my-report"])
+    assert cli.main() == 1
+    out = capsys.readouterr().out
+    assert "my-report: missing required env var PDT_TOKEN; set one of" in out
+    assert "To fix it, add each one as NAME=value to" in out

@@ -145,3 +145,19 @@ def test_a_python_app_is_not_a_powershell_app(project, wrapper):
     (folder / "extra.ps1").write_text("")
     from pdt import config
     assert config.powershell_scripts(folder) == []
+
+
+def test_a_missing_required_env_var_stops_the_run_before_any_script(
+        app_dir, wrapper, monkeypatch, capsys):
+    (app_dir / "report.ps1").write_text("")
+    (app_dir / "config.yml").write_text("schedule: daily\nenv:\n  required: [PDT_TEST_TENANT]\n")
+    monkeypatch.delenv("PDT_TEST_TENANT", raising=False)
+    monkeypatch.setattr(wrapper.subprocess, "run", lambda *a, **k: pytest.fail("a script ran"))
+
+    with pytest.raises(SystemExit) as stop:
+        wrapper.main([str(app_dir)])
+
+    assert stop.value.code == 1
+    out = capsys.readouterr().out
+    assert "env vars missing: missing required env var PDT_TEST_TENANT." in out
+    assert f"add each one as NAME=value to {app_dir.parent / '.env'}" in out

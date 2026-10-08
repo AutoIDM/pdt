@@ -66,6 +66,9 @@ def main(argv: list[str]) -> int:
         config.load_env(app_dir)
     except config.ConfigError as exc:
         die(1, "config is not valid", problem=str(exc))
+    missing = config.missing_env(app)
+    if missing != "":
+        die(1, f"env vars missing: {missing}")
     pwsh = ensure_pwsh()
     try:
         entries, _helpers = powershell.split_files(

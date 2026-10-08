@@ -10,7 +10,7 @@ from pdt.powershell import Finding, ModuleNeed, ScriptScan, install_command, jud
 EMPTY_FILE = {
     "parseErrors": [], "requires": None, "usingModules": [], "importModules": [], "commands": [],
     "definedFunctions": [], "params": [], "localInvocations": [], "strings": [], "types": [],
-    "newObjects": [], "assemblies": [], "dynamic": [], "remoting": [],
+    "newObjects": [], "assemblies": [], "dynamic": [], "remoting": [], "envReads": [],
 }
 
 
@@ -438,7 +438,26 @@ def test_in_box_and_built_in_modules_are_never_installed():
             {"name": "ActiveDirectory"}, {"name": "CimCmdlets"}]},
         "usingModules": [], "importModules": [], "commands": [], "definedFunctions": [],
         "params": [], "localInvocations": [], "strings": [], "types": [], "newObjects": [],
-        "assemblies": [], "dynamic": [], "remoting": []}], "requirements": None, "known": {}}
+        "assemblies": [], "dynamic": [], "remoting": [], "envReads": []}], "requirements": None, "known": {}}
     scan = powershell.judge(facts, {"run_scripts": None}, "windows", gallery=no_gallery)
     assert scan.modules == []
     assert scan.host_modules == ["ActiveDirectory"]
+
+
+def env_read(name, line, set=False):
+    return {"name": name, "line": line, "set": set}
+
+
+def test_an_env_var_the_script_reads_must_be_listed_in_config():
+    seen = facts(script("r.ps1", envReads=[
+        env_read("TENANT_ID", 2), env_read("TENANT_ID", 9), env_read("Client_Secret", 3),
+        env_read("NOTE", 4), env_read("PDT_OUTPUT_DIR", 5), env_read("TEMP", 6),
+        env_read("SCRATCH", 7, set=True), env_read("SCRATCH", 8)]))
+    app = {"run_scripts": None, "env": {"required": ["CLIENT_SECRET"], "optional": ["NOTE"]}}
+    assert certain(judge(seen, app, "azure", no_gallery)) == [("unlisted-env", "r.ps1", 2)]
+    assert warnings(judge(seen, app, "windows", no_gallery)) == [("unlisted-env", "r.ps1", 2)]
+    problems, _ = report(judge(seen, app, "azure", no_gallery))
+    assert problems == ["r.ps1:2: the script reads $env:TENANT_ID, and config.yml does not list "
+                        "TENANT_ID under env:, so pdt does not check it before a run and pdt "
+                        "deploy does not send it to the job. Add it to env: required: in "
+                        "config.yml, or to env: optional: when the script works without it."]
