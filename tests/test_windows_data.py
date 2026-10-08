@@ -1,3 +1,4 @@
+import base64
 from pathlib import Path
 
 import pytest
@@ -122,3 +123,91 @@ def test_deploy_prints_the_run_logs_folder(project, monkeypatch, capsys):
     assert deploy_windows.deploy(app, assume_yes=True) == 0
     out = capsys.readouterr().out
     assert f"Run logs: {project / 'ProgramData' / 'pdt' / 'my-report' / 'logs'}" in out
+
+
+@pytest.fixture
+def powershell_deploy(project, monkeypatch):
+    from pdt import powershell
+    folder = project / "ps-report"
+    folder.mkdir()
+    (folder / "config.yml").write_text("schedule: hourly\ntimezone: local\n")
+    (folder / "report.ps1").write_text("")
+    needs = []
+    host = []
+    checked = []
+    scripts = []
+    runs = []
+    monkeypatch.setattr(deploy_windows, "ensure_pwsh", lambda: r"C:\ProgramData\pdt\pwsh\pwsh.exe")
+    monkeypatch.setattr(powershell, "scan", lambda app, provider: powershell.ScriptScan(
+        ["report.ps1"], [], list(needs), [], list(host))
+        if provider == "windows" else pytest.fail(provider))
+
+    def has_module(command, **kwargs):
+        script = base64.b64decode(command[-1]).decode("utf-16-le")
+        checked.append((command[0], script))
+        missing = "ActiveDirectory\n" if "'ActiveDirectory'" in script else ""
+        return deploy_windows.subprocess.CompletedProcess(command, 0, missing, "")
+
+    monkeypatch.setattr(deploy_windows.subprocess, "run", has_module)
+    monkeypatch.setattr(deploy_windows, "_preflight",
+                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_run",
+                        lambda powershell, script, **kw: runs.append(powershell) or scripts.append(script) or True)
+    return config.merged_app("ps-report"), needs, host, checked, scripts, runs
+
+
+def test_powershell_deploy_installs_the_gallery_modules_in_the_elevated_step(
+        powershell_deploy, monkeypatch):
+    from pdt import powershell
+    app, needs, host, checked, scripts, _runs = powershell_deploy
+    needs.append(powershell.ModuleNeed("ImportExcel", None, "#Requires in report.ps1"))
+    host.append("ScheduledTasks")
+    actions = []
+    monkeypatch.setattr(deploy_windows, "confirm",
+                        lambda lines, assume_yes, cost=None: actions.extend(lines) or True)
+
+    assert deploy_windows.deploy(app, assume_yes=True) == 0
+
+    assert actions[-2:] == [
+        r"run the app's .ps1 files with PowerShell from C:\ProgramData\pdt\pwsh\pwsh.exe",
+        "install PowerShell modules ImportExcel (all users)"]
+    assert checked == [(r"C:\ProgramData\pdt\pwsh\pwsh.exe",
+                        "$have = Get-Module -ListAvailable -Name 'ScheduledTasks' | "
+                        "Select-Object -ExpandProperty Name; "
+                        "'ScheduledTasks' | Where-Object { $have -notcontains $_ }")]
+    (script,) = scripts
+    install = powershell.install_command([needs[0]])
+    encoded = base64.b64encode(install.encode("utf-16-le")).decode("ascii")
+    assert (r"& 'C:\ProgramData\pdt\pwsh\pwsh.exe' -NoProfile -NonInteractive "
+            f"-EncodedCommand {encoded}; if ($LASTEXITCODE -ne 0) {{ throw") in script
+    assert script.index("icacls") < script.index("-EncodedCommand") < script.index(
+        "Register-ScheduledTask")
+
+
+def test_powershell_deploy_without_modules_installs_nothing(powershell_deploy):
+    app, _needs, _host, checked, scripts, _runs = powershell_deploy
+    assert deploy_windows.deploy(app, assume_yes=True) == 0
+    (script,) = scripts
+    assert "EncodedCommand" not in script
+    assert checked == []
+
+
+def test_powershell_deploy_runs_the_elevated_script_through_windows_powershell(powershell_deploy):
+    from pdt import powershell
+    app, needs, _host, _checked, _scripts, runs = powershell_deploy
+    needs.append(powershell.ModuleNeed("ImportExcel", None, "#Requires in report.ps1"))
+    assert deploy_windows.deploy(app, assume_yes=True) == 0
+    assert runs == ["powershell.exe"]
+
+
+def test_powershell_deploy_names_the_windows_feature_of_a_missing_module(
+        powershell_deploy, capsys):
+    app, _needs, host, _checked, scripts, _runs = powershell_deploy
+    host.append("ActiveDirectory")
+    assert deploy_windows.deploy(app, assume_yes=True) == 1
+    assert scripts == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert "the PowerShell module ActiveDirectory, which this PC does not have" in out
+    assert "RSAT: Active Directory Domain Services and Lightweight Directory Services Tools" in out

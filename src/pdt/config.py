@@ -1,9 +1,10 @@
 """Load, merge, and validate pdt configuration.
 
 A project is a directory holding pdt.yml. An app is a directory inside it
-that contains run.py. Commands find the project by walking up from the
-working directory, so pdt works the same whether it was installed from
-PyPI or run from a clone of this repository.
+that contains run.py, or one that holds PowerShell scripts (.ps1) and no
+run.py; `pdt.powershell` describes how those run. Commands find the
+project by walking up from the working directory, so pdt works the same
+whether it was installed from PyPI or run from a clone of this repository.
 
 Merge order for one app, least to most specific:
   1. `platform:` defaults in the project pdt.yml
@@ -43,7 +44,8 @@ SCHEDULE_SHORTHAND = {
     "yearly": "0 0 1 1 *",
 }
 ROOT_KEYS = {"platform", "apps"}
-APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled"}
+APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
+            "run_scripts", "continue_on_error"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
@@ -63,6 +65,8 @@ KEY_HOME = {
     "env": APP_LEVEL,
     "storage": APP_LEVEL,
     "enabled": APP_LEVEL,
+    "run_scripts": APP_LEVEL,
+    "continue_on_error": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -132,12 +136,28 @@ def find_project(start: Path | None = None) -> Path:
         folder = folder.parent
 
 
+def powershell_scripts(app_dir: Path) -> list[str]:
+    """The .ps1 files of a PowerShell app, in name order; [] for a Python app. A folder with a
+    run.py is a Python app, unless it also holds the requirements.psd1 that
+    `pdt new APP --from-scripts` writes next to it."""
+    if not app_dir.is_dir():
+        return []
+    if (app_dir / "run.py").is_file() and not (app_dir / "requirements.psd1").is_file():
+        return []
+    return sorted(path.name for path in app_dir.iterdir()
+                  if path.is_file() and path.suffix.lower() == ".ps1")
+
+
+def is_app(folder: Path) -> bool:
+    return (folder / "run.py").is_file() or powershell_scripts(folder) != []
+
+
 def app_folders() -> list[str]:
     names = []
     for child in sorted(find_project().iterdir()):
         if child.name.startswith(".") or not child.is_dir():
             continue
-        if (child / "run.py").is_file():
+        if is_app(child):
             names.append(child.name)
     return names
 
@@ -167,7 +187,8 @@ def current_app() -> str | None:
 
 
 def uses_email(app: dict) -> bool:
-    return "pdt.utils.send_email" in (app["dir"] / "run.py").read_text()
+    run_py = app["dir"] / "run.py"
+    return run_py.is_file() and "pdt.utils.send_email" in run_py.read_text()
 
 
 def root_app_entry(root_cfg: dict, name: str) -> dict:
@@ -206,8 +227,8 @@ def merged_app(name: str) -> dict:
     if problem != "":
         raise ConfigError(problem)
     app_dir = find_project() / name
-    if not (app_dir / "run.py").is_file():
-        raise ConfigError(f"no app named {name!r} (no {name}/run.py)")
+    if not is_app(app_dir):
+        raise ConfigError(f"no app named {name!r} (no {name}/run.py and no .ps1 file in {name}/)")
     root_cfg = load_yaml(find_project() / PROJECT_FILE)
     entry = root_app_entry(root_cfg, name)
     own = load_yaml(app_dir / APP_FILE)
@@ -234,6 +255,8 @@ def merged_app(name: str) -> dict:
         "env": mapping(own, "env", own_where) or mapping(entry, "env", entry_where),
         "storage": own.get("storage", entry.get("storage", True)),
         "enabled": own.get("enabled", entry.get("enabled", True)),
+        "run_scripts": own.get("run_scripts", entry.get("run_scripts")),
+        "continue_on_error": own.get("continue_on_error", entry.get("continue_on_error", False)),
     }
 
 
@@ -611,7 +634,7 @@ def validate() -> list[str]:
             problems.append(f"{PROJECT_FILE}: every apps entry needs a name")
             continue
         if entry["name"] not in app_folders():
-            problems.append(f"{PROJECT_FILE}: app {entry['name']!r} has no directory with a run.py")
+            problems.append(f"{PROJECT_FILE}: app {entry['name']!r} has no directory with a run.py or a .ps1 file")
     for name in apps:
         problems.extend(validate_app(name))
     # Every app re-checks the shared platform: block; report it once.
@@ -683,4 +706,25 @@ def validate_app(name: str) -> list[str]:
         problems.append(f"{where}: storage must be true or false")
     if not isinstance(app["enabled"], bool):
         problems.append(f"{where}: enabled must be true or false")
+    if not isinstance(app["continue_on_error"], bool):
+        problems.append(f"{where}: continue_on_error must be true or false")
+    problems.extend(f"{where}: {problem}" for problem in run_scripts_problems(app))
     return problems
+
+
+def run_scripts_problems(app: dict) -> list[str]:
+    scripts = app["run_scripts"]
+    if scripts is None:
+        return []
+    available = powershell_scripts(app["dir"])
+    if not available:
+        return ["run_scripts only applies to an app made of .ps1 files; remove the key"]
+    if any(script.lower() == "run.ps1" for script in available):
+        return ["run.ps1 and run_scripts cannot both be present; keep one"]
+    not_a_list = "run_scripts must be a list of .ps1 file names in the order to run them"
+    if not isinstance(scripts, list) or scripts == []:
+        return [not_a_list]
+    if not all(isinstance(script, str) for script in scripts):
+        return [not_a_list]
+    return [f"run_scripts names {script!r}, which is not a .ps1 file in {app['name']}/"
+            for script in scripts if script not in available]

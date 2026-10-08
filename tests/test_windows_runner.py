@@ -17,6 +17,7 @@ RUNNER = Path(run_windows_task.__file__)
 def folders(tmp_path):
     app_dir = tmp_path / "my-report"
     app_dir.mkdir()
+    (app_dir / "run.py").write_text("")
     return app_dir, tmp_path / "logs", (tmp_path / "storage").as_uri() + "/"
 
 
@@ -61,6 +62,22 @@ def test_runner_sets_the_storage_url_for_the_child(folders, monkeypatch):
     assert command[0] == "/tools/uv.exe"
     assert kwargs["env"]["PDT_STORAGE_URL"] == url
     assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+
+
+def test_runner_runs_an_app_without_run_py_through_the_powershell_wrapper(folders, monkeypatch):
+    app_dir, logs, url = folders
+    (app_dir / "run.py").unlink()
+    (app_dir / "report.ps1").write_text("")
+    calls = []
+    monkeypatch.setenv("UV", "/tools/uv.exe")
+    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run(calls, b"", 0))
+
+    assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
+
+    (command, kwargs), = calls
+    assert command == ["/tools/uv.exe", "run", "--script",
+                       str(RUNNER.with_name("run_powershell.py")), str(app_dir)]
+    assert kwargs["cwd"] == str(app_dir)
 
 
 def test_runner_without_uv_logs_exit_127(folders, monkeypatch):

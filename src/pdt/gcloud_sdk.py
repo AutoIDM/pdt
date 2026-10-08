@@ -23,21 +23,17 @@ own sha256 below.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import platform
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
-import urllib.error
-import urllib.request
-import zipfile
 from pathlib import Path
 
 from pdt import console
 from pdt.config import data_home
+from pdt.download import fetch_verified
 
 VERSION = "581.0.0"
 CHECKSUMS = {
@@ -114,47 +110,14 @@ def set_sdk_python() -> None:
 def download_sdk(key: str) -> None:
     url = (f"https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/"
            f"{archive_name(key)}")
-    console.status(f"downloading {url}")
-    digest = hashlib.sha256()
-    tmp = tempfile.NamedTemporaryFile(suffix=Path(url).suffix, delete=False)
-    tmp_path = Path(tmp.name)
     stage = Path(tempfile.mkdtemp(prefix="pdt-gcloud-"))
     try:
-        with tmp, urllib.request.urlopen(url, timeout=60) as resp:
-            total = int(resp.headers.get("Content-Length") or 0)
-            done = 0
-            while True:
-                chunk = resp.read(1024 * 1024)
-                if chunk == b"":
-                    break
-                digest.update(chunk)
-                tmp.write(chunk)
-                done += len(chunk)
-                if total:
-                    console.progress(f"  {done // 2**20} / {total // 2**20} MB")
-        console.say()
-        if digest.hexdigest() != CHECKSUMS[key]:
-            raise GcloudError(
-                f"checksum mismatch for {url}\n"
-                f"  expected {CHECKSUMS[key]}\n"
-                f"  got      {digest.hexdigest()}\n"
-                f"A newer release may have replaced the pinned one; update VERSION "
-                f"and CHECKSUMS in pdt/gcloud_sdk.py from {INSTALL_DOCS}")
-        console.status(f"unpacking to {SDK_DIR}")
-        if url.endswith(".zip"):
-            with zipfile.ZipFile(tmp_path) as archive:
-                archive.extractall(stage)
-        else:
-            with tarfile.open(tmp_path) as tar:
-                tar.extractall(stage, filter="data")
+        fetch_verified(url, CHECKSUMS[key], stage, GcloudError)
         if SDK_DIR.exists():
             shutil.rmtree(SDK_DIR)
         SDK_DIR.mkdir(parents=True)
         shutil.move(str(stage / "google-cloud-sdk"), str(SDK_DIR / "google-cloud-sdk"))
-    except urllib.error.URLError as e:
-        raise GcloudError(f"download failed: {e.reason}")
     finally:
-        tmp_path.unlink(missing_ok=True)
         shutil.rmtree(stage, ignore_errors=True)
 
 

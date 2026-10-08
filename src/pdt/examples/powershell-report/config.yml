@@ -1,0 +1,18 @@
+# Sample PowerShell app. It writes a small CSV report with Export-Csv and
+# keeps it in the app's data store. pdt runs every .ps1 file in this folder
+# that no other .ps1 file loads.
+
+# How often this app runs.
+# Shorthand: hourly, daily, weekly, monthly, yearly.
+# Or a 5-field cron expression, for example "0 * * * *".
+schedule: "daily"
+
+# Every app gets a data store folder by default. Uncomment to opt out.
+# storage: false
+
+# Env vars this app reads. `pdt validate` checks them against your .env,
+# and `pdt deploy` uploads the ones that are set as cloud secrets.
+# REPORT_GREETING is optional, so the app runs with nothing set.
+env:
+  required: []
+  optional: [REPORT_GREETING]

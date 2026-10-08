@@ -31,7 +31,7 @@ def test_task_action_runs_the_runner_through_uv(project):
     assert (f"<Arguments>run --script {runner} {app['dir']} {folder / 'logs'} "
             f"{(folder / 'storage').as_uri()}/</Arguments>") in xml
     assert f"<WorkingDirectory>{app['dir']}</WorkingDirectory>" in xml
-    assert "powershell" not in xml.lower()
+    assert "powershell.exe" not in xml.lower()
 
 
 def test_task_stops_a_run_after_30_minutes_and_skips_an_overlapping_start(project):
