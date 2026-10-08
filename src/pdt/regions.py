@@ -1,8 +1,11 @@
 """Where this computer is, guessed from its time zone.
 
-`suggest_region` names the nearest region of each cloud provider. On the
-first deploy of a project, `choose_region` offers that region, lets the
-user pick another, and saves the answer, so later deploys do not ask.
+`region_suggestion` names a region for each cloud provider: the one
+nearest the place the time zone names, else the one the provider's CLI
+settings name (read from their files, without starting the CLI), else a
+fixed default. On the first deploy of a project, `choose_region` offers
+that region, lets the user pick another, and saves the answer, so later
+deploys do not ask.
 `local_currency` names the currency a cost estimate shows, from the
 regional setting of the user who runs pdt: the user default locale on
 Windows, AppleLocale on macOS, and LC_ALL, LC_MONETARY, or LANG on Linux.
@@ -24,6 +27,7 @@ https://github.com/unicode-org/cldr/blob/main/common/supplemental/windowsZones.x
 
 from __future__ import annotations
 
+import configparser
 import os
 import subprocess
 import sys
@@ -226,10 +230,92 @@ def country(zone: str) -> str:
     return ZONE_COUNTRY.get(zone) or CONTINENT_COUNTRY.get(zone.split("/", 1)[0], "")
 
 
-def suggest_region(provider: str, zone: str | None = None) -> str:
+def zone_region(provider: str, zone: str) -> str:
+    """The region nearest the place the time zone names, or "" when it names no place."""
+    regions = ZONE_REGIONS.get(zone) or COUNTRY_REGIONS.get(country(zone))
+    return regions[PROVIDERS.index(provider)] if regions else ""
+
+
+def ini_value(path: Path, sections: tuple[str, ...], key: str) -> str:
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(path, encoding="utf-8")
+    except (OSError, configparser.Error):
+        return ""
+    for section in sections:
+        value = parser.get(section, key, fallback="").strip()
+        if value != "":
+            return value
+    return ""
+
+
+def aws_profile_region(platform: dict) -> tuple[str, str]:
+    for name in ("AWS_REGION", "AWS_DEFAULT_REGION"):
+        if os.environ.get(name, "").strip() != "":
+            return os.environ[name].strip(), f"the environment variable {name} names it"
+    profile = str(platform.get("profile") or os.environ.get("AWS_PROFILE") or "default")
+    path = Path(os.environ.get("AWS_CONFIG_FILE") or Path.home() / ".aws" / "config")
+    section = "default" if profile == "default" else f"profile {profile}"
+    region = ini_value(path, (section,), "region")
+    return region, f"the AWS CLI profile {profile} in {path} names it"
+
+
+def azure_profile_region() -> tuple[str, str]:
+    path = Path(os.environ.get("AZURE_CONFIG_DIR") or Path.home() / ".azure") / "config"
+    return ini_value(path, ("defaults",), "location"), f"defaults.location in {path} names it"
+
+
+def gcloud_config_dir() -> Path:
+    if os.environ.get("CLOUDSDK_CONFIG"):
+        return Path(os.environ["CLOUDSDK_CONFIG"])
+    if os.name == "nt" and os.environ.get("APPDATA"):
+        return Path(os.environ["APPDATA"]) / "gcloud"
+    return Path.home() / ".config" / "gcloud"
+
+
+def gcloud_profile_region() -> tuple[str, str]:
+    folder = gcloud_config_dir()
+    name = os.environ.get("CLOUDSDK_ACTIVE_CONFIG_NAME", "").strip()
+    if name == "":
+        try:
+            name = (folder / "active_config").read_text().strip()
+        except OSError:
+            name = ""
+    path = folder / "configurations" / f"config_{name or 'default'}"
+    for section in ("run", "compute"):
+        region = ini_value(path, (section,), "region")
+        if region != "":
+            return region, f"{section}/region in the gcloud configuration {path} names it"
+    return "", ""
+
+
+def profile_region(provider: str, platform: dict) -> tuple[str, str]:
+    """The region the provider's own CLI settings name, and why, or ("", "")."""
+    if provider == "aws":
+        return aws_profile_region(platform)
+    if provider == "azure":
+        return azure_profile_region()
+    return gcloud_profile_region()
+
+
+def region_suggestion(provider: str, platform: dict | None = None,
+                      zone: str | None = None) -> tuple[str, str]:
+    """The region to suggest and the reason, in this order: the time zone,
+    the provider's CLI settings, then pdt's default."""
     zone = local_timezone() if zone is None else zone
-    regions = ZONE_REGIONS.get(zone) or COUNTRY_REGIONS.get(country(zone)) or DEFAULT_REGIONS
-    return regions[PROVIDERS.index(provider)]
+    region = zone_region(provider, zone)
+    if region != "":
+        return region, f"this computer's time zone is {zone}"
+    region, reason = profile_region(provider, platform or {})
+    if region != "":
+        return region, reason
+    region = DEFAULT_REGIONS[PROVIDERS.index(provider)]
+    return region, (f"it is pdt's default; the time zone {zone or 'of this computer'} "
+                    f"names no place and no {PROVIDER_NAMES[provider]} CLI setting names a region")
+
+
+def suggest_region(provider: str, zone: str | None = None) -> str:
+    return region_suggestion(provider, zone=zone)[0]
 
 
 def windows_currency() -> str:
@@ -304,12 +390,7 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
         return ""
     if any(os.environ.get(name, "").strip() != "" for name in REGION_ENV[provider]):
         return ""
-    zone = local_timezone()
-    region = suggest_region(provider, zone)
-    if zone != "":
-        reason = f"this computer's time zone is {zone}"
-    else:
-        reason = "pdt could not read this computer's time zone"
+    region, reason = region_suggestion(provider, app["platform"])
     if assume_yes:
         console.say(f"Using {PROVIDER_NAMES[provider]} region {region}, because {reason}.")
     elif not can_prompt(None):

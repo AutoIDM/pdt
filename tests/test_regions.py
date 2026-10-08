@@ -9,10 +9,15 @@ from pdt.config import merged_app
 
 
 @pytest.fixture(autouse=True)
-def no_region_env(monkeypatch):
+def no_region_env(monkeypatch, tmp_path):
     for names in regions.REGION_ENV.values():
         for name in names:
             monkeypatch.delenv(name, raising=False)
+    for name in ("AWS_PROFILE", "CLOUDSDK_ACTIVE_CONFIG_NAME"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "aws-config"))
+    monkeypatch.setenv("AZURE_CONFIG_DIR", str(tmp_path / "azure"))
+    monkeypatch.setenv("CLOUDSDK_CONFIG", str(tmp_path / "gcloud"))
 
 
 @pytest.mark.parametrize("zone,expected", [
@@ -115,3 +120,56 @@ def test_windows_has_no_region(project):
     add_app(project, "my-report")
     assert regions.choose_region(merged_app("my-report"), "windows", False) == ""
     assert region_in(project / "pdt.yml") is None
+
+
+def write_cli_settings(tmp_path):
+    (tmp_path / "aws-config").write_text("[default]\nregion = eu-west-1\n"
+                                         "[profile work]\nregion = ap-south-1\n")
+    (tmp_path / "azure").mkdir()
+    (tmp_path / "azure" / "config").write_text("[defaults]\nlocation = northeurope\n")
+    (tmp_path / "gcloud" / "configurations").mkdir(parents=True)
+    (tmp_path / "gcloud" / "active_config").write_text("work\n")
+    (tmp_path / "gcloud" / "configurations" / "config_work").write_text(
+        "[compute]\nregion = europe-west4\n[run]\nregion = europe-west1\n")
+
+
+def test_the_time_zone_comes_before_the_cli_settings(tmp_path):
+    write_cli_settings(tmp_path)
+    for provider, region in zip(regions.PROVIDERS, ("eu-west-2", "uksouth", "europe-west2")):
+        assert regions.region_suggestion(provider, {}, "Europe/London") == (
+            region, "this computer's time zone is Europe/London")
+
+
+def test_the_cli_settings_come_before_the_default(tmp_path):
+    write_cli_settings(tmp_path)
+    found = {p: regions.region_suggestion(p, {}, "Etc/UTC") for p in regions.PROVIDERS}
+    assert found["aws"][0] == "eu-west-1" and "AWS CLI profile default" in found["aws"][1]
+    assert found["azure"][0] == "northeurope" and "defaults.location" in found["azure"][1]
+    assert found["google-cloud"][0] == "europe-west1" and "run/region" in found["google-cloud"][1]
+
+
+def test_the_aws_settings_follow_the_profile(tmp_path):
+    write_cli_settings(tmp_path)
+    assert regions.region_suggestion("aws", {"profile": "work"}, "Etc/UTC")[0] == "ap-south-1"
+
+
+def test_gcloud_falls_back_to_the_compute_region(tmp_path):
+    write_cli_settings(tmp_path)
+    (tmp_path / "gcloud" / "configurations" / "config_work").write_text(
+        "[compute]\nregion = europe-west4\n")
+    assert regions.region_suggestion("google-cloud", {}, "")[0] == "europe-west4"
+
+
+def test_with_no_place_and_no_settings_the_default_says_so():
+    region, reason = regions.region_suggestion("azure", {}, "Etc/UTC")
+    assert region == "eastus2"
+    assert reason.startswith("it is pdt's default")
+
+
+def test_choose_region_names_the_cli_settings(project, monkeypatch, tmp_path, capsys):
+    write_cli_settings(tmp_path)
+    (project / "pdt.yml").write_text("platform:\n  provider: azure\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
+    assert regions.choose_region(merged_app("my-report"), "azure", True) == ""
+    assert "northeurope, because defaults.location" in capsys.readouterr().out
