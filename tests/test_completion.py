@@ -299,6 +299,8 @@ def test_this_window_line_loads_the_script_without_a_file(capsys, shell, line):
 def test_the_eval_line_registers_completion_in_a_shell_with_no_startup_file(shell, check):
     if shutil.which(shell) is None:
         pytest.skip(f"needs {shell}")
+    if os.name == "nt":
+        pytest.skip("bash.exe on a Windows runner is the WSL launcher, with no Linux installed")
     start = ["bash", "--norc", "--noprofile", "-c"] if shell == "bash" else ["zsh", "-f", "-c"]
     result = subprocess.run([*start, f'eval "$PDT_SCRIPT"; {check}'], capture_output=True,
                             text=True, env={**os.environ, "PDT_SCRIPT": completion._script(shell)})
