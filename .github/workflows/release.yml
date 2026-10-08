@@ -78,9 +78,19 @@ jobs:
           path: pdt-windows-x64.zip
 
       - if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${GITHUB_REF_NAME}" -f previous_tag_name="${previous}" --jq .body \
+            | awk '/^## New Contributors/ {skip = 1; next} /^(## |\*\*Full Changelog)/ {skip = 0} !skip' > release-notes.md
+
+      - if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: pdt-windows-x64.zip
+          body_path: release-notes.md
 
   # The first submission of AutoIDM.pdt is a manual `wingetcreate new` from
   # the rendered manifests in the winget-manifests artifact. WINGET_TOKEN is a
