@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from conftest import add_app
-from pdt import cli, config, console, deploy
+from pdt import cli, config, console, deploy, powershell
 
 
 def run_cli(monkeypatch, *argv):
@@ -569,3 +569,12 @@ def test_secrets_takes_the_action_before_the_app(project, monkeypatch):
     monkeypatch.setattr(deploy, "dispatch", lambda provider, *a: calls.append(a) or 0)
     assert run_cli(monkeypatch, "secrets", "save", "hello-world") == 0
     assert calls == [("secrets", "hello-world", False, ["save"])]
+
+
+def test_validate_says_it_scans_a_powershell_app(monkeypatch, capsys):
+    def scan(app, provider):
+        raise powershell.PowerShellError("pwsh failed")
+
+    monkeypatch.setattr(powershell, "scan", scan)
+    assert cli.powershell_problems("report", {"platform": {}}) == ["report: pwsh failed"]
+    assert "Scanning the PowerShell scripts in report..." in capsys.readouterr().out

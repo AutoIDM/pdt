@@ -394,6 +394,8 @@ def aws_cli() -> list[str]:
     """
     cached = subprocess.run(["uvx", "--offline", "--from", AWS_CLI_V2, "python", "-c", ""],
                             capture_output=True).returncode == 0
+    if not cached:
+        console.status("Installing the AWS CLI. This happens once and can take several minutes...")
     return ["uvx", *(["--offline"] if cached else []), "--from", AWS_CLI_V2, "aws"]
 
 

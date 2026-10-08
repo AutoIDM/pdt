@@ -125,6 +125,19 @@ def test_deploy_prints_the_run_logs_folder(project, monkeypatch, capsys):
     assert f"Run logs: {project / 'ProgramData' / 'pdt' / 'my-report' / 'logs'}" in out
 
 
+
+def test_deploy_says_what_it_does_before_each_slow_step(project, monkeypatch, capsys):
+    app = windows_app(project)
+    monkeypatch.setattr(deploy_windows, "_preflight",
+                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_run", lambda powershell, script, **kw: True)
+    assert deploy_windows.deploy(app, assume_yes=True) == 0
+    out = capsys.readouterr().out
+    assert out.index("Checking Windows scheduled task pdt-my-report") < out.index("Plan")
+    assert out.index("Plan") < out.index("Updating Windows scheduled task pdt-my-report")
+
 @pytest.fixture
 def powershell_deploy(project, monkeypatch):
     from pdt import powershell

@@ -471,6 +471,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         assert uv is not None
         on_machine_path = uv_on_machine_path()
         name = _task_name(app["name"])
+        console.status(f"Checking Windows scheduled task {name}...")
         user = _deploying_user()
         description, xml = task_xml(app, uv, on_machine_path)
         state = _task_state(powershell, name)
@@ -506,6 +507,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
         "-ErrorAction Stop | Out-Null"
     )
+    console.status(f"{'Updating' if exists else 'Creating'} Windows scheduled task {name}...")
     try:
         _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
@@ -523,6 +525,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     try:
         powershell, _uv = _preflight(require_uv=False)
         name = _task_name(app["name"])
+        console.status(f"Checking Windows scheduled task {name}...")
         state = _task_state(powershell, name)
         if state == "unmanaged":
             raise WindowsDeployError(
@@ -553,6 +556,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 1
+    console.status(f"Removing Windows scheduled task {name}..." if exists
+                   else f"Removing {logs}...")
     try:
         _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:

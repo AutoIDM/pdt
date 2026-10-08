@@ -536,6 +536,7 @@ def retire_job(settings: dict[str, str], job: str, current: dict, store: dict | 
 
 
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
+    console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     app_name = app["name"]
     job, _current = find_job(settings, app_name)
@@ -554,6 +555,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
+    console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     name = app["name"]
     job = job_name(settings, name)
@@ -798,6 +800,7 @@ def kept_line(store: dict[str, str], deployer, name: str) -> str:
 
 
 def destroy(app: dict, assume_yes: bool) -> int:
+    console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     name = app["name"]
     job, current_job = find_job(settings, name)

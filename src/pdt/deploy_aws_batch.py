@@ -498,6 +498,7 @@ def batch_clients(session) -> dict:
 
 
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
+    console.status("Checking your AWS sign-in...")
     session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
     clients = batch_clients(session)
@@ -517,6 +518,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 def deploy(app: dict, assume_yes: bool) -> int:
     docker_preflight()
+    console.status("Checking your AWS sign-in...")
     session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
     clients = batch_clients(session)
@@ -658,6 +660,7 @@ def note_if_gone(label: str, deleted: bool) -> None:
 
 
 def destroy(app: dict, assume_yes: bool) -> int:
+    console.status("Checking your AWS sign-in...")
     session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
     clients = batch_clients(session)

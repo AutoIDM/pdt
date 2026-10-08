@@ -164,6 +164,7 @@ def cmd_validate(_args) -> int:
 
 def powershell_problems(name: str, app: dict) -> list[str]:
     """Scan a PowerShell app, print what it runs and needs, and return the certain findings."""
+    console.status(f"Scanning the PowerShell scripts in {name}...")
     try:
         scan = powershell.scan(app, app["platform"].get("provider", ""))
     except (pwsh.PwshError, powershell.PowerShellError) as e:

@@ -646,6 +646,7 @@ def destroy_old_secret_versions(project: str, sid: str) -> None:
 
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
     project, _region = project_region(app)
+    console.status("Checking your Google Cloud sign-in...")
     project = preflight(app, project, assume_yes)
     sid = secret_id(app["name"])
     secret = read_json_or_none("secrets", "describe", sid, "--project", project)
@@ -664,6 +665,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 def deploy(app: dict, assume_yes: bool) -> int:
     name = app["name"]
     project, region = project_region(app)
+    console.status("Checking your Google Cloud sign-in...")
     project = preflight(app, project, assume_yes)
     billing_confirmed = ensure_apis(project, assume_yes)
 
@@ -817,6 +819,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
 def destroy(app: dict, assume_yes: bool) -> int:
     name = app["name"]
     project, region = project_region(app)
+    console.status("Checking your Google Cloud sign-in...")
     project = preflight(app, project, assume_yes)
     ensure_apis(project, assume_yes, DESTROY_APIS)
     job = f"pdt-{name}"
