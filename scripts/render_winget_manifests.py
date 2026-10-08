@@ -1,6 +1,6 @@
 """Fill the winget/ manifest templates for one release.
 
-    render_winget_manifests.py --version 0.1.4 --sha256 <zip hash> --out DIR
+    render_winget_manifests.py --version 0.1.6 --sha256 <zip hash> --out DIR
 """
 
 from __future__ import annotations
