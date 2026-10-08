@@ -517,3 +517,52 @@ def test_every_command_is_in_exactly_one_help_group():
     grouped = [name for names in cli.COMMAND_GROUPS.values() for name in names]
     assert sorted(grouped) == sorted(sub.choices)
     assert len(grouped) == len(set(grouped))
+
+
+@pytest.mark.parametrize("argv, hint", [
+    (["lgos"], "Did you mean `pdt logs`?"),
+    (["deploy", "--yse"], "Did you mean `--yes`?"),
+    (["runs", "--sinse", "3d"], "Did you mean `--since`?"),
+    (["completion", "zhs"], "Did you mean `pdt completion zsh`?"),
+])
+def test_a_mistyped_command_or_option_names_the_closest_one(monkeypatch, capsys, argv, hint):
+    with pytest.raises(SystemExit) as stop:
+        run_cli(monkeypatch, *argv)
+    assert stop.value.code == 2
+    assert capsys.readouterr().err.rstrip().endswith(hint)
+
+
+def test_a_word_close_to_nothing_gets_no_hint(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        run_cli(monkeypatch, "xyzzy")
+    assert "Did you mean" not in capsys.readouterr().err
+
+
+def test_a_subcommand_error_shows_a_usage_line_that_runs(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        run_cli(monkeypatch, "logs", "--lines", "x")
+    err = capsys.readouterr().err
+    assert "pdt logs: error:" in err
+    assert "<command> ..." not in err
+
+
+def test_a_mistyped_app_names_the_closest_app(project, monkeypatch, capsys):
+    add_app(project, "list-empty-security-groups", "schedule: daily\n")
+    assert run_cli(monkeypatch, "logs", "list-empty-securty-groups") == 1
+    assert ("no app named 'list-empty-securty-groups'. Did you mean "
+            "`pdt logs list-empty-security-groups`?") in capsys.readouterr().out
+
+
+def test_a_mistyped_secrets_action_names_the_closest_action(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    assert run_cli(monkeypatch, "secrets", "hello-world", "sav") == 1
+    assert "Did you mean `pdt secrets hello-world save`?" in capsys.readouterr().out
+
+
+def test_secrets_takes_the_action_before_the_app(project, monkeypatch):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(config, "check_env", lambda env: [])
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda provider, *a: calls.append(a) or 0)
+    assert run_cli(monkeypatch, "secrets", "save", "hello-world") == 0
+    assert calls == [("secrets", "hello-world", False, ["save"])]

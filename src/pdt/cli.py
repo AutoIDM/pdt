@@ -10,7 +10,9 @@ pdt finds it by walking up from the working directory to the nearest pdt.yml.
 from __future__ import annotations
 
 import argparse
+import difflib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -94,7 +96,8 @@ def choose_app(name: str | None, command: str, quiet: bool = False) -> str | Non
     if name is None:
         console.heading(f"{APP_QUESTIONS[command]} This project has:")
     else:
-        console.error(f"no app named {name!r}. This project has:")
+        hint = did_you_mean(name, apps, f"pdt {command} {{}}")
+        console.error(f"no app named {name!r}.{hint} This project has:")
     shown = apps[:5]
     for app in shown:
         console.name(app)
@@ -294,11 +297,15 @@ def use_app_folder(args) -> None:
 
 
 def cmd_secrets(args) -> int:
+    if args.app in deploy_common.SECRET_ACTIONS and args.action in config.find_apps():
+        args.app, args.action = args.action, args.app
     use_app_folder(args)
     action = args.action or "diff"
     if action not in deploy_common.SECRET_ACTIONS:
+        hint = did_you_mean(action, deploy_common.SECRET_ACTIONS,
+                            f"pdt secrets {args.app or '<app>'} {{}}")
         console.error(f"no secrets action named {action!r}; "
-                      f"choose {', '.join(deploy_common.SECRET_ACTIONS)}")
+                      f"choose {', '.join(deploy_common.SECRET_ACTIONS)}.{hint}")
         return 1
     name = choose_app(args.app, "secrets")
     if name is None:
@@ -363,6 +370,37 @@ def cmd_completion(args) -> int:
     return completion.install(args.shell, print_only=args.script)
 
 
+def did_you_mean(word: str, choices, hint: str) -> str:
+    """" Did you mean `<hint>`?" with the choice closest to a mistyped `word` put in
+    `hint`'s `{}`, or "" when no choice is close. Every typo hint in pdt comes from here."""
+    match = difflib.get_close_matches(word, list(choices), n=1)
+    if not match:
+        return ""
+    return f" Did you mean `{hint.format(match[0])}`?"
+
+
+class Parser(argparse.ArgumentParser):
+    """An ArgumentParser whose errors name the closest command or option:
+    `pdt lgos` says "Did you mean `pdt logs`?"."""
+
+    commands: dict[str, argparse.ArgumentParser] = {}
+
+    def parse_args(self, args=None, namespace=None):
+        args, extras = self.parse_known_args(args, namespace)
+        if extras:
+            command = self.commands.get(getattr(args, "command", None), self)
+            hint = did_you_mean(extras[0], command._option_string_actions, "{}")
+            self.error(f"unrecognized arguments: {' '.join(extras)}.{hint}")
+        return args
+
+    def error(self, message):
+        typo = re.search(r"invalid choice: '([^']*)'", message)
+        if typo is not None:
+            choices = [choice for action in self._actions for choice in action.choices or []]
+            message += "." + did_you_mean(typo.group(1), choices, f"{self.prog} {{}}")
+        super().error(message)
+
+
 # Capitalize only the first letter of a section title, so "Cloud CLIs" keeps its case.
 rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
     lambda title: title[:1].upper() + title[1:])
@@ -379,12 +417,13 @@ COMMAND_GROUPS = {
 
 def build_parser() -> argparse.ArgumentParser:
     summary, _, note = __doc__.strip().partition("\n\n")
-    parser = argparse.ArgumentParser(
+    parser = Parser(
         prog="pdt", description=summary, epilog=note, usage="pdt [-h] [--version] <command> ...",
         formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
     parser.add_argument("--version", action="version", version=__version__)
     # The commands are listed under COMMAND_GROUPS instead of the one argparse section.
-    sub = parser.add_subparsers(dest="command", metavar="<command>", help=argparse.SUPPRESS)
+    sub = parser.add_subparsers(dest="command", metavar="<command>", help=argparse.SUPPRESS,
+                                prog="pdt")
 
     def add_parser(name: str, **kwargs):
         return sub.add_parser(
@@ -496,6 +535,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, label in (("aws", "AWS"), ("az", "Azure"), ("gcloud", "Google Cloud")):
         p = add_parser(name, help=f"run the {label} CLI that pdt installs")
         p.add_argument("args", nargs=argparse.REMAINDER)
+    parser.commands = sub.choices
     entries = {a.dest: a for a in sub._choices_actions}
     for title, names in COMMAND_GROUPS.items():
         group = parser.add_argument_group(title)
