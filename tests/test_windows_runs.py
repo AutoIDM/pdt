@@ -84,6 +84,23 @@ def test_plan_names_the_saved_path_when_uv_is_not_on_the_system_path(project, mo
     assert f"<Command>{saved}</Command>" in xml
 
 
+def test_deploy_fills_the_notice_cache_in_the_elevated_script(project, monkeypatch):
+    app = windows_app(project)
+    calls = []
+    monkeypatch.setattr(deploy_windows, "_preflight", lambda: ("powershell.exe", "uv.exe"))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "uv_on_machine_path", lambda: True)
+    monkeypatch.setattr(deploy_windows, "confirm", lambda *args: True)
+    monkeypatch.setattr(deploy_windows, "_run",
+                        lambda *args, **kwargs: calls.append((args, kwargs)) or True)
+
+    assert deploy_windows.deploy(app, assume_yes=True) == 0
+    (args, kwargs), = calls
+    assert f"& 'uv.exe' sync --script '{deploy_windows.NOTICE}'" in args[1]
+    assert kwargs == {"elevate": True, "warn_exit": deploy_windows.NOTICE_CACHE_FAILED}
+
+
 def test_uv_is_never_on_the_machine_path_off_windows():
     assert deploy_windows.uv_on_machine_path() is False
 

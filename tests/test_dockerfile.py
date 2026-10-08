@@ -28,6 +28,24 @@ def test_an_app_without_a_dockerfile_gets_the_generated_one(tmp_path):
     assert image_action(app, "build image x") == "build image x"
 
 
+def test_the_generated_dockerfile_installs_the_deploying_notice_script(tmp_path):
+    app, stage = staged(tmp_path, "my-report")
+    write_dockerfile(stage, app)
+    dockerfile = (stage / "Dockerfile").read_text()
+    assert "COPY .pdt-runtime/pdt /opt/pdt/pdt" in dockerfile
+    assert "uv sync --script /opt/pdt/pdt/notify.py" in dockerfile
+    assert "uv run --script /opt/pdt/pdt/notify.py --app-dir /workspace/my-report" in dockerfile
+    assert "export PDT_APP=my-report PDT_RUN_ID=$run_id" in dockerfile
+    assert "uv export" not in dockerfile
+
+
+def test_the_notice_uses_each_cloud_provider_run_identifier():
+    dockerfile = DOCKERFILE.format(app="my-report")
+    assert "AWS_BATCH_JOB_ID" in dockerfile
+    assert "CONTAINER_APP_JOB_EXECUTION_NAME" in dockerfile
+    assert "CLOUD_RUN_EXECUTION" in dockerfile
+
+
 def test_an_app_dockerfile_is_used_as_is_at_the_context_root(tmp_path):
     own = "FROM python:3.12-slim\nCOPY . /workspace\n"
     app, stage = staged(tmp_path, "my-report", own)
@@ -89,9 +107,10 @@ def test_context_ignore_text_keeps_comments_and_blank_lines():
 def test_the_entrypoint_ends_the_log_with_the_exit_code(tmp_path):
     (tmp_path / "uv").write_text("#!/bin/sh\necho working\nexit 3\n")
     (tmp_path / "uv").chmod(0o755)
-    line = next(line for line in DOCKERFILE.splitlines() if line.startswith("ENTRYPOINT "))
+    dockerfile = DOCKERFILE.format(app="my-report")
+    line = next(line for line in dockerfile.splitlines() if line.startswith("ENTRYPOINT "))
     command = json.loads(line.removeprefix("ENTRYPOINT "))
     proc = subprocess.run(command, capture_output=True, text=True,
                           env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
-    assert proc.stdout == "working\npdt: exit 3\n"
+    assert proc.stdout == "working\nworking\npdt: exit 3\n"
     assert proc.returncode == 3

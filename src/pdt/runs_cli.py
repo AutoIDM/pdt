@@ -23,9 +23,9 @@ from pdt import console
 
 DEFAULT_RUNS = 10
 TAIL_LINES = 20
-SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
-SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
-               "or a date and time (2026-09-20T14:00)")
+SINCE_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+SINCE_FORMS = ("a count with a unit (5m, 12h, 3d, 2w), a date (2026-09-20), "
+               "a date and time (2026-09-20T14:00), or a UTC time (2026-09-20T14:00Z)")
 EXIT_MARKER = "pdt: exit "
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 TEXT_LINE = re.compile(r"^\d\d:\d\d:\d\d (DEBUG|INFO|WARNING|ERROR)\s+(.*)$")
@@ -153,18 +153,23 @@ def duration_text(run: Run) -> str:
 
 
 def parse_amount(value: str) -> timedelta | None:
-    """The length of time a count with a unit (12h, 3d, 2w) names, or None."""
-    match = re.fullmatch(r"(\d+)([hdw])", value)
+    """The length of time a count with a unit (5m, 12h, 3d, 2w) names, or None."""
+    match = re.fullmatch(r"(\d+)([mhdw])", value)
     if match is None:
         return None
     return timedelta(**{SINCE_UNITS[match.group(2)]: int(match.group(1))})
 
 
 def parse_since(value: str, now: datetime) -> datetime:
-    """The moment `--since VALUE` names; a date without a time is local midnight."""
+    """The moment `--since VALUE` names; a date without a time is local midnight,
+    and a time ending in Z is UTC."""
     amount = parse_amount(value)
     if amount is not None:
         return now - amount
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%MZ").replace(tzinfo=UTC)
+    except ValueError:
+        pass
     for form in ("%Y-%m-%d", "%Y-%m-%dT%H:%M"):
         try:
             return datetime.strptime(value, form).astimezone()
@@ -294,8 +299,11 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
         run = shown[0] if args.number is None else found[args.number - 1]
         if resolve is not None:
             resolve([run])
-    lines = in_time_order([line for line in read_lines(run)
-                           if not line.message.startswith(EXIT_MARKER)])
+    return show_logs(app_name, args, run, read_lines(run))
+
+
+def show_logs(app_name: str, args, run: Run, raw_lines: list[Line]) -> int:
+    lines = in_time_order([line for line in raw_lines if not line.message.startswith(EXIT_MARKER)])
     if args.errors:
         lines = [line for line in lines if line.level not in ("DEBUG", "INFO")]
     total = len(lines)

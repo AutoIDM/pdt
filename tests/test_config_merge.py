@@ -90,6 +90,19 @@ def test_storage_must_be_a_bool(project):
     assert any("storage must be true or false" in p for p in validate_app("my-report"))
 
 
+def test_failure_notices_default_to_email_and_can_be_disabled(project):
+    add_app(project, "my-report", "on_failure: []\n")
+    assert merged_app("my-report")["on_failure"] == []
+    add_app(project, "other-report")
+    assert merged_app("other-report")["on_failure"] == ["email"]
+
+
+def test_an_unsupported_failure_notice_is_rejected(project):
+    add_app(project, "my-report", "on_failure: [slack]\n")
+    assert validate_app("my-report") == [
+        "my-report/config.yml: on_failure value 'slack' is not supported yet"]
+
+
 def test_windows_app_with_no_timezone_runs_on_local_time(project):
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
     add_app(project, "my-report", "schedule: daily\n")
