@@ -448,16 +448,18 @@ def env_read(name, line, set=False):
     return {"name": name, "line": line, "set": set}
 
 
-def test_an_env_var_the_script_reads_must_be_listed_in_config():
+def test_each_env_var_a_script_reads_and_config_does_not_list_is_found_once():
     seen = facts(script("r.ps1", envReads=[
         env_read("TENANT_ID", 2), env_read("TENANT_ID", 9), env_read("Client_Secret", 3),
         env_read("NOTE", 4), env_read("PDT_OUTPUT_DIR", 5), env_read("TEMP", 6),
-        env_read("SCRATCH", 7, set=True), env_read("SCRATCH", 8)]))
-    app = {"run_scripts": None, "env": {"required": ["CLIENT_SECRET"], "optional": ["NOTE"]}}
-    assert certain(judge(seen, app, "azure", no_gallery)) == [("unlisted-env", "r.ps1", 2)]
-    assert warnings(judge(seen, app, "windows", no_gallery)) == [("unlisted-env", "r.ps1", 2)]
-    problems, _ = report(judge(seen, app, "azure", no_gallery))
-    assert problems == ["r.ps1:2: the script reads $env:TENANT_ID, and config.yml does not list "
-                        "TENANT_ID under env:, so pdt does not check it before a run and pdt "
-                        "deploy does not send it to the job. Add it to env: required: in "
-                        "config.yml, or to env: optional: when the script works without it."]
+        env_read("SCRATCH", 7, set=True), env_read("SCRATCH", 8), env_read("Either", 10)]),
+        script("lib/helper.ps1", envReads=[env_read("API_URL", 3)]))
+    env = {"required": ["CLIENT_SECRET"], "optional": ["NOTE"], "one_of": [["EITHER"], ["OR"]]}
+    assert powershell.unlisted_env_reads(seen, env) == {
+        "TENANT_ID": "r.ps1:2", "API_URL": "lib/helper.ps1:3"}
+
+
+@pytest.mark.parametrize("provider", ["azure", "windows"])
+def test_an_env_var_read_is_no_finding(provider):
+    seen = facts(script("r.ps1", envReads=[env_read("TENANT_ID", 2)]))
+    assert judge(seen, {"run_scripts": None, "env": {}}, provider, no_gallery).findings == []

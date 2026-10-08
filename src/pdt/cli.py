@@ -142,14 +142,14 @@ def cmd_validate(_args) -> int:
             except ConfigError:
                 continue
             config.load_env(app["dir"])
+            if config.powershell_scripts(app["dir"]):
+                problems.extend(powershell_problems(name, app))
             missing = config.missing_env(app)
             if missing != "":
                 problems.append(f"{name}: {missing}")
             if config.uses_email(app):
                 for problem in email_problems(app["config"]):
                     problems.append(f"{name}: {problem}")
-            if config.powershell_scripts(app["dir"]):
-                problems.extend(powershell_problems(name, app))
     finally:
         os.environ.clear()
         os.environ.update(original_env)

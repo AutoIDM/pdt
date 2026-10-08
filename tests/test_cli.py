@@ -193,6 +193,7 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
 def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
     folder = project / "ps-report"
     folder.mkdir()
+    monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})
     (folder / "report.ps1").write_text("")
     calls = []
     monkeypatch.setattr(cli.subprocess, "run", lambda command, **kwargs: calls.append(
@@ -208,6 +209,7 @@ def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
 def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
     folder = project / "ps-report"
     folder.mkdir()
+    monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})
     for name in ("report.ps1", "requirements.psd1", "run.py"):
         (folder / name).write_text("")
     calls = []

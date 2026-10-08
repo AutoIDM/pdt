@@ -78,7 +78,7 @@ This folder is a pdt project: a set of small scheduled jobs. Every folder holdin
 
 - Start a new app with `pdt new <name> --from <example>`; `pdt examples` lists the starting points. Do not copy an app folder by hand.
 - An app declares its dependencies in the script header at the top of its `run.py`. The pinned `pdt-cli` version is the version a deployed job keeps running, so leave it alone unless the app is being redeployed.
-- List the env vars an app reads under `env:` in its `config.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets.
+- List the env vars an app reads under `env:` in its `config.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets. Each `$env:NAME` a PowerShell app's scripts read is required even when `config.yml` does not list it; list it under `env: optional:` when the scripts work without it.
 - Check work with `pdt validate`, try it with `pdt run <name>`, ship it with `pdt deploy <name>`.
 - Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all, `--follow` to wait for a running run's lines); add `--json` to any of them for machine-readable output.
 - Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
@@ -111,13 +111,16 @@ from pdt import config, powershell
 from pdt.pwsh import ensure_pwsh
 from pdt.run_powershell import pwsh_command
 from pdt.utils import storage
-from pdt.utils.log import log
+from pdt.utils.log import die, log
 
 
 def main() -> int:
     app_dir = Path(__file__).resolve().parent
     app = config.merged_app(app_dir.name)
     config.load_env(app_dir)
+    missing = config.missing_env(app)
+    if missing != "":
+        die(1, f"env vars missing: {missing}")
     pwsh = ensure_pwsh()
     entries = powershell.split_files(
         powershell.extract(app_dir)["files"], app["run_scripts"])[0]

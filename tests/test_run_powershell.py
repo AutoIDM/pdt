@@ -14,7 +14,7 @@ from pdt import run_powershell
 def wrapper(monkeypatch):
     monkeypatch.setattr(run_powershell, "ensure_pwsh", lambda: "/fake/pwsh")
     monkeypatch.setattr(run_powershell.powershell, "extract", lambda folder: {"files": [
-        {"file": path.name, "localInvocations": []}
+        {"file": path.name, "localInvocations": [], "envReads": []}
         for path in sorted(folder.iterdir()) if path.suffix == ".ps1"]})
     return run_powershell
 

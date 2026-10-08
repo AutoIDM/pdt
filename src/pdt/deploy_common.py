@@ -334,7 +334,10 @@ def run_build(command: list[str]) -> None:
 
 
 def gather_secrets(app: dict) -> dict[str, str]:
-    spec = app["env"]
+    try:
+        spec = config.env_spec(app)
+    except config.ConfigError as e:
+        fail(str(e))
     names = list(spec.get("required") or [])
     for group in spec.get("one_of") or []:
         names.extend(group)

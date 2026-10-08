@@ -548,12 +548,32 @@ def is_set(values, name: str) -> bool:
     return name.endswith("_PATH") and str(values.get(name[:-5] + "_B64", "")).strip() != ""
 
 
+def env_spec(app: dict) -> dict:
+    """The app's env spec. A PowerShell app's scripts take the place of run.py, so each
+    env var they read that config.yml does not list is required, and `read_by` names the
+    file and line of its first read."""
+    spec = app["env"]
+    if not powershell_scripts(app["dir"]):
+        return spec
+    from pdt import powershell, pwsh
+    try:
+        read_by = powershell.unlisted_env_reads(powershell.extract(app["dir"]), spec)
+    except (pwsh.PwshError, powershell.PowerShellError) as e:
+        raise ConfigError(str(e))
+    return {**spec, "required": [*(spec.get("required") or []), *read_by], "read_by": read_by}
+
+
 def check_env(env_spec: dict, values=None) -> list[str]:
     if values is None:
         values = os.environ
     problems = []
+    read_by = env_spec.get("read_by") or {}
     for name in env_spec.get("required") or []:
-        if not is_set(values, name):
+        if is_set(values, name):
+            continue
+        if name in read_by:
+            problems.append(f"missing required env var {name} ({read_by[name]} reads $env:{name})")
+        else:
             problems.append(f"missing required env var {name}")
     groups = env_spec.get("one_of") or []
     if groups:
@@ -577,8 +597,13 @@ def missing_env(app: dict) -> str:
     The message names each missing var, where pdt looked, and the fix. A
     deployed job (PDT_ENV_SECRET_RESOURCE set) reads the app's cloud secret,
     so its fix is `pdt secrets <app> save`; anywhere else the fix is a .env line.
+    A var that only a script's read requires can also move to env: optional:.
     """
-    problems = check_env(app["env"])
+    try:
+        spec = env_spec(app)
+    except ConfigError as e:
+        return str(e)
+    problems = check_env(spec)
     if not problems:
         return ""
     secret = os.environ.get("PDT_ENV_SECRET_RESOURCE", "").strip()
@@ -599,7 +624,11 @@ def missing_env(app: dict) -> str:
             looked = (f"the environment; there is no .env file in {app['dir']} "
                       "or a folder above it")
         fix = f"add each one as NAME=value to {target}, then run the command again"
-    return f"{'; '.join(problems)}. pdt looked in {looked}. To fix it, {fix}."
+    message = f"{'; '.join(problems)}. pdt looked in {looked}. To fix it, {fix}."
+    if any(not is_set(os.environ, name) for name in spec.get("read_by") or {}):
+        message += (f" If a script works without one that it reads, list that one under "
+                    f"env: optional: in {app['name']}/{APP_FILE} instead.")
+    return message
 
 
 def key_problems(where: str, section: dict, allowed: set[str] | None) -> list[str]:
