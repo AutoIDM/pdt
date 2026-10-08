@@ -31,6 +31,11 @@ from pdt import console
 DEFAULT_RUNS = 10
 TAIL_LINES = 20
 FOLLOW_SECONDS = 10
+# How long a cloud provider's log store can take to show a line, the same on every cloud.
+# Azure Monitor lists resource logs as "usually available within 3 to 10 minutes"
+# (https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-ingestion-time);
+# AWS and Google document no maximum. The windows provider reads a local file, with no delay.
+LOG_DELAY = timedelta(minutes=5)
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
 SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
                "or a date and time (2026-09-20T14:00)")

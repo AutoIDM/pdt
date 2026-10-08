@@ -280,9 +280,6 @@ def average_run_seconds(job: str, rg: str) -> float | None:
 
 
 LOG_ANALYTICS_API = "https://api.loganalytics.io"
-# Azure Monitor lists resource logs as "usually available within 3 to 10 minutes":
-# https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-ingestion-time
-LOG_DELAY = datetime.timedelta(minutes=10)
 EXIT_CODE = re.compile(r"exit code '(\d+)'")
 RUN_STATUS = {"Succeeded": "succeeded", "Running": "running", "Processing": "running"}
 
@@ -346,7 +343,7 @@ def logs(app: dict, settings: dict, rest: list[str]) -> int:
     job, _current = find_job(settings, app["name"])
     return runs_cli.logs(lambda: list_runs(settings, job),
                          lambda run: read_lines(settings, job, run.id), app["name"], rest,
-                         store="Azure Log Analytics", delay=LOG_DELAY)
+                         store="Azure Log Analytics", delay=runs_cli.LOG_DELAY)
 
 
 def cost_estimate_for(region: str, currency: str, cron: str, job: str, rg: str,

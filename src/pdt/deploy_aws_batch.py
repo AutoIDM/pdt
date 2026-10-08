@@ -739,10 +739,6 @@ def job_run(job: dict) -> runs_cli.Run:
                         (job.get("container") or {}).get("exitCode"))
 
 
-# How long pdt waits for CloudWatch Logs to show a line. AWS documents no maximum.
-LOG_DELAY = timedelta(minutes=1)
-
-
 def list_runs(batch, job_name: str) -> list[runs_cli.Run]:
     kwargs = {"jobQueue": JOB_QUEUE.name,
               "filters": [{"name": "JOB_NAME", "values": [job_name]}]}
@@ -803,4 +799,4 @@ def logs(app: dict, session, rest: list[str]) -> int:
     return runs_cli.logs(
         lambda: list_runs(batch, names["job_definition"]),
         lambda run: read_lines(batch, logs_client, names["log_group"], run),
-        app["name"], rest, store="CloudWatch Logs", delay=LOG_DELAY)
+        app["name"], rest, store="CloudWatch Logs", delay=runs_cli.LOG_DELAY)
