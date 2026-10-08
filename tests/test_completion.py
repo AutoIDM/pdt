@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 
@@ -99,9 +100,8 @@ def test_setup_writes_zsh_registration(tmp_path, monkeypatch):
     first = startup.read_text()
     completion.setup()
 
-    assert "$+functions[compdef]" in first
-    assert "source " in first
-    assert (tmp_path / "data" / "pdt" / "pdt.zsh").is_file()
+    assert "pdt.zsh" in first
+    assert "$+functions[compdef]" in (tmp_path / "data" / "pdt" / "pdt.zsh").read_text()
     assert startup.read_text() == first
 
 
@@ -196,7 +196,9 @@ def test_install_command_sets_up_a_named_shell(tmp_path, monkeypatch, capsys):
     assert completion.install("zsh", print_only=False) == 0
 
     assert "pdt.zsh" in (tmp_path / ".zshrc").read_text()
-    assert str(tmp_path / ".zshrc") in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert str(tmp_path / ".zshrc") in out
+    assert 'eval "$(pdt completion zsh --script)"' in out
 
 
 def test_install_command_with_unknown_shell_names_the_choices(monkeypatch, capsys):
@@ -277,11 +279,31 @@ def test_a_group_policy_that_keeps_the_policy_is_named(monkeypatch, capsys):
     assert "Group Policy" in capsys.readouterr().out
 
 
-def test_this_window_line_loads_the_script_without_a_file(capsys):
-    completion._this_window("powershell")
+@pytest.mark.parametrize(("shell", "line"), [
+    ("bash", 'eval "$(pdt completion bash --script)"'),
+    ("zsh", 'eval "$(pdt completion zsh --script)"'),
+    ("fish", "pdt completion fish --script | source"),
+    ("powershell", "pdt completion powershell --script | Out-String | Invoke-Expression"),
+    ("pwsh", "pdt completion pwsh --script | Out-String | Invoke-Expression"),
+])
+def test_this_window_line_loads_the_script_without_a_file(capsys, shell, line):
+    completion._this_window(shell)
 
-    assert ("pdt completion powershell --script | Out-String | Invoke-Expression"
-            in capsys.readouterr().out)
+    assert line in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("shell", "check"), [
+    ("bash", "complete -p pdt"),
+    ("zsh", "(( ${+_comps[pdt]} ))"),
+])
+def test_the_eval_line_registers_completion_in_a_shell_with_no_startup_file(shell, check):
+    if shutil.which(shell) is None:
+        pytest.skip(f"needs {shell}")
+    start = ["bash", "--norc", "--noprofile", "-c"] if shell == "bash" else ["zsh", "-f", "-c"]
+    result = subprocess.run([*start, f'eval "$PDT_SCRIPT"; {check}'], capture_output=True,
+                            text=True, env={**os.environ, "PDT_SCRIPT": completion._script(shell)})
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_powershell_on_windows_sets_up_both_profiles(tmp_path, monkeypatch):

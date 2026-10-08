@@ -64,6 +64,10 @@ def _script(shell: str) -> str:
     else:
         executables = ["pdt", "./pdt"]
     code = argcomplete.shellcode(executables, shell=name)
+    if name == "zsh":
+        # The script registers itself with compdef, which only exists after compinit.
+        code = ("if ! (( $+functions[compdef] )); then\n  autoload -Uz compinit\n  compinit\nfi\n"
+                + code)
     return f"{START}\n{code.rstrip()}\n{END}\n"
 
 
@@ -123,10 +127,6 @@ def setup(shell: str | None = None) -> None:
         if name in {"powershell", "pwsh"}:
             path = str(script).replace("'", "''")
             source = f"{START}\n. '{path}'\n{END}\n"
-        elif name == "zsh":
-            source = (f"{START}\nif ! (( $+functions[compdef] )); then\n"
-                      f"  autoload -Uz compinit\n  compinit\nfi\n"
-                      f"source {shlex.quote(str(script))}\n{END}\n")
         else:
             source = f"{START}\n. {shlex.quote(str(script))}\n{END}\n"
         _install(startup, source)
@@ -168,17 +168,27 @@ def install(shell: str | None, print_only: bool) -> int:
     console.done(f"Tab completion for pdt is set up in {startup or script}")
     if shell in {"powershell", "pwsh"} and os.name == "nt":
         _allow_profile(shell)
-        _this_window(shell)
-        return 0
-    console.say("It works in every new terminal.")
+    else:
+        console.say("It works in every new terminal.")
+    _this_window(shell)
     return 0
 
 
 def _this_window(shell: str) -> None:
-    # A command cannot change the PowerShell session that started it, and
-    # Invoke-Expression runs text, which no execution policy blocks.
+    # A command cannot change the shell session that started it, so the user runs a
+    # line that loads the script into it. In PowerShell, Invoke-Expression runs text,
+    # which no execution policy blocks.
+    if shell in {"bash", "zsh"}:
+        # macOS ships bash 3.2, whose `source <(...)` reads nothing.
+        line = f'eval "$(pdt completion {shell} --script)"'
+    elif shell == "fish":
+        line = "pdt completion fish --script | source"
+    elif shell in {"powershell", "pwsh"}:
+        line = f"pdt completion {shell} --script | Out-String | Invoke-Expression"
+    else:
+        return
     console.say("To use it in this window now, run:")
-    console.command(f"pdt completion {shell} --script | Out-String | Invoke-Expression")
+    console.command(line)
 
 
 def _powershell(shell: str, command: str) -> subprocess.CompletedProcess:
