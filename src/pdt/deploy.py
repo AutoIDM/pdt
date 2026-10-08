@@ -10,6 +10,9 @@ installs its own SDK packages. Every provider script accepts
 
 PDT_PROJECT reaches the provider script through the environment, so the
 child agrees with the parent about which project it is working on.
+PDT_CLI_VERSION does the same for pdt's version: from a clone, the script
+imports pdt from src/, where no package metadata says which version it is,
+and the image a PowerShell app builds pins pdt-cli at that version.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from pdt import config, console, powershell, pwsh, runs_cli
+from pdt import __version__, config, console, powershell, pwsh, runs_cli
 from pdt.config import ConfigError
 from pdt.deploy_common import CostEstimate
 from pdt.utils.email_auth import can_prompt
@@ -57,19 +60,21 @@ def provider_command(provider: str, command: str, app_name: str, assume_yes: boo
     return args + (extra or [])
 
 
+def provider_env() -> dict[str, str]:
+    return dict(os.environ, PDT_PROJECT=str(config.find_project()), PDT_CLI_VERSION=__version__)
+
+
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
              extra: list[str] | None = None) -> int:
-    env = dict(os.environ, PDT_PROJECT=str(config.find_project()))
     args = provider_command(provider, command, app_name, assume_yes, extra)
-    return subprocess.run(args, check=False, env=env).returncode
+    return subprocess.run(args, check=False, env=provider_env()).returncode
 
 
 def dispatch_output(provider: str, command: str, app_name: str,
                     extra: list[str]) -> tuple[int, str]:
     """Like dispatch, but return the provider script's output instead of showing it."""
-    env = dict(os.environ, PDT_PROJECT=str(config.find_project()))
     proc = subprocess.run(provider_command(provider, command, app_name, False, extra),
-                          check=False, env=env, stdout=subprocess.PIPE, text=True)
+                          check=False, env=provider_env(), stdout=subprocess.PIPE, text=True)
     return proc.returncode, proc.stdout
 
 
