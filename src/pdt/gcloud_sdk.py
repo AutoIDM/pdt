@@ -90,8 +90,8 @@ def ensure_gcloud() -> str:
         set_sdk_python()
         return str(LOCAL_GCLOUD)
     key = sdk_platform()
-    console.warn(f"gcloud is not installed. pdt downloads the Google Cloud CLI "
-                 f"{VERSION} (~150 MB) to {SDK_DIR}.")
+    console.status(f"Installing the Google Cloud CLI {VERSION} (~150 MB) to {SDK_DIR}. "
+                   "This happens once and can take several minutes...")
     console.say("Deleting that folder uninstalls it again.")
     download_sdk(key)
     if not LOCAL_GCLOUD.is_file():

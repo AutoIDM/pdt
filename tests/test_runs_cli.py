@@ -385,3 +385,49 @@ def test_health_counts_the_10_newest_runs(capsys):
 def test_health_counts_an_unreadable_app_as_a_failure(capsys):
     assert runs_cli.health({"a": None}, False) == 1
     assert "unknown" in capsys.readouterr().out
+
+
+RUNNING = Run("stream-3", T0, None, "running")
+
+
+def test_logs_of_a_running_run_with_no_lines_yet_offers_follow(capsys):
+    assert runs_cli.logs(lambda: [RUNNING], lambda run: [], "report", [],
+                         store="Azure Log Analytics", delay=timedelta(minutes=10)) == 0
+    out = capsys.readouterr().out
+    assert "run 1 is still running, and Azure Log Analytics has no lines from it yet." in out
+    assert "pdt logs report 1 --follow" in out
+
+
+def test_logs_of_a_running_run_says_more_lines_will_come(capsys):
+    assert runs_cli.logs(lambda: [RUNNING], lambda run: [Line(T0, "INFO", "started")],
+                         "report", []) == 0
+    out = capsys.readouterr().out
+    assert "run 1 is still running, so more lines will come." in out
+
+
+def test_follow_prints_each_new_line_once_until_the_run_ends(monkeypatch, capsys):
+    ended = dataclasses.replace(RUNNING, ended=T1, status="succeeded", exit_code=0)
+    states = iter([[RUNNING], [RUNNING], [ended]])
+    reads = iter([
+        [Line(T0, "INFO", "started")],
+        [Line(T0, "INFO", "started"), Line(T0, "INFO", "row"), Line(T0, "INFO", "row")],
+        [Line(T0, "INFO", "started"), Line(T0, "INFO", "row"), Line(T0, "INFO", "row"),
+         Line(T1, "INFO", "done")],
+    ])
+    first = next(reads)
+    sleeps = []
+    monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
+    assert runs_cli.logs(lambda: next(states),
+                         lambda run: first if not sleeps else next(reads),
+                         "report", ["--follow"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("INFO    started") == 1
+    assert out.count("row") == 2
+    assert out.count("done") == 1
+    assert out.rstrip().endswith("run 1 of report: started 2026-09-23 10:00:12, 12s, succeeded, exit 0")
+    assert sleeps == [runs_cli.FOLLOW_SECONDS] * 2
+
+
+def test_follow_with_json_or_head_is_an_error(capsys):
+    assert runs_cli.logs(list_two, read, "report", ["--follow", "--json"]) == 1
+    assert "--follow prints lines as they arrive" in capsys.readouterr().out

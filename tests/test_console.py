@@ -21,9 +21,9 @@ def test_cost_aligns_amounts_and_totals_them(capsys):
                  "us-east-1 list prices", "excludes logs")
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == "Estimated monthly cost (us-east-1 list prices):"
-    assert lines[1] == "  Lambda: 730 runs  $   0.12"
-    assert lines[2] == "  Secrets Manager   $   0.40"
-    assert lines[3] == "  total             $   0.52"
+    assert lines[1] == "  Lambda: 730 runs  $USD   0.12"
+    assert lines[2] == "  Secrets Manager   $USD   0.40"
+    assert lines[3] == "  total             $USD   0.52"
     assert lines[4] == "  excludes logs"
 
 

@@ -109,9 +109,20 @@ def test_read_lines_queries_the_shared_workspace(monkeypatch):
     assert "ContainerGroupName_s startswith 'job-a'" in query
 
 
-def test_logs_notes_the_ingestion_delay_for_a_finished_run_with_no_lines(monkeypatch, capsys):
+def test_logs_names_the_ingestion_delay_for_a_run_that_ended_moments_ago(monkeypatch, capsys):
+    end = datetime.datetime.now(datetime.UTC) - datetime.timedelta(minutes=1)
+    start = end - datetime.timedelta(seconds=12)
+    fake_az(monkeypatch, [execution("job-a", "Succeeded", start.isoformat(), end.isoformat())])
+    monkeypatch.setattr(deploy_azure_container_apps, "read_lines", lambda *args: [])
+    assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS, []) == 0
+    out = capsys.readouterr().out
+    assert "Azure Log Analytics can take up to 5 minutes to show a line, so no lines are" in out
+    assert "pdt logs report 1 --follow" in out
+
+
+def test_logs_says_plainly_when_an_old_run_has_no_lines(monkeypatch, capsys):
     ended = execution("job-a", "Succeeded", "2026-09-23T10:00:00Z", "2026-09-23T10:00:12Z")
     fake_az(monkeypatch, [ended])
     monkeypatch.setattr(deploy_azure_container_apps, "read_lines", lambda *args: [])
     assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS, []) == 0
-    assert "receives lines 2 to 5 minutes" in capsys.readouterr().out
+    assert "Azure Log Analytics has no lines from run 1." in capsys.readouterr().out

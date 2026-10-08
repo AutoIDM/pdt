@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 
@@ -99,9 +100,8 @@ def test_setup_writes_zsh_registration(tmp_path, monkeypatch):
     first = startup.read_text()
     completion.setup()
 
-    assert "$+functions[compdef]" in first
-    assert "source " in first
-    assert (tmp_path / "data" / "pdt" / "pdt.zsh").is_file()
+    assert "pdt.zsh" in first
+    assert "$+functions[compdef]" in (tmp_path / "data" / "pdt" / "pdt.zsh").read_text()
     assert startup.read_text() == first
 
 
@@ -196,7 +196,9 @@ def test_install_command_sets_up_a_named_shell(tmp_path, monkeypatch, capsys):
     assert completion.install("zsh", print_only=False) == 0
 
     assert "pdt.zsh" in (tmp_path / ".zshrc").read_text()
-    assert str(tmp_path / ".zshrc") in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert str(tmp_path / ".zshrc") in out
+    assert 'eval "$(pdt completion zsh --script)"' in out
 
 
 def test_install_command_with_unknown_shell_names_the_choices(monkeypatch, capsys):
@@ -217,3 +219,102 @@ def test_script_flag_prints_without_writing(tmp_path, monkeypatch, capsys):
     assert "pdt" in capsys.readouterr().out
     assert not (tmp_path / ".bashrc").exists()
     assert not (tmp_path / "data").exists()
+
+
+class FakePowerShell:
+    def __init__(self, *policies):
+        self.policies = list(policies)
+        self.commands = []
+
+    def __call__(self, shell, command):
+        self.commands.append(command)
+        stdout = self.policies.pop(0) + "\n" if command == "Get-ExecutionPolicy" else ""
+        return subprocess.CompletedProcess([shell], 0, stdout, "")
+
+
+def test_powershell_profile_needs_nothing_under_remote_signed(monkeypatch, capsys):
+    fake = FakePowerShell("RemoteSigned")
+    monkeypatch.setattr(completion, "_powershell", fake)
+
+    completion._allow_profile("powershell")
+
+    assert fake.commands == ["Get-ExecutionPolicy"]
+    assert "every new PowerShell window" in capsys.readouterr().out
+
+
+def test_restricted_policy_without_a_terminal_prints_the_fix(monkeypatch, capsys):
+    fake = FakePowerShell("Restricted")
+    monkeypatch.setattr(completion, "_powershell", fake)
+    monkeypatch.setattr(completion, "can_prompt", lambda interactive: False)
+
+    completion._allow_profile("powershell")
+
+    assert fake.commands == ["Get-ExecutionPolicy"]
+    out = capsys.readouterr().out
+    assert "(Restricted)" in out
+    assert completion.ALLOW_PROFILE in out
+
+
+def test_restricted_policy_is_changed_after_a_yes(monkeypatch, capsys):
+    fake = FakePowerShell("Restricted", "RemoteSigned")
+    monkeypatch.setattr(completion, "_powershell", fake)
+    monkeypatch.setattr(completion, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(completion.console, "confirm", lambda question: True)
+
+    completion._allow_profile("powershell")
+
+    assert fake.commands == ["Get-ExecutionPolicy", f"{completion.ALLOW_PROFILE} -Force",
+                             "Get-ExecutionPolicy"]
+    assert "now RemoteSigned" in capsys.readouterr().out
+
+
+def test_a_group_policy_that_keeps_the_policy_is_named(monkeypatch, capsys):
+    fake = FakePowerShell("Restricted", "Restricted")
+    monkeypatch.setattr(completion, "_powershell", fake)
+    monkeypatch.setattr(completion, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(completion.console, "confirm", lambda question: True)
+
+    completion._allow_profile("powershell")
+
+    assert "Group Policy" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("shell", "line"), [
+    ("bash", 'eval "$(pdt completion bash --script)"'),
+    ("zsh", 'eval "$(pdt completion zsh --script)"'),
+    ("fish", "pdt completion fish --script | source"),
+    ("powershell", "pdt completion powershell --script | Out-String | Invoke-Expression"),
+    ("pwsh", "pdt completion pwsh --script | Out-String | Invoke-Expression"),
+])
+def test_this_window_line_loads_the_script_without_a_file(capsys, shell, line):
+    completion._this_window(shell)
+
+    assert line in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("shell", "check"), [
+    ("bash", "complete -p pdt"),
+    ("zsh", "(( ${+_comps[pdt]} ))"),
+])
+def test_the_eval_line_registers_completion_in_a_shell_with_no_startup_file(shell, check):
+    if shutil.which(shell) is None:
+        pytest.skip(f"needs {shell}")
+    if os.name == "nt":
+        pytest.skip("bash.exe on a Windows runner is the WSL launcher, with no Linux installed")
+    start = ["bash", "--norc", "--noprofile", "-c"] if shell == "bash" else ["zsh", "-f", "-c"]
+    result = subprocess.run([*start, f'eval "$PDT_SCRIPT"; {check}'], capture_output=True,
+                            text=True, env={**os.environ, "PDT_SCRIPT": completion._script(shell)})
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_powershell_on_windows_sets_up_both_profiles(tmp_path, monkeypatch):
+    def paths(shell):
+        return tmp_path / "pdt.ps1", tmp_path / f"{shell}.ps1"
+
+    monkeypatch.setattr(completion, "_paths", paths)
+    monkeypatch.setattr(completion.os, "name", "nt")
+    completion.setup("powershell")
+
+    assert (tmp_path / "powershell.ps1").is_file()
+    assert (tmp_path / "pwsh.ps1").is_file()

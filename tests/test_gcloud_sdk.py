@@ -16,7 +16,7 @@ def restore_quiet_env(monkeypatch):
 
 
 @pytest.mark.parametrize("ci", ["true", ""])
-def test_a_missing_gcloud_downloads_without_a_question(monkeypatch, tmp_path, ci):
+def test_a_missing_gcloud_downloads_without_a_question(monkeypatch, tmp_path, capsys, ci):
     monkeypatch.setenv("CI", ci)
     monkeypatch.setattr(gcloud_sdk.shutil, "which", lambda name: None)
     monkeypatch.setattr(gcloud_sdk, "LOCAL_GCLOUD", tmp_path / "gcloud")
@@ -34,6 +34,7 @@ def test_a_missing_gcloud_downloads_without_a_question(monkeypatch, tmp_path, ci
     monkeypatch.setattr(gcloud_sdk, "download_sdk", fake_download)
     assert gcloud_sdk.ensure_gcloud() == str(tmp_path / "gcloud")
     assert downloads == [gcloud_sdk.sdk_platform()]
+    assert "Installing the Google Cloud CLI" in capsys.readouterr().out
 
 
 def test_ensure_gcloud_turns_off_the_update_nag_and_survey(monkeypatch):

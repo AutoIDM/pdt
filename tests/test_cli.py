@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from conftest import add_app
-from pdt import cli, config, console, deploy
+from pdt import cli, config, console, deploy, powershell
 
 
 def run_cli(monkeypatch, *argv):
@@ -193,6 +193,7 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
 def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
     folder = project / "ps-report"
     folder.mkdir()
+    monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})
     (folder / "report.ps1").write_text("")
     calls = []
     monkeypatch.setattr(cli.subprocess, "run", lambda command, **kwargs: calls.append(
@@ -208,6 +209,7 @@ def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
 def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
     folder = project / "ps-report"
     folder.mkdir()
+    monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})
     for name in ("report.ps1", "requirements.psd1", "run.py"):
         (folder / name).write_text("")
     calls = []
@@ -250,6 +252,7 @@ def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatc
     assert run_cli(monkeypatch, "logs", "hello-world", "--count", "5", "--since", "3d",
                    "--span", "1d") == 0
     assert run_cli(monkeypatch, "logs", "hello-world", "--lines", "50", "--head") == 0
+    assert run_cli(monkeypatch, "logs", "hello-world", "--follow") == 0
     assert calls == [
         ("azure", "runs", "hello-world", False, ["--", "--json"]),
         ("azure", "logs", "hello-world", False, ["--", "1"]),
@@ -261,6 +264,7 @@ def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatc
         ("azure", "logs", "hello-world", False,
          ["--", "1", "--since", "3d", "--span", "1d", "--count", "5"]),
         ("azure", "logs", "hello-world", False, ["--", "1", "--lines", "50", "--head"]),
+        ("azure", "logs", "hello-world", False, ["--", "1", "--follow"]),
     ]
 
 
@@ -517,3 +521,62 @@ def test_every_command_is_in_exactly_one_help_group():
     grouped = [name for names in cli.COMMAND_GROUPS.values() for name in names]
     assert sorted(grouped) == sorted(sub.choices)
     assert len(grouped) == len(set(grouped))
+
+
+@pytest.mark.parametrize("argv, hint", [
+    (["lgos"], "Did you mean `pdt logs`?"),
+    (["deploy", "--yse"], "Did you mean `--yes`?"),
+    (["logs", "--folow"], "Did you mean `--follow`?"),
+    (["runs", "--sinse", "3d"], "Did you mean `--since`?"),
+    (["completion", "zhs"], "Did you mean `pdt completion zsh`?"),
+])
+def test_a_mistyped_command_or_option_names_the_closest_one(monkeypatch, capsys, argv, hint):
+    with pytest.raises(SystemExit) as stop:
+        run_cli(monkeypatch, *argv)
+    assert stop.value.code == 2
+    assert capsys.readouterr().err.rstrip().endswith(hint)
+
+
+def test_a_word_close_to_nothing_gets_no_hint(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        run_cli(monkeypatch, "xyzzy")
+    assert "Did you mean" not in capsys.readouterr().err
+
+
+def test_a_subcommand_error_shows_a_usage_line_that_runs(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        run_cli(monkeypatch, "logs", "--lines", "x")
+    err = capsys.readouterr().err
+    assert "pdt logs: error:" in err
+    assert "<command> ..." not in err
+
+
+def test_a_mistyped_app_names_the_closest_app(project, monkeypatch, capsys):
+    add_app(project, "list-empty-security-groups", "schedule: daily\n")
+    assert run_cli(monkeypatch, "logs", "list-empty-securty-groups") == 1
+    assert ("no app named 'list-empty-securty-groups'. Did you mean "
+            "`pdt logs list-empty-security-groups`?") in capsys.readouterr().out
+
+
+def test_a_mistyped_secrets_action_names_the_closest_action(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    assert run_cli(monkeypatch, "secrets", "hello-world", "sav") == 1
+    assert "Did you mean `pdt secrets hello-world save`?" in capsys.readouterr().out
+
+
+def test_secrets_takes_the_action_before_the_app(project, monkeypatch):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(config, "check_env", lambda env: [])
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda provider, *a: calls.append(a) or 0)
+    assert run_cli(monkeypatch, "secrets", "save", "hello-world") == 0
+    assert calls == [("secrets", "hello-world", False, ["save"])]
+
+
+def test_validate_says_it_scans_a_powershell_app(monkeypatch, capsys):
+    def scan(app, provider):
+        raise powershell.PowerShellError("pwsh failed")
+
+    monkeypatch.setattr(powershell, "scan", scan)
+    assert cli.powershell_problems("report", {"platform": {}}) == ["report: pwsh failed"]
+    assert "Scanning the PowerShell scripts in report..." in capsys.readouterr().out

@@ -35,14 +35,13 @@ import json
 import os
 import re
 import shutil
-import subprocess
 
-from pdt import config, console, runs_cli
+from pdt import config, console, regions, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
-    AZ, ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az_json, az_tsv,
+    ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cost_estimate, delete_unless_locked, deployer_store,
-    destroy_group, disable_old_secret_versions, ensure_group_and_vault, ensure_secret, ensure_shared_group,
+    destroy_group, disable_old_secret_versions, exchange_rate, ensure_group_and_vault, ensure_secret, ensure_shared_group,
     ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item, list_remaining,
     managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
@@ -51,7 +50,7 @@ from pdt.deploy_azure import (
     store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_build, run_secrets,
+    CostEstimate, convert_from_usd, fail, gather_secrets, image_action, run_build, run_secrets,
     stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
@@ -250,10 +249,8 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
     run_quiet("containerapp", "job", "update", *common, retry_access=True)
     if not secret_uri:
         # Ignore absence: Azure returns nonzero when there is nothing to remove.
-        subprocess.run(
-            [*AZ, "containerapp", "job", "secret", "remove", "--name", job,
-             "--resource-group", rg, "--secret-names", "pdt-env"],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        az("containerapp", "job", "secret", "remove", "--name", job,
+           "--resource-group", rg, "--secret-names", "pdt-env")
 
 
 def job_principal_id(job: str, rg: str) -> str:
@@ -344,45 +341,56 @@ def runs(app: dict, settings: dict, rest: list[str]) -> int:
 
 def logs(app: dict, settings: dict, rest: list[str]) -> int:
     job, _current = find_job(settings, app["name"])
-
-    def read(run: runs_cli.Run) -> list[runs_cli.Line]:
-        lines = read_lines(settings, job, run.id)
-        if not lines and run.ended is not None:
-            console.note("Azure Log Analytics receives lines 2 to 5 minutes after a run "
-                         "finishes; run pdt logs again in a moment.")
-        return lines
-
-    return runs_cli.logs(lambda: list_runs(settings, job), read, app["name"], rest)
+    return runs_cli.logs(lambda: list_runs(settings, job),
+                         lambda run: read_lines(settings, job, run.id), app["name"], rest,
+                         store="Azure Log Analytics", delay=runs_cli.LOG_DELAY)
 
 
-def cost_estimate_for(region: str, cron: str, job: str, rg: str,
+def cost_estimate_for(region: str, currency: str, cron: str, job: str, rg: str,
                job_exists: bool, num_secrets: int,
                usage: tuple[int, int] | None) -> CostEstimate:
     console.status("Fetching list prices from the Azure Retail Prices API...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(average_run_seconds(job, rg) if job_exists else None)
-        cpu_price, _ = retail_price(region, "Azure Container Apps",
-                                    "Standard vCPU Active Usage", "Standard")
-        mem_price, _ = retail_price(region, "Azure Container Apps",
-                                    "Standard Memory Active Usage", "Standard")
-        gib = float(MEMORY.rstrip("Gi"))
-        run_cost = runs * seconds * (float(CPU) * cpu_price + gib * mem_price)
-        acr_price, _ = retail_price(region, "Container Registry",
-                                    "Basic Registry Unit", "Basic")
-        items = [
-            (f"Container Apps job: ~{runs:.0f} runs x {basis} "
-             f"x {float(CPU):g} vCPU / {gib:g} GiB", run_cost),
-            ("Container Registry (Basic, shared)", acr_price * 30.44),
-        ]
-        if num_secrets:
-            items.append(key_vault_item(region, runs))
-        if usage is not None:
-            items.append(store_cost(usage, region))
+        shown, converted = currency, ""
+        try:
+            items = priced_items(region, runs, seconds, basis, num_secrets, usage, currency)
+            if currency != "USD":
+                converted = f", in {currency} from the Azure Retail Prices API"
+        except Exception:
+            if currency == "USD":
+                raise
+            items = priced_items(region, runs, seconds, basis, num_secrets, usage, "USD")
+            items, shown, converted = convert_from_usd(
+                items, currency, ("Azure's rate", lambda: exchange_rate(currency)))
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
     return cost_estimate(
-        region, items, "excludes ACR image builds/storage and Log Analytics ingestion")
+        region, items, "excludes ACR image builds/storage and Log Analytics ingestion", shown,
+        converted)
+
+
+def priced_items(region: str, runs: float, seconds: float, basis: str, num_secrets: int,
+                 usage: tuple[int, int] | None, currency: str) -> list[tuple[str, float]]:
+    cpu_price, _ = retail_price(region, "Azure Container Apps",
+                                "Standard vCPU Active Usage", "Standard", currency=currency)
+    mem_price, _ = retail_price(region, "Azure Container Apps",
+                                "Standard Memory Active Usage", "Standard", currency=currency)
+    gib = float(MEMORY.rstrip("Gi"))
+    run_cost = runs * seconds * (float(CPU) * cpu_price + gib * mem_price)
+    acr_price, _ = retail_price(region, "Container Registry",
+                                "Basic Registry Unit", "Basic", currency=currency)
+    items = [
+        (f"Container Apps job: ~{runs:.0f} runs x {basis} "
+         f"x {float(CPU):g} vCPU / {gib:g} GiB", run_cost),
+        ("Container Registry (Basic, shared)", acr_price * 30.44),
+    ]
+    if num_secrets:
+        items.append(key_vault_item(region, runs, currency))
+    if usage is not None:
+        items.append(store_cost(usage, region, currency))
+    return items
 
 
 def environment_resource(settings: dict) -> dict | None:
@@ -540,6 +548,7 @@ def retire_job(settings: dict[str, str], job: str, current: dict, store: dict | 
 
 
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
+    console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     app_name = app["name"]
     job, _current = find_job(settings, app_name)
@@ -558,6 +567,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
+    console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     name = app["name"]
     job = job_name(settings, name)
@@ -645,7 +655,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions.append(("update" if current_job else "create")
                    + f' Container Apps Job {job}: "{cron}" (UTC)')
     if not confirm(actions, assume_yes, cost_estimate_for(
-            settings["region"], cron, job, rg, current_job is not None,
+            settings["region"], regions.local_currency(), cron, job, rg,
+            current_job is not None,
             1 if values else 0, usage)):
         console.warn("Aborted; nothing was changed.")
         return 1
@@ -801,6 +812,7 @@ def kept_line(store: dict[str, str], deployer, name: str) -> str:
 
 
 def destroy(app: dict, assume_yes: bool) -> int:
+    console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     name = app["name"]
     job, current_job = find_job(settings, name)

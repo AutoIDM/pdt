@@ -59,7 +59,7 @@ function Read-ScriptFile([string]$Path, [string]$Folder) {
     parseErrors = @($errors | ForEach-Object { [ordered]@{ line = $_.Extent.StartLineNumber; message = $_.Message } })
     requires = $null; usingModules = @(); importModules = @(); commands = @(); definedFunctions = @()
     params = @(); localInvocations = @(); strings = @(); types = @(); newObjects = @(); assemblies = @()
-    dynamic = @(); remoting = @()
+    dynamic = @(); remoting = @(); envReads = @()
   }
   $req = $ast.ScriptRequirements
   if ($req) {
@@ -119,6 +119,10 @@ function Read-ScriptFile([string]$Path, [string]$Folder) {
     if ($name -eq 'Add-Type') {
       foreach ($a in (Get-NameList (Get-Arg $c 'AssemblyName'))) { $f.assemblies += [ordered]@{ name = $a; line = $line } }
     }
+  }
+  foreach ($v in $ast.FindAll({ $args[0] -is [VariableExpressionAst] -and $args[0].VariablePath.DriveName -eq 'env' }, $true)) {
+    $set = $v.Parent -is [AssignmentStatementAst] -and $v.Parent.Left -eq $v
+    $f.envReads += [ordered]@{ name = $v.VariablePath.UserPath.Substring(4); line = $v.Extent.StartLineNumber; set = $set }
   }
   foreach ($m in $ast.FindAll({ $args[0] -is [InvokeMemberExpressionAst] }, $true)) {
     if ($m.Member.Extent.Text -in 'Invoke', 'InvokeScript') { $f.dynamic += [ordered]@{ kind = '.Invoke()'; text = (Get-Snippet $m); line = $m.Extent.StartLineNumber } }

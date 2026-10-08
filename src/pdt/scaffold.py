@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pdt import __version__, console, powershell, pwsh
+from pdt import __version__, console, powershell, pwsh, regions
 from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
                         merged_app, powershell_scripts)
 from pdt.utils.env_secret import private_file
@@ -31,15 +31,18 @@ def _needed(answer: str) -> str:
 # Ask only what pdt cannot supply. Every provider learns its own account,
 # subscription, or project from the credentials at deploy time and writes the
 # answer back, so region is the only thing left that the user must choose.
+# Each default is a function, so the region suggested from this computer's
+# time zone is read only when the question is asked.
 PROVIDER_QUESTIONS = {
     "azure": [
-        ("region", "Which Azure region should hold your jobs?", "eastus2", _needed),
+        ("region", regions.question("azure"), lambda: regions.suggest_region("azure"), _needed),
     ],
     "aws": [
-        ("region", "Which AWS region should hold your jobs?", "us-east-1", _needed),
+        ("region", regions.question("aws"), lambda: regions.suggest_region("aws"), _needed),
     ],
     "google-cloud": [
-        ("region", "Which Google Cloud region should hold your jobs?", "us-central1", _needed),
+        ("region", regions.question("google-cloud"),
+         lambda: regions.suggest_region("google-cloud"), _needed),
     ],
     "windows": [],
     "": [],
@@ -75,9 +78,9 @@ This folder is a pdt project: a set of small scheduled jobs. Every folder holdin
 
 - Start a new app with `pdt new <name> --from <example>`; `pdt examples` lists the starting points. Do not copy an app folder by hand.
 - An app declares its dependencies in the script header at the top of its `run.py`. The pinned `pdt-cli` version is the version a deployed job keeps running, so leave it alone unless the app is being redeployed.
-- List the env vars an app reads under `env:` in its `config.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets.
+- List the env vars an app reads under `env:` in its `config.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets. Each `$env:NAME` a PowerShell app's scripts read is required even when `config.yml` does not list it; list it under `env: optional:` when the scripts work without it. The same holds for each `os.environ["NAME"]` a Python app's `.py` files read; `os.environ.get("NAME")` and `os.getenv("NAME")` make it optional. pdt does not find a name that the code builds at run time.
 - Check work with `pdt validate`, try it with `pdt run <name>`, ship it with `pdt deploy <name>`.
-- Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all); add `--json` to any of them for machine-readable output.
+- Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all, `--follow` to wait for a running run's lines); add `--json` to any of them for machine-readable output.
 - Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
 - A `run.ps1` file is the only entry script. Otherwise, `run_scripts` lists the entry scripts in order, or pdt runs each `.ps1` file that no other `.ps1` file loads in name order. Do not use `run.ps1` and `run_scripts` together.
 - `pdt new <name> --from-scripts` writes `requirements.psd1` (the modules to install) and `run.py` (how the scripts run) into a PowerShell app's folder; once there, `requirements.psd1` replaces the modules pdt finds in the scripts, and `run.py` replaces how pdt runs them.
@@ -108,13 +111,16 @@ from pdt import config, powershell
 from pdt.pwsh import ensure_pwsh
 from pdt.run_powershell import pwsh_command
 from pdt.utils import storage
-from pdt.utils.log import log
+from pdt.utils.log import die, log
 
 
 def main() -> int:
     app_dir = Path(__file__).resolve().parent
     app = config.merged_app(app_dir.name)
     config.load_env(app_dir)
+    missing = config.missing_env(app)
+    if missing != "":
+        die(1, f"env vars missing: {missing}")
     pwsh = ensure_pwsh()
     entries = powershell.split_files(
         powershell.extract(app_dir)["files"], app["run_scripts"])[0]
@@ -231,7 +237,7 @@ def ask_platform(assume_yes: bool) -> dict:
     settings = {"provider": provider}
     for key, question, default, check in PROVIDER_QUESTIONS[provider]:
         while True:
-            answer = _ask(question, default)
+            answer = _ask(question, default())
             problem = check(answer)
             if problem == "":
                 break

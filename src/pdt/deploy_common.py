@@ -47,11 +47,13 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ElementTree
 from http import HTTPStatus
 from pathlib import Path
 from typing import Callable
@@ -171,16 +173,74 @@ def fail(message: str) -> None:
 class CostEstimate:
     """What a deploy will cost per month, shown before the user agrees.
 
-    `items` pairs a label with a dollar amount. `prices` says where the
-    numbers come from, such as "us-east-1 list prices, before free tiers".
+    `items` pairs a label with an amount in `currency`. `prices` says where
+    the numbers come from, such as "us-east-1 list prices, before free tiers".
     `excludes` names what the estimate leaves out.
     """
     items: list[tuple[str, float]]
     prices: str
     excludes: str = ""
+    currency: str = "USD"
 
     def show(self) -> None:
-        console.cost(self.items, self.prices, self.excludes)
+        console.cost(self.items, self.prices, self.excludes, self.currency)
+
+
+ECB_RATES = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+
+
+def ecb_xml() -> bytes:
+    # The ECB certificate chains to Sectigo Root E46, which the CA file of
+    # uv's Python builds lacks. certifi holds it, and every provider script
+    # installs certifi.
+    try:
+        import certifi
+        context = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        context = None
+    with urllib.request.urlopen(ECB_RATES, timeout=30, context=context) as response:
+        return response.read()
+
+
+def ecb_rate(currency: str) -> tuple[float, str]:
+    """What one USD costs in `currency` at today's ECB euro reference rates, and their date."""
+    rates = {"EUR": 1.0}
+    date = ""
+    for cube in ElementTree.fromstring(ecb_xml()).iter():
+        if cube.get("time"):
+            date = cube.get("time", "")
+        if cube.get("currency") and cube.get("rate"):
+            rates[cube.get("currency", "")] = float(cube.get("rate", ""))
+    if "USD" not in rates or currency not in rates:
+        raise LookupError(f"the ECB publishes no {currency} rate")
+    return rates[currency] / rates["USD"], date
+
+
+def convert_from_usd(items: list[tuple[str, float]], currency: str,
+                     published: tuple[str, Callable[[], float]] | None = None,
+                     ) -> tuple[list[tuple[str, float]], str, str]:
+    """Convert USD amounts to `currency`: the items, their currency, and a note for `prices`.
+
+    `published` names an exchange rate the cloud itself publishes and the
+    function that reads it. That rate comes first, then the ECB rate. When
+    neither can be read, the items stay in USD and the note says why.
+    """
+    if currency == "USD":
+        return items, "USD", ""
+    if published is not None:
+        name, read_rate = published
+        try:
+            rate = read_rate()
+            return ([(label, amount * rate) for label, amount in items], currency,
+                    f", converted from USD at {name}")
+        except Exception:
+            pass
+    try:
+        rate, date = ecb_rate(currency)
+    except Exception as exc:
+        return items, "USD", f" in USD, because no USD to {currency} rate could be read ({exc})"
+    return ([(label, amount * rate) for label, amount in items], currency,
+            f", converted from USD at the ECB rate of {date}")
 def store_plan_lines(description: str, exists: bool, identity: str, app_name: str) -> list[str]:
     return [("use existing" if exists else "create") + f" {description} (kept after destroy)",
             f"grant {identity} write access to {app_name}/ in {description}"]
@@ -274,7 +334,10 @@ def run_build(command: list[str]) -> None:
 
 
 def gather_secrets(app: dict) -> dict[str, str]:
-    spec = app["env"]
+    try:
+        spec = config.env_spec(app)
+    except config.ConfigError as e:
+        fail(str(e))
     names = list(spec.get("required") or [])
     for group in spec.get("one_of") or []:
         names.extend(group)

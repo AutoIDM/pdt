@@ -10,7 +10,7 @@ from pdt.powershell import Finding, ModuleNeed, ScriptScan, install_command, jud
 EMPTY_FILE = {
     "parseErrors": [], "requires": None, "usingModules": [], "importModules": [], "commands": [],
     "definedFunctions": [], "params": [], "localInvocations": [], "strings": [], "types": [],
-    "newObjects": [], "assemblies": [], "dynamic": [], "remoting": [],
+    "newObjects": [], "assemblies": [], "dynamic": [], "remoting": [], "envReads": [],
 }
 
 
@@ -438,7 +438,28 @@ def test_in_box_and_built_in_modules_are_never_installed():
             {"name": "ActiveDirectory"}, {"name": "CimCmdlets"}]},
         "usingModules": [], "importModules": [], "commands": [], "definedFunctions": [],
         "params": [], "localInvocations": [], "strings": [], "types": [], "newObjects": [],
-        "assemblies": [], "dynamic": [], "remoting": []}], "requirements": None, "known": {}}
+        "assemblies": [], "dynamic": [], "remoting": [], "envReads": []}], "requirements": None, "known": {}}
     scan = powershell.judge(facts, {"run_scripts": None}, "windows", gallery=no_gallery)
     assert scan.modules == []
     assert scan.host_modules == ["ActiveDirectory"]
+
+
+def env_read(name, line, set=False):
+    return {"name": name, "line": line, "set": set}
+
+
+def test_each_env_var_a_script_reads_and_config_does_not_list_is_found_once():
+    seen = facts(script("r.ps1", envReads=[
+        env_read("TENANT_ID", 2), env_read("TENANT_ID", 9), env_read("Client_Secret", 3),
+        env_read("NOTE", 4), env_read("PDT_OUTPUT_DIR", 5), env_read("TEMP", 6),
+        env_read("SCRATCH", 7, set=True), env_read("SCRATCH", 8), env_read("Either", 10)]),
+        script("lib/helper.ps1", envReads=[env_read("API_URL", 3)]))
+    env = {"required": ["CLIENT_SECRET"], "optional": ["NOTE"], "one_of": [["EITHER"], ["OR"]]}
+    assert powershell.unlisted_env_reads(seen, env) == {
+        "TENANT_ID": "r.ps1:2", "API_URL": "lib/helper.ps1:3"}
+
+
+@pytest.mark.parametrize("provider", ["azure", "windows"])
+def test_an_env_var_read_is_no_finding(provider):
+    seen = facts(script("r.ps1", envReads=[env_read("TENANT_ID", 2)]))
+    assert judge(seen, {"run_scripts": None, "env": {}}, provider, no_gallery).findings == []

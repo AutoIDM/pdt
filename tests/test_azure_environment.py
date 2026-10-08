@@ -69,7 +69,7 @@ def test_a_user_environment_creates_no_workspace_and_no_shared_group(monkeypatch
     plans, calls = plan_for(monkeypatch, deploy_settings(OWN),
                             lambda args: TAGGED if args[:3] == ("containerapp", "env", "show") else None)
     assert deploy_azure_container_apps.deploy(
-        {"name": "report", "schedule": "0 0 * * *", "storage": False}, True) == 1
+        {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}}, True) == 1
     plan = "\n".join(plans[0])
     assert "use your own Container Apps environment my-group/my-env" in plan
     assert "workspace" not in plan
@@ -81,7 +81,7 @@ def test_a_missing_user_environment_fails_before_the_plan(monkeypatch, capsys):
     plans, _ = plan_for(monkeypatch, deploy_settings(OWN), lambda args: None)
     with pytest.raises(SystemExit):
         deploy_azure_container_apps.deploy(
-            {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+            {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}}, True)
     assert plans == []
     assert "my-group/my-env" in capsys.readouterr().out
 
@@ -91,7 +91,7 @@ def test_a_user_environment_in_another_region_fails_before_the_plan(monkeypatch,
                         lambda args: TAGGED | {"location": "West US"})
     with pytest.raises(SystemExit):
         deploy_azure_container_apps.deploy(
-            {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+            {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}}, True)
     assert plans == []
     assert "westus" in capsys.readouterr().out
 
@@ -99,7 +99,7 @@ def test_a_user_environment_in_another_region_fails_before_the_plan(monkeypatch,
 def test_the_default_plan_creates_the_shared_group_workspace_and_environment(monkeypatch):
     plans, _ = plan_for(monkeypatch, deploy_settings(SHARED), lambda args: None)
     deploy_azure_container_apps.deploy(
-        {"name": "report", "schedule": "0 0 * * *", "storage": False}, True)
+        {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}}, True)
     plan = plans[0]
     assert "create resource group pdt-shared (shared by every pdt project in this subscription)" in plan
     assert "create Log Analytics workspace pdt-logs in pdt-shared" in plan
@@ -168,6 +168,7 @@ def test_destroy_never_touches_a_user_environment(monkeypatch):
 
 
 def test_destroy_with_the_project_group_already_gone_still_releases_the_environment(monkeypatch):
+    monkeypatch.setattr(deploy_azure, "az", lambda *args: subprocess.CompletedProcess(args, 1, "", ""))
     plans, deleted = [], []
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",
                         lambda app, requested: deploy_settings(SHARED))
@@ -189,6 +190,7 @@ def test_destroy_with_the_project_group_already_gone_still_releases_the_environm
 
 
 def test_destroy_with_the_project_group_already_gone_purges_its_soft_deleted_vault(monkeypatch):
+    monkeypatch.setattr(deploy_azure, "az", lambda *args: subprocess.CompletedProcess(args, 1, "", ""))
     plans, purged = [], []
     deleted_vault = {"properties": {"tags": {"managed-by": "pdt"}}}
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",
@@ -209,6 +211,7 @@ def test_destroy_with_the_project_group_already_gone_purges_its_soft_deleted_vau
 
 
 def test_destroy_leaves_a_soft_deleted_vault_pdt_did_not_make(monkeypatch):
+    monkeypatch.setattr(deploy_azure, "az", lambda *args: subprocess.CompletedProcess(args, 1, "", ""))
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",
                         lambda app, requested: deploy_settings(OWN))
     monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
@@ -225,8 +228,8 @@ def test_destroy_leaves_a_soft_deleted_vault_pdt_did_not_make(monkeypatch):
 def test_the_quota_error_gets_a_hint(monkeypatch, capsys):
     stderr = ('ERROR: (EnvironmentsInSubExceeded) Subscription is over quota '
               'for Managed Environments. Current usage: 1, allowed: 1')
-    monkeypatch.setattr(deploy_azure.subprocess, "run",
-                        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", stderr))
+    monkeypatch.setattr(deploy_azure, "az",
+                        lambda *command: subprocess.CompletedProcess(command, 1, "", stderr))
     with pytest.raises(SystemExit):
         deploy_azure.run_quiet("containerapp", "env", "create",
                                hints={"EnvironmentsInSubExceeded": deploy_azure_container_apps.QUOTA_HINT})
@@ -236,8 +239,8 @@ def test_the_quota_error_gets_a_hint(monkeypatch, capsys):
 
 
 def test_another_error_gets_no_hint(monkeypatch, capsys):
-    monkeypatch.setattr(deploy_azure.subprocess, "run",
-                        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "boom"))
+    monkeypatch.setattr(deploy_azure, "az",
+                        lambda *command: subprocess.CompletedProcess(command, 1, "", "boom"))
     with pytest.raises(SystemExit):
         deploy_azure.run_quiet("containerapp", "env", "create",
                                hints={"EnvironmentsInSubExceeded": deploy_azure_container_apps.QUOTA_HINT})

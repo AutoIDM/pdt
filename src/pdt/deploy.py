@@ -21,7 +21,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from pdt import __version__, config, console, powershell, pwsh, runs_cli
+from pdt import __version__, config, console, powershell, pwsh, regions, runs_cli
 from pdt.config import ConfigError
 from pdt.deploy_common import CostEstimate
 from pdt.utils.email_auth import can_prompt
@@ -45,9 +45,26 @@ def _load(app_name: str):
     return app, provider
 
 
+# A provider script whose packages take minutes to install on its first run,
+# and the name of what they are.
+SLOW_INSTALLS = {"deploy_azure.py": "the Azure CLI"}
+
+
+def announce_install(script: Path) -> None:
+    """Say so before uv installs a slow provider script's packages for the first time."""
+    tool = SLOW_INSTALLS.get(script.name)
+    if tool is None:
+        return
+    ready = subprocess.run(["uv", "sync", "--script", str(script), "--offline", "--check"],
+                           capture_output=True).returncode == 0
+    if not ready:
+        console.status(f"Installing {tool}. This happens once and can take several minutes...")
+
+
 def provider_command(provider: str, command: str, app_name: str, assume_yes: bool,
                      extra: list[str] | None = None) -> list[str]:
     script = Path(__file__).with_name(PROVIDERS[provider])
+    announce_install(script)
     # When someone runs pdt with `uvx`, uv installs pdt inside its own cache
     # folder, so this script is in the cache too. uv refuses to run a script
     # from its cache, because it treats the script's folder as the project.
@@ -86,8 +103,9 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
         return 1
     problems = config.validate_app(app_name)
     config.load_env(app["dir"])
-    for problem in config.check_env(app["env"]):
-        problems.append(f"env: {problem}")
+    missing = config.missing_env(app)
+    if missing != "":
+        problems.append(missing)
     if app["schedule"] is None:
         problems.append("schedule is required to deploy")
     if config.uses_email(app):
@@ -100,6 +118,10 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
     if problems:
         for problem in problems:
             console.error(f"{app_name}: {problem}")
+        return 1
+    problem = regions.choose_region(app, provider, assume_yes)
+    if problem != "":
+        console.error(f"{app_name}: {problem}")
         return 1
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
@@ -119,10 +141,9 @@ def secrets(app_name: str, action: str, assume_yes: bool = False,
         return 1
     config.load_env(app["dir"])
     if action in ("diff", "save"):
-        problems = config.check_env(app["env"])
-        if problems:
-            for problem in problems:
-                console.error(f"{app_name}: env: {problem}")
+        missing = config.missing_env(app)
+        if missing != "":
+            console.error(f"{app_name}: {missing}")
             return 1
     return dispatch(provider, "secrets", app_name, assume_yes, [action, *([name] if name else [])])
 

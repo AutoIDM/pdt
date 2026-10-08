@@ -15,7 +15,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from pdt.config import ConfigError, check_env, load_env, merged_app
+from pdt.config import ConfigError, load_env, merged_app, missing_env
 from pdt.utils.log import die, log
 
 EXIT_OK = 0
@@ -29,9 +29,9 @@ def main() -> int:
     except ConfigError as exc:
         die(EXIT_CONFIG, "config is not valid", problem=str(exc))
     load_env(app_dir)
-    problems = check_env(app["env"])
-    if problems:
-        die(EXIT_CONFIG, "env vars missing", problems="; ".join(problems))
+    missing = missing_env(app)
+    if missing != "":
+        die(EXIT_CONFIG, f"env vars missing: {missing}")
 
     log("info", app["config"].get("greeting", "Hello, world!"), app=app["name"])
     return EXIT_OK

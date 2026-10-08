@@ -10,6 +10,7 @@
 #     "fsspec",
 #     "s3fs>=2024",
 #     "duckdb",
+#     "certifi",
 # ]
 # ///
 """Deploy an app to AWS.
@@ -37,7 +38,7 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_PREFIX, STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_name)
+    STORE_PREFIX, STORE_TAGS, CostEstimate, convert_from_usd, fail, fetch_json, store_cost_label, store_name)
 from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
@@ -394,6 +395,8 @@ def aws_cli() -> list[str]:
     """
     cached = subprocess.run(["uvx", "--offline", "--from", AWS_CLI_V2, "python", "-c", ""],
                             capture_output=True).returncode == 0
+    if not cached:
+        console.status("Installing the AWS CLI. This happens once and can take several minutes...")
     return ["uvx", *(["--offline"] if cached else []), "--from", AWS_CLI_V2, "aws"]
 
 
@@ -676,8 +679,11 @@ def recent_stream_seconds(logs, log_group: str) -> float | None:
 
 
 def cost_estimate(region: str, items: list[tuple[str, float]],
-                  excludes: str) -> CostEstimate:
-    return CostEstimate(items, f"{region} list prices, before free tiers", excludes)
+                  excludes: str, local_currency: str) -> CostEstimate:
+    # The AWS price list holds USD only and AWS publishes no exchange rate.
+    items, currency, converted = convert_from_usd(items, local_currency)
+    return CostEstimate(items, f"{region} list prices{converted}, before free tiers", excludes,
+                        currency)
 
 
 def run_basis(seconds: float | None) -> tuple[float, str]:
