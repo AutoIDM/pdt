@@ -1,8 +1,11 @@
 import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-from pdt import config, deploy, powershell, scaffold
+from pdt import __version__, config, deploy, powershell, scaffold
 
 
 def project_with_starter(tmp_path, monkeypatch):
@@ -114,3 +117,14 @@ def test_deploy_refuses_a_powershell_app_whose_scripts_certainly_fail(tmp_path, 
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
     assert deploy.deploy("report") == 1
     assert "report.ps1:1: Read-Host waits for a person" in capsys.readouterr().out
+
+
+def test_a_provider_script_pins_the_version_of_the_pdt_that_ran_it(tmp_path, monkeypatch):
+    # From a clone, `uv run --script` imports pdt from src/ with no package
+    # metadata beside it, so the version must arrive from the parent.
+    project_with_starter(tmp_path, monkeypatch)
+    src = Path(deploy.__file__).resolve().parent.parent
+    code = f"import sys; sys.path.insert(0, {str(src)!r}); import pdt; print(pdt.__version__)"
+    out = subprocess.run([sys.executable, "-S", "-c", code], env=deploy.provider_env(),
+                         check=True, capture_output=True, text=True).stdout.strip()
+    assert out == __version__ != "0.0.0.dev0"
