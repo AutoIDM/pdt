@@ -487,7 +487,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions = plan(app, "update" if exists else "create", description, user, uv,
                    on_machine_path, pwsh, modules)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
-                        "no cloud charges", currency=regions.local_currency(app["platform"]))
+                        "no cloud charges", currency=regions.local_currency())
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return 1

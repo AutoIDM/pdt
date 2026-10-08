@@ -482,17 +482,18 @@ def revoke_role(scope: str, principal_id: str, role: str) -> None:
 
 
 def retail_price(region: str, service: str, meter: str, sku: str,
-                 product: str = "") -> tuple[float, str]:
+                 product: str = "", currency: str = "USD") -> tuple[float, str]:
     query = (f"serviceName eq '{service}' and armRegionName eq '{region}' "
              f"and meterName eq '{meter}' and skuName eq '{sku}' "
              f"and type eq 'Consumption'")
     if product:
         query += f" and productName eq '{product}'"
-    url = f"{PRICES_API}?$filter={urllib.parse.quote(query)}"
+    url = f"{PRICES_API}?currencyCode='{currency}'&$filter={urllib.parse.quote(query)}"
     items = fetch_json(url, timeout=30).get("Items") or []
-    items = [i for i in items if i.get("retailPrice")]
+    items = [i for i in items if i.get("retailPrice")
+             and i.get("currencyCode", currency) == currency]
     if not items:
-        raise LookupError(f"no {meter!r} price for {service} in region {region}")
+        raise LookupError(f"no {meter!r} {currency} price for {service} in region {region}")
     return float(items[0]["retailPrice"]), items[0].get("unitOfMeasure", "")
 
 
@@ -924,10 +925,10 @@ def ensure_store(settings: dict[str, str], store: dict[str, str], exists: bool) 
                 settings["deployer_principal_type"])
 
 
-def store_cost(usage: tuple[int, int], region: str) -> tuple[str, float]:
+def store_cost(usage: tuple[int, int], region: str, currency: str = "USD") -> tuple[str, float]:
     count, size = usage
     price, _ = retail_price(region, "Storage", "Hot LRS Data Stored", "Hot LRS",
-                            "General Block Blob v2")
+                            "General Block Blob v2", currency)
     return store_cost_label(count, size), size / 1024 ** 3 * price
 
 
@@ -960,14 +961,13 @@ def run_basis(seconds: float | None) -> tuple[float, str]:
     return seconds, f"{seconds / 60:.1f} min avg of recent runs"
 
 
-def key_vault_item(region: str, runs: float) -> tuple[str, float]:
-    kv_price, _ = retail_price(region, "Key Vault", "Operations", "Standard")
+def key_vault_item(region: str, runs: float, currency: str = "USD") -> tuple[str, float]:
+    kv_price, _ = retail_price(region, "Key Vault", "Operations", "Standard", currency=currency)
     return f"Key Vault: 1 secret, ~{runs:.0f} reads", runs * kv_price / 10000
 
 
 def cost_estimate(region: str, items: list[tuple[str, float]],
-                  excludes: str, currency: str) -> CostEstimate:
-    converted = "" if currency == "USD" else ", converted from USD at Azure's rate"
+                  excludes: str, currency: str, converted: str = "") -> CostEstimate:
     return CostEstimate(items, f"{region} list prices{converted}, before free grants",
                         excludes, currency)
 

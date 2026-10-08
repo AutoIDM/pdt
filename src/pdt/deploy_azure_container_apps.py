@@ -50,7 +50,7 @@ from pdt.deploy_azure import (
     store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_build, run_secrets,
+    CostEstimate, convert_from_usd, fail, gather_secrets, image_action, run_build, run_secrets,
     stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
@@ -356,29 +356,44 @@ def cost_estimate_for(region: str, currency: str, cron: str, job: str, rg: str,
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(average_run_seconds(job, rg) if job_exists else None)
-        cpu_price, _ = retail_price(region, "Azure Container Apps",
-                                    "Standard vCPU Active Usage", "Standard")
-        mem_price, _ = retail_price(region, "Azure Container Apps",
-                                    "Standard Memory Active Usage", "Standard")
-        gib = float(MEMORY.rstrip("Gi"))
-        run_cost = runs * seconds * (float(CPU) * cpu_price + gib * mem_price)
-        acr_price, _ = retail_price(region, "Container Registry",
-                                    "Basic Registry Unit", "Basic")
-        items = [
-            (f"Container Apps job: ~{runs:.0f} runs x {basis} "
-             f"x {float(CPU):g} vCPU / {gib:g} GiB", run_cost),
-            ("Container Registry (Basic, shared)", acr_price * 30.44),
-        ]
-        if num_secrets:
-            items.append(key_vault_item(region, runs))
-        if usage is not None:
-            items.append(store_cost(usage, region))
-        rate = exchange_rate(currency)
-        items = [(label, amount * rate) for label, amount in items]
+        shown, converted = currency, ""
+        try:
+            items = priced_items(region, runs, seconds, basis, num_secrets, usage, currency)
+            if currency != "USD":
+                converted = f", in {currency} from the Azure Retail Prices API"
+        except Exception:
+            if currency == "USD":
+                raise
+            items = priced_items(region, runs, seconds, basis, num_secrets, usage, "USD")
+            items, shown, converted = convert_from_usd(
+                items, currency, ("Azure's rate", lambda: exchange_rate(currency)))
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
     return cost_estimate(
-        region, items, "excludes ACR image builds/storage and Log Analytics ingestion", currency)
+        region, items, "excludes ACR image builds/storage and Log Analytics ingestion", shown,
+        converted)
+
+
+def priced_items(region: str, runs: float, seconds: float, basis: str, num_secrets: int,
+                 usage: tuple[int, int] | None, currency: str) -> list[tuple[str, float]]:
+    cpu_price, _ = retail_price(region, "Azure Container Apps",
+                                "Standard vCPU Active Usage", "Standard", currency=currency)
+    mem_price, _ = retail_price(region, "Azure Container Apps",
+                                "Standard Memory Active Usage", "Standard", currency=currency)
+    gib = float(MEMORY.rstrip("Gi"))
+    run_cost = runs * seconds * (float(CPU) * cpu_price + gib * mem_price)
+    acr_price, _ = retail_price(region, "Container Registry",
+                                "Basic Registry Unit", "Basic", currency=currency)
+    items = [
+        (f"Container Apps job: ~{runs:.0f} runs x {basis} "
+         f"x {float(CPU):g} vCPU / {gib:g} GiB", run_cost),
+        ("Container Registry (Basic, shared)", acr_price * 30.44),
+    ]
+    if num_secrets:
+        items.append(key_vault_item(region, runs, currency))
+    if usage is not None:
+        items.append(store_cost(usage, region, currency))
+    return items
 
 
 def environment_resource(settings: dict) -> dict | None:
@@ -643,7 +658,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions.append(("update" if current_job else "create")
                    + f' Container Apps Job {job}: "{cron}" (UTC)')
     if not confirm(actions, assume_yes, cost_estimate_for(
-            settings["region"], regions.local_currency(app["platform"]), cron, job, rg,
+            settings["region"], regions.local_currency(), cron, job, rg,
             current_job is not None,
             1 if values else 0, usage)):
         console.warn("Aborted; nothing was changed.")

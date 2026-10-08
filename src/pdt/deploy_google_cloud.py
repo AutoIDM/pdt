@@ -61,7 +61,7 @@ from pdt import gcloud_sdk
 from pdt import regions
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action, run_secrets,
+    STORE_TAGS, CostEstimate, convert_from_usd, fail, fetch_json, gather_secrets, image_action, run_secrets,
     stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
     warn_if_locked, write_dockerfile)
 from pdt import runs_cli
@@ -608,6 +608,12 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
     except Exception as exc:
         detail = billing_detail(exc)
         disabled = "has not been used" in detail or "SERVICE_DISABLED" in detail
+        if not disabled and currency != "USD":
+            in_usd = cost_estimate(project, region, cron, job, job_exists, num_secrets,
+                                   assume_yes, billing_confirmed, attempt, store_usage, "USD")
+            items, shown, converted = convert_from_usd(in_usd.items, currency)
+            return CostEstimate(items, f"{region} list prices{converted}, before free tiers",
+                                in_usd.excludes, shown)
         if disabled and not billing_confirmed:
             actions = [f"enable the Cloud Billing API in project {project} "
                        "to calculate the required cost estimate"]
@@ -735,7 +741,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    + f' Cloud Scheduler job {job}: "{cron}" ({timezone})')
     cost = cost_estimate(project, region, cron, job, job_exists,
                          1 if values else 0, assume_yes, billing_confirmed,
-                         store_usage=usage, currency=regions.local_currency(app["platform"]))
+                         store_usage=usage, currency=regions.local_currency())
 
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")

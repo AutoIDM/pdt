@@ -8,4 +8,4 @@ def test_confirm_prints_plan_then_cost(capsys):
     assert confirm(["create task pdt-x"], assume_yes=True, cost=cost)
     out = capsys.readouterr().out
     assert out.index("Plan:") < out.index("create task pdt-x") < out.index("Estimated monthly cost")
-    assert "total" in out and "$   0.00" in out
+    assert "total" in out and "$USD   0.00" in out

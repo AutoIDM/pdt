@@ -162,6 +162,7 @@ def powershell_deploy(project, monkeypatch):
         return deploy_windows.subprocess.CompletedProcess(command, 0, missing, "")
 
     monkeypatch.setattr(deploy_windows.subprocess, "run", has_module)
+    monkeypatch.setattr(deploy_windows.regions, "local_currency", lambda: "USD")
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda require_uv=True: ("powershell.exe", "uv.exe"))
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")

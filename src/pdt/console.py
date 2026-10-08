@@ -167,14 +167,35 @@ def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:
     return line
 
 
-CURRENCY_SYMBOLS = {"USD": "$", "GBP": "£", "EUR": "€"}
+# A symbol that names one currency stands alone. A symbol that several
+# currencies share is followed by the code, so "$" never hides which dollar.
+CURRENCY_SYMBOLS = {
+    "GBP": "£", "EUR": "€", "INR": "₹", "KRW": "₩", "ILS": "₪", "TRY": "₺", "PHP": "₱",
+    "VND": "₫", "UAH": "₴", "NGN": "₦", "THB": "฿", "PLN": "zł", "BRL": "R$",
+}
+SHARED_SYMBOLS = {
+    **dict.fromkeys(("USD", "CAD", "AUD", "NZD", "SGD", "HKD", "TWD", "MXN", "ARS", "CLP",
+                     "COP"), "$"),
+    **dict.fromkeys(("JPY", "CNY"), "¥"),
+    **dict.fromkeys(("SEK", "NOK", "DKK", "ISK"), "kr"),
+    "ZAR": "R",
+}
+
+
+def currency_prefix(currency: str) -> str:
+    """`£`, `$USD`, or `CHF ` before an amount."""
+    if currency in CURRENCY_SYMBOLS:
+        return CURRENCY_SYMBOLS[currency]
+    if currency in SHARED_SYMBOLS:
+        return SHARED_SYMBOLS[currency] + currency
+    return f"{currency} "
 
 
 def cost(items: list[tuple[str, float]], prices: str, excludes: str = "",
          currency: str = "USD") -> None:
     """A monthly cost estimate: one line per item, then the total."""
     width = max(len(label) for label, _ in items)
-    symbol = escape(CURRENCY_SYMBOLS.get(currency, f"{currency} "))
+    symbol = escape(currency_prefix(currency))
     _console.print(f"[bold]Estimated monthly cost[/] ({escape(prices)}):")
     for label, amount in items:
         _console.print(f"  {escape(label):<{width}}  [cyan]{symbol}{amount:>7.2f}[/]")

@@ -3,12 +3,10 @@
 `suggest_region` names the nearest region of each cloud provider. On the
 first deploy of a project, `choose_region` offers that region, lets the
 user pick another, and saves the answer, so later deploys do not ask.
-`local_currency` names the currency a cost estimate shows.
-
-The time zone, not the OS locale, picks the currency. Windows and macOS
-set the time zone from the computer's location, while the locale follows
-the display language: a UK computer set up in US English has the locale
-en_US, and a terminal or a CI runner often has no locale at all (C).
+`local_currency` names the currency a cost estimate shows, from the
+regional setting of the user who runs pdt: the user default locale on
+Windows, AppleLocale on macOS, and LC_ALL, LC_MONETARY, or LANG on Linux.
+When none can be read, it is USD.
 
 The region lists the tables below are drawn from:
 
@@ -27,6 +25,8 @@ https://github.com/unicode-org/cldr/blob/main/common/supplemental/windowsZones.x
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 from pdt import config, console
@@ -133,13 +133,17 @@ ZONE_COUNTRY = {
     "Australia/Adelaide": "AU", "Australia/Perth": "AU", "Australia/Hobart": "AU",
     "Pacific/Auckland": "NZ",
 }
-# The currency of each country whose currency is in config.CURRENCIES.
-EURO = ("IE", "DE", "AT", "FR", "BE", "LU", "NL", "IT", "ES", "PT", "FI")
+# The currency of each country, for a locale that names a country but no currency.
+EURO = ("IE", "DE", "AT", "FR", "BE", "LU", "NL", "IT", "ES", "PT", "FI", "GR", "SK", "SI",
+        "EE", "LV", "LT", "MT", "CY", "HR")
 COUNTRY_CURRENCY = {
     **dict.fromkeys(EURO, "EUR"),
-    "US": "USD", "CA": "CAD", "BR": "BRL", "GB": "GBP", "CH": "CHF", "SE": "SEK", "NO": "NOK",
-    "DK": "DKK", "IN": "INR", "CN": "CNY", "TW": "TWD", "JP": "JPY", "KR": "KRW",
-    "AU": "AUD", "NZ": "NZD",
+    "US": "USD", "CA": "CAD", "MX": "MXN", "BR": "BRL", "AR": "ARS", "CL": "CLP", "CO": "COP",
+    "GB": "GBP", "CH": "CHF", "SE": "SEK", "NO": "NOK", "DK": "DKK", "IS": "ISK",
+    "PL": "PLN", "CZ": "CZK", "HU": "HUF", "RO": "RON", "BG": "BGN", "UA": "UAH", "TR": "TRY",
+    "IL": "ILS", "AE": "AED", "QA": "QAR", "SA": "SAR", "ZA": "ZAR", "NG": "NGN",
+    "IN": "INR", "SG": "SGD", "MY": "MYR", "ID": "IDR", "TH": "THB", "PH": "PHP", "VN": "VND",
+    "HK": "HKD", "CN": "CNY", "TW": "TWD", "JP": "JPY", "KR": "KRW", "AU": "AUD", "NZ": "NZD",
 }
 # A zone missing from ZONE_COUNTRY still names its continent.
 CONTINENT_COUNTRY = {
@@ -200,9 +204,9 @@ def windows_zone_id() -> str:
 
 
 def local_timezone() -> str:
-    """The IANA name of this computer's time zone, or "" when it cannot be read."""
+    """The IANA name of this computer's time zone, or Etc/UTC when it cannot be read."""
     if os.name == "nt":
-        return WINDOWS_ZONES.get(windows_zone_id(), "")
+        return WINDOWS_ZONES.get(windows_zone_id(), "Etc/UTC")
     zone = os.environ.get("TZ", "").lstrip(":")
     if zone != "" and not zone.startswith("/"):
         return zone
@@ -213,9 +217,9 @@ def local_timezone() -> str:
     if "zoneinfo/" in target:
         return target.split("zoneinfo/", 1)[1]
     try:
-        return Path("/etc/timezone").read_text().strip()
+        return Path("/etc/timezone").read_text().strip() or "Etc/UTC"
     except OSError:
-        return ""
+        return "Etc/UTC"
 
 
 def country(zone: str) -> str:
@@ -228,12 +232,61 @@ def suggest_region(provider: str, zone: str | None = None) -> str:
     return regions[PROVIDERS.index(provider)]
 
 
-def local_currency(platform: dict) -> str:
-    """platform.currency when set, else the currency of the time zone's country, else USD."""
-    chosen = str(platform.get("currency") or "").strip()
-    if chosen != "":
-        return chosen
-    return COUNTRY_CURRENCY.get(ZONE_COUNTRY.get(local_timezone(), ""), "USD")
+def windows_currency() -> str:
+    import ctypes
+    locale_sintlsymbol = 0x15
+    buffer = ctypes.create_unicode_buffer(9)
+    if ctypes.windll.kernel32.GetLocaleInfoEx(None, locale_sintlsymbol, buffer, len(buffer)) == 0:
+        return ""
+    return buffer.value
+
+
+def mac_locale() -> str:
+    try:
+        return subprocess.run(["defaults", "read", "-g", "AppleLocale"], capture_output=True,
+                              text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def posix_currency() -> str:
+    import locale
+    try:
+        saved = locale.setlocale(locale.LC_MONETARY)
+        locale.setlocale(locale.LC_MONETARY, "")
+        try:
+            return str(locale.localeconv()["int_curr_symbol"]).strip()
+        finally:
+            locale.setlocale(locale.LC_MONETARY, saved)
+    except locale.Error:
+        return ""
+
+
+def locale_currency(name: str) -> str:
+    """The currency a locale name such as en_GB.UTF-8 or en_US@currency=EUR stands for."""
+    name, _, keywords = name.partition("@")
+    for keyword in keywords.split(";"):
+        key, _, value = keyword.partition("=")
+        if key == "currency" and value != "":
+            return value.upper()
+    territory = name.split(".", 1)[0].replace("-", "_").split("_")
+    return COUNTRY_CURRENCY.get(territory[-1].upper(), "") if len(territory) > 1 else ""
+
+
+def local_currency() -> str:
+    """The ISO 4217 code of the user's regional setting, or USD when none can be read."""
+    if os.name == "nt":
+        code = windows_currency()
+    elif sys.platform == "darwin":
+        code = locale_currency(mac_locale())
+    else:
+        code = posix_currency()
+        if code == "":
+            name = next((os.environ[key] for key in ("LC_ALL", "LC_MONETARY", "LANG")
+                         if os.environ.get(key, "") != ""), "")
+            code = locale_currency(name)
+    code = code.strip().upper()
+    return code if len(code) == 3 and code.isalpha() else "USD"
 
 
 def question(provider: str) -> str:

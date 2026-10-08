@@ -559,7 +559,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         actions += store_plan_lines(f"bucket {bucket}", store_present, names["job_role"], app["name"])
     if not confirm(actions, assume_yes, cost_estimate_for(
             clients["logs"], names, region, cron, schedule_exists, usage,
-            regions.local_currency(app["platform"]))):
+            regions.local_currency())):
         console.warn("Aborted; nothing was changed.")
         return 1
 
