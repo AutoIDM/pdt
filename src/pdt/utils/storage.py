@@ -114,6 +114,12 @@ class Local(Backend):
         import fsspec
         return fsspec.filesystem("file", auto_mkdir=True)
 
+    def dirfs(self):
+        # fsspec keeps %20 in a file URI's path, so a space in a folder name
+        # would become a new folder named with %20. Use the decoded path.
+        from fsspec.implementations.dirfs import DirFileSystem
+        return DirFileSystem(path=str(self.folder), fs=self.filesystem())
+
     def file(self, path: str) -> Path:
         return self.folder / path
 

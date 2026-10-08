@@ -147,3 +147,16 @@ def test_usage_counts_files_and_bytes(store):
     write(store, "runs/a/report.csv", "abc")
     write(store, "state/count.txt", "12")
     assert store.usage() == (2, 5)
+
+
+def test_a_folder_with_spaces_is_not_percent_encoded(tmp_path):
+    # A OneDrive folder such as "OneDrive - Contoso" is a file URI with %20 in it.
+    folder = tmp_path / "OneDrive - Contoso" / "project" / "my-report"
+    folder.mkdir(parents=True)
+    store = Store(folder.as_uri() + "/")
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "report.csv").write_text("a\n")
+    store.push(tmp_path / "out", "runs/first-abc/")
+    assert (folder / "runs" / "first-abc" / "report.csv").read_text() == "a\n"
+    assert store.ls("runs/first-abc") != []
+    assert not any("%20" in path.name for path in tmp_path.rglob("*"))
