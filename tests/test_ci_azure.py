@@ -38,11 +38,11 @@ def azure_app(project, monkeypatch):
 def chosen(monkeypatch, result=OTHER):
     calls = []
 
-    def record(app, requested, can_ask):
+    def record(app, requested, account, can_ask):
         calls.append(requested)
         return result
 
-    monkeypatch.setattr(deploy_azure, "choose_subscription", record)
+    monkeypatch.setattr(deploy_azure, "switch_subscription", record)
     monkeypatch.setattr(deploy_azure, "run_quiet", lambda *args, **kwargs: "")
     return calls
 
@@ -113,15 +113,72 @@ def test_a_person_at_the_keyboard_still_gets_the_subscription_written_back(
     assert writes == [ACCOUNT["id"]]
 
 
-def test_an_unattended_run_with_an_unknown_subscription_names_the_fix(
-        project, azure_app, monkeypatch):
+def wrong_login(project, monkeypatch, visible=(ACCOUNT,)):
+    """pdt.yml records OTHER, but the signed-in account only sees `visible`."""
     (project / "pdt.yml").write_text(
-        "platform:\n  provider: azure\n  subscription: \"not-a-subscription\"\n")
-    app = config.merged_app("my-report")
+        f"platform:\n  provider: azure\n  subscription: \"{OTHER['id']}\"\n")
     monkeypatch.setattr(deploy_azure, "az_json", lambda *args: (
-        ACCOUNT if args[:2] == ("account", "show") else [ACCOUNT, OTHER]))
+        ACCOUNT if args[:2] == ("account", "show") else list(visible)))
+    monkeypatch.setattr(deploy_azure, "run_quiet", lambda *args, **kwargs: "")
+    return config.merged_app("my-report")
+
+
+def test_an_unattended_run_with_an_unknown_subscription_names_the_fix(
+        project, azure_app, monkeypatch, capsys):
+    app = wrong_login(project, monkeypatch)
+    writes = saved(monkeypatch)
     with pytest.raises(SystemExit):
         deploy_azure.preflight(app, deploy_azure.azure_settings(app))
+    out = capsys.readouterr().out
+    assert "someone@example.com" in out
+    assert "platform.subscription" in out
+    assert writes == []
+
+
+def test_a_wrong_login_is_offered_a_new_sign_in_and_a_refusal_names_both_fixes(
+        project, azure_app, monkeypatch, capsys):
+    app = wrong_login(project, monkeypatch)
+    writes = saved(monkeypatch)
+    monkeypatch.setattr(deploy_azure, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    with pytest.raises(SystemExit):
+        deploy_azure.preflight(app, deploy_azure.azure_settings(app))
+    out = capsys.readouterr().out
+    assert "pdt login my-report" in out
+    assert "platform.subscription" in out
+    assert ACCOUNT["id"] in out  # what this login could use, for a deliberate edit
+    assert writes == []
+
+
+def test_a_wrong_login_that_signs_in_again_continues_on_the_recorded_subscription(
+        project, azure_app, monkeypatch):
+    app = wrong_login(project, monkeypatch)
+    writes = saved(monkeypatch)
+    monkeypatch.setattr(deploy_azure, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+
+    def signed_in(requested):
+        monkeypatch.setattr(deploy_azure, "az_json", lambda *args: (
+            OTHER if args[:2] == ("account", "show") else [OTHER]))
+        return OTHER
+
+    monkeypatch.setattr(deploy_azure, "sign_in_again", signed_in)
+    settings = deploy_azure.preflight(app, deploy_azure.azure_settings(app))
+    assert settings["subscription"] == OTHER["id"]
+    assert writes == []
+
+
+def test_a_second_wrong_login_stops_without_touching_the_project(
+        project, azure_app, monkeypatch, capsys):
+    app = wrong_login(project, monkeypatch)
+    writes = saved(monkeypatch)
+    monkeypatch.setattr(deploy_azure, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    monkeypatch.setattr(deploy_azure, "sign_in_again", lambda requested: ACCOUNT)
+    with pytest.raises(SystemExit):
+        deploy_azure.preflight(app, deploy_azure.azure_settings(app))
+    assert "either" in capsys.readouterr().out
+    assert writes == []
 
 
 @pytest.mark.parametrize("filler", ["", "a", "ab", "abc"])
@@ -233,36 +290,3 @@ def test_a_discovered_subscription_names_the_vault_like_a_saved_one(azure_app, m
     saved = deploy_azure.shared_names(ACCOUNT["id"], settings["resource_group"])
     assert settings["vault"] == saved["vault"]
     assert settings["storage"] == saved["storage"]
-
-
-def choose_subscription_answering(monkeypatch, answer):
-    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: [ACCOUNT, OTHER])
-    monkeypatch.setattr("builtins.input", lambda prompt="": answer)
-    return saved(monkeypatch)
-
-
-def test_a_typed_subscription_id_from_the_list_is_saved(azure_app, monkeypatch):
-    calls = choose_subscription_answering(monkeypatch, OTHER["id"])
-    assert deploy_azure.choose_subscription(azure_app, "", True) == OTHER
-    assert calls == [OTHER["id"]]
-
-
-def test_a_typed_subscription_name_from_the_list_is_saved(azure_app, monkeypatch):
-    calls = choose_subscription_answering(monkeypatch, OTHER["name"])
-    assert deploy_azure.choose_subscription(azure_app, "", True) == OTHER
-    assert calls == [OTHER["id"]]
-
-
-def test_a_number_still_picks_a_subscription_by_position(azure_app, monkeypatch):
-    calls = choose_subscription_answering(monkeypatch, "1")
-    assert deploy_azure.choose_subscription(azure_app, "", True) == ACCOUNT
-    assert calls == [ACCOUNT["id"]]
-
-
-def test_a_typed_subscription_id_not_in_the_list_says_what_to_type(azure_app, monkeypatch, capsys):
-    calls = choose_subscription_answering(monkeypatch, "not-my-subscription")
-    with pytest.raises(SystemExit):
-        deploy_azure.choose_subscription(azure_app, "", True)
-    assert calls == []
-    message = capsys.readouterr().out
-    assert "type a number from the list or one of the subscription ids" in message
