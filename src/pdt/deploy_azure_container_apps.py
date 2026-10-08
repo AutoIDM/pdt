@@ -35,12 +35,11 @@ import json
 import os
 import re
 import shutil
-import subprocess
 
 from pdt import config, console, regions, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
-    AZ, ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az_json, az_tsv,
+    ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cost_estimate, delete_unless_locked, deployer_store,
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group_and_vault, ensure_secret, ensure_shared_group,
     ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item, list_remaining,
@@ -250,10 +249,8 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
     run_quiet("containerapp", "job", "update", *common, retry_access=True)
     if not secret_uri:
         # Ignore absence: Azure returns nonzero when there is nothing to remove.
-        subprocess.run(
-            [*AZ, "containerapp", "job", "secret", "remove", "--name", job,
-             "--resource-group", rg, "--secret-names", "pdt-env"],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        az("containerapp", "job", "secret", "remove", "--name", job,
+           "--resource-group", rg, "--secret-names", "pdt-env")
 
 
 def job_principal_id(job: str, rg: str) -> str:

@@ -24,7 +24,10 @@ lives here. The job itself, a scheduled Container Apps Job, is in
 deploy_azure_container_apps.py.
 
 The Azure CLI is a Python package, so the script header installs it and
-every call here runs it as `python -m azure.cli`. No system install is
+`az` runs it inside this process. A new `python -m azure.cli` process for
+each call cost 2 to 4 seconds on Windows, and a deploy makes dozens of
+calls. Only the browser login, `az acr build`, and `pdt az` start a
+process, because they stream to the terminal. No system install is
 needed. Login state lives in ~/.azure either way. azure-cli pins a few of
 its own dependencies to pre-release versions, so the header allows
 pre-releases; without that, uv before 0.12 refuses to resolve it.
@@ -57,7 +60,9 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import io
 import json
+import logging
 import os
 import re
 import subprocess
@@ -101,12 +106,36 @@ STORE_METADATA_ARGS = tuple(
 BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
 
 
-def run_quiet(*args: str, data: str | None = None, retry_access: bool = False,
+def az(*args: str) -> subprocess.CompletedProcess:
+    """Run one Azure CLI command in this process and return what it printed."""
+    from azure.cli.core import get_default_cli
+    from knack.log import cli_logger_names
+    loggers = [logging.getLogger(name) for name in ("", *cli_logger_names)]
+    before = [list(logger.handlers) for logger in loggers]
+    out, err = io.StringIO(), io.StringIO()
+    saved = sys.stdin, sys.stderr
+    sys.stdin, sys.stderr = io.StringIO(), err
+    try:
+        try:
+            code = get_default_cli().invoke(list(args), out_file=out)
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 1
+    finally:
+        sys.stdin, sys.stderr = saved
+        # The CLI adds its log handlers once, on sys.stderr as it is then.
+        # Removing them makes the next call write its errors to its own buffer.
+        for logger, handlers in zip(loggers, before):
+            for handler in logger.handlers[:]:
+                if handler not in handlers:
+                    logger.removeHandler(handler)
+    return subprocess.CompletedProcess(args, code, out.getvalue(), err.getvalue())
+
+
+def run_quiet(*args: str, retry_access: bool = False,
               retry_internal: bool = False, hints: dict[str, str] | None = None) -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
     for wait in waits:
-        proc = subprocess.run(
-            [*AZ, *args], input=data, capture_output=True, text=True)
+        proc = az(*args)
         if proc.returncode == 0:
             return proc.stdout
         output = proc.stderr.lower()
@@ -140,8 +169,7 @@ LOCK_NAME = re.compile(r"Microsoft\.Authorization/locks/([^'\s,]+)", re.IGNORECA
 
 def delete_unless_locked(*args: str) -> str:
     """Run an az delete. Return the lock names that refused it, or "" on success."""
-    proc = subprocess.run(
-        [*AZ, *args], stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    proc = az(*args)
     if proc.returncode == 0:
         return ""
     if "scopelocked" in proc.stderr.lower() or LOCK_NAME.search(proc.stderr):
@@ -152,9 +180,7 @@ def delete_unless_locked(*args: str) -> str:
 
 
 def az_json(*args: str):
-    proc = subprocess.run(
-        [*AZ, *args, "--output", "json"], stdin=subprocess.DEVNULL,
-        capture_output=True, text=True)
+    proc = az(*args, "--output", "json")
     if proc.returncode != 0:
         return None
     return json.loads(proc.stdout or "null")
@@ -388,8 +414,7 @@ def login(requested: str) -> None:
 
 def relogin(requested: str) -> int:
     console.status("Clearing the cached Azure login on this computer...")
-    subprocess.run([*AZ, "account", "clear"], stdin=subprocess.DEVNULL,
-                   capture_output=True, text=True)
+    az("account", "clear")
     console.say("Choose a different account in the browser to sign in as someone else.")
     login(requested)
     account = az_json("account", "show")

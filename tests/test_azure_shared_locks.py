@@ -56,7 +56,7 @@ def fake_deploy(monkeypatch, answers):
     monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(actions) or True)
     monkeypatch.setattr(module, "ensure_environment", lambda *args: None)
     monkeypatch.setattr(module, "ensure_group_and_vault", lambda *args: "/vault")
-    monkeypatch.setattr(module, "assign_role", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "assign_role", lambda *args: None)
     monkeypatch.setattr(module, "enable_acr_arm_auth", lambda registry: None)
     monkeypatch.setattr(module, "build_image", lambda *args: events.append(("build",)))
     monkeypatch.setattr(module, "ensure_secret", lambda *args: None)
@@ -175,14 +175,14 @@ def test_destroy_does_not_delete_a_group_an_app_joined_since_the_plan(monkeypatc
 
 
 def test_a_refused_delete_names_the_lock_that_refused_it(monkeypatch):
-    monkeypatch.setattr(deploy_azure.subprocess, "run",
-                        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", LOCKED))
+    monkeypatch.setattr(deploy_azure, "az",
+                        lambda *command: subprocess.CompletedProcess(command, 1, "", LOCKED))
     assert deploy_azure.delete_unless_locked("group", "delete", "--name", "pdt", "--yes") == "pdt-other"
 
 
 def test_any_other_delete_error_still_fails(monkeypatch, capsys):
-    monkeypatch.setattr(deploy_azure.subprocess, "run",
-                        lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "boom"))
+    monkeypatch.setattr(deploy_azure, "az",
+                        lambda *command: subprocess.CompletedProcess(command, 1, "", "boom"))
     with pytest.raises(SystemExit):
         deploy_azure.delete_unless_locked("group", "delete", "--name", "pdt", "--yes")
     assert "boom" in capsys.readouterr().out
