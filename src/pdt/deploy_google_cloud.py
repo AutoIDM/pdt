@@ -994,6 +994,10 @@ def execution_run(execution: dict) -> runs_cli.Run:
     return runs_cli.Run(execution_id, started, ended, status_text)
 
 
+# How long pdt waits for Cloud Logging to show a line. Google documents no maximum.
+LOG_DELAY = datetime.timedelta(minutes=1)
+
+
 def list_runs(project: str, region: str, job: str) -> list[runs_cli.Run]:
     executions = describe_json("run", "jobs", "executions", "list", "--job", job,
                                "--region", region, "--project", project)
@@ -1056,7 +1060,8 @@ def logs(app: dict, rest: list[str], assume_yes: bool) -> int:
     project = preflight(app, project, assume_yes)
     job = f"pdt-{app['name']}"
     return runs_cli.logs(lambda: list_runs(project, region, job),
-                         lambda run: read_lines(project, run.id), app["name"], rest)
+                         lambda run: read_lines(project, run.id), app["name"], rest,
+                         store="Cloud Logging", delay=LOG_DELAY)
 
 
 def main() -> int:

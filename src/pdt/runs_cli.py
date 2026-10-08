@@ -6,6 +6,11 @@ Every provider gives this module two callables, and a third when it needs one:
 `resolve(runs)` fills status and exit code on the runs about to print or read,
 for a provider whose list does not already know them.
 
+A provider whose log store shows a line some time after the job writes it
+names the store and that delay, so `pdt logs` can say when a run's lines are
+not there yet. `--follow` reads the same store again every FOLLOW_SECONDS
+until the run has ended and the delay has passed.
+
 A run's number is its place in the full list, starting at 1. A window
 (`--since`, `--span`, `--count`) picks which runs print and never renumbers.
 """
@@ -16,6 +21,8 @@ import argparse
 import dataclasses
 import json
 import re
+import time
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Callable
 
@@ -23,6 +30,7 @@ from pdt import console
 
 DEFAULT_RUNS = 10
 TAIL_LINES = 20
+FOLLOW_SECONDS = 10
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
 SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
                "or a date and time (2026-09-20T14:00)")
@@ -251,7 +259,8 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
 
 def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Line]],
          app_name: str, rest: list[str],
-         resolve: Callable[[list[Run]], None] | None = None) -> int:
+         resolve: Callable[[list[Run]], None] | None = None,
+         store: str = "the log", delay: timedelta = timedelta(0)) -> int:
     parser = argparse.ArgumentParser(prog=f"pdt logs {app_name}")
     parser.add_argument("number", nargs="?", type=int)
     parser.add_argument("--failed", action="store_true")
@@ -259,11 +268,15 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
     parser.add_argument("--lines", type=int)
     parser.add_argument("--head", action="store_true")
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--follow", action="store_true")
     add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
     if args.full and (args.lines is not None or args.head):
         console.error("--full prints every line; drop --lines and --head")
+        return 1
+    if args.follow and (args.json or args.head):
+        console.error("--follow prints lines as they arrive; drop --json and --head")
         return 1
     if args.lines is not None and args.lines < 1:
         console.error("--lines must be 1 or more")
@@ -294,10 +307,7 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
         run = shown[0] if args.number is None else found[args.number - 1]
         if resolve is not None:
             resolve([run])
-    lines = in_time_order([line for line in read_lines(run)
-                           if not line.message.startswith(EXIT_MARKER)])
-    if args.errors:
-        lines = [line for line in lines if line.level not in ("DEBUG", "INFO")]
+    lines = log_lines(read_lines, run, args.errors)
     total = len(lines)
     if not args.full:
         keep = args.lines or TAIL_LINES
@@ -306,16 +316,97 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
         console.say(json.dumps([{"time": line.time.isoformat() if line.time else None,
                                  "level": line.level, "message": line.message}
                                 for line in lines]))
-    else:
-        exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
-        console.heading(f"run {run.number} of {app_name}: started {started_text(run)}, "
-                        f"{duration_text(run)}, {run.status}{exit_part}")
-        if len(lines) < total:
-            side = "first" if args.head else "last"
-            console.status(f"the {side} {len(lines)} of {total} lines; add --full for all of them")
-        for line in lines:
-            console.log_line(local_text(line.time, "%H:%M:%S") if line.time else "",
-                             line.level, line.message)
+        return 1 if run.status == "failed" else 0
+    console.heading(run_heading(run, app_name))
+    if len(lines) < total:
+        side = "first" if args.head else "last"
+        console.status(f"the {side} {len(lines)} of {total} lines; add --full for all of them")
+    for line in lines:
+        print_line(line)
+    if args.follow:
+        return follow(list_runs, read_lines, resolve, run, app_name, args.errors, delay)
+    say_lag(run, app_name, total, store, delay)
+    return 1 if run.status == "failed" else 0
+
+
+def log_lines(read_lines: Callable[[Run], list[Line]], run: Run, errors: bool) -> list[Line]:
+    lines = in_time_order([line for line in read_lines(run)
+                           if not line.message.startswith(EXIT_MARKER)])
+    if errors:
+        lines = [line for line in lines if line.level not in ("DEBUG", "INFO")]
+    return lines
+
+
+def run_heading(run: Run, app_name: str) -> str:
+    exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
+    return (f"run {run.number} of {app_name}: started {started_text(run)}, "
+            f"{duration_text(run)}, {run.status}{exit_part}")
+
+
+def print_line(line: Line) -> None:
+    console.log_line(local_text(line.time, "%H:%M:%S") if line.time else "",
+                     line.level, line.message)
+
+
+def minutes_text(delay: timedelta) -> str:
+    minutes = max(1, round(delay.total_seconds() / 60))
+    return "1 minute" if minutes == 1 else f"{minutes} minutes"
+
+
+def say_lag(run: Run, app_name: str, total: int, store: str, delay: timedelta) -> None:
+    """Tell the user when the lines printed may not be all the run's lines yet."""
+    again = f"pdt logs {app_name} {run.number}"
+    if run.status == "running":
+        if total == 0:
+            console.note(f"run {run.number} is still running, and {store} has no lines "
+                         "from it yet.")
+        else:
+            console.note(f"run {run.number} is still running, so more lines will come.")
+        console.command(f"{again} --follow", "print each line as it arrives")
+        return
+    settled = None if run.ended is None else run.ended + delay
+    if settled is not None and datetime.now(UTC) < settled:
+        console.note(f"run {run.number} ended at {local_text(run.ended, '%H:%M:%S')}, and "
+                     f"{store} can take up to {minutes_text(delay)} to show a line, so "
+                     f"{'no lines are' if total == 0 else 'the last lines may not be'} "
+                     "there yet.")
+        console.command(f"{again} --follow",
+                        f"wait for them, until {local_text(settled, '%H:%M:%S')}")
+    elif total == 0:
+        console.note(f"{store} has no lines from run {run.number}.")
+
+
+def follow(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Line]],
+           resolve: Callable[[list[Run]], None] | None, run: Run, app_name: str,
+           errors: bool, delay: timedelta) -> int:
+    """Print each new line of `run` until it has ended and `delay` has passed since then."""
+    # A count per distinct line, so a line the job printed twice prints twice, and a
+    # line the store shows late, between two older ones, still prints.
+    seen = Counter((line.time, line.level, line.message)
+                   for line in log_lines(read_lines, run, errors))
+    console.status(f"waiting for new lines of run {run.number}; press Ctrl+C to stop")
+    try:
+        while run.status == "running" or run.ended is None or (
+                datetime.now(UTC) < run.ended + delay):
+            time.sleep(FOLLOW_SECONDS)
+            current = next((item for item in list_runs() if item.id == run.id), None)
+            if current is not None:
+                if resolve is not None:
+                    resolve([current])
+                run = dataclasses.replace(current, number=run.number)
+            now_seen = Counter()
+            for line in log_lines(read_lines, run, errors):
+                key = (line.time, line.level, line.message)
+                now_seen[key] += 1
+                if now_seen[key] > seen[key]:
+                    seen[key] = now_seen[key]
+                    print_line(line)
+            if run.status != "running" and run.ended is None:
+                break
+    except KeyboardInterrupt:
+        console.say()
+        return 130
+    console.heading(run_heading(run, app_name))
     return 1 if run.status == "failed" else 0
 
 

@@ -341,7 +341,7 @@ def cmd_logs(args) -> int:
         return 1
     flags = [flag for flag, on in (("--failed", args.failed), ("--errors", args.errors),
                                    ("--head", args.head), ("--full", args.full),
-                                   ("--json", args.json)) if on]
+                                   ("--follow", args.follow), ("--json", args.json)) if on]
     lines = [] if args.lines is None else ["--lines", str(args.lines)]
     number = 1 if args.number is None else args.number
     return deploy.logs(name, [str(number), *window_options(args), *lines, *flags])
@@ -515,6 +515,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print the first lines, not the last")
     p.add_argument("--full", action="store_true",
                    help="print every line, not only the last 20")
+    p.add_argument("--follow", action="store_true",
+                   help="keep printing new lines until the run ends and its log is complete")
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_logs)
     p = add_parser("health", help="show whether each deployed app's last run succeeded")

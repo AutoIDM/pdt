@@ -250,6 +250,7 @@ def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatc
     assert run_cli(monkeypatch, "logs", "hello-world", "--count", "5", "--since", "3d",
                    "--span", "1d") == 0
     assert run_cli(monkeypatch, "logs", "hello-world", "--lines", "50", "--head") == 0
+    assert run_cli(monkeypatch, "logs", "hello-world", "--follow") == 0
     assert calls == [
         ("azure", "runs", "hello-world", False, ["--", "--json"]),
         ("azure", "logs", "hello-world", False, ["--", "1"]),
@@ -261,6 +262,7 @@ def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatc
         ("azure", "logs", "hello-world", False,
          ["--", "1", "--since", "3d", "--span", "1d", "--count", "5"]),
         ("azure", "logs", "hello-world", False, ["--", "1", "--lines", "50", "--head"]),
+        ("azure", "logs", "hello-world", False, ["--", "1", "--follow"]),
     ]
 
 
@@ -522,6 +524,7 @@ def test_every_command_is_in_exactly_one_help_group():
 @pytest.mark.parametrize("argv, hint", [
     (["lgos"], "Did you mean `pdt logs`?"),
     (["deploy", "--yse"], "Did you mean `--yes`?"),
+    (["logs", "--folow"], "Did you mean `--follow`?"),
     (["runs", "--sinse", "3d"], "Did you mean `--since`?"),
     (["completion", "zhs"], "Did you mean `pdt completion zsh`?"),
 ])
