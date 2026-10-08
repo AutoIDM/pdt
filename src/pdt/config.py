@@ -50,7 +50,7 @@ PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
     "subscription", "resource_group", "environment",
-    "timezone",
+    "timezone", "currency",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
 # Where each known key belongs, so a key in the wrong section gets told
@@ -403,6 +403,20 @@ def aws_account_problem(account: str) -> str:
     return "That is not an AWS account ID. It is 12 digits, for example 123456789012."
 
 
+# The currencies the Azure Retail Prices API converts to, the shortest list of
+# the three price APIs, less RUB:
+# https://learn.microsoft.com/en-us/azure/cost-management-billing/microsoft-customer-agreement/microsoft-customer-agreement-faq
+CURRENCIES = ("USD", "AUD", "BRL", "CAD", "CHF", "CNY", "DKK", "EUR", "GBP", "INR", "JPY",
+              "KRW", "NOK", "NZD", "SEK", "TWD")
+
+
+def currency_problem(currency: str) -> str:
+    currency = currency.strip()
+    if currency == "" or currency in CURRENCIES:
+        return ""
+    return f"Cost estimates can show only these currencies: {', '.join(CURRENCIES)}."
+
+
 def azure_environment_problem(environment: str) -> str:
     environment = environment.strip()
     if environment == "":
@@ -715,6 +729,9 @@ def validate_app(name: str) -> list[str]:
         problems.append(
             f"{name}: platform.provider must be one of: {', '.join(PROVIDERS)}. "
             f"Set it under platform: in {PROJECT_FILE}, or in {name}/{APP_FILE}.")
+    problem = currency_problem(str(app["platform"].get("currency") or ""))
+    if problem != "":
+        problems.append(f"{name}: platform.currency: {problem}")
     if provider == "aws":
         problem = aws_account_problem(str(app["platform"].get("account") or ""))
         if problem != "":

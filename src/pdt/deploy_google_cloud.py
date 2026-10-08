@@ -58,6 +58,7 @@ os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 from pdt import config
 from pdt import console
 from pdt import gcloud_sdk
+from pdt import regions
 from pdt.deploy import confirm
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, fail, fetch_json, gather_secrets, image_action, run_secrets,
@@ -480,12 +481,14 @@ def build_image(app: dict, image: str, project: str) -> None:
         shutil.rmtree(stage, ignore_errors=True)
 
 
-def billing_list(path: str, key: str, project: str) -> list:
+def billing_list(path: str, key: str, project: str, currency: str = "") -> list:
     token = run_quiet("auth", "print-access-token").strip()
     items = []
     page_token = ""
     while True:
         query = {"pageSize": "5000"}
+        if currency:
+            query["currencyCode"] = currency
         if page_token:
             query["pageToken"] = page_token
         req = urllib.request.Request(
@@ -563,7 +566,8 @@ def billing_detail(exc: Exception) -> str:
 def cost_estimate(project: str, region: str, cron: str, job: str,
                         job_exists: bool, num_secrets: int,
                         assume_yes: bool, billing_confirmed: bool = False,
-                        attempt: int = 0, store_usage: tuple[int, int] | None = None) -> CostEstimate:
+                        attempt: int = 0, store_usage: tuple[int, int] | None = None,
+                        currency: str = "USD") -> CostEstimate:
     console.status("Fetching list prices from the Cloud Billing catalog...")
     try:
         runs = config.runs_per_month(cron)
@@ -575,9 +579,11 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
             basis = f"{seconds / 60:.1f} min avg of recent runs"
         services = billing_list("services", "services", project)
         ids = {s.get("displayName"): s.get("serviceId") for s in services}
-        run_skus = billing_list(f"services/{ids['Cloud Run']}/skus", "skus", project)
-        sched_skus = billing_list(f"services/{ids['Cloud Scheduler']}/skus", "skus", project)
-        secret_skus = billing_list(f"services/{ids['Secret Manager']}/skus", "skus", project)
+        run_skus = billing_list(f"services/{ids['Cloud Run']}/skus", "skus", project, currency)
+        sched_skus = billing_list(f"services/{ids['Cloud Scheduler']}/skus", "skus", project,
+                                  currency)
+        secret_skus = billing_list(f"services/{ids['Secret Manager']}/skus", "skus", project,
+                                   currency)
         cpu_price, _ = sku_price(run_skus, region, "Jobs CPU")
         mem_price, _ = sku_price(run_skus, region, "Jobs Memory")
         run_cost = runs * seconds * (JOB_VCPU * cpu_price + JOB_MEMORY_GIB * mem_price)
@@ -594,7 +600,8 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
             secret_cost = num_secrets * secret_price * per_month(secret_unit)
             items.append((f"Secret Manager: {num_secrets} secret version", secret_cost))
         if store_usage is not None:
-            storage_skus = billing_list(f"services/{ids['Cloud Storage']}/skus", "skus", project)
+            storage_skus = billing_list(f"services/{ids['Cloud Storage']}/skus", "skus", project,
+                                        currency)
             storage_price, _ = sku_price(storage_skus, region, "Standard Storage")
             count, size = store_usage
             items.append((store_cost_label(count, size), size / 1024 ** 3 * storage_price))
@@ -619,11 +626,12 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
             return cost_estimate(project, region, cron, job,
                                  job_exists, num_secrets, assume_yes,
                                  billing_confirmed,
-                                 attempt + 1, store_usage)
+                                 attempt + 1, store_usage, currency)
         fail(f"could not calculate the required monthly cost estimate: "
              f"{detail or str(exc)}")
-    return CostEstimate(items, f"{region} list prices, before free tiers",
-                        "excludes Cloud Build image builds and Artifact Registry storage")
+    converted = "" if currency == "USD" else ", converted from USD by Google Cloud"
+    return CostEstimate(items, f"{region} list prices{converted}, before free tiers",
+                        "excludes Cloud Build image builds and Artifact Registry storage", currency)
 
 
 def destroy_old_secret_versions(project: str, sid: str) -> None:
@@ -725,7 +733,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    + f' Cloud Scheduler job {job}: "{cron}" ({timezone})')
     cost = cost_estimate(project, region, cron, job, job_exists,
                          1 if values else 0, assume_yes, billing_confirmed,
-                         store_usage=usage)
+                         store_usage=usage, currency=regions.local_currency(app["platform"]))
 
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")

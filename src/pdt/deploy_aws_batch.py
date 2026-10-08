@@ -29,7 +29,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from pdt import config, console, runs_cli
+from pdt import config, console, regions, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, MANAGED_TAGS, SCHEDULE_GROUP, aws_schedule_expression,
@@ -462,7 +462,8 @@ def build_and_push(app: dict, image: str, ecr) -> str:
 
 
 def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
-                      schedule_exists: bool, usage: tuple[int, int] | None) -> CostEstimate:
+                      schedule_exists: bool, usage: tuple[int, int] | None,
+                      local_currency: str) -> CostEstimate:
     console.status("Fetching list prices from the AWS price list...")
     try:
         runs = config.runs_per_month(cron)
@@ -486,7 +487,8 @@ def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
         fail(f"could not calculate the required monthly cost estimate: {exc}")
     return cost_estimate(
         region, items,
-        "excludes EventBridge Scheduler free tier, ECR storage, and CloudWatch Logs usage")
+        "excludes EventBridge Scheduler free tier, ECR storage, and CloudWatch Logs usage",
+        local_currency)
 
 
 def batch_clients(session) -> dict:
@@ -554,7 +556,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if store:
         actions += store_plan_lines(f"bucket {bucket}", store_present, names["job_role"], app["name"])
     if not confirm(actions, assume_yes, cost_estimate_for(
-            clients["logs"], names, region, cron, schedule_exists, usage)):
+            clients["logs"], names, region, cron, schedule_exists, usage,
+            regions.local_currency(app["platform"]))):
         console.warn("Aborted; nothing was changed.")
         return 1
 

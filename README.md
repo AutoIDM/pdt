@@ -160,6 +160,8 @@ Every command reads its values from the environment it runs in. A build server s
 
 Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
 
+The cost estimate before each deploy shows prices in your local currency, chosen from your computer's time zone, or in US dollars when pdt cannot tell. Set `currency:` under `platform:` to choose another: USD, AUD, BRL, CAD, CHF, CNY, DKK, EUR, GBP, INR, JPY, KRW, NOK, NZD, SEK, or TWD. AWS lists its prices only in US dollars, so an AWS estimate stays in US dollars.
+
 ### Azure
 
 ```yaml

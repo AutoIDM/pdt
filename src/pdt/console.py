@@ -5,7 +5,7 @@ piped run stays plain text and every command stays readable in a log.
 
 The vocabulary is small on purpose. Bold marks a value the user may
 type back or copy: a name, a command, a path, an id. Cyan marks a value
-pdt worked out for the user to weigh: a numbered choice, a dollar
+pdt worked out for the user to weigh: a numbered choice, a money
 amount, the `==>` of a step. Dim marks text the user may skip: a
 progress line, a side note. Colour otherwise marks state and nothing
 else: red for a failure, green for a success, yellow for something the
@@ -167,14 +167,19 @@ def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:
     return line
 
 
-def cost(items: list[tuple[str, float]], prices: str, excludes: str = "") -> None:
+CURRENCY_SYMBOLS = {"USD": "$", "GBP": "£", "EUR": "€"}
+
+
+def cost(items: list[tuple[str, float]], prices: str, excludes: str = "",
+         currency: str = "USD") -> None:
     """A monthly cost estimate: one line per item, then the total."""
     width = max(len(label) for label, _ in items)
+    symbol = escape(CURRENCY_SYMBOLS.get(currency, f"{currency} "))
     _console.print(f"[bold]Estimated monthly cost[/] ({escape(prices)}):")
     for label, amount in items:
-        _console.print(f"  {escape(label):<{width}}  [cyan]${amount:>7.2f}[/]")
+        _console.print(f"  {escape(label):<{width}}  [cyan]{symbol}{amount:>7.2f}[/]")
     total = sum(amount for _, amount in items)
-    _console.print(f"  [bold]{'total':<{width}}  [cyan]${total:>7.2f}[/][/]")
+    _console.print(f"  [bold]{'total':<{width}}  [cyan]{symbol}{total:>7.2f}[/][/]")
     if excludes != "":
         _console.print(f"  [dim]{escape(excludes)}[/]")
 

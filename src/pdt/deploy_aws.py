@@ -676,8 +676,10 @@ def recent_stream_seconds(logs, log_group: str) -> float | None:
 
 
 def cost_estimate(region: str, items: list[tuple[str, float]],
-                  excludes: str) -> CostEstimate:
-    return CostEstimate(items, f"{region} list prices, before free tiers", excludes)
+                  excludes: str, local_currency: str) -> CostEstimate:
+    # The AWS price list holds USD only, and pdt adds no exchange-rate source.
+    in_usd = "" if local_currency == "USD" else " in USD, the only currency AWS lists"
+    return CostEstimate(items, f"{region} list prices{in_usd}, before free tiers", excludes)
 
 
 def run_basis(seconds: float | None) -> tuple[float, str]:

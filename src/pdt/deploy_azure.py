@@ -85,6 +85,11 @@ PLACEHOLDER_SUBSCRIPTION = "00000000-0000-0000-0000-000000000000"
 SHARED_GROUP = "pdt-shared"
 ENVIRONMENT_TYPE = "Microsoft.App/managedEnvironments"
 PRICES_API = "https://prices.azure.com/api/retail/prices"
+# The Retail Prices API rounds a converted price to four decimals, so a
+# per-second price such as Container Apps vCPU becomes 0 in GBP. Prices stay
+# in USD, and this meter (M416ms v2 in UK South, about 124 USD an hour),
+# priced in both currencies, gives Azure's own exchange rate.
+RATE_METER = "0238d90b-dcb1-5d36-a997-0b1612e97041"
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 STORE_GROUP = "pdt-data"
@@ -464,6 +469,21 @@ def retail_price(region: str, service: str, meter: str, sku: str,
     if not items:
         raise LookupError(f"no {meter!r} price for {service} in region {region}")
     return float(items[0]["retailPrice"]), items[0].get("unitOfMeasure", "")
+
+
+def exchange_rate(currency: str) -> float:
+    """What one USD costs in `currency`, at the rate Azure prices with today."""
+    if currency == "USD":
+        return 1.0
+    query = urllib.parse.quote(f"meterId eq '{RATE_METER}' and type eq 'Consumption'")
+    prices = []
+    for code in ("USD", currency):
+        items = fetch_json(f"{PRICES_API}?currencyCode='{code}'&$filter={query}",
+                           timeout=30).get("Items") or []
+        if not items or not items[0].get("retailPrice"):
+            raise LookupError(f"no {code} price for the exchange-rate meter {RATE_METER}")
+        prices.append(float(items[0]["retailPrice"]))
+    return prices[1] / prices[0]
 
 
 def owned_by(resource: dict | None, app_name: str) -> bool:
@@ -921,8 +941,10 @@ def key_vault_item(region: str, runs: float) -> tuple[str, float]:
 
 
 def cost_estimate(region: str, items: list[tuple[str, float]],
-                  excludes: str) -> CostEstimate:
-    return CostEstimate(items, f"{region} list prices, before free grants", excludes)
+                  excludes: str, currency: str) -> CostEstimate:
+    converted = "" if currency == "USD" else ", converted from USD at Azure's rate"
+    return CostEstimate(items, f"{region} list prices{converted}, before free grants",
+                        excludes, currency)
 
 
 def load_app(app_name: str) -> dict:

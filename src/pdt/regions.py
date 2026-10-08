@@ -3,6 +3,12 @@
 `suggest_region` names the nearest region of each cloud provider. On the
 first deploy of a project, `choose_region` offers that region, lets the
 user pick another, and saves the answer, so later deploys do not ask.
+`local_currency` names the currency a cost estimate shows.
+
+The time zone, not the OS locale, picks the currency. Windows and macOS
+set the time zone from the computer's location, while the locale follows
+the display language: a UK computer set up in US English has the locale
+en_US, and a terminal or a CI runner often has no locale at all (C).
 
 The region lists the tables below are drawn from:
 
@@ -127,6 +133,14 @@ ZONE_COUNTRY = {
     "Australia/Adelaide": "AU", "Australia/Perth": "AU", "Australia/Hobart": "AU",
     "Pacific/Auckland": "NZ",
 }
+# The currency of each country whose currency is in config.CURRENCIES.
+EURO = ("IE", "DE", "AT", "FR", "BE", "LU", "NL", "IT", "ES", "PT", "FI")
+COUNTRY_CURRENCY = {
+    **dict.fromkeys(EURO, "EUR"),
+    "US": "USD", "CA": "CAD", "BR": "BRL", "GB": "GBP", "CH": "CHF", "SE": "SEK", "NO": "NOK",
+    "DK": "DKK", "IN": "INR", "CN": "CNY", "TW": "TWD", "JP": "JPY", "KR": "KRW",
+    "AU": "AUD", "NZ": "NZD",
+}
 # A zone missing from ZONE_COUNTRY still names its continent.
 CONTINENT_COUNTRY = {
     "America": "US", "Europe": "DE", "Africa": "ZA", "Asia": "SG", "Australia": "AU",
@@ -212,6 +226,14 @@ def suggest_region(provider: str, zone: str | None = None) -> str:
     zone = local_timezone() if zone is None else zone
     regions = ZONE_REGIONS.get(zone) or COUNTRY_REGIONS.get(country(zone)) or DEFAULT_REGIONS
     return regions[PROVIDERS.index(provider)]
+
+
+def local_currency(platform: dict) -> str:
+    """platform.currency when set, else the currency of the time zone's country, else USD."""
+    chosen = str(platform.get("currency") or "").strip()
+    if chosen != "":
+        return chosen
+    return COUNTRY_CURRENCY.get(ZONE_COUNTRY.get(local_timezone(), ""), "USD")
 
 
 def question(provider: str) -> str:

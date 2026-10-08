@@ -171,16 +171,17 @@ def fail(message: str) -> None:
 class CostEstimate:
     """What a deploy will cost per month, shown before the user agrees.
 
-    `items` pairs a label with a dollar amount. `prices` says where the
-    numbers come from, such as "us-east-1 list prices, before free tiers".
+    `items` pairs a label with an amount in `currency`. `prices` says where
+    the numbers come from, such as "us-east-1 list prices, before free tiers".
     `excludes` names what the estimate leaves out.
     """
     items: list[tuple[str, float]]
     prices: str
     excludes: str = ""
+    currency: str = "USD"
 
     def show(self) -> None:
-        console.cost(self.items, self.prices, self.excludes)
+        console.cost(self.items, self.prices, self.excludes, self.currency)
 def store_plan_lines(description: str, exists: bool, identity: str, app_name: str) -> list[str]:
     return [("use existing" if exists else "create") + f" {description} (kept after destroy)",
             f"grant {identity} write access to {app_name}/ in {description}"]

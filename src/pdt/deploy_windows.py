@@ -57,7 +57,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, runs_cli
+from pdt import config, console, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import confirm
 from pdt.deploy_common import CostEstimate, warn_if_locked
@@ -486,7 +486,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions = plan(app, "update" if exists else "create", description, user, uv,
                    on_machine_path, pwsh, modules)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
-                        "no cloud charges")
+                        "no cloud charges", currency=regions.local_currency(app["platform"]))
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return 1

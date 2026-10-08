@@ -37,12 +37,12 @@ import re
 import shutil
 import subprocess
 
-from pdt import config, console, runs_cli
+from pdt import config, console, regions, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_azure import (
     AZ, ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cost_estimate, delete_unless_locked, deployer_store,
-    destroy_group, disable_old_secret_versions, ensure_group_and_vault, ensure_secret, ensure_shared_group,
+    destroy_group, disable_old_secret_versions, exchange_rate, ensure_group_and_vault, ensure_secret, ensure_shared_group,
     ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item, list_remaining,
     managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
@@ -352,7 +352,7 @@ def logs(app: dict, settings: dict, rest: list[str]) -> int:
                          store="Azure Log Analytics", delay=LOG_DELAY)
 
 
-def cost_estimate_for(region: str, cron: str, job: str, rg: str,
+def cost_estimate_for(region: str, currency: str, cron: str, job: str, rg: str,
                job_exists: bool, num_secrets: int,
                usage: tuple[int, int] | None) -> CostEstimate:
     console.status("Fetching list prices from the Azure Retail Prices API...")
@@ -376,10 +376,12 @@ def cost_estimate_for(region: str, cron: str, job: str, rg: str,
             items.append(key_vault_item(region, runs))
         if usage is not None:
             items.append(store_cost(usage, region))
+        rate = exchange_rate(currency)
+        items = [(label, amount * rate) for label, amount in items]
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
     return cost_estimate(
-        region, items, "excludes ACR image builds/storage and Log Analytics ingestion")
+        region, items, "excludes ACR image builds/storage and Log Analytics ingestion", currency)
 
 
 def environment_resource(settings: dict) -> dict | None:
@@ -642,7 +644,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     actions.append(("update" if current_job else "create")
                    + f' Container Apps Job {job}: "{cron}" (UTC)')
     if not confirm(actions, assume_yes, cost_estimate_for(
-            settings["region"], cron, job, rg, current_job is not None,
+            settings["region"], regions.local_currency(app["platform"]), cron, job, rg,
+            current_job is not None,
             1 if values else 0, usage)):
         console.warn("Aborted; nothing was changed.")
         return 1
