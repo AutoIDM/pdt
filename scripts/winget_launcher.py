@@ -18,7 +18,8 @@ import sys
 from pathlib import Path
 
 VERSION = "0.0.0"
-NEEDS_UV = "pdt needs uv. Install it with: winget install astral-sh.uv"
+NEEDS_UV = ("pdt needs uv. Install it with: winget install astral-sh.uv\n"
+            "Then open a new PowerShell window and run pdt again.")
 
 
 def main(args: list[str]) -> int:

@@ -37,7 +37,9 @@ def uv_on_path(monkeypatch):
 def test_missing_uv_prints_the_winget_hint(monkeypatch, capsys):
     monkeypatch.setattr(launcher.shutil, "which", lambda name: None)
     assert launcher.main(["list"]) == 1
-    assert "winget install astral-sh.uv" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "winget install astral-sh.uv" in err
+    assert "open a new PowerShell window" in err
 
 
 def test_installs_the_pinned_version_then_runs_pdt_with_the_same_arguments(monkeypatch, uv_on_path):

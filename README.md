@@ -6,11 +6,25 @@ Run scheduled jobs — reports, integrations, automations — and deploy them to
 
 ```
 uv tool install pdt-cli
+uv tool update-shell
 ```
 
-That puts a `pdt` command on your PATH. To update it later, run `uv tool upgrade pdt-cli`.
+`uv tool install` puts the `pdt` command in uv's tool folder. `uv tool update-shell` adds that folder to your PATH if it is not there yet. A terminal window that was already open does not see a PATH change, so open a new window before you type `pdt`. To update pdt later, run `uv tool upgrade pdt-cli`.
 
-On Windows you can run `winget install AutoIDM.pdt` instead, which also installs `uv` if you do not have it and puts the same `pdt` command on your PATH. `winget upgrade AutoIDM.pdt` moves pdt to the latest release, and the first `pdt` command after an install or upgrade finishes setting up that version.
+On Windows, paste these lines into PowerShell. They install `uv` and pdt, and they work in the window you type them in:
+
+```powershell
+winget install --id astral-sh.uv -e
+$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+uv tool install pdt-cli
+uv tool update-shell
+$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+pdt --version
+```
+
+`winget` and `uv tool update-shell` change the PATH for new windows only. Each `$env:Path = ...` line reads the new PATH into the current window. Another PowerShell window that was open before the install does not find `uv` or `pdt` until you paste the same line into it or open a new window.
+
+On Windows you can run `winget install AutoIDM.pdt` instead, which also installs `uv` if you do not have it and puts the same `pdt` command on your PATH. Open a new PowerShell window after it finishes. `winget upgrade AutoIDM.pdt` moves pdt to the latest release, and the first `pdt` command after an install or upgrade finishes setting up that version.
 
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
 
