@@ -416,6 +416,22 @@ def test_the_extractor_reads_a_real_script(tmp_path, monkeypatch):
         ("mandatory-parameter", 3, True), ("windows-path", 8, False)]
 
 
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs pwsh")
+def test_a_module_that_talks_while_it_loads_leaves_the_json_alone(tmp_path, monkeypatch):
+    # ImportExcel warns on import when libgdiplus is missing, as in the job image.
+    module = tmp_path / "modules" / "Chatty"
+    module.mkdir(parents=True)
+    (module / "Chatty.psm1").write_text(
+        "Write-Warning 'cannot autosize'\nWrite-Host 'loading'\n"
+        "function Get-Chatty { 1 }\nExport-ModuleMember -Function Get-Chatty\n")
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "report.ps1").write_text("Get-Chatty\n")
+    monkeypatch.setenv("PSModulePath", str(tmp_path / "modules"))
+    monkeypatch.setattr(powershell.pwsh, "ensure_pwsh", lambda: shutil.which("pwsh"))
+    assert powershell.extract(app)["known"]["Get-Chatty"] == "Chatty"
+
+
 def test_in_box_and_built_in_modules_are_never_installed():
     facts = {"files": [{
         "file": "a.ps1", "parseErrors": [], "requires": {"editions": [], "modules": [

@@ -1,8 +1,11 @@
 #Requires -Version 7.0
 # Lists facts about the PowerShell files in a folder as JSON. It judges
 # nothing; pdt/powershell.py holds the rules, so they run without pwsh in tests.
+# The JSON goes to $Out, not stdout: Get-Command can load a module, and whatever
+# that module prints while it loads (ImportExcel warns when libgdiplus is
+# missing) would land on stdout ahead of the JSON.
 using namespace System.Management.Automation.Language
-param([Parameter(Mandatory)][string]$Folder)
+param([Parameter(Mandatory)][string]$Folder, [Parameter(Mandatory)][string]$Out)
 
 function Get-ArgText($cmdAst, $i) {
   $el = $cmdAst.CommandElements[$i]
@@ -167,4 +170,5 @@ foreach ($found in @(Get-Command -Name $names -ErrorAction SilentlyContinue)) {
 }
 $known = [ordered]@{}
 foreach ($n in $names) { $known[$n] = $modules[$n.ToLowerInvariant()] }
-[ordered]@{ files = $scans; requirements = $requirements; known = $known } | ConvertTo-Json -Depth 8
+[ordered]@{ files = $scans; requirements = $requirements; known = $known } | ConvertTo-Json -Depth 8 |
+  Set-Content -LiteralPath $Out -Encoding utf8NoBOM

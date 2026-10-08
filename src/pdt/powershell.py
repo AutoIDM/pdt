@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -296,13 +297,18 @@ def scan(app: dict, provider: str) -> ScriptScan:
 
 
 def extract(folder: Path) -> dict:
-    """Run the fact extractor on `folder` through pwsh."""
-    proc = subprocess.run(
-        [pwsh.ensure_pwsh(), "-NoProfile", "-NonInteractive", "-File", str(SCANNER), str(folder)],
-        capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise PowerShellError(f"pdt could not read the scripts in {folder}: {proc.stderr.strip()}")
-    return json.loads(proc.stdout)
+    """Run the fact extractor on `folder` through pwsh. It writes its JSON to a file,
+    because a module that loads while it runs can print to stdout."""
+    with tempfile.TemporaryDirectory(prefix="pdt-scan-") as tmp:
+        out = Path(tmp) / "facts.json"
+        proc = subprocess.run(
+            [pwsh.ensure_pwsh(), "-NoProfile", "-NonInteractive", "-File", str(SCANNER),
+             str(folder), str(out)],
+            capture_output=True, text=True)
+        if proc.returncode != 0 or not out.is_file():
+            raise PowerShellError(
+                f"pdt could not read the scripts in {folder}: {proc.stderr.strip()}")
+        return json.loads(out.read_text(encoding="utf-8"))
 
 
 def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
