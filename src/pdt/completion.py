@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shlex
 import stat
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,11 +13,17 @@ from argcomplete.completers import ChoicesCompleter, DirectoriesCompleter
 
 from pdt import config, console, scaffold
 from pdt.deploy_common import SECRET_ACTIONS
+from pdt.utils.email_auth import can_prompt
 
 SHELLS = ("bash", "zsh", "fish", "powershell")
 
 START = "# pdt completion start"
 END = "# pdt completion end"
+
+# Windows blocks every profile script under these execution policies.
+# Restricted is the default on a Windows client (GitHub issue 133).
+BLOCKING_POLICIES = {"restricted", "allsigned"}
+ALLOW_PROFILE = "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
 
 
 def apps(prefix: str, **_kwargs) -> list[str]:
@@ -105,7 +112,9 @@ def setup(shell: str | None = None) -> None:
     shell = shell or _shell()
     if shell is None:
         return
-    shells = ["powershell", "pwsh"] if shell == "cmd" else [shell]
+    # On Windows, "powershell" covers both Windows PowerShell and PowerShell 7.
+    both = shell == "cmd" or (shell == "powershell" and os.name == "nt")
+    shells = ["powershell", "pwsh"] if both else [shell]
     for name in shells:
         script, startup = _paths(name)
         _install(script, _script(name))
@@ -157,5 +166,54 @@ def install(shell: str | None, print_only: bool) -> int:
     setup(shell)
     script, startup = _paths(shell)
     console.done(f"Tab completion for pdt is set up in {startup or script}")
+    if shell in {"powershell", "pwsh"} and os.name == "nt":
+        _allow_profile(shell)
+        _this_window(shell)
+        return 0
     console.say("It works in every new terminal.")
     return 0
+
+
+def _this_window(shell: str) -> None:
+    # A command cannot change the PowerShell session that started it, and
+    # Invoke-Expression runs text, which no execution policy blocks.
+    console.say("To use it in this window now, run:")
+    console.command(f"pdt completion {shell} --script | Out-String | Invoke-Expression")
+
+
+def _powershell(shell: str, command: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["pwsh" if shell == "pwsh" else "powershell", "-NoLogo", "-NoProfile",
+         "-NonInteractive", "-Command", command],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+
+
+def _execution_policy(shell: str) -> str:
+    try:
+        return _powershell(shell, "Get-ExecutionPolicy").stdout.strip()
+    except OSError:
+        return ""
+
+
+def _allow_profile(shell: str) -> None:
+    """Make sure new windows load the profile, which the execution policy may block."""
+    policy = _execution_policy(shell)
+    if policy.lower() not in BLOCKING_POLICIES:
+        console.say("It works in every new PowerShell window.")
+        return
+    console.warn(f"PowerShell's execution policy ({policy}) stops new windows from "
+                 "loading tab completion.")
+    if can_prompt(None) and console.confirm(
+            "Allow PowerShell to run scripts that you create on this computer?"):
+        _powershell(shell, f"{ALLOW_PROFILE} -Force")
+        policy = _execution_policy(shell)
+        if policy.lower() not in BLOCKING_POLICIES:
+            console.done(f"Execution policy for your account is now {policy}. "
+                         "Tab completion works in every new PowerShell window.")
+            return
+        console.note(f"the execution policy is still {policy}; a Group Policy on this "
+                     "computer sets it, so ask whoever manages the computer to allow "
+                     "RemoteSigned.")
+        return
+    console.say("To load it in every new PowerShell window, run this once:")
+    console.command(ALLOW_PROFILE)

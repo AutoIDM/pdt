@@ -217,3 +217,80 @@ def test_script_flag_prints_without_writing(tmp_path, monkeypatch, capsys):
     assert "pdt" in capsys.readouterr().out
     assert not (tmp_path / ".bashrc").exists()
     assert not (tmp_path / "data").exists()
+
+
+class FakePowerShell:
+    def __init__(self, *policies):
+        self.policies = list(policies)
+        self.commands = []
+
+    def __call__(self, shell, command):
+        self.commands.append(command)
+        stdout = self.policies.pop(0) + "\n" if command == "Get-ExecutionPolicy" else ""
+        return subprocess.CompletedProcess([shell], 0, stdout, "")
+
+
+def test_powershell_profile_needs_nothing_under_remote_signed(monkeypatch, capsys):
+    fake = FakePowerShell("RemoteSigned")
+    monkeypatch.setattr(completion, "_powershell", fake)
+
+    completion._allow_profile("powershell")
+
+    assert fake.commands == ["Get-ExecutionPolicy"]
+    assert "every new PowerShell window" in capsys.readouterr().out
+
+
+def test_restricted_policy_without_a_terminal_prints_the_fix(monkeypatch, capsys):
+    fake = FakePowerShell("Restricted")
+    monkeypatch.setattr(completion, "_powershell", fake)
+    monkeypatch.setattr(completion, "can_prompt", lambda interactive: False)
+
+    completion._allow_profile("powershell")
+
+    assert fake.commands == ["Get-ExecutionPolicy"]
+    out = capsys.readouterr().out
+    assert "(Restricted)" in out
+    assert completion.ALLOW_PROFILE in out
+
+
+def test_restricted_policy_is_changed_after_a_yes(monkeypatch, capsys):
+    fake = FakePowerShell("Restricted", "RemoteSigned")
+    monkeypatch.setattr(completion, "_powershell", fake)
+    monkeypatch.setattr(completion, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(completion.console, "confirm", lambda question: True)
+
+    completion._allow_profile("powershell")
+
+    assert fake.commands == ["Get-ExecutionPolicy", f"{completion.ALLOW_PROFILE} -Force",
+                             "Get-ExecutionPolicy"]
+    assert "now RemoteSigned" in capsys.readouterr().out
+
+
+def test_a_group_policy_that_keeps_the_policy_is_named(monkeypatch, capsys):
+    fake = FakePowerShell("Restricted", "Restricted")
+    monkeypatch.setattr(completion, "_powershell", fake)
+    monkeypatch.setattr(completion, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(completion.console, "confirm", lambda question: True)
+
+    completion._allow_profile("powershell")
+
+    assert "Group Policy" in capsys.readouterr().out
+
+
+def test_this_window_line_loads_the_script_without_a_file(capsys):
+    completion._this_window("powershell")
+
+    assert ("pdt completion powershell --script | Out-String | Invoke-Expression"
+            in capsys.readouterr().out)
+
+
+def test_powershell_on_windows_sets_up_both_profiles(tmp_path, monkeypatch):
+    def paths(shell):
+        return tmp_path / "pdt.ps1", tmp_path / f"{shell}.ps1"
+
+    monkeypatch.setattr(completion, "_paths", paths)
+    monkeypatch.setattr(completion.os, "name", "nt")
+    completion.setup("powershell")
+
+    assert (tmp_path / "powershell.ps1").is_file()
+    assert (tmp_path / "pwsh.ps1").is_file()
