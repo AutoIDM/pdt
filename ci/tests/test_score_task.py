@@ -119,7 +119,7 @@ def comment(marker: str, login: str = "pdt-bot") -> dict:
 
 def test_path_floors_follow_the_table():
     arch = ["src/pdt/utils/log.py", "src/pdt/deploy.py", "src/pdt/deploy_common.py",
-            "src/pdt/config.py", "src/pdt/cli.py", "src/pdt/__init__.py", ".gitlab-ci.yml",
+            "src/pdt/config.py", "src/pdt/cli.py", "src/pdt/__init__.py",
             ".github/workflows/ci.yml", "ci/claude_task.py", "AGENTS.md", "CLAUDE.md",
             "pdt", "pdt.bat"]
     for path in arch:
@@ -172,7 +172,7 @@ def test_a_few_tested_lines_in_a_covered_file_floor_at_simple():
     assert select.rule_floor(pr(), [five, test])[0] == "architectural"
     gated = change("src/pdt/cli.py", extra="+token = 1\n")
     assert select.rule_floor(pr(), [gated, test])[0] == "architectural"
-    for path in ("src/pdt/utils/log.py", ".gitlab-ci.yml", "AGENTS.md", "pdt"):
+    for path in ("src/pdt/utils/log.py", ".github/workflows/ci.yml", "AGENTS.md", "pdt"):
         assert select.rule_floor(pr(), [change(path), test])[0] == "architectural", path
 
 
@@ -670,10 +670,3 @@ def test_score_prs_workflow_runs_on_the_three_pr_events_a_schedule_and_by_hand()
     assert score["run"].rstrip().endswith("|| [ $? -eq 2 ]")
     upload = job["steps"][-1]
     assert upload["if"] == "always()" and upload["with"]["retention-days"] == 30
-
-
-def test_gitlab_ci_runs_no_claude_task():
-    ci = yaml.safe_load((REPO / ".gitlab-ci.yml").read_text())
-    for name in (".claude-task", "rebase-mrs", "score-mrs", "score-mrs-skip",
-                 "close_stale_drafts"):
-        assert name not in ci, name

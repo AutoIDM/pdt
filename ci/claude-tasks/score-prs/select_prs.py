@@ -93,7 +93,6 @@ ARCHITECTURAL = (
     ("src/pdt/config.py", "config loading and validation"),
     ("src/pdt/cli.py", "the command line"),
     ("src/pdt/__init__.py", "package root"),
-    (".gitlab-ci.yml", "CI rules"),
     (".github/workflows/*", "a GitHub workflow"),
     ("ci/*", "CI automation"),
     ("AGENTS.md", "repo rules"),
