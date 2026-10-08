@@ -81,6 +81,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: pdt-windows-x64.zip
+          # GitHub lists the PR titles merged since the previous release.
+          # Upgrade notes for a change in behavior are added by hand.
+          generate_release_notes: true
 
   # The first submission of AutoIDM.pdt is a manual `wingetcreate new` from
   # the rendered manifests in the winget-manifests artifact. WINGET_TOKEN is a
