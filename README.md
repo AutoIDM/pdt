@@ -174,6 +174,30 @@ platform:
 
 Every pdt project in a subscription runs its jobs in one shared Container Apps environment per region, `pdt-<region>` in the resource group `pdt-shared`, because a subscription allows only a few environments. Destroying the last app that uses the environment removes it, and removes `pdt-shared` once it holds no environment. Set `environment` to use an environment you already have; pdt then never creates, changes, or deletes it.
 
+#### The Azure roles you need
+
+The account you sign in with needs two roles on the subscription: **Contributor** and **Role Based Access Control Administrator**. Contributor lets deploy create the resource group, Key Vault, container registry, and job. Role Based Access Control Administrator lets deploy grant the job's identity read access to the Key Vault secret and the container registry, and grant you write access to the secret; Contributor alone cannot grant a role. Owner also works, as one role instead of two, but it grants more than pdt needs. To see which roles you hold, print your sign-in address, then list your role assignments with it:
+
+```
+pdt az ad signed-in-user show --query userPrincipalName --output tsv
+pdt az role assignment list --assignee <address it printed> --scope /subscriptions/<your subscription id> --include-inherited --include-groups --output table
+```
+
+An empty list — or the list command itself failing with the AuthorizationFailed error below — means your account holds no role on the subscription at all.
+
+#### If Azure says AuthorizationFailed
+
+```
+(AuthorizationFailed) The client '...' with object id '...' does not have authorization to perform action '...' over scope '/subscriptions/...' or the scope is invalid.
+```
+
+The action named in the error says which role is missing. `Microsoft.Authorization/roleAssignments/write` means your account can create resources but cannot grant roles: add Role Based Access Control Administrator. Any other action means your account holds no role on the subscription: add Contributor and Role Based Access Control Administrator. Being an admin in Microsoft 365 or Entra ID does not count: Azure resource roles are granted separately, per subscription. Pick the line that matches you:
+
+- **Someone else administers Azure.** Ask them to grant the roles on the subscription: portal.azure.com → Subscriptions → the subscription → Access control (IAM) → Add → Add role assignment → *Privileged administrator roles* tab → the role → select your account, once per role. If the wizard shows an *Assignment type* step, they must pick **Active** and **Permanent** — the default, Eligible, only lets you borrow the role for a few hours at a time, and deploys start failing again when it lapses. The step only appears on subscriptions that use Privileged Identity Management.
+- **You are the tenant's Global Administrator and still get this error.** This happens when someone else created the subscription, so nobody ever granted your account a role on it. Give yourself temporary rights: portal.azure.com → Microsoft Entra ID → Properties → switch "Access management for Azure resources" to **Yes** → Save. Then run `pdt login <app>` to sign in fresh (the elevation is invisible to the session you already had), grant yourself the roles exactly as in the line above, and switch the toggle back to **No**.
+
+After the roles are granted, run `pdt login <app>` once so you sign in fresh, then run your deploy again. A new role can take a minute or two to start working; pdt retries for you during a deploy.
+
 ### AWS
 
 ```yaml
