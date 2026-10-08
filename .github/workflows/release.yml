@@ -77,15 +77,17 @@ jobs:
           name: winget-launcher
           path: pdt-windows-x64.zip
 
-      # GitHub lists the PR titles merged since the previous release. The
-      # awk drops its "New Contributors" section. Upgrade notes for a change
-      # in behavior are added by hand.
+      # GitHub lists the PR titles merged since the newest full release, so a
+      # pre-release such as v0.1.5 (tagged, never on PyPI) is not the start.
+      # The awk drops the "New Contributors" section. Upgrade notes for a
+      # change in behavior are added by hand.
       - if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${GITHUB_REF_NAME}" --jq .body \
+          previous="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${GITHUB_REF_NAME}" -f previous_tag_name="${previous}" --jq .body \
             | awk '/^## New Contributors/ {skip = 1; next} /^(## |\*\*Full Changelog)/ {skip = 0} !skip' > release-notes.md
 
       - if: startsWith(github.ref, 'refs/tags/')
