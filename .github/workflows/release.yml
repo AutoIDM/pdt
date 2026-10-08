@@ -77,10 +77,6 @@ jobs:
           name: winget-launcher
           path: pdt-windows-x64.zip
 
-      # GitHub lists the PR titles merged since the newest full release, so a
-      # pre-release such as v0.1.5 (tagged, never on PyPI) is not the start.
-      # The awk drops the "New Contributors" section. Upgrade notes for a
-      # change in behavior are added by hand.
       - if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
