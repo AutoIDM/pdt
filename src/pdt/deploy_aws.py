@@ -365,8 +365,10 @@ def choose_profile(app: dict, session) -> str:
     profiles = session.available_profiles
     if not profiles:
         console.warn("No AWS credentials or profiles were found on this computer.")
-        console.next_steps([("pdt aws configure sso", "create a profile (or: pdt aws configure)"),
-                            ("profile: <profile-name>", "select it under platform: in pdt.yml")],
+        console.next_steps([("pdt aws configure sso",
+                             f"create a profile (or: {console.value('pdt aws configure')})"),
+                            ("profile: <profile-name>", f"select it under {console.value('platform:')} "
+                                                        f"in {console.value('pdt.yml')}")],
                            "Create a profile first, then select it:")
         fail("run the same command again after you create a profile")
     if len(profiles) == 1:
