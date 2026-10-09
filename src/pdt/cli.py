@@ -490,7 +490,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = add_parser("storage", help="read or manage an app's data store")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
-    p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|unlock|destroy [args...]")
+    rest = p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|unlock|destroy [args...]")
+    rest.completer = completion.storage_args
     p.set_defaults(func=cmd_storage)
     p = add_parser("runs", help="list a deployed app's recent runs")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
@@ -537,7 +538,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_completion)
     for name, label in (("aws", "AWS"), ("az", "Azure"), ("gcloud", "Google Cloud")):
         p = add_parser(name, help=f"run the {label} CLI that pdt installs")
-        p.add_argument("args", nargs=argparse.REMAINDER)
+        args = p.add_argument("args", nargs=argparse.REMAINDER)
+        args.completer = completion.files
     parser.commands = sub.choices
     entries = {a.dest: a for a in sub._choices_actions}
     for title, names in COMMAND_GROUPS.items():

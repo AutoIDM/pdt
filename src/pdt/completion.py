@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import os
 import shlex
 import stat
@@ -9,9 +10,9 @@ from pathlib import Path
 
 import argcomplete
 import shellingham
-from argcomplete.completers import ChoicesCompleter, DirectoriesCompleter
+from argcomplete.completers import ChoicesCompleter, DirectoriesCompleter, SuppressCompleter
 
-from pdt import config, console, scaffold
+from pdt import config, console, scaffold, storage_cli
 from pdt.deploy_common import SECRET_ACTIONS
 from pdt.utils.email_auth import can_prompt
 
@@ -36,6 +37,20 @@ def apps(prefix: str, **_kwargs) -> list[str]:
 def examples(prefix: str, **_kwargs) -> list[str]:
     return [example.name for example in scaffold.examples()
             if example.name.startswith(prefix)]
+
+
+def files(prefix: str, **_kwargs) -> list[str]:
+    # argcomplete's FilesCompleter runs bash, which Windows does not have.
+    return [path + "/" if os.path.isdir(path) else path
+            for path in sorted(glob.glob(glob.escape(prefix) + "*"))]
+
+
+def storage_args(prefix: str, parsed_args, **_kwargs) -> list[str]:
+    """`pdt storage APP get KEY [PATH]` takes a local path; the other words are not paths."""
+    rest = parsed_args.rest or []
+    if not rest:
+        return [name for name in storage_cli.COMMANDS if name.startswith(prefix)]
+    return files(prefix) if rest[0] == "get" and len(rest) == 2 else []
 
 
 directories = DirectoriesCompleter()
@@ -63,7 +78,14 @@ def _script(shell: str) -> str:
         executables = ["pdt", "pdt.bat", r".\pdt.bat"]
     else:
         executables = ["pdt", "./pdt"]
-    code = argcomplete.shellcode(executables, shell=name)
+    # use_defaults=False stops bash from offering file names when pdt offers nothing.
+    code = argcomplete.shellcode(executables, use_defaults=False, shell=name)
+    if name == "powershell":
+        # PowerShell offers file names when a completer returns nothing, but not when it
+        # returns one empty string.
+        code = code.replace("    Remove-Item $completion_file",
+                            '    if (-not (Get-Content $completion_file)) { "" }\n'
+                            "    Remove-Item $completion_file")
     if name == "zsh":
         # The script registers itself with compdef, which only exists after compinit.
         code = ("if ! (( $+functions[compdef] )); then\n  autoload -Uz compinit\n  compinit\nfi\n"
@@ -143,7 +165,9 @@ def setup(shell: str | None = None) -> None:
 
 
 def configure(parser) -> None:
-    argcomplete.autocomplete(parser, always_complete_options=False)
+    # A positional with no completer offers nothing, not argcomplete's default of file names.
+    argcomplete.autocomplete(parser, always_complete_options=False,
+                            default_completer=SuppressCompleter())
     if not (sys.stdin.isatty() and sys.stderr.isatty()):
         return
     try:
