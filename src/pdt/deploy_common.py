@@ -28,10 +28,15 @@ The image is built from DOCKERFILE (or POWERSHELL_DOCKERFILE) unless the
 app directory holds its own Dockerfile; write_dockerfile puts whichever
 applies at the root of the context, so every cloud provider builds the
 same way. An app's own
-.dockerignore is rewritten to the context root too (and as .gcloudignore,
-which Cloud Build reads instead), so its patterns keep meaning paths
-inside the app directory. The generated image ends every run's output
-with the line `pdt: exit N`, which `pdt runs` reads for the run's status.
+.dockerignore is rewritten to the context root too, so its patterns keep
+meaning paths inside the app directory. The generated image ends every
+run's output with the line `pdt: exit N`, which `pdt runs` reads for the
+run's status.
+
+Every cloud provider builds the image with docker on the deploying
+machine and pushes it to its own registry. Docker is the one tool a
+deploy needs that pdt cannot install, so `docker_preflight` stops the
+deploy before it touches the cloud and says so.
 
 A build run by docker on the deploying machine forwards that machine's
 SSH agent when one is running, so a RUN step marked
@@ -145,7 +150,6 @@ def write_dockerfile(stage: Path, app: dict) -> None:
     if ignore.is_file():
         text = context_ignore_text(ignore.read_text(), app["name"])
         (stage / ".dockerignore").write_text(text)
-        (stage / ".gcloudignore").write_text(text)
 
 
 def context_ignore_text(text: str, app_name: str) -> str:
@@ -335,9 +339,22 @@ def ssh_build_args() -> list[str]:
     return []
 
 
-def run_build(command: list[str]) -> None:
+def docker_preflight(provider: str) -> None:
+    if not shutil.which("docker"):
+        fail(f"Docker is not installed. pdt builds the image for {provider} with Docker on "
+             "this computer. Docker is the one tool pdt cannot install for you, because its "
+             "installer needs administrator rights and a person must accept its license. "
+             "Install Docker Desktop from https://www.docker.com/products/docker-desktop/, "
+             "start it, and run the same command again.")
+    proc = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False)
+    if proc.returncode:
+        fail("Docker is installed but not running. Start Docker Desktop, wait until it "
+             "says Docker is running, and run the same command again.")
+
+
+def run_build(command: list[str], data: str | None = None) -> None:
     proc = subprocess.run(
-        command, capture_output=True, text=True, check=False)
+        command, input=data, capture_output=True, text=True, check=False)
     if proc.returncode:
         if proc.stdout.strip():
             console.say(proc.stdout.strip())

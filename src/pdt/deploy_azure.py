@@ -26,8 +26,8 @@ deploy_azure_container_apps.py.
 The Azure CLI is a Python package, so the script header installs it and
 `az` runs it inside this process. A new `python -m azure.cli` process for
 each call cost 2 to 4 seconds on Windows, and a deploy makes dozens of
-calls. Only the browser login, `az acr build`, and `pdt az` start a
-process, because they stream to the terminal. No system install is
+calls. Only the browser login and `pdt az` start a process, because
+they stream to the terminal. No system install is
 needed. Login state lives in ~/.azure either way. azure-cli pins a few of
 its own dependencies to pre-release versions, so the header allows
 pre-releases; without that, uv before 0.12 refuses to resolve it.
@@ -156,12 +156,6 @@ def run_quiet(*args: str, retry_access: bool = False,
         if text.lower() in output:
             console.say(hint)
     fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
-
-
-def run_stream(*args: str) -> None:
-    proc = subprocess.run([*AZ, *args])
-    if proc.returncode != 0:
-        fail(f"pdt az {' '.join(args[:3])} failed; fix the problem above and re-run")
 
 
 LOCK_NAME = re.compile(r"Microsoft\.Authorization/locks/([^'\s,]+)", re.IGNORECASE)

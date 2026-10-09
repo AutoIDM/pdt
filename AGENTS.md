@@ -7,7 +7,7 @@ This repo is the source of `pdt-cli`, a tool IT teams install. They use it to cr
 Ease of use and simplification of the process is the top guiding principle. Every decision in this repo is measured against it.
 
 - The user runs one command, for example `pdt deploy <app>`. The command does everything else. It never tells the user to go and install, configure, or look something up first.
-- A required tool installs itself. Prefer a PyPI package in the provider script header (`boto3`, `azure-cli`) so `uv` installs it with no user step. If no package exists, download a pinned copy with no question, in CI and on a user's computer alike (see `src/pdt/gcloud_sdk.py`). Never print "install X and run again".
+- A required tool installs itself. Prefer a PyPI package in the provider script header (`boto3`, `azure-cli`) so `uv` installs it with no user step. If no package exists, download a pinned copy with no question, in CI and on a user's computer alike (see `src/pdt/gcloud_sdk.py`). Never print "install X and run again". Docker is the one exception, because its installer needs administrator rights and a person must accept its license. Every cloud provider builds its image with Docker on the deploying machine, so `deploy_common.docker_preflight` stops the deploy first, says why pdt cannot install Docker, and links Docker Desktop.
 - A missing login gets one `[y/N]` question, then the command opens the browser login itself and continues.
 - A missing permission prints the exact policy or role the user must add.
 - Prompts use plain words. The reader is an IT administrator. Say "Which AWS region should hold your jobs?", not "platform.region is required".

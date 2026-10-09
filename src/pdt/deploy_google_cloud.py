@@ -32,7 +32,8 @@ pinned copy to the pdt data folder and every call here uses that copy.
 
 Deploy reconciles: it creates what is missing and updates what changed,
 so it is safe to re-run after a failure. Secrets and the image build
-context are prepared by pdt/deploy_common.py.
+context are prepared by pdt/deploy_common.py. Docker on this computer
+builds the image and pushes it to Artifact Registry.
 """
 
 from __future__ import annotations
@@ -61,9 +62,9 @@ from pdt import gcloud_sdk
 from pdt import regions
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, convert_from_usd, fail, fetch_json, gather_secrets, image_action, run_secrets,
-    stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
-    warn_if_locked, write_dockerfile)
+    STORE_TAGS, CostEstimate, convert_from_usd, docker_preflight, fail, fetch_json, gather_secrets,
+    image_action, run_build, run_secrets, stage_build_context, store_cost_label, store_kept_line,
+    store_name, store_plan_lines, warn_if_locked, write_dockerfile)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -77,7 +78,6 @@ PROJECT_ID = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
 APIS = (
     "artifactregistry.googleapis.com",
     "cloudbilling.googleapis.com",
-    "cloudbuild.googleapis.com",
     "cloudscheduler.googleapis.com",
     "iam.googleapis.com",
     "logging.googleapis.com",
@@ -129,12 +129,6 @@ def run_quiet(*args: str, data: str | None = None) -> str:
         return proc.stdout
     console.say(proc.stderr.strip())
     fail(f"pdt gcloud {' '.join(args[:4])} failed; fix the problem above and re-run the deploy")
-
-
-def run_stream(*args: str) -> None:
-    proc = subprocess.run([GCLOUD, *args])
-    if proc.returncode != 0:
-        fail(f"pdt gcloud {' '.join(args[:2])} failed; fix the problem above and re-run the deploy")
 
 
 def describe_json(*args: str):
@@ -472,11 +466,20 @@ def secret_value(project: str, sid: str) -> str | None:
     return proc.stdout
 
 
-def build_image(app: dict, image: str, project: str) -> None:
+def build_image(app: dict, image: str, region: str) -> None:
     stage = stage_build_context(app)
     try:
         write_dockerfile(stage, app)
-        run_stream("builds", "submit", str(stage), "--tag", image, "--project", project)
+        # The gcloud credential helper works only with gcloud on the PATH, and
+        # pdt's own copy may not be there, so docker logs in with an access
+        # token, which is valid for 60 minutes:
+        # https://docs.cloud.google.com/artifact-registry/docs/docker/authentication#token
+        token = run_quiet("auth", "print-access-token").strip()
+        run_build(["docker", "login", "--username", "oauth2accesstoken", "--password-stdin",
+                   f"https://{region}-docker.pkg.dev"], data=token)
+        # Cloud Run runs only linux/amd64 images.
+        run_build(["docker", "build", "--platform", "linux/amd64", "-t", image, str(stage)])
+        run_build(["docker", "push", image])
     finally:
         shutil.rmtree(stage, ignore_errors=True)
 
@@ -637,7 +640,7 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
              f"{detail or str(exc)}")
     converted = "" if currency == "USD" else ", converted from USD by Google Cloud"
     return CostEstimate(items, f"{region} list prices{converted}, before free tiers",
-                        "excludes Cloud Build image builds and Artifact Registry storage", currency)
+                        "excludes Artifact Registry storage", currency)
 
 
 def destroy_old_secret_versions(project: str, sid: str) -> None:
@@ -669,6 +672,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
+    docker_preflight("Google Cloud")
     name = app["name"]
     project, region = project_region(app)
     console.status("Checking your Google Cloud sign-in...")
@@ -753,7 +757,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                   "--repository-format", "docker", "--location", region,
                   "--project", project, "--labels", "managed-by=pdt")
     console.step(f"building image {image}")
-    build_image(app, image, project)
+    build_image(app, image, region)
     if not sa_exists:
         if not sa.startswith("pdt-runner@"):
             fail(f"CLOUD_RUN_SERVICE_ACCOUNT {sa} does not exist in project {project}")
