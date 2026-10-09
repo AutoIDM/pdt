@@ -8,7 +8,9 @@ Windows scheduled task, gets it set). Without it the folder is
 behaves the same as a deployed job.
 
 Inside the folder pdt reserves `runs/` and `state/`. `state/lock` is
-the lock that pull takes and push or abort releases.
+the lock that pull takes and push or abort releases. A `runs/<time>-<id>/`
+folder ends with the run's id: PDT_RUN_ID when set, else the id the cloud
+gave the run (the one `pdt runs` lists), else a random one.
 
     from pdt.utils import storage
     with storage.sync() as run:
@@ -31,7 +33,7 @@ propagates. The same steps by hand:
 
 A run that dies without releasing the lock blocks the next run until the
 lock's TTL passes, unless the next run can tell the holder is gone: it
-carries the same PDT_RUN_ID, or it started on this same machine and its
+carries the same run id, or it started on this same machine and its
 process no longer exists. `pdt storage <app> unlock` releases a lock by hand.
 """
 
@@ -84,7 +86,21 @@ class Run:
     lease: Lease
 
 
-RUN_ID = os.environ.get("PDT_RUN_ID", "").strip() or uuid.uuid4().hex[:8]
+def cloud_run_id() -> str:
+    """The id the cloud gave this run, so a runs/ folder ends with the id `pdt runs` shows.
+
+    Google Cloud, Azure, and AWS Batch each name the run in an env var.
+    """
+    for name in ("CLOUD_RUN_EXECUTION", "CONTAINER_APP_JOB_EXECUTION_NAME",
+                 "AWS_BATCH_JOB_ID"):
+        value = os.environ.get(name, "").strip()
+        if value != "":
+            return value
+    return ""
+
+
+RUN_ID = (os.environ.get("PDT_RUN_ID", "").strip() or cloud_run_id()
+          or uuid.uuid4().hex[:8])
 HOST = socket.gethostname()
 
 

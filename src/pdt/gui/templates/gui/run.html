@@ -1,0 +1,78 @@
+{% extends "gui/base.html" %}
+{% block title %}{{ app.name }} run {{ number }}{% endblock %}
+{% block crumbs %}<a href="{% url 'index' %}">Apps</a> › <a href="{% url 'app_detail' app.name %}">{{ app.name }}</a> › <span>run {{ number }}</span>{% endblock %}
+{% block content %}
+{% if run.status == "running" %}<meta http-equiv="refresh" content="15">{% elif pending %}<meta http-equiv="refresh" content="5">{% endif %}
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h1>run {{ number }} of {{ app.name }} <span class="status {{ run.status }}">{{ run.status }}</span></h1>
+            <p class="hint">
+                started {{ run.started|date:"Y-m-d H:i:s" }} · {{ duration }}
+                {% if run.exit_code is not None %} · exit {{ run.exit_code }}{% endif %}
+                · <span class="dim">{{ run.run_id }}</span>
+            </p>
+            {% if run.status == "running" %}<p class="hint">This run is going. The page refreshes itself every 15 seconds; the platform can report a run as running for a minute after it ends.</p>
+            {% elif pending %}<p class="hint">Reading this run's log and files now; this page refreshes itself in a few seconds.</p>{% endif %}
+        </div>
+    </div>
+</section>
+
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2>Artifacts</h2>
+            <p class="hint">
+                {% for folder in folders %}<button type="button" class="chip" data-copy>pdt storage {{ app.name }} ls {{ folder }}/ --recursive</button>{% if not forloop.last %}<br>{% endif %}{% empty %}<button type="button" class="chip" data-copy>pdt storage {{ app.name }} ls runs/</button>{% endfor %}
+            </p>
+        </div>
+    </div>
+    {% if run.artifacts_error %}<pre class="error">{{ run.artifacts_error }}</pre>{% endif %}
+    {% if artifacts %}
+    <table class="grid-table">
+        <thead><tr><th>Path</th><th>Size</th><th></th></tr></thead>
+        <tbody>
+        {% for file in artifacts %}
+            <tr>
+                <td>{% if file.path|lower|slice:"-4:" == ".csv" %}<a href="{% url 'explore' app.name run.pk %}?path={{ file.path|urlencode }}" title="open in the SQL workbench">{{ file.path }}</a>{% else %}{{ file.path }}{% endif %}</td>
+                <td>{% if file.size is not None %}{{ file.size|filesizeformat }}{% endif %}</td>
+                <td><a href="{% url 'artifact' app.name run.pk %}?path={{ file.path|urlencode }}">Download</a></td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% elif not run.artifacts_error %}
+    <p class="empty">This run kept no files.</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2>Log</h2>
+            <p class="hint">
+                {% if errors_only %}
+                warnings, errors, and plain lines only · <a href="?">show every line</a>
+                {% else %}
+                {{ total_lines }} line{{ total_lines|pluralize }} · <a href="?errors=1">only warnings and errors</a>
+                {% endif %}
+                · <button type="button" class="chip" data-copy>pdt logs {{ app.name }} --id {{ run.run_id }} --full</button>
+            </p>
+        </div>
+    </div>
+    {% if run.logs_error %}<pre class="error">{{ run.logs_error }}</pre>{% endif %}
+    {% if lines %}
+    <pre class="log" tabindex="0" aria-label="Log of run {{ number }}">{% for line in lines %}<span class="line {{ line.level|lower }}"><span class="time">{% if line.time %}{{ line.time|date:"H:i:s" }}{% endif %}</span> <span class="level">{{ line.level }}</span> {{ line.message }}</span>{% endfor %}</pre>
+    {% elif not run.logs_error %}
+    <p class="empty">No log lines{% if run.status == "running" %} yet{% endif %}.</p>
+    {% endif %}
+</section>
+<script>
+    // The last line logged is the one to read first.
+    document.querySelectorAll('.log').forEach(function (log) { log.scrollTop = log.scrollHeight; });
+</script>
+
+<section class="card" hidden data-ai-analysis>
+    <div class="card-head"><h2>AI Analysis</h2></div>
+</section>
+{% endblock %}

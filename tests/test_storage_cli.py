@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from pdt import storage_cli
@@ -20,6 +22,23 @@ def app():
 def test_ls_lists_the_folder(store, app, capsys):
     assert storage_cli.run(store, app, ["ls"], False) == 0
     assert "a.csv" in capsys.readouterr().out
+
+
+def test_ls_json_lists_each_entry_with_its_type(store, app, capsys):
+    assert storage_cli.run(store, app, ["ls", "--json"], False) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [(entry["name"], entry["type"]) for entry in entries] == [("a.csv", "file")]
+
+
+def test_ls_recursive_lists_every_file_under_the_folder(store, app, capsys, tmp_path):
+    nested = tmp_path / "store" / "my-report" / "runs" / "r1" / "more"
+    nested.mkdir(parents=True)
+    (nested / "b.txt").write_text("b")
+    (nested.parent / "a.csv").write_text("a")
+    assert storage_cli.run(store, app, ["ls", "runs/", "--recursive", "--json"], False) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [entry["name"] for entry in entries] == ["runs/r1/a.csv", "runs/r1/more/b.txt"]
+    assert all(entry["type"] == "file" for entry in entries)
 
 
 def test_no_subcommand_prints_the_usage(store, app, capsys):
@@ -61,3 +80,12 @@ def test_unlock_refused_keeps_the_lock(store, app, tmp_path, capsys, monkeypatch
     assert storage_cli.run(store, app, ["unlock"], False) == 1
     assert store.read_lock() is not None
     assert any("release the state lock held by run" in line for line in seen[0])
+
+
+@pytest.mark.parametrize("subcommand", ["unlock", "destroy"])
+def test_yes_after_the_separator_skips_the_question(store, app, tmp_path, monkeypatch, subcommand):
+    store.pull("state/", tmp_path / "local")
+    seen = []
+    monkeypatch.setattr("pdt.deploy.confirm", lambda actions, assume_yes: seen.append(assume_yes))
+    storage_cli.run(store, app, [subcommand, "--yes"], False)
+    assert seen == [True]

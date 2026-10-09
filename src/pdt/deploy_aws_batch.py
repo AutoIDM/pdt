@@ -72,6 +72,7 @@ BATCH_ACTIONS = [
     "batch:DescribeJobs",
     "batch:ListJobs",
     "batch:RegisterJobDefinition",
+    "batch:SubmitJob",
     "batch:TagResource",
     "batch:UpdateComputeEnvironment",
     "batch:UpdateJobQueue",
@@ -601,7 +602,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
         f"reconcile Batch job definition {names['job_definition']} "
         f"({float(JOB_VCPU):g} vCPU, {JOB_MEMORY} MiB, no time limit)",
         ("update" if schedule_exists else "create")
-        + f" EventBridge schedule {names['schedule']}: {expression} ({app['timezone']})",
+        + f" EventBridge schedule {names['schedule']}: {expression} ({app['timezone']})"
+        + (" (paused)" if app["pause"] else ""),
         (f"use security group {SECURITY_GROUP} ({group_id})" if group else
          f"create security group {SECURITY_GROUP} (no inbound rules, all outbound)")
         + f" in default VPC {vpc_id}",
@@ -642,7 +644,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         names, image, region, execution, job_role, secret_arn, environment)
     ensure_job_definition(clients["batch"], desired, image_digest)
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
-                    app["timezone"], scheduler_role, submit_job_target(names))
+                    app["timezone"], scheduler_role, submit_job_target(names), app["pause"])
     console.done(f"Deployed {app['name']}.")
     console.field("Run it once", f"pdt aws batch submit-job --job-name {names['job_definition']} "
                   f"--job-queue {JOB_QUEUE.name} --job-definition {names['job_definition']} "
@@ -856,6 +858,47 @@ def runs(app: dict, session, rest: list[str]) -> int:
     names = resource_names(app["name"])
     batch = session.client("batch")
     return runs_cli.runs(lambda: list_runs(batch, names["job_definition"]), app["name"], rest)
+
+
+def current_schedule(scheduler, name: str, app_name: str) -> dict:
+    try:
+        return scheduler.get_schedule(Name=name, GroupName=SCHEDULE_GROUP)
+    except Exception as exc:
+        if not not_found(exc):
+            raise
+        fail(f"{app_name} has no EventBridge schedule {name}; run pdt deploy {app_name} first")
+
+
+# What update_schedule needs back from get_schedule to change one field.
+SCHEDULE_FIELDS = ("Name", "GroupName", "ScheduleExpression", "ScheduleExpressionTimezone",
+                   "FlexibleTimeWindow", "Target", "Description")
+
+
+def pause(app: dict, session, paused: bool) -> int:
+    scheduler = session.client("scheduler")
+    names = resource_names(app["name"])
+    schedule = current_schedule(scheduler, names["schedule"], app["name"])
+    state = "DISABLED" if paused else "ENABLED"
+    if schedule.get("State") != state:
+        scheduler.update_schedule(
+            **{key: schedule[key] for key in SCHEDULE_FIELDS if key in schedule}, State=state)
+    console.done(f"{'Paused' if paused else 'Unpaused'} {app['name']}: "
+                 f"EventBridge schedule {names['schedule']} is {state}.")
+    return 0
+
+
+def start(app: dict, session) -> int:
+    """Submit the job the schedule would submit, with the same input."""
+    scheduler, batch = session.client("scheduler"), session.client("batch")
+    names = resource_names(app["name"])
+    target = current_schedule(scheduler, names["schedule"], app["name"])["Target"]
+    request = json.loads(target["Input"])
+    response = batch.submit_job(
+        jobName=request["JobName"], jobQueue=request["JobQueue"],
+        jobDefinition=request["JobDefinition"], tags=dict(MANAGED_TAGS))
+    console.done(f"Started {app['name']}: Batch job {response['jobId']}.")
+    console.command(f"pdt runs {app['name']}", "see the run")
+    return 0
 
 
 def logs(app: dict, session, rest: list[str]) -> int:
