@@ -67,8 +67,9 @@ def test_a_second_run_changes_nothing(release, tmp_path, monkeypatch, capsys):
         assert migration.plan(project) == migrations.Plan()
 
 
-def test_the_newest_release_only_gains_migrated_by(tmp_path, monkeypatch, capsys):
+def test_a_project_with_every_change_only_gains_migrated_by(tmp_path, monkeypatch, capsys):
     project = copy_fixture("0.1.6", tmp_path, monkeypatch)
+    (project / "AGENTS.md").write_text(scaffold.AGENTS_TEXT)
     before = files(project)
     migrations.bring_up_to_date(project)
     after = files(project)
