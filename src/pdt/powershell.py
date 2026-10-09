@@ -825,9 +825,10 @@ def install_for_run(app: dict, folder: Path = MODULE_DIR) -> dict[str, str]:
         if have is not None and satisfies(have, m.version):
             continue
         version = f" -Version {quoted(m.version)}" if m.version else ""
-        found = "does not have it" if have is None else f"has version {have}"
-        console.status(f"Installing the PowerShell module {m.name} {m.version or '(latest)'} "
-                       f"into {folder}, because this computer {found}...")
+        found = "does not have it" if have is None else f"has version {console.value(have)}"
+        console.status(f"Installing the PowerShell module {console.value(m.name)} "
+                       f"{console.value(m.version) if m.version else '(latest)'} "
+                       f"into {console.value(folder)}, because this computer {found}...")
         shutil.rmtree(folder / m.name, ignore_errors=True)
         folder.mkdir(parents=True, exist_ok=True)
         proc = subprocess.run(

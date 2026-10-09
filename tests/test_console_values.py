@@ -43,6 +43,7 @@ ALLOWED = {
     "duckdb_wasm.py": {"size_text(size)"},
     "email_auth.py": {"_provider_name(provider)", "name"},
     "gcloud_sdk.py": {"VERSION"},
+    "powershell.py": {"found"},
     "pwsh.py": {"VERSION"},
     "regions.py": {"PROVIDER_NAMES[provider]"},
     "runs_cli.py": {"local_text(since)", "local_text(since + span)", "len(shown)", "len(found)",
