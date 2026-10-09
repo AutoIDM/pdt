@@ -541,6 +541,21 @@ def test_json_stdout_holds_only_json(project, monkeypatch, capsys, command, case
         json.loads(out)
 
 
+@pytest.mark.parametrize("case", [no_apps, disabled_apps, no_project, provider_fails,
+                                  unknown_provider])
+def test_storage_ls_json_stdout_holds_only_json(project, monkeypatch, capsys, case):
+    case(project, monkeypatch)
+    named = [] if case in (no_apps, disabled_apps) else ["hello-world"]
+    code = run_cli(monkeypatch, "storage", *named, "ls", "--json")
+    out = capsys.readouterr().out
+    if case in (no_apps, disabled_apps):
+        assert (code, json.loads(out)) == (0, [])
+    if out == "":
+        assert code != 0
+    else:
+        json.loads(out)
+
+
 def test_json_commands_are_found():
     assert {"list", "validate", "health", "runs", "logs"} <= set(JSON_COMMANDS)
 
@@ -605,12 +620,18 @@ def test_validate_names_no_app_for_a_problem_every_app_shares(project, monkeypat
 def test_a_provider_script_for_json_prints_only_the_data_on_stdout(project):
     src = Path(deploy.__file__).resolve().parent.parent
     code = (f"import subprocess, sys; sys.path.insert(0, {str(src)!r}); "
-            "from pdt import console; console.say('Signing in...'); "
+            "from pdt import console; console.json_output(); console.say('Signing in...'); "
             "subprocess.run([sys.executable, '-c', 'print(1)']); console.data('[]')")
     proc = subprocess.run([sys.executable, "-c", code], env=deploy.provider_env(["--", "--json"]),
                           check=True, capture_output=True, text=True)
     assert proc.stdout == "[]\n"
     assert proc.stderr == "Signing in...\n1\n"
+
+
+@pytest.mark.parametrize("script", deploy.PROVIDERS.values())
+def test_every_provider_script_starts_with_json_output(script):
+    source = Path(deploy.__file__).with_name(script).read_text()
+    assert 'if __name__ == "__main__":\n    console.json_output()\n' in source
 
 
 def test_cloud_cli_passthroughs_are_registered():

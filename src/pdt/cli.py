@@ -385,8 +385,14 @@ def cmd_secrets(args) -> int:
 
 
 def cmd_storage(args) -> int:
+    as_json = "--json" in args.rest
+    if as_json:
+        console.to_stderr()
+        if not config.find_apps():
+            say_no_apps(as_json=True)
+            return 0
     use_app_folder(args)
-    name = choose_app(args.app, "storage")
+    name = choose_app(args.app, "storage", quiet=as_json)
     if name is None:
         return 1
     return deploy.storage(name, args.rest)

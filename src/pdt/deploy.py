@@ -15,7 +15,7 @@ PDT_CLI_VERSION does the same for pdt's version: from a clone, the script
 imports pdt from src/, where no package metadata says which version it is,
 and the image a PowerShell app builds pins pdt-cli at that version.
 PDT_JSON_OUTPUT tells a script given `--json` to print every line but the
-JSON on stderr; see `pdt.console`.
+JSON on stderr; see `pdt.console.json_output`.
 """
 
 from __future__ import annotations

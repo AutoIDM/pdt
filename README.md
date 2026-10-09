@@ -127,7 +127,7 @@ pdt login my-report
 
 Inside an app folder, or any folder below it, leave `APP` off any command that takes one and pdt uses that app. For example, `pdt logs 3` in the `hello-world` folder reads run 3 of `hello-world`. Anywhere else, leave `APP` off or mistype it and pdt lists the apps in the project so you can pick one; a mistyped name also gets the closest app name. A mistyped command or option gets the closest one too, for example `pdt lgos` asks "Did you mean `pdt logs`?".
 
-With `--json`, `pdt list`, `pdt validate`, `pdt runs`, `pdt logs`, and `pdt health` print only JSON on stdout, and every other line, such as an error or a sign-in question, on stderr. In a project with no enabled apps, `pdt runs`, `pdt logs`, and `pdt health` print `[]`. A command that has no JSON to print exits with a code other than 0 and prints nothing on stdout.
+With `--json`, `pdt list`, `pdt validate`, `pdt runs`, `pdt logs`, `pdt health`, and `pdt storage APP ls` print only JSON on stdout, and every other line, such as an error or a sign-in question, on stderr. In a project with no enabled apps, `pdt runs`, `pdt logs`, `pdt health`, and `pdt storage APP ls` print `[]`. A command that has no JSON to print exits with a code other than 0 and prints nothing on stdout.
 
 `pdt az` and `pdt gcloud` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
 

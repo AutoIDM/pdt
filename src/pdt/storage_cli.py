@@ -28,9 +28,8 @@ def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
     except FileNotFoundError:
         entries = []
     if as_json:
-        console.say(console.escape(json.dumps([{"name": entry["name"], "size": entry.get("size"),
-                                                "type": entry.get("type", "file")}
-                                               for entry in entries])))
+        console.data(json.dumps([{"name": entry["name"], "size": entry.get("size"),
+                                  "type": entry.get("type", "file")} for entry in entries]))
         return 0
     if not entries:
         console.say(f"nothing under {console.value(path or '/')}")
@@ -123,6 +122,9 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
     subcommand, *args = rest or [""]
     if subcommand not in handlers:
         console.error(console.escape(USAGE))
+        return 1
+    if as_json and subcommand != "ls":
+        console.error("--json works only with ls")
         return 1
     needed, handler = handlers[subcommand]
     if len(args) < needed:

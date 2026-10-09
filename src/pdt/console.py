@@ -34,13 +34,8 @@ from rich.text import Text
 # wraps it at the edge, and rich never re-flows it at a word boundary.
 _console = Console(highlight=False, soft_wrap=True, emoji=False)
 
-# Where `data` writes. pdt.deploy sets PDT_JSON_OUTPUT for a provider script
-# that prints --json output, and the script then points its own stdout, and
-# that of each program it starts, at stderr, so only `data` reaches stdout.
+# The real stdout, for `data`, once `json_output` has moved stdout to stderr.
 _data = None
-if os.environ.get("PDT_JSON_OUTPUT"):
-    _data = os.fdopen(os.dup(1), "w")
-    os.dup2(2, 1)
 
 INDENT = 6
 
@@ -52,6 +47,20 @@ def width() -> int:
 def to_stderr() -> None:
     """Print every line on stderr from now on, so stdout holds only what `data` prints."""
     _console.stderr = True
+
+
+def json_output() -> None:
+    """In a provider script started for --json output, point stdout at stderr.
+
+    pdt.deploy sets PDT_JSON_OUTPUT for such a script. The move is at the file
+    level, so a prompt, a print, and each program the script starts all reach
+    stderr, and only `data` reaches stdout. Every provider script calls this first.
+    """
+    global _data
+    if not os.environ.get("PDT_JSON_OUTPUT") or _data is not None:
+        return
+    _data = os.fdopen(os.dup(1), "w")
+    os.dup2(2, 1)
 
 
 def data(text: str) -> None:

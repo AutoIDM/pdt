@@ -41,6 +41,13 @@ def test_ls_recursive_lists_every_file_under_the_folder(store, app, capsys, tmp_
     assert all(entry["type"] == "file" for entry in entries)
 
 
+@pytest.mark.parametrize("subcommand", [["get", "a.csv"], ["query", "select 1"], ["unlock"]])
+def test_json_works_only_with_ls(store, app, capsys, subcommand):
+    assert storage_cli.run(store, app, [*subcommand, "--json"], False) == 1
+    captured = capsys.readouterr().out
+    assert "--json works only with ls" in captured
+
+
 def test_no_subcommand_prints_the_usage(store, app, capsys):
     assert storage_cli.run(store, app, [], False) == 1
     assert storage_cli.USAGE in capsys.readouterr().out
