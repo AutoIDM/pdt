@@ -20,7 +20,6 @@ import contextlib
 import difflib
 import hashlib
 import json
-import os
 import re
 import shutil
 import sys
@@ -43,7 +42,6 @@ KEEP_BACKUPS = 5
 # These commands go on, with a note, when a migration needs the user first,
 # so a user can still read the logs of a job that failed.
 READ_ONLY_COMMANDS = ("list", "validate", "runs", "logs", "health")
-ALLOW_NEWER = "PDT_ALLOW_NEWER_PROJECT"
 MIGRATED_BY_COMMENT = "pdt writes this line when it updates the project. Do not change it."
 # The sha256 of each text that a release wrote, and the first release that wrote
 # it. A file that still has one of these texts has no edits by the user.
@@ -265,7 +263,7 @@ def pending(project: Path) -> list[Migration]:
     have = migrated_by(project)
     if have is None:
         return list(MIGRATIONS)
-    if version(have) > version(MIGRATIONS[-1].release) and os.environ.get(ALLOW_NEWER) != "1":
+    if version(have) > version(MIGRATIONS[-1].release):
         raise ConfigError(f"this project needs pdt {have} or newer. You have pdt {__version__}.\n"
                           "Update pdt, then run the command again:\n"
                           "  uv tool upgrade pdt-cli          (or: winget upgrade AutoIDM.pdt)")
