@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from pdt import console, deploy_aws_batch, deploy_azure_container_apps, deploy_google_cloud
-from pdt import scaffold
+from pdt import deploy, scaffold
 from pdt import deploy_windows
 from pdt.deploy_common import deployed_next_steps
 
@@ -68,11 +68,21 @@ def test_a_deploy_suggests_pdt_run_deployed_first(width, capsys):
     ]
 
 
+def test_a_deploy_that_started_the_run_does_not_suggest_starting_one(width, capsys):
+    deployed_next_steps("my-report", started=True)
+    assert [line.split()[1] for line in capsys.readouterr().out.splitlines()[2:]] == [
+        "logs", "runs", "health"]
+
+
+def test_every_provider_gets_the_next_steps_from_the_neutral_deploy():
+    assert inspect.getsource(deploy.deploy).count("deployed_next_steps(") == 1
+
+
 @pytest.mark.parametrize("module", [deploy_aws_batch, deploy_azure_container_apps,
                                     deploy_google_cloud, deploy_windows])
-def test_every_provider_ends_its_deploy_with_the_same_next_steps(module):
+def test_no_provider_prints_its_own_next_steps(module):
     source = inspect.getsource(module.deploy)
-    assert source.count("deployed_next_steps(") == 1
+    assert "deployed_next_steps(" not in source
     assert "console.field(" not in source
 
 

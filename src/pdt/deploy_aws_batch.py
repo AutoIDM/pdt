@@ -43,7 +43,7 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, deployed_next_steps, docker_preflight, fail, gather_secrets, image_action,
+    CostEstimate, docker_preflight, fail, gather_secrets, image_action,
     run_secrets, secret_contents, ssh_build_args, stage_build_context, store_kept_line,
     store_name, store_plan_lines, warn_if_locked, write_dockerfile,
 )
@@ -663,7 +663,6 @@ def deploy(app: dict, assume_yes: bool) -> int:
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, submit_job_target(names), app["pause"])
     console.done(f"Deployed {console.value(app['name'])}.")
-    deployed_next_steps(app["name"])
     return 0
 
 

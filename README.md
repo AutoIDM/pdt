@@ -83,7 +83,11 @@ my-jobs/
 pdt deploy my-report
 ```
 
-The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question. To remove everything it created:
+The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question.
+
+When the app has no successful run yet (it never ran, or every run failed), the deploy then asks `Start a run now and show its log? [y/N]`. A yes starts one run, as `pdt run my-report --deployed` does, and prints the run's log lines as they arrive, as `pdt logs my-report --follow` does. The deploy then exits with the run's result: 0 when the run succeeded, 1 when it failed. A run can have side effects, for example an email to real people, so the answer is no unless you type `y`. With `--yes`, or with no terminal (a build server), pdt does not ask and starts no run. Add `--run` to start the run and follow its log with no question. `pdt deploy --all` does not offer a run.
+
+To remove everything it created:
 
 ```
 pdt destroy my-report
@@ -106,7 +110,8 @@ pdt login my-report
 | `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
 | `pdt run APP` | run an app on this machine |
 | `pdt run APP --deployed` | start one run of the deployed job now, on its platform |
-| `pdt deploy APP` | deploy an app to its configured platform |
+| `pdt deploy APP` | deploy an app to its configured platform; when the app has no successful run yet, asks whether to start one and follow its log |
+| `pdt deploy APP --run` | deploy, then start the app's first run and follow its log with no question; starts no run when the app already has a successful run |
 | `pdt deploy --all` | deploy every enabled app, in order; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
 | `pdt destroy APP` | remove everything deploy created |
 | `pdt pause APP` | stop the deployed schedule from starting runs; writes `pause: true` into the app's `config.yml` |
@@ -182,7 +187,7 @@ Every command reads its values from the environment it runs in. A build server s
 - A `.env` file is a convenience for a person working on their own machine. A value that is already in the environment wins over the same name in a `.env` file.
 - `PDT_ENV_JSON` holds every value as one JSON object, for a CI system that keeps one secret instead of many. For example, `PDT_ENV_JSON={"PDT_TOKEN": "abc", "PDT_SMTP_USER": "reports@example.com"}`.
 - pdt creates no `.env` file on a build server. It looks for the `CI` variable that build systems set, and for a missing terminal. Email authorization must therefore be done first: run `pdt run APP` once on a machine with a browser, then copy `PDT_SMTP_OAUTH_CACHE_B64` (or `PDT_GRAPH_MAIL_CACHE_B64` for Microsoft Graph) from your `.env` into the CI variables.
-- `pdt deploy APP` and `pdt destroy APP` ask before they change anything. Add `--yes` so they proceed without asking.
+- `pdt deploy APP` and `pdt destroy APP` ask before they change anything. Add `--yes` so they proceed without asking. On a build server, `pdt deploy APP` starts no run after the deploy; add `--run` to start the app's first run and follow its log.
 
 ## Choosing where jobs run
 
