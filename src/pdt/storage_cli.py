@@ -106,7 +106,8 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
         return 1
     as_json = "--json" in rest
     recursive = "--recursive" in rest
-    rest = [arg for arg in rest if arg not in ("--json", "--recursive")]
+    assume_yes = assume_yes or "--yes" in rest
+    rest = [arg for arg in rest if arg not in ("--json", "--recursive", "--yes")]
     handlers = {
         "ls": (0, lambda args: ls(store, args[0] if args else "", as_json, recursive)),
         "get": (1, lambda args: get(store, args[0],

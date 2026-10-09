@@ -80,3 +80,12 @@ def test_unlock_refused_keeps_the_lock(store, app, tmp_path, capsys, monkeypatch
     assert storage_cli.run(store, app, ["unlock"], False) == 1
     assert store.read_lock() is not None
     assert any("release the state lock held by run" in line for line in seen[0])
+
+
+@pytest.mark.parametrize("subcommand", ["unlock", "destroy"])
+def test_yes_after_the_separator_skips_the_question(store, app, tmp_path, monkeypatch, subcommand):
+    store.pull("state/", tmp_path / "local")
+    seen = []
+    monkeypatch.setattr("pdt.deploy.confirm", lambda actions, assume_yes: seen.append(assume_yes))
+    storage_cli.run(store, app, [subcommand, "--yes"], False)
+    assert seen == [True]
