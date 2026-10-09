@@ -34,9 +34,8 @@ run's output with the line `pdt: exit N`, which `pdt runs` reads for the
 run's status.
 
 Every cloud provider builds the image with docker on the deploying
-machine and pushes it to its own registry. Docker is the one tool a
-deploy needs that pdt cannot install, so `docker_preflight` stops the
-deploy before it touches the cloud and says so.
+machine and pushes it to its own registry. `docker_preflight` gets Docker
+ready through `pdt.docker_setup` before the deploy touches the cloud.
 
 The build forwards the deploying machine's SSH agent when one is
 running, so a RUN step marked `--mount=type=ssh` can install a private
@@ -69,7 +68,7 @@ from typing import Callable
 
 import backoff
 
-from pdt import config, console
+from pdt import config, console, docker_setup
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
@@ -358,17 +357,10 @@ def ssh_build_args() -> list[str]:
     return []
 
 
-def docker_preflight(provider: str) -> None:
-    if not shutil.which("docker"):
-        fail(f"Docker is not installed. pdt builds the image for {provider} with Docker on "
-             "this computer. Docker is the one tool pdt cannot install for you, because its "
-             "installer needs administrator rights and a person must accept its license. "
-             "Install Docker Desktop from https://www.docker.com/products/docker-desktop/, "
-             "start it, and run the same command again.")
-    proc = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False)
-    if proc.returncode:
-        fail("Docker is installed but not running. Start Docker Desktop, wait until it "
-             "says Docker is running, and run the same command again.")
+def docker_preflight(provider: str, image_platform: str, assume_yes: bool) -> None:
+    problem = docker_setup.ensure(provider, assume_yes) or docker_setup.emulate(image_platform)
+    if problem:
+        fail(problem)
 
 
 def run_build(command: list[str], data: str | None = None) -> None:

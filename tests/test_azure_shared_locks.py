@@ -42,7 +42,7 @@ def fake_deploy(monkeypatch, answers):
         return ""
 
     monkeypatch.setattr(module, "preflight", lambda app, requested: settings())
-    monkeypatch.setattr(module, "docker_preflight", lambda provider: None)
+    monkeypatch.setattr(module, "docker_preflight", lambda provider, image_platform, assume_yes: None)
     monkeypatch.setattr(module, "azure_settings", lambda app: {})
     monkeypatch.setattr(module, "gather_secrets", lambda app: {})
     monkeypatch.setattr(module, "check_shared_names", lambda settings: None)

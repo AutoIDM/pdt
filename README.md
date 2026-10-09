@@ -190,7 +190,7 @@ Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for 
 
 The cost estimate before each deploy shows prices in the currency of your computer's regional setting, or in US dollars when pdt cannot read it. pdt takes the price in that currency from the cloud when the cloud lists one. Otherwise it converts from US dollars at the cloud's own exchange rate, or at the European Central Bank's daily reference rate, and the estimate names the rate it used.
 
-A deploy to AWS, Azure, or Google Cloud builds each app's image with Docker on your computer and uploads it to that cloud's image registry, so [Docker Desktop](https://www.docker.com/products/docker-desktop/) must be installed and running. Docker is the one tool pdt cannot install for you, because its installer needs administrator rights and a person must accept its license. The Windows provider does not use Docker.
+A deploy to AWS, Azure, or Google Cloud builds each app's image with Docker on your computer and uploads it to that cloud's image registry. When Docker is installed but not running, the deploy starts it. When Docker is not installed, the deploy shows the commands that install it and asks once: Colima through Homebrew on macOS, Docker Desktop through winget on Windows, and Docker Engine from get.docker.com on Linux. Docker Desktop needs a paid plan at a company with more than 250 employees or more than $10 million in yearly revenue. Without Homebrew, winget, or curl, the deploy names Docker's install page for your system. On Linux, when the image is for another CPU type than your computer's, the deploy first adds the QEMU emulator with `docker run --privileged --rm tonistiigi/binfmt --install <type>`. The Windows provider does not use Docker.
 
 ### Azure
 
