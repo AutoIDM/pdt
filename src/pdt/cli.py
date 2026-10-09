@@ -245,6 +245,12 @@ def cmd_run(args) -> int:
     console.name(name)
     for line in [*run_lines(app), *sources]:
         console.detail(line)
+    if config.powershell_scripts(app["dir"]):
+        try:
+            os.environ.update(powershell.install_for_run(app))
+        except (pwsh.PwshError, powershell.PowerShellError) as e:
+            console.error(f"{console.value(name)}: {console.escape(str(e))}")
+            return 1
     if (app["dir"] / "run.py").is_file():
         proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
     else:
