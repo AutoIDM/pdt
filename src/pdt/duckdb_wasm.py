@@ -64,7 +64,8 @@ def ensure() -> Path:
     DIR.mkdir(parents=True, exist_ok=True)
     for name, (base, checksum, size) in FILES.items():
         if not (DIR / name).is_file():
-            console.status(f"downloading DuckDB for the browser, {name}, {size_text(size)}, once")
+            console.status(f"downloading DuckDB for the browser, {console.value(name)}, "
+                           f"{size_text(size)}, once")
             download(base + name, name, checksum)
     return DIR
 

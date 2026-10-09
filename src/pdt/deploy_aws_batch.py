@@ -176,7 +176,7 @@ def default_network(ec2) -> tuple[str, list[str]]:
     ])["Subnets"]
     subnet_ids = sorted(subnet["SubnetId"] for subnet in subnets)
     if not subnet_ids:
-        fail(f"default VPC {vpc_id} has no available default subnets")
+        fail(f"default VPC {console.value(vpc_id)} has no available default subnets")
     return vpc_id, subnet_ids
 
 
@@ -196,7 +196,8 @@ def ensure_security_group(ec2, vpc_id: str, group: dict | None) -> str:
     # A new group has no inbound rules and allows all outbound traffic, which is what a job needs.
     if group is not None:
         if not managed_group(group):
-            fail(f"security group {SECURITY_GROUP} in VPC {vpc_id} exists but is not managed by PDT")
+            fail(f"security group {console.value(SECURITY_GROUP)} in VPC {console.value(vpc_id)} "
+                 "exists but is not managed by PDT")
         return group["GroupId"]
     return ec2.create_security_group(
         GroupName=SECURITY_GROUP,
@@ -240,7 +241,7 @@ def wait_for_batch(describe: Callable[[], dict | None], ready: Callable[[dict | 
             return current
         if delay is None:
             fail(f"gave up waiting for {what}")
-        console.bullet(console.escape(f"waiting for {what}..."), indent=4)
+        console.bullet(f"waiting for {what}...", indent=4)
         sleep(delay)
     raise AssertionError("unreachable")
 
@@ -258,7 +259,7 @@ def resting(item: dict | None) -> bool:
 def settled(batch, resource: SharedResource) -> dict | None:
     """The shared resource once Batch has finished changing it, or None when it is gone."""
     return wait_for_batch(lambda: describe(batch, resource), resting,
-                          f"Batch {resource.label} {resource.name}")
+                          f"Batch {resource.label} {console.value(resource.name)}")
 
 
 def ensure_shared(batch, resource: SharedResource, create: Callable[[], None]) -> str:
@@ -266,16 +267,18 @@ def ensure_shared(batch, resource: SharedResource, create: Callable[[], None]) -
     if current is None:
         create()
     elif not managed(current):
-        fail(f"Batch {resource.label} {resource.name} exists but is not managed by PDT")
+        fail(f"Batch {resource.label} {console.value(resource.name)} exists but is not managed "
+             "by PDT")
     elif current["state"] != "ENABLED":
         getattr(batch, resource.update)(**{resource.param: resource.name}, state="ENABLED")
     elif current["status"] == "VALID":
         return current[resource.arn]
     ready = wait_for_batch(lambda: describe(batch, resource),
                            lambda item: item is not None and resting(item),
-                           f"Batch {resource.label} {resource.name}")
+                           f"Batch {resource.label} {console.value(resource.name)}")
     if ready["status"] == "INVALID":
-        fail(f"Batch {resource.label} {resource.name} is invalid: {ready.get('statusReason', '')}")
+        fail(f"Batch {resource.label} {console.value(resource.name)} is invalid: "
+             f"{console.escape(ready.get('statusReason', ''))}")
     return ready[resource.arn]
 
 
@@ -289,7 +292,7 @@ def remove(batch, resource: SharedResource) -> bool:
         getattr(batch, resource.update)(**{resource.param: resource.name}, state="DISABLED")
         wait_for_batch(lambda: describe(batch, resource),
                        lambda item: item is None or (item["state"] == "DISABLED" and resting(item)),
-                       f"Batch {resource.label} {resource.name} to be disabled")
+                       f"Batch {resource.label} {console.value(resource.name)} to be disabled")
     except Exception as exc:
         if not not_found(exc):
             raise
@@ -297,7 +300,7 @@ def remove(batch, resource: SharedResource) -> bool:
     if not delete_if_present(getattr(batch, resource.delete), **{resource.param: resource.name}):
         return False
     wait_for_batch(lambda: describe(batch, resource), lambda item: item is None,
-                   f"Batch {resource.label} {resource.name} to be deleted")
+                   f"Batch {resource.label} {console.value(resource.name)} to be deleted")
     return True
 
 
@@ -438,7 +441,7 @@ def ensure_job_definition(batch, desired: dict, image_digest: str) -> str:
     revisions = active_job_definitions(batch, desired["jobDefinitionName"])
     if revisions:
         if not managed(revisions[0]):
-            fail(f"Batch job definition {desired['jobDefinitionName']} exists "
+            fail(f"Batch job definition {console.value(desired['jobDefinitionName'])} exists "
                  "but is not managed by PDT")
         if same_job_definition(revisions[0], desired, image_digest):
             deregister_job_definitions(batch, revisions[1:])
@@ -497,7 +500,7 @@ def build_and_push(app: dict, image: str, ecr) -> str:
         for command, stdin in commands:
             proc = subprocess.run(command, input=stdin, text=True, check=False)
             if proc.returncode:
-                fail(f"{' '.join(command[:2])} failed")
+                fail(f"{console.value(' '.join(command[:2]))} failed")
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     images = ecr.describe_images(
@@ -528,7 +531,8 @@ def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
         if usage is not None:
             items.append(store_cost(usage, region))
     except Exception as exc:
-        fail(f"could not calculate the required monthly cost estimate: {exc}")
+        fail(f"could not calculate the required monthly cost estimate: "
+             f"{console.escape(str(exc))}")
     return cost_estimate(
         region, items,
         "excludes EventBridge Scheduler free tier, ECR storage, and CloudWatch Logs usage",
@@ -554,7 +558,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
         current = client.get_secret_value(SecretId=name).get("SecretString", "")
 
     def write(values: dict[str, str]) -> None:
-        console.step(f"updating secret {name}")
+        console.step(f"updating secret {console.value(name)}")
         ensure_secret(client, name, json.dumps(values, sort_keys=True))
 
     return run_secrets(action, app, current, write, assume_yes, name)
@@ -577,7 +581,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     bucket = store_name(account)
     store = deployer_store(app, session, account) if app["storage"] else None
 
-    console.status(f"Checking current state in account {account} ({region})...")
+    console.status(f"Checking current state in account {console.value(account)} "
+                   f"({console.value(region)})...")
     store_present = store_exists(clients["s3"], bucket) if store else False
     usage = (store.usage() if store_present else (0, 0)) if store else None
     vpc_id, subnets = default_network(clients["ec2"])
@@ -593,36 +598,46 @@ def deploy(app: dict, assume_yes: bool) -> int:
     secret_exists = resource_exists(
         clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
     actions = [
-        f"reconcile shared ECR repository {REPOSITORY}, Batch compute environment "
-        f"{COMPUTE_ENVIRONMENT.name}, and job queue {JOB_QUEUE.name}",
-        image_action(app, f"build and push Docker image {image} ({DOCKER_PLATFORM})"),
+        console.Markup(f"reconcile shared ECR repository {console.value(REPOSITORY)}, Batch "
+                       f"compute environment {console.value(COMPUTE_ENVIRONMENT.name)}, and job "
+                       f"queue {console.value(JOB_QUEUE.name)}"),
+        image_action(app, console.Markup(f"build and push Docker image {console.value(image)} "
+                                         f"({DOCKER_PLATFORM})")),
         console.Markup(("update" if secret_exists else "create")
-                       + f" Secrets Manager secret {console.escape(names['secret'])} "
+                       + f" Secrets Manager secret {console.value(names['secret'])} "
                        f"({secret_contents(secrets)})"),
         "reconcile the execution, job, and scheduler IAM roles",
-        f"allow {names['job_role']} to update its own secret {names['secret']}",
-        f"reconcile Batch job definition {names['job_definition']} "
-        f"({float(JOB_VCPU):g} vCPU, {JOB_MEMORY} MiB, no time limit)",
-        ("update" if schedule_exists else "create")
-        + f" EventBridge schedule {names['schedule']}: {expression} ({app['timezone']})"
-        + (" (paused)" if app["pause"] else ""),
-        (f"use security group {SECURITY_GROUP} ({group_id})" if group else
-         f"create security group {SECURITY_GROUP} (no inbound rules, all outbound)")
-        + f" in default VPC {vpc_id}",
+        console.Markup(f"allow {console.value(names['job_role'])} to update its own secret "
+                       f"{console.value(names['secret'])}"),
+        console.Markup(f"reconcile Batch job definition {console.value(names['job_definition'])} "
+                       f"({float(JOB_VCPU):g} vCPU, {JOB_MEMORY} MiB, no time limit)"),
+        console.Markup(("update" if schedule_exists else "create")
+                       + f" EventBridge schedule {console.value(names['schedule'])}: "
+                       f"{console.value(expression)} ({console.value(app['timezone'])})"
+                       + (" (paused)" if app["pause"] else "")),
+        console.Markup((f"use security group {console.value(SECURITY_GROUP)} "
+                        f"({console.value(group_id)})" if group else
+                        f"create security group {console.value(SECURITY_GROUP)} "
+                        "(no inbound rules, all outbound)")
+                       + f" in default VPC {console.value(vpc_id)}"),
         "run jobs in the default VPC subnets with a public IP",
     ]
     if move_environment:
-        actions.append(f"move Batch compute environment {COMPUTE_ENVIRONMENT.name} from "
-                       f"security group {', '.join(environment_groups)} to {SECURITY_GROUP}")
+        groups = ", ".join(console.value(group) for group in environment_groups)
+        actions.append(console.Markup(
+            f"move Batch compute environment {console.value(COMPUTE_ENVIRONMENT.name)} from "
+            f"security group {groups} to {console.value(SECURITY_GROUP)}"))
     if store:
-        actions += store_plan_lines(f"bucket {bucket}", store_present, names["job_role"], app["name"])
+        actions += store_plan_lines(f"bucket {console.value(bucket)}", store_present,
+                                    names["job_role"], app["name"])
     if not confirm(actions, assume_yes, cost_estimate_for(
             clients["logs"], names, region, cron, schedule_exists, usage,
             regions.local_currency())):
         console.warn("Aborted; nothing was changed.")
         return 1
 
-    console.step(f"reconciling AWS resources in {account} ({region})")
+    console.step(f"reconciling AWS resources in {console.value(account)} "
+                 f"({console.value(region)})")
     repository_uri = ensure_repository(clients["ecr"])
     security_group = ensure_security_group(clients["ec2"], vpc_id, group)
     environment_arn = ensure_compute_environment(
@@ -639,7 +654,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     execution, job_role, scheduler_role = ensure_roles(
         clients["iam"], names, account, region, secret_arn, grants)
     image = f"{repository_uri}:{names['image_tag']}"
-    console.step(f"building and pushing {image}")
+    console.step(f"building and pushing {console.value(image)}")
     image_digest = build_and_push(app, image, clients["ecr"])
     console.step("reconciling job definition and schedule")
     desired = desired_job_definition(
@@ -647,7 +662,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     ensure_job_definition(clients["batch"], desired, image_digest)
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, submit_job_target(names), app["pause"])
-    console.done(f"Deployed {app['name']}.")
+    console.done(f"Deployed {console.value(app['name'])}.")
     deployed_next_steps(app["name"])
     return 0
 
@@ -682,21 +697,24 @@ def legacy_fargate_cleanup(ecs, logs, iam, names: dict[str, str]) -> list[tuple[
     plan = []
     arns = legacy_task_definitions(ecs, family)
     if arns:
-        plan.append((f"deregister {len(arns)} tagged ECS task definition(s) in family {family} "
-                     "(older Fargate deployment)",
+        plan.append((console.Markup(f"deregister {len(arns)} tagged ECS task definition(s) in "
+                                    f"family {console.value(family)} (older Fargate deployment)"),
                      lambda: deregister_task_definitions(ecs, arns)))
     if find_log_group(logs, names["legacy_log_group"]) is not None:
-        plan.append((f"delete tagged log group {names['legacy_log_group']} "
-                     "(older Fargate deployment)",
+        plan.append((console.Markup(f"delete tagged log group "
+                                    f"{console.value(names['legacy_log_group'])} "
+                                    "(older Fargate deployment)"),
                      lambda: delete_log_group(logs, names["legacy_log_group"])))
     if resource_exists(iam, "get_role", RoleName=names["legacy_task_role"]):
-        plan.append((f"delete tagged IAM role {names['legacy_task_role']} "
-                     "(older Fargate deployment)",
+        plan.append((console.Markup(f"delete tagged IAM role "
+                                    f"{console.value(names['legacy_task_role'])} "
+                                    "(older Fargate deployment)"),
                      lambda: delete_role(iam, names["legacy_task_role"])))
     if cluster_unused_after(ecs, family):
-        plan.append((f"delete ECS cluster {LEGACY_CLUSTER} "
-                     "(older Fargate deployment, no other apps use it)",
-                     lambda: note_if_gone(f"ECS cluster {LEGACY_CLUSTER}", delete_if_present(
+        plan.append((console.Markup(f"delete ECS cluster {console.value(LEGACY_CLUSTER)} "
+                                    "(older Fargate deployment, no other apps use it)"),
+                     lambda: note_if_gone(f"ECS cluster {console.value(LEGACY_CLUSTER)}",
+                                          delete_if_present(
                          ecs.delete_cluster, cluster=LEGACY_CLUSTER))))
     return plan
 
@@ -729,50 +747,59 @@ def destroy(app: dict, assume_yes: bool) -> int:
     plan: list[tuple[str, Callable]] = []
     if resource_exists(scheduler, "get_schedule",
                        Name=names["schedule"], GroupName=SCHEDULE_GROUP):
-        plan.append((f"delete EventBridge schedule {names['schedule']}",
+        plan.append((console.Markup(f"delete EventBridge schedule "
+                                    f"{console.value(names['schedule'])}"),
                      lambda: scheduler.delete_schedule(
                          Name=names["schedule"], GroupName=SCHEDULE_GROUP)))
     revisions = [revision for revision in active_job_definitions(batch, names["job_definition"])
                  if managed(revision)]
     if revisions:
-        plan.append((f"deregister {len(revisions)} tagged revision(s) of Batch job definition "
-                     f"{names['job_definition']}",
+        plan.append((console.Markup(f"deregister {len(revisions)} tagged revision(s) of Batch "
+                                    f"job definition {console.value(names['job_definition'])}"),
                      lambda: deregister_job_definitions(batch, revisions)))
     if resource_exists(clients["secretsmanager"], "describe_secret", SecretId=names["secret"]):
-        plan.append((f"delete secret {names['secret']}",
+        plan.append((console.Markup(f"delete secret {console.value(names['secret'])}"),
                      lambda: delete_secret(clients["secretsmanager"], names["secret"])))
     plan += [
-        (f"delete tagged log group {names['log_group']}",
+        (console.Markup(f"delete tagged log group {console.value(names['log_group'])}"),
          lambda: delete_log_group(clients["logs"], names["log_group"])),
         ("delete tagged per-app IAM roles",
          lambda: [delete_role(iam, role) for role in
                   (names["scheduler_role"], names["job_role"], names["execution_role"])]),
-        (f"delete image tag {names['image_tag']} from ECR repository {REPOSITORY}",
+        (console.Markup(f"delete image tag {console.value(names['image_tag'])} from ECR "
+                        f"repository {console.value(REPOSITORY)}"),
          lambda: note_if_gone(
-             f"image tag {names['image_tag']} in ECR repository {REPOSITORY}",
+             f"image tag {console.value(names['image_tag'])} in ECR repository "
+             f"{console.value(REPOSITORY)}",
              delete_if_present(clients["ecr"].batch_delete_image, repositoryName=REPOSITORY,
                                imageIds=[{"imageTag": names["image_tag"]}]))),
     ]
     plan += legacy_fargate_cleanup(clients["ecs"], clients["logs"], iam, names)
     if other_schedules(scheduler, names["schedule"]) == []:
-        plan.append((f"delete schedule group {SCHEDULE_GROUP} (no other apps use it)",
-                     lambda: note_if_gone(f"schedule group {SCHEDULE_GROUP}",
+        plan.append((console.Markup(f"delete schedule group {console.value(SCHEDULE_GROUP)} "
+                                    "(no other apps use it)"),
+                     lambda: note_if_gone(f"schedule group {console.value(SCHEDULE_GROUP)}",
                                           delete_schedule_group(scheduler))))
     if not other_job_definitions(batch, names["job_definition"]):
         for resource in shared_present(batch):
-            plan.append((f"delete Batch {resource.label} {resource.name} (no other apps use it)",
+            plan.append((console.Markup(f"delete Batch {resource.label} "
+                                        f"{console.value(resource.name)} (no other apps use it)"),
                          lambda resource=resource: note_if_gone(
-                             f"Batch {resource.label} {resource.name}", remove(batch, resource))))
+                             f"Batch {resource.label} {console.value(resource.name)}",
+                             remove(batch, resource))))
         vpc_id = default_vpc(clients["ec2"])
         group = find_security_group(clients["ec2"], vpc_id) if vpc_id else None
         if managed_group(group):
-            plan.append((f"delete security group {SECURITY_GROUP} ({group['GroupId']}) "
-                         "(no other apps use it)",
-                         lambda: note_if_gone(f"security group {SECURITY_GROUP}",
+            plan.append((console.Markup(f"delete security group {console.value(SECURITY_GROUP)} "
+                                        f"({console.value(group['GroupId'])}) "
+                                        "(no other apps use it)"),
+                         lambda: note_if_gone(f"security group {console.value(SECURITY_GROUP)}",
                                               delete_security_group(clients["ec2"], group["GroupId"]))))
     if repository_unused_after(clients["ecr"], names["image_tag"]):
-        plan.append((f"delete ECR repository {REPOSITORY} (no other apps use it)",
-                     lambda: note_if_gone(f"ECR repository {REPOSITORY}", delete_if_present(
+        plan.append((console.Markup(f"delete ECR repository {console.value(REPOSITORY)} "
+                                    "(no other apps use it)"),
+                     lambda: note_if_gone(f"ECR repository {console.value(REPOSITORY)}",
+                                          delete_if_present(
                          clients["ecr"].delete_repository, repositoryName=REPOSITORY,
                          force=True))))
     bucket = store_name(account)
@@ -786,9 +813,11 @@ def destroy(app: dict, assume_yes: bool) -> int:
 
     for _line, action in plan:
         action()
-    console.done(f"Removed {app['name']} from account {account} ({region}).")
+    console.done(f"Removed {console.value(app['name'])} from account {console.value(account)} "
+                 f"({console.value(region)}).")
     if store_present:
-        console.say(store_kept_line(f"bucket {bucket}", store.usage()[0], app["name"]))
+        console.say(store_kept_line(f"bucket {console.value(bucket)}", store.usage()[0],
+                                    app["name"]))
     return 0
 
 
@@ -865,7 +894,8 @@ def current_schedule(scheduler, name: str, app_name: str) -> dict:
     except Exception as exc:
         if not not_found(exc):
             raise
-        fail(f"{app_name} has no EventBridge schedule {name}; run pdt deploy {app_name} first")
+        fail(f"{console.value(app_name)} has no EventBridge schedule {console.value(name)}; "
+             f"run {console.value(f'pdt deploy {app_name}')} first")
 
 
 # What update_schedule needs back from get_schedule to change one field.
@@ -881,8 +911,8 @@ def pause(app: dict, session, paused: bool) -> int:
     if schedule.get("State") != state:
         scheduler.update_schedule(
             **{key: schedule[key] for key in SCHEDULE_FIELDS if key in schedule}, State=state)
-    console.done(f"{'Paused' if paused else 'Unpaused'} {app['name']}: "
-                 f"EventBridge schedule {names['schedule']} is {state}.")
+    console.done(f"{'Paused' if paused else 'Unpaused'} {console.value(app['name'])}: "
+                 f"EventBridge schedule {console.value(names['schedule'])} is {state}.")
     return 0
 
 
@@ -895,7 +925,8 @@ def start(app: dict, session) -> int:
     response = batch.submit_job(
         jobName=request["JobName"], jobQueue=request["JobQueue"],
         jobDefinition=request["JobDefinition"], tags=dict(MANAGED_TAGS))
-    console.done(f"Started {app['name']}: Batch job {response['jobId']}.")
+    console.done(f"Started {console.value(app['name'])}: Batch job "
+                 f"{console.value(response['jobId'])}.")
     console.command(f"pdt runs {app['name']}", "see the run")
     return 0
 

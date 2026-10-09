@@ -388,7 +388,8 @@ def read_state() -> dict:
     except ValueError:
         state = None
     if not isinstance(state, dict):
-        console.warn(f"{STATE_DIR}/{path.name} is not valid; treating every app as not deployed")
+        console.warn(f"{console.value(f'{STATE_DIR}/{path.name}')} is not valid; "
+                     "treating every app as not deployed")
         return {}
     return state
 

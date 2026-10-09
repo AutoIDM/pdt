@@ -1,5 +1,6 @@
 import pytest
 
+from conftest import plain
 from pdt import deploy_aws_batch as batch_deploy
 from pdt.deploy_aws_batch import (
     COMPUTE_ENVIRONMENT, SECURITY_GROUP, ensure_compute_environment, ensure_security_group,
@@ -101,7 +102,7 @@ def plan(monkeypatch):
     shown = []
 
     def confirm(actions, assume_yes, estimate):
-        shown.extend(actions)
+        shown.extend(plain(actions))
         return False
 
     for name, value in {

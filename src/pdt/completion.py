@@ -181,7 +181,8 @@ def install(shell: str | None, print_only: bool) -> int:
     shell = shell or _shell()
     if shell is None:
         console.error("pdt could not tell which shell you use.")
-        console.say("Tell it: " + ", ".join(f"pdt completion {name}" for name in SHELLS))
+        console.say("Tell it: " + ", ".join(console.value(f"pdt completion {name}")
+                                            for name in SHELLS))
         return 1
     if print_only:
         # The user pipes this into a startup file, so it goes out byte for byte.
@@ -189,7 +190,7 @@ def install(shell: str | None, print_only: bool) -> int:
         return 0
     setup(shell)
     script, startup = _paths(shell)
-    console.done(f"Tab completion for pdt is set up in {startup or script}")
+    console.done(f"Tab completion for pdt is set up in {console.value(startup or script)}")
     if shell in {"powershell", "pwsh"} and os.name == "nt":
         _allow_profile(shell)
     else:
@@ -235,19 +236,19 @@ def _allow_profile(shell: str) -> None:
     if policy.lower() not in BLOCKING_POLICIES:
         console.say("It works in every new PowerShell window.")
         return
-    console.warn(f"PowerShell's execution policy ({policy}) stops new windows from "
+    console.warn(f"PowerShell's execution policy ({console.value(policy)}) stops new windows from "
                  "loading tab completion.")
     if can_prompt(None) and console.confirm(
             "Allow PowerShell to run scripts that you create on this computer?"):
         _powershell(shell, f"{ALLOW_PROFILE} -Force")
         policy = _execution_policy(shell)
         if policy.lower() not in BLOCKING_POLICIES:
-            console.done(f"Execution policy for your account is now {policy}. "
+            console.done(f"Execution policy for your account is now {console.value(policy)}. "
                          "Tab completion works in every new PowerShell window.")
             return
-        console.note(f"the execution policy is still {policy}; a Group Policy on this "
-                     "computer sets it, so ask whoever manages the computer to allow "
-                     "RemoteSigned.")
+        console.note(f"the execution policy is still {console.value(policy)}; a Group Policy on "
+                     "this computer sets it, so ask whoever manages the computer to allow "
+                     f"{console.value('RemoteSigned')}.")
         return
     console.say("To load it in every new PowerShell window, run this once:")
     console.command(ALLOW_PROFILE)

@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from conftest import add_app
+from conftest import add_app, plain
 from pdt import __version__, powershell
 from pdt.config import validate_app
 from pdt.deploy_common import (
@@ -35,7 +35,7 @@ def test_an_app_dockerfile_is_used_as_is_at_the_context_root(tmp_path):
     app, stage = staged(tmp_path, "my-report", own)
     write_dockerfile(stage, app)
     assert (stage / "Dockerfile").read_text() == own
-    assert image_action(app, "build image x") == "build image x (from my-report/Dockerfile)"
+    assert plain([image_action(app, "build image x")]) == ["build image x (from my-report/Dockerfile)"]
 
 
 def app_with_dockerfile(project, platform_text):

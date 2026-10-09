@@ -100,7 +100,7 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     problems = config.validate_app(app_name)
     sources = config.env_file_lines(app["dir"])
@@ -122,14 +122,14 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
             problems.append(str(e))
     if problems:
         for problem in problems:
-            console.error(f"{app_name}: {problem}")
+            console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
     console.name(app_name)
     for line in [*lines, *config.found_env_lines(app), *sources]:
         console.detail(line)
     problem = regions.choose_region(app, provider, assume_yes)
     if problem != "":
-        console.error(f"{app_name}: {problem}")
+        console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
@@ -145,13 +145,13 @@ def secrets(app_name: str, action: str, assume_yes: bool = False,
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     config.load_env(app["dir"])
     if action in ("diff", "save"):
         missing = config.missing_env(app)
         if missing != "":
-            console.error(f"{app_name}: {missing}")
+            console.error(f"{console.value(app_name)}: {console.escape(missing)}")
             return 1
     return dispatch(provider, "secrets", app_name, assume_yes, [action, *([name] if name else [])])
 
@@ -160,7 +160,7 @@ def login(app_name: str) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     config.load_env(app["dir"])
     return dispatch(provider, "login", app_name, False)
@@ -170,7 +170,7 @@ def storage(app_name: str, rest: list[str]) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     config.load_env(app["dir"])
     return dispatch(provider, "storage", app_name, False, ["--", *rest])
@@ -180,7 +180,7 @@ def runs(app_name: str, rest: list[str]) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     config.load_env(app["dir"])
     return dispatch(provider, "runs", app_name, False, ["--", *rest])
@@ -190,7 +190,7 @@ def logs(app_name: str, rest: list[str]) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     config.load_env(app["dir"])
     return dispatch(provider, "logs", app_name, False, ["--", *rest])
@@ -201,13 +201,16 @@ def pause(app_name: str, paused: bool) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     path = config.save_app_key(app, "pause", paused)
-    console.done(f"{app_name}: pause: {'true' if paused else 'false'} saved in {path}")
+    setting = f"pause: {'true' if paused else 'false'}"
+    console.done(f"{console.value(app_name)}: {console.value(setting)} saved in "
+                 f"{console.value(path)}")
     if not config.is_deployed(app_name):
         state = "paused" if paused else "running"
-        console.say(f"{app_name} is not deployed; the next pdt deploy will create it {state}.")
+        console.say(f"{console.value(app_name)} is not deployed; the next pdt deploy will create "
+                    f"it {state}.")
         return 0
     config.load_env(app["dir"])
     return dispatch(provider, "pause" if paused else "unpause", app_name, False)
@@ -218,10 +221,11 @@ def start(app_name: str) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     if not config.is_deployed(app_name):
-        console.error(f"{app_name} is not deployed; run pdt deploy {app_name} first")
+        console.error(f"{console.value(app_name)} is not deployed; "
+                      f"run {console.value(f'pdt deploy {app_name}')} first")
         return 1
     config.load_env(app["dir"])
     return dispatch(provider, "start", app_name, False)
@@ -233,7 +237,7 @@ def health(app_names: list[str], as_json: bool) -> int:
         try:
             _app, provider = _load(app_name)
         except ConfigError as e:
-            console.error(str(e))
+            console.error(console.escape(str(e)))
             app_runs[app_name] = None
             continue
         # The provider script loads the app's .env itself, so one app's env
@@ -241,7 +245,7 @@ def health(app_names: list[str], as_json: bool) -> int:
         code, output = dispatch_output(provider, "runs", app_name, ["--", "--json"])
         app_runs[app_name] = runs_cli.parse_runs(output) if code == 0 else None
         if app_runs[app_name] is None:
-            console.say(output.rstrip())
+            console.say(console.escape(output.rstrip()))
     return runs_cli.health(app_runs, as_json)
 
 
@@ -249,7 +253,7 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     config.load_env(app["dir"])
     code = dispatch(provider, "destroy", app_name, assume_yes)

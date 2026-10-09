@@ -128,8 +128,9 @@ def run_quiet(*args: str, data: str | None = None) -> str:
     proc = gcloud(*args, data=data)
     if proc.returncode == 0:
         return proc.stdout
-    console.say(proc.stderr.strip())
-    fail(f"pdt gcloud {' '.join(args[:4])} failed; fix the problem above and re-run the deploy")
+    console.say(console.escape(proc.stderr.strip()))
+    command = "pdt gcloud " + " ".join(args[:4])
+    fail(f"{console.value(command)} failed; fix the problem above and re-run the deploy")
 
 
 def describe_json(*args: str):
@@ -153,8 +154,9 @@ def read_json_or_none(*args: str):
     if not_found(detail):
         return None
     if detail:
-        console.say(detail)
-    fail(f"pdt gcloud {' '.join(args[:4])} failed while checking resource ownership")
+        console.say(console.escape(detail))
+    command = "pdt gcloud " + " ".join(args[:4])
+    fail(f"{console.value(command)} failed while checking resource ownership")
 
 
 def list_json(*args: str) -> list:
@@ -194,7 +196,7 @@ def login_with_key_file() -> bool:
     key_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
     if key_file == "" or not Path(key_file).is_file():
         return False
-    console.status(f"Signing in to Google Cloud with {key_file}...")
+    console.status(f"Signing in to Google Cloud with {console.value(key_file)}...")
     subprocess.run([GCLOUD, "--quiet", "auth", "login", "--cred-file", key_file],
                    stdin=subprocess.DEVNULL, capture_output=True, text=True)
     return have_credentials()
@@ -206,18 +208,19 @@ def ensure_credentials() -> None:
     if login_with_key_file():
         return
     if not can_ask():
-        fail("no Google Cloud sign-in on this computer; set GOOGLE_APPLICATION_CREDENTIALS "
-             f"to a service account key file, or run {GCLOUD} auth login")
+        fail(f"no Google Cloud sign-in on this computer; set "
+             f"{console.value('GOOGLE_APPLICATION_CREDENTIALS')} to a service account key file, "
+             f"or run {console.value(f'{GCLOUD} auth login')}")
     console.warn("gcloud has no active Google account yet.")
     try:
         answer = input("Log in now (opens a browser)? [y/N] ").strip().lower()
     except EOFError:
         answer = ""
     if answer not in ("y", "yes"):
-        fail(f"log in first: {GCLOUD} auth login")
+        fail(f"log in first: {console.value(f'{GCLOUD} auth login')}")
     login = subprocess.run([GCLOUD, "auth", "login"])
     if login.returncode != 0:
-        fail("gcloud auth login failed")
+        fail(f"{console.value('gcloud auth login')} failed")
 
 
 def preflight(app: dict, project: str, assume_yes: bool) -> str:
@@ -225,7 +228,7 @@ def preflight(app: dict, project: str, assume_yes: bool) -> str:
     try:
         GCLOUD = gcloud_sdk.ensure_gcloud()
     except gcloud_sdk.GcloudError as e:
-        fail(str(e))
+        fail(console.escape(str(e)))
     ensure_credentials()
     if project in ("", "my-project"):
         project = choose_project(app, project)
@@ -234,13 +237,15 @@ def preflight(app: dict, project: str, assume_yes: bool) -> str:
 
 def choose_project(app: dict, requested: str) -> str:
     if not can_ask():
-        fail("no Google Cloud project to deploy to; set platform.project in pdt.yml, "
-             "or set the PDT_GOOGLE_CLOUD_PROJECT environment variable")
+        fail(f"no Google Cloud project to deploy to; set {console.value('platform.project')} in "
+             f"{console.value('pdt.yml')}, or set the {console.value('PDT_GOOGLE_CLOUD_PROJECT')} "
+             "environment variable")
     available = [line.split("\t") for line in
                  run_quiet("projects", "list", "--format=value(projectId,name)").splitlines()
                  if line.strip()]
     if requested:
-        console.warn(f"platform.project {requested!r} is not a real Google Cloud project id.")
+        console.warn(f"platform.project {console.value(repr(requested))} is not a real Google "
+                     "Cloud project id.")
     if available:
         console.heading("Your Google Cloud projects:")
         for index, entry in enumerate(available, 1):
@@ -262,23 +267,26 @@ def choose_project(app: dict, requested: str) -> str:
         fail("no Google Cloud project selected")
     else:
         if not PROJECT_ID.fullmatch(answer):
-            fail(f"{answer} is not a valid Google Cloud project id: use 6 to 30 lowercase "
+            fail(f"{console.value(answer)} is not a valid Google Cloud project id: use 6 to 30 "
+                 "lowercase "
                  "letters, digits, and hyphens, starting with a letter")
         if not console.confirm(f"Create Google Cloud project {answer}?"):
             fail("no Google Cloud project selected")
         create_project(answer)
         project = answer
     saved = config.save_platform_key(app, "project", project)
-    console.done(f"Saved project {project} to {saved.relative_to(config.find_project())}.")
+    console.done(f"Saved project {console.value(project)} to "
+                 f"{console.value(saved.relative_to(config.find_project()))}.")
     return project
 
 
 def create_project(project: str) -> None:
-    console.step(f"creating project {project}")
+    console.step(f"creating project {console.value(project)}")
     run_quiet("projects", "create", project, "--name", project)
     accounts = list_json("billing", "accounts", "list", "--filter=open=true")
     if not accounts:
-        fail(f"project {project} was created but your account has no open billing account "
+        fail(f"project {console.value(project)} was created but your account has no open "
+             "billing account "
              "to attach; add one at https://console.cloud.google.com/billing "
              "and run the deploy again")
     account = accounts[0]
@@ -292,12 +300,14 @@ def create_project(project: str) -> None:
         except EOFError:
             answer = ""
         if not (answer.isdigit() and 1 <= int(answer) <= len(accounts)):
-            fail(f"project {project} was created but no billing account was chosen; "
+            fail(f"project {console.value(project)} was created but no billing account was "
+                 "chosen; "
                  "run the deploy again and pick one from the list")
         account = accounts[int(answer) - 1]
     account_id = account["name"].removeprefix("billingAccounts/")
     run_quiet("billing", "projects", "link", project, "--billing-account", account_id)
-    console.done(f"Linked billing account {account['displayName']} to {project}.")
+    console.done(f"Linked billing account {console.value(account['displayName'])} to "
+                 f"{console.value(project)}.")
 
 
 def relogin(assume_yes: bool) -> int:
@@ -305,16 +315,16 @@ def relogin(assume_yes: bool) -> int:
     try:
         GCLOUD = gcloud_sdk.ensure_gcloud()
     except gcloud_sdk.GcloudError as e:
-        fail(str(e))
+        fail(console.escape(str(e)))
     console.status("Revoking the cached Google Cloud logins on this computer...")
     subprocess.run([GCLOUD, "auth", "revoke", "--all"], stdin=subprocess.DEVNULL,
                    capture_output=True, text=True)
     if subprocess.run([GCLOUD, "auth", "login"]).returncode != 0:
-        fail("pdt gcloud auth login failed")
+        fail(f"{console.value('pdt gcloud auth login')} failed")
     account = subprocess.run(
         [GCLOUD, "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
         stdin=subprocess.DEVNULL, capture_output=True, text=True).stdout.strip()
-    console.done(f"Signed in as {account}")
+    console.done(f"Signed in as {console.value(account)}")
     return 0
 
 
@@ -327,7 +337,8 @@ def ensure_apis(project: str, assume_yes: bool,
     missing = [api for api in required if api not in enabled]
     if not missing:
         return False
-    actions = [f"enable {api} in project {project}" for api in missing]
+    actions = [console.Markup(f"enable {console.value(api)} in project {console.value(project)}")
+               for api in missing]
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         raise SystemExit(1)
@@ -389,7 +400,8 @@ def bucket_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
 
 def grant_store_access(bucket: str, app_name: str, sa: str) -> None:
     folder = store_url(bucket, app_name)
-    console.step(f"granting {sa} write access to {bucket}/{app_name}/")
+    console.step(f"granting {console.value(sa)} write access to "
+                 f"{console.value(f'{bucket}/{app_name}/')}")
     if describe_json("storage", "managed-folders", "describe", folder) is None:
         run_quiet("storage", "managed-folders", "create", folder)
     run_quiet("storage", "managed-folders", "add-iam-policy-binding", folder,
@@ -400,7 +412,8 @@ def revoke_store_access(bucket: str, app_name: str, sa: str,
                         folder: bool, bucket_binding: bool) -> None:
     # The managed folder stays: it holds the app's data in the kept bucket,
     # and gcloud refuses to delete a managed folder that is not empty.
-    console.step(f"removing {sa} write access to {bucket}/{app_name}/")
+    console.step(f"removing {console.value(sa)} write access to "
+                 f"{console.value(f'{bucket}/{app_name}/')}")
     member = ("--member", f"serviceAccount:{sa}", "--role", STORE_ROLE)
     if folder:
         run_quiet("storage", "managed-folders", "remove-iam-policy-binding",
@@ -424,7 +437,8 @@ def scheduler_state(project: str, region: str, job: str) -> str | None:
 def set_scheduler_paused(project: str, region: str, job: str, paused: bool) -> None:
     state = scheduler_state(project, region, job)
     if state is None:
-        fail(f"Cloud Scheduler job {job} does not exist; run pdt deploy first")
+        fail(f"Cloud Scheduler job {console.value(job)} does not exist; run "
+             f"{console.value('pdt deploy')} first")
     if (state == "PAUSED") == paused:
         return
     run_quiet("scheduler", "jobs", "pause" if paused else "resume", job,
@@ -637,8 +651,9 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
             return CostEstimate(items, f"{region} list prices{converted}, before free tiers",
                                 in_usd.excludes, shown)
         if disabled and not billing_confirmed:
-            actions = [f"enable the Cloud Billing API in project {project} "
-                       "to calculate the required cost estimate"]
+            actions = [console.Markup(f"enable the Cloud Billing API in project "
+                                      f"{console.value(project)} to calculate the required "
+                                      "cost estimate")]
             if not confirm(actions, assume_yes):
                 console.warn("Aborted; nothing was changed.")
                 raise SystemExit(1)
@@ -656,7 +671,7 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                                  billing_confirmed,
                                  attempt + 1, store_usage, currency)
         fail(f"could not calculate the required monthly cost estimate: "
-             f"{detail or str(exc)}")
+             f"{console.escape(detail or str(exc))}")
     converted = "" if currency == "USD" else ", converted from USD by Google Cloud"
     return CostEstimate(items, f"{region} list prices{converted}, before free tiers",
                         "excludes Artifact Registry storage", currency)
@@ -678,11 +693,11 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     project = preflight(app, project, assume_yes)
     sid = secret_id(app["name"])
     secret = read_json_or_none("secrets", "describe", sid, "--project", project)
-    require_managed(secret, f"Secret Manager secret {sid}")
+    require_managed(secret, f"Secret Manager secret {console.value(sid)}")
     current = secret_value(project, sid) if secret else None
 
     def write(values: dict[str, str]) -> None:
-        console.step(f"updating secret {sid}")
+        console.step(f"updating secret {console.value(sid)}")
         run_quiet("secrets", "versions", "add", sid, "--project", project,
                   "--data-file", "-", data=json.dumps(values, sort_keys=True))
         destroy_old_secret_versions(project, sid)
@@ -709,37 +724,38 @@ def deploy(app: dict, assume_yes: bool) -> int:
     bucket = store_bucket(project)
     store = deployer_store(project, name) if app["storage"] else None
 
-    console.status(f"Checking current state in project {project} ({region})...")
+    console.status(f"Checking current state in project {console.value(project)} "
+                   f"({console.value(region)})...")
     repository = read_json_or_none(
         "artifacts", "repositories", "describe", repo,
         "--location", region, "--project", project)
-    require_managed(repository, f"Artifact Registry repository {repo}")
+    require_managed(repository, f"Artifact Registry repository {console.value(repo)}")
     repo_exists = repository is not None
     service_account = service_account_or_none(project, sa)
     default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
     if (service_account is not None and sa == default_sa
             and not service_account_owned(service_account)):
-        fail(f"service account {sa} exists but is not managed by PDT")
+        fail(f"service account {console.value(sa)} exists but is not managed by PDT")
     sa_exists = service_account is not None
     bucket_exists = False
     if store:
         described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
-        require_managed(described, f"bucket {bucket}")
+        require_managed(described, f"bucket {console.value(bucket)}")
         bucket_exists = described is not None
     usage = (store.usage() if bucket_exists else (0, 0)) if store else None
     run_job = read_json_or_none(
         "run", "jobs", "describe", job, "--region", region, "--project", project)
-    require_managed(run_job, f"Cloud Run job {job}")
+    require_managed(run_job, f"Cloud Run job {console.value(job)}")
     job_exists = run_job is not None
     scheduler = read_json_or_none(
         "scheduler", "jobs", "describe", job,
         "--location", region, "--project", project)
     if scheduler is not None and not scheduler_owned(scheduler, name, project, region, sa):
-        fail(f"Cloud Scheduler job {job} exists but is not managed by PDT")
+        fail(f"Cloud Scheduler job {console.value(job)} exists but is not managed by PDT")
     sched_exists = scheduler is not None
     sid = secret_id(name)
     secret = read_json_or_none("secrets", "describe", sid, "--project", project)
-    require_managed(secret, f"Secret Manager secret {sid}")
+    require_managed(secret, f"Secret Manager secret {console.value(sid)}")
     payload = json.dumps(values, sort_keys=True)
     secret_state = None
     if values:
@@ -749,21 +765,26 @@ def deploy(app: dict, assume_yes: bool) -> int:
             current = secret_value(project, sid)
             secret_state = "unchanged" if current == payload else "update"
 
-    actions = [("use existing" if repo_exists else "create")
-               + f" Artifact Registry repo {repo}"]
-    actions.append(image_action(app, f"build and push image {image}"))
+    actions = [console.Markup(("use existing" if repo_exists else "create")
+                              + f" Artifact Registry repo {console.value(repo)}")]
+    actions.append(image_action(app, console.Markup(
+        f"build and push image {console.value(image)}")))
     if secret_state:
-        actions.append(console.Markup(f"{secret_state} secret {console.escape(sid)} "
+        actions.append(console.Markup(f"{secret_state} secret {console.value(sid)} "
                                       f"({secret_contents(values)}, as one json blob)"))
     if values:
-        actions.append(f"allow {job} to update its own secret {sid}")
-    actions.append(("use existing" if sa_exists else "create") + f" service account {sa}")
+        actions.append(console.Markup(f"allow {console.value(job)} to update its own secret "
+                                      f"{console.value(sid)}"))
+    actions.append(console.Markup(("use existing" if sa_exists else "create")
+                                  + f" service account {console.value(sa)}"))
     if store:
-        actions += store_plan_lines(f"bucket {bucket}", bucket_exists, sa, name)
-    actions.append(("update" if job_exists else "create") + f" Cloud Run job {job}")
-    actions.append(("update" if sched_exists else "create")
-                   + f' Cloud Scheduler job {job}: "{cron}" ({timezone})'
-                   + (" (paused)" if app["pause"] else ""))
+        actions += store_plan_lines(f"bucket {console.value(bucket)}", bucket_exists, sa, name)
+    actions.append(console.Markup(("update" if job_exists else "create")
+                                  + f" Cloud Run job {console.value(job)}"))
+    actions.append(console.Markup(("update" if sched_exists else "create")
+                                  + f' Cloud Scheduler job {console.value(job)}: '
+                                  f'"{console.value(cron)}" ({console.value(timezone)})'
+                                  + (" (paused)" if app["pause"] else "")))
     cost = cost_estimate(project, region, cron, job, job_exists,
                          1 if values else 0, assume_yes, billing_confirmed,
                          store_usage=usage, currency=regions.local_currency())
@@ -773,22 +794,23 @@ def deploy(app: dict, assume_yes: bool) -> int:
         return 1
 
     if not repo_exists:
-        console.step(f"creating Artifact Registry repo {repo}")
+        console.step(f"creating Artifact Registry repo {console.value(repo)}")
         run_quiet("artifacts", "repositories", "create", repo,
                   "--repository-format", "docker", "--location", region,
                   "--project", project, "--labels", "managed-by=pdt")
-    console.step(f"building image {image}")
+    console.step(f"building image {console.value(image)}")
     build_image(app, image, region)
     if not sa_exists:
         if not sa.startswith("pdt-runner@"):
-            fail(f"CLOUD_RUN_SERVICE_ACCOUNT {sa} does not exist in project {project}")
-        console.step(f"creating service account {sa}")
+            fail(f"CLOUD_RUN_SERVICE_ACCOUNT {console.value(sa)} does not exist in project "
+                 f"{console.value(project)}")
+        console.step(f"creating service account {console.value(sa)}")
         run_quiet("iam", "service-accounts", "create", "pdt-runner",
                   "--project", project, "--display-name", "pdt job runner",
                   "--description", "Managed by PDT")
     if store:
         if not bucket_exists:
-            console.step(f"creating bucket {bucket}")
+            console.step(f"creating bucket {console.value(bucket)}")
             run_quiet("storage", "buckets", "create", f"gs://{bucket}",
                       "--location", region, "--project", project,
                       "--uniform-bucket-level-access", "--public-access-prevention")
@@ -797,13 +819,13 @@ def deploy(app: dict, assume_yes: bool) -> int:
         grant_store_access(bucket, name, sa)
     if secret_state:
         if secret_state == "create":
-            console.step(f"creating secret {sid}")
+            console.step(f"creating secret {console.value(sid)}")
             run_quiet("secrets", "create", sid, "--project", project,
                       "--replication-policy", "automatic",
                       "--labels", "managed-by=pdt",
                       "--data-file", "-", data=payload)
         elif secret_state == "update":
-            console.step(f"updating secret {sid}")
+            console.step(f"updating secret {console.value(sid)}")
             run_quiet("secrets", "versions", "add", sid, "--project", project,
                       "--data-file", "-", data=payload)
         destroy_old_secret_versions(project, sid)
@@ -814,7 +836,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         run_quiet("secrets", "add-iam-policy-binding", sid, "--project", project,
                   "--member", f"serviceAccount:{sa}",
                   "--role", "roles/secretmanager.secretVersionManager")
-    console.step(f"deploying Cloud Run job {job}")
+    console.step(f"deploying Cloud Run job {console.value(job)}")
     args = ["run", "jobs", "deploy", job, "--image", image, "--region", region,
             "--project", project, "--service-account", sa, "--max-retries", "0",
             "--labels", "managed-by=pdt"]
@@ -831,7 +853,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     run_quiet("run", "jobs", "add-iam-policy-binding", job, "--region", region,
               "--project", project, "--member", f"serviceAccount:{sa}",
               "--role", "roles/run.invoker")
-    console.step(f'scheduling {job}: "{cron}" ({timezone})')
+    console.step(f'scheduling {console.value(job)}: "{console.value(cron)}" '
+                 f'({console.value(timezone)})')
     uri = (f"https://{region}-run.googleapis.com/apis/run.googleapis.com"
            f"/v1/namespaces/{project}/jobs/{job}:run")
     verb = "update" if sched_exists else "create"
@@ -842,7 +865,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
               "--uri", uri, "--http-method", "POST",
               "--oauth-service-account-email", sa)
     set_scheduler_paused(project, region, job, app["pause"])
-    console.done(f"Deployed {name}.")
+    console.done(f"Deployed {console.value(name)}.")
     deployed_next_steps(name)
     return 0
 
@@ -860,30 +883,33 @@ def destroy(app: dict, assume_yes: bool) -> int:
         or f"pdt-runner@{project}.iam.gserviceaccount.com"
     default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
 
-    console.status(f"Checking current state in project {project} ({region})...")
+    console.status(f"Checking current state in project {console.value(project)} "
+                   f"({console.value(region)})...")
     scheduler = read_json_or_none(
         "scheduler", "jobs", "describe", job,
         "--location", region, "--project", project)
     delete_scheduler = scheduler_owned(scheduler, name, project, region, sa)
     if scheduler is not None and not delete_scheduler:
-        console.note(f"Cloud Scheduler job {job} is not managed by PDT; keeping it")
+        console.note(f"Cloud Scheduler job {console.value(job)} is not managed by PDT; keeping it")
     run_job = read_json_or_none(
         "run", "jobs", "describe", job,
         "--region", region, "--project", project)
     delete_job = managed_by_pdt(run_job)
     if run_job is not None and not delete_job:
-        console.note(f"Cloud Run job {job} is not managed by PDT; keeping it")
+        console.note(f"Cloud Run job {console.value(job)} is not managed by PDT; keeping it")
     sid = secret_id(name)
     secret = read_json_or_none("secrets", "describe", sid, "--project", project)
     delete_secret = managed_by_pdt(secret)
     if secret is not None and not delete_secret:
-        console.note(f"Secret Manager secret {sid} is not managed by PDT; keeping it")
+        console.note(f"Secret Manager secret {console.value(sid)} is not managed by PDT; "
+                     "keeping it")
     repository = read_json_or_none(
         "artifacts", "repositories", "describe", repo,
         "--location", region, "--project", project)
     repository_owned = managed_by_pdt(repository)
     if repository is not None and not repository_owned:
-        console.note(f"Artifact Registry repository {repo} is not managed by PDT; keeping it")
+        console.note(f"Artifact Registry repository {console.value(repo)} is not managed by PDT; "
+                     "keeping it")
     images = []
     if repository_owned:
         images = list_json("artifacts", "docker", "images", "list",
@@ -926,51 +952,56 @@ def destroy(app: dict, assume_yes: bool) -> int:
 
     actions = []
     if revoke_grant:
-        actions.append(f"remove {sa} write access to {bucket}/{name}/")
+        actions.append(console.Markup(f"remove {console.value(sa)} write access to "
+                                      f"{console.value(f'{bucket}/{name}/')}"))
     if delete_scheduler:
-        actions.append(f"delete Cloud Scheduler job {job}")
+        actions.append(console.Markup(f"delete Cloud Scheduler job {console.value(job)}"))
     if delete_job:
-        actions.append(f"delete Cloud Run job {job}")
+        actions.append(console.Markup(f"delete Cloud Run job {console.value(job)}"))
     if delete_secret:
-        actions.append(f"delete secret {sid}")
+        actions.append(console.Markup(f"delete secret {console.value(sid)}"))
     if delete_image:
-        actions.append(f"delete Artifact Registry image {image}")
+        actions.append(console.Markup(f"delete Artifact Registry image {console.value(image)}"))
     if delete_repo:
-        actions.append(f"delete Artifact Registry repository {repo} (no other apps use it)")
+        actions.append(console.Markup(f"delete Artifact Registry repository {console.value(repo)} "
+                                      "(no other apps use it)"))
     if delete_sa:
-        actions.append(f"delete service account {sa} (no other apps use it)")
+        actions.append(console.Markup(f"delete service account {console.value(sa)} "
+                                      "(no other apps use it)"))
     kept = []
     if scheduler is not None and not delete_scheduler:
-        kept.append(f"Cloud Scheduler job {job}")
+        kept.append(f"Cloud Scheduler job {console.value(job)}")
     if run_job is not None and not delete_job:
-        kept.append(f"Cloud Run job {job}")
+        kept.append(f"Cloud Run job {console.value(job)}")
     if secret is not None and not delete_secret:
-        kept.append(f"Secret Manager secret {sid}")
+        kept.append(f"Secret Manager secret {console.value(sid)}")
     if repository is not None and not delete_repo:
-        kept.append(f"Artifact Registry repository {repo}")
+        kept.append(f"Artifact Registry repository {console.value(repo)}")
     if service_account is not None and not delete_sa:
-        kept.append(f"service account {sa}")
+        kept.append(f"service account {console.value(sa)}")
     if store_present:
-        kept.append(store_kept_line(f"bucket {bucket}", store.usage()[0], name))
+        kept.append(store_kept_line(f"bucket {console.value(bucket)}", store.usage()[0], name))
     for item in other_project_jobs:
         if managed_by_pdt(item):
             continue
         item_name, item_region = run_job_identity(item)
         if not item_name:
             continue
-        label = f"Cloud Run job {item_name}"
+        label = f"Cloud Run job {console.value(item_name)}"
         if item_region:
-            label += f" ({item_region})"
+            label += f" ({console.value(item_region)})"
         kept.append(label)
     if not actions:
-        console.done(f"Nothing to remove for {name} in project {project}.")
+        console.done(f"Nothing to remove for {console.value(name)} in project "
+                     f"{console.value(project)}.")
         remaining = sorted(set(other_jobs))
         if remaining:
-            console.note(f"PDT apps still deployed: {', '.join(remaining)}.")
+            console.note(f"PDT apps still deployed: "
+                         f"{', '.join(console.value(app) for app in remaining)}.")
         if kept:
             console.heading("Still present:")
             for resource in kept:
-                console.bullet(console.escape(str(resource)))
+                console.bullet(resource)
         return 0
     if revoke_grant:
         warn_if_locked(store, name)
@@ -981,36 +1012,37 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if revoke_grant:
         revoke_store_access(bucket, name, sa, revoke_folder, revoke_bucket)
     if delete_scheduler:
-        console.step(f"deleting Cloud Scheduler job {job}")
+        console.step(f"deleting Cloud Scheduler job {console.value(job)}")
         run_quiet("scheduler", "jobs", "delete", job,
                   "--location", region, "--project", project, "--quiet")
     if delete_job:
-        console.step(f"deleting Cloud Run job {job}")
+        console.step(f"deleting Cloud Run job {console.value(job)}")
         run_quiet("run", "jobs", "delete", job,
                   "--region", region, "--project", project, "--quiet")
     if delete_secret:
-        console.step(f"deleting secret {sid}")
+        console.step(f"deleting secret {console.value(sid)}")
         run_quiet("secrets", "delete", sid, "--project", project, "--quiet")
     if delete_image:
-        console.step(f"deleting Artifact Registry image {image}")
+        console.step(f"deleting Artifact Registry image {console.value(image)}")
         run_quiet("artifacts", "docker", "images", "delete", image,
                   "--delete-tags", "--project", project, "--quiet")
     if delete_repo:
-        console.step(f"deleting Artifact Registry repository {repo}")
+        console.step(f"deleting Artifact Registry repository {console.value(repo)}")
         run_quiet("artifacts", "repositories", "delete", repo,
                   "--location", region, "--project", project, "--quiet")
     if delete_sa:
-        console.step(f"deleting service account {sa}")
+        console.step(f"deleting service account {console.value(sa)}")
         run_quiet("iam", "service-accounts", "delete", sa,
                   "--project", project, "--quiet")
-    console.done(f"Removed {name} from project {project}.")
+    console.done(f"Removed {console.value(name)} from project {console.value(project)}.")
     remaining = sorted(set(other_jobs))
     if remaining:
-        console.note(f"PDT apps still deployed: {', '.join(remaining)}.")
+        console.note(f"PDT apps still deployed: "
+                     f"{', '.join(console.value(app) for app in remaining)}.")
     if kept:
         console.heading("Still present:")
         for resource in kept:
-            console.bullet(console.escape(str(resource)))
+            console.bullet(resource)
     elif not remaining:
         console.done("Nothing remains.")
     return 0
@@ -1107,8 +1139,9 @@ def pause(app: dict, paused: bool, assume_yes: bool) -> int:
     project = preflight(app, project, assume_yes)
     job = f"pdt-{app['name']}"
     set_scheduler_paused(project, region, job, paused)
-    console.done(f"{'Paused' if paused else 'Unpaused'} {app['name']}: "
-                 f"Cloud Scheduler job {job} is {'PAUSED' if paused else 'ENABLED'}.")
+    console.done(f"{'Paused' if paused else 'Unpaused'} {console.value(app['name'])}: "
+                 f"Cloud Scheduler job {console.value(job)} is "
+                 f"{'PAUSED' if paused else 'ENABLED'}.")
     return 0
 
 
@@ -1123,8 +1156,9 @@ def start(app: dict, assume_yes: bool) -> int:
     except ValueError:
         execution = None
     name = ((execution or {}).get("metadata") or {}).get("name")
-    console.done(f"Started {app['name']}: Cloud Run execution {name}." if name
-                 else f"Started {app['name']}.")
+    console.done(f"Started {console.value(app['name'])}: Cloud Run execution "
+                 f"{console.value(name)}." if name
+                 else f"Started {console.value(app['name'])}.")
     console.command(f"pdt runs {app['name']}", "see the run")
     return 0
 
@@ -1134,7 +1168,7 @@ def main() -> int:
         try:
             binary = gcloud_sdk.ensure_gcloud()
         except gcloud_sdk.GcloudError as e:
-            fail(str(e))
+            fail(console.escape(str(e)))
         return subprocess.run([binary, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
@@ -1147,7 +1181,7 @@ def main() -> int:
     try:
         app = config.merged_app(args.app)
     except config.ConfigError as exc:
-        fail(str(exc))
+        fail(console.escape(str(exc)))
     config.load_env(app["dir"])
     if args.command == "login":
         return relogin(args.yes)

@@ -273,9 +273,10 @@ def adopt_account(app: dict, session) -> str:
     identity = session.client("sts").get_caller_identity()
     account = identity["Account"]
     console.field("These credentials belong to AWS account", account)
-    console.bullet(console.escape(identity["Arn"]))
+    console.bullet(console.value(identity["Arn"]))
     saved = config.save_platform_key(app, "account", account)
-    console.done(f"Saved account {account} to {saved.relative_to(config.find_project())}.")
+    console.done(f"Saved account {console.value(account)} to "
+                 f"{console.value(saved.relative_to(config.find_project()))}.")
     return account
 
 
@@ -287,7 +288,8 @@ def aws_settings(app: dict, session) -> tuple[str, str]:
     region = str(platform.get("region") or session.region_name or
                  os.environ.get("AWS_DEFAULT_REGION") or "")
     if not region:
-        fail("AWS region is required; set platform.region, AWS_REGION, or AWS_DEFAULT_REGION")
+        fail(f"AWS region is required; set {console.value('platform.region')}, "
+             f"{console.value('AWS_REGION')}, or {console.value('AWS_DEFAULT_REGION')}")
     return account, region
 
 
@@ -339,11 +341,11 @@ def print_permission_help(identity: str, detail: str, actions: list[str],
                           account: str, region: str) -> None:
     console.warn("AWS blocked this deployment because the current login lacks a permission.")
     if detail:
-        console.say(f"AWS said: {detail}")
+        console.say(f"AWS said: {console.escape(detail)}")
     console.field("Current AWS login", identity)
     console.say("Send the policy below to the person who manages your AWS account.")
     console.say("Ask them to add it to this login, then run the same command again.")
-    console.say(json.dumps(deployer_policy(actions, account, region), indent=2))
+    console.say(console.escape(json.dumps(deployer_policy(actions, account, region), indent=2)))
 
 
 def principal_arn(identity_arn: str, account: str) -> str:
@@ -379,8 +381,10 @@ def choose_profile(app: dict, session) -> str:
         console.field("Using the only AWS profile on this computer", profiles[0])
         return profiles[0]
     if not can_ask():
-        fail("no AWS profile selected; add `profile: <name>` under platform: in pdt.yml, "
-             f"or set AWS_PROFILE=<name> (profiles: {', '.join(profiles)})")
+        fail(f"no AWS profile selected; add `{console.value('profile: <name>')}` under "
+             f"{console.value('platform:')} in {console.value('pdt.yml')}, or set "
+             f"{console.value('AWS_PROFILE=<name>')} "
+             f"(profiles: {', '.join(console.value(profile) for profile in profiles)})")
     console.heading("No AWS profile is selected. Profiles on this computer:")
     for number, profile in enumerate(profiles, start=1):
         console.choice(number, profile)
@@ -390,10 +394,12 @@ def choose_profile(app: dict, session) -> str:
     elif answer in profiles:
         profile = answer
     else:
-        fail("no AWS profile selected; add `profile: <name>` under platform: in pdt.yml, "
-             "or set AWS_PROFILE=<name>")
+        fail(f"no AWS profile selected; add `{console.value('profile: <name>')}` under "
+             f"{console.value('platform:')} in {console.value('pdt.yml')}, or set "
+             f"{console.value('AWS_PROFILE=<name>')}")
     saved = config.save_platform_key(app, "profile", profile)
-    console.done(f"Saved profile {profile} to {saved.relative_to(config.find_project())}.")
+    console.done(f"Saved profile {console.value(profile)} to "
+                 f"{console.value(saved.relative_to(config.find_project()))}.")
     return profile
 
 
@@ -429,7 +435,7 @@ def sso_login(profile: str | None) -> bool:
         shown += f" --profile {profile}"
     console.warn("Your AWS login has expired or is missing.")
     if not can_ask():
-        console.say(f"Log in first: {shown}")
+        console.say(f"Log in first: {console.value(shown)}")
         return False
     answer = ask(f"Log in now with `{shown}` (opens a browser)? [y/N] ")
     if answer.lower() not in ("y", "yes"):
@@ -442,13 +448,14 @@ def relogin(app: dict) -> int:
     name = app["platform"].get("profile") or os.environ.get("AWS_PROFILE") or ""
     if name not in session.available_profiles:
         name = choose_profile(app, session)
-    console.status(f"Logging in to AWS profile {name}...")
+    console.status(f"Logging in to AWS profile {console.value(name)}...")
     if subprocess.run([*aws_cli(), "sso", "login", "--profile", name]).returncode != 0:
-        console.warn(f"If {name} uses access keys instead of SSO there is no login to "
-                     f"refresh; run `pdt aws configure --profile {name}` to replace the keys.")
-        fail("pdt aws sso login failed")
+        configure = f"pdt aws configure --profile {name}"
+        console.warn(f"If {console.value(name)} uses access keys instead of SSO there is no "
+                     f"login to refresh; run `{console.value(configure)}` to replace the keys.")
+        fail(f"{console.value('pdt aws sso login')} failed")
     identity = boto3.Session(profile_name=name).client("sts").get_caller_identity()
-    console.done(f"Signed in as {identity['Arn']}")
+    console.done(f"Signed in as {console.value(identity['Arn'])}")
     console.field("Account", identity["Account"])
     return 0
 
@@ -464,7 +471,8 @@ def ensure_session(app: dict):
     region = app["platform"].get("region") or None
     profile = app["platform"].get("profile") or None
     if profile and profile not in boto3.Session().available_profiles:
-        console.warn(f"AWS profile {profile!r} from your config is not on this computer.")
+        console.warn(f"AWS profile {console.value(repr(profile))} from your config is not on "
+                     "this computer.")
         profile = choose_profile(app, boto3.Session())
     session = boto3.Session(region_name=region, profile_name=profile)
     if session.get_credentials() is None:
@@ -474,8 +482,9 @@ def ensure_session(app: dict):
     except Exception as exc:  # noqa: BLE001 - credential providers raise several types
         if not login_error(exc) or not sso_login(session.profile_name):
             profile = session.profile_name or "<profile-name>"
-            fail(f"AWS credentials are unavailable or invalid: {exc}\n"
-                 f"Log in first (for example: pdt aws sso login --profile {profile}), "
+            fail(f"AWS credentials are unavailable or invalid: {console.escape(str(exc))}\n"
+                 f"Log in first (for example: "
+                 f"{console.value(f'pdt aws sso login --profile {profile}')}), "
                  f"then run the same command again.")
         session = boto3.Session(region_name=region, profile_name=session.profile_name)
     return session
@@ -486,11 +495,12 @@ def preflight(sts, iam, expected_account: str, region: str,
     try:
         identity = sts.get_caller_identity()
     except Exception as exc:  # noqa: BLE001 - credential providers raise several types
-        fail(f"AWS credentials are unavailable or invalid: {exc}")
+        fail(f"AWS credentials are unavailable or invalid: {console.escape(str(exc))}")
     account = identity["Account"]
     identity_arn = identity["Arn"]
     if expected_account != account:
-        fail(f"configured AWS account {expected_account} does not match credentials ({account})")
+        fail(f"configured AWS account {console.value(expected_account)} does not match "
+             f"credentials ({console.value(account)})")
     source_arn = principal_arn(identity_arn, account)
     if source_arn.endswith(":root"):
         return account, identity_arn
@@ -527,7 +537,7 @@ def ensure_role(iam, name: str, service: str, policy_name: str,
     try:
         role = iam.get_role(RoleName=name)["Role"]
         if not has_managed_tag(role.get("Tags", []), "Key", "Value"):
-            fail(f"IAM role {name} exists but is not managed by PDT")
+            fail(f"IAM role {console.value(name)} exists but is not managed by PDT")
         iam.update_assume_role_policy(
             RoleName=name, PolicyDocument=trust_policy(service))
         iam.tag_role(RoleName=name, Tags=iam_tags())
@@ -589,7 +599,7 @@ def ensure_store(s3, name: str, region: str) -> None:
     if store_exists(s3, name):
         tags = s3.get_bucket_tagging(Bucket=name).get("TagSet", [])
         if not has_managed_tag(tags, "Key", "Value"):
-            fail(f"S3 bucket {name} exists but is not managed by PDT")
+            fail(f"S3 bucket {console.value(name)} exists but is not managed by PDT")
         return
     location = {} if region == "us-east-1" else {
         "CreateBucketConfiguration": {"LocationConstraint": region}}
@@ -634,7 +644,7 @@ def ensure_log_group(logs, name: str) -> None:
         arn = group.get("logGroupArn") or group["arn"].removesuffix(":*")
         tags = logs.list_tags_for_resource(resourceArn=arn).get("tags", {})
         if tags.get("managed-by") != "pdt":
-            fail(f"CloudWatch log group {name} exists but is not managed by PDT")
+            fail(f"CloudWatch log group {console.value(name)} exists but is not managed by PDT")
     else:
         logs.create_log_group(logGroupName=name, tags=MANAGED_TAGS)
     logs.put_retention_policy(logGroupName=name, retentionInDays=30)
@@ -645,7 +655,7 @@ def ensure_secret(secrets, name: str, payload: str) -> str:
         current = secrets.describe_secret(SecretId=name)
         arn = current["ARN"]
         if not has_managed_tag(current.get("Tags", []), "Key", "Value"):
-            fail(f"Secrets Manager secret {name} exists but is not managed by PDT")
+            fail(f"Secrets Manager secret {console.value(name)} exists but is not managed by PDT")
         if current.get("DeletedDate"):
             secrets.restore_secret(SecretId=name)
         try:
@@ -849,7 +859,7 @@ def load_app(app_name: str) -> dict:
     try:
         app = config.merged_app(app_name)
     except config.ConfigError as exc:
-        fail(str(exc))
+        fail(console.escape(str(exc)))
     config.load_env(app["dir"])
     return app
 
@@ -899,7 +909,8 @@ def main() -> int:
                 pass
             print_permission_help(identity, str(exc), batch.DEPLOYER_ACTIONS, account, region)
             return 1
-        fail(f"AWS returned {error_code(exc) or 'an error'}: {exc}")
+        fail(f"AWS returned {console.escape(error_code(exc) or 'an error')}: "
+             f"{console.escape(str(exc))}")
 
 
 if __name__ == "__main__":

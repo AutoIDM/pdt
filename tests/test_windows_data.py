@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import add_app
+from conftest import add_app, plain
 from pdt import config, deploy_windows
 
 
@@ -66,7 +66,7 @@ def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
     folder = project / "ProgramData" / "pdt" / "my-report"
     actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
                                   "uv.exe", False)
-    assert actions == [
+    assert plain(actions) == [
         "create Windows scheduled task pdt-my-report (runs as SYSTEM)",
         "run my-report hourly at minute 00 (machine local time)",
         f"working directory: {app['dir']}",
@@ -189,7 +189,7 @@ def test_powershell_deploy_installs_the_gallery_modules_in_the_elevated_step(
 
     assert deploy_windows.deploy(app, assume_yes=True) == 0
 
-    assert actions[-2:] == [
+    assert plain(actions[-2:]) == [
         r"run the app's .ps1 files with PowerShell from C:\ProgramData\pdt\pwsh\pwsh.exe",
         "install PowerShell modules ImportExcel (all users)"]
     assert checked == [(r"C:\ProgramData\pdt\pwsh\pwsh.exe",
