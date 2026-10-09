@@ -146,6 +146,14 @@ def test_new_app_copies_a_powershell_example(project, capsys):
     assert "my-report/report.ps1" in capsys.readouterr().out
 
 
+def test_new_app_copies_an_examples_data_files(project):
+    assert scaffold.new_app("license-audit", "azure-license-waste") == 0
+    app = project / "license-audit"
+    assert (app / "LicenseWasteAudit.ps1").is_file()
+    assert (app / "license-prices.csv").read_text().startswith("SkuPartNumber,")
+    assert find_apps() == ["license-audit"]
+
+
 def test_new_app_refuses_an_unknown_example(project):
     with pytest.raises(ConfigError):
         scaffold.new_app("my-report", "no-such-example")

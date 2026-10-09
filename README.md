@@ -283,6 +283,12 @@ Run `pdt examples` to list them, then `pdt new <name> --from <example>` to copy 
 
 Small app that logs "Hello world." Shows how to write a config.yml and useful as an empty starting project so you can write your own. `pdt init` puts a copy of this in every new empty project.
 
+### azure-license-waste
+
+A PowerShell app. Finds the Microsoft 365 licenses a tenant pays for that nobody uses: paid licenses on disabled accounts, on accounts that have not signed in for 90 days (or never did), and seats bought but assigned to nobody. Each run keeps a `LicenseWaste-<date>.xlsx` workbook in the app's data store, with a Summary sheet of monthly and annual cost and one sheet per finding.
+
+Monthly prices come from the app's `license-prices.csv`; edit it to match what your tenant pays. A license missing from it is listed on an Unpriced Licenses sheet so you can add it. The Graph permissions and env vars it needs are listed in its `config.yml` and `env.template`.
+
 ### impossible-travel-report
 
 Looks at recent Entra ID sign-ins. Sends an email when one person signs in from two far-apart places too quickly: Dallas an hour ago, Paris now.
