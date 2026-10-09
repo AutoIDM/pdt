@@ -1,0 +1,20 @@
+# Sample hello world app. This can be deleted or used as a template to
+# create your own app. It demonstrates basic configuration and logging.
+
+# How often this app runs.
+# Shorthand: hourly, daily, weekly, monthly, yearly.
+# Or a 5-field cron expression, for example "0 * * * *".
+schedule: "daily"
+
+config:
+  # Anything under config: reaches the app as app["config"].
+  # See line 36 in run.py for how it's used.
+  greeting: Hello, world!
+
+# Env vars this app needs. `pdt validate` checks them against your .env,
+# and `pdt deploy` uploads the ones that are set as cloud secrets.
+# This app needs none, so the lists are empty. Look at the other example apps
+# to see how to add required and optional env vars.
+env:
+  required: []
+  optional: []

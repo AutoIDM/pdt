@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -43,7 +44,7 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
-ROOT_KEYS = {"platform", "apps"}
+ROOT_KEYS = {"platform", "apps", "migrated_by"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
             "run_scripts", "continue_on_error"}
 PLATFORM_KEYS = {
@@ -58,6 +59,7 @@ ENV_KEYS = {"required", "one_of", "optional"}
 APP_LEVEL = f"the top level of the app's {APP_FILE}, or its apps: entry in {PROJECT_FILE}"
 KEY_HOME = {
     "apps": f"the top level of {PROJECT_FILE}",
+    "migrated_by": f"the top level of {PROJECT_FILE}",
     "platform": f"the top level of {PROJECT_FILE} or of the app's {APP_FILE}",
     "name": f"the app's apps: entry in {PROJECT_FILE}",
     "schedule": APP_LEVEL,
@@ -152,9 +154,9 @@ def is_app(folder: Path) -> bool:
     return (folder / "run.py").is_file() or powershell_scripts(folder) != []
 
 
-def app_folders() -> list[str]:
+def app_folders(project: Path | None = None) -> list[str]:
     names = []
-    for child in sorted(find_project().iterdir()):
+    for child in sorted((project or find_project()).iterdir()):
         if child.name.startswith(".") or not child.is_dir():
             continue
         if is_app(child):
@@ -313,6 +315,79 @@ def yaml_quoted(value: str) -> str:
     return f'"{escaped}"'
 
 
+# rename_key, remove_key, and set_top_level_key change only the characters
+# at a key's PyYAML node marks, so every other byte of the user's file stays.
+def yaml_key(text: str, path: tuple) -> tuple[yaml.Node, yaml.Node] | None:
+    """The key node and the value node at `path`, a tuple of mapping keys and list
+    indexes, or None when the file has no such key."""
+    node = yaml.compose(text, Loader=yaml.SafeLoader)
+    key = None
+    for part in path:
+        if isinstance(part, int):
+            if not isinstance(node, yaml.SequenceNode) or part >= len(node.value):
+                return None
+            node = node.value[part]
+        else:
+            if not isinstance(node, yaml.MappingNode):
+                return None
+            pair = next(((k, v) for k, v in node.value if k.value == part), None)
+            if pair is None:
+                return None
+            key, node = pair
+    return key, node
+
+
+def rename_key(text: str, path: tuple, new: str) -> str:
+    found = yaml_key(text, path)
+    if found is None:
+        return text
+    key = found[0]
+    return text[:key.start_mark.index] + new + text[key.end_mark.index:]
+
+
+def remove_key(text: str, path: tuple) -> str | None:
+    """`text` without the lines of the key at `path`. None when another key shares
+    those lines, as in `{a: 1, b: 2}` or `- b: 2`, so lines cannot remove it alone."""
+    found = yaml_key(text, path)
+    if found is None:
+        return text
+    key, value = found
+    start = text.rfind("\n", 0, key.start_mark.index) + 1
+    if text[start:key.start_mark.index].strip() != "":
+        return None
+    last = value
+    while isinstance(last, (yaml.MappingNode, yaml.SequenceNode)) and last.value:
+        last = last.value[-1][1] if isinstance(last, yaml.MappingNode) else last.value[-1]
+    # An empty value's mark sits at the next token, which can be on a later line.
+    empty = last.start_mark.index == last.end_mark.index
+    value_end = key.end_mark.index if empty else last.end_mark.index
+    end = text.find("\n", value_end)
+    return text[:start] + ("" if end == -1 else text[end + 1:])
+
+
+def set_top_level_key(text: str, key: str, value: str, comment: str = "") -> str:
+    """`text` with `key: value` at the top level. A new key goes above the first key
+    and the comment lines right above it, after `# comment` when one is given."""
+    found = yaml_key(text, (key,))
+    if found is not None:
+        node = found[1]
+        if node.start_mark.index == node.end_mark.index:
+            colon = text.index(":", found[0].end_mark.index) + 1
+            return f"{text[:colon]} {value}{text[colon:]}"
+        return text[:node.start_mark.index] + value + text[node.end_mark.index:]
+    lines = [f"# {comment}"] if comment != "" else []
+    lines.append(f"{key}: {value}")
+    root = yaml.compose(text, Loader=yaml.SafeLoader)
+    if not isinstance(root, yaml.MappingNode) or not root.value:
+        joined = text if text == "" or text.endswith("\n") else text + "\n"
+        return joined + "\n".join(lines) + "\n"
+    before = text[:root.value[0][0].start_mark.index].splitlines(keepends=True)
+    while before and before[-1].lstrip().startswith("#"):
+        before.pop()
+    at = len("".join(before))
+    return text[:at] + "\n".join(lines) + "\n\n" + text[at:]
+
+
 def write_text_atomically(path: Path, text: str) -> None:
     # The temporary file sits in the same folder because a rename is atomic only
     # within one filesystem.
@@ -323,6 +398,8 @@ def write_text_atomically(path: Path, text: str) -> None:
             tmp.write(text)
             tmp.flush()
             os.fsync(tmp.fileno())
+        if path.exists():
+            shutil.copymode(path, tmp.name)
         os.replace(tmp.name, path)
     except BaseException:
         os.unlink(tmp.name)

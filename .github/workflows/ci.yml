@@ -70,6 +70,9 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --check
+      - run: uv run pdt migrate --dry-run
+        env:
+          PDT_PROJECT: verify
       - run: uv run pdt validate
         env:
           PDT_PROJECT: verify

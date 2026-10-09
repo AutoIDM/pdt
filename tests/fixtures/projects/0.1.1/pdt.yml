@@ -1,0 +1,10 @@
+# This file marks the top of your pdt project.
+# Every app folder next to this file is a job pdt can run and deploy.
+
+# Defaults for every app. Fill this in before you deploy.
+#platform:
+#  provider: azure        # azure, aws, google-cloud, or windows
+#  region: eastus2
+
+# Settings for one app. The app's own config.yml can hold these instead.
+apps: []
