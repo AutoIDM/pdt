@@ -154,7 +154,8 @@ def cmd_list(args) -> int:
 
 
 def cmd_validate(args) -> int:
-    console.styled(config.project_line())
+    if not args.json:
+        console.styled(config.project_line())
     problems = config.validate_by_app()
     original_env = os.environ.copy()
     try:
@@ -168,16 +169,18 @@ def cmd_validate(args) -> int:
             sources = config.env_file_lines(app["dir"])
             config.load_env(app["dir"])
             if config.powershell_scripts(app["dir"]):
-                problems.extend((name, problem) for problem in powershell_problems(name, app))
-            else:
+                problems.extend((name, problem)
+                                for problem in powershell_problems(name, app, quiet=args.json))
+            elif not args.json:
                 console.name(name)
                 console.detail(f"runs {console.value('run.py')}")
-            try:
-                found = config.found_env_lines(app)
-            except ConfigError:
-                found = []
-            for line in [*found, *sources]:
-                console.detail(line)
+            if not args.json:
+                try:
+                    found = config.found_env_lines(app)
+                except ConfigError:
+                    found = []
+                for line in [*found, *sources]:
+                    console.detail(line)
             missing = config.missing_env(app)
             if missing != "":
                 problems.append((name, f"{name}: {missing}"))
@@ -200,16 +203,19 @@ def cmd_validate(args) -> int:
     return 0
 
 
-def powershell_problems(name: str, app: dict) -> list[str]:
-    """Scan a PowerShell app, print what it runs and needs, and return the certain findings."""
+def powershell_problems(name: str, app: dict, quiet: bool = False) -> list[str]:
+    """Scan a PowerShell app, print what it runs and needs unless `quiet`, and return the
+    certain findings."""
     console.status(f"Scanning the PowerShell scripts in {console.value(name)}...")
-    console.name(name)
+    if not quiet:
+        console.name(name)
     try:
         scan = powershell.scan(app, app["platform"].get("provider", ""))
     except (pwsh.PwshError, powershell.PowerShellError) as e:
         return [f"{name}: {e}"]
-    for line in powershell.summary_lines(scan):
-        console.detail(line)
+    if not quiet:
+        for line in powershell.summary_lines(scan):
+            console.detail(line)
     problems, warnings = powershell.report(scan)
     for warning in warnings:
         console.warn(f"{console.value(name)}: {console.escape(warning)}")

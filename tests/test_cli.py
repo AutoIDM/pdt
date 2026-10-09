@@ -609,6 +609,14 @@ def test_validate_json_of_a_valid_project(project, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out) == {"ok": True, "problems": []}
 
 
+def test_validate_json_prints_no_discovery_lines(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    assert run_cli(monkeypatch, "validate", "--json") == 0
+    err = capsys.readouterr().err
+    assert "Project folder" not in err
+    assert "runs run.py" not in err
+
+
 def test_validate_names_no_app_for_a_problem_every_app_shares(project, monkeypatch):
     (project / "pdt.yml").write_text("platform:\n  provider: azure\n  colour: blue\n")
     add_app(project, "hello-world")
