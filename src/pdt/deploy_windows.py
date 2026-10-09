@@ -60,7 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import confirm
-from pdt.deploy_common import CostEstimate, deployed_next_steps, warn_if_locked
+from pdt.deploy_common import CostEstimate, warn_if_locked
 from pdt.pwsh import ensure_pwsh
 
 
@@ -521,7 +521,6 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.error(console.escape(str(exc)))
         return 1
     console.done(f"Deployed {console.value(app['name'])} as Windows task {console.value(name)}.")
-    deployed_next_steps(app["name"])
     return 0
 
 

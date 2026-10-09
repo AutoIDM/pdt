@@ -49,7 +49,7 @@ from pdt.deploy_azure import (
     store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, convert_from_usd, deployed_next_steps, docker_preflight, fail, gather_secrets,
+    CostEstimate, convert_from_usd, docker_preflight, fail, gather_secrets,
     image_action, run_build, run_secrets, ssh_build_args, stage_build_context, store_kept_line,
     warn_if_locked, write_dockerfile)
 
@@ -788,7 +788,6 @@ def deploy(app: dict, assume_yes: bool) -> int:
         assign_role(store["container_id"], principal, STORE_ROLE,
                     condition=store_condition(name))
     console.done(f"Deployed {console.value(name)}.")
-    deployed_next_steps(name)
     return 0
 
 
