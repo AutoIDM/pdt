@@ -108,6 +108,7 @@ BATCH_ARNS = {
     "job_definition": "arn:aws:batch:{region}:{account}:job-definition/pdt-*",
     "job_definition_revision": "arn:aws:batch:{region}:{account}:job-definition/pdt-*:*",
 }
+SECURITY_GROUP_ARN = "arn:aws:ec2:{region}:{account}:security-group/*"
 # Each action pdt calls, grouped with the ARNs of the pdt resources it touches.
 # deployer_policy prints these and preflight simulates them, so both agree.
 POLICY_SCOPES = [
@@ -170,6 +171,15 @@ POLICY_SCOPES = [
     {"Action": ["ecs:ListTagsForResource"],
      "Resource": ["arn:aws:ecs:{region}:{account}:cluster/pdt",
                   "arn:aws:ecs:{region}:{account}:task-definition/pdt-*:*"]},
+    # A security group's ARN holds its id, not its name, so the managed-by tag scopes it.
+    # CreateTags is allowed only inside CreateSecurityGroup, so no other group can gain the tag.
+    {"Action": ["ec2:CreateSecurityGroup"], "Resource": ["arn:aws:ec2:{region}:{account}:vpc/*"]},
+    {"Action": ["ec2:CreateSecurityGroup"], "Resource": [SECURITY_GROUP_ARN],
+     "Condition": {"StringEquals": {"aws:RequestTag/managed-by": ["pdt"]}}},
+    {"Action": ["ec2:CreateTags"], "Resource": [SECURITY_GROUP_ARN],
+     "Condition": {"StringEquals": {"ec2:CreateAction": ["CreateSecurityGroup"]}}},
+    {"Action": ["ec2:DeleteSecurityGroup"], "Resource": [SECURITY_GROUP_ARN],
+     "Condition": {"StringEquals": {"aws:ResourceTag/managed-by": ["pdt"]}}},
     {"Action": [
         "batch:DescribeComputeEnvironments",  # Batch Describe and List calls take no resource ARN.
         "batch:DescribeJobDefinitions",
@@ -198,7 +208,7 @@ def error_code(exc: Exception) -> str:
 def not_found(exc: Exception) -> bool:
     if error_code(exc) in {
         "NoSuchEntity", "ResourceNotFoundException", "ResourceNotFound",
-        "ClusterNotFoundException", "RepositoryNotFoundException",
+        "ClusterNotFoundException", "RepositoryNotFoundException", "InvalidGroup.NotFound",
     }:
         return True
     # ECS and Batch report a missing task definition family or job queue as a
@@ -237,16 +247,21 @@ def role_propagation_error(exc: Exception) -> bool:
     )
 
 
-def with_role_propagation_retry(operation, sleep=time.sleep):
-    for delay in (*ROLE_PROPAGATION_DELAYS, None):
+def retry(operation, retryable, reason: str, delays: tuple[int, ...], sleep=time.sleep):
+    for delay in (*delays, None):
         try:
             return operation()
         except Exception as exc:
-            if delay is None or not role_propagation_error(exc):
+            if delay is None or not retryable(exc):
                 raise
-            console.bullet(f"IAM role is not visible yet; retrying in {delay}s...", indent=4)
+            console.bullet(f"{reason}; retrying in {delay}s...", indent=4)
             sleep(delay)
     raise AssertionError("unreachable")
+
+
+def with_role_propagation_retry(operation, sleep=time.sleep):
+    return retry(operation, role_propagation_error, "IAM role is not visible yet",
+                 ROLE_PROPAGATION_DELAYS, sleep)
 
 
 def adopt_account(app: dict, session) -> str:

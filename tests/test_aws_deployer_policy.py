@@ -3,7 +3,7 @@ from fnmatch import fnmatchcase
 
 import pytest
 
-from pdt.deploy_aws import deployer_policy, preflight
+from pdt.deploy_aws import SECURITY_GROUP_ARN, deployer_policy, preflight
 from pdt.deploy_aws_batch import DEPLOYER_ACTIONS
 
 ACCOUNT = "123456789012"
@@ -21,6 +21,9 @@ UNSCOPED = {
 # ARNs AWS names, not pdt: the operator's own login, and Batch's service-linked role.
 CALLER_ARNS = [f"arn:aws:iam::{ACCOUNT}:user/*", f"arn:aws:iam::{ACCOUNT}:role/*"]
 SERVICE_LINKED_ARN = f"arn:aws:iam::{ACCOUNT}:role/aws-service-role/batch.amazonaws.com/*"
+# A security group's ARN holds its id, not its name, so a condition scopes it instead.
+GROUP_ARN = SECURITY_GROUP_ARN.format(region=REGION, account=ACCOUNT)
+VPC_ARN = f"arn:aws:ec2:{REGION}:{ACCOUNT}:vpc/*"
 BROAD_POLICY = {"Version": "2012-10-17", "Statement": [
     {"Effect": "Allow", "Action": DEPLOYER_ACTIONS, "Resource": "*"}]}
 # The resource types AWS accepts for these actions. SimulatePrincipalPolicy denies any
@@ -63,7 +66,7 @@ def test_only_actions_aws_cannot_scope_use_a_wildcard_resource():
 def test_every_scoped_arn_names_a_pdt_resource():
     for statement in policy()["Statement"]:
         for arn in listed(statement["Resource"]):
-            if arn == "*" or arn in CALLER_ARNS or arn == SERVICE_LINKED_ARN:
+            if arn in ("*", SERVICE_LINKED_ARN, GROUP_ARN, VPC_ARN) or arn in CALLER_ARNS:
                 continue
             assert "pdt" in arn, statement
             assert ACCOUNT in arn or arn.startswith("arn:aws:s3:::"), arn
@@ -84,6 +87,20 @@ def test_the_service_linked_role_grant_is_for_batch_only():
     assert listed(statement["Action"]) == ["iam:CreateServiceLinkedRole"]
     assert listed(statement["Resource"]) == [SERVICE_LINKED_ARN]
     assert statement["Condition"] == {"StringEquals": {"iam:AWSServiceName": ["batch.amazonaws.com"]}}
+
+
+def test_security_group_grants_reach_only_groups_pdt_creates_and_tags():
+    scoped = {action: statement["Condition"]["StringEquals"]
+              for statement in policy()["Statement"]
+              if GROUP_ARN in listed(statement["Resource"])
+              for action in listed(statement["Action"])}
+    assert scoped == {
+        "ec2:CreateSecurityGroup": {"aws:RequestTag/managed-by": ["pdt"]},
+        "ec2:CreateTags": {"ec2:CreateAction": ["CreateSecurityGroup"]},
+        "ec2:DeleteSecurityGroup": {"aws:ResourceTag/managed-by": ["pdt"]},
+    }
+    [vpc] = [s for s in policy()["Statement"] if VPC_ARN in listed(s["Resource"])]
+    assert listed(vpc["Action"]) == ["ec2:CreateSecurityGroup"]
 
 
 def test_batch_resources_are_scoped_to_the_pdt_environment_queue_and_definitions():
