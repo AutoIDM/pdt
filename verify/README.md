@@ -54,7 +54,7 @@ The Azure service principal holds `Contributor` and `Locks Contributor` on the s
 
 `PDT_SMOKE_TOKEN` is set in `verify.yml`, so it needs no setting. Each app declares it as required, so a deployed job fails unless pdt delivered it through `PDT_ENV_JSON`.
 
-`pdt_install` is an optional input of a manual run. Each job installs the wheel the `build` job produced. Set `pdt_install` to a git ref or to `pdt-cli` to verify a different build instead.
+Each job installs the wheel that the `build` job made from the commit under test, and runs `scripts/sync_apps.py --wheel` with it before the first deploy. That copies the wheel into each app folder and adds a `[tool.uv.sources]` entry to each `run.py`, so a deployed job installs pdt from that copy, not from PyPI. To do the same on your computer, run `uv build --wheel` and then `uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/<wheel>`. Run `sync_apps.py` again without `--wheel` to restore the committed `run.py` files.
 
 ## What the listings read
 

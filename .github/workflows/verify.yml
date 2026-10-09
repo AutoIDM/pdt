@@ -23,16 +23,11 @@ on:
   schedule:
     - cron: "52 7 * * *"
   workflow_dispatch:
-    inputs:
-      pdt_install:
-        description: A git ref or pdt-cli to verify instead of this commit's wheel
-        required: false
 
 env:
   # A fake secret. Each app declares it as required, so a deployed job fails
   # unless deploy delivered it as PDT_ENV_JSON.
   PDT_SMOKE_TOKEN: pdt-verify
-  PDT_INSTALL: ${{ inputs.pdt_install }}
   PYTHONUNBUFFERED: "1"
 
 jobs:
@@ -67,7 +62,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/*.whl
+      - run: uv tool install dist/*.whl && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -101,7 +97,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/*.whl
+      - run: uv tool install dist/*.whl && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: pdt az login --service-principal -u "$AZURE_CLIENT_ID" --password="$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
         env:
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
@@ -130,7 +127,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/*.whl
+      - run: uv tool install dist/*.whl && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: |
           printf '%s' "$KEY" > "$RUNNER_TEMP/google-key.json"
           pdt gcloud auth activate-service-account --key-file "$RUNNER_TEMP/google-key.json"
@@ -162,7 +160,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$USERPROFILE/.local/bin" >> "$GITHUB_PATH"
+      - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/*.whl
+      - run: uv tool install dist/*.whl && echo "$USERPROFILE/.local/bin" >> "$GITHUB_PATH"
       - run: uv run --no-project --with pyyaml python verify/scripts/verify.py windows --report verify-windows.xml
       - uses: actions/upload-artifact@v4
         if: always()

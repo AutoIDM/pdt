@@ -3,9 +3,13 @@
 
 The templates live in scripts/templates/ rather than in this file because uv
 scans a script for a PEP 723 block and would find the one inside run.py.txt.
+
+With --wheel, each app folder gets a copy of that wheel, and its run.py
+installs pdt-cli from the copy instead of PyPI.
 """
 
 import argparse
+import shutil
 from pathlib import Path
 
 import yaml
@@ -18,12 +22,19 @@ FILES = ("run.py", "config.yml")
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--wheel", type=Path)
     args = parser.parse_args()
 
     templates = {name: (TEMPLATES / f"{name}.txt").read_text() for name in FILES}
+    if args.wheel:
+        templates["run.py"] = templates["run.py"].replace(
+            "# ///\n",
+            f'#\n# [tool.uv.sources]\n# pdt-cli = {{ path = "{args.wheel.name}" }}\n# ///\n', 1)
     matrix = yaml.safe_load((ROOT / "pdt.yml").read_text())
     mismatches = 0
     for entry in matrix["apps"]:
+        if args.wheel:
+            shutil.copy(args.wheel, ROOT / entry["name"])
         for name in FILES:
             path = ROOT / entry["name"] / name
             wanted = templates[name]
