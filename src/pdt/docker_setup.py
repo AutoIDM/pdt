@@ -11,6 +11,10 @@ Every cloud provider builds its image with docker on this computer, with
   Windows gets Docker Desktop from winget. Linux gets Docker Engine from
   get.docker.com.
 - On Linux, a user outside the docker group joins it.
+- On Linux, Docker Engine builds for another CPU type (AWS's arm64 on an
+  x86_64 computer) only through a QEMU handler, which a restart removes.
+  When the handler is missing, pdt registers it with tonistiigi/binfmt,
+  Docker's documented way. Docker Desktop and Colima register it themselves.
 - Anything else: one line with Docker's install page for this system.
 """
 
@@ -41,6 +45,9 @@ INSTALLERS = {
 DESKTOP_LICENSE = ("Docker Desktop needs a paid plan at a company with more than 250 "
                    "employees or more than $10 million in yearly revenue.")
 LINUX_SOCKET = "/var/run/docker.sock"
+CPU_TYPES = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+QEMU_NAMES = {"amd64": "x86_64", "arm64": "aarch64"}
+BINFMT_DIR = Path("/proc/sys/fs/binfmt_misc")
 RESTART_WINDOWS = "Restart Windows to finish the Docker install, then run the same command again."
 START_SECONDS = 300
 
@@ -201,4 +208,20 @@ def ensure(provider: str, assume_yes: bool) -> str:
         if problem:
             return problem
     console.done("Docker is running.")
+    return ""
+
+
+def emulate(image_platform: str) -> str:
+    """Let Docker on Linux build `image_platform` ("linux/arm64") on a computer of another
+    CPU type. Returns "" when it can, else the one step left for the user."""
+    cpu = image_platform.split("/")[1]
+    if (platform.system() != "Linux" or CPU_TYPES.get(platform.machine().lower()) == cpu
+            or (BINFMT_DIR / f"qemu-{QEMU_NAMES[cpu]}").exists()):
+        return ""
+    command = ["docker", "run", "--privileged", "--rm", "tonistiigi/binfmt", "--install", cpu]
+    console.status(f"Docker on this computer cannot build for {console.value(cpu)}. "
+                   f"Adding the {console.value(cpu)} emulator with {console.value(' '.join(command))}...")
+    if subprocess.run(command, capture_output=True, text=True, check=False).returncode:
+        return (f"{console.value(' '.join(command))} failed, so Docker cannot build the "
+                f"{console.value(cpu)} image. Run it yourself, then run the same command again.")
     return ""

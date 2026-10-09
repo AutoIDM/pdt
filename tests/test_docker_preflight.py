@@ -34,6 +34,7 @@ class Machine:
         self.commands = []
         self.now = 0.0
         monkeypatch.setattr(docker_setup.platform, "system", lambda: self.system)
+        monkeypatch.setattr(docker_setup.platform, "machine", lambda: "aarch64")
         monkeypatch.setattr(docker_setup.shutil, "which",
                             lambda name: f"/bin/{name}" if name in self.tools else None)
         monkeypatch.setattr(docker_setup, "desktop", self.desktop_app)
@@ -109,10 +110,30 @@ def test_deploy_stops_before_the_cloud_without_docker(
     assert "Docker is not installed." in said(capsys)
 
 
+@pytest.mark.parametrize("module, provider, image_platform", [
+    (deploy_aws_batch, "AWS", "linux/arm64"),
+    (deploy_azure_container_apps, "Azure", "linux/amd64"),
+    (deploy_google_cloud, "Google Cloud", "linux/amd64"),
+])
+def test_deploy_checks_that_docker_can_build_its_cpu_type(
+        monkeypatch, capsys, module, provider, image_platform):
+    asked = []
+
+    def emulate(name):
+        asked.append(name)
+        return "Docker cannot build the image."
+
+    monkeypatch.setattr(docker_setup, "ensure", lambda name, assume_yes: "")
+    monkeypatch.setattr(docker_setup, "emulate", emulate)
+    with pytest.raises(SystemExit):
+        module.deploy({"name": "report"}, assume_yes=True)
+    assert asked == [image_platform]
+
+
 @pytest.mark.parametrize("system", ["Darwin", "Windows", "Linux"])
 def test_a_running_docker_needs_nothing_and_prints_nothing(monkeypatch, capsys, system):
     machine = Machine(monkeypatch, system, tools={"docker"}, running=True)
-    deploy_common.docker_preflight("AWS", assume_yes=False)
+    deploy_common.docker_preflight("AWS", "linux/arm64", assume_yes=False)
     assert machine.commands == []
     assert capsys.readouterr().out == ""
 
@@ -250,3 +271,49 @@ def test_a_new_desktop_puts_its_docker_on_this_runs_path(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", "C:\\Windows")
     assert docker_setup.desktop() == exe
     assert docker_setup.os.environ["PATH"].startswith(str(exe.parent / "resources" / "bin"))
+
+
+def linux(monkeypatch, tmp_path, machine, returncode=0):
+    commands = []
+    monkeypatch.setattr(docker_setup.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(docker_setup.platform, "machine", lambda: machine)
+    monkeypatch.setattr(docker_setup, "BINFMT_DIR", tmp_path)
+    monkeypatch.setattr(docker_setup.subprocess, "run", lambda command, **kwargs: (
+        commands.append(command) or SimpleNamespace(returncode=returncode, stdout="", stderr="")))
+    return commands
+
+
+@pytest.mark.parametrize("machine, image_platform", [
+    ("x86_64", "linux/arm64"), ("aarch64", "linux/amd64")])
+def test_linux_registers_the_emulator_for_the_other_cpu_type(
+        monkeypatch, capsys, tmp_path, machine, image_platform):
+    commands = linux(monkeypatch, tmp_path, machine)
+    cpu = image_platform.split("/")[1]
+    assert docker_setup.emulate(image_platform) == ""
+    assert commands == [["docker", "run", "--privileged", "--rm", "tonistiigi/binfmt",
+                         "--install", cpu]]
+    assert f"Docker on this computer cannot build for {cpu}." in said(capsys)
+
+
+@pytest.mark.parametrize("system, machine, handler, image_platform", [
+    ("Linux", "x86_64", "", "linux/amd64"),
+    ("Linux", "aarch64", "", "linux/arm64"),
+    ("Linux", "x86_64", "qemu-aarch64", "linux/arm64"),
+    ("Darwin", "arm64", "", "linux/amd64"),
+    ("Windows", "AMD64", "", "linux/arm64"),
+])
+def test_a_native_cpu_a_registered_handler_or_a_desktop_needs_nothing(
+        monkeypatch, capsys, tmp_path, system, machine, handler, image_platform):
+    commands = linux(monkeypatch, tmp_path, machine)
+    monkeypatch.setattr(docker_setup.platform, "system", lambda: system)
+    if handler:
+        (tmp_path / handler).touch()
+    assert docker_setup.emulate(image_platform) == ""
+    assert commands == []
+    assert capsys.readouterr().out == ""
+
+
+def test_a_failed_emulator_install_names_the_command(monkeypatch, tmp_path):
+    linux(monkeypatch, tmp_path, "x86_64", returncode=1)
+    problem = Text.from_markup(docker_setup.emulate("linux/arm64")).plain
+    assert problem.startswith("docker run --privileged --rm tonistiigi/binfmt --install arm64 failed")

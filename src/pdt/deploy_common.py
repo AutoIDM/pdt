@@ -357,8 +357,8 @@ def ssh_build_args() -> list[str]:
     return []
 
 
-def docker_preflight(provider: str, assume_yes: bool) -> None:
-    problem = docker_setup.ensure(provider, assume_yes)
+def docker_preflight(provider: str, image_platform: str, assume_yes: bool) -> None:
+    problem = docker_setup.ensure(provider, assume_yes) or docker_setup.emulate(image_platform)
     if problem:
         fail(problem)
 

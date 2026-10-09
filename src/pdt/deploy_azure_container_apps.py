@@ -631,7 +631,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
-    docker_preflight("Azure", assume_yes)
+    docker_preflight("Azure", "linux/amd64", assume_yes)
     console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     name = app["name"]
