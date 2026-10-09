@@ -73,6 +73,19 @@ EXISTING = {
 }
 
 
+def test_deploy_ends_with_the_next_pdt_commands(monkeypatch, capsys):
+    fake_deploy(monkeypatch, EXISTING)
+    assert deploy_azure_container_apps.deploy(APP, True) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[out.index("Next steps:") + 1:] == [
+        "  pdt az containerapp job start --name pdt-report-3cc3425 --resource-group pdt",
+        "                     start a run now",
+        "  pdt logs report    read the log of the newest run",
+        "  pdt runs report    list the recent runs",
+        "  pdt health report  show whether the last run succeeded",
+    ]
+
+
 def test_deploy_locks_the_registry_and_the_environment_before_the_build(monkeypatch):
     events, plans = fake_deploy(monkeypatch, EXISTING)
     assert deploy_azure_container_apps.deploy(APP, True) == 0

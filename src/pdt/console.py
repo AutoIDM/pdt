@@ -18,6 +18,8 @@ Import the module, not its functions: `from pdt import console`, then
 
 from __future__ import annotations
 
+import textwrap
+
 from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
@@ -145,6 +147,32 @@ def command(text: str, note: str = "", indent: int = 2) -> None:
         _console.print(f"{' ' * indent}[bold]{escape(text)}[/]  [dim]{escape(note)}[/]")
     else:
         _console.print(f"{' ' * indent}[bold]{escape(text)}[/]")
+
+
+def next_steps(rows: list[tuple[str, str]], title: str = "Next steps:") -> None:
+    """Commands the user may run next, each with what it does, in two aligned columns.
+
+    The second column starts after the longest command that leaves room for
+    the descriptions. A longer command prints alone, and its description
+    starts the next line in the second column. A description wraps to the
+    terminal. On a terminal too narrow for two columns, every description
+    prints under its command.
+    """
+    indent, gap = 2, 2
+    room = min(40, max(len(what) for _, what in rows))
+    fits = [len(text) for text, _ in rows if indent + len(text) + gap + room <= _console.width]
+    column = indent + max(fits) + gap if fits else INDENT
+    heading(title)
+    for text, what in rows:
+        line = Text(" " * indent)
+        line.append(text, style="bold")
+        lines = textwrap.wrap(what, width=max(10, _console.width - column))
+        if lines and indent + len(text) + gap <= column:
+            line.append(" " * (column - indent - len(text)))
+            line.append(lines.pop(0), style="dim")
+        _console.print(line)
+        for rest in lines:
+            _console.print(Text(" " * column + rest, style="dim"))
 
 
 SECRET_CHANGE_COLOURS = {"deleted": "red", "new": "green", "updated": "yellow", "unchanged": "dim"}

@@ -309,12 +309,13 @@ def init(directory: str | None, assume_yes: bool) -> int:
     if starting_fresh:
         console.command(f"{STARTER}/", "a working app to run and edit")
     console.say()
-    console.heading("Next steps:")
+    steps = []
     if target != Path.cwd().resolve():
-        console.command(f"cd {target.name}")
+        steps.append((f"cd {target.name}", "go to the new project"))
     if starting_fresh:
-        console.command(f"pdt run {STARTER}")
-    console.command("pdt examples", "see what else you can start from")
+        steps.append((f"pdt run {STARTER}", "run the starter app on this computer"))
+    steps.append(("pdt examples", "see what else you can start from"))
+    console.next_steps(steps)
     return 0
 
 
@@ -382,11 +383,10 @@ def new_app(name: str, source: str | None) -> int:
     if needs_secrets:
         console.command(f"{name}/env.template", "the secrets to copy into .env")
     console.say()
-    console.heading("Next steps:")
     if needs_secrets:
-        console.bullet(console.escape(f"open {name}/env.template and copy the names you need into .env"))
-    console.command("pdt validate")
-    console.command(f"pdt run {name}")
+        console.say(f"Open {name}/env.template and copy the names you need into .env.")
+    console.next_steps([("pdt validate", "check the config and the .env values"),
+                        (f"pdt run {name}", "run the app on this computer")])
     return 0
 
 
@@ -419,7 +419,6 @@ def from_scripts(name: str) -> int:
     console.command(f"{name}/requirements.psd1", "the modules pdt installs before the scripts run")
     console.command(f"{name}/run.py", "how the scripts run")
     console.say()
-    console.heading("Next steps:")
-    console.command("pdt validate")
-    console.command(f"pdt run {name}")
+    console.next_steps([("pdt validate", "check the config and the .env values"),
+                        (f"pdt run {name}", "run the scripts on this computer")])
     return 0

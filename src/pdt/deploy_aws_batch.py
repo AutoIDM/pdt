@@ -35,7 +35,7 @@ from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, MANAGED_TAGS, SCHEDULE_GROUP, aws_schedule_expression,
     aws_settings, clients_for, cost_estimate, delete_log_group, delete_role,
-    delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
+    delete_secret, list_price, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     deployer_store, ensure_session, ensure_store, find_log_group, has_managed_tag, iam_tags,
     delete_if_present, error_code, not_found,
@@ -43,10 +43,9 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_secrets, secret_contents,
-    ssh_build_args, stage_build_context, store_kept_line, store_name, store_plan_lines,
-    warn_if_locked,
-    write_dockerfile,
+    CostEstimate, deployed_next_steps, fail, gather_secrets, image_action, run_secrets,
+    secret_contents, ssh_build_args, stage_build_context, store_kept_line, store_name,
+    store_plan_lines, warn_if_locked, write_dockerfile,
 )
 
 REPOSITORY = "pdt"
@@ -656,10 +655,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, submit_job_target(names))
     console.done(f"Deployed {app['name']}.")
-    console.field("Run it once", f"pdt aws batch submit-job --job-name {names['job_definition']} "
-                  f"--job-queue {JOB_QUEUE.name} --job-definition {names['job_definition']} "
-                  f"--region {region}")
-    console.field("Run logs", log_group_url(region, names["log_group"]))
+    deployed_next_steps(app["name"], f"pdt aws batch submit-job --job-name {names['job_definition']} "
+                        f"--job-queue {JOB_QUEUE.name} --job-definition {names['job_definition']} "
+                        f"--region {region}")
     return 0
 
 
