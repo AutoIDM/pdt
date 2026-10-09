@@ -179,8 +179,8 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
         console.note("no recent activity log events matched this job")
         return
     for event in matching[:5]:
-        console.bullet(
-            f"activity: {event.get('eventTimestamp')} "
+        console.say(
+            f"  activity: {event.get('eventTimestamp')} "
             f"{event.get('operationName')} {event.get('status')} "
             f"{event.get('subStatus')} correlation {event.get('correlationId')} "
             f"error {_activity_error(event.get('statusMessage'))}")

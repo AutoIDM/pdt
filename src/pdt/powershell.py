@@ -26,7 +26,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pdt import pwsh
+from pdt import console, pwsh
 from pdt.config import data_home, locked, write_text_atomically
 
 
@@ -504,16 +504,18 @@ def split_files(files: list[dict], run_scripts: list[str] | None) -> tuple[list[
 def entry_rule(files: list[dict], run_scripts: list[str] | None) -> str:
     """Why split_files picks the entry scripts it picks, for the user."""
     if any(f["file"].lower() == "run.ps1" for f in files):
-        return "run.ps1 is in the folder, so only it runs"
+        return f"{console.value('run.ps1')} is in the folder, so only it runs"
     if run_scripts:
-        return "the order run_scripts sets"
+        return f"the order {console.value('run_scripts')} sets"
     return "each .ps1 that no other script loads, in name order"
 
 
 def script_lines(entries: list[str], helpers: list[str], rule: str) -> list[str]:
-    lines = [f"runs, in order: {', '.join(entries) or 'no script'}" + (f" ({rule})" if rule else "")]
+    lines = [f"runs, in order: {', '.join(map(console.value, entries)) or 'no script'}"
+             + (f" ({rule})" if rule else "")]
     if helpers:
-        lines.append(f"helper files, which run only when a script loads them: {', '.join(helpers)}")
+        lines.append("helper files, which run only when a script loads them: "
+                     f"{', '.join(map(console.value, helpers))}")
     return lines
 
 
@@ -818,10 +820,17 @@ def summary_lines(scan: ScriptScan) -> list[str]:
     """What the scan found, with where each finding came from, one fact per line."""
     lines = script_lines(scan.entries, scan.helpers, scan.entry_rule)
     if scan.from_requirements:
-        modules = [f"{m.name} {m.version or '(latest)'}" for m in scan.modules]
-        lines.append(f"modules to install, as requirements.psd1 lists them: "
-                     f"{', '.join(modules) or 'none'}")
-        return lines
-    modules = [f"{m.name} ({m.version or 'latest'}, {m.source})" for m in scan.modules]
-    lines.append(f"modules to install, found in the scripts: {', '.join(modules) or 'none'}")
-    return lines
+        heading = f"modules to install, as {console.value('requirements.psd1')} lists them:"
+    else:
+        heading = "modules to install, found in the scripts:"
+    modules = []
+    for m in scan.modules:
+        version = console.value(m.version) if m.version else "latest"
+        if scan.from_requirements:
+            modules.append((m.name, version))
+            continue
+        how, _, file = m.source.rpartition(" in ")
+        if how.startswith("command "):
+            how = f"command {console.value(how.removeprefix('command '))}"
+        modules.append((m.name, f"{version}, {how} in {console.value(file)}"))
+    return lines + (console.rows(heading, modules) if modules else [f"{heading} none"])

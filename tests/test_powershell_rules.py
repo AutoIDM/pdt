@@ -3,6 +3,7 @@ import shutil
 import subprocess
 
 import pytest
+from rich.text import Text
 
 from pdt import powershell
 from pdt.powershell import Finding, ModuleNeed, ScriptScan, install_command, judge, report, summary_lines
@@ -357,18 +358,24 @@ def test_the_gallery_lookup_runs_one_pwsh_and_caches_empty_answers(tmp_path, mon
 def test_report_and_summary_lines():
     scan = ScriptScan(
         ["a.ps1", "b.ps1"], ["lib.psm1"],
-        [ModuleNeed("ImportExcel", None, "x"), ModuleNeed("Microsoft.Graph.Users", "2.25.0", "x")],
+        [ModuleNeed("ImportExcel", None, "Import-Module in a.ps1"),
+         ModuleNeed("Microsoft.Graph.Users", "2.25.0", "command Get-MgUser in b.ps1")],
         [Finding("interactive", "a.ps1", 3, "Read-Host waits.", True),
          Finding("windows-module", "a.ps1", 0, "the module X only exists on Windows.", True),
          Finding("no-login", "", 0, "never calls Connect-MgGraph.", False)])
     assert report(scan) == (
         ["a.ps1:3: Read-Host waits.", "a.ps1: the module X only exists on Windows."],
         ["never calls Connect-MgGraph."])
-    assert summary_lines(scan) == [
+    assert plain(summary_lines(scan)) == [
         "runs, in order: a.ps1, b.ps1",
         "helper files, which run only when a script loads them: lib.psm1",
-        "modules to install, found in the scripts: ImportExcel (latest, x), "
-        "Microsoft.Graph.Users (2.25.0, x)"]
+        "modules to install, found in the scripts:",
+        "  ImportExcel            latest, Import-Module in a.ps1",
+        "  Microsoft.Graph.Users  2.25.0, command Get-MgUser in b.ps1"]
+
+
+def plain(lines):
+    return [Text.from_markup(line).plain for line in lines]
 
 
 def local_call(target):
@@ -385,23 +392,25 @@ def local_call(target):
      "runs, in order: b.ps1, a.ps1 (the order run_scripts sets)"),
 ])
 def test_the_summary_says_why_these_scripts_run(files, run_scripts, first_line):
-    lines = summary_lines(verdict(facts(*files), run_scripts=run_scripts))
+    lines = plain(summary_lines(verdict(facts(*files), run_scripts=run_scripts)))
     assert lines[0] == first_line
 
 
 def test_the_summary_says_where_each_module_came_from():
     scan = verdict(facts(*scripts_asking_for_modules()))
-    assert summary_lines(scan)[-1] == (
-        "modules to install, found in the scripts: ImportExcel (7.8.10, #Requires in a.ps1), "
-        "Microsoft.Graph.Users (2.25.0, Import-Module in b.ps1), "
-        "Pester ([5.0,5.9], #Requires in a.ps1), PnP.PowerShell (latest, using module in b.ps1), "
-        "PSScriptAnalyzer ([1.2,), #Requires in a.ps1)")
+    assert plain(summary_lines(scan))[-6:] == [
+        "modules to install, found in the scripts:",
+        "  ImportExcel            7.8.10, #Requires in a.ps1",
+        "  Microsoft.Graph.Users  2.25.0, Import-Module in b.ps1",
+        "  Pester                 [5.0,5.9], #Requires in a.ps1",
+        "  PnP.PowerShell         latest, using module in b.ps1",
+        "  PSScriptAnalyzer       [1.2,), #Requires in a.ps1"]
 
 
 def test_the_summary_says_requirements_psd1_replaced_the_scan():
     scan = verdict(facts(*scripts_asking_for_modules(), requirements={"ImportExcel": "7.8.10"}))
-    assert summary_lines(scan)[-1] == (
-        "modules to install, as requirements.psd1 lists them: ImportExcel 7.8.10")
+    assert plain(summary_lines(scan))[-1] == (
+        "modules to install, as requirements.psd1 lists them: ImportExcel (7.8.10)")
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs pwsh")

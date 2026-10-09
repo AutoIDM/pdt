@@ -139,10 +139,11 @@ def find_project(start: Path | None = None) -> Path:
 
 def project_line() -> str:
     """Which project folder pdt works on, and how it found it."""
-    project = find_project()
+    project = console.value(str(find_project()))
     if os.environ.get("PDT_PROJECT", "").strip() != "":
-        return f"Project folder: {project} (from PDT_PROJECT)."
-    return f"Project folder: {project} (the first folder with {PROJECT_FILE}, from here up)."
+        return f"Project folder: {project}  [dim](from {console.value('PDT_PROJECT')})[/]"
+    return (f"Project folder: {project}  "
+            f"[dim](the first folder with {console.value(PROJECT_FILE)}, from here up)[/]")
 
 
 def powershell_scripts(app_dir: Path) -> list[str]:
@@ -636,19 +637,20 @@ def env_file_lines(start: Path) -> list[str]:
     terminal already sets with another value, which the .env value does not replace.
     Call it before load_env, which adds the .env values to the environment."""
     files = find_env_files(start)
+    env = console.value(".env")
     if not files:
-        return [f"no .env file in {start.name} or a folder above it, "
+        return [f"no {env} file in {console.value(start.name)} or a folder above it, "
                 "so pdt reads env vars only from this terminal"]
     if len(files) == 1:
-        lines = [f".env file read: {shown_path(files[0])}"]
+        lines = [f"{env} file read: {console.value(shown_path(files[0]))}"]
     else:
-        lines = [f".env files read, the first one wins: "
-                 f"{', '.join(shown_path(path) for path in files)}"]
+        lines = [f"{env} files read, the first one wins: "
+                 f"{', '.join(console.value(shown_path(path)) for path in files)}"]
     kept = sorted({name for path in files for name, value in dotenv_values(path).items()
                    if name in os.environ and os.environ[name] != (value or "")})
     if kept:
-        lines.append(f"this terminal already sets {', '.join(kept)}, so pdt uses "
-                     "that value and not the one in .env")
+        lines.append(f"this terminal already sets {', '.join(map(console.value, kept))}, "
+                     f"so pdt uses that value and not the one in {env}")
     return lines
 
 
@@ -707,10 +709,10 @@ def env_spec(app: dict) -> dict:
 
 
 def found_env_lines(app: dict) -> list[str]:
-    """The env vars the app's code reads that config.yml does not list, as one line for
+    """The env vars the app's code reads that config.yml does not list, as lines for
     the user, or none. Raises ConfigError, like env_spec."""
     spec = env_spec(app)
-    found = [f"{name} (required, {where.replace(':', ' line ')})"
+    found = [(name, f"required, {_code_line(where)}")
              for name, where in (spec.get("read_by") or {}).items()]
     listed = set(app["env"].get("optional") or [])
     optional = [name for name in spec.get("optional") or [] if name not in listed]
@@ -718,11 +720,18 @@ def found_env_lines(app: dict) -> list[str]:
         from pdt import python_env
         first: dict[str, str] = {}
         for where, name, _kind in python_env.reads(app["dir"]):
-            first.setdefault(name, where.replace(":", " line "))
-        found += [f"{name} (optional, {first.get(name, 'the code')})" for name in optional]
+            first.setdefault(name, _code_line(where))
+        found += [(name, f"optional, {first.get(name, 'the code')}") for name in optional]
     if not found:
         return []
-    return [f"env vars the code reads that {APP_FILE} does not list: {', '.join(found)}"]
+    return console.rows(f"env vars the code reads that {console.value(APP_FILE)} does not list:",
+                        found)
+
+
+def _code_line(where: str) -> str:
+    """`report.ps1:4` as `report.ps1 line 4`, the file name bold."""
+    file, _, line = where.rpartition(":")
+    return f"{console.value(file)} line {line}"
 
 
 def check_env(env_spec: dict, values=None) -> list[str]:

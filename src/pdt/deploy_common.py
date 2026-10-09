@@ -193,8 +193,8 @@ class CostEstimate:
     def show(self) -> None:
         console.cost(self.items, self.prices, self.excludes, self.currency)
         if self.currency != "USD":
-            console.status(f"pdt shows {self.currency}, the currency of this computer's "
-                           "regional setting.")
+            console.styled(f"[dim]pdt shows {console.value(self.currency)}, the currency of "
+                           "this computer's regional setting.[/]")
 
 
 ECB_RATES = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
@@ -367,7 +367,7 @@ def run_build(command: list[str], data: str | None = None) -> None:
 
 def secret_contents(values: dict[str, str]) -> str:
     """The env var names a secret holds, for a plan line. A plan never shows a value."""
-    return f"env vars {', '.join(sorted(values))}" if values else "no env vars"
+    return f"env vars {', '.join(map(console.value, sorted(values)))}" if values else "no env vars"
 
 
 def gather_secrets(app: dict) -> dict[str, str]:

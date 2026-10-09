@@ -134,7 +134,7 @@ def cmd_list(args) -> int:
 
 
 def cmd_validate(_args) -> int:
-    console.status(config.project_line())
+    console.styled(config.project_line())
     problems = config.validate()
     original_env = os.environ.copy()
     try:
@@ -151,7 +151,7 @@ def cmd_validate(_args) -> int:
                 problems.extend(powershell_problems(name, app))
             else:
                 console.name(name)
-                console.detail("runs run.py")
+                console.detail(f"runs {console.value('run.py')}")
             try:
                 found = config.found_env_lines(app)
             except ConfigError:
@@ -233,7 +233,7 @@ def cmd_run(args) -> int:
 def run_lines(app: dict) -> list[str]:
     """What `pdt run` starts: run.py, or the PowerShell entry scripts and why."""
     if (app["dir"] / "run.py").is_file():
-        return ["runs run.py"]
+        return [f"runs {console.value('run.py')}"]
     files = powershell.extract(app["dir"])["files"]
     entries, helpers = powershell.split_files(files, app["run_scripts"])
     return powershell.script_lines(entries, helpers,

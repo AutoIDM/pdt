@@ -112,7 +112,7 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
         problems.append("schedule is required to deploy")
     if config.uses_email(app):
         problems.extend(email_problems(app["config"], check_oauth=False))
-    lines = ["runs run.py"]
+    lines = [f"runs {console.value('run.py')}"]
     if config.powershell_scripts(app["dir"]):
         try:
             scan = powershell.scan(app, provider)
