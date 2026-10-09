@@ -247,9 +247,13 @@ def ask_platform(assume_yes: bool) -> dict:
 
 
 def project_yaml(platform: dict) -> str:
+    from pdt import migrations
     lines = [
         "# This file marks the top of your pdt project.",
         "# Every app folder next to this file is a job pdt can run and deploy.",
+        "",
+        f"# {migrations.MIGRATED_BY_COMMENT}",
+        f"migrated_by: {migrations.MIGRATIONS[-1].release}",
         "",
     ]
     if platform:

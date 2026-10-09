@@ -5,6 +5,7 @@ Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
 Every command except init, examples, completion, aws, az, and gcloud needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
+Before such a command runs, pdt updates a project that an older pdt made.
 """
 
 from __future__ import annotations
@@ -19,8 +20,8 @@ from pathlib import Path
 
 import rich_argparse
 
-from pdt import (__version__, completion, config, console, deploy, deploy_common, powershell,
-                 pwsh, scaffold, storage_cli)
+from pdt import (__version__, completion, config, console, deploy, deploy_common, migrations,
+                 powershell, pwsh, scaffold, storage_cli)
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -176,6 +177,10 @@ def powershell_problems(name: str, app: dict) -> list[str]:
     for warning in warnings:
         console.warn(f"{name}: {warning}")
     return [f"{name}: {problem}" for problem in problems]
+
+
+def cmd_migrate(args) -> int:
+    return migrations.migrate(config.find_project(), args.dry_run)
 
 
 def cmd_run(args) -> int:
@@ -408,7 +413,7 @@ rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
 
 COMMAND_GROUPS = {
     "Get started": ["init", "examples", "new", "completion"],
-    "Run and validate": ["list", "validate", "run"],
+    "Run and validate": ["list", "validate", "migrate", "run"],
     "Deploy": ["deploy", "destroy", "login"],
     "Check a deployed app": ["health", "runs", "logs"],
     "Manage app data": ["secrets", "storage"],
@@ -453,6 +458,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print only the name of each enabled app, one per line")
     p.set_defaults(func=cmd_list)
     add_parser("validate", help="check config and env").set_defaults(func=cmd_validate)
+    p = add_parser("migrate", help="update a project that an older pdt made; "
+                                   "every other command does this first")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print the changes as a diff, change nothing, and exit 1 when "
+                        "there are changes")
+    p.set_defaults(func=cmd_migrate)
     p = add_parser("run", help="run an app locally")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
@@ -563,6 +574,8 @@ def main() -> int:
         parser.print_help()
         return 0
     try:
+        if args.command not in ("init", "examples", "completion", "migrate"):
+            migrations.start(args.command, getattr(args, "json", False))
         return args.func(args)
     except ConfigError as e:
         console.error(str(e))
