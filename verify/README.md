@@ -48,7 +48,11 @@ The Azure job builds container images with Docker on the GitHub Actions runner a
 
 The environment's required reviewers are the manual start for a pull request. A pull request from a fork never gets the environment's secrets, so the workflow skips it.
 
-The AWS job stores no key. It trades the job's GitHub OIDC token for credentials that expire after one hour. The role's trust policy must allow `sts:AssumeRoleWithWebIdentity` from the `token.actions.githubusercontent.com` identity provider when `token.actions.githubusercontent.com:aud` is `sts.amazonaws.com` and `token.actions.githubusercontent.com:sub` is `repo:AutoIDM/pdt:environment:verify`, and its permission policy needs the actions pdt prints in `deployer_policy` plus the read actions the inventory uses: `tag:GetResources`, `lambda:ListFunctions`, `lambda:ListTags`, `iam:ListRoles`, `secretsmanager:ListSecrets`, `scheduler:ListScheduleGroups`, `scheduler:ListTagsForResource`, `ecs:ListClusters`, `ecr:ListTagsForResource`, `sts:GetCallerIdentity`.
+The AWS job stores no key. It trades the job's GitHub OIDC token for credentials that expire after one hour. The role's trust policy must allow `sts:AssumeRoleWithWebIdentity` from the `token.actions.githubusercontent.com` identity provider when `token.actions.githubusercontent.com:aud` is `sts.amazonaws.com` and `token.actions.githubusercontent.com:sub` is `repo:AutoIDM/pdt:environment:verify`. `verify/scripts/aws_role.py` writes its permission policy: every action pdt deploy and destroy need, plus every read action the inventory calls. Run it again after a change to either, with a profile that may change IAM roles in the verify account:
+
+```sh
+uv run python verify/scripts/aws_role.py --profile <profile>
+```
 
 The Azure service principal holds `Contributor` and `Locks Contributor` on the subscription, because deploy puts a management lock on the shared environment and the ACR. It also holds `Role Based Access Control Administrator` with a condition that limits the roles it may assign to the ones pdt assigns: Key Vault Secrets Officer (`b86a8fe4-44ce-4948-aee5-eccb2c155cd7`), Key Vault Secrets User (`4633458b-17de-408a-b874-0445c86b69e6`), AcrPull (`7f951dda-4ed3-4680-a7ca-43fe172d538d`), and Storage Blob Data Contributor (`ba92f5b4-2d11-453d-a403-e96b0029c9fe`). When pdt starts assigning a new role, add its id to that condition, or the deploy fails at `role assignment create` with `AuthorizationFailed`.
 

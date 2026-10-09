@@ -61,3 +61,12 @@ def test_batch_listings_keep_pdt_resources_and_skip_a_deleted_queue(monkeypatch)
     assert [(item.kind, item.name) for item in found] == [
         ("batch compute environment", "pdt"), ("batch job definition", "pdt-a")]
     assert all(item.tags == {"managed-by": "pdt"} for item in found)
+
+
+def test_the_verify_role_policy_allows_every_inventory_call():
+    import aws_role
+
+    allowed = {action for statement in aws_role.policy("123456789012")["Statement"]
+               for action in statement["Action"]}
+    assert {"batch:DescribeComputeEnvironments", "tag:GetResources"} <= allowed
+    assert set(aws_role.inventory_actions()) <= allowed
