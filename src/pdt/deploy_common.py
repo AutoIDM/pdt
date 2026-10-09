@@ -33,6 +33,11 @@ which Cloud Build reads instead), so its patterns keep meaning paths
 inside the app directory. The generated image ends every run's output
 with the line `pdt: exit N`, which `pdt runs` reads for the run's status.
 
+A build run by docker on the deploying machine forwards that machine's
+SSH agent when one is running, so a RUN step marked
+`--mount=type=ssh` can install a private git dependency. Remote
+builders (`az acr build`, Cloud Build) have no agent to forward.
+
 Every provider also shares one data store per account, named
 `pdt-data-<suffix>` by `store_name` and tagged with `STORE_TAGS`; it
 outlives any single app's deploy/destroy cycle.
@@ -320,6 +325,14 @@ def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
     except urllib.error.HTTPError as error:
         validate_response(error)
         raise
+
+
+def ssh_build_args() -> list[str]:
+    # docker build fails on a socket path that no longer exists, so a stale value is skipped.
+    socket = os.environ.get("SSH_AUTH_SOCK", "").strip()
+    if socket and os.path.exists(socket):
+        return ["--ssh", "default"]
+    return []
 
 
 def run_build(command: list[str]) -> None:
