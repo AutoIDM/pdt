@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md).
 
-Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
+Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins. pdt merges the settings in this order, from lowest to highest: the `platform:` block in `pdt.yml`, the app's entry in the `apps:` list in `pdt.yml`, and the app's own `config.yml`. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
 
 The cost estimate before each deploy shows prices in the currency of your computer's regional setting, or in US dollars when pdt cannot read it. pdt takes the price in that currency from the cloud when the cloud lists one. Otherwise it converts from US dollars at the cloud's own exchange rate, or at the European Central Bank's daily reference rate, and the estimate names the rate it used.
 

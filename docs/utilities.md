@@ -106,3 +106,5 @@ log("info", "processed", rows=42)
 ```
 
 Levels are `debug`, `info`, `warning`, and `error`. Locally a line is human-readable text on stdout; with `LOG_FORMAT=json` it is one JSON object per line, which is also the default on Cloud Run.
+
+A plain `print()` also goes to the run's cloud logs, but the line has no level.

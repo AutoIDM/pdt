@@ -30,17 +30,27 @@ You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) i
 
 ## Set up a project
 
-A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`. Every command except `init` finds the project by looking in the current folder, then each folder above it.
+A project is a folder holding `pdt.yml`. Each app is a folder inside it. A Python app folder contains a `run.py`. A PowerShell app folder contains one or more `.ps1` files and no `run.py` (see [PowerShell apps](#powershell-apps)). Every command except `init` finds the project by looking in the current folder, then each folder above it.
 
 ```
 pdt init my-jobs
 ```
 
-`pdt init` asks where the project should live, which cloud you want, and which region. It warns you if you are about to create a project somewhere unwise, such as your home folder. The folder name is optional: `pdt init` with no name uses the current folder, and `pdt init DIR` uses `DIR`, creating it if it is not there yet. Add `--yes` to take the defaults and answer nothing.
+The folder name is optional. `pdt init` chooses the project folder in one of three ways:
 
-Region is the only setting it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it.
+- `pdt init DIR` uses `DIR` and does not ask where the project should live. pdt creates `DIR` if it does not exist.
+- `pdt init` with no DIR shows the current folder and asks where the project should live. The choices are "Make a new folder inside this one", "Use this folder", and "Cancel". For a new folder, pdt asks for its name (the default is `pdt-jobs`).
+- `pdt init --yes` with no DIR uses the current folder and asks nothing.
 
-pdt suggests the region nearest to you from your computer's time zone. If `pdt.yml` has no region when you first deploy, the deploy suggests one the same way, asks you to confirm it or type another, and saves your answer. With `--yes` it takes the suggestion and tells you which region it used.
+When pdt asks where the project should live, it also warns you if the current folder is an unwise place for a project: your home folder, the top of the disk, or a folder that belongs to the operating system. After a warning, the default choice is a new folder inside the current folder.
+
+Next, `pdt init` asks where your jobs should run: Microsoft Azure, Amazon Web Services, Google Cloud, this Windows PC (Task Scheduler), or "Decide later". For Azure, AWS, and Google Cloud, it then asks for a region. The Windows choice and the "Decide later" choice ask no more questions. With "Decide later" or `--yes`, `pdt.yml` gets a `platform:` block in comments, and you fill it in before you deploy (see [Choosing where jobs run](providers.md)).
+
+If the folder already holds `pdt.yml`, `pdt init` says that the folder is already a pdt project and changes nothing. `pdt init` also writes `.gitignore`, `.env`, `AGENTS.md`, and `CLAUDE.md` (which points to `AGENTS.md`). It does not replace one of these files when it already exists.
+
+Region is the only cloud setting it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it.
+
+pdt suggests the region nearest to you from your computer's time zone. When the time zone names no place, pdt suggests the region in your cloud CLI settings. When those settings name no region, pdt suggests a fixed default. If `pdt.yml` has no region when you first deploy, the deploy suggests one the same way, asks you to confirm it or type another, and saves your answer. With `--yes` it takes the suggestion and tells you which region it used.
 
 Starting in an empty folder also gives you a working app called `hello-world`. Run it straight away:
 
@@ -49,7 +59,7 @@ cd my-jobs
 pdt run hello-world
 ```
 
-It writes one log line and nothing else. Edit `hello-world/run.py` to make it do real work, or delete the folder if you would rather start from one of the examples below. A folder that already holds your own files gets no starter app.
+It writes one log line and nothing else. Edit `hello-world/run.py` to make it do real work, or delete the folder if you would rather start from one of [the bundled examples](#the-bundled-examples). A folder that already holds your own files gets no starter app.
 
 ## Add an app
 
@@ -58,7 +68,7 @@ pdt examples
 pdt new my-report --from impossible-travel-report
 ```
 
-`pdt new` copies one of the examples bundled with pdt into your project. Open `my-report/env.template`, copy the names you need into `.env`, then:
+`pdt new` copies one of the examples bundled with pdt into your project. If you leave out `--from`, `pdt new` lists the examples and stops, so you can choose one. Open `my-report/env.template`, copy the names you need into `.env`, then:
 
 ```
 pdt validate
@@ -77,13 +87,26 @@ my-jobs/
     env.template
 ```
 
+## The bundled examples
+
+Run `pdt examples` to list them, then `pdt new <name> --from <example>` to copy one.
+
+| Example | What it does |
+| --- | --- |
+| `hello-world` | Logs a greeting. It shows how to write a `config.yml`, and you can use it as an empty app to start your own. `pdt init` puts a copy in every new empty project. |
+| `impossible-travel-report` | Reads recent Entra ID sign-ins. It sends an email when one person signs in from two far-apart places too quickly: Dallas an hour ago, Paris now. The lookback window, the minimum distance, and the email addresses are settings in the app's `config.yml`. The `config.yml` and the `env.template` list the env vars that it needs. |
+| `monday-orphaned-account-report` | Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user. |
+| `powershell-report` | A PowerShell app. Its `report.ps1` writes a small CSV file with `Export-Csv` into `PDT_OUTPUT_DIR`, and pdt keeps the file in the app's data store. |
+
 ## Deploy
 
 ```
 pdt deploy my-report
 ```
 
-The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question. To remove everything it created:
+The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question. Deploy creates what is missing and updates what changed, so you can run it again after a failure.
+
+pdt names the resources of one app `pdt-<app>`, and tags every resource that it creates with `managed-by=pdt`. Destroy deletes only resources with that tag. When no other app uses a shared resource, destroy deletes that resource too. To remove everything it created:
 
 ```
 pdt destroy my-report
@@ -156,7 +179,7 @@ Set `PDT_PROJECT` to name the project folder directly, instead of letting pdt se
 
 ## Writing your own app
 
-An app is a folder with a `run.py` that has a `main()` function. It declares its own dependencies in a script header, and pdt is one of them:
+A Python app is a folder with a `run.py` that has a `main()` function. It declares its own dependencies in a script header, and pdt is one of them:
 
 ```python
 # /// script
@@ -177,10 +200,33 @@ def main() -> int:
 
 The pinned version is the pdt version that the app runs with. Keep it at the newest pdt release. After you raise it, run `pdt deploy <app>` so the deployed job uses the new version.
 
+### Settings and env vars
+
+Each key under `config:` in an app's `config.yml` reaches the app as `app["config"]`. An env var named `PDT_<APP>_<KEY>` replaces the value of one key. For example, `PDT_HELLO_WORLD_GREETING` replaces `greeting` in the `hello-world` app.
+
+List the env vars that an app reads under `env:` in its `config.yml`:
+
+```yaml
+env:
+  required: [PDT_AZURE_TENANT_ID, PDT_AZURE_CLIENT_ID]
+  one_of:
+    - [PDT_AZURE_CLIENT_SECRET]
+    - [PDT_AZURE_PRIVATE_KEY_B64]
+  optional: [PDT_AZURE_PRIVATE_KEY_PASSWORD]
+```
+
+`pdt validate` reports a missing `required` value, and `pdt run` and `pdt deploy` stop. For `one_of`, all the names in at least one group must have a value. `pdt deploy` sends the values that are set to the cloud as secrets.
+
+pdt also reads the code to find env vars. In a Python app, each `os.environ["NAME"]` in a `.py` file is a required env var, and each `os.environ.get("NAME")` or `os.getenv("NAME")` is an optional one. In a PowerShell app, each `$env:NAME` that the scripts read and do not set is a required env var, unless you list it under `optional` or `one_of`. Neither scan counts a name that starts with `PDT_` or a system variable such as `PATH` or `TEMP`. pdt does not find a name that the code builds while it runs.
+
 ### PowerShell apps
 
-A folder of `.ps1` files with no `run.py` is a PowerShell app: pdt reads the scripts to find the modules to install, then runs the entry scripts in name order through pwsh. A `run.ps1` file is the only entry script. Otherwise, use `run_scripts` in `config.yml` to choose entries and set their order. Do not use `run.ps1` and `run_scripts` together. By default, pdt stops after the first failed script. Set `continue_on_error: true` to run every entry script. The run still fails with the first script's exit code. To change either step, run `pdt new <app> --from-scripts`. It writes `requirements.psd1`, which lists the modules with pinned versions, and `run.py`, which runs the scripts. Once they exist, pdt installs exactly the modules in `requirements.psd1` (`pdt validate` warns about a module the scripts need that it leaves out), and `pdt run` and deploy run your `run.py`.
+A folder of `.ps1` files with no `run.py` is a PowerShell app: pdt reads the scripts to find the modules to install, then runs the entry scripts in name order through pwsh. A `run.ps1` file is the only entry script. Otherwise, use `run_scripts` in `config.yml` to choose entries and set their order. Without `run.ps1` and `run_scripts`, the entry scripts are the `.ps1` files in the app folder that no other `.ps1` file loads. Do not use `run.ps1` and `run_scripts` together. By default, pdt stops after the first failed script. Set `continue_on_error: true` to run every entry script. The run still fails with the first script's exit code. To change either step, run `pdt new <app> --from-scripts`. It writes `requirements.psd1`, which lists the modules with pinned versions, and `run.py`, which runs the scripts. Once they exist, pdt installs exactly the modules in `requirements.psd1` (`pdt validate` warns about a module the scripts need that it leaves out), and `pdt run` and deploy run your `run.py`.
 
 ```
 pdt new my-report --from-scripts
 ```
+
+pdt makes an empty folder for each run and puts its path in `PDT_OUTPUT_DIR`. After the scripts end, pdt copies each file in that folder to the app's data store, under `runs/<run>/output/`. In the cloud, the modules install when deploy builds the image. A module that does not load makes the build fail, not the first run.
+
+The [`powershell-report`](#the-bundled-examples) example is a PowerShell app to start from.

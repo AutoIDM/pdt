@@ -57,7 +57,7 @@ cd my-jobs
 pdt run hello-world
 ```
 
-`pdt init` asks two things: which cloud to use and which region. It creates a working `hello-world` app so you have something to run straight away.
+`pdt init` asks where your jobs should run. For AWS, Azure, or Google Cloud, it also asks which region to use. The Windows PC choice and the "Decide later" choice ask no region. In an empty folder, `pdt init` also creates a working `hello-world` app so you have something to run straight away.
 
 Put it on a schedule in your cloud (Example is for Azure):
 
@@ -85,6 +85,7 @@ pdt comes with examples. List them with `pdt examples` and copy one with `pdt ne
 | --- | --- |
 | `impossible-travel-report` | Checks recent Entra ID sign-ins and emails you when one person signs in from two places too far apart for the time between them: Dallas an hour ago, Paris now. |
 | `monday-orphaned-account-report` | Lists active Monday users whose email address matches no active Entra ID user. |
+| `powershell-report` | A PowerShell app. Its script writes a small CSV report, and pdt keeps the file in the app's data store. |
 | `hello-world` | The smallest possible app. `pdt init` puts one in every new project as a place to start. |
 
 Jobs can send email through Microsoft 365, Gmail, Microsoft Graph, Amazon SES, or Resend, and keep files from one run to the next in storage pdt creates for them.
