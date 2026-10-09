@@ -76,8 +76,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_plan_lines,
-    store_suffix)
+    STORE_TAGS, CostEstimate, fail, fetch_json, secret_contents, store_cost_label,
+    store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
@@ -573,7 +573,7 @@ def secret_actions(sid: str, values: dict, current: str | None,
         return []
     state = "unchanged" if current == payload else (
         "update" if current else "create")
-    return [f"{state} Key Vault secret {sid} ({len(values)} env vars)"]
+    return [f"{state} Key Vault secret {sid} ({secret_contents(values)})"]
 
 
 def register_providers(names: tuple[str, ...]) -> None:

@@ -43,8 +43,9 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, fail, gather_secrets, image_action, run_secrets, ssh_build_args, stage_build_context,
-    store_kept_line, store_name, store_plan_lines, warn_if_locked,
+    CostEstimate, fail, gather_secrets, image_action, run_secrets, secret_contents,
+    ssh_build_args, stage_build_context, store_kept_line, store_name, store_plan_lines,
+    warn_if_locked,
     write_dockerfile,
 )
 
@@ -579,7 +580,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     names = resource_names(app["name"])
     cron = config.cron_expression(app["schedule"])
     expression = aws_schedule_expression(cron)
-    payload = json.dumps(gather_secrets(app), sort_keys=True)
+    secrets = gather_secrets(app)
+    payload = json.dumps(secrets, sort_keys=True)
     image = f"{account}.dkr.ecr.{region}.amazonaws.com/{REPOSITORY}:{names['image_tag']}"
     bucket = store_name(account)
     store = deployer_store(app, session, account) if app["storage"] else None
@@ -604,7 +606,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         f"{COMPUTE_ENVIRONMENT.name}, and job queue {JOB_QUEUE.name}",
         image_action(app, f"build and push Docker image {image} ({DOCKER_PLATFORM})"),
         ("update" if secret_exists else "create")
-        + f" Secrets Manager secret {names['secret']}",
+        + f" Secrets Manager secret {names['secret']} ({secret_contents(secrets)})",
         "reconcile the execution, job, and scheduler IAM roles",
         f"allow {names['job_role']} to update its own secret {names['secret']}",
         f"reconcile Batch job definition {names['job_definition']} "

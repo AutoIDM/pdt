@@ -62,7 +62,7 @@ from pdt import regions
 from pdt.deploy import confirm
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, convert_from_usd, fail, fetch_json, gather_secrets, image_action, run_secrets,
-    stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
+    secret_contents, stage_build_context, store_cost_label, store_kept_line, store_name, store_plan_lines,
     warn_if_locked, write_dockerfile)
 from pdt import runs_cli
 from pdt import storage_cli
@@ -730,7 +730,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                + f" Artifact Registry repo {repo}"]
     actions.append(image_action(app, f"build and push image {image}"))
     if secret_state:
-        actions.append(f"{secret_state} secret {sid} ({len(values)} env vars as one json blob)")
+        actions.append(f"{secret_state} secret {sid} ({secret_contents(values)}, as one json blob)")
     if values:
         actions.append(f"allow {job} to update its own secret {sid}")
     actions.append(("use existing" if sa_exists else "create") + f" service account {sa}")

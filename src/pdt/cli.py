@@ -131,6 +131,7 @@ def cmd_list(args) -> int:
 
 
 def cmd_validate(_args) -> int:
+    console.status(config.project_line())
     problems = config.validate()
     original_env = os.environ.copy()
     try:
@@ -141,9 +142,19 @@ def cmd_validate(_args) -> int:
                 app = config.merged_app(name)
             except ConfigError:
                 continue
+            sources = config.env_file_lines(app["dir"])
             config.load_env(app["dir"])
             if config.powershell_scripts(app["dir"]):
                 problems.extend(powershell_problems(name, app))
+            else:
+                console.name(name)
+                console.detail("runs run.py")
+            try:
+                found = config.found_env_lines(app)
+            except ConfigError:
+                found = []
+            for line in [*found, *sources]:
+                console.detail(line)
             missing = config.missing_env(app)
             if missing != "":
                 problems.append(f"{name}: {missing}")
@@ -165,11 +176,11 @@ def cmd_validate(_args) -> int:
 def powershell_problems(name: str, app: dict) -> list[str]:
     """Scan a PowerShell app, print what it runs and needs, and return the certain findings."""
     console.status(f"Scanning the PowerShell scripts in {name}...")
+    console.name(name)
     try:
         scan = powershell.scan(app, app["platform"].get("provider", ""))
     except (pwsh.PwshError, powershell.PowerShellError) as e:
         return [f"{name}: {e}"]
-    console.name(name)
     for line in powershell.summary_lines(scan):
         console.detail(line)
     problems, warnings = powershell.report(scan)
@@ -183,6 +194,7 @@ def cmd_run(args) -> int:
     if name is None:
         return 1
     app = config.merged_app(name)
+    sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
     missing = config.missing_env(app)
     if missing != "":
@@ -195,6 +207,9 @@ def cmd_run(args) -> int:
                 console.error(f"{name}: {problem}")
             return 1
         prepare_email_auth(auth_env_file(app["dir"]))
+    console.name(name)
+    for line in [*run_lines(app), *sources]:
+        console.detail(line)
     if (app["dir"] / "run.py").is_file():
         proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
     else:
@@ -208,6 +223,16 @@ def cmd_run(args) -> int:
         console.say("Try deploying this job:")
         console.command(f"pdt deploy {scaffold.STARTER}")
     return proc.returncode
+
+
+def run_lines(app: dict) -> list[str]:
+    """What `pdt run` starts: run.py, or the PowerShell entry scripts and why."""
+    if (app["dir"] / "run.py").is_file():
+        return ["runs run.py"]
+    files = powershell.extract(app["dir"])["files"]
+    entries, helpers = powershell.split_files(files, app["run_scripts"])
+    return powershell.script_lines(entries, helpers,
+                                   powershell.entry_rule(files, app["run_scripts"]))
 
 
 def cmd_deploy(args) -> int:
