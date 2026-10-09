@@ -1,11 +1,22 @@
 # pdt - Process Deploy Tool
 
-**Scheduled jobs for IT teams, without a cloud engineer.** Integrations, reports, and alerts run in your own AWS, Azure, or Google Cloud account, or on a Windows PC, and you deploy each one with a single command.
+## **Scheduled jobs for IT teams, without a cloud engineer.**
 
-<!-- TODO: replace VIDEO_URL and the thumbnail with the announcement video. Use absolute URLs; PyPI shows this file too. -->
-[![Watch the 3-minute demo](https://github.com/AutoIDM/pdt/raw/main/docs/images/demo-thumbnail.png)](VIDEO_URL)
+Integrations, reports, and alerts run in your own AWS, Azure, or Google Cloud account, or on a Windows PC, and you deploy each one with a single command.
+
+[![Watch the 3-minute demo](https://raw.githubusercontent.com/AutoIDM/pdt/main/docs/assets/demo-thumbnail.png)](https://www.youtube.com/watch?v=4lYfoIxlcpM)
 
 [Website](https://autoidm.com/#services?utm_source=readme&utm_content=top) · [Book a 30-minute walkthrough](BOOKING_URL?utm_source=readme&utm_content=top) · [Docs](https://github.com/AutoIDM/pdt/blob/main/docs/guide.md)
+
+## Get started with your agent
+
+Copy this prompt into your coding agent. The agent installs pdt, creates a project with you, and runs your first job.
+
+```
+Install pdt and set me up. Read https://raw.githubusercontent.com/AutoIDM/pdt/main/.agents/skills/pdt-onboarding/SKILL.md and follow it.
+```
+
+[Open in Cursor](https://cursor.com/link/prompt?text=Install%20pdt%20and%20set%20me%20up.%20Read%20https%3A%2F%2Fraw.githubusercontent.com%2FAutoIDM%2Fpdt%2Fmain%2F.agents%2Fskills%2Fpdt-onboarding%2FSKILL.md%20and%20follow%20it.)
 
 ## Why pdt
 
@@ -18,9 +29,10 @@ Most IT teams have a folder of scripts that someone runs by hand, or a server un
 - **Best practices from AutoIDM.** We've been doing data integrations for years, this gets you to production and answers your questions of how to deploy, schedule, secure, and monitor your jobs
 - **It cleans up after itself.** `pdt destroy my-report` removes everything deploy created.
 
+
 ## Let your AI agent write the job
 
-`pdt init` writes an `AGENTS.md` into your project that tells CoPilot, Claude Code, Cursor, Codex, or any other coding agent how the project works. Describe the job in plain words:
+`pdt init` writes an `AGENTS.md` into your project that tells any coding agent how the project works. Describe the job in plain words:
 
 > Every Monday at 8am, email me a list of Entra ID users who haven't signed in for 90 days.
 
@@ -77,16 +89,20 @@ That's it: your first job is live. Remove it with `pdt destroy hello-world` when
 
 > **Have 20 more scripts to move?** We help IT teams move their scheduled scripts onto pdt, and we can build the first few with you. [Book a call](BOOKING_URL?utm_source=readme&utm_content=after-deploy).
 
+
+
 ## What you can build
 
 pdt comes with examples. List them with `pdt examples` and copy one with `pdt new my-report --from <example>`.
 
-| Example | What it does |
-| --- | --- |
-| `impossible-travel-report` | Checks recent Entra ID sign-ins and emails you when one person signs in from two places too far apart for the time between them: Dallas an hour ago, Paris now. |
-| `monday-orphaned-account-report` | Lists active Monday users whose email address matches no active Entra ID user. |
-| `powershell-report` | A PowerShell app. Its script writes a small CSV report, and pdt keeps the file in the app's data store. |
-| `hello-world` | The smallest possible app. `pdt init` puts one in every new project as a place to start. |
+
+| Example                          | What it does                                                                                                                                                    |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `impossible-travel-report`       | Checks recent Entra ID sign-ins and emails you when one person signs in from two places too far apart for the time between them: Dallas an hour ago, Paris now. |
+| `monday-orphaned-account-report` | Lists active Monday users whose email address matches no active Entra ID user.                                                                                  |
+| `powershell-report`              | A PowerShell app. Its script writes a small CSV report, and pdt keeps the file in the app's data store.                                                         |
+| `hello-world`                    | The smallest possible app. `pdt init` puts one in every new project as a place to start.                                                                        |
+
 
 Jobs can send email through Microsoft 365, Gmail, Microsoft Graph, Amazon SES, or Resend, and keep files from one run to the next in storage pdt creates for them.
 
@@ -94,16 +110,18 @@ Jobs can send email through Microsoft 365, Gmail, Microsoft Graph, Amazon SES, o
 
 ## Everyday commands
 
-| Command | What it does |
-| --- | --- |
-| `pdt new APP --from EXAMPLE` | add an app to the project |
-| `pdt validate` | check the config files and the required env vars |
-| `pdt run APP` | run an app on this machine |
-| `pdt deploy APP` | deploy an app to its configured platform |
-| `pdt deploy --all` | deploy every enabled app, in order |
-| `pdt health` | show whether each app's last run succeeded |
-| `pdt logs APP` | read the log of the newest run |
-| `pdt destroy APP` | remove everything deploy created |
+
+| Command                      | What it does                                     |
+| ---------------------------- | ------------------------------------------------ |
+| `pdt new APP --from EXAMPLE` | add an app to the project                        |
+| `pdt validate`               | check the config files and the required env vars |
+| `pdt run APP`                | run an app on this machine                       |
+| `pdt deploy APP`             | deploy an app to its configured platform         |
+| `pdt deploy --all`           | deploy every enabled app, in order               |
+| `pdt health`                 | show whether each app's last run succeeded       |
+| `pdt logs APP`               | read the log of the newest run                   |
+| `pdt destroy APP`            | remove everything deploy created                 |
+
 
 The full list, including `runs`, `secrets`, and `storage`, is in [Commands](https://github.com/AutoIDM/pdt/blob/main/docs/commands.md).
 
@@ -114,9 +132,12 @@ The full list, including `runs`, `secrets`, and `storage`, is in [Commands](http
 - [Commands](https://github.com/AutoIDM/pdt/blob/main/docs/commands.md): every command and option.
 - [Utilities for your apps](https://github.com/AutoIDM/pdt/blob/main/docs/utilities.md): sending email and logging.
 
+
+
 ## Who builds pdt
 
 pdt is built by [AutoIDM](https://autoidm.com/?utm_source=readme&utm_content=footer). We help IT teams automate identity and operations work. pdt is free and open source under the MIT license.
 
 - Found a bug or want a feature? [Open an issue](https://github.com/AutoIDM/pdt/issues).
 - Want help getting started, or want us to build jobs for you? [Book a 30-minute call](BOOKING_URL?utm_source=readme&utm_content=footer).
+
