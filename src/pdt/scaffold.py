@@ -208,7 +208,7 @@ def choose_target(requested: str | None, assume_yes: bool) -> Path:
     console.say()
     console.field("This folder", str(here))
     if warning != "":
-        console.warn(f"Careful: {warning}")
+        console.warn(f"Careful: {console.escape(warning)}")
 
     labels = ["Make a new folder inside this one", f"Use this folder ({here.name})", "Cancel"]
     default = 1 if warning != "" else 2
@@ -222,7 +222,7 @@ def choose_target(requested: str | None, assume_yes: bool) -> Path:
         folder = (here / name).resolve()
         if not folder.exists():
             return folder
-        console.warn(f"{folder} already exists. Pick another name.")
+        console.warn(f"{console.value(folder)} already exists. Pick another name.")
 
 
 def ask_platform(assume_yes: bool) -> dict:
@@ -241,7 +241,7 @@ def ask_platform(assume_yes: bool) -> dict:
             problem = check(answer)
             if problem == "":
                 break
-            console.warn(problem)
+            console.warn(console.escape(problem))
         settings[key] = answer
     return settings
 
@@ -284,7 +284,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
     target = choose_target(directory, assume_yes)
     marker = target / PROJECT_FILE
     if marker.is_file():
-        console.say(f"{target} is already a pdt project.")
+        console.say(f"{console.value(target)} is already a pdt project.")
         return 0
     starting_fresh = has_nothing_in_it(target)
 
@@ -301,7 +301,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
         copy_example(target, STARTER, EXAMPLES / STARTER)
 
     console.say()
-    console.done(f"Your project is ready: {target}")
+    console.done(f"Your project is ready: {console.value(target)}")
     files = [(PROJECT_FILE, "settings shared by every app"), (".env", "secrets, never committed"),
              (".gitignore", ""),
              ("AGENTS.md", "how an AI agent should work in this project "
@@ -354,7 +354,7 @@ def list_examples() -> int:
     console.heading("Example apps you can start from:")
     console.say()
     print_examples()
-    console.styled("Copy one with:  [bold]pdt new <name> --from <example>[/]")
+    console.say(f"Copy one with:  {console.value('pdt new <name> --from <example>')}")
     return 0
 
 
@@ -376,7 +376,8 @@ def new_app(name: str, source: str | None) -> int:
         raise ConfigError(
             f"there is no example named {source!r}. Run `pdt examples` to see them.")
     copy_example(root, name, example)
-    console.done(f"Created {name}/ from the {example.name} example.")
+    console.done(f"Created {console.value(f'{name}/')} from the {console.value(example.name)} "
+                 "example.")
     files = [(f"{name}/{job}", "the job itself") for job in powershell_scripts(destination) or ["run.py"]]
     files.append((f"{name}/config.yml", "how often it runs and what it needs"))
     needs_secrets = (destination / "env.template").is_file()
@@ -417,7 +418,8 @@ def from_scripts(name: str) -> int:
         lines.append(f"    {powershell.quoted(m.name)} = {powershell.quoted(version)}")
     (folder / "requirements.psd1").write_text("\n".join(lines + ["}", ""]))
     (folder / "run.py").write_text(RUN_PY_TEXT.replace("PDT_VERSION", __version__))
-    console.done(f"Wrote requirements.psd1 and run.py for the scripts in {name}/.")
+    console.done(f"Wrote {console.value('requirements.psd1')} and {console.value('run.py')} for the "
+                 f"scripts in {console.value(f'{name}/')}.")
     console.columns([(f"{name}/requirements.psd1", "the modules pdt installs before the scripts run"),
                      (f"{name}/run.py", "how the scripts run")])
     console.say()

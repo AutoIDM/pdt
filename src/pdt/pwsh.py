@@ -86,7 +86,7 @@ def ensure_pwsh() -> str:
         return str(local_pwsh())
     key = platform_key()
     console.warn(f"pwsh is not installed. pdt downloads PowerShell {VERSION} "
-                 f"(~100 MB) to {install_dir()}.")
+                 f"(~100 MB) to {console.value(install_dir())}.")
     console.say("Deleting that folder uninstalls it again.")
     download_pwsh(key)
     if not local_pwsh().is_file():
@@ -115,6 +115,6 @@ if __name__ == "__main__":
         try:
             path = ensure_pwsh()
         except PwshError as e:
-            console.error(str(e))
+            console.error(console.escape(str(e)))
             sys.exit(1)
     sys.stdout.write(path + "\n")

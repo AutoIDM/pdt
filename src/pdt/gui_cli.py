@@ -81,7 +81,7 @@ def read_pid(state: Path) -> dict | None:
 
 def open_browser(port: int) -> None:
     if webbrowser.open(url(port)):
-        console.done(f"Opened {url(port)} in your browser.")
+        console.done(f"Opened {console.value(url(port))} in your browser.")
     else:
         console.field("Open this in your browser", url(port))
 
@@ -91,7 +91,7 @@ def start(port: int, background: bool, open_the_browser: bool) -> int:
     state = state_dir(project)
     known = read_pid(state)
     if known is not None and is_up(known["port"]):
-        console.say(f"pdt gui is already running at {url(known['port'])}")
+        console.say(f"pdt gui is already running at {console.value(url(known['port']))}")
         if open_the_browser:
             open_browser(known["port"])
         return 0
@@ -106,21 +106,23 @@ def start(port: int, background: bool, open_the_browser: bool) -> int:
     else:
         proc = subprocess.Popen(server_command(port), env=env)
     (state / PID_FILE).write_text(json.dumps({"pid": proc.pid, "port": port}))
-    console.status(f"starting pdt gui on port {port} (the first start installs Django)...")
+    console.status(f"starting pdt gui on port {console.value(port)} "
+                   "(the first start installs Django)...")
     if not wait_up(proc, port):
         (state / PID_FILE).unlink(missing_ok=True)
         if proc.poll() is None:
             proc.terminate()
         console.error("pdt gui did not start"
-                      + (f"; see {state / LOG_FILE}" if background else ""))
+                      + (f"; see {console.value(state / LOG_FILE)}" if background else ""))
         return 1
     if open_the_browser:
         open_browser(port)
     if background:
-        console.done(f"pdt gui is running at {url(port)} (log: {state / LOG_FILE})")
+        console.done(f"pdt gui is running at {console.value(url(port))} "
+                     f"(log: {console.value(state / LOG_FILE)})")
         console.command("pdt gui --stop", "stop it")
         return 0
-    console.say(f"pdt gui is running at {url(port)}. Press Ctrl+C to stop it.")
+    console.say(f"pdt gui is running at {console.value(url(port))}. Press Ctrl+C to stop it.")
     try:
         return proc.wait()
     except KeyboardInterrupt:

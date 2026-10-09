@@ -5,6 +5,7 @@ import zipfile
 
 import pytest
 
+from conftest import plain
 from pdt import download
 from pdt.download import fetch_verified
 
@@ -62,7 +63,7 @@ def test_a_download_without_a_terminal_has_no_per_mb_progress(tmp_path, monkeypa
 
     fetch_verified(path.as_uri(), digest, stage, FetchError)
 
-    assert status == [
+    assert plain(status) == [
         f"downloading {path.as_uri()}",
         f"downloaded {path.name}",
         f"unpacking {path.name}",

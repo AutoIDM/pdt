@@ -52,10 +52,11 @@ def main() -> int:
     try:
         duckdb_wasm.ensure()
     except duckdb_wasm.DuckdbWasmError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
     from pdt.gui import worker
     worker.start()
-    console.say(f"pdt gui for {os.environ['PDT_PROJECT']} at {gui_cli.url(args.port)}")
+    console.say(f"pdt gui for {console.value(os.environ['PDT_PROJECT'])} at "
+                f"{console.value(gui_cli.url(args.port))}")
     try:
         run("127.0.0.1", args.port, get_internal_wsgi_application(), threading=True)
     except KeyboardInterrupt:

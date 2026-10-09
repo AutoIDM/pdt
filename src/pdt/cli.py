@@ -93,13 +93,14 @@ def choose_app(name: str | None, command: str, quiet: bool = False) -> str | Non
     here = config.current_app() if name is None else None
     if here is not None:
         if not quiet:
-            console.status(f"Using app {here} (current folder).")
+            console.status(f"Using app {console.value(here)} (current folder).")
         return here
     if name is None:
         console.heading(f"{APP_QUESTIONS[command]} This project has:")
     else:
         hint = did_you_mean(name, apps, f"pdt {command} {{}}")
-        console.error(f"no app named {name!r}.{hint} This project has:")
+        console.error(f"no app named {console.value(repr(name))}.{console.escape(hint)} "
+                      "This project has:")
     shown = apps[:5]
     for app in shown:
         console.name(app)
@@ -113,7 +114,7 @@ def choose_app(name: str | None, command: str, quiet: bool = False) -> str | Non
 def cmd_list(args) -> int:
     if args.names:
         for name in config.find_apps():
-            console.say(name)
+            console.say(console.value(name))
         return 0
     apps = config.app_folders()
     if not apps:
@@ -169,7 +170,7 @@ def cmd_validate(_args) -> int:
         os.environ.update(original_env)
     if problems:
         for problem in problems:
-            console.error(problem)
+            console.error(console.escape(problem))
         console.failed(f"{len(problems)} problem(s) found.")
         return 1
     console.done("Configuration is valid.")
@@ -178,7 +179,7 @@ def cmd_validate(_args) -> int:
 
 def powershell_problems(name: str, app: dict) -> list[str]:
     """Scan a PowerShell app, print what it runs and needs, and return the certain findings."""
-    console.status(f"Scanning the PowerShell scripts in {name}...")
+    console.status(f"Scanning the PowerShell scripts in {console.value(name)}...")
     console.name(name)
     try:
         scan = powershell.scan(app, app["platform"].get("provider", ""))
@@ -188,7 +189,7 @@ def powershell_problems(name: str, app: dict) -> list[str]:
         console.detail(line)
     problems, warnings = powershell.report(scan)
     for warning in warnings:
-        console.warn(f"{name}: {warning}")
+        console.warn(f"{console.value(name)}: {console.escape(warning)}")
     return [f"{name}: {problem}" for problem in problems]
 
 
@@ -203,13 +204,13 @@ def cmd_run(args) -> int:
     config.load_env(app["dir"])
     missing = config.missing_env(app)
     if missing != "":
-        console.error(f"{name}: {missing}")
+        console.error(f"{console.value(name)}: {console.escape(missing)}")
         return 1
     if config.uses_email(app):
         problems = email_problems(app["config"], check_oauth=False)
         if problems:
             for problem in problems:
-                console.error(f"{name}: {problem}")
+                console.error(f"{console.value(name)}: {console.escape(problem)}")
             return 1
         prepare_email_auth(auth_env_file(app["dir"]))
     console.name(name)
@@ -267,12 +268,12 @@ def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
         for index, name in enumerate(names, 1):
             os.environ.clear()
             os.environ.update(original_env)
-            console.heading(f"Deploying {name} ({index} of {len(names)})")
+            console.heading(f"Deploying {console.value(name)} ({index} of {len(names)})")
             code = deploy.deploy(name, assume_yes=assume_yes)
             if code == 0:
                 continue
             failed.append(name)
-            console.error(f"{name} did not deploy.")
+            console.error(f"{console.value(name)} did not deploy.")
             if index < len(names) and not skip_failures and not (
                     ask and console.confirm(
                         f"Skip the failing app {name} and deploy the rest?")):
@@ -282,13 +283,14 @@ def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
             if ask and not assume_yes and console.confirm(
                     f"Disable the failing app {name}?"):
                 path = config.set_app_enabled(name, False)
-                console.done(f"Disabled {name} in {path.relative_to(config.find_project())}. "
+                console.done(f"Disabled {console.value(name)} in "
+                             f"{console.value(path.relative_to(config.find_project()))}. "
                              "Set enabled: true there to bring it back.")
     finally:
         os.environ.clear()
         os.environ.update(original_env)
     if failed:
-        console.warn(f"Not deployed: {', '.join(failed)}")
+        console.warn(f"Not deployed: {', '.join(console.value(name) for name in failed)}")
         return 1
     return 0
 
@@ -349,8 +351,9 @@ def cmd_secrets(args) -> int:
     if action not in deploy_common.SECRET_ACTIONS:
         hint = did_you_mean(action, deploy_common.SECRET_ACTIONS,
                             f"pdt secrets {args.app or '<app>'} {{}}")
-        console.error(f"no secrets action named {action!r}; "
-                      f"choose {', '.join(deploy_common.SECRET_ACTIONS)}.{hint}")
+        choices = ", ".join(console.value(choice) for choice in deploy_common.SECRET_ACTIONS)
+        console.error(f"no secrets action named {console.value(repr(action))}; "
+                      f"choose {choices}.{console.escape(hint)}")
         return 1
     name = choose_app(args.app, "secrets")
     if name is None:
@@ -640,7 +643,7 @@ def main() -> int:
     try:
         return args.func(args)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     except KeyboardInterrupt:
         console.say()
