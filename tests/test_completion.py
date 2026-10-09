@@ -52,6 +52,34 @@ def test_first_tab_offers_app_names_without_options(project, tmp_path):
     assert _complete("pdt deploy ", tmp_path) == ["daily-report", "weekly-report"]
 
 
+def test_positionals_that_are_not_paths_offer_no_file_names(project, tmp_path):
+    add_app(project, "daily-report")
+    (project / "notes.txt").write_text("")
+
+    assert _complete("pdt logs ", tmp_path) == ["daily-report "]
+    assert _complete("pdt logs daily-report ", tmp_path) == [""]
+    assert _complete("pdt new ", tmp_path) == [""]
+
+
+def test_app_names_outside_a_project_offer_no_file_names(tmp_path, monkeypatch):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "notes.txt").write_text("")
+    monkeypatch.chdir(elsewhere)
+
+    assert _complete("pdt run ", tmp_path) == [""]
+    assert _complete("pdt logs ", tmp_path) == [""]
+
+
+def test_path_arguments_still_offer_file_names(project, tmp_path):
+    add_app(project, "daily-report")
+    (project / "notes.txt").write_text("")
+
+    assert _complete("pdt storage daily-report ", tmp_path) == ["ls", "get", "query", "unlock", "destroy"]
+    assert "notes.txt" in _complete("pdt storage daily-report get report.csv ", tmp_path)
+    assert "notes.txt" in _complete("pdt aws s3 cp ", tmp_path)
+
+
 def test_typed_dash_offers_options(project, tmp_path):
     add_app(project, "daily-report")
 
@@ -308,6 +336,10 @@ def test_the_eval_line_registers_completion_in_a_shell_with_no_startup_file(shel
     assert result.returncode == 0, result.stderr
 
 
+def test_bash_does_not_fall_back_to_file_names():
+    assert "-o default" not in completion._script("bash")
+
+
 def test_powershell_on_windows_sets_up_both_profiles(tmp_path, monkeypatch):
     def paths(shell):
         return tmp_path / "pdt.ps1", tmp_path / f"{shell}.ps1"
@@ -318,3 +350,36 @@ def test_powershell_on_windows_sets_up_both_profiles(tmp_path, monkeypatch):
 
     assert (tmp_path / "powershell.ps1").is_file()
     assert (tmp_path / "pwsh.ps1").is_file()
+
+
+TAB_IN_POWERSHELL = r"""
+$env:PDT_SCRIPT | Out-String | Invoke-Expression
+foreach ($folder in '.', 'daily-report', $env:ELSEWHERE) {
+    Push-Location $folder
+    foreach ($line in 'pdt run ', 'pdt logs ') {
+        $found = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches
+        "[" + ($found.CompletionText -join ',') + "]"
+    }
+    Pop-Location
+}
+"""
+
+
+@pytest.mark.parametrize("shell", ["pwsh", "powershell"])
+def test_powershell_tab_completes_app_names(project, tmp_path_factory, shell):
+    if shutil.which(shell) is None or shutil.which("pdt") is None:
+        pytest.skip(f"needs {shell} and pdt on the PATH")
+    add_app(project, "daily-report")
+    add_app(project, "weekly-report")
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    (elsewhere / "notes.txt").write_text("")
+    # Windows PowerShell started from pwsh inherits pwsh's PSModulePath and then
+    # cannot load its own New-TemporaryFile, which the completion script calls.
+    environment = {key: value for key, value in os.environ.items()
+                   if key.upper() != "PSMODULEPATH"}
+    result = subprocess.run(
+        [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", TAB_IN_POWERSHELL],
+        env={**environment, "PDT_SCRIPT": completion._script(shell), "ELSEWHERE": str(elsewhere)},
+        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+
+    assert result.stdout.split() == ["[daily-report,weekly-report]"] * 4 + ["[]"] * 2, result.stderr
