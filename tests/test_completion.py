@@ -318,3 +318,31 @@ def test_powershell_on_windows_sets_up_both_profiles(tmp_path, monkeypatch):
 
     assert (tmp_path / "powershell.ps1").is_file()
     assert (tmp_path / "pwsh.ps1").is_file()
+
+
+TAB_IN_POWERSHELL = r"""
+$env:PDT_SCRIPT | Out-String | Invoke-Expression
+foreach ($folder in '.', 'daily-report') {
+    Push-Location $folder
+    (TabExpansion2 -inputScript 'pdt run ' -cursorColumn 8).CompletionMatches.CompletionText -join ','
+    Pop-Location
+}
+"""
+
+
+@pytest.mark.parametrize("shell", ["pwsh", "powershell"])
+def test_powershell_tab_completes_app_names(project, shell):
+    if shutil.which(shell) is None or shutil.which("pdt") is None:
+        pytest.skip(f"needs {shell} and pdt on the PATH")
+    add_app(project, "daily-report")
+    add_app(project, "weekly-report")
+    # Windows PowerShell started from pwsh inherits pwsh's PSModulePath and then
+    # cannot load its own New-TemporaryFile, which the completion script calls.
+    environment = {key: value for key, value in os.environ.items()
+                   if key.upper() != "PSMODULEPATH"}
+    result = subprocess.run(
+        [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", TAB_IN_POWERSHELL],
+        env={**environment, "PDT_SCRIPT": completion._script(shell)},
+        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+
+    assert result.stdout.split() == ["daily-report,weekly-report"] * 2, result.stderr
