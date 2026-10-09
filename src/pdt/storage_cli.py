@@ -11,8 +11,9 @@ from pathlib import Path
 
 from pdt import console
 
-COMMANDS = ("ls", "get", "query", "destroy")
-USAGE = "usage: pdt storage <app> ls [path] | get <path> [dest] | query <sql> | destroy [--yes]"
+COMMANDS = ("ls", "get", "query", "unlock", "destroy")
+USAGE = ("usage: pdt storage <app> ls [path] | get <path> [dest] | query <sql> "
+         "| unlock [--yes] | destroy [--yes]")
 
 
 def ls(store, path) -> int:
@@ -55,6 +56,24 @@ def query(store, sql) -> int:
     return 0
 
 
+def unlock(store, app, assume_yes) -> int:
+    from pdt import deploy
+
+    held = store.read_lock()
+    if held is None:
+        console.say(f"no run holds the state of {app}; nothing to unlock")
+        return 0
+    holder = f"run {held.get('run', '?')} started at {held.get('started', '?')}"
+    if held.get("host"):
+        holder += f" on {held['host']}"
+    if not deploy.confirm([f"release the state lock held by {holder}",
+                           "only do this when that run is no longer running"], assume_yes):
+        return 1
+    store.unlock()
+    console.done(f"released the state lock of {app}")
+    return 0
+
+
 def destroy(store, app, assume_yes) -> int:
     from pdt import deploy
 
@@ -81,6 +100,7 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
         "get": (1, lambda args: get(store, args[0],
                                     Path(args[1] if len(args) > 1 else Path(args[0]).name))),
         "query": (1, lambda args: query(store, args[0])),
+        "unlock": (0, lambda args: unlock(store, name, assume_yes)),
         "destroy": (0, lambda args: destroy(store, name, assume_yes)),
     }
     subcommand, *args = rest or [""]
