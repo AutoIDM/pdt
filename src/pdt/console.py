@@ -168,7 +168,8 @@ def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:
 
 
 # A symbol that names one currency stands alone. A symbol that several
-# currencies share is followed by the code, so "$" never hides which dollar.
+# currencies share is followed by the code on the total line, so "$" never
+# hides which dollar.
 CURRENCY_SYMBOLS = {
     "GBP": "£", "EUR": "€", "INR": "₹", "KRW": "₩", "ILS": "₪", "TRY": "₺", "PHP": "₱",
     "VND": "₫", "UAH": "₴", "NGN": "₦", "THB": "฿", "PLN": "zł", "BRL": "R$",
@@ -195,12 +196,14 @@ def cost(items: list[tuple[str, float]], prices: str, excludes: str = "",
          currency: str = "USD") -> None:
     """A monthly cost estimate: one line per item, then the total."""
     width = max(len(label) for label, _ in items)
-    symbol = escape(currency_prefix(currency))
+    total_symbol = currency_prefix(currency)
+    symbol = escape(SHARED_SYMBOLS.get(currency, total_symbol).ljust(len(total_symbol)))
     _console.print(f"[bold]Estimated monthly cost[/] ({escape(prices)}):")
     for label, amount in items:
         _console.print(f"  {escape(label):<{width}}  [cyan]{symbol}{amount:>7.2f}[/]")
     total = sum(amount for _, amount in items)
-    _console.print(f"  [bold]{'total':<{width}}  [cyan]{symbol}{total:>7.2f}[/][/]")
+    _console.print(
+        f"  [bold]{'total':<{width}}  [cyan]{escape(total_symbol)}{total:>7.2f}[/][/]")
     if excludes != "":
         _console.print(f"  [dim]{escape(excludes)}[/]")
 
