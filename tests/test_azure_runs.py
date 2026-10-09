@@ -1,6 +1,8 @@
 import datetime
 import json
 
+import pytest
+
 from pdt import deploy_azure, deploy_azure_container_apps, runs_cli
 
 SETTINGS = {
@@ -146,3 +148,99 @@ def test_read_many_asks_log_analytics_once_and_splits_the_rows(monkeypatch):
     assert [line.message for line in lines["pdt-job-aaa"]] == ["one", "three"]
     assert [line.message for line in lines["pdt-job-bbb"]] == ["two"]
     assert deploy_azure_container_apps.read_many(SETTINGS, "pdt-job", []) == {}
+
+
+def test_read_many_orders_lines_by_the_time_the_container_wrote_them(monkeypatch):
+    queries = []
+    monkeypatch.setattr(deploy_azure_container_apps, "log_query",
+                        lambda settings, query: queries.append(query) or [])
+    deploy_azure_container_apps.read_many(SETTINGS, "pdt-job", ["pdt-job-aaa"])
+    assert "extend written = coalesce(time_t, TimeGenerated)" in queries[0]
+    assert queries[0].endswith("| order by written asc")
+
+
+STREAM_SETTINGS = {**SETTINGS, "subscription": "123456789012"}
+JOB = {"properties": {
+    "eventStreamEndpoint": "https://eastus2.azurecontainerapps.dev/subscriptions/123456789012"
+                           "/resourceGroups/pdt/containerApps/pdt-report/eventstream",
+    "template": {"containers": [{"name": "pdt-report"}]}}}
+RUNNING_RUN = runs_cli.Run("pdt-report-x1", datetime.datetime(2026, 10, 9, 21, 15, tzinfo=datetime.UTC),
+                           None, "running")
+
+
+class Response:
+    def __init__(self, body: bytes):
+        self.rows = body.splitlines(keepends=True)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def __iter__(self):
+        return iter(self.rows)
+
+
+def fake_stream_api(monkeypatch, replicas, body=b"", calls=None):
+    def az_json(*args):
+        url = args[args.index("--url") + 1]
+        if "/replicas?" in url:
+            return replicas
+        if "/getAuthToken?" in url:
+            return {"properties": {"token": "stream-token"}}
+        return JOB
+
+    def urlopen(request, timeout):
+        if calls is not None:
+            calls.append((request.full_url, request.get_header("Authorization"), timeout))
+        if isinstance(body, Exception):
+            raise body
+        return Response(body)
+
+    monkeypatch.setattr(deploy_azure_container_apps, "az_json", az_json)
+    monkeypatch.setattr(deploy_azure_container_apps.urllib.request, "urlopen", urlopen)
+
+
+def test_stream_lines_reads_the_container_log_with_its_own_times(monkeypatch):
+    calls = []
+    body = (b"2026-10-09T21:16:02.38246  Connecting to the container 'pdt-report'...\n"
+            b"2026-10-09T21:15:44.4795058Z stdout F line 1\n"
+            b"2026-10-09T21:15:44.4795506Z stderr F {\"severity\": \"WARNING\", \"message\": \"slow\"}\n"
+            b"2026-10-09T21:15:45.0000000Z stdout F \n")
+    fake_stream_api(monkeypatch, {"value": [{"name": "pdt-report-x1-abc"}]}, body, calls)
+    lines = list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                          RUNNING_RUN, True))
+    assert [(line.level, line.message) for line in lines] == [
+        ("", "line 1"), ("WARNING", "slow"), ("", "")]
+    assert lines[0].time == datetime.datetime(2026, 10, 9, 21, 15, 44, 479505, tzinfo=datetime.UTC)
+    [(url, authorization, _timeout)] = calls
+    assert url == ("https://eastus2.azurecontainerapps.dev/subscriptions/123456789012"
+                   "/resourceGroups/pdt/jobs/pdt-report/executions/pdt-report-x1"
+                   "/replicas/pdt-report-x1-abc/containers/pdt-report/logstream?follow=true")
+    assert authorization == "Bearer stream-token"
+
+
+def test_stream_lines_of_an_execution_with_no_container_yet_is_empty(monkeypatch):
+    calls = []
+    fake_stream_api(monkeypatch, {"value": []}, calls=calls)
+    assert list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                         RUNNING_RUN, False)) == []
+    assert calls == []
+
+
+def test_a_quiet_stream_ends_so_follow_opens_it_again(monkeypatch):
+    fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, TimeoutError("timed out"))
+    assert list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                         RUNNING_RUN, True)) == []
+
+
+def test_a_stream_that_azure_refuses_is_a_stream_error(monkeypatch):
+    fake_stream_api(monkeypatch, None)
+    with pytest.raises(runs_cli.StreamError, match="pdt-report"):
+        list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                      RUNNING_RUN, True))
+    fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, ConnectionResetError("reset"))
+    with pytest.raises(runs_cli.StreamError, match="reset"):
+        list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                      RUNNING_RUN, True))

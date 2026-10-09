@@ -46,6 +46,9 @@ def main(argv: list[str]) -> int:
     log = folder / f"{stamp}.log"
     env = {**os.environ, "PDT_STORAGE_URL": storage_url, "PDT_RUN_ID": stamp}
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    # Python holds stdout written to a file or pipe until a buffer fills, so a print()
+    # line would land after a later stderr line. The cloud images set the same.
+    env.setdefault("PYTHONUNBUFFERED", "1")
     uv = os.environ.get("UV") or "uv"
     if (Path(app_dir) / "run.py").is_file():
         command = [uv, "run", "--script", "run.py"]
