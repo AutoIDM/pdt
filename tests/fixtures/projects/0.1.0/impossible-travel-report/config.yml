@@ -1,0 +1,48 @@
+# Flags one person signing in from two far-apart places too quickly.
+
+# How often this app runs.
+# Shorthand: hourly, daily, weekly, monthly, yearly.
+# Or a 5-field cron expression, for example "0 * * * *".
+schedule: "hourly"
+
+config:
+  # How far back to read Entra sign-in logs. Two far logins inside
+  # this window count as impossible; wider window, more Graph data.
+  lookback_hours: 72
+
+  # Ignore short hops. IP geolocation jitters tens of km.
+  min_distance_km: 250
+
+  # Who to mail when exactly one email env block is set (smtp / ses / resend).
+  # If none of those env blocks is set, findings print to stdout instead.
+  email_to: recipient@example.com
+  email_from: notifications@example.com
+  email_subject: Impossible login detected
+
+# Env vars the app needs. `pdt validate` checks them against your
+# .env; `pdt deploy` uploads the ones that are set as cloud secrets.
+env:
+  required: [PDT_AZURE_TENANT_ID, PDT_AZURE_CLIENT_ID]
+  one_of:
+    - [PDT_AZURE_CLIENT_SECRET]
+    - [PDT_AZURE_PRIVATE_KEY_B64]
+    - [PDT_AZURE_PRIVATE_KEY_PATH]
+  optional:
+    - PDT_AZURE_PRIVATE_KEY_PASSWORD
+    - PDT_SMTP_HOST
+    - PDT_SMTP_PORT
+    - PDT_SMTP_USER
+    - PDT_SMTP_PASSWORD
+    - PDT_SMTP_AUTH
+    - PDT_SMTP_OAUTH_CLIENT_ID
+    - PDT_SMTP_OAUTH_CLIENT_SECRET
+    - PDT_SMTP_OAUTH_TENANT_ID
+    - PDT_SMTP_OAUTH_CACHE_B64
+    - PDT_GRAPH_MAIL_USER
+    - PDT_GRAPH_MAIL_CLIENT_ID
+    - PDT_GRAPH_MAIL_TENANT_ID
+    - PDT_GRAPH_MAIL_CACHE_B64
+    - PDT_SES_REGION
+    - PDT_SES_ACCESS_KEY_ID
+    - PDT_SES_SECRET_ACCESS_KEY
+    - PDT_RESEND_API_KEY

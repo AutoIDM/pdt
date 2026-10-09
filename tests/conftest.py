@@ -7,6 +7,8 @@ from rich.text import Text
 
 from pdt import console
 
+from pdt.migrations import MIGRATIONS
+
 # verify/scripts holds the live verification framework. It ships with the
 # user's project, not with the wheel, so it is not importable as a package.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "verify" / "scripts"))
@@ -22,7 +24,8 @@ def console_on_stdout(monkeypatch):
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
-    (tmp_path / "pdt.yml").write_text("platform:\n  provider: azure\n")
+    (tmp_path / "pdt.yml").write_text(
+        f"migrated_by: {MIGRATIONS[-1].release}\nplatform:\n  provider: azure\n")
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
