@@ -19,8 +19,8 @@ from pathlib import Path
 
 import rich_argparse
 
-from pdt import (__version__, completion, config, console, deploy, deploy_common, powershell,
-                 pwsh, scaffold, storage_cli)
+from pdt import (__version__, completion, config, console, deploy, deploy_common, gui_cli,
+                 powershell, pwsh, scaffold, storage_cli)
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -56,13 +56,15 @@ def say_no_apps() -> None:
 APP_QUESTIONS = {
     "run": "Which app do you want to run?",
     "deploy": "Which app do you want to deploy?",
-    "login": "Which app's cloud provider do you want to sign in to?",
+    "login": "Which app's platform do you want to sign in to?",
     "destroy": "Which app do you want to destroy?",
     "secrets": "Which app's secrets?",
     "storage": "Which app's files do you want to manage?",
     "runs": "Which app's runs do you want to see?",
     "logs": "Which app's log do you want to read?",
     "health": "Which app do you want to check?",
+    "pause": "Which app do you want to pause?",
+    "unpause": "Which app do you want to unpause?",
 }
 
 SINCE_HELP = ("show every run that started at or after this: 12h, 3d, 2w, 2026-09-20, "
@@ -123,10 +125,11 @@ def cmd_list(args) -> int:
         try:
             app = config.merged_app(name)
             rows.append([name, app["schedule"] or "-",
-                         app["platform"].get("provider", "-"), enabled])
+                         app["platform"].get("provider", "-"), enabled,
+                         "true" if app["pause"] else "false"])
         except ConfigError as e:
-            rows.append([name, "-", f"config error: {e}", enabled])
-    console.table(["name", "schedule", "provider", "enabled"], rows, ["bold cyan"])
+            rows.append([name, "-", f"config error: {e}", enabled, "-"])
+    console.table(["name", "schedule", "platform", "enabled", "paused"], rows, ["bold cyan"])
     return 0
 
 
@@ -182,6 +185,8 @@ def cmd_run(args) -> int:
     name = choose_app(args.app, "run")
     if name is None:
         return 1
+    if args.deployed:
+        return deploy.start(name)
     app = config.merged_app(name)
     config.load_env(app["dir"])
     missing = config.missing_env(app)
@@ -297,6 +302,20 @@ def use_app_folder(args) -> None:
     args.app = None
 
 
+def cmd_pause(args) -> int:
+    name = choose_app(args.app, "pause")
+    if name is None:
+        return 1
+    return deploy.pause(name, True)
+
+
+def cmd_unpause(args) -> int:
+    name = choose_app(args.app, "unpause")
+    if name is None:
+        return 1
+    return deploy.pause(name, False)
+
+
 def cmd_secrets(args) -> int:
     if args.app in deploy_common.SECRET_ACTIONS and args.action in config.find_apps():
         args.app, args.action = args.action, args.app
@@ -345,7 +364,8 @@ def cmd_logs(args) -> int:
                                    ("--follow", args.follow), ("--json", args.json)) if on]
     lines = [] if args.lines is None else ["--lines", str(args.lines)]
     number = 1 if args.number is None else args.number
-    return deploy.logs(name, [str(number), *window_options(args), *lines, *flags])
+    run_id = [part for wanted in args.id or [] for part in ("--id", wanted)]
+    return deploy.logs(name, [str(number), *run_id, *window_options(args), *lines, *flags])
 
 
 def cmd_health(args) -> int:
@@ -365,6 +385,10 @@ def cmd_health(args) -> int:
             console.command("pdt health --all", "check every app")
         names = [name]
     return deploy.health(names, args.json)
+
+
+def cmd_gui(args) -> int:
+    return gui_cli.main(args.port, args.background, args.no_browser, args.stop)
 
 
 def cmd_completion(args) -> int:
@@ -409,8 +433,8 @@ rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
 COMMAND_GROUPS = {
     "Get started": ["init", "examples", "new", "completion"],
     "Run and validate": ["list", "validate", "run"],
-    "Deploy": ["deploy", "destroy", "login"],
-    "Check a deployed app": ["health", "runs", "logs"],
+    "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
+    "Check a deployed app": ["health", "runs", "logs", "gui"],
     "Manage app data": ["secrets", "storage"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
@@ -456,6 +480,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = add_parser("run", help="run an app locally")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
+    p.add_argument("--deployed", action="store_true",
+                   help="start the deployed job now, instead of running the app on this machine")
     p.set_defaults(func=cmd_run)
     p = add_parser("deploy", help="deploy an app")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
@@ -465,7 +491,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-failures", action="store_true",
                    help="with --all, go on past an app that fails to deploy instead of asking")
     p.set_defaults(func=cmd_deploy)
-    p = add_parser("login", help="sign in again to an app's cloud provider")
+    p = add_parser("login", help="sign in again to an app's platform")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.set_defaults(func=cmd_login)
@@ -474,6 +500,14 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_destroy)
+    p = add_parser("pause", help="stop an app's schedule from starting runs")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
+    app.completer = completion.apps
+    p.set_defaults(func=cmd_pause)
+    p = add_parser("unpause", help="let a paused app's schedule start runs again")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
+    app.completer = completion.apps
+    p.set_defaults(func=cmd_unpause)
     p = add_parser("secrets", help="compare, send, or fetch a deployed app's .env values")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
@@ -506,6 +540,9 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("number", nargs="?", type=int,
                    help="which run, as `pdt runs` numbers them (default: 1, the newest)")
+    p.add_argument("--id", action="append",
+                   help="which run, by the id `pdt runs` shows, instead of a number; "
+                        "repeat it to read several runs at once")
     p.add_argument("--since", help=SINCE_HELP)
     p.add_argument("--span", help=SPAN_HELP)
     p.add_argument("--count", type=int, help=COUNT_HELP)
@@ -530,6 +567,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="check every enabled app, even inside an app folder")
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_health)
+    p = add_parser("gui", help="open the project's dashboard in your web browser")
+    p.add_argument("--port", type=int, default=gui_cli.DEFAULT_PORT,
+                   help=f"the local port to serve on (default: {gui_cli.DEFAULT_PORT})")
+    p.add_argument("--background", action="store_true",
+                   help="leave the server running after this command returns; "
+                        "stop it with pdt gui --stop")
+    p.add_argument("--no-browser", action="store_true",
+                   help="start the server without opening a browser")
+    p.add_argument("--stop", action="store_true",
+                   help="stop a server started with --background")
+    p.set_defaults(func=cmd_gui)
     p = add_parser("completion", help="turn on tab completion in your shell")
     p.add_argument("shell", nargs="?", choices=completion.SHELLS,
                    help="which shell; pdt works it out when left off")

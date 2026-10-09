@@ -122,7 +122,7 @@ def plan(monkeypatch):
                    "secretsmanager": None, "sts": None, "iam": None}
         monkeypatch.setattr(batch_deploy, "batch_clients", lambda session: clients)
         app = {"name": "my-app", "storage": False, "schedule": "0 6 * * *",
-               "timezone": "UTC", "dir": "."}
+               "timezone": "UTC", "dir": ".", "pause": False}
         assert batch_deploy.deploy(app, assume_yes=False) == 1
         return [line for line in shown if "security group" in line]
     return run

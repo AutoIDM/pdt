@@ -419,6 +419,23 @@ def scheduler_description(app_name: str) -> str:
     return f"Managed by PDT app {app_name}"
 
 
+def scheduler_state(project: str, region: str, job: str) -> str | None:
+    """ENABLED or PAUSED, or None when the Cloud Scheduler job does not exist."""
+    resource = read_json_or_none("scheduler", "jobs", "describe", job,
+                                 "--location", region, "--project", project)
+    return None if resource is None else resource.get("state")
+
+
+def set_scheduler_paused(project: str, region: str, job: str, paused: bool) -> None:
+    state = scheduler_state(project, region, job)
+    if state is None:
+        fail(f"Cloud Scheduler job {job} does not exist; run pdt deploy first")
+    if (state == "PAUSED") == paused:
+        return
+    run_quiet("scheduler", "jobs", "pause" if paused else "resume", job,
+              "--location", region, "--project", project)
+
+
 def job_logs_url(project: str, region: str, job: str) -> str:
     # The Logs tab on the Cloud Run job page: every execution's output, newest first.
     return (f"https://console.cloud.google.com/run/jobs/details/{region}/{job}"
@@ -738,7 +755,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
         actions += store_plan_lines(f"bucket {bucket}", bucket_exists, sa, name)
     actions.append(("update" if job_exists else "create") + f" Cloud Run job {job}")
     actions.append(("update" if sched_exists else "create")
-                   + f' Cloud Scheduler job {job}: "{cron}" ({timezone})')
+                   + f' Cloud Scheduler job {job}: "{cron}" ({timezone})'
+                   + (" (paused)" if app["pause"] else ""))
     cost = cost_estimate(project, region, cron, job, job_exists,
                          1 if values else 0, assume_yes, billing_confirmed,
                          store_usage=usage, currency=regions.local_currency())
@@ -816,6 +834,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
               "--schedule", cron, "--time-zone", timezone,
               "--uri", uri, "--http-method", "POST",
               "--oauth-service-account-email", sa)
+    set_scheduler_paused(project, region, job, app["pause"])
     console.done(f"Deployed {name}.")
     console.field("Run it once", f"pdt gcloud run jobs execute {job} --region {region} --project {project}")
     console.field("Run logs", job_logs_url(project, region, job))
@@ -1077,6 +1096,33 @@ def logs(app: dict, rest: list[str], assume_yes: bool) -> int:
                          store="Cloud Logging", delay=runs_cli.LOG_DELAY)
 
 
+def pause(app: dict, paused: bool, assume_yes: bool) -> int:
+    project, region = project_region(app)
+    project = preflight(app, project, assume_yes)
+    job = f"pdt-{app['name']}"
+    set_scheduler_paused(project, region, job, paused)
+    console.done(f"{'Paused' if paused else 'Unpaused'} {app['name']}: "
+                 f"Cloud Scheduler job {job} is {'PAUSED' if paused else 'ENABLED'}.")
+    return 0
+
+
+def start(app: dict, assume_yes: bool) -> int:
+    project, region = project_region(app)
+    project = preflight(app, project, assume_yes)
+    job = f"pdt-{app['name']}"
+    output = run_quiet("run", "jobs", "execute", job, "--region", region,
+                       "--project", project, "--async", "--format=json")
+    try:
+        execution = json.loads(output or "null")
+    except ValueError:
+        execution = None
+    name = ((execution or {}).get("metadata") or {}).get("name")
+    console.done(f"Started {app['name']}: Cloud Run execution {name}." if name
+                 else f"Started {app['name']}.")
+    console.command(f"pdt runs {app['name']}", "see the run")
+    return 0
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "gcloud":
         try:
@@ -1086,7 +1132,8 @@ def main() -> int:
         return subprocess.run([binary, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
-                        choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
+                        choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
+                                 "pause", "unpause", "start"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -1104,6 +1151,10 @@ def main() -> int:
         return runs(app, args.rest, args.yes)
     if args.command == "logs":
         return logs(app, args.rest, args.yes)
+    if args.command in ("pause", "unpause"):
+        return pause(app, args.command == "pause", args.yes)
+    if args.command == "start":
+        return start(app, args.yes)
     if args.command == "secrets":
         return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":

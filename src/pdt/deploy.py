@@ -4,7 +4,8 @@ Validates the app, then dispatches to one script per provider
 (pdt/deploy_<provider>.py) with `uv run --script`, so each provider
 installs its own SDK packages. Every provider script accepts
 `deploy|destroy|login <app> [--yes]`, and also
-`storage <app> <ls|get|query|unlock|destroy> [args...]` and
+`pause|unpause|start <app>`,
+`storage <app> -- <ls|get|query|unlock|destroy> [args...]` and
 `runs|logs <app> -- [args...]`. The `--` keeps flags such as `--json` for
 `pdt.runs_cli`, which parses them.
 
@@ -165,7 +166,7 @@ def storage(app_name: str, rest: list[str]) -> int:
         console.error(str(e))
         return 1
     config.load_env(app["dir"])
-    return dispatch(provider, "storage", app_name, False, rest)
+    return dispatch(provider, "storage", app_name, False, ["--", *rest])
 
 
 def runs(app_name: str, rest: list[str]) -> int:
@@ -186,6 +187,37 @@ def logs(app_name: str, rest: list[str]) -> int:
         return 1
     config.load_env(app["dir"])
     return dispatch(provider, "logs", app_name, False, ["--", *rest])
+
+
+def pause(app_name: str, paused: bool) -> int:
+    """Write `pause:` into the app's config, then apply it to the deployed schedule."""
+    try:
+        app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(str(e))
+        return 1
+    path = config.save_app_key(app, "pause", paused)
+    console.done(f"{app_name}: pause: {'true' if paused else 'false'} saved in {path}")
+    if not config.is_deployed(app_name):
+        state = "paused" if paused else "running"
+        console.say(f"{app_name} is not deployed; the next pdt deploy will create it {state}.")
+        return 0
+    config.load_env(app["dir"])
+    return dispatch(provider, "pause" if paused else "unpause", app_name, False)
+
+
+def start(app_name: str) -> int:
+    """Start one run of the deployed job now."""
+    try:
+        app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(str(e))
+        return 1
+    if not config.is_deployed(app_name):
+        console.error(f"{app_name} is not deployed; run pdt deploy {app_name} first")
+        return 1
+    config.load_env(app["dir"])
+    return dispatch(provider, "start", app_name, False)
 
 
 def health(app_names: list[str], as_json: bool) -> int:

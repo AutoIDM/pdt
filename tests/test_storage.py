@@ -333,3 +333,16 @@ def test_sync_releases_the_lock_when_the_final_push_fails(store, tmp_path):
             (run.state / "count.txt").write_text("2")
     assert LOCK not in store.ls("state")
     assert store.open("state/count.txt").read() == b"someone else"
+
+
+def test_the_cloud_names_the_run(monkeypatch):
+    for name in ("CLOUD_RUN_EXECUTION", "CONTAINER_APP_JOB_EXECUTION_NAME",
+                 "AWS_BATCH_JOB_ID"):
+        monkeypatch.delenv(name, raising=False)
+    assert storage.cloud_run_id() == ""
+    monkeypatch.setenv("AWS_BATCH_JOB_ID", "6c3f2b1a-0000-4c2e-9a7d-000000000001")
+    assert storage.cloud_run_id() == "6c3f2b1a-0000-4c2e-9a7d-000000000001"
+    monkeypatch.setenv("CONTAINER_APP_JOB_EXECUTION_NAME", "pdt-my-report-abc12")
+    assert storage.cloud_run_id() == "pdt-my-report-abc12"
+    monkeypatch.setenv("CLOUD_RUN_EXECUTION", "pdt-my-report-xyz")
+    assert storage.cloud_run_id() == "pdt-my-report-xyz"

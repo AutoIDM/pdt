@@ -1,0 +1,79 @@
+{% extends "gui/base.html" %}
+{% block title %}Stats{% endblock %}
+{% block crumbs %}<a href="{% url 'index' %}">Apps</a> › <span>Stats</span>{% endblock %}
+{% block content %}
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2>pdt commands</h2>
+            <p class="hint">Every command the pages ran in a child process, grouped by name. A page waits for these.</p>
+        </div>
+    </div>
+    {% if commands %}
+    <table class="grid-table">
+        <thead><tr><th>Command</th><th>Runs</th><th>Average</th><th>Slowest</th><th>Failed</th></tr></thead>
+        <tbody>
+        {% for row in commands %}
+            <tr><td><code>pdt {{ row.name }}</code></td><td>{{ row.count }}</td><td>{{ row.average|floatformat:0 }} ms</td><td>{{ row.worst }} ms</td><td>{{ row.failed }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<p class="empty">No command has run yet.</p>{% endif %}
+</section>
+
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2>Pages</h2>
+            <p class="hint">Time from request to response, including the commands above.</p>
+        </div>
+    </div>
+    {% if pages %}
+    <table class="grid-table">
+        <thead><tr><th>Page</th><th>Views</th><th>Average</th><th>Slowest</th><th>Failed</th></tr></thead>
+        <tbody>
+        {% for row in pages %}
+            <tr><td>{{ row.name }}</td><td>{{ row.count }}</td><td>{{ row.average|floatformat:0 }} ms</td><td>{{ row.worst }} ms</td><td>{{ row.failed }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<p class="empty">No page has been viewed yet.</p>{% endif %}
+</section>
+
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h2>Background worker</h2>
+            <p class="hint">Commands the worker ran ahead of the pages. Nobody waited for these.</p>
+        </div>
+    </div>
+    {% if worker %}
+    <table class="grid-table">
+        <thead><tr><th>Command</th><th>Runs</th><th>Average</th><th>Slowest</th><th>Failed</th></tr></thead>
+        <tbody>
+        {% for row in worker %}
+            <tr><td><code>pdt {{ row.name }}</code></td><td>{{ row.count }}</td><td>{{ row.average|floatformat:0 }} ms</td><td>{{ row.worst }} ms</td><td>{{ row.failed }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}<p class="empty">The worker has not run a command yet.</p>{% endif %}
+</section>
+
+<section class="card">
+    <div class="card-head"><h2>Recent</h2></div>
+    <table class="grid-table">
+        <thead><tr><th>When</th><th>Kind</th><th>What</th><th>Took</th><th></th></tr></thead>
+        <tbody>
+        {% for row in recent %}
+            <tr>
+                <td>{{ row.started|date:"H:i:s" }}</td>
+                <td>{{ row.kind }}</td>
+                <td class="dim">{{ row.detail }}</td>
+                <td>{{ row.ms }} ms</td>
+                <td>{% if not row.ok %}<span class="status failed">failed</span>{% endif %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

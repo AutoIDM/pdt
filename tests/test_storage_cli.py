@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from pdt import storage_cli
@@ -20,6 +22,23 @@ def app():
 def test_ls_lists_the_folder(store, app, capsys):
     assert storage_cli.run(store, app, ["ls"], False) == 0
     assert "a.csv" in capsys.readouterr().out
+
+
+def test_ls_json_lists_each_entry_with_its_type(store, app, capsys):
+    assert storage_cli.run(store, app, ["ls", "--json"], False) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [(entry["name"], entry["type"]) for entry in entries] == [("a.csv", "file")]
+
+
+def test_ls_recursive_lists_every_file_under_the_folder(store, app, capsys, tmp_path):
+    nested = tmp_path / "store" / "my-report" / "runs" / "r1" / "more"
+    nested.mkdir(parents=True)
+    (nested / "b.txt").write_text("b")
+    (nested.parent / "a.csv").write_text("a")
+    assert storage_cli.run(store, app, ["ls", "runs/", "--recursive", "--json"], False) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [entry["name"] for entry in entries] == ["runs/r1/a.csv", "runs/r1/more/b.txt"]
+    assert all(entry["type"] == "file" for entry in entries)
 
 
 def test_no_subcommand_prints_the_usage(store, app, capsys):
