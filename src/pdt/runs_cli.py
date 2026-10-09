@@ -388,7 +388,7 @@ def minutes_text(delay: timedelta) -> str:
 
 def say_lag(run: Run, app_name: str, total: int, store: str, delay: timedelta) -> None:
     """Tell the user when the lines printed may not be all the run's lines yet."""
-    again = f"pdt logs {app_name} {run.number}"
+    again = f"pdt logs {app_name} --id {run.id}"
     if run.status == "running":
         if total == 0:
             console.note(f"run {console.value(run.number)} is still running, and {store} "

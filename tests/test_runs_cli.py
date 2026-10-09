@@ -425,7 +425,7 @@ def test_logs_of_a_running_run_with_no_lines_yet_offers_follow(capsys):
                          store="Azure Log Analytics", delay=timedelta(minutes=10)) == 0
     out = capsys.readouterr().out
     assert "run 1 is still running, and Azure Log Analytics has no lines from it yet." in out
-    assert "pdt logs report 1 --follow" in out
+    assert "pdt logs report --id stream-3 --follow" in out
 
 
 def test_logs_of_a_running_run_says_more_lines_will_come(capsys):

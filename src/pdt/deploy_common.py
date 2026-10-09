@@ -275,7 +275,9 @@ def warn_if_locked(store, app_name: str) -> None:
     if held is not None:
         console.warn(f"run {console.value(held['run'])} of {console.value(app_name)} started at "
                      f"{console.escape(held['started'])} "
-                     "still holds the state; destroying now loses that run's state")
+                     "still holds the state; destroying now loses that run's state. "
+                     "If that run is no longer running, release the lock with: "
+                     f"{console.value('pdt storage ' + app_name + ' unlock')}")
 
 
 # HTTP fetching follows the Meltano SDK's RESTStream pattern:

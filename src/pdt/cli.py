@@ -552,7 +552,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = add_parser("storage", help="read or manage an app's data store")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
-    rest = p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|unlock|destroy [args...]")
+    rest = p.add_argument("rest", nargs=argparse.REMAINDER,
+                          help="ls [PATH] [--recursive] [--json], get PATH [DEST], query SQL, "
+                               "unlock [--yes], or destroy [--yes]")
     rest.completer = completion.storage_args
     p.set_defaults(func=cmd_storage)
     p = add_parser("runs", help="list a deployed app's recent runs")
