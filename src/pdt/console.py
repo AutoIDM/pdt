@@ -4,7 +4,8 @@ Rich drops the colour when output is not a terminal, so a redirected or
 piped run stays plain text and every command stays readable in a log.
 
 The vocabulary is small on purpose. Bold marks a value the user may
-type back or copy: a name, a command, a path, an id. Cyan marks a value
+type back or copy: a name, a command, a path, an id, an env var name, a
+file name, a module name and version. Cyan marks a value
 pdt worked out for the user to weigh: a numbered choice, a money
 amount, the `==>` of a step. Dim marks text the user may skip: a
 progress line, a side note. Colour otherwise marks state and nothing
@@ -101,6 +102,10 @@ def name(text: str) -> None:
     _console.print(f"  [bold cyan]{escape(text)}[/]")
 
 
+class Markup(str):
+    """A plan line that is already rich markup. deploy.confirm escapes every other line."""
+
+
 def value(text: str) -> str:
     """Markup that prints `text` bold, for a line that detail() or bullet() prints.
     Inside dim text the value is bold and not dim, so it stands out."""
@@ -108,7 +113,8 @@ def value(text: str) -> str:
 
 
 def detail(text: str, indent: int = INDENT) -> None:
-    """Marked-up prose under a name, wrapped to the terminal and indented. A line
+    """Marked-up prose under a name, wrapped to the terminal and indented. Pass text
+    that pdt did not write through escape(). A line
     breaks only at a space, so a name such as Import-Module stays whole. Spaces
     at the start of `text` indent every line of it."""
     stripped = text.lstrip(" ")
@@ -119,7 +125,7 @@ def detail(text: str, indent: int = INDENT) -> None:
 
 
 def bullet(text: str, indent: int = 2) -> None:
-    """A marked-up line, indented."""
+    """A marked-up line, indented. Pass text that pdt did not write through escape()."""
     _console.print(f"{' ' * indent}{text}")
 
 

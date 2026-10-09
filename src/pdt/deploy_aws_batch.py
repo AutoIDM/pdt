@@ -240,7 +240,7 @@ def wait_for_batch(describe: Callable[[], dict | None], ready: Callable[[dict | 
             return current
         if delay is None:
             fail(f"gave up waiting for {what}")
-        console.bullet(f"waiting for {what}...", indent=4)
+        console.bullet(console.escape(f"waiting for {what}..."), indent=4)
         sleep(delay)
     raise AssertionError("unreachable")
 
@@ -596,8 +596,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         f"reconcile shared ECR repository {REPOSITORY}, Batch compute environment "
         f"{COMPUTE_ENVIRONMENT.name}, and job queue {JOB_QUEUE.name}",
         image_action(app, f"build and push Docker image {image} ({DOCKER_PLATFORM})"),
-        ("update" if secret_exists else "create")
-        + f" Secrets Manager secret {names['secret']} ({secret_contents(secrets)})",
+        console.Markup(("update" if secret_exists else "create")
+                       + f" Secrets Manager secret {console.escape(names['secret'])} "
+                       f"({secret_contents(secrets)})"),
         "reconcile the execution, job, and scheduler IAM roles",
         f"allow {names['job_role']} to update its own secret {names['secret']}",
         f"reconcile Batch job definition {names['job_definition']} "

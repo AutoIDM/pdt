@@ -262,7 +262,7 @@ def confirm(actions: list[str], assume_yes: bool,
             cost: CostEstimate | None = None) -> bool:
     console.heading("Plan:")
     for action in actions:
-        console.bullet(action)
+        console.bullet(action if isinstance(action, console.Markup) else console.escape(action))
     if cost is not None:
         cost.show()
     return proceed(assume_yes)

@@ -127,9 +127,9 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
     timestamp = datetime.datetime.now(datetime.UTC).isoformat()
     job_id = resource_id(settings, "Microsoft.App", "jobs", job)
     console.heading("Azure Container Apps failure diagnostics:")
-    console.bullet(f"resource group: {settings['resource_group']}")
-    console.bullet(f"job: {job}")
-    console.bullet(f"resource: {job_id}")
+    console.bullet(console.escape(f"resource group: {settings['resource_group']}"))
+    console.bullet(console.escape(f"job: {job}"))
+    console.bullet(console.escape(f"resource: {job_id}"))
     console.bullet(f"diagnostic time (UTC): {timestamp}")
 
     try:
@@ -153,11 +153,11 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
         identities = data.get("userAssignedIdentities") or {}
         if not isinstance(identities, dict):
             identities = {}
-        console.bullet(f"provisioning state: {data.get('provisioningState')}")
-        console.bullet(f"environment: {data.get('environmentId')}")
-        console.bullet(f"identity type: {data.get('identityType')}")
-        console.bullet(f"user assigned identities: {list(identities)}")
-        console.bullet(f"owned tags: {tags}")
+        console.bullet(console.escape(f"provisioning state: {data.get('provisioningState')}"))
+        console.bullet(console.escape(f"environment: {data.get('environmentId')}"))
+        console.bullet(console.escape(f"identity type: {data.get('identityType')}"))
+        console.bullet(console.escape(f"user assigned identities: {list(identities)}"))
+        console.bullet(console.escape(f"owned tags: {tags}"))
 
     try:
         events = az_json(
@@ -179,11 +179,11 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
         console.note("no recent activity log events matched this job")
         return
     for event in matching[:5]:
-        console.say(
-            f"  activity: {event.get('eventTimestamp')} "
+        console.bullet(console.escape(
+            f"activity: {event.get('eventTimestamp')} "
             f"{event.get('operationName')} {event.get('status')} "
             f"{event.get('subStatus')} correlation {event.get('correlationId')} "
-            f"error {_activity_error(event.get('statusMessage'))}")
+            f"error {_activity_error(event.get('statusMessage'))}"))
 
 
 def set_job_secret(job: str, rg: str, secret_uri: str, identity_id: str) -> None:

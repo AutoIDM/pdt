@@ -258,7 +258,7 @@ def retry(operation, retryable, reason: str, delays: tuple[int, ...], sleep=time
         except Exception as exc:
             if delay is None or not retryable(exc):
                 raise
-            console.bullet(f"{reason}; retrying in {delay}s...", indent=4)
+            console.bullet(f"{console.escape(reason)}; retrying in {delay}s...", indent=4)
             sleep(delay)
     raise AssertionError("unreachable")
 
@@ -273,7 +273,7 @@ def adopt_account(app: dict, session) -> str:
     identity = session.client("sts").get_caller_identity()
     account = identity["Account"]
     console.field("These credentials belong to AWS account", account)
-    console.bullet(f"{identity['Arn']}")
+    console.bullet(console.escape(identity["Arn"]))
     saved = config.save_platform_key(app, "account", account)
     console.done(f"Saved account {account} to {saved.relative_to(config.find_project())}.")
     return account

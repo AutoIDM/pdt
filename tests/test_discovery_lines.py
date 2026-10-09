@@ -208,3 +208,13 @@ def test_detail_wraps_on_visible_text_and_keeps_a_hyphenated_name_whole(monkeypa
                    f"in {console.value('report.ps1')}")
     assert out.getvalue() == ("        ImportExcel  latest,\n"
                               "        Import-Module in report.ps1\n")
+
+
+def test_text_pdt_did_not_write_prints_verbatim(monkeypatch, capsys):
+    raw = "an Azure error [/x] and a [word] in it"
+    console.detail(console.escape(raw))
+    console.bullet(console.escape(raw))
+    deploy.confirm([raw, console.Markup(f"create secret ({console.value('[/y]')})")],
+                   assume_yes=True)
+    assert capsys.readouterr().out.splitlines() == [
+        f"      {raw}", f"  {raw}", "Plan:", f"  {raw}", "  create secret ([/y])"]
