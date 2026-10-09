@@ -1,6 +1,7 @@
 """validate, run, and deploy say what pdt found on its own and where it came from."""
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -71,7 +72,7 @@ def test_the_dot_env_files_are_named_closest_first(project):
     assert config.env_file_lines(project) == [".env file read: .env"]
     (folder / ".env").write_text("")
     assert config.env_file_lines(folder) == [
-        ".env files read, the first one wins: a/.env, .env"]
+        f".env files read, the first one wins: {Path('a', '.env')}, .env"]
 
 
 def test_a_terminal_value_that_wins_over_dot_env_is_named_but_not_shown(project, monkeypatch):
