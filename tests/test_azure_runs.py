@@ -119,7 +119,7 @@ def test_logs_names_the_ingestion_delay_for_a_run_that_ended_moments_ago(monkeyp
     assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS, []) == 0
     out = capsys.readouterr().out
     assert "Azure Log Analytics can take up to 5 minutes to show a line, so no lines are" in out
-    assert "pdt logs report 1 --follow" in out
+    assert "pdt logs report --id job-a --follow" in out
 
 
 def test_logs_says_plainly_when_an_old_run_has_no_lines(monkeypatch, capsys):
