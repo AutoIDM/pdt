@@ -1,5 +1,7 @@
 import argparse
+import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -486,14 +488,158 @@ def test_deploy_all_with_an_app_name_is_refused(project, monkeypatch, capsys):
     assert "pick an app or --all, not both" in capsys.readouterr().out
 
 
-def test_health_of_one_app_relays_a_provider_failure(project, monkeypatch, capsys):
+def test_health_of_one_app_shows_a_provider_failure_as_unknown(project, monkeypatch, capsys):
     add_app(project, "hello-world", "schedule: daily\n")
-    monkeypatch.setattr(deploy, "dispatch_output",
-                        lambda *a: (1, "error: not signed in to Azure\n"))
+    monkeypatch.setattr(deploy, "dispatch_output", lambda *a: (1, ""))
     assert run_cli(monkeypatch, "health", "hello-world") == 1
+    assert "unknown" in capsys.readouterr().out
+
+
+PARSER_COMMANDS = cli.build_parser().commands
+JSON_COMMANDS = [name for name, command in PARSER_COMMANDS.items()
+                 if "--json" in command._option_string_actions]
+
+
+def no_apps(project, monkeypatch):
+    pass
+
+
+def disabled_apps(project, monkeypatch):
+    add_app(project, "hello-world", "enabled: false\n")
+
+
+def no_project(project, monkeypatch):
+    outside = project.parent / f"{project.name}-outside"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+
+def provider_fails(project, monkeypatch):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: console.error("not signed in") or 1)
+    monkeypatch.setattr(deploy, "dispatch_output", lambda *a: (1, ""))
+
+
+def unknown_provider(project, monkeypatch):
+    add_app(project, "hello-world", "platform:\n  provider: nowhere\n")
+
+
+@pytest.mark.parametrize("case", [no_apps, disabled_apps, no_project, provider_fails,
+                                  unknown_provider])
+@pytest.mark.parametrize("command", JSON_COMMANDS)
+def test_json_stdout_holds_only_json(project, monkeypatch, capsys, command, case):
+    case(project, monkeypatch)
+    takes_app = any(action.dest == "app" for action in PARSER_COMMANDS[command]._actions)
+    named = takes_app and case not in (no_apps, disabled_apps)
+    code = run_cli(monkeypatch, command, *(["hello-world"] if named else []), "--json")
     out = capsys.readouterr().out
-    assert "error: not signed in to Azure" in out
-    assert "unknown" in out
+    if case in (no_apps, disabled_apps):
+        assert code == 0
+    if out == "":
+        assert code != 0
+    else:
+        json.loads(out)
+
+
+@pytest.mark.parametrize("case", [no_apps, disabled_apps, no_project, provider_fails,
+                                  unknown_provider])
+def test_storage_ls_json_stdout_holds_only_json(project, monkeypatch, capsys, case):
+    case(project, monkeypatch)
+    named = [] if case in (no_apps, disabled_apps) else ["hello-world"]
+    code = run_cli(monkeypatch, "storage", *named, "ls", "--json")
+    out = capsys.readouterr().out
+    if case in (no_apps, disabled_apps):
+        assert (code, json.loads(out)) == (0, [])
+    if out == "":
+        assert code != 0
+    else:
+        json.loads(out)
+
+
+def test_json_commands_are_found():
+    assert {"list", "validate", "health", "runs", "logs"} <= set(JSON_COMMANDS)
+
+
+@pytest.mark.parametrize("command", ["health", "runs", "logs"])
+def test_json_without_apps_prints_an_empty_list(project, monkeypatch, capsys, command):
+    assert run_cli(monkeypatch, command, "--json") == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == []
+    assert "This project has no apps yet." in captured.err
+
+
+@pytest.mark.parametrize("argv", [[command] for command in APP_COMMANDS]
+                         + [["health"], ["deploy", "--all"]])
+def test_no_enabled_apps_says_so(project, monkeypatch, capsys, argv):
+    add_app(project, "hello-world", "enabled: false\n")
+    run_cli(monkeypatch, *argv)
+    out = capsys.readouterr().out
+    assert "This project has no enabled apps." in out
+    assert "pdt list" in out
+    assert "no apps yet" not in out
+    assert "pdt new" not in out
+
+
+def test_list_json_has_the_fields_the_table_shows(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    add_app(project, "not-ready", "enabled: false\n")
+    add_app(project, "broken", "platform: [1]\n")
+    assert run_cli(monkeypatch, "list", "--json") == 0
+    records = {record["name"]: record for record in json.loads(capsys.readouterr().out)}
+    assert records["hello-world"] == {"name": "hello-world", "schedule": "daily",
+                                      "platform": "azure", "enabled": True, "paused": False,
+                                      "error": None}
+    assert records["not-ready"]["enabled"] is False
+    assert records["broken"]["platform"] is None
+    assert records["broken"]["error"]
+
+
+def test_validate_json_lists_each_problem_with_its_app(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "platform:\n  provider: nowhere\n")
+    assert run_cli(monkeypatch, "validate", "--json") == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is False
+    assert [problem["app"] for problem in result["problems"]] == ["hello-world"]
+    assert "platform.provider must be one of" in result["problems"][0]["message"]
+
+
+def test_validate_json_of_a_valid_project(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    assert run_cli(monkeypatch, "validate", "--json") == 0
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "problems": []}
+
+
+def test_validate_json_prints_no_discovery_lines(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    assert run_cli(monkeypatch, "validate", "--json") == 0
+    err = capsys.readouterr().err
+    assert "Project folder" not in err
+    assert "runs run.py" not in err
+
+
+def test_validate_names_no_app_for_a_problem_every_app_shares(project, monkeypatch):
+    (project / "pdt.yml").write_text("platform:\n  provider: azure\n  colour: blue\n")
+    add_app(project, "hello-world")
+    add_app(project, "daily-report")
+    problems = config.validate_by_app()
+    assert [app for app, problem in problems if "colour" in problem] == [None]
+
+
+def test_a_provider_script_for_json_prints_only_the_data_on_stdout(project):
+    src = Path(deploy.__file__).resolve().parent.parent
+    code = (f"import subprocess, sys; sys.path.insert(0, {str(src)!r}); "
+            "from pdt import console; console.json_output(); console.say('Signing in...'); "
+            "subprocess.run([sys.executable, '-c', 'print(1)']); console.data('[]')")
+    proc = subprocess.run([sys.executable, "-c", code], env=deploy.provider_env(["--", "--json"]),
+                          check=True, capture_output=True, text=True)
+    assert proc.stdout == "[]\n"
+    assert proc.stderr == "Signing in...\n1\n"
+
+
+@pytest.mark.parametrize("script", deploy.PROVIDERS.values())
+def test_every_provider_script_starts_with_json_output(script):
+    source = Path(deploy.__file__).with_name(script).read_text()
+    assert 'if __name__ == "__main__":\n    console.json_output()\n' in source
 
 
 def test_cloud_cli_passthroughs_are_registered():

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import os
 import re
 import subprocess
@@ -46,11 +47,19 @@ def cmd_new(args) -> int:
     return scaffold.new_app(args.app, args.source)
 
 
-def say_no_apps() -> None:
-    console.say("This project has no apps yet.")
-    console.next_steps([("pdt examples", "list the examples"),
-                        ("pdt new my-report --from <example>", "copy one into this project")],
-                       "Start from an example:")
+def say_no_apps(as_json: bool = False) -> None:
+    """Say why there is no app to act on; with `as_json`, also print the empty list."""
+    if config.app_folders():
+        console.say("This project has no enabled apps. Every app has enabled: false.")
+        console.say("Set enabled: true in an app's config.yml, or delete the line, to turn it on.")
+        console.next_steps([("pdt list", "see every app and whether it is enabled")])
+    else:
+        console.say("This project has no apps yet.")
+        console.next_steps([("pdt examples", "list the examples"),
+                            ("pdt new my-report --from <example>", "copy one into this project")],
+                           "Start from an example:")
+    if as_json:
+        console.data("[]")
 
 
 APP_QUESTIONS = {
@@ -118,25 +127,36 @@ def cmd_list(args) -> int:
         return 0
     apps = config.app_folders()
     if not apps:
-        say_no_apps()
+        say_no_apps(args.json)
         return 0
-    rows = []
+    records = []
     for name in apps:
-        enabled = "true" if config.is_enabled(name) else "false"
+        record = {"name": name, "schedule": None, "platform": None,
+                  "enabled": config.is_enabled(name), "paused": None, "error": None}
         try:
             app = config.merged_app(name)
-            rows.append([name, app["schedule"] or "-",
-                         app["platform"].get("provider", "-"), enabled,
-                         "true" if app["pause"] else "false"])
+            record["schedule"] = app["schedule"]
+            record["platform"] = app["platform"].get("provider")
+            record["paused"] = app["pause"]
         except ConfigError as e:
-            rows.append([name, "-", f"config error: {e}", enabled, "-"])
+            record["error"] = str(e)
+        records.append(record)
+    if args.json:
+        console.data(json.dumps(records))
+        return 0
+    rows = [[record["name"], record["schedule"] or "-",
+             f"config error: {record['error']}" if record["error"] else record["platform"] or "-",
+             "true" if record["enabled"] else "false",
+             "-" if record["paused"] is None else "true" if record["paused"] else "false"]
+            for record in records]
     console.table(["name", "schedule", "platform", "enabled", "paused"], rows, ["bold cyan"])
     return 0
 
 
-def cmd_validate(_args) -> int:
-    console.styled(config.project_line())
-    problems = config.validate()
+def cmd_validate(args) -> int:
+    if not args.json:
+        console.styled(config.project_line())
+    problems = config.validate_by_app()
     original_env = os.environ.copy()
     try:
         for name in config.find_apps():
@@ -149,27 +169,33 @@ def cmd_validate(_args) -> int:
             sources = config.env_file_lines(app["dir"])
             config.load_env(app["dir"])
             if config.powershell_scripts(app["dir"]):
-                problems.extend(powershell_problems(name, app))
-            else:
+                problems.extend((name, problem)
+                                for problem in powershell_problems(name, app, quiet=args.json))
+            elif not args.json:
                 console.name(name)
                 console.detail(f"runs {console.value('run.py')}")
-            try:
-                found = config.found_env_lines(app)
-            except ConfigError:
-                found = []
-            for line in [*found, *sources]:
-                console.detail(line)
+            if not args.json:
+                try:
+                    found = config.found_env_lines(app)
+                except ConfigError:
+                    found = []
+                for line in [*found, *sources]:
+                    console.detail(line)
             missing = config.missing_env(app)
             if missing != "":
-                problems.append(f"{name}: {missing}")
+                problems.append((name, f"{name}: {missing}"))
             if config.uses_email(app):
                 for problem in email_problems(app["config"]):
-                    problems.append(f"{name}: {problem}")
+                    problems.append((name, f"{name}: {problem}"))
     finally:
         os.environ.clear()
         os.environ.update(original_env)
+    if args.json:
+        console.data(json.dumps({"ok": not problems, "problems": [
+            {"app": app_name, "message": message} for app_name, message in problems]}))
+        return 1 if problems else 0
     if problems:
-        for problem in problems:
+        for _app_name, problem in problems:
             console.error(console.escape(problem))
         console.failed(f"{len(problems)} problem(s) found.")
         return 1
@@ -177,16 +203,19 @@ def cmd_validate(_args) -> int:
     return 0
 
 
-def powershell_problems(name: str, app: dict) -> list[str]:
-    """Scan a PowerShell app, print what it runs and needs, and return the certain findings."""
+def powershell_problems(name: str, app: dict, quiet: bool = False) -> list[str]:
+    """Scan a PowerShell app, print what it runs and needs unless `quiet`, and return the
+    certain findings."""
     console.status(f"Scanning the PowerShell scripts in {console.value(name)}...")
-    console.name(name)
+    if not quiet:
+        console.name(name)
     try:
         scan = powershell.scan(app, app["platform"].get("provider", ""))
     except (pwsh.PwshError, powershell.PowerShellError) as e:
         return [f"{name}: {e}"]
-    for line in powershell.summary_lines(scan):
-        console.detail(line)
+    if not quiet:
+        for line in powershell.summary_lines(scan):
+            console.detail(line)
     problems, warnings = powershell.report(scan)
     for warning in warnings:
         console.warn(f"{console.value(name)}: {console.escape(warning)}")
@@ -362,8 +391,14 @@ def cmd_secrets(args) -> int:
 
 
 def cmd_storage(args) -> int:
+    as_json = "--json" in args.rest
+    if as_json:
+        console.to_stderr()
+        if not config.find_apps():
+            say_no_apps(as_json=True)
+            return 0
     use_app_folder(args)
-    name = choose_app(args.app, "storage")
+    name = choose_app(args.app, "storage", quiet=as_json)
     if name is None:
         return 1
     return deploy.storage(name, args.rest)
@@ -376,6 +411,9 @@ def window_options(args) -> list[str]:
 
 
 def cmd_runs(args) -> int:
+    if args.json and not config.find_apps():
+        say_no_apps(as_json=True)
+        return 0
     name = choose_app(args.app, "runs", quiet=args.json)
     if name is None:
         return 1
@@ -383,6 +421,9 @@ def cmd_runs(args) -> int:
 
 
 def cmd_logs(args) -> int:
+    if args.json and not config.find_apps():
+        say_no_apps(as_json=True)
+        return 0
     use_app_folder(args)
     name = choose_app(args.app, "logs", quiet=args.json)
     if name is None:
@@ -403,7 +444,7 @@ def cmd_health(args) -> int:
     if args.app is None and (args.all or config.current_app() is None):
         names = config.find_apps()
         if not names:
-            say_no_apps()
+            say_no_apps(args.json)
             return 0
     else:
         name = choose_app(args.app, "health", quiet=args.json)
@@ -501,10 +542,14 @@ def build_parser() -> argparse.ArgumentParser:
                             "to edit how they run")
     p.set_defaults(func=cmd_new)
     p = add_parser("list", help="show every app")
-    p.add_argument("--names", action="store_true",
-                   help="print only the name of each enabled app, one per line")
+    output = p.add_mutually_exclusive_group()
+    output.add_argument("--names", action="store_true",
+                        help="print only the name of each enabled app, one per line")
+    output.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_list)
-    add_parser("validate", help="check config and env").set_defaults(func=cmd_validate)
+    p = add_parser("validate", help="check config and env")
+    p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
+    p.set_defaults(func=cmd_validate)
     p = add_parser("run", help="run an app locally")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
@@ -640,6 +685,8 @@ def main() -> int:
     if args.command is None:
         parser.print_help()
         return 0
+    if getattr(args, "json", False):
+        console.to_stderr()
     try:
         return args.func(args)
     except ConfigError as e:

@@ -841,11 +841,17 @@ def env_shape_problems(where: str, env: dict) -> list[str]:
 
 
 def validate() -> list[str]:
+    return [problem for _app, problem in validate_by_app()]
+
+
+def validate_by_app() -> list[tuple[str | None, str]]:
+    """Each problem with the app it belongs to, or None when it belongs to the
+    project or to more than one app."""
     problems = []
     try:
         root_cfg = load_yaml(find_project() / PROJECT_FILE)
     except ConfigError as e:
-        return [str(e)]
+        return [(None, str(e))]
     problems.extend(key_problems(PROJECT_FILE, root_cfg, ROOT_KEYS))
     apps = find_apps()
     entries = root_cfg.get("apps")
@@ -858,10 +864,13 @@ def validate() -> list[str]:
             continue
         if entry["name"] not in app_folders():
             problems.append(f"{PROJECT_FILE}: app {entry['name']!r} has no directory with a run.py or a .ps1 file")
-    for name in apps:
-        problems.extend(validate_app(name))
+    found = [(None, problem) for problem in problems]
+    found += [(name, problem) for name in apps for problem in validate_app(name)]
     # Every app re-checks the shared platform: block; report it once.
-    return sorted(set(problems), key=problems.index)
+    owners = {}
+    for name, problem in found:
+        owners[problem] = name if owners.get(problem, name) == name else None
+    return [(name, problem) for problem, name in owners.items()]
 
 
 def builds_image(platform: dict) -> bool:

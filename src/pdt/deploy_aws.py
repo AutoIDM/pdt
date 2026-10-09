@@ -914,4 +914,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    console.json_output()
     sys.exit(main())
