@@ -34,6 +34,8 @@ import hashlib
 import json
 import re
 import shutil
+import urllib.request
+from typing import Iterator
 
 from pdt import config, console, regions, runs_cli
 from pdt.deploy import confirm
@@ -280,6 +282,14 @@ LOG_ANALYTICS_API = "https://api.loganalytics.io"
 # from this api-version on, and it is what reports properties.runningState.
 MANAGEMENT_API = "https://management.azure.com"
 JOBS_API_VERSION = "2026-07-01"
+# A running execution's replicas, and the token for the job's log stream, exist only
+# in this preview api-version, the one `az containerapp job logs show` uses.
+LOG_STREAM_API_VERSION = "2023-11-02-preview"
+# One line of the log stream: the container runtime's time, stdout or stderr, F for a
+# whole line or P for part of a long one, and the text the container wrote.
+STREAM_LINE = re.compile(r"(\S+Z) (?:stdout|stderr) [FP] ?(.*)")
+# A quiet container sends nothing; after this many seconds pdt opens the stream again.
+STREAM_TIMEOUT = 60
 EXIT_CODE = re.compile(r"exit code '(\d+)'")
 RUN_STATUS = {"Succeeded": "succeeded", "Running": "running", "Processing": "running"}
 
@@ -331,22 +341,65 @@ def read_lines(settings: dict, job: str, execution: str) -> list[runs_cli.Line]:
 
 
 def read_many(settings: dict, job: str, executions: list[str]) -> dict[str, list[runs_cli.Line]]:
-    """The lines of several executions from one Log Analytics query, keyed by execution."""
+    """The lines of several executions from one Log Analytics query, keyed by execution.
+
+    A line's time is time_t, the time the container runtime read it from the
+    container. TimeGenerated is the time Log Analytics collected it, which one
+    batch of lines shares, so it cannot put the lines of a batch in order."""
     if not executions:
         return {}
     wanted = " or ".join(f"ContainerGroupName_s startswith '{execution}'"
                          for execution in executions)
     rows = log_query(settings, f"ContainerAppConsoleLogs_CL | where ContainerJobName_s == '{job}' "
-                               f"and ({wanted}) | project TimeGenerated, Log_s, ContainerGroupName_s "
-                               "| order by TimeGenerated asc")
+                               f"and ({wanted}) | extend written = coalesce(time_t, TimeGenerated) "
+                               "| project written, Log_s, ContainerGroupName_s "
+                               "| order by written asc")
     lines = {execution: [] for execution in executions}
-    for generated, log, group in rows:
+    for written, log, group in rows:
         for execution in executions:
             if group.startswith(execution):
                 lines[execution].append(
-                    runs_cli.parse_line(log, datetime.datetime.fromisoformat(generated)))
+                    runs_cli.parse_line(log, datetime.datetime.fromisoformat(written)))
                 break
     return lines
+
+
+def stream_lines(settings: dict, job: str, run: runs_cli.Run,
+                 follow: bool) -> Iterator[runs_cli.Line]:
+    """The lines a running execution's container has written, from the job's live log stream.
+
+    With `follow`, the stream stays open and yields each new line until the container
+    exits. An execution whose container has not started yet has no lines."""
+    url = f"{MANAGEMENT_API}{resource_id(settings, 'Microsoft.App', 'jobs', job)}"
+    version = f"api-version={LOG_STREAM_API_VERSION}"
+    replicas = az_json("rest", "--method", "get",
+                       "--url", f"{url}/executions/{run.id}/replicas?{version}")
+    token = az_json("rest", "--method", "post", "--url", f"{url}/getAuthToken?{version}")
+    current = az_json("rest", "--method", "get", "--url", job_url(settings, job))
+    if replicas is None or token is None or current is None:
+        raise runs_cli.StreamError(f"Azure did not open the log stream of job {job}")
+    if not replicas.get("value"):
+        return
+    endpoint = current["properties"]["eventStreamEndpoint"]
+    container = current["properties"]["template"]["containers"][0]["name"]
+    stream_url = (f"{endpoint[:endpoint.index('/subscriptions/')]}"
+                  f"/subscriptions/{settings['subscription']}"
+                  f"/resourceGroups/{settings['resource_group']}/jobs/{job}"
+                  f"/executions/{run.id}/replicas/{replicas['value'][0]['name']}"
+                  f"/containers/{container}/logstream?follow={str(follow).lower()}")
+    request = urllib.request.Request(
+        stream_url, headers={"Authorization": f"Bearer {token['properties']['token']}"})
+    try:
+        with urllib.request.urlopen(request, timeout=STREAM_TIMEOUT) as response:
+            for raw in response:
+                match = STREAM_LINE.fullmatch(raw.decode("utf-8", "replace").rstrip("\r\n"))
+                if match:
+                    yield runs_cli.parse_line(
+                        match.group(2), datetime.datetime.fromisoformat(match.group(1)))
+    except TimeoutError:
+        return
+    except OSError as exc:
+        raise runs_cli.StreamError(str(exc)) from exc
 
 
 def runs(app: dict, settings: dict, rest: list[str]) -> int:
@@ -403,7 +456,8 @@ def logs(app: dict, settings: dict, rest: list[str]) -> int:
                          lambda run: read_lines(settings, job, run.id), app["name"], rest,
                          store="Azure Log Analytics", delay=runs_cli.LOG_DELAY,
                          read_many=lambda chosen: read_many(settings, job,
-                                                            [run.id for run in chosen]))
+                                                            [run.id for run in chosen]),
+                         stream=lambda run, follow: stream_lines(settings, job, run, follow))
 
 
 def cost_estimate_for(region: str, currency: str, cron: str, job: str, rg: str,

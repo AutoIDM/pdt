@@ -62,6 +62,7 @@ def test_runner_sets_the_storage_url_for_the_child(folders, monkeypatch):
     assert command[0] == "/tools/uv.exe"
     assert kwargs["env"]["PDT_STORAGE_URL"] == url
     assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+    assert kwargs["env"]["PYTHONUNBUFFERED"] == "1"
 
 
 def test_runner_runs_an_app_without_run_py_through_the_powershell_wrapper(folders, monkeypatch):
