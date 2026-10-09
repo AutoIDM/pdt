@@ -302,11 +302,11 @@ class RetriableAPIError(Exception):
         self.response = response
 
 
-def deployed_next_steps(app_name: str) -> None:
-    """The same commands after every provider's deploy."""
+def deployed_next_steps(app_name: str, started: bool = False) -> None:
+    """The same commands after every provider's deploy; no `pdt run` when pdt just started one."""
     console.say()
     console.next_steps([
-        (f"pdt run {app_name} --deployed", "start a run now"),
+        *([] if started else [(f"pdt run {app_name} --deployed", "start a run now")]),
         (f"pdt logs {app_name}", "read the log of the newest run"),
         (f"pdt runs {app_name}", "list the recent runs"),
         (f"pdt health {app_name}", "show whether the last run succeeded"),

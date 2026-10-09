@@ -342,7 +342,8 @@ def test_health_with_an_app_and_all_is_refused(project, monkeypatch, capsys):
 def fake_deploys(monkeypatch, codes):
     calls = []
 
-    def fake_deploy(name, assume_yes=False):
+    def fake_deploy(name, assume_yes=False, run=None):
+        assert run is False
         calls.append((name, assume_yes))
         return codes.get(name, 0)
 

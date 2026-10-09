@@ -83,7 +83,7 @@ def test_path_arguments_still_offer_file_names(project, tmp_path):
 def test_typed_dash_offers_options(project, tmp_path):
     add_app(project, "daily-report")
 
-    assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "--yes", "--all", "--skip-failures"]
+    assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "--yes", "--all", "--skip-failures", "--run"]
 
 
 def test_install_preserves_content_and_replaces_owned_block(tmp_path):
