@@ -7,7 +7,7 @@
 
 from pathlib import Path
 
-from pdt.config import ConfigError, check_env, load_env, merged_app
+from pdt.config import ConfigError, load_env, merged_app, missing_env
 from pdt.utils.log import die, log
 
 
@@ -19,9 +19,9 @@ def main():
         die(1, str(error))
 
     load_env(app_dir)
-    problems = check_env(app["env"])
-    if problems:
-        die(1, "Environment check failed.", problems=problems)
+    missing = missing_env(app)
+    if missing != "":
+        die(1, f"env vars missing: {missing}")
 
     log(
         "info",

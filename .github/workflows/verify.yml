@@ -3,21 +3,14 @@
 # cancelled run leaks what it made, so no job here is ever cancelled by a
 # newer run.
 #
-# A cloud job runs in the `verify` environment. Its required reviewers are
-# the manual start for a pull request, and fork pull requests never get its
-# secrets.
+# A push to main and the daily schedule start a run. A pull request does
+# not. To verify a pull request, start this workflow by hand on the pull
+# request's branch; every job then checks out and tests that branch. A cloud
+# job runs in the `verify` environment, which holds its secrets.
 
 name: verify
 
 on:
-  pull_request:
-    paths:
-      - src/pdt/**
-      - verify/**
-      - scripts/**
-      - pyproject.toml
-      - uv.lock
-      - .github/workflows/verify.yml
   push:
     branches: [main]
     paths:
@@ -30,23 +23,15 @@ on:
   schedule:
     - cron: "52 7 * * *"
   workflow_dispatch:
-    inputs:
-      pdt_install:
-        description: A git ref or pdt-cli to verify instead of this commit's wheel
-        required: false
 
 env:
   # A fake secret. Each app declares it as required, so a deployed job fails
   # unless deploy delivered it as PDT_ENV_JSON.
   PDT_SMOKE_TOKEN: pdt-verify
-  PDT_INSTALL: ${{ inputs.pdt_install }}
   PYTHONUNBUFFERED: "1"
 
 jobs:
   build:
-    if: >-
-      !contains(github.event.pull_request.labels.*.name, 'force-merge')
-      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,7 +62,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/*.whl
+      - run: uv tool install dist/*.whl && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -111,7 +97,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/*.whl
+      - run: uv tool install dist/*.whl && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: pdt az login --service-principal -u "$AZURE_CLIENT_ID" --password="$AZURE_CLIENT_SECRET" --tenant "$AZURE_TENANT_ID"
         env:
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
@@ -140,7 +127,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/*.whl
+      - run: uv tool install dist/*.whl && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: |
           printf '%s' "$KEY" > "$RUNNER_TEMP/google-key.json"
           pdt gcloud auth activate-service-account --key-file "$RUNNER_TEMP/google-key.json"
@@ -172,7 +160,8 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: uv tool install "${PDT_INSTALL:-$(ls dist/*.whl)}" && echo "$USERPROFILE/.local/bin" >> "$GITHUB_PATH"
+      - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/*.whl
+      - run: uv tool install dist/*.whl && echo "$USERPROFILE/.local/bin" >> "$GITHUB_PATH"
       - run: uv run --no-project --with pyyaml python verify/scripts/verify.py windows --report verify-windows.xml
       - uses: actions/upload-artifact@v4
         if: always()
