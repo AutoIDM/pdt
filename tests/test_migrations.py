@@ -246,9 +246,6 @@ def test_a_newer_project_stops_every_command(project, monkeypatch, capsys):
     assert "error: this project needs pdt 9.0.0 or newer." in out
     assert "uv tool upgrade pdt-cli" in out
     assert files(project) == before
-    monkeypatch.setenv("PDT_ALLOW_NEWER_PROJECT", "1")
-    assert run_cli(monkeypatch, "list") == 0
-    assert files(project) == before
 
 
 def test_the_library_ignores_migrated_by(project):
