@@ -211,7 +211,8 @@ def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
                        str(Path(cli.__file__).with_name("run_powershell.py")), str(folder)]
     assert kwargs["cwd"] == folder
     assert kwargs["env"]["PDT_PROJECT"] == str(project)
-    assert kwargs["env"]["PSModulePath"] == "MODULE-PATH"
+    assert os.environ["PSModulePath"] == "MODULE-PATH"
+    assert kwargs["env"] == dict(os.environ, PDT_PROJECT=str(project))
 
 
 def test_run_stops_when_a_powershell_module_does_not_install(project, monkeypatch, capsys):
