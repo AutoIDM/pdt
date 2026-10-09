@@ -3,9 +3,10 @@
 `scan_powershell.ps1` lists facts about the scripts; this module judges them.
 A `Finding` with `certain=True` fails `pdt validate`, because the job would
 fail for sure; the rest are warnings. A `ModuleNeed` is a module the job's
-image or PC must install before the scripts run. The tables below decide
-both; `judge` only walks the facts. A requirements.psd1 in the app folder
-replaces the modules the scripts ask for.
+image or PC must install before the scripts run; `install_for_run` installs
+the same ones for `pdt run`. The tables below decide both; `judge` only walks
+the facts. A requirements.psd1 in the app folder replaces the modules the
+scripts ask for.
 
 Modules named only by a command (Get-MgUser, Get-AzVM) come from the
 PowerShell Gallery through `find_in_gallery`, which `judge` calls once with
@@ -63,6 +64,7 @@ class PowerShellError(Exception):
 
 SCANNER = Path(__file__).with_name("scan_powershell.ps1")
 GALLERY_CACHE = data_home() / "pdt" / "psgallery.json"
+MODULE_DIR = data_home() / "pdt" / "powershell-modules"
 BOM = "\ufeff"
 
 
@@ -786,21 +788,109 @@ def quoted(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def install_command(modules: list[ModuleNeed]) -> str:
-    """One pwsh command that installs the modules with PSResourceGet, then imports and probes them."""
+def install_command(modules: list[ModuleNeed], folder: Path | None = None) -> str:
+    """One pwsh command that installs the modules with PSResourceGet, for all users or into
+    `folder`, then imports and probes them."""
     if not modules:
         return ""
     parts = ["$ErrorActionPreference = 'Stop'"]
     for m in modules:
         version = f" -Version {quoted(m.version)}" if m.version else ""
-        parts.append(f"Install-PSResource -Name {quoted(m.name)}{version} -Repository PSGallery "
-                     "-TrustRepository -Scope AllUsers -Quiet")
+        if folder is None:
+            parts.append(f"Install-PSResource -Name {quoted(m.name)}{version} -Repository PSGallery "
+                         "-TrustRepository -Scope AllUsers -Quiet")
+        else:
+            parts.append(f"Save-PSResource -Name {quoted(m.name)}{version} -Repository PSGallery "
+                         f"-TrustRepository -Path {quoted(str(folder))} -Quiet")
     for m in modules:
         parts.append(f"Import-Module {quoted(m.name)} -ErrorAction Stop")
     for prefix, probe in PROBES:
         if any(m.name == prefix or m.name.startswith(prefix + ".") for m in modules):
             parts.append(probe)
     return "; ".join(parts)
+
+
+def install_for_run(app: dict, folder: Path = MODULE_DIR) -> dict[str, str]:
+    """Install the modules a deploy installs, for a run on this computer, and return the env
+    the run needs. A module stays as it is when the run loads it at the version asked for;
+    pdt saves each other module into `folder`, which no other pwsh session reads, and puts
+    `folder` first on the run's PSModulePath, so the run loads that copy."""
+    modules = scan(app, app["platform"].get("provider", "")).modules
+    if not modules:
+        return {}
+    module_path, loaded = loaded_versions([m.name for m in modules], folder)
+    env = {**os.environ, "PSModulePath": module_path, "NO_COLOR": "1"}
+    for m in modules:
+        have = loaded.get(m.name.lower())
+        if have is not None and satisfies(have, m.version):
+            continue
+        version = f" -Version {quoted(m.version)}" if m.version else ""
+        found = "does not have it" if have is None else f"has version {have}"
+        console.status(f"Installing the PowerShell module {m.name} {m.version or '(latest)'} "
+                       f"into {folder}, because this computer {found}...")
+        shutil.rmtree(folder / m.name, ignore_errors=True)
+        folder.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            [pwsh.ensure_pwsh(), "-NoProfile", "-NonInteractive", "-Command", install_command([m], folder)],
+            capture_output=True, text=True, env=env)
+        if proc.returncode != 0:
+            raise PowerShellError(
+                f"pdt could not install the PowerShell module {m.name} from the PowerShell Gallery. "
+                "Make sure this computer reaches www.powershellgallery.com and run the command again, "
+                f"or install the module yourself in pwsh: Install-PSResource -Name {quoted(m.name)}"
+                f"{version} -Repository PSGallery -Scope CurrentUser. pwsh said: {proc.stderr.strip()}")
+    return {"PSModulePath": module_path}
+
+
+def loaded_versions(names: list[str], folder: Path) -> tuple[str, dict[str, str]]:
+    """pwsh's own PSModulePath with `folder` first, and {lower name: version} of the module
+    Import-Module NAME loads from it: the newest version in the first path entry that holds
+    it. pwsh keeps an inherited PSModulePath as it is when it already holds pwsh's own entries."""
+    script = (f"$env:PSModulePath = {quoted(str(folder))} + [IO.Path]::PathSeparator + $env:PSModulePath; "
+              "ConvertTo-Json -Depth 3 -InputObject ([ordered]@{ path = $env:PSModulePath; modules = @("
+              f"Get-Module -ListAvailable -Name {', '.join(map(quoted, names))} "
+              "-ErrorAction SilentlyContinue | Select-Object Name, ModuleBase, "
+              "@{Name = 'Version'; Expression = { \"$($_.Version)\" }}) })")
+    proc = subprocess.run([pwsh.ensure_pwsh(), "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True)
+    if proc.returncode != 0 or proc.stdout.strip() == "":
+        raise PowerShellError(f"pdt could not list the PowerShell modules on this computer: "
+                              f"{proc.stderr.strip()}")
+    found = json.loads(proc.stdout)
+    entries = [Path(entry) for entry in found["path"].split(os.pathsep) if entry]
+    best: dict[str, tuple] = {}
+    for module in found["modules"]:
+        base = Path(module["ModuleBase"])
+        place = next((i for i, entry in enumerate(entries) if base.is_relative_to(entry)), len(entries))
+        rank = (place, *(-part for part in version_key(module["Version"])))
+        key = module["Name"].lower()
+        if key not in best or rank < best[key][0]:
+            best[key] = (rank, module["Version"])
+    return found["path"], {key: version for key, (_rank, version) in best.items()}
+
+
+def version_key(text: str) -> tuple[int, ...]:
+    parts = [int(part) for part in re.findall(r"\d+", text.split("-")[0])]
+    return tuple(parts + [0] * (4 - len(parts)))
+
+
+def satisfies(version: str, wanted: str | None) -> bool:
+    """Whether `version` meets `wanted`: None, an exact version, or a NuGet range such as
+    `[7.0,8.0)`, as Install-PSResource -Version reads it."""
+    if wanted is None:
+        return True
+    have = version_key(version)
+    if wanted[0] not in "[(":
+        return have == version_key(wanted)
+    inner = wanted[1:-1]
+    if "," not in inner:
+        return have == version_key(inner)
+    low, high = (part.strip() for part in inner.split(",", 1))
+    if low and (have < version_key(low) or (wanted[0] == "(" and have == version_key(low))):
+        return False
+    if high and (have > version_key(high) or (wanted[-1] == ")" and have == version_key(high))):
+        return False
+    return True
 
 
 def report(scan: ScriptScan) -> tuple[list[str], list[str]]:

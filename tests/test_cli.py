@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -195,9 +196,11 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
 
 
 def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
+    monkeypatch.setenv("PSModulePath", "")
     folder = project / "ps-report"
     folder.mkdir()
     monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})
+    monkeypatch.setattr(powershell, "install_for_run", lambda app: {"PSModulePath": "MODULE-PATH"})
     (folder / "report.ps1").write_text("")
     calls = []
     monkeypatch.setattr(cli.subprocess, "run", lambda command, **kwargs: calls.append(
@@ -208,12 +211,30 @@ def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
                        str(Path(cli.__file__).with_name("run_powershell.py")), str(folder)]
     assert kwargs["cwd"] == folder
     assert kwargs["env"]["PDT_PROJECT"] == str(project)
+    assert kwargs["env"]["PSModulePath"] == "MODULE-PATH"
+
+
+def test_run_stops_when_a_powershell_module_does_not_install(project, monkeypatch, capsys):
+    folder = project / "ps-report"
+    folder.mkdir()
+    (folder / "report.ps1").write_text("")
+
+    def fail(app):
+        raise powershell.PowerShellError("pdt could not install the PowerShell module ImportExcel")
+
+    monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})
+    monkeypatch.setattr(powershell, "install_for_run", fail)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("the app ran"))
+    assert run_cli(monkeypatch, "run", "ps-report") == 1
+    assert "ps-report: pdt could not install the PowerShell module ImportExcel" in capsys.readouterr().out
 
 
 def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
+    monkeypatch.setenv("PSModulePath", "")
     folder = project / "ps-report"
     folder.mkdir()
     monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})
+    monkeypatch.setattr(powershell, "install_for_run", lambda app: {"PSModulePath": "MODULE-PATH"})
     for name in ("report.ps1", "requirements.psd1", "run.py"):
         (folder / name).write_text("")
     calls = []
@@ -221,6 +242,7 @@ def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
         (command, kwargs)) or subprocess.CompletedProcess(command, 0))
     assert run_cli(monkeypatch, "run", "ps-report") == 0
     assert calls == [(["uv", "run", "--script", "run.py"], {"cwd": folder})]
+    assert os.environ["PSModulePath"] == "MODULE-PATH"
 
 
 def test_new_takes_from_scripts_but_not_together_with_from(monkeypatch, capsys):
