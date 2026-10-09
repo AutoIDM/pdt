@@ -30,7 +30,7 @@ You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) i
 
 ## Set up a project
 
-A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`. Every command except `init` finds the project by looking in the current folder, then each folder above it.
+A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, or the `.ps1` scripts of a PowerShell app. Every command except `init` finds the project by looking in the current folder, then each folder above it.
 
 ```
 pdt init my-jobs
@@ -83,7 +83,16 @@ my-jobs/
 pdt deploy my-report
 ```
 
-The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question. To remove everything it created:
+A deploy to AWS, Azure, or Google Cloud builds the app's image with Docker on your computer, so Docker Desktop must be running (see [Choosing where jobs run](#choosing-where-jobs-run)). The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question.
+
+To start one run of the deployed job now, and then read its log:
+
+```
+pdt run my-report --deployed
+pdt logs my-report
+```
+
+To remove everything the deploy created:
 
 ```
 pdt destroy my-report
@@ -116,11 +125,12 @@ pdt login my-report
 | `pdt secrets APP get` | copy the deployed values into a `.env.<provider>` file |
 | `pdt secrets APP set NAME` | put one value, read from stdin, into the deployed app's secrets |
 | `pdt login APP` | sign in again to the app's platform |
-| `pdt storage APP ls|get|query|unlock|destroy` | look at, fetch, query, unlock, or delete the app's stored files; `ls PATH --recursive` lists every file under a folder |
+| `pdt storage APP ls\|get\|query\|unlock\|destroy` | look at, fetch, query, unlock, or delete the app's stored files; `ls PATH --recursive` lists every file under a folder, and `ls --json` prints the list as JSON |
 | `pdt runs APP` | list the deployed app's runs with each run's exit code: the 10 newest, or with `--since 3d` (or `12h`, `2w`, `2026-09-20`, `2026-09-20T14:00`) every run since then, `--span 1d` keeping only the runs within that long after `--since` and `--count N` keeping only the N newest; a run's number is its place among every run pdt can still find, so it stays the same whichever runs print |
 | `pdt logs APP [N]` | read the log of run N as `pdt runs` numbers it; with no N, the newest run, `--failed` picks the newest failed run instead, and `--id ID` picks a run by the id `pdt runs` shows (repeat it to read several runs; their `--json` is then an object keyed by id); `--since`, `--span`, and `--count` limit which runs those two choose from, `--errors` leaves out DEBUG and INFO lines; the last 20 lines print, `--lines N` prints N instead, `--head` prints the first lines instead of the last, `--full` prints every line, and `--follow` keeps printing new lines until the run ends and its log store has caught up; a run that is still running, or whose lines have not reached the log store yet, says so |
 | `pdt health [APP] [--all]` | show whether each app's last run succeeded; exits 1 when one failed; inside an app folder it checks only that app, and `--all` checks every app |
 | `pdt gui` | open the project's dashboard in your browser: every app's health, each app's run history, and each run's log and files, with buttons for pause, unpause, and run now; `--background` keeps the server up after the command returns and `pdt gui --stop` ends it; `--port N` and `--no-browser` are there for the rare case |
+| `pdt aws ...` | run the AWS CLI that pdt installs |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
 | `pdt completion [SHELL]` | turn on tab completion for a shell |
@@ -165,7 +175,7 @@ A run that dies without reaching either call leaves the lock behind. The next ru
 
 From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
 
-An app that is not ready sets `enabled: false` in its `config.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it.
+An app that is not ready sets `enabled: false` in its `config.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it. `enabled: false` does not stop a schedule that is already deployed, so run `pdt pause APP` or `pdt destroy APP` before you set it.
 
 ## The dashboard
 
@@ -243,10 +253,14 @@ COPY . /workspace
 WORKDIR /workspace/my-app
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
 RUN uv sync --script run.py
-ENTRYPOINT ["uv", "run", "--script", "run.py"]
+ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \"pdt: exit $code\"; exit $code"]
 ```
 
 A `.dockerignore` in the app folder keeps files out of the image. Write its patterns relative to the app folder (`.meltano`, `output`, `*.csv`); pdt moves them to the root of the build context for you. `.env` and the other secret files never reach the context, with or without a `.dockerignore`.
+
+The `ENTRYPOINT` ends each run's output with the line `pdt: exit N`, which `pdt runs` reads for the run's exit code. Keep that line when you change the rest of the file.
+
+The build forwards your computer's SSH agent when one is running, so a `RUN --mount=type=ssh` step can install a private git dependency.
 
 The Windows provider never builds an image, so `pdt validate` reports a Dockerfile in an app that uses it.
 
@@ -293,6 +307,10 @@ Settings for the lookback window, the minimum distance, and the email addresses 
 
 Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user.
 
+### powershell-report
+
+A PowerShell app with no `run.py`. Its script writes a small CSV report with `Export-Csv`, and pdt keeps the file in the app's data store.
+
 ## Where things live
 
 | Item | Where |
@@ -302,8 +320,11 @@ Reports active Monday users whose email address does not match the `userPrincipa
 | the example apps | inside the pdt package, copied out by `pdt new` |
 | your apps, `pdt.yml`, `.env` | your project folder, under version control |
 | the Google Cloud CLI pdt downloads | `~/.local/share/pdt/gcloud`, or `%LOCALAPPDATA%\pdt\gcloud` |
+| the PowerShell 7 pdt downloads | `~/.local/share/pdt/pwsh`, or `%ProgramData%\pdt\pwsh` |
+| the DuckDB files of the `pdt gui` SQL workbench | `~/.local/share/pdt/duckdb-wasm`, or `%LOCALAPPDATA%\pdt\duckdb-wasm` |
+| what `pdt gui` fetched | `.pdt/gui.sqlite3` in your project folder |
 | a Windows scheduled task's run logs and files | `%ProgramData%\pdt\<app>\logs` and `%ProgramData%\pdt\<app>\storage` |
-| cloud sign-in state | `~/.azure` and `~/.config/gcloud`, as usual |
+| cloud sign-in state | `~/.aws`, `~/.azure`, and `~/.config/gcloud`, as usual |
 
 Set `PDT_PROJECT` to name the project folder directly, instead of letting pdt search upward. Deployed jobs get it set for them.
 
@@ -328,7 +349,7 @@ def main() -> int:
     ...
 ```
 
-The pinned version matters. A deployed job keeps using the version in its header, so upgrading pdt on your machine does not change a job already running in the cloud.
+The pinned version is the pdt version the app runs with, on your computer and in a deployed job. Upgrading pdt on your computer does not change it. Keep the pin at the newest pdt release, and run `pdt deploy APP` after you raise it, so the deployed job uses it too.
 
 ### PowerShell apps
 
