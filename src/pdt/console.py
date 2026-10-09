@@ -96,10 +96,11 @@ def field(label: str, value: str) -> None:
 
 
 def choice(number: int, label: str, detail: str = "") -> None:
-    """One numbered option the user picks with `number`."""
+    """One numbered option the user picks with `number`. `detail` is the option's id or name,
+    printed bold."""
     line = f"  [bold cyan]{number})[/] {escape(label)}"
     if detail != "":
-        line += f"  [dim]{escape(detail)}[/]"
+        line += f"  [bold]{escape(detail)}[/]"
     _console.print(line)
 
 
@@ -136,7 +137,7 @@ def heading(message: str) -> None:
 
 def name(text: str) -> None:
     """A thing the user can type back to pdt: an app, an example."""
-    _console.print(f"  [bold cyan]{escape(text)}[/]")
+    _console.print(f"  [bold]{escape(text)}[/]")
 
 
 class Markup(str):
@@ -233,7 +234,7 @@ def secret_changes(rows: list[tuple[str, str, str, str]]) -> None:
     _console.print(_row(headers, widths, ["bold"] * len(headers)))
     for row in rows:
         colour = SECRET_CHANGE_COLOURS[row[0]]
-        _console.print(_row(list(row), widths, [colour, f"bold {colour}", colour, colour]))
+        _console.print(_row(list(row), widths, [colour, "bold"]))
 
 
 def log_line(time: str, level: str, message: str) -> None:
