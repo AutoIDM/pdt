@@ -62,10 +62,10 @@ from pdt import gcloud_sdk
 from pdt import regions
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, convert_from_usd, docker_preflight, fail, fetch_json, gather_secrets,
-    image_action, run_build, run_secrets, secret_contents, ssh_build_args, stage_build_context,
-    store_cost_label, store_kept_line, store_name, store_plan_lines, warn_if_locked,
-    write_dockerfile)
+    STORE_TAGS, CostEstimate, convert_from_usd, deployed_next_steps, docker_preflight, fail,
+    fetch_json, gather_secrets, image_action, run_build, run_secrets, secret_contents,
+    ssh_build_args, stage_build_context, store_cost_label, store_kept_line, store_name,
+    store_plan_lines, warn_if_locked, write_dockerfile)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -843,8 +843,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
               "--oauth-service-account-email", sa)
     set_scheduler_paused(project, region, job, app["pause"])
     console.done(f"Deployed {name}.")
-    console.field("Run it once", f"pdt gcloud run jobs execute {job} --region {region} --project {project}")
-    console.field("Run logs", job_logs_url(project, region, job))
+    deployed_next_steps(name, f"pdt gcloud run jobs execute {job} --region {region} --project {project}")
     return 0
 
 

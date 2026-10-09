@@ -113,7 +113,7 @@ def test_deploy_creates_the_folders_before_registering_the_task(project, monkeyp
         "Register-ScheduledTask")
 
 
-def test_deploy_prints_the_run_logs_folder(project, monkeypatch, capsys):
+def test_deploy_ends_with_the_next_pdt_commands(project, monkeypatch, capsys):
     app = windows_app(project)
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda require_uv=True: ("powershell.exe", "uv.exe"))
@@ -121,8 +121,14 @@ def test_deploy_prints_the_run_logs_folder(project, monkeypatch, capsys):
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run", lambda powershell, script, **kw: True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
-    out = capsys.readouterr().out
-    assert f"Run logs: {project / 'ProgramData' / 'pdt' / 'my-report' / 'logs'}" in out
+    out = capsys.readouterr().out.splitlines()
+    assert out[out.index("Next steps:") + 1:] == [
+        "  Start-ScheduledTask -TaskName 'pdt-my-report'",
+        "                        start a run now",
+        "  pdt logs my-report    read the log of the newest run",
+        "  pdt runs my-report    list the recent runs",
+        "  pdt health my-report  show whether the last run succeeded",
+    ]
 
 
 

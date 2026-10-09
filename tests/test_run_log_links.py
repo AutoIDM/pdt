@@ -1,7 +1,7 @@
-"""Every cloud deploy ends with a Run logs line naming where run output lives.
+"""The console link to each cloud provider's run logs.
 
-The links are built from settings alone, never from the pre-deploy resource
-state, so they exist on a first deploy, before the resources do.
+The links are built from settings alone, never from the resource state, so
+they exist before the resources do.
 """
 
 import sys

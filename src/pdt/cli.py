@@ -48,9 +48,9 @@ def cmd_new(args) -> int:
 
 def say_no_apps() -> None:
     console.say("This project has no apps yet.")
-    console.say("Start from an example:")
-    console.command("pdt examples")
-    console.command("pdt new my-report --from <example>")
+    console.next_steps([("pdt examples", "list the examples"),
+                        ("pdt new my-report --from <example>", "copy one into this project")],
+                       "Start from an example:")
 
 
 APP_QUESTIONS = {
