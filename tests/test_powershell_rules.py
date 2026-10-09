@@ -148,7 +148,7 @@ def test_a_login_needs_an_app_only_parameter():
 
 def test_a_module_used_without_its_login_is_a_warning():
     scan = verdict(facts(script("r.ps1", commands=[cmd("Get-Mailbox", 2), cmd("Get-ExoMailbox", 3)])))
-    assert scan.modules == [ModuleNeed("ExchangeOnlineManagement", None, "command Get-Mailbox")]
+    assert scan.modules == [ModuleNeed("ExchangeOnlineManagement", None, "command Get-Mailbox in r.ps1")]
     assert [f.reason for f in scan.findings] == [
         "the scripts use ExchangeOnlineManagement commands but never call Connect-ExchangeOnline, "
         "so the job has no session. Add Connect-ExchangeOnline with an app-only parameter."]
@@ -240,9 +240,9 @@ def test_the_command_table_names_the_module_without_the_gallery():
         cmd("Get-PnPList", 4), cmd("Connect-PnPOnline", 5, ["ClientId"]),
         cmd("Get-AutomationConnection", 6)])))
     assert [(m.name, m.source) for m in scan.modules] == [
-        ("ExchangeOnlineManagement", "command Set-Mailbox"),
-        ("ImportExcel", "command Export-Excel"),
-        ("PnP.PowerShell", "command Get-PnPList")]
+        ("ExchangeOnlineManagement", "command Set-Mailbox in r.ps1"),
+        ("ImportExcel", "command Export-Excel in r.ps1"),
+        ("PnP.PowerShell", "command Get-PnPList in r.ps1")]
 
 
 def test_a_graph_or_az_command_finds_its_sub_module_on_the_gallery():
@@ -287,8 +287,8 @@ def test_an_unknown_command_asks_the_gallery_and_guesses_only_a_microsoft_module
         definedFunctions=["My-Helper"]),
         known={"Export-Csv": "Microsoft.PowerShell.Utility", "Get-Tree": "PSTree"}), gallery=gallery)
     assert asked == [["Get-MsalToken", "Get-SqlDatabase", "Get-Nothing"]]
-    assert scan.modules == [ModuleNeed("PSTree", None, "command Get-Tree"),
-                            ModuleNeed("SqlServer", None, "command Get-SqlDatabase")]
+    assert scan.modules == [ModuleNeed("PSTree", None, "command Get-Tree in r.ps1"),
+                            ModuleNeed("SqlServer", None, "command Get-SqlDatabase in r.ps1")]
     assert [(f.kind, f.line) for f in scan.findings] == [
         ("unknown-command", 1), ("guessed-module", 2), ("unknown-command", 3), ("guessed-module", 5)]
     assert scan.findings[1].reason == (
@@ -366,8 +366,42 @@ def test_report_and_summary_lines():
         ["never calls Connect-MgGraph."])
     assert summary_lines(scan) == [
         "runs, in order: a.ps1, b.ps1",
-        "helper files: lib.psm1",
-        "modules to install: ImportExcel (latest), Microsoft.Graph.Users 2.25.0"]
+        "helper files, which run only when a script loads them: lib.psm1",
+        "modules to install, found in the scripts: ImportExcel (latest, x), "
+        "Microsoft.Graph.Users (2.25.0, x)"]
+
+
+def local_call(target):
+    return {"target": target, "line": 1}
+
+
+@pytest.mark.parametrize("files, run_scripts, first_line", [
+    ([script("a.ps1", localInvocations=[local_call("./lib.ps1")]), script("b.ps1"),
+      script("lib.ps1")], None,
+     "runs, in order: a.ps1, b.ps1 (each .ps1 that no other script loads, in name order)"),
+    ([script("a.ps1"), script("run.ps1")], None,
+     "runs, in order: run.ps1 (run.ps1 is in the folder, so only it runs)"),
+    ([script("a.ps1"), script("b.ps1")], ["b.ps1", "a.ps1"],
+     "runs, in order: b.ps1, a.ps1 (the order run_scripts sets)"),
+])
+def test_the_summary_says_why_these_scripts_run(files, run_scripts, first_line):
+    lines = summary_lines(verdict(facts(*files), run_scripts=run_scripts))
+    assert lines[0] == first_line
+
+
+def test_the_summary_says_where_each_module_came_from():
+    scan = verdict(facts(*scripts_asking_for_modules()))
+    assert summary_lines(scan)[-1] == (
+        "modules to install, found in the scripts: ImportExcel (7.8.10, #Requires in a.ps1), "
+        "Microsoft.Graph.Users (2.25.0, Import-Module in b.ps1), "
+        "Pester ([5.0,5.9], #Requires in a.ps1), PnP.PowerShell (latest, using module in b.ps1), "
+        "PSScriptAnalyzer ([1.2,), #Requires in a.ps1)")
+
+
+def test_the_summary_says_requirements_psd1_replaced_the_scan():
+    scan = verdict(facts(*scripts_asking_for_modules(), requirements={"ImportExcel": "7.8.10"}))
+    assert summary_lines(scan)[-1] == (
+        "modules to install, as requirements.psd1 lists them: ImportExcel 7.8.10")
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs pwsh")

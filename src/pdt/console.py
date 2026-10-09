@@ -104,10 +104,12 @@ def name(text: str) -> None:
 
 
 def detail(text: str, indent: int = INDENT) -> None:
-    """Prose under a name, wrapped to the terminal and indented."""
+    """Prose under a name, wrapped to the terminal and indented. A name such as
+    Import-Module stays whole on one line."""
     _console.print(textwrap.fill(text, width=_console.width,
                                  initial_indent=" " * indent,
-                                 subsequent_indent=" " * indent),
+                                 subsequent_indent=" " * indent,
+                                 break_on_hyphens=False),
                    markup=False)
 
 

@@ -53,6 +53,8 @@ class ScriptScan:
     modules: list[ModuleNeed]
     findings: list[Finding]
     host_modules: list[str] = field(default_factory=list)
+    entry_rule: str = ""
+    from_requirements: bool = False
 
 
 class PowerShellError(Exception):
@@ -452,7 +454,7 @@ def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
         if finding is not None:
             findings.append(Finding(finding.kind, file, line, finding.reason, False))
         if module is not None:
-            need(module, None, f"command {name}", file)
+            need(module, None, f"command {name} in {file}", file)
 
     for prefix, login in LOGIN_FOR:
         users = [m.name for m in needs.values() if m.source.startswith("command ")
@@ -477,7 +479,8 @@ def judge(facts: dict, app: dict, provider: str, gallery=None) -> ScriptScan:
 
     modules = sorted(needs.values(), key=lambda m: m.name.lower())
     return ScriptScan(entries, helpers, modules, list(dict.fromkeys(findings)),
-                      sorted(host.values(), key=str.lower))
+                      sorted(host.values(), key=str.lower),
+                      entry_rule(files, app.get("run_scripts")), requirements is not None)
 
 
 def split_files(files: list[dict], run_scripts: list[str] | None) -> tuple[list[str], list[str]]:
@@ -496,6 +499,22 @@ def split_files(files: list[dict], run_scripts: list[str] | None) -> tuple[list[
     entries = [n for n in names
                if "/" not in n and n.lower().endswith(".ps1") and n.lower() not in referenced]
     return entries, [n for n in names if n not in entries]
+
+
+def entry_rule(files: list[dict], run_scripts: list[str] | None) -> str:
+    """Why split_files picks the entry scripts it picks, for the user."""
+    if any(f["file"].lower() == "run.ps1" for f in files):
+        return "run.ps1 is in the folder, so only it runs"
+    if run_scripts:
+        return "the order run_scripts sets"
+    return "each .ps1 that no other script loads, in name order"
+
+
+def script_lines(entries: list[str], helpers: list[str], rule: str) -> list[str]:
+    lines = [f"runs, in order: {', '.join(entries) or 'no script'}" + (f" ({rule})" if rule else "")]
+    if helpers:
+        lines.append(f"helper files, which run only when a script loads them: {', '.join(helpers)}")
+    return lines
 
 
 def is_path(name: str) -> bool:
@@ -796,9 +815,13 @@ def report(scan: ScriptScan) -> tuple[list[str], list[str]]:
 
 
 def summary_lines(scan: ScriptScan) -> list[str]:
-    lines = [f"runs, in order: {', '.join(scan.entries) or 'no script'}"]
-    if scan.helpers:
-        lines.append(f"helper files: {', '.join(scan.helpers)}")
-    modules = [f"{m.name} {m.version}" if m.version else f"{m.name} (latest)" for m in scan.modules]
-    lines.append(f"modules to install: {', '.join(modules) or 'none'}")
+    """What the scan found, with where each finding came from, one fact per line."""
+    lines = script_lines(scan.entries, scan.helpers, scan.entry_rule)
+    if scan.from_requirements:
+        modules = [f"{m.name} {m.version or '(latest)'}" for m in scan.modules]
+        lines.append(f"modules to install, as requirements.psd1 lists them: "
+                     f"{', '.join(modules) or 'none'}")
+        return lines
+    modules = [f"{m.name} ({m.version or 'latest'}, {m.source})" for m in scan.modules]
+    lines.append(f"modules to install, found in the scripts: {', '.join(modules) or 'none'}")
     return lines
