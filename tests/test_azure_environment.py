@@ -2,6 +2,7 @@ import subprocess
 
 import pytest
 
+from conftest import plain
 from pdt import deploy_azure, deploy_azure_container_apps
 
 SUBSCRIPTION = "11111111-1111-1111-1111-111111111111"
@@ -62,7 +63,7 @@ def plan_for(monkeypatch, settings, resources):
     monkeypatch.setattr(deploy_azure_container_apps, "image_action", lambda app, text: text)
     monkeypatch.setattr(deploy_azure_container_apps, "cost_estimate_for", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "confirm",
-                        lambda actions, *args: plans.append(actions) and False)
+                        lambda actions, *args: plans.append(plain(actions)) and False)
     return plans, calls
 
 
@@ -130,7 +131,7 @@ def release_with(monkeypatch, jobs, other_environments=()):
 def test_destroy_releases_the_environment_and_the_shared_group_when_nothing_uses_them(monkeypatch):
     release = release_with(monkeypatch, [job_in("pdt", SHARED)])
     assert release == deploy_azure_container_apps.Release(environment=True, group=True)
-    assert deploy_azure_container_apps.release_actions(deploy_settings(SHARED), release) == [
+    assert plain(deploy_azure_container_apps.release_actions(deploy_settings(SHARED), release)) == [
         "delete Container Apps environment pdt-shared/pdt-eastus2 (no other job uses it)",
         "delete resource group pdt-shared and the Log Analytics workspace pdt-logs in it",
     ]
@@ -155,17 +156,19 @@ def test_destroy_keeps_the_shared_group_while_another_region_has_an_environment(
 def test_destroy_keeps_the_environment_another_project_uses(monkeypatch):
     release = release_with(monkeypatch, [job_in("pdt", SHARED), job_in("pdt-other", SHARED),
                                          job_in("pdt-other", OWN)])
-    assert release == deploy_azure_container_apps.Release(
-        note="Container Apps environment pdt-shared/pdt-eastus2 still runs 1 job "
-             "in resource group pdt-other; keeping it")
+    assert (release.environment, release.group) == (False, False)
+    assert plain([release.note]) == [
+        "Container Apps environment pdt-shared/pdt-eastus2 still runs 1 job "
+        "in resource group pdt-other; keeping it"]
 
 
 def test_destroy_never_touches_a_user_environment(monkeypatch):
     monkeypatch.setattr(deploy_azure_container_apps, "az_json",
                         lambda *args: pytest.fail("looked at the environment"))
     release = deploy_azure_container_apps.environment_release(deploy_settings(OWN))
-    assert release == deploy_azure_container_apps.Release(
-        note="Container Apps environment my-group/my-env is your own; pdt leaves it as it is")
+    assert (release.environment, release.group) == (False, False)
+    assert plain([release.note]) == [
+        "Container Apps environment my-group/my-env is your own; pdt leaves it as it is"]
 
 
 def test_destroy_with_the_project_group_already_gone_still_releases_the_environment(monkeypatch):
@@ -180,7 +183,7 @@ def test_destroy_with_the_project_group_already_gone_still_releases_the_environm
     monkeypatch.setattr(deploy_azure_container_apps, "environment_release",
                         lambda settings: deploy_azure_container_apps.Release(environment=True, group=True))
     monkeypatch.setattr(deploy_azure_container_apps, "confirm",
-                        lambda actions, *args: plans.append(actions) or True)
+                        lambda actions, *args: plans.append(plain(actions)) or True)
     monkeypatch.setattr(deploy_azure_container_apps, "destroy_group",
                         lambda settings, name: pytest.fail("deleted a group that does not exist"))
     monkeypatch.setattr(deploy_azure_container_apps, "delete_unless_locked",
@@ -203,7 +206,7 @@ def test_destroy_with_the_project_group_already_gone_purges_its_soft_deleted_vau
     monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "false")
     monkeypatch.setattr(deploy_azure_container_apps, "managed_secret", lambda *args: False)
     monkeypatch.setattr(deploy_azure_container_apps, "confirm",
-                        lambda actions, *args: plans.append(actions) or True)
+                        lambda actions, *args: plans.append(plain(actions)) or True)
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
                         lambda *args, **kwargs: purged.append(args) or "")
     assert deploy_azure_container_apps.destroy({"name": "report", "storage": False}, True) == 0

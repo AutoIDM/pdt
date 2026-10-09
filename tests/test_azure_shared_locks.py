@@ -2,6 +2,7 @@ import subprocess
 
 import pytest
 
+from conftest import plain
 from pdt import deploy_azure, deploy_azure_container_apps
 
 SUBSCRIPTION = "11111111-1111-1111-1111-111111111111"
@@ -54,7 +55,7 @@ def fake_deploy(monkeypatch, answers):
     monkeypatch.setattr(module, "secret_state", lambda *args: (False, None))
     monkeypatch.setattr(module, "image_action", lambda app, text: text)
     monkeypatch.setattr(module, "cost_estimate_for", lambda *args: None)
-    monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(actions) or True)
+    monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(plain(actions)) or True)
     monkeypatch.setattr(module, "ensure_environment", lambda *args: None)
     monkeypatch.setattr(module, "ensure_group_and_vault", lambda *args: "/vault")
     monkeypatch.setattr(module, "assign_role", lambda *args: None)
@@ -132,7 +133,7 @@ def fake_destroy(monkeypatch, answers, locked_by):
     monkeypatch.setattr(deploy_azure, "delete_unless_locked", delete)
     monkeypatch.setattr(module, "delete_unless_locked", delete)
     monkeypatch.setattr(module, "managed_secret", lambda *args: False)
-    monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(actions) or True)
+    monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(plain(actions)) or True)
     return events, plans
 
 

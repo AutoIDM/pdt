@@ -127,9 +127,9 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
     timestamp = datetime.datetime.now(datetime.UTC).isoformat()
     job_id = resource_id(settings, "Microsoft.App", "jobs", job)
     console.heading("Azure Container Apps failure diagnostics:")
-    console.bullet(console.escape(f"resource group: {settings['resource_group']}"))
-    console.bullet(console.escape(f"job: {job}"))
-    console.bullet(console.escape(f"resource: {job_id}"))
+    console.bullet(f"resource group: {console.value(settings['resource_group'])}")
+    console.bullet(f"job: {console.value(job)}")
+    console.bullet(f"resource: {console.value(job_id)}")
     console.bullet(f"diagnostic time (UTC): {timestamp}")
 
     try:
@@ -254,7 +254,7 @@ def job_principal_id(job: str, rg: str) -> str:
                       "--resource-group", rg)
     principal = ((current or {}).get("identity") or {}).get("principalId")
     if not principal:
-        fail(f"could not read the identity of Container Apps Job {job}")
+        fail(f"could not read the identity of Container Apps Job {console.value(job)}")
     return principal
 
 
@@ -376,8 +376,9 @@ def set_job_paused(settings: dict, job: str, paused: bool) -> None:
 def pause(app: dict, settings: dict, paused: bool) -> int:
     job, _current = find_job(settings, app["name"])
     set_job_paused(settings, job, paused)
-    console.done(f"{'Paused' if paused else 'Unpaused'} {app['name']}: "
-                 f"Container Apps Job {job} is {'Suspended' if paused else 'Ready'}.")
+    console.done(f"{'Paused' if paused else 'Unpaused'} {console.value(app['name'])}: "
+                 f"Container Apps Job {console.value(job)} is "
+                 f"{'Suspended' if paused else 'Ready'}.")
     return 0
 
 
@@ -390,8 +391,8 @@ def start(app: dict, settings: dict) -> int:
     except ValueError:
         execution = None
     name = (execution or {}).get("name")
-    console.done(f"Started {app['name']}: execution {name}." if name
-                 else f"Started {app['name']}.")
+    console.done(f"Started {console.value(app['name'])}: execution {console.value(name)}."
+                 if name else f"Started {console.value(app['name'])}.")
     console.command(f"pdt runs {app['name']}", "see the run")
     return 0
 
@@ -424,7 +425,8 @@ def cost_estimate_for(region: str, currency: str, cron: str, job: str, rg: str,
             items, shown, converted = convert_from_usd(
                 items, currency, ("Azure's rate", lambda: exchange_rate(currency)))
     except Exception as exc:
-        fail(f"could not calculate the required monthly cost estimate: {exc}")
+        fail(f"could not calculate the required monthly cost estimate: "
+             f"{console.escape(str(exc))}")
     return cost_estimate(
         region, items, "excludes ACR storage and Log Analytics ingestion", shown,
         converted)
@@ -461,32 +463,35 @@ def environment_resource(settings: dict) -> dict | None:
 def check_environment(settings: dict, resource: dict | None) -> None:
     environment = settings["environment"]
     if environment.managed:
-        require_managed(resource, f"Container Apps environment {environment}")
+        require_managed(resource, f"Container Apps environment {console.value(environment)}")
         return
     if resource is None:
-        fail(f"the Container Apps environment {environment} named by "
-             f"platform.environment in {config.PROJECT_FILE} does not exist in "
-             f"subscription {settings['subscription']}")
+        fail(f"the Container Apps environment {console.value(environment)} named by "
+             f"platform.environment in {console.value(config.PROJECT_FILE)} does not exist in "
+             f"subscription {console.value(settings['subscription'])}")
     location = str(resource.get("location") or "").lower().replace(" ", "")
     if location and location != settings["region"]:
-        fail(f"the Container Apps environment {environment} is in {location}, but "
-             f"platform.region in {config.PROJECT_FILE} is {settings['region']}. A "
+        fail(f"the Container Apps environment {console.value(environment)} is in "
+             f"{console.value(location)}, but platform.region in "
+             f"{console.value(config.PROJECT_FILE)} is {console.value(settings['region'])}. A "
              "job must run in its environment's region; change one of them")
 
 
 def environment_actions(settings: dict, exists: bool, logs_exist: bool,
-                        shared_group_exists: bool) -> list[str]:
+                        shared_group_exists: bool) -> list[console.Markup]:
     environment = settings["environment"]
     if not environment.managed:
-        return [f"use your own Container Apps environment {environment}"]
+        return [console.Markup(
+            f"use your own Container Apps environment {console.value(environment)}")]
     shared = "(shared by every pdt project in this subscription)"
     return [
-        ("use existing" if shared_group_exists else "create")
-        + f" resource group {environment.resource_group} {shared}",
-        ("use existing" if logs_exist else "create")
-        + f" Log Analytics workspace {settings['workspace']} in {environment.resource_group}",
-        ("use existing" if exists else "create")
-        + f" Container Apps environment {environment} {shared}",
+        console.Markup(("use existing" if shared_group_exists else "create")
+                       + f" resource group {console.value(environment.resource_group)} {shared}"),
+        console.Markup(("use existing" if logs_exist else "create")
+                       + f" Log Analytics workspace {console.value(settings['workspace'])} in "
+                       f"{console.value(environment.resource_group)}"),
+        console.Markup(("use existing" if exists else "create")
+                       + f" Container Apps environment {console.value(environment)} {shared}"),
     ]
 
 
@@ -502,17 +507,17 @@ class Lock:
         return az_json("lock", "show", "--name", self.name, *self.scope) is not None
 
     def create(self) -> None:
-        console.step(f"creating lock {self.name} on {self.label}")
+        console.step(f"creating lock {console.value(self.name)} on {self.label}")
         run_quiet("lock", "create", "--name", self.name, "--lock-type", "CanNotDelete",
                   *self.scope, "--notes", "managed-by=pdt")
 
     def remove(self) -> None:
-        console.step(f"removing lock {self.name} from {self.label}")
+        console.step(f"removing lock {console.value(self.name)} from {self.label}")
         run_quiet("lock", "delete", "--name", self.name, *self.scope)
 
 
 def registry_lock(settings: dict, owner: str) -> Lock:
-    return Lock(owner, f"ACR {settings['registry']}", (
+    return Lock(owner, f"ACR {console.value(settings['registry'])}", (
         "--resource-group", settings["resource_group"],
         "--resource-name", settings["registry"],
         "--resource-type", "Microsoft.ContainerRegistry/registries"))
@@ -521,7 +526,7 @@ def registry_lock(settings: dict, owner: str) -> Lock:
 def environment_lock(settings: dict, owner: str) -> Lock:
     environment = settings["environment"]
     return Lock(clean_name(f"{owner}-in-{settings['resource_group']}"),
-                f"Container Apps environment {environment}", (
+                f"Container Apps environment {console.value(environment)}", (
                     "--resource-group", environment.resource_group,
                     "--resource-name", environment.name,
                     "--resource-type", ENVIRONMENT_TYPE))
@@ -548,7 +553,7 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
     logs_id, logs_key = ensure_workspace(settings, logs_exist)
     if exists:
         return
-    console.step(f"creating Container Apps environment {environment}")
+    console.step(f"creating Container Apps environment {console.value(environment)}")
     run_quiet("containerapp", "env", "create", "--name", environment.name,
               "--resource-group", environment.resource_group,
               "--location", settings["region"],
@@ -601,7 +606,7 @@ def retire_job(settings: dict[str, str], job: str, current: dict, store: dict | 
         if store:
             revoke_role(store["container_id"], principal, STORE_ROLE)
         revoke_role(secret_scope(settings, sid), principal, SECRET_ROLE)
-    console.step(f"deleting Container Apps Job {job}")
+    console.step(f"deleting Container Apps Job {console.value(job)}")
     run_quiet("containerapp", "job", "delete", "--name", job,
               "--resource-group", settings["resource_group"], "--yes")
 
@@ -637,37 +642,40 @@ def deploy(app: dict, assume_yes: bool) -> int:
     sid = secret_name(name)
     rg = settings["resource_group"]
 
-    console.status(f"Checking current state in Azure subscription {settings['subscription']} "
-          f"({settings['region']})...")
+    console.status("Checking current state in Azure subscription "
+                   f"{console.value(settings['subscription'])} "
+                   f"({console.value(settings['region'])})...")
     check_shared_names(settings)
     group = az_json("group", "show", "--name", rg)
-    require_managed(group, f"resource group {rg}")
+    require_managed(group, f"resource group {console.value(rg)}")
     group_exists = group is not None
     registry = az_json("acr", "show", "--name", settings["registry"],
                        "--resource-group", rg)
-    require_managed(registry, f"ACR {settings['registry']}")
+    require_managed(registry, f"ACR {console.value(settings['registry'])}")
     registry_exists = registry is not None
     environment = environment_resource(settings)
     check_environment(settings, environment)
     environment_exists = environment is not None
     identity = az_json("identity", "show", "--name", settings["identity"],
                        "--resource-group", rg)
-    require_managed(identity, f"managed identity {settings['identity']}")
+    require_managed(identity, f"managed identity {console.value(settings['identity'])}")
     logs_exist = shared_group_exists = False
     if settings["environment"].managed:
         shared_group = az_json("group", "show", "--name", settings["environment"].resource_group)
-        require_managed(shared_group, f"resource group {settings['environment'].resource_group}")
+        require_managed(shared_group,
+                        f"resource group {console.value(settings['environment'].resource_group)}")
         shared_group_exists = shared_group is not None
         workspace = workspace_resource(settings)
-        require_managed(workspace, f"Log Analytics workspace {settings['workspace']}")
+        require_managed(workspace,
+                        f"Log Analytics workspace {console.value(settings['workspace'])}")
         logs_exist = workspace is not None
     arm_auth_enabled = (
         acr_arm_auth_enabled(settings["registry"]) if registry_exists else False)
     current_job = az_json("containerapp", "job", "show", "--name", job,
                           "--resource-group", rg)
     if current_job and not owned_by(current_job, name):
-        fail(f"Container Apps Job {job} already exists but is not owned by "
-             f"PDT app {name}; choose another resource group")
+        fail(f"Container Apps Job {console.value(job)} already exists but is not owned by "
+             f"PDT app {console.value(name)}; choose another resource group")
     locks = shared_locks(settings, lock_owner(name))
     missing_locks = [lock for lock in locks if not lock.exists()]
     legacy = legacy_job_name(name)
@@ -683,38 +691,45 @@ def deploy(app: dict, assume_yes: bool) -> int:
     deployer = deployer_store(settings, name) if store_present else None
     usage = (store_usage(deployer) if deployer else (0, 0)) if store else None
 
+    image = f"{settings['registry']}.azurecr.io/{name}:latest"
     actions = ["register required Azure resource providers"]
     actions += environment_actions(settings, environment_exists, logs_exist,
                                    shared_group_exists)
-    actions.append(("use existing" if group_exists else "create")
-                   + f" resource group {rg}")
-    actions.append(("use existing" if registry_exists else "create")
-                   + f" ACR {settings['registry']} (Basic)")
-    actions.append(
+    actions.append(console.Markup(("use existing" if group_exists else "create")
+                                  + f" resource group {console.value(rg)}"))
+    actions.append(console.Markup(("use existing" if registry_exists else "create")
+                                  + f" ACR {console.value(settings['registry'])} (Basic)"))
+    actions.append(console.Markup(
         ("keep" if arm_auth_enabled else "enable")
-        + f" ACR authentication-as-arm on {settings['registry']} "
-        "(required for managed-identity image pulls)")
+        + f" ACR authentication-as-arm on {console.value(settings['registry'])} "
+        "(required for managed-identity image pulls)"))
     for lock in locks:
-        actions.append(f"create lock {lock.name} on {lock.label} (keeps it while {name} is deployed)"
-                       if lock in missing_locks else f"use existing lock {lock.name} on {lock.label}")
-    actions.append(("use existing" if identity else "create")
-                   + f" managed identity {settings['identity']}")
-    actions.append(("use existing" if vault_exists else "create")
-                   + f" Key Vault {settings['vault']} (RBAC)")
+        actions.append(console.Markup(
+            f"create lock {console.value(lock.name)} on {lock.label} (keeps it while "
+            f"{console.value(name)} is deployed)"
+            if lock in missing_locks
+            else f"use existing lock {console.value(lock.name)} on {lock.label}"))
+    actions.append(console.Markup(("use existing" if identity else "create")
+                                  + f" managed identity {console.value(settings['identity'])}"))
+    actions.append(console.Markup(("use existing" if vault_exists else "create")
+                                  + f" Key Vault {console.value(settings['vault'])} (RBAC)"))
     actions.append("ensure scoped Key Vault secret permissions for the deployer "
                    "and managed identity")
     if store:
         actions += store_plan(store, store_present, name, job)
     actions.append(image_action(
-        app, f"build and push image {settings['registry']}.azurecr.io/{name}:latest"))
+        app, console.Markup(f"build and push image {console.value(image)}")))
     actions += secret_actions(sid, values, current_secret, payload)
     if legacy_job:
-        actions.append(f"delete Container Apps Job {legacy} (its name is now {job})")
+        actions.append(console.Markup(f"delete Container Apps Job {console.value(legacy)} "
+                                      f"(its name is now {console.value(job)})"))
     if values:
-        actions.append(f"allow {job} to update its own Key Vault secret {sid}")
-    actions.append(("update" if current_job else "create")
-                   + f' Container Apps Job {job}: "{cron}" (UTC)'
-                   + (" (paused)" if app["pause"] else ""))
+        actions.append(console.Markup(f"allow {console.value(job)} to update its own Key Vault "
+                                      f"secret {console.value(sid)}"))
+    actions.append(console.Markup(("update" if current_job else "create")
+                                  + f' Container Apps Job {console.value(job)}: '
+                                  f'"{console.value(cron)}" (UTC)'
+                                  + (" (paused)" if app["pause"] else "")))
     if not confirm(actions, assume_yes, cost_estimate_for(
             settings["region"], regions.local_currency(), cron, job, rg,
             current_job is not None,
@@ -725,7 +740,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     ensure_environment(settings, environment_exists, logs_exist)
     vault_id = ensure_group_and_vault(settings, PROVIDERS, vault_exists)
     if not registry_exists:
-        console.step(f"creating ACR {settings['registry']}")
+        console.step(f"creating ACR {console.value(settings['registry'])}")
         run_quiet("acr", "create", "--name", settings["registry"],
                   "--resource-group", rg, "--location", settings["region"],
                   "--sku", "Basic", "--admin-enabled", "false",
@@ -733,12 +748,12 @@ def deploy(app: dict, assume_yes: bool) -> int:
     for lock in missing_locks:
         lock.create()
     if not identity:
-        console.step(f"creating managed identity {settings['identity']}")
+        console.step(f"creating managed identity {console.value(settings['identity'])}")
         identity = az_json("identity", "create", "--name", settings["identity"],
                            "--resource-group", rg, "--location", settings["region"],
                            "--tags", "managed-by=pdt")
     if not identity:
-        fail(f"could not read managed identity {settings['identity']}")
+        fail(f"could not read managed identity {console.value(settings['identity'])}")
     identity_id = identity["id"]
     principal_id = identity["principalId"]
 
@@ -748,16 +763,15 @@ def deploy(app: dict, assume_yes: bool) -> int:
     assign_role(vault_id, principal_id, "Key Vault Secrets User")
     if store:
         ensure_store(settings, store, store_present)
-    console.step(f"enabling ACR authentication-as-arm on {settings['registry']}")
+    console.step(f"enabling ACR authentication-as-arm on {console.value(settings['registry'])}")
     enable_acr_arm_auth(settings["registry"])
 
-    console.step(f"building image {settings['registry']}.azurecr.io/{name}:latest")
+    console.step(f"building image {console.value(image)}")
     build_image(app, settings["registry"], name)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
     if legacy_job:
         retire_job(settings, legacy, legacy_job, store, sid)
-    console.step(f"reconciling Container Apps Job {job}")
-    image = f"{settings['registry']}.azurecr.io/{name}:latest"
+    console.step(f"reconciling Container Apps Job {console.value(job)}")
     try:
         reconcile_job(settings, job, image, cron, identity_id, secret_uri,
                       store_url(store, name) if store else None,
@@ -773,7 +787,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if store:
         assign_role(store["container_id"], principal, STORE_ROLE,
                     condition=store_condition(name))
-    console.done(f"Deployed {name}.")
+    console.done(f"Deployed {console.value(name)}.")
     deployed_next_steps(name)
     return 0
 
@@ -812,8 +826,8 @@ class Release:
 def environment_release(settings: dict) -> Release:
     environment = settings["environment"]
     if not environment.managed:
-        return Release(note=f"Container Apps environment {environment} is your own; "
-                            "pdt leaves it as it is")
+        return Release(note=f"Container Apps environment {console.value(environment)} is your "
+                            "own; pdt leaves it as it is")
     resource = environment_resource(settings)
     if resource is None:
         group = az_json("group", "show", "--name", environment.resource_group)
@@ -828,19 +842,22 @@ def environment_release(settings: dict) -> Release:
 
 def users_note(settings: dict, users: dict[str, int]) -> str:
     count = sum(users.values())
-    return (f"Container Apps environment {settings['environment']} still runs {count} "
-            f"job{'s' if count != 1 else ''} in resource group"
-            f"{'s' if len(users) != 1 else ''} {', '.join(sorted(users))}; keeping it")
+    return (f"Container Apps environment {console.value(settings['environment'])} still runs "
+            f"{count} job{'s' if count != 1 else ''} in resource group"
+            f"{'s' if len(users) != 1 else ''} "
+            f"{', '.join(console.value(group) for group in sorted(users))}; keeping it")
 
 
-def release_actions(settings: dict, release: Release) -> list[str]:
+def release_actions(settings: dict, release: Release) -> list[console.Markup]:
     environment = settings["environment"]
     actions = []
     if release.environment:
-        actions.append(f"delete Container Apps environment {environment} (no other job uses it)")
+        actions.append(console.Markup(f"delete Container Apps environment "
+                                      f"{console.value(environment)} (no other job uses it)"))
     if release.group:
-        actions.append(f"delete resource group {environment.resource_group} and the Log "
-                       f"Analytics workspace {settings['workspace']} in it")
+        actions.append(console.Markup(
+            f"delete resource group {console.value(environment.resource_group)} and the Log "
+            f"Analytics workspace {console.value(settings['workspace'])} in it"))
     return actions
 
 
@@ -851,24 +868,27 @@ def release_environment(settings: dict, release: Release) -> None:
         if users:
             console.note(users_note(settings, users))
             return
-        console.step(f"deleting Container Apps environment {environment}")
+        console.step(f"deleting Container Apps environment {console.value(environment)}")
         locked = delete_unless_locked(
             "containerapp", "env", "delete", "--name", environment.name,
             "--resource-group", environment.resource_group, "--yes")
         if locked:
-            console.note(f"kept: Container Apps environment {environment} (locked by {locked})")
+            console.note(f"kept: Container Apps environment {console.value(environment)} "
+                         f"(locked by {console.value(locked)})")
             return
     if release.group:
-        console.step(f"deleting resource group {environment.resource_group}")
+        console.step(f"deleting resource group {console.value(environment.resource_group)}")
         locked = delete_unless_locked("group", "delete", "--name", environment.resource_group, "--yes")
         if locked:
-            console.note(f"kept: resource group {environment.resource_group} (locked by {locked})")
+            console.note(f"kept: resource group {console.value(environment.resource_group)} "
+                         f"(locked by {console.value(locked)})")
 
 
-def kept_line(store: dict[str, str], deployer, name: str) -> str:
+def kept_line(store: dict[str, str], deployer, name: str) -> console.Markup:
     usage = store_usage(deployer)
     if usage is None:
-        return f"kept: {store_description(store)} (data under {name}/)"
+        return console.Markup(f"kept: {store_description(store)} "
+                              f"(data under {console.value(f'{name}/')})")
     return store_kept_line(store_description(store), usage[0], name)
 
 
@@ -882,22 +902,24 @@ def destroy(app: dict, assume_yes: bool) -> int:
     managed_job = owned_by(current_job, name)
     secret_owned = managed_secret(settings, sid, name)
     if current_job and not managed_job:
-        console.note(f"Container Apps Job {job} is not owned by this app; keeping it")
+        console.note(f"Container Apps Job {console.value(job)} is not owned by this app; "
+                     "keeping it")
     store = store_settings(settings) if app["storage"] else None
     store_present = store_exists(store) if store else False
     deployer = deployer_store(settings, name) if store_present else None
     principal_id = ((current_job or {}).get("identity") or {}).get("principalId")
     grant = ""
     if deployer and managed_job and principal_id:
-        grant = (f"revoke {job}'s write access to {name}/ "
-                 f"in {store_description(store)}")
+        grant = console.Markup(f"revoke {console.value(job)}'s write access to "
+                               f"{console.value(f'{name}/')} in {store_description(store)}")
         warn_if_locked(deployer, name)
     others = other_pdt_apps(rg, name)
     # A run that stopped after the project group went may still owe the
     # environment, so a missing group takes the same path as a deletable one.
     group_exists = az_tsv("group", "exists", "--name", rg) == "true"
     held = [lock for lock in shared_locks(settings, lock_owner(name)) if lock.exists()]
-    unlock = [f"remove lock {lock.name} from {lock.label}" for lock in held]
+    unlock = [console.Markup(f"remove lock {console.value(lock.name)} from {lock.label}")
+              for lock in held]
     # A run stopped between the group delete and the purge leaves the vault
     # soft-deleted, still holding its global name.
     orphan_vault = not group_exists and managed_by_pdt((az_json(
@@ -909,17 +931,20 @@ def destroy(app: dict, assume_yes: bool) -> int:
             actions.append(grant)
         if group_exists:
             actions += [
-                f"delete resource group {rg} and everything in it: the job and the "
-                "shared ACR (with images), managed identity, and Key Vault",
-                f"purge the soft-deleted Key Vault {settings['vault']}",
+                console.Markup(f"delete resource group {console.value(rg)} and everything in "
+                               "it: the job and the shared ACR (with images), managed identity, "
+                               "and Key Vault"),
+                console.Markup(f"purge the soft-deleted Key Vault "
+                               f"{console.value(settings['vault'])}"),
             ]
         if orphan_vault:
-            actions.append(f"purge the soft-deleted Key Vault {settings['vault']}")
+            actions.append(console.Markup(f"purge the soft-deleted Key Vault "
+                                          f"{console.value(settings['vault'])}"))
         actions += release_actions(settings, release)
         if release.note:
             console.note(release.note)
         if not actions:
-            console.done(f"Nothing owned by {name} to remove.")
+            console.done(f"Nothing owned by {console.value(name)} to remove.")
             return 0
         if not confirm(actions, assume_yes):
             console.warn("Aborted; nothing was changed.")
@@ -929,7 +954,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if grant:
             revoke_role(store["container_id"], principal_id, STORE_ROLE)
         if orphan_vault:
-            console.step(f"purging soft-deleted Key Vault {settings['vault']}")
+            console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
             run_quiet("keyvault", "purge", "--name", settings["vault"])
         if group_exists and not destroy_group(settings, name):
             # Another app joined the group meanwhile, so this one leaves the
@@ -947,13 +972,15 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if grant:
         actions.append(grant)
     if managed_job:
-        actions.append(f"delete Container Apps Job {job}")
+        actions.append(console.Markup(f"delete Container Apps Job {console.value(job)}"))
     if image_exists:
-        actions.append(f"delete image repository {name} from ACR {settings['registry']}")
+        actions.append(console.Markup(f"delete image repository {console.value(name)} from ACR "
+                                      f"{console.value(settings['registry'])}"))
     if secret_owned:
-        actions.append(f"delete and purge Key Vault secret {sid}")
+        actions.append(console.Markup(f"delete and purge Key Vault secret {console.value(sid)}"))
     if not actions:
-        console.done(f"Nothing owned by {name} to remove in resource group {rg}.")
+        console.done(f"Nothing owned by {console.value(name)} to remove in resource group "
+                     f"{console.value(rg)}.")
         return 0
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
@@ -974,7 +1001,8 @@ def has_image(settings: dict, name: str) -> bool:
                        "--resource-group", settings["resource_group"])
     registry_owned = managed_by_pdt(registry)
     if registry is not None and not registry_owned:
-        console.note(f"ACR {settings['registry']} is not managed by PDT; keeping its images")
+        console.note(f"ACR {console.value(settings['registry'])} is not managed by PDT; "
+                     "keeping its images")
     return registry_owned and az_json(
         "acr", "repository", "show", "--name", settings["registry"],
         "--repository", name) is not None
