@@ -344,7 +344,7 @@ def summary_of(example: Path) -> str:
 def print_examples() -> None:
     for example in examples():
         console.name(example.name)
-        console.detail(summary_of(example))
+        console.detail(console.escape(summary_of(example)))
         console.say()
 
 
@@ -384,7 +384,7 @@ def new_app(name: str, source: str | None) -> int:
     console.say()
     console.heading("Next steps:")
     if needs_secrets:
-        console.bullet(f"open {name}/env.template and copy the names you need into .env")
+        console.bullet(console.escape(f"open {name}/env.template and copy the names you need into .env"))
     console.command("pdt validate")
     console.command(f"pdt run {name}")
     return 0

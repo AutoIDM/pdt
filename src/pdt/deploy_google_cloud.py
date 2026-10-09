@@ -119,7 +119,7 @@ def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
             return proc
         title = re.search(r"serviceTitle: (.+)", proc.stderr)
         what = title.group(1).strip() if title else "Google Cloud"
-        console.bullet(f"{what} is not ready yet; retrying in {wait}s...", indent=4)
+        console.bullet(f"{console.escape(what)} is not ready yet; retrying in {wait}s...", indent=4)
         time.sleep(wait)
 
 
@@ -730,7 +730,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
                + f" Artifact Registry repo {repo}"]
     actions.append(image_action(app, f"build and push image {image}"))
     if secret_state:
-        actions.append(f"{secret_state} secret {sid} ({secret_contents(values)}, as one json blob)")
+        actions.append(console.Markup(f"{secret_state} secret {console.escape(sid)} "
+                                      f"({secret_contents(values)}, as one json blob)"))
     if values:
         actions.append(f"allow {job} to update its own secret {sid}")
     actions.append(("use existing" if sa_exists else "create") + f" service account {sa}")
@@ -945,7 +946,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if kept:
             console.heading("Still present:")
             for resource in kept:
-                console.bullet(f"{resource}")
+                console.bullet(console.escape(str(resource)))
         return 0
     if revoke_grant:
         warn_if_locked(store, name)
@@ -985,7 +986,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if kept:
         console.heading("Still present:")
         for resource in kept:
-            console.bullet(f"{resource}")
+            console.bullet(console.escape(str(resource)))
     elif not remaining:
         console.done("Nothing remains.")
     return 0
