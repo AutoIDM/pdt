@@ -12,6 +12,11 @@ progress line, a side note. Colour otherwise marks state and nothing
 else: red for a failure, green for a success, yellow for something the
 user should read but need not act on. Everything else prints unstyled.
 
+A message is rich markup. Wrap each value in value(), so it prints bold
+inside a coloured or dim line, and pass text that pdt did not write (a
+cloud's output, an error, a file's content) through escape().
+tests/test_console_values.py fails on a value that is not wrapped.
+
 Import the module, not its functions: `from pdt import console`, then
 `console.error(...)`. The names here are short and would collide.
 """
@@ -24,7 +29,7 @@ from rich.text import Text
 
 # soft_wrap keeps a long path or command on one logical line: the terminal
 # wraps it at the edge, and rich never re-flows it at a word boundary.
-_console = Console(highlight=False, soft_wrap=True)
+_console = Console(highlight=False, soft_wrap=True, emoji=False)
 
 INDENT = 6
 
@@ -34,8 +39,8 @@ def width() -> int:
 
 
 def say(message: str = "") -> None:
-    """A plain line. Square brackets and :emoji: codes in `message` stay literal."""
-    _console.print(message, markup=False, emoji=False)
+    """A line with no colour."""
+    _console.print(message)
 
 
 def progress(text: str) -> None:
@@ -50,7 +55,7 @@ def styled(message: str) -> None:
 
 def status(message: str) -> None:
     """A line about work in progress, such as a fetch or a login."""
-    _console.print(f"[dim]{escape(message)}[/]")
+    _console.print(f"[dim]{message}[/]")
 
 
 def field(label: str, value: str) -> None:
@@ -67,34 +72,34 @@ def choice(number: int, label: str, detail: str = "") -> None:
 
 
 def error(message: str) -> None:
-    _console.print(f"[bold red]error:[/] {escape(message)}")
+    _console.print(f"[bold red]error:[/] {message}")
 
 
 def note(message: str) -> None:
     """Something pdt did not do, and why."""
-    _console.print(f"[yellow]note:[/] {escape(message)}")
+    _console.print(f"[yellow]note:[/] {message}")
 
 
 def warn(message: str) -> None:
     """A caution with no label, such as a re-prompt after a bad answer."""
-    _console.print(f"[yellow]{escape(message)}[/]")
+    _console.print(f"[yellow]{message}[/]")
 
 
 def step(message: str) -> None:
     """One reconcile action, printed as it happens."""
-    _console.print(f"[bold cyan]==>[/] {escape(message)}")
+    _console.print(f"[bold cyan]==>[/] {message}")
 
 
 def done(message: str) -> None:
-    _console.print(f"[bold green]{escape(message)}[/]")
+    _console.print(f"[green]{message}[/]")
 
 
 def failed(message: str) -> None:
-    _console.print(f"[bold red]{escape(message)}[/]")
+    _console.print(f"[red]{message}[/]")
 
 
 def heading(message: str) -> None:
-    _console.print(f"[bold]{escape(message)}[/]")
+    _console.print(f"[bold]{message}[/]")
 
 
 def name(text: str) -> None:
@@ -103,13 +108,14 @@ def name(text: str) -> None:
 
 
 class Markup(str):
-    """A plan line that is already rich markup. deploy.confirm escapes every other line."""
+    """Text that is already rich markup, such as a plan line. deploy.confirm escapes
+    every plan line that is not one."""
 
 
-def value(text: str) -> str:
-    """Markup that prints `text` bold, for a line that detail() or bullet() prints.
-    Inside dim text the value is bold and not dim, so it stands out."""
-    return f"[bold not dim]{escape(text)}[/]"
+def value(text: object) -> str:
+    """Markup that prints `text` bold. Inside dim text the value is bold and not dim,
+    so it stands out."""
+    return f"[bold not dim]{escape(str(text))}[/]"
 
 
 def detail(text: str, indent: int = INDENT) -> None:
@@ -194,7 +200,8 @@ def secret_changes(rows: list[tuple[str, str, str, str]]) -> None:
     widths = [max(len(cell) for cell in column) for column in zip(headers, *rows)]
     _console.print(_row(headers, widths, ["bold"] * len(headers)))
     for row in rows:
-        _console.print(_row(list(row), widths, [SECRET_CHANGE_COLOURS[row[0]]] * len(row)))
+        colour = SECRET_CHANGE_COLOURS[row[0]]
+        _console.print(_row(list(row), widths, [colour, f"bold {colour}", colour, colour]))
 
 
 def log_line(time: str, level: str, message: str) -> None:
