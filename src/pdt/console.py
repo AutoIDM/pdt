@@ -23,6 +23,9 @@ Import the module, not its functions: `from pdt import console`, then
 
 from __future__ import annotations
 
+import os
+import sys
+
 from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
@@ -31,11 +34,31 @@ from rich.text import Text
 # wraps it at the edge, and rich never re-flows it at a word boundary.
 _console = Console(highlight=False, soft_wrap=True, emoji=False)
 
+# Where `data` writes. pdt.deploy sets PDT_JSON_OUTPUT for a provider script
+# that prints --json output, and the script then points its own stdout, and
+# that of each program it starts, at stderr, so only `data` reaches stdout.
+_data = None
+if os.environ.get("PDT_JSON_OUTPUT"):
+    _data = os.fdopen(os.dup(1), "w")
+    os.dup2(2, 1)
+
 INDENT = 6
 
 
 def width() -> int:
     return _console.width
+
+
+def to_stderr() -> None:
+    """Print every line on stderr from now on, so stdout holds only what `data` prints."""
+    _console.stderr = True
+
+
+def data(text: str) -> None:
+    """Output for a program to read, such as a --json document."""
+    out = _data or sys.stdout
+    out.write(text + "\n")
+    out.flush()
 
 
 def say(message: str = "") -> None:

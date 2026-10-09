@@ -404,6 +404,8 @@ def cmd_health(args) -> int:
         names = config.find_apps()
         if not names:
             say_no_apps()
+            if args.json:
+                console.data("[]")
             return 0
     else:
         name = choose_app(args.app, "health", quiet=args.json)
@@ -640,6 +642,8 @@ def main() -> int:
     if args.command is None:
         parser.print_help()
         return 0
+    if getattr(args, "json", False):
+        console.to_stderr()
     try:
         return args.func(args)
     except ConfigError as e:

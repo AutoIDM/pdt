@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from pdt import runs_cli
+from pdt import console, runs_cli
 from pdt.runs_cli import Line, Run
 
 pytestmark = pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset to set TZ")
@@ -378,6 +378,18 @@ def test_logs_errors_keeps_warnings_errors_and_plain_lines(capsys):
 def test_logs_with_no_runs(capsys):
     assert runs_cli.logs(list, read, "my-report", ["--failed"]) == 0
     assert capsys.readouterr().out == "my-report has not run yet.\n"
+
+
+@pytest.mark.parametrize("list_runs, rest", [
+    (list, ["--json"]),
+    (list, ["--failed", "--json"]),
+    (lambda: [NEWEST], ["--failed", "--json"]),
+    (lambda: [OLDER], ["--since", "1h", "--json"]),
+])
+def test_logs_json_with_no_run_to_read_prints_an_empty_list(capsys, list_runs, rest):
+    console.to_stderr()
+    assert runs_cli.logs(list_runs, read, "my-report", rest) == 0
+    assert capsys.readouterr().out == "[]\n"
 
 
 def test_logs_out_of_range(capsys):

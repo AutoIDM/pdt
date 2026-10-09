@@ -14,6 +14,8 @@ child agrees with the parent about which project it is working on.
 PDT_CLI_VERSION does the same for pdt's version: from a clone, the script
 imports pdt from src/, where no package metadata says which version it is,
 and the image a PowerShell app builds pins pdt-cli at that version.
+PDT_JSON_OUTPUT tells a script given `--json` to print every line but the
+JSON on stderr; see `pdt.console`.
 """
 
 from __future__ import annotations
@@ -78,21 +80,25 @@ def provider_command(provider: str, command: str, app_name: str, assume_yes: boo
     return args + (extra or [])
 
 
-def provider_env() -> dict[str, str]:
-    return dict(os.environ, PDT_PROJECT=str(config.find_project()), PDT_CLI_VERSION=__version__)
+def provider_env(extra: list[str] | None = None) -> dict[str, str]:
+    env = dict(os.environ, PDT_PROJECT=str(config.find_project()), PDT_CLI_VERSION=__version__)
+    if "--json" in (extra or []):
+        env["PDT_JSON_OUTPUT"] = "1"
+    return env
 
 
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
              extra: list[str] | None = None) -> int:
     args = provider_command(provider, command, app_name, assume_yes, extra)
-    return subprocess.run(args, check=False, env=provider_env()).returncode
+    return subprocess.run(args, check=False, env=provider_env(extra)).returncode
 
 
 def dispatch_output(provider: str, command: str, app_name: str,
                     extra: list[str]) -> tuple[int, str]:
-    """Like dispatch, but return the provider script's output instead of showing it."""
+    """Like dispatch, but return what the provider script prints on stdout."""
     proc = subprocess.run(provider_command(provider, command, app_name, False, extra),
-                          check=False, env=provider_env(), stdout=subprocess.PIPE, text=True)
+                          check=False, env=provider_env(extra), stdout=subprocess.PIPE,
+                          text=True)
     return proc.returncode, proc.stdout
 
 
@@ -244,8 +250,6 @@ def health(app_names: list[str], as_json: bool) -> int:
         # never leaks into the next app's run.
         code, output = dispatch_output(provider, "runs", app_name, ["--", "--json"])
         app_runs[app_name] = runs_cli.parse_runs(output) if code == 0 else None
-        if app_runs[app_name] is None:
-            console.say(console.escape(output.rstrip()))
     return runs_cli.health(app_runs, as_json)
 
 

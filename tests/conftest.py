@@ -4,9 +4,17 @@ from pathlib import Path
 import pytest
 from rich.text import Text
 
+from pdt import console
+
 # verify/scripts holds the live verification framework. It ships with the
 # user's project, not with the wheel, so it is not importable as a package.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "verify" / "scripts"))
+
+
+@pytest.fixture(autouse=True)
+def console_on_stdout(monkeypatch):
+    # A --json command moves pdt.console to stderr for the rest of the process.
+    monkeypatch.setattr(console._console, "stderr", False)
 
 
 @pytest.fixture

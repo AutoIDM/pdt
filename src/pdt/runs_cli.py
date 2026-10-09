@@ -248,7 +248,7 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
     if resolve is not None:
         resolve(found)
     if args.json:
-        console.say(console.escape(json.dumps([run_json(run) for run in found])))
+        console.data(json.dumps([run_json(run) for run in found]))
         return 0
     if not found:
         say_not_run(app_name, args, since, span)
@@ -314,6 +314,8 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
             resolve(chosen)
     elif not shown and (not found or args.failed or args.number is None):
         say_not_run(app_name, args, since, span)
+        if args.json:
+            console.data("[]")
         return 0
     elif args.failed:
         if resolve is not None:
@@ -322,6 +324,8 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
         if not failed:
             console.say(f"{console.value(app_name)} has no failed run in its last "
                         f"{len(shown)} runs.")
+            if args.json:
+                console.data("[]")
             return 0
         chosen = [failed[0]]
     else:
@@ -358,8 +362,7 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
             return follow(list_runs, read_lines, resolve, run, app_name, args.errors, delay)
         say_lag(run, app_name, total, store, delay)
     if args.json:
-        console.say(console.escape(
-            json.dumps(output if len(args.id or []) > 1 else output[chosen[0].id])))
+        console.data(json.dumps(output if len(args.id or []) > 1 else output[chosen[0].id]))
     return 1 if any(run.status == "failed" for run in chosen) else 0
 
 
@@ -463,7 +466,7 @@ def health(app_runs: dict[str, list[Run] | None], as_json: bool) -> int:
     """One row per app. `None` stands for an app whose runs could not be read."""
     rows = [health_row(app_name, found) for app_name, found in app_runs.items()]
     if as_json:
-        console.say(console.escape(json.dumps(rows)))
+        console.data(json.dumps(rows))
     else:
         console.table(
             ["App", "Status", "Last run", "Recent"],

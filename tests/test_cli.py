@@ -1,5 +1,7 @@
 import argparse
+import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -486,14 +488,70 @@ def test_deploy_all_with_an_app_name_is_refused(project, monkeypatch, capsys):
     assert "pick an app or --all, not both" in capsys.readouterr().out
 
 
-def test_health_of_one_app_relays_a_provider_failure(project, monkeypatch, capsys):
+def test_health_of_one_app_shows_a_provider_failure_as_unknown(project, monkeypatch, capsys):
     add_app(project, "hello-world", "schedule: daily\n")
-    monkeypatch.setattr(deploy, "dispatch_output",
-                        lambda *a: (1, "error: not signed in to Azure\n"))
+    monkeypatch.setattr(deploy, "dispatch_output", lambda *a: (1, ""))
     assert run_cli(monkeypatch, "health", "hello-world") == 1
+    assert "unknown" in capsys.readouterr().out
+
+
+JSON_COMMANDS = [name for name, command in cli.build_parser().commands.items()
+                 if "--json" in command._option_string_actions]
+
+
+def no_apps(project, monkeypatch):
+    pass
+
+
+def no_project(project, monkeypatch):
+    outside = project.parent / f"{project.name}-outside"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+
+
+def provider_fails(project, monkeypatch):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: console.error("not signed in") or 1)
+    monkeypatch.setattr(deploy, "dispatch_output", lambda *a: (1, ""))
+
+
+def unknown_provider(project, monkeypatch):
+    add_app(project, "hello-world", "platform:\n  provider: nowhere\n")
+
+
+@pytest.mark.parametrize("case", [no_apps, no_project, provider_fails, unknown_provider])
+@pytest.mark.parametrize("command", JSON_COMMANDS)
+def test_json_stdout_holds_only_json(project, monkeypatch, capsys, command, case):
+    case(project, monkeypatch)
+    argv = [command, "--json"] if case is no_apps else [command, "hello-world", "--json"]
+    code = run_cli(monkeypatch, *argv)
     out = capsys.readouterr().out
-    assert "error: not signed in to Azure" in out
-    assert "unknown" in out
+    if out == "":
+        assert code != 0
+    else:
+        json.loads(out)
+
+
+def test_json_commands_are_found():
+    assert {"health", "runs", "logs"} <= set(JSON_COMMANDS)
+
+
+def test_health_json_without_apps_prints_an_empty_list(project, monkeypatch, capsys):
+    assert run_cli(monkeypatch, "health", "--json") == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == []
+    assert "This project has no apps yet." in captured.err
+
+
+def test_a_provider_script_for_json_prints_only_the_data_on_stdout(project):
+    src = Path(deploy.__file__).resolve().parent.parent
+    code = (f"import subprocess, sys; sys.path.insert(0, {str(src)!r}); "
+            "from pdt import console; console.say('Signing in...'); "
+            "subprocess.run([sys.executable, '-c', 'print(1)']); console.data('[]')")
+    proc = subprocess.run([sys.executable, "-c", code], env=deploy.provider_env(["--", "--json"]),
+                          check=True, capture_output=True, text=True)
+    assert proc.stdout == "[]\n"
+    assert proc.stderr == "Signing in...\n1\n"
 
 
 def test_cloud_cli_passthroughs_are_registered():
