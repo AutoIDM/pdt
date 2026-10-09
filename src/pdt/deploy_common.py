@@ -38,10 +38,9 @@ machine and pushes it to its own registry. Docker is the one tool a
 deploy needs that pdt cannot install, so `docker_preflight` stops the
 deploy before it touches the cloud and says so.
 
-A build run by docker on the deploying machine forwards that machine's
-SSH agent when one is running, so a RUN step marked
-`--mount=type=ssh` can install a private git dependency. Remote
-builders (`az acr build`, Cloud Build) have no agent to forward.
+The build forwards the deploying machine's SSH agent when one is
+running, so a RUN step marked `--mount=type=ssh` can install a private
+git dependency.
 
 Every provider also shares one data store per account, named
 `pdt-data-<suffix>` by `store_name` and tagged with `STORE_TAGS`; it

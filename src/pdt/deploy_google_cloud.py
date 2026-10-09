@@ -63,8 +63,8 @@ from pdt import regions
 from pdt.deploy import confirm
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, convert_from_usd, docker_preflight, fail, fetch_json, gather_secrets,
-    image_action, run_build, run_secrets, stage_build_context, store_cost_label, store_kept_line,
-    store_name, store_plan_lines, warn_if_locked, write_dockerfile)
+    image_action, run_build, run_secrets, ssh_build_args, stage_build_context, store_cost_label,
+    store_kept_line, store_name, store_plan_lines, warn_if_locked, write_dockerfile)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -478,7 +478,8 @@ def build_image(app: dict, image: str, region: str) -> None:
         run_build(["docker", "login", "--username", "oauth2accesstoken", "--password-stdin",
                    f"https://{region}-docker.pkg.dev"], data=token)
         # Cloud Run runs only linux/amd64 images.
-        run_build(["docker", "build", "--platform", "linux/amd64", "-t", image, str(stage)])
+        run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
+                   "-t", image, str(stage)])
         run_build(["docker", "push", image])
     finally:
         shutil.rmtree(stage, ignore_errors=True)

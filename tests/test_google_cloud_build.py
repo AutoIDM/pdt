@@ -24,6 +24,7 @@ def fake_build(monkeypatch, tmp_path, build):
 
 def test_logs_in_builds_for_amd64_and_pushes_to_artifact_registry(tmp_path, monkeypatch):
     calls = []
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     stage = fake_build(monkeypatch, tmp_path,
                        lambda command, data=None: calls.append((command, data)))
     google.build_image(app_at(tmp_path), IMAGE, "us-central1")
