@@ -255,7 +255,7 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
         return 0
     rows = [[str(run.number), started_text(run), duration_text(run), run.status,
              "-" if run.exit_code is None else str(run.exit_code), run.id] for run in found]
-    row_styles = [["bold", "", "", console.RUN_STATUS_COLOURS[run.status], "", "dim"]
+    row_styles = [["bold", "", "", console.RUN_STATUS_COLOURS[run.status], "", "bold"]
                   for run in found]
     console.table(["#", "Started", "Duration", "Status", "Exit Code", "Id"], rows,
                   row_styles=row_styles)
@@ -475,5 +475,5 @@ def health(app_runs: dict[str, list[Run] | None], as_json: bool) -> int:
               if row["last_run"] else "",
               f"{row['succeeded']} of {row['runs']} succeeded" if row["runs"] else ""]
              for row in rows],
-            row_styles=[["bold cyan", console.RUN_STATUS_COLOURS[row["status"]]] for row in rows])
+            row_styles=[["bold", console.RUN_STATUS_COLOURS[row["status"]]] for row in rows])
     return 1 if any(row["status"] in ("failed", "unknown") for row in rows) else 0

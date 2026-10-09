@@ -149,7 +149,7 @@ def cmd_list(args) -> int:
              "true" if record["enabled"] else "false",
              "-" if record["paused"] is None else "true" if record["paused"] else "false"]
             for record in records]
-    console.table(["name", "schedule", "platform", "enabled", "paused"], rows, ["bold cyan"])
+    console.table(["name", "schedule", "platform", "enabled", "paused"], rows, ["bold"])
     return 0
 
 
