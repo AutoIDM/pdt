@@ -17,8 +17,6 @@ Import the module, not its functions: `from pdt import console`, then
 
 from __future__ import annotations
 
-import textwrap
-
 from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
@@ -103,18 +101,36 @@ def name(text: str) -> None:
     _console.print(f"  [bold cyan]{escape(text)}[/]")
 
 
+def value(text: str) -> str:
+    """Markup that prints `text` bold, for a line that detail() or bullet() prints.
+    Inside dim text the value is bold and not dim, so it stands out."""
+    return f"[bold not dim]{escape(text)}[/]"
+
+
 def detail(text: str, indent: int = INDENT) -> None:
-    """Prose under a name, wrapped to the terminal and indented. A name such as
-    Import-Module stays whole on one line."""
-    _console.print(textwrap.fill(text, width=_console.width,
-                                 initial_indent=" " * indent,
-                                 subsequent_indent=" " * indent,
-                                 break_on_hyphens=False),
-                   markup=False)
+    """Marked-up prose under a name, wrapped to the terminal and indented. A line
+    breaks only at a space, so a name such as Import-Module stays whole. Spaces
+    at the start of `text` indent every line of it."""
+    stripped = text.lstrip(" ")
+    indent += len(text) - len(stripped)
+    for part in Text.from_markup(stripped).wrap(_console, max(10, _console.width - indent)):
+        part.rstrip()
+        _console.print(Text(" " * indent) + part)
 
 
 def bullet(text: str, indent: int = 2) -> None:
-    _console.print(f"{' ' * indent}{text}", markup=False)
+    """A marked-up line, indented."""
+    _console.print(f"{' ' * indent}{text}")
+
+
+def rows(heading: str, items: list[tuple[str, str]]) -> list[str]:
+    """Lines for detail(): `heading` and each value bold with its marked-up note, on one
+    line when there is one value, else one aligned row per value under the heading."""
+    if len(items) == 1:
+        return [f"{heading} {value(items[0][0])} ({items[0][1]})"]
+    width = max(len(name) for name, _ in items)
+    return [heading, *(f"  {value(name)}{' ' * (width - len(name))}  {note}"
+                       for name, note in items)]
 
 
 def command(text: str, note: str = "", indent: int = 2) -> None:
