@@ -1,3 +1,8 @@
+import ast
+from pathlib import Path
+
+import pytest
+
 from pdt import console
 
 
@@ -41,3 +46,30 @@ def test_choice_and_field_keep_text_literal(capsys):
     out = capsys.readouterr().out
     assert "  1) proj [x]  detail [y]" in out
     assert "Run logs: https://a/b?c=[1]" in out
+
+
+@pytest.mark.parametrize("default, answer, expected", [
+    (False, "", False), (False, "y", True), (True, "", True), (True, "n", False)])
+def test_confirm_prompts_on_stdout(monkeypatch, capsys, default, answer, expected):
+    monkeypatch.setattr("builtins.input", lambda prompt="": answer)
+    assert console.confirm("Log in now?", default=default) is expected
+    captured = capsys.readouterr()
+    assert captured.out == f"Log in now? [{'Y/n' if default else 'y/N'}] "
+    assert captured.err == ""
+
+
+def test_ask_prompts_on_stdout(monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda prompt="": " 2 ")
+    assert console.ask("Deploy to which one? [1-3]") == "2"
+    assert capsys.readouterr() == ("Deploy to which one? [1-3]: ", "")
+
+
+def test_only_console_calls_input():
+    # input() writes its prompt to stderr when stdin and stdout are a terminal,
+    # and `meltano invoke` shows stderr only one whole line at a time.
+    src = Path(console.__file__).parent
+    callers = [str(path.relative_to(src)) for path in src.rglob("*.py")
+               if "examples" not in path.parts and path.name != "console.py"
+               for node in ast.walk(ast.parse(path.read_text()))
+               if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "input"]
+    assert callers == [], "prompt with console.ask or console.confirm instead of input()"

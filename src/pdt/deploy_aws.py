@@ -341,7 +341,7 @@ def can_ask() -> bool:
 
 def ask(prompt: str) -> str:
     try:
-        return input(prompt).strip()
+        return console.ask(prompt)
     except EOFError:
         return ""
 
@@ -363,7 +363,7 @@ def choose_profile(app: dict, session) -> str:
     console.heading("No AWS profile is selected. Profiles on this computer:")
     for number, profile in enumerate(profiles, start=1):
         console.choice(number, profile)
-    answer = ask(f"Which profile do you want to use? [1-{len(profiles)}] ")
+    answer = ask(f"Which profile do you want to use? [1-{len(profiles)}]")
     if answer.isdigit() and 1 <= int(answer) <= len(profiles):
         profile = profiles[int(answer) - 1]
     elif answer in profiles:
@@ -410,8 +410,10 @@ def sso_login(profile: str | None) -> bool:
     if not can_ask():
         console.say(f"Log in first: {shown}")
         return False
-    answer = ask(f"Log in now with `{shown}` (opens a browser)? [y/N] ")
-    if answer.lower() not in ("y", "yes"):
+    try:
+        if not console.confirm(f"Log in now with `{shown}` (opens a browser)?"):
+            return False
+    except EOFError:
         return False
     return subprocess.run(command, check=False).returncode == 0
 

@@ -112,7 +112,7 @@ def oauth_setup_help(host: str, configured_auth: str,
 
 def _ask(prompt: str) -> str:
     try:
-        return input(prompt).strip()
+        return console.ask(prompt)
     except EOFError:
         return ""
 
@@ -132,9 +132,9 @@ def prompt_oauth_client(host: str, configured_auth: str, client_id: str,
     console.say("Paste the values now, or press Enter to stop.")
     values = {}
     if client_id == "":
-        values["PDT_SMTP_OAUTH_CLIENT_ID"] = _ask("OAuth client ID: ")
+        values["PDT_SMTP_OAUTH_CLIENT_ID"] = _ask("OAuth client ID")
     if provider == "google" and client_secret == "":
-        values["PDT_SMTP_OAUTH_CLIENT_SECRET"] = _ask("OAuth client secret: ")
+        values["PDT_SMTP_OAUTH_CLIENT_SECRET"] = _ask("OAuth client secret")
     if any(value == "" for value in values.values()):
         return False
     for name, value in values.items():
@@ -231,10 +231,10 @@ def _confirm(provider: str, user: str) -> None:
         console.say("PDT will not request permission to read email.")
     console.say()
     try:
-        answer = input(f"Open {name} sign-in now? [Y/n] ").strip().lower()
+        answer = console.confirm(f"Open {name} sign-in now?", default=True)
     except EOFError:
-        answer = "n"
-    if answer not in ("", "y", "yes"):
+        answer = False
+    if not answer:
         raise OAuthError("OAuth authorization was not completed")
 
 
