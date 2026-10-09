@@ -49,8 +49,8 @@ from pdt.deploy_azure import (
     store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, convert_from_usd, docker_preflight, fail, gather_secrets, image_action,
-    run_build, run_secrets, ssh_build_args, stage_build_context, store_kept_line,
+    CostEstimate, convert_from_usd, deployed_next_steps, docker_preflight, fail, gather_secrets,
+    image_action, run_build, run_secrets, ssh_build_args, stage_build_context, store_kept_line,
     warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
@@ -127,9 +127,9 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
     timestamp = datetime.datetime.now(datetime.UTC).isoformat()
     job_id = resource_id(settings, "Microsoft.App", "jobs", job)
     console.heading("Azure Container Apps failure diagnostics:")
-    console.bullet(f"resource group: {settings['resource_group']}")
-    console.bullet(f"job: {job}")
-    console.bullet(f"resource: {job_id}")
+    console.bullet(console.escape(f"resource group: {settings['resource_group']}"))
+    console.bullet(console.escape(f"job: {job}"))
+    console.bullet(console.escape(f"resource: {job_id}"))
     console.bullet(f"diagnostic time (UTC): {timestamp}")
 
     try:
@@ -153,11 +153,11 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
         identities = data.get("userAssignedIdentities") or {}
         if not isinstance(identities, dict):
             identities = {}
-        console.bullet(f"provisioning state: {data.get('provisioningState')}")
-        console.bullet(f"environment: {data.get('environmentId')}")
-        console.bullet(f"identity type: {data.get('identityType')}")
-        console.bullet(f"user assigned identities: {list(identities)}")
-        console.bullet(f"owned tags: {tags}")
+        console.bullet(console.escape(f"provisioning state: {data.get('provisioningState')}"))
+        console.bullet(console.escape(f"environment: {data.get('environmentId')}"))
+        console.bullet(console.escape(f"identity type: {data.get('identityType')}"))
+        console.bullet(console.escape(f"user assigned identities: {list(identities)}"))
+        console.bullet(console.escape(f"owned tags: {tags}"))
 
     try:
         events = az_json(
@@ -179,11 +179,11 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
         console.note("no recent activity log events matched this job")
         return
     for event in matching[:5]:
-        console.bullet(
+        console.bullet(console.escape(
             f"activity: {event.get('eventTimestamp')} "
             f"{event.get('operationName')} {event.get('status')} "
             f"{event.get('subStatus')} correlation {event.get('correlationId')} "
-            f"error {_activity_error(event.get('statusMessage'))}")
+            f"error {_activity_error(event.get('statusMessage'))}"))
 
 
 def set_job_secret(job: str, rg: str, secret_uri: str, identity_id: str) -> None:
@@ -774,8 +774,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         assign_role(store["container_id"], principal, STORE_ROLE,
                     condition=store_condition(name))
     console.done(f"Deployed {name}.")
-    console.field("Run it once", f"pdt az containerapp job start --name {job} --resource-group {rg}")
-    console.field("Run logs (Execution history tab)", job_history_url(settings, job))
+    deployed_next_steps(name)
     return 0
 
 

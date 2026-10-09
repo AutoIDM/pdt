@@ -258,7 +258,7 @@ def retry(operation, retryable, reason: str, delays: tuple[int, ...], sleep=time
         except Exception as exc:
             if delay is None or not retryable(exc):
                 raise
-            console.bullet(f"{reason}; retrying in {delay}s...", indent=4)
+            console.bullet(f"{console.escape(reason)}; retrying in {delay}s...", indent=4)
             sleep(delay)
     raise AssertionError("unreachable")
 
@@ -273,7 +273,7 @@ def adopt_account(app: dict, session) -> str:
     identity = session.client("sts").get_caller_identity()
     account = identity["Account"]
     console.field("These credentials belong to AWS account", account)
-    console.bullet(f"{identity['Arn']}")
+    console.bullet(console.escape(identity["Arn"]))
     saved = config.save_platform_key(app, "account", account)
     console.done(f"Saved account {account} to {saved.relative_to(config.find_project())}.")
     return account
@@ -369,9 +369,11 @@ def choose_profile(app: dict, session) -> str:
     profiles = session.available_profiles
     if not profiles:
         console.warn("No AWS credentials or profiles were found on this computer.")
-        console.say("Create a profile first, then select it:")
-        console.command("pdt aws configure sso", "or: pdt aws configure")
-        console.command("profile: <profile-name>", "under platform: in pdt.yml")
+        console.next_steps([("pdt aws configure sso",
+                             f"create a profile (or: {console.value('pdt aws configure')})"),
+                            ("profile: <profile-name>", f"select it under {console.value('platform:')} "
+                                                        f"in {console.value('pdt.yml')}")],
+                           "Create a profile first, then select it:")
         fail("run the same command again after you create a profile")
     if len(profiles) == 1:
         console.field("Using the only AWS profile on this computer", profiles[0])

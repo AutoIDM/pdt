@@ -192,6 +192,9 @@ class CostEstimate:
 
     def show(self) -> None:
         console.cost(self.items, self.prices, self.excludes, self.currency)
+        if self.currency != "USD":
+            console.styled(f"[dim]pdt shows {console.value(self.currency)}, the currency of "
+                           "this computer's regional setting.[/]")
 
 
 ECB_RATES = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
@@ -293,6 +296,17 @@ class RetriableAPIError(Exception):
         self.response = response
 
 
+def deployed_next_steps(app_name: str) -> None:
+    """The same commands after every provider's deploy."""
+    console.say()
+    console.next_steps([
+        (f"pdt run {app_name} --deployed", "start a run now"),
+        (f"pdt logs {app_name}", "read the log of the newest run"),
+        (f"pdt runs {app_name}", "list the recent runs"),
+        (f"pdt health {app_name}", "show whether the last run succeeded"),
+    ])
+
+
 def response_error_message(response) -> str:
     error_type = ("Client" if HTTPStatus.BAD_REQUEST <= response.status
                   < HTTPStatus.INTERNAL_SERVER_ERROR else "Server")
@@ -360,6 +374,11 @@ def run_build(command: list[str], data: str | None = None) -> None:
         if proc.stderr.strip():
             console.say(proc.stderr.strip())
         fail(f"{' '.join(command[:3])} failed")
+
+
+def secret_contents(values: dict[str, str]) -> str:
+    """The env var names a secret holds, for a plan line. A plan never shows a value."""
+    return f"env vars {', '.join(map(console.value, sorted(values)))}" if values else "no env vars"
 
 
 def gather_secrets(app: dict) -> dict[str, str]:

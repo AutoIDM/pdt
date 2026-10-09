@@ -76,8 +76,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_plan_lines,
-    store_suffix)
+    STORE_TAGS, CostEstimate, fail, fetch_json, secret_contents, store_cost_label,
+    store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
@@ -567,7 +567,7 @@ def secret_actions(sid: str, values: dict, current: str | None,
         return []
     state = "unchanged" if current == payload else (
         "update" if current else "create")
-    return [f"{state} Key Vault secret {sid} ({len(values)} env vars)"]
+    return [console.Markup(f"{state} Key Vault secret {console.escape(sid)} ({secret_contents(values)})")]
 
 
 def register_providers(names: tuple[str, ...]) -> None:
@@ -588,7 +588,8 @@ def register_providers(names: tuple[str, ...]) -> None:
                    if az_tsv("provider", "show", "--namespace", name,
                              "--query", "registrationState") != "Registered"]
         if pending:
-            console.bullet(f"still waiting after {waited}s for: {', '.join(pending)}", indent=4)
+            console.bullet(console.escape(f"still waiting after {waited}s for: {', '.join(pending)}"),
+                           indent=4)
 
 
 def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
@@ -827,7 +828,7 @@ def report_shared_kept(rg: str, others: list[str]) -> None:
 def list_remaining(rg: str) -> None:
     console.heading("Still present:")
     for resource in az_json("resource", "list", "--resource-group", rg) or []:
-        console.bullet(f"{resource.get('name')}  ({resource.get('type')})")
+        console.bullet(console.escape(f"{resource.get('name')}  ({resource.get('type')})"))
 
 
 def store_settings(settings: dict[str, str]) -> dict[str, str]:

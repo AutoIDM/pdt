@@ -62,9 +62,10 @@ from pdt import gcloud_sdk
 from pdt import regions
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, convert_from_usd, docker_preflight, fail, fetch_json, gather_secrets,
-    image_action, run_build, run_secrets, ssh_build_args, stage_build_context, store_cost_label,
-    store_kept_line, store_name, store_plan_lines, warn_if_locked, write_dockerfile)
+    STORE_TAGS, CostEstimate, convert_from_usd, deployed_next_steps, docker_preflight, fail,
+    fetch_json, gather_secrets, image_action, run_build, run_secrets, secret_contents,
+    ssh_build_args, stage_build_context, store_cost_label, store_kept_line, store_name,
+    store_plan_lines, warn_if_locked, write_dockerfile)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -119,7 +120,7 @@ def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
             return proc
         title = re.search(r"serviceTitle: (.+)", proc.stderr)
         what = title.group(1).strip() if title else "Google Cloud"
-        console.bullet(f"{what} is not ready yet; retrying in {wait}s...", indent=4)
+        console.bullet(f"{console.escape(what)} is not ready yet; retrying in {wait}s...", indent=4)
         time.sleep(wait)
 
 
@@ -752,7 +753,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
                + f" Artifact Registry repo {repo}"]
     actions.append(image_action(app, f"build and push image {image}"))
     if secret_state:
-        actions.append(f"{secret_state} secret {sid} ({len(values)} env vars as one json blob)")
+        actions.append(console.Markup(f"{secret_state} secret {console.escape(sid)} "
+                                      f"({secret_contents(values)}, as one json blob)"))
     if values:
         actions.append(f"allow {job} to update its own secret {sid}")
     actions.append(("use existing" if sa_exists else "create") + f" service account {sa}")
@@ -841,8 +843,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
               "--oauth-service-account-email", sa)
     set_scheduler_paused(project, region, job, app["pause"])
     console.done(f"Deployed {name}.")
-    console.field("Run it once", f"pdt gcloud run jobs execute {job} --region {region} --project {project}")
-    console.field("Run logs", job_logs_url(project, region, job))
+    deployed_next_steps(name)
     return 0
 
 
@@ -969,7 +970,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if kept:
             console.heading("Still present:")
             for resource in kept:
-                console.bullet(f"{resource}")
+                console.bullet(console.escape(str(resource)))
         return 0
     if revoke_grant:
         warn_if_locked(store, name)
@@ -1009,7 +1010,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if kept:
         console.heading("Still present:")
         for resource in kept:
-            console.bullet(f"{resource}")
+            console.bullet(console.escape(str(resource)))
     elif not remaining:
         console.done("Nothing remains.")
     return 0

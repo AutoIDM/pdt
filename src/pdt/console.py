@@ -4,7 +4,8 @@ Rich drops the colour when output is not a terminal, so a redirected or
 piped run stays plain text and every command stays readable in a log.
 
 The vocabulary is small on purpose. Bold marks a value the user may
-type back or copy: a name, a command, a path, an id. Cyan marks a value
+type back or copy: a name, a command, a path, an id, an env var name, a
+file name, a module name and version. Cyan marks a value
 pdt worked out for the user to weigh: a numbered choice, a money
 amount, the `==>` of a step. Dim marks text the user may skip: a
 progress line, a side note. Colour otherwise marks state and nothing
@@ -16,8 +17,6 @@ Import the module, not its functions: `from pdt import console`, then
 """
 
 from __future__ import annotations
-
-import textwrap
 
 from rich.console import Console
 from rich.markup import escape
@@ -103,16 +102,41 @@ def name(text: str) -> None:
     _console.print(f"  [bold cyan]{escape(text)}[/]")
 
 
+class Markup(str):
+    """A plan line that is already rich markup. deploy.confirm escapes every other line."""
+
+
+def value(text: str) -> str:
+    """Markup that prints `text` bold, for a line that detail() or bullet() prints.
+    Inside dim text the value is bold and not dim, so it stands out."""
+    return f"[bold not dim]{escape(text)}[/]"
+
+
 def detail(text: str, indent: int = INDENT) -> None:
-    """Prose under a name, wrapped to the terminal and indented."""
-    _console.print(textwrap.fill(text, width=_console.width,
-                                 initial_indent=" " * indent,
-                                 subsequent_indent=" " * indent),
-                   markup=False)
+    """Marked-up prose under a name, wrapped to the terminal and indented. Pass text
+    that pdt did not write through escape(). A line
+    breaks only at a space, so a name such as Import-Module stays whole. Spaces
+    at the start of `text` indent every line of it."""
+    stripped = text.lstrip(" ")
+    indent += len(text) - len(stripped)
+    for part in Text.from_markup(stripped).wrap(_console, max(10, _console.width - indent)):
+        part.rstrip()
+        _console.print(Text(" " * indent) + part)
 
 
 def bullet(text: str, indent: int = 2) -> None:
-    _console.print(f"{' ' * indent}{text}", markup=False)
+    """A marked-up line, indented. Pass text that pdt did not write through escape()."""
+    _console.print(f"{' ' * indent}{text}")
+
+
+def rows(heading: str, items: list[tuple[str, str]]) -> list[str]:
+    """Lines for detail(): `heading` and each value bold with its marked-up note, on one
+    line when there is one value, else one aligned row per value under the heading."""
+    if len(items) == 1:
+        return [f"{heading} {value(items[0][0])} ({items[0][1]})"]
+    width = max(len(name) for name, _ in items)
+    return [heading, *(f"  {value(name)}{' ' * (width - len(name))}  {note}"
+                       for name, note in items)]
 
 
 def command(text: str, note: str = "", indent: int = 2) -> None:
@@ -121,6 +145,41 @@ def command(text: str, note: str = "", indent: int = 2) -> None:
         _console.print(f"{' ' * indent}[bold]{escape(text)}[/]  [dim]{escape(note)}[/]")
     else:
         _console.print(f"{' ' * indent}[bold]{escape(text)}[/]")
+
+
+def next_steps(rows: list[tuple[str, str]], title: str = "Next steps:") -> None:
+    """Commands the user may run next, each with what it does, under `title`."""
+    heading(title)
+    columns(rows)
+
+
+def columns(rows: list[tuple[str, str]]) -> None:
+    """Values the user may type or copy, such as commands or file names, each with a
+    marked-up description, in two aligned columns: the value bold, the description dim.
+
+    The second column starts after the longest value that leaves room for
+    the descriptions. A longer value prints alone, and its description
+    starts the next line in the second column. A description wraps to the
+    terminal. On a terminal too narrow for two columns, every description
+    prints under its value.
+    """
+    indent, gap = 2, 2
+    notes = [Text.from_markup(what, style="dim") for _, what in rows]
+    room = min(40, max(len(note) for note in notes))
+    fits = [len(text) for text, _ in rows if indent + len(text) + gap + room <= _console.width]
+    column = indent + max(fits) + gap if fits else INDENT
+    for (text, _), note in zip(rows, notes):
+        line = Text(" " * indent)
+        line.append(text, style="bold")
+        lines = list(note.wrap(_console, max(10, _console.width - column))) if note.plain else []
+        for part in lines:
+            part.rstrip()
+        if lines and indent + len(text) + gap <= column:
+            line.append(" " * (column - indent - len(text)))
+            line.append(lines.pop(0))
+        _console.print(line)
+        for rest in lines:
+            _console.print(Text(" " * column) + rest)
 
 
 SECRET_CHANGE_COLOURS = {"deleted": "red", "new": "green", "updated": "yellow", "unchanged": "dim"}

@@ -103,6 +103,7 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
         console.error(str(e))
         return 1
     problems = config.validate_app(app_name)
+    sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
     missing = config.missing_env(app)
     if missing != "":
@@ -111,15 +112,21 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
         problems.append("schedule is required to deploy")
     if config.uses_email(app):
         problems.extend(email_problems(app["config"], check_oauth=False))
+    lines = [f"runs {console.value('run.py')}"]
     if config.powershell_scripts(app["dir"]):
         try:
-            problems.extend(powershell.report(powershell.scan(app, provider))[0])
+            scan = powershell.scan(app, provider)
+            problems.extend(powershell.report(scan)[0])
+            lines = powershell.summary_lines(scan)
         except (pwsh.PwshError, powershell.PowerShellError) as e:
             problems.append(str(e))
     if problems:
         for problem in problems:
             console.error(f"{app_name}: {problem}")
         return 1
+    console.name(app_name)
+    for line in [*lines, *config.found_env_lines(app), *sources]:
+        console.detail(line)
     problem = regions.choose_region(app, provider, assume_yes)
     if problem != "":
         console.error(f"{app_name}: {problem}")
@@ -255,7 +262,7 @@ def confirm(actions: list[str], assume_yes: bool,
             cost: CostEstimate | None = None) -> bool:
     console.heading("Plan:")
     for action in actions:
-        console.bullet(action)
+        console.bullet(action if isinstance(action, console.Markup) else console.escape(action))
     if cost is not None:
         cost.show()
     return proceed(assume_yes)

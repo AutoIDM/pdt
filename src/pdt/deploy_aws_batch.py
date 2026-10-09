@@ -35,7 +35,7 @@ from pdt.deploy import confirm
 from pdt.deploy_aws import (
     COMMON_ACTIONS, MANAGED_TAGS, SCHEDULE_GROUP, aws_schedule_expression,
     aws_settings, clients_for, cost_estimate, delete_log_group, delete_role,
-    delete_secret, list_price, log_group_url, recent_stream_seconds, run_basis,
+    delete_secret, list_price, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     deployer_store, ensure_session, ensure_store, find_log_group, has_managed_tag, iam_tags,
     delete_if_present, error_code, not_found,
@@ -43,9 +43,9 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, docker_preflight, fail, gather_secrets, image_action,
-    run_secrets, ssh_build_args, stage_build_context, store_kept_line, store_name,
-    store_plan_lines, warn_if_locked, write_dockerfile,
+    CostEstimate, deployed_next_steps, docker_preflight, fail, gather_secrets, image_action,
+    run_secrets, secret_contents, ssh_build_args, stage_build_context, store_kept_line,
+    store_name, store_plan_lines, warn_if_locked, write_dockerfile,
 )
 
 REPOSITORY = "pdt"
@@ -240,7 +240,7 @@ def wait_for_batch(describe: Callable[[], dict | None], ready: Callable[[dict | 
             return current
         if delay is None:
             fail(f"gave up waiting for {what}")
-        console.bullet(f"waiting for {what}...", indent=4)
+        console.bullet(console.escape(f"waiting for {what}..."), indent=4)
         sleep(delay)
     raise AssertionError("unreachable")
 
@@ -571,7 +571,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     names = resource_names(app["name"])
     cron = config.cron_expression(app["schedule"])
     expression = aws_schedule_expression(cron)
-    payload = json.dumps(gather_secrets(app), sort_keys=True)
+    secrets = gather_secrets(app)
+    payload = json.dumps(secrets, sort_keys=True)
     image = f"{account}.dkr.ecr.{region}.amazonaws.com/{REPOSITORY}:{names['image_tag']}"
     bucket = store_name(account)
     store = deployer_store(app, session, account) if app["storage"] else None
@@ -595,8 +596,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         f"reconcile shared ECR repository {REPOSITORY}, Batch compute environment "
         f"{COMPUTE_ENVIRONMENT.name}, and job queue {JOB_QUEUE.name}",
         image_action(app, f"build and push Docker image {image} ({DOCKER_PLATFORM})"),
-        ("update" if secret_exists else "create")
-        + f" Secrets Manager secret {names['secret']}",
+        console.Markup(("update" if secret_exists else "create")
+                       + f" Secrets Manager secret {console.escape(names['secret'])} "
+                       f"({secret_contents(secrets)})"),
         "reconcile the execution, job, and scheduler IAM roles",
         f"allow {names['job_role']} to update its own secret {names['secret']}",
         f"reconcile Batch job definition {names['job_definition']} "
@@ -646,10 +648,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, submit_job_target(names), app["pause"])
     console.done(f"Deployed {app['name']}.")
-    console.field("Run it once", f"pdt aws batch submit-job --job-name {names['job_definition']} "
-                  f"--job-queue {JOB_QUEUE.name} --job-definition {names['job_definition']} "
-                  f"--region {region}")
-    console.field("Run logs", log_group_url(region, names["log_group"]))
+    deployed_next_steps(app["name"])
     return 0
 
 

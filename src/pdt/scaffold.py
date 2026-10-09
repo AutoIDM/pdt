@@ -302,19 +302,21 @@ def init(directory: str | None, assume_yes: bool) -> int:
 
     console.say()
     console.done(f"Your project is ready: {target}")
-    console.command(PROJECT_FILE, "settings shared by every app")
-    console.command(".env", "secrets, never committed")
-    console.command(".gitignore")
-    console.command("AGENTS.md", "how an AI agent should work in this project (CLAUDE.md points here)")
+    files = [(PROJECT_FILE, "settings shared by every app"), (".env", "secrets, never committed"),
+             (".gitignore", ""),
+             ("AGENTS.md", "how an AI agent should work in this project "
+                           f"({console.value('CLAUDE.md')} points here)")]
     if starting_fresh:
-        console.command(f"{STARTER}/", "a working app to run and edit")
+        files.append((f"{STARTER}/", "a working app to run and edit"))
+    console.columns(files)
     console.say()
-    console.heading("Next steps:")
+    steps = []
     if target != Path.cwd().resolve():
-        console.command(f"cd {target.name}")
+        steps.append((f"cd {target.name}", "go to the new project"))
     if starting_fresh:
-        console.command(f"pdt run {STARTER}")
-    console.command("pdt examples", "see what else you can start from")
+        steps.append((f"pdt run {STARTER}", "run the starter app on this computer"))
+    steps.append(("pdt examples", "see what else you can start from"))
+    console.next_steps(steps)
     return 0
 
 
@@ -344,7 +346,7 @@ def summary_of(example: Path) -> str:
 def print_examples() -> None:
     for example in examples():
         console.name(example.name)
-        console.detail(summary_of(example))
+        console.detail(console.escape(summary_of(example)))
         console.say()
 
 
@@ -375,18 +377,18 @@ def new_app(name: str, source: str | None) -> int:
             f"there is no example named {source!r}. Run `pdt examples` to see them.")
     copy_example(root, name, example)
     console.done(f"Created {name}/ from the {example.name} example.")
-    for job in powershell_scripts(destination) or ["run.py"]:
-        console.command(f"{name}/{job}", "the job itself")
-    console.command(f"{name}/config.yml", "how often it runs and what it needs")
+    files = [(f"{name}/{job}", "the job itself") for job in powershell_scripts(destination) or ["run.py"]]
+    files.append((f"{name}/config.yml", "how often it runs and what it needs"))
     needs_secrets = (destination / "env.template").is_file()
     if needs_secrets:
-        console.command(f"{name}/env.template", "the secrets to copy into .env")
+        files.append((f"{name}/env.template", f"the secrets to copy into {console.value('.env')}"))
+    console.columns(files)
     console.say()
-    console.heading("Next steps:")
     if needs_secrets:
-        console.bullet(f"open {name}/env.template and copy the names you need into .env")
-    console.command("pdt validate")
-    console.command(f"pdt run {name}")
+        console.styled(f"Open {console.value(f'{name}/env.template')} and copy the names you need "
+                       f"into {console.value('.env')}.")
+    console.next_steps([("pdt validate", f"check the config and the {console.value('.env')} values"),
+                        (f"pdt run {name}", "run the app on this computer")])
     return 0
 
 
@@ -416,10 +418,9 @@ def from_scripts(name: str) -> int:
     (folder / "requirements.psd1").write_text("\n".join(lines + ["}", ""]))
     (folder / "run.py").write_text(RUN_PY_TEXT.replace("PDT_VERSION", __version__))
     console.done(f"Wrote requirements.psd1 and run.py for the scripts in {name}/.")
-    console.command(f"{name}/requirements.psd1", "the modules pdt installs before the scripts run")
-    console.command(f"{name}/run.py", "how the scripts run")
+    console.columns([(f"{name}/requirements.psd1", "the modules pdt installs before the scripts run"),
+                     (f"{name}/run.py", "how the scripts run")])
     console.say()
-    console.heading("Next steps:")
-    console.command("pdt validate")
-    console.command(f"pdt run {name}")
+    console.next_steps([("pdt validate", f"check the config and the {console.value('.env')} values"),
+                        (f"pdt run {name}", "run the scripts on this computer")])
     return 0
