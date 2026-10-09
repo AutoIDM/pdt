@@ -302,7 +302,7 @@ An app is a folder with a `run.py` that has a `main()` function. It declares its
 ```python
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["pdt-cli[apps]==0.1.6"]
+# dependencies = ["pdt-cli[apps]==0.1.7"]
 # ///
 from pathlib import Path
 
