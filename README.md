@@ -178,6 +178,8 @@ Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for 
 
 The cost estimate before each deploy shows prices in the currency of your computer's regional setting, or in US dollars when pdt cannot read it. pdt takes the price in that currency from the cloud when the cloud lists one. Otherwise it converts from US dollars at the cloud's own exchange rate, or at the European Central Bank's daily reference rate, and the estimate names the rate it used.
 
+A deploy to AWS, Azure, or Google Cloud builds each app's image with Docker on your computer and uploads it to that cloud's image registry, so [Docker Desktop](https://www.docker.com/products/docker-desktop/) must be installed and running. Docker is the one tool pdt cannot install for you, because its installer needs administrator rights and a person must accept its license. The Windows provider does not use Docker.
+
 ### Azure
 
 ```yaml

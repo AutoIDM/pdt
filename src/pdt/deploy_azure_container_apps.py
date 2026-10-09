@@ -32,7 +32,6 @@ import dataclasses
 import datetime
 import hashlib
 import json
-import os
 import re
 import shutil
 
@@ -45,13 +44,14 @@ from pdt.deploy_azure import (
     ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item, list_remaining,
     managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
-    revoke_role, run_basis, run_quiet, run_stream, secret_actions, secret_name,
+    revoke_role, run_basis, run_quiet, secret_actions, secret_name,
     secret_scope, secret_state, store_condition, store_cost, store_description, store_exists,
     store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, convert_from_usd, fail, gather_secrets, image_action, run_build, run_secrets,
-    ssh_build_args, stage_build_context, store_kept_line, warn_if_locked, write_dockerfile)
+    CostEstimate, convert_from_usd, docker_preflight, fail, gather_secrets, image_action,
+    run_build, run_secrets, ssh_build_args, stage_build_context, store_kept_line,
+    warn_if_locked, write_dockerfile)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -70,15 +70,11 @@ def build_image(app: dict, registry: str, image_name: str) -> None:
     stage = stage_build_context(app)
     try:
         write_dockerfile(stage, app)
-        if os.environ.get("GITHUB_ACTIONS") == "true":
-            image = f"{registry}.azurecr.io/{image_name}:latest"
-            run_quiet("acr", "login", "--name", registry)
-            run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
-                       "-t", image, str(stage)])
-            run_build(["docker", "push", image])
-        else:
-            run_stream("acr", "build", "--registry", registry, "--image",
-                       f"{image_name}:latest", str(stage))
+        image = f"{registry}.azurecr.io/{image_name}:latest"
+        run_quiet("acr", "login", "--name", registry)
+        run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
+                   "-t", image, str(stage)])
+        run_build(["docker", "push", image])
     finally:
         shutil.rmtree(stage, ignore_errors=True)
 
@@ -367,7 +363,7 @@ def cost_estimate_for(region: str, currency: str, cron: str, job: str, rg: str,
     except Exception as exc:
         fail(f"could not calculate the required monthly cost estimate: {exc}")
     return cost_estimate(
-        region, items, "excludes ACR image builds/storage and Log Analytics ingestion", shown,
+        region, items, "excludes ACR storage and Log Analytics ingestion", shown,
         converted)
 
 
@@ -567,6 +563,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
+    docker_preflight("Azure")
     console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     name = app["name"]

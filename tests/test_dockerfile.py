@@ -73,14 +73,12 @@ def test_an_app_dockerignore_is_moved_to_the_context_root(tmp_path):
     write_dockerfile(stage, app)
     expected = "# local state\nmy-report/.meltano\nmy-report/output\n!my-report/output/keep\n\n"
     assert (stage / ".dockerignore").read_text() == expected
-    assert (stage / ".gcloudignore").read_text() == expected
 
 
 def test_no_dockerignore_means_no_ignore_files(tmp_path):
     app, stage = staged(tmp_path, "my-report")
     write_dockerfile(stage, app)
     assert not (stage / ".dockerignore").exists()
-    assert not (stage / ".gcloudignore").exists()
 
 
 def test_context_ignore_text_keeps_comments_and_blank_lines():
