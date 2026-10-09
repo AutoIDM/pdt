@@ -706,7 +706,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
-    docker_preflight("Google Cloud")
+    docker_preflight("Google Cloud", assume_yes)
     name = app["name"]
     project, region = project_region(app)
     console.status("Checking your Google Cloud sign-in...")

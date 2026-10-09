@@ -565,7 +565,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
-    docker_preflight("AWS")
+    docker_preflight("AWS", assume_yes)
     console.status("Checking your AWS sign-in...")
     session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
