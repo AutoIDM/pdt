@@ -515,7 +515,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.error(str(exc))
         return 1
     console.done(f"Deployed {app['name']} as Windows task {name}.")
-    deployed_next_steps(app["name"], f"Start-ScheduledTask -TaskName {_ps_string(name)}")
+    deployed_next_steps(app["name"])
     return 0
 
 

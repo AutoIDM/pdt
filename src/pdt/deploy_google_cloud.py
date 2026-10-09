@@ -843,7 +843,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
               "--oauth-service-account-email", sa)
     set_scheduler_paused(project, region, job, app["pause"])
     console.done(f"Deployed {name}.")
-    deployed_next_steps(name, f"pdt gcloud run jobs execute {job} --region {region} --project {project}")
+    deployed_next_steps(name)
     return 0
 
 

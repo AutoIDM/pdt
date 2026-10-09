@@ -57,15 +57,14 @@ def test_a_command_with_no_description_has_no_trailing_space(width, capsys):
     assert capsys.readouterr().out.splitlines()[1] == "  cd my-project"
 
 
-def test_a_deploy_names_the_pdt_commands_after_the_run_command(width, capsys):
-    deployed_next_steps("my-report", "Start-ScheduledTask -TaskName 'pdt-my-report'")
+def test_a_deploy_suggests_pdt_run_deployed_first(width, capsys):
+    deployed_next_steps("my-report")
     assert capsys.readouterr().out.splitlines()[1:] == [
         "Next steps:",
-        "  Start-ScheduledTask -TaskName 'pdt-my-report'",
-        "                        start a run now",
-        "  pdt logs my-report    read the log of the newest run",
-        "  pdt runs my-report    list the recent runs",
-        "  pdt health my-report  show whether the last run succeeded",
+        "  pdt run my-report --deployed  start a run now",
+        "  pdt logs my-report            read the log of the newest run",
+        "  pdt runs my-report            list the recent runs",
+        "  pdt health my-report          show whether the last run succeeded",
     ]
 
 

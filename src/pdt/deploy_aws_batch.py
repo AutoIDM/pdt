@@ -648,9 +648,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, submit_job_target(names), app["pause"])
     console.done(f"Deployed {app['name']}.")
-    deployed_next_steps(app["name"], f"pdt aws batch submit-job --job-name {names['job_definition']} "
-                        f"--job-queue {JOB_QUEUE.name} --job-definition {names['job_definition']} "
-                        f"--region {region}")
+    deployed_next_steps(app["name"])
     return 0
 
 

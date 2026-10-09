@@ -774,7 +774,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         assign_role(store["container_id"], principal, STORE_ROLE,
                     condition=store_condition(name))
     console.done(f"Deployed {name}.")
-    deployed_next_steps(name, f"pdt az containerapp job start --name {job} --resource-group {rg}")
+    deployed_next_steps(name)
     return 0
 
 
