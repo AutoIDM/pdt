@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from pdt import __version__, config, console, powershell, pwsh, regions, runs_cli
@@ -36,6 +37,9 @@ PROVIDERS = {
     "azure": "deploy_azure.py",
     "windows": "deploy_windows.py",
 }
+
+# How many times pdt reads the run list, FOLLOW_SECONDS apart, for the run it just started.
+NEW_RUN_TRIES = 6
 
 
 def _load(app_name: str):
@@ -102,7 +106,13 @@ def dispatch_output(provider: str, command: str, app_name: str,
     return proc.returncode, proc.stdout
 
 
-def deploy(app_name: str, assume_yes: bool = False) -> int:
+def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> int:
+    """Deploy one app; then, when it has no successful run yet, offer to start one.
+
+    `run` None asks a person at a terminal and starts nothing with `--yes` or
+    with no terminal, True starts the run with no question (`--run`), and
+    False never offers it (`pdt deploy --all`). The exit code is the deploy's,
+    or the run's when pdt followed one."""
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
@@ -140,10 +150,65 @@ def deploy(app_name: str, assume_yes: bool = False) -> int:
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
     code = dispatch(provider, "deploy", app_name, assume_yes)
-    if code == 0:
-        # A declined plan exits nonzero, so 0 means the deploy completed.
-        config.mark_deployed(app_name, True)
-    return code
+    # A declined plan exits nonzero, so 0 means the deploy completed.
+    if code != 0:
+        return code
+    config.mark_deployed(app_name, True)
+    run_code = first_run(app_name, provider, assume_yes, run)
+    deployed_next_steps(app_name, started=run_code is not None)
+    return run_code or 0
+
+
+def first_run(app_name: str, provider: str, assume_yes: bool, run: bool | None) -> int | None:
+    """Start a run of an app with no successful run yet and follow its log.
+
+    Returns the exit code of `pdt logs --follow` (the run's result), or None
+    when pdt started no run."""
+    if run is False or (run is None and (assume_yes or not can_prompt(None))):
+        return None
+    history = run_history(provider, app_name)
+    if history is None or any(item.status == "succeeded" for item in history):
+        return None
+    console.say()
+    console.say(f"{console.value(app_name)} has "
+                f"{'no successful run' if history else 'not run'} yet.")
+    if not run:
+        try:
+            if not console.confirm("Start a run now and show its log?"):
+                return None
+        except EOFError:
+            return None
+    code = dispatch(provider, "start", app_name, False)
+    if code != 0:
+        return code
+    before = {item.id for item in history}
+    for attempt in range(NEW_RUN_TRIES):
+        if attempt > 0:
+            time.sleep(runs_cli.FOLLOW_SECONDS)
+        found = [item for item in run_history(provider, app_name) or [] if item.id not in before]
+        if found:
+            return dispatch(provider, "logs", app_name, False,
+                            ["--", "--follow", "--id", found[0].id])
+    console.note("the run list does not show the new run yet.")
+    console.command(f"pdt logs {app_name} --follow", "print its lines as they arrive")
+    return 0
+
+
+def run_history(provider: str, app_name: str) -> list[runs_cli.Run] | None:
+    """The app's runs from `pdt runs --json`, or None when they could not be read."""
+    code, output = dispatch_output(provider, "runs", app_name, ["--", "--json"])
+    return runs_cli.parse_runs(output) if code == 0 else None
+
+
+def deployed_next_steps(app_name: str, started: bool = False) -> None:
+    """The same commands after every provider's deploy; no `pdt run` when pdt just started one."""
+    console.say()
+    console.next_steps([
+        *([] if started else [(f"pdt run {app_name} --deployed", "start a run now")]),
+        (f"pdt logs {app_name}", "read the log of the newest run"),
+        (f"pdt runs {app_name}", "list the recent runs"),
+        (f"pdt health {app_name}", "show whether the last run succeeded"),
+    ])
 
 
 def secrets(app_name: str, action: str, assume_yes: bool = False,
@@ -234,7 +299,10 @@ def start(app_name: str) -> int:
                       f"run {console.value(f'pdt deploy {app_name}')} first")
         return 1
     config.load_env(app["dir"])
-    return dispatch(provider, "start", app_name, False)
+    code = dispatch(provider, "start", app_name, False)
+    if code == 0:
+        console.command(f"pdt runs {app_name}", "see the run")
+    return code
 
 
 def health(app_names: list[str], as_json: bool) -> int:
@@ -248,8 +316,7 @@ def health(app_names: list[str], as_json: bool) -> int:
             continue
         # The provider script loads the app's .env itself, so one app's env
         # never leaks into the next app's run.
-        code, output = dispatch_output(provider, "runs", app_name, ["--", "--json"])
-        app_runs[app_name] = runs_cli.parse_runs(output) if code == 0 else None
+        app_runs[app_name] = run_history(provider, app_name)
     return runs_cli.health(app_runs, as_json)
 
 

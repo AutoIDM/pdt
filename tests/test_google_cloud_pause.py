@@ -61,6 +61,4 @@ def test_start_executes_the_job_and_names_the_execution(monkeypatch, capsys):
     assert deploy_google_cloud.start({"name": "my-app"}, False) == 0
     assert calls == [("run", "jobs", "execute", "pdt-my-app", "--region", "us-central1",
                       "--project", "p", "--async", "--format=json")]
-    out = capsys.readouterr().out
-    assert "pdt-my-app-k7x2m" in out
-    assert "pdt runs my-app" in out
+    assert "pdt-my-app-k7x2m" in capsys.readouterr().out

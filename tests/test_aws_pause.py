@@ -110,9 +110,7 @@ def test_start_submits_the_job_the_schedule_would_submit(capsys):
     assert request["jobQueue"] == batch_deploy.JOB_QUEUE.name
     assert request["jobDefinition"] == "pdt-my-app"
     assert request["tags"] == {"managed-by": "pdt"}
-    out = capsys.readouterr().out
-    assert "abc123" in out
-    assert "pdt runs my-app" in out
+    assert "abc123" in capsys.readouterr().out
 
 
 def test_the_deployer_policy_allows_submitting_a_job():
