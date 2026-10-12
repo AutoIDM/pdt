@@ -81,8 +81,9 @@ def _script(shell: str) -> str:
     # use_defaults=False stops bash from offering file names when pdt offers nothing.
     code = argcomplete.shellcode(executables, use_defaults=False, shell=name)
     if name == "powershell":
-        # PowerShell offers file names when a completer returns nothing, but not when it
-        # returns one empty string.
+        # PowerShell offers file names when a completer returns nothing. One empty string stops
+        # that: PowerShell throws on it, and catches the error when a host such as PSReadLine
+        # asks for completions. No other result leaves an empty word unchanged.
         code = code.replace("    Remove-Item $completion_file",
                             '    if (-not (Get-Content $completion_file)) { "" }\n'
                             "    Remove-Item $completion_file")
