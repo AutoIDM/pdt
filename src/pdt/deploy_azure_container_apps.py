@@ -393,7 +393,6 @@ def start(app: dict, settings: dict) -> int:
     name = (execution or {}).get("name")
     console.done(f"Started {console.value(app['name'])}: execution {console.value(name)}."
                  if name else f"Started {console.value(app['name'])}.")
-    console.command(f"pdt runs {app['name']}", "see the run")
     return 0
 
 

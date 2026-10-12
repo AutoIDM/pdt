@@ -926,7 +926,6 @@ def start(app: dict, session) -> int:
         jobDefinition=request["JobDefinition"], tags=dict(MANAGED_TAGS))
     console.done(f"Started {console.value(app['name'])}: Batch job "
                  f"{console.value(response['jobId'])}.")
-    console.command(f"pdt runs {app['name']}", "see the run")
     return 0
 
 

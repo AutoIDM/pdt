@@ -60,6 +60,4 @@ def test_start_runs_the_job_and_names_the_execution(monkeypatch, capsys):
     assert deploy_azure_container_apps.start({"name": "my-app"}, SETTINGS) == 0
     assert calls == [("containerapp", "job", "start", "--name", JOB,
                       "--resource-group", "pdt", "--output", "json")]
-    out = capsys.readouterr().out
-    assert "pdt-my-app-abc12" in out
-    assert "pdt runs my-app" in out
+    assert "pdt-my-app-abc12" in capsys.readouterr().out

@@ -1158,7 +1158,6 @@ def start(app: dict, assume_yes: bool) -> int:
     console.done(f"Started {console.value(app['name'])}: Cloud Run execution "
                  f"{console.value(name)}." if name
                  else f"Started {console.value(app['name'])}.")
-    console.command(f"pdt runs {app['name']}", "see the run")
     return 0
 
 

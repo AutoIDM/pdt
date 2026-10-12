@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from pdt import cli, console, deploy, runs_cli, scaffold
+from pdt import cli, config, console, deploy, runs_cli, scaffold
 
 APP = scaffold.STARTER
 
@@ -85,6 +85,7 @@ def test_a_yes_at_the_terminal_starts_the_run_and_follows_it(project, monkeypatc
     assert said in out
     assert f"pdt run {APP} --deployed" not in out
     assert f"pdt logs {APP}" in out
+    assert "see the run" not in out
 
 
 def test_a_no_at_the_terminal_starts_nothing(project, monkeypatch, capsys):
@@ -183,6 +184,17 @@ def test_a_start_that_fails_ends_the_deploy_with_its_code(project, monkeypatch):
     cloud.codes["start"] = 1
     assert deploy.deploy(APP) == 1
     assert cloud.commands() == ["deploy", "runs", "start"]
+
+
+@pytest.mark.parametrize("start_code, hint", [(0, True), (1, False)])
+def test_pdt_run_deployed_ends_with_the_command_to_see_the_run(project, monkeypatch, capsys,
+                                                               start_code, hint):
+    cloud = Cloud(monkeypatch, [])
+    cloud.codes["start"] = start_code
+    config.mark_deployed(APP, True)
+    assert deploy.start(APP) == start_code
+    assert cloud.commands() == ["start"]
+    assert (f"pdt runs {APP}" in capsys.readouterr().out) == hint
 
 
 def run_cli(monkeypatch, *argv):

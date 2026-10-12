@@ -59,7 +59,7 @@ def test_start_runs_the_task_now(monkeypatch, capsys):
     assert deploy_windows.start({"name": "my-report"}) == 0
     assert scripts[0][0].startswith("Start-ScheduledTask -TaskName 'pdt-my-report'")
     assert scripts[0][1] == {"elevate": True}
-    assert "pdt runs my-report" in capsys.readouterr().out
+    assert "Started my-report" in capsys.readouterr().out
 
 
 def test_a_missing_task_says_deploy_first(monkeypatch, capsys):

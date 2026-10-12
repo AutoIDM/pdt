@@ -27,7 +27,7 @@ from pathlib import Path
 
 from pdt import __version__, config, console, powershell, pwsh, regions, runs_cli
 from pdt.config import ConfigError
-from pdt.deploy_common import CostEstimate, deployed_next_steps
+from pdt.deploy_common import CostEstimate
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -178,7 +178,7 @@ def first_run(app_name: str, provider: str, assume_yes: bool, run: bool | None) 
                 return None
         except EOFError:
             return None
-    code = start(app_name)
+    code = dispatch(provider, "start", app_name, False)
     if code != 0:
         return code
     before = {item.id for item in history}
@@ -198,6 +198,17 @@ def run_history(provider: str, app_name: str) -> list[runs_cli.Run] | None:
     """The app's runs from `pdt runs --json`, or None when they could not be read."""
     code, output = dispatch_output(provider, "runs", app_name, ["--", "--json"])
     return runs_cli.parse_runs(output) if code == 0 else None
+
+
+def deployed_next_steps(app_name: str, started: bool = False) -> None:
+    """The same commands after every provider's deploy; no `pdt run` when pdt just started one."""
+    console.say()
+    console.next_steps([
+        *([] if started else [(f"pdt run {app_name} --deployed", "start a run now")]),
+        (f"pdt logs {app_name}", "read the log of the newest run"),
+        (f"pdt runs {app_name}", "list the recent runs"),
+        (f"pdt health {app_name}", "show whether the last run succeeded"),
+    ])
 
 
 def secrets(app_name: str, action: str, assume_yes: bool = False,
@@ -288,7 +299,10 @@ def start(app_name: str) -> int:
                       f"run {console.value(f'pdt deploy {app_name}')} first")
         return 1
     config.load_env(app["dir"])
-    return dispatch(provider, "start", app_name, False)
+    code = dispatch(provider, "start", app_name, False)
+    if code == 0:
+        console.command(f"pdt runs {app_name}", "see the run")
+    return code
 
 
 def health(app_names: list[str], as_json: bool) -> int:

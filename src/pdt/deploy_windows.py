@@ -616,7 +616,6 @@ def start(app: dict) -> int:
         console.error(console.escape(str(exc)))
         return 1
     console.done(f"Started {console.value(app['name'])}: Windows task {console.value(name)}.")
-    console.command(f"pdt runs {app['name']}", "see the run")
     return 0
 
 
