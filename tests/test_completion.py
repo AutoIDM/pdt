@@ -354,10 +354,12 @@ def test_powershell_on_windows_sets_up_both_profiles(tmp_path, monkeypatch):
 
 TAB_IN_POWERSHELL = r"""
 $env:PDT_SCRIPT | Out-String | Invoke-Expression
+# The call PSReadLine makes on Tab. PowerShell catches the error from an empty result there.
+$tab = [powershell]::Create([System.Management.Automation.RunspaceMode]::CurrentRunspace)
 foreach ($folder in '.', 'daily-report', $env:ELSEWHERE) {
     Push-Location $folder
     foreach ($line in 'pdt run ', 'pdt logs ') {
-        $found = (TabExpansion2 -inputScript $line -cursorColumn $line.Length).CompletionMatches
+        $found = [System.Management.Automation.CommandCompletion]::CompleteInput($line, $line.Length, $null, $tab).CompletionMatches
         "[" + ($found.CompletionText -join ',') + "]"
     }
     Pop-Location
@@ -383,6 +385,7 @@ def test_powershell_tab_completes_app_names(project, tmp_path_factory, shell):
         stdin=subprocess.DEVNULL, capture_output=True, text=True)
 
     assert result.stdout.split() == ["[daily-report,weekly-report]"] * 4 + ["[]"] * 2, result.stderr
+    assert result.stderr == ""
 
 
 TAB_IN_SHELL = {
