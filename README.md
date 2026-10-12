@@ -83,7 +83,7 @@ my-jobs/
 pdt deploy my-report
 ```
 
-A deploy to AWS, Azure, or Google Cloud builds the app's image with Docker on your computer, so Docker Desktop must be running (see [Choosing where jobs run](#choosing-where-jobs-run)). The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question.
+A deploy to AWS, Azure, or Google Cloud builds the app's image with Docker on your computer. The deploy starts Docker when it is installed but not running, and installs it after one question when it is missing (see [Choosing where jobs run](#choosing-where-jobs-run)). The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question.
 
 When the app has no successful run yet (it never ran, or every run failed), the deploy then asks `Start a run now and show its log? [y/N]`. A yes starts one run, as `pdt run my-report --deployed` does, and prints the run's log lines as they arrive, as `pdt logs my-report --follow` does. The deploy then exits with the run's result: 0 when the run succeeded, 1 when it failed. A run can have side effects, for example an email to real people, so the answer is no unless you type `y`. With `--yes`, or with no terminal (a build server), pdt does not ask and starts no run. Add `--run` to start the run and follow its log with no question. `pdt deploy --all` does not offer a run.
 
