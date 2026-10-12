@@ -176,3 +176,20 @@ def test_only_the_projects_own_server_counts_as_up(project, monkeypatch, other_s
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_program_that_is_not_a_web_server_does_not_count_as_up(project):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+
+    def banner():
+        connection, _ = listener.accept()
+        connection.sendall(b"SSH-2.0-OpenSSH_9.6\r\n")
+        connection.close()
+
+    threading.Thread(target=banner, daemon=True).start()
+    try:
+        assert REAL_IS_UP(listener.getsockname()[1], project) is False
+    finally:
+        listener.close()
