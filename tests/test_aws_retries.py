@@ -42,7 +42,7 @@ def test_preflight_waits_out_a_throttled_permission_check(monkeypatch, tmp_path)
 
     def respond(request, **_kwargs):
         sent.append(request)
-        if len(sent) <= 8:
+        if len(sent) <= 7:
             return AWSResponse(request.url, 400, {}, Body(THROTTLED))
         return AWSResponse(request.url, 200, {}, Body(ALLOWED))
 
@@ -51,13 +51,13 @@ def test_preflight_waits_out_a_throttled_permission_check(monkeypatch, tmp_path)
     account, _identity = deploy_aws.preflight(Sts(), iam, ACCOUNT, "us-east-1", DEPLOYER_ACTIONS)
 
     assert account == ACCOUNT
-    assert len(sent) == 8 + len(deploy_aws.simulations(
+    assert len(sent) == 7 + len(deploy_aws.simulations(
         deploy_aws.deployer_policy(DEPLOYER_ACTIONS, ACCOUNT, "us-east-1")))
 
 
-def test_every_deploy_and_destroy_client_uses_standard_retries(monkeypatch, tmp_path):
+def test_the_batch_clients_retry_in_standard_mode_with_8_attempts(monkeypatch, tmp_path):
     clients = batch_clients(session(monkeypatch, tmp_path))
 
-    assert {name: client.meta.config.retries["mode"] for name, client in clients.items()} == {
-        name: "standard" for name in
+    assert {name: client.meta.config.retries for name, client in clients.items()} == {
+        name: {"mode": "standard", "total_max_attempts": 8} for name in
         ("sts", "logs", "secretsmanager", "iam", "scheduler", "s3", "batch", "ec2", "ecr", "ecs")}
