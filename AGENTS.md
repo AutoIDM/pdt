@@ -7,7 +7,7 @@ This repo is the source of `pdt-cli`, a tool IT teams install. They use it to cr
 Ease of use and simplification of the process is the top guiding principle. Every decision in this repo is measured against it.
 
 - The user runs one command, for example `pdt deploy <app>`. The command does everything else. It never tells the user to go and install, configure, or look something up first.
-- A required tool installs itself. Prefer a PyPI package in the provider script header (`boto3`, `azure-cli`) so `uv` installs it with no user step. If no package exists, download a pinned copy with no question, in CI and on a user's computer alike (see `src/pdt/gcloud_sdk.py`). Never print "install X and run again". Docker is the one exception, because its installer needs administrator rights and a person must accept its license. Every cloud provider builds its image with Docker on the deploying machine, so `deploy_common.docker_preflight` stops the deploy first, says why pdt cannot install Docker, and links Docker Desktop.
+- A required tool installs itself. Prefer a PyPI package in the provider script header (`boto3`, `azure-cli`) so `uv` installs it with no user step. If no package exists, download a pinned copy with no question, in CI and on a user's computer alike (see `src/pdt/gcloud_sdk.py`). Never print "install X and run again". Docker is the one tool that pdt installs only after one question, because the install changes the system. Every cloud provider builds its image with Docker on the deploying machine, so `deploy_common.docker_preflight` calls `src/pdt/docker_setup.py`. It starts an installed Docker, or it shows the install commands for this system, asks once (`--yes` skips the question), and runs them.
 - A missing login gets one `[y/N]` question, then the command opens the browser login itself and continues.
 - A missing permission prints the exact policy or role the user must add.
 - Prompts use plain words. The reader is an IT administrator. Say "Which AWS region should hold your jobs?", not "platform.region is required".
@@ -83,7 +83,7 @@ Both install routes must keep working, and a change is not done until both do:
 - Pick the cheapest adequate option by default (for example arm64 on AWS).
 - Never copy package source into a build context. The `deploy_common.py` docstring describes the context and the secret layout every provider shares.
 - An app folder may hold its own `Dockerfile`. Every cloud provider builds from it through `deploy_common.write_dockerfile`, which puts it (or the generated `DOCKERFILE`) at the root of the staged context; `config.dockerfile_problem` is the one rule for when the file would be ignored. Do not read the Dockerfile in a provider module.
-- A `docker build` on the deploying machine forwards that machine's SSH agent. `deploy_common.ssh_build_args` adds `--ssh default` when `SSH_AUTH_SOCK` names a socket that exists, so an app Dockerfile can install a private git dependency with `RUN --mount=type=ssh`. Every provider runs `docker build`, so every provider forwards the agent.
+- A `docker build` on the deploying machine forwards that machine's SSH agent. `deploy_common.ssh_build_args` adds `--ssh default` when `SSH_AUTH_SOCK` names a socket that exists, or on Windows when the agent's named pipe (`SSH_AUTH_SOCK`, else `\\.\pipe\openssh-ssh-agent`, the pipe docker uses when it is unset) is in the pipe listing, so an app Dockerfile can install a private git dependency with `RUN --mount=type=ssh`. Every provider runs `docker build`, so every provider forwards the agent.
 - A PowerShell app builds from `deploy_common.POWERSHELL_DOCKERFILE`. Its modules install at build time, and the build exercises each one, so a broken module fails the build and not the first run.
 - The `pdt-cli` pin in a scaffolded `run.py` exists only because uv needs a version in the script header. It is not a decision to keep a job on an old pdt. A job should run the current pdt wherever possible, so a change may raise the pin, and the next deploy ships it.
 - Name per-app resources `pdt-<app>`. Tag or label every created resource `managed-by=pdt`. The string `autoidm` appears nowhere in code, names, tags, or defaults. Only delete resources that carry that tag.
@@ -96,7 +96,7 @@ Both install routes must keep working, and a change is not done until both do:
 
 ## Anything written to disk outside the project
 
-The tool downloads the Google Cloud CLI, the PowerShell modules a local run needs, and the DuckDB-WASM files of the `pdt gui` SQL workbench (`src/pdt/duckdb_wasm.py`), to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). Never write them beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
+The tool downloads the Google Cloud CLI, the PowerShell modules a local run needs, Docker on macOS without Homebrew, Docker's Linux install script, and a missing docker-buildx (`src/pdt/docker_setup.py`), and the DuckDB-WASM files of the `pdt gui` SQL workbench (`src/pdt/duckdb_wasm.py`), to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). Never write them beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
 
 ## verify/
 
