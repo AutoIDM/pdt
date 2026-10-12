@@ -340,12 +340,20 @@ def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
         raise
 
 
+PIPES = "\\\\.\\pipe\\"
+WINDOWS_AGENT = f"{PIPES}openssh-ssh-agent"
+
+
 def ssh_build_args() -> list[str]:
     # docker build fails on a socket path that no longer exists, so a stale value is skipped.
-    socket = os.environ.get("SSH_AUTH_SOCK", "").strip()
-    if socket and os.path.exists(socket):
-        return ["--ssh", "default"]
-    return []
+    # Windows OpenSSH serves its agent on a named pipe, which docker uses when SSH_AUTH_SOCK is
+    # unset. os.path.exists cannot see a pipe, so the pipe must be in the pipe listing.
+    socket = os.environ.get("SSH_AUTH_SOCK", "").strip() or (WINDOWS_AGENT if os.name == "nt" else "")
+    if os.name == "nt" and socket.startswith(PIPES):
+        found = socket[len(PIPES):] in os.listdir(PIPES)
+    else:
+        found = bool(socket) and os.path.exists(socket)
+    return ["--ssh", "default"] if found else []
 
 
 def docker_preflight(provider: str, image_platform: str, assume_yes: bool) -> None:
