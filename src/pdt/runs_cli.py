@@ -20,7 +20,9 @@ are not worth what they cost here: CloudWatch Logs Live Tail sends only the
 lines it takes in after the session starts, samples them above 500 a second,
 and bills each minute; Cloud Logging's TailLogEntries works only over gRPC.
 
-`--follow` prints from the stream while the run runs. Without a stream, it
+`--follow` on a run that has ended prints what `pdt logs` prints, unless the
+store may not show the run's last lines yet; then it waits for them. On a
+running run it prints from the stream while the run runs. Without a stream, it
 reads the store again every FOLLOW_SECONDS, and prints a line only when it is
 as old as the provider's hold, so a line the store shows late still prints in
 time order. It stops when the run's exit line is as old as the hold, because by
@@ -382,10 +384,13 @@ def logs(list_runs: Callable[[], list[Run]],
     else:
         lines_by_id.update({run.id: read_lines(run, None) for run in stored})
     output = {}
+    shown_runs = []
     for run in chosen:
         raw = lines_by_id.get(run.id, [])
         if args.follow and run.id not in live:
             raw = [line for line in raw if line.time is None or line.time <= now - hold]
+        run = ended_by(run, last_exit_line(raw))
+        shown_runs.append(run)
         lines = log_lines(raw, args.errors)
         total = len(lines)
         if not args.full:
@@ -396,20 +401,31 @@ def logs(list_runs: Callable[[], list[Run]],
                                "level": line.level, "message": line.message}
                               for line in lines]
             continue
+        finished = exit_code(raw) is not None
+        settled = settles(run, finished, delay)
+        following = args.follow and (run.status == "running"
+                                     or (settled is not None and now < settled))
         console.heading(console.escape(run_heading(run, app_name)))
+        if following and run.status == "running":
+            console.status(f"following run {console.value(run.number)} until it ends; "
+                           "press Ctrl+C to stop following, the run keeps going")
+        elif following:
+            console.status(f"waiting until {local_text(settled, '%H:%M:%S')} at the latest for "
+                           f"the last lines of run {console.value(run.number)} in {store}; "
+                           "press Ctrl+C to stop")
         if len(lines) < total:
             side = "first" if args.head else "last"
             console.status(f"the {side} {len(lines)} of {total} lines; add --full for all of them")
         for line in lines:
             print_line(line)
-        if args.follow:
-            return follow(list_runs, read_lines, resolve, run, app_name, args.errors, delay, raw,
+        if following:
+            return follow(list_runs, read_lines, resolve, run, args.errors, delay, raw,
                           hold=hold, stream=stream, store=store)
         say_lag(run, app_name, total, None if run.id in live else store, delay,
-                exit_code(raw) is not None)
+                finished)
     if args.json:
         console.data(json.dumps(output if len(args.id or []) > 1 else output[chosen[0].id]))
-    return 1 if any(run.status == "failed" for run in chosen) else 0
+    return 1 if any(run.status == "failed" for run in shown_runs) else 0
 
 
 def log_lines(lines: list[Line], errors: bool) -> list[Line]:
@@ -421,8 +437,20 @@ def log_lines(lines: list[Line], errors: bool) -> list[Line]:
 
 def run_heading(run: Run, app_name: str) -> str:
     exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
+    duration = "" if run.ended is None else f"{duration_text(run)}, "
     return (f"run {run.number} of {app_name}: started {started_text(run)}, "
-            f"{duration_text(run)}, {run.status}{exit_part}")
+            f"{duration}{run.status}{exit_part}")
+
+
+def say_result(run: Run) -> None:
+    """The end of a run that `pdt logs --follow` saw running."""
+    after = "" if run.ended is None else f" after {duration_text(run)}"
+    exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
+    text = f"run {console.value(run.number)} {run.status}{after}{exit_part}"
+    if run.status == "succeeded":
+        console.done(text)
+    else:
+        console.failed(text)
 
 
 def print_line(line: Line) -> None:
@@ -433,6 +461,12 @@ def print_line(line: Line) -> None:
 def minutes_text(delay: timedelta) -> str:
     minutes = max(1, round(delay.total_seconds() / 60))
     return "1 minute" if minutes == 1 else f"{minutes} minutes"
+
+
+def settles(run: Run, finished: bool, delay: timedelta) -> datetime | None:
+    """When the store shows every line of `run`: None while the run runs, or when
+    `finished` says its lines already hold the exit line."""
+    return None if run.ended is None or finished else run.ended + delay
 
 
 def say_lag(run: Run, app_name: str, total: int, store: str | None, delay: timedelta,
@@ -454,7 +488,7 @@ def say_lag(run: Run, app_name: str, total: int, store: str | None, delay: timed
                          "so more lines will come.")
         console.command(f"{again} --follow", "print each line as it arrives")
         return
-    settled = None if run.ended is None or finished else run.ended + delay
+    settled = settles(run, finished, delay)
     if settled is not None and datetime.now(UTC) < settled:
         console.note(f"run {console.value(run.number)} ended at "
                      f"{local_text(run.ended, '%H:%M:%S')}, and "
@@ -501,17 +535,17 @@ def unseen(lines: list[Line], errors: bool, seen: Counter) -> list[Line]:
 
 def follow(list_runs: Callable[[], list[Run]],
            read_lines: Callable[[Run, datetime | None], list[Line]],
-           resolve: Callable[[list[Run]], None] | None, run: Run, app_name: str,
-           errors: bool, delay: timedelta, shown: list[Line], hold: timedelta = timedelta(0),
+           resolve: Callable[[list[Run]], None] | None, run: Run, errors: bool,
+           delay: timedelta, shown: list[Line], hold: timedelta = timedelta(0),
            stream: Callable[[Run, bool], Iterable[Line]] | None = None,
            store: str = "the log") -> int:
-    """Print each new line of `run`, in time order, until the run has ended.
+    """Print each new line of `run`, in time order, until the run has ended, then
+    its result when it was running.
 
     `shown` holds the lines already printed. A running run with a `stream` prints
     from its live log. Otherwise, or when the stream fails, follow reads the store,
     as the module docstring says."""
-    console.status(f"waiting for new lines of run {console.value(run.number)}; "
-                   "press Ctrl+C to stop")
+    was_running = run.status == "running"
     # A count per distinct line, so a line the job printed twice prints twice, and a
     # line that a source shows again, such as a stream that starts from the first line
     # each time it connects, prints once.
@@ -526,7 +560,8 @@ def follow(list_runs: Callable[[], list[Run]],
     except KeyboardInterrupt:
         console.say()
         return 130
-    console.heading(console.escape(run_heading(run, app_name)))
+    if was_running:
+        say_result(run)
     return 1 if run.status == "failed" else 0
 
 
