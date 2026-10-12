@@ -12,7 +12,7 @@ def captured(monkeypatch):
 
 
 class Session:
-    def client(self, name):
+    def client(self, name, config=None):
         return name
 
 

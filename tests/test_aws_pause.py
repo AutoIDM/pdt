@@ -57,7 +57,7 @@ class FakeSession:
     def __init__(self, scheduler, batch=None):
         self.clients = {"scheduler": scheduler, "batch": batch}
 
-    def client(self, name):
+    def client(self, name, config=None):
         return self.clients[name]
 
 

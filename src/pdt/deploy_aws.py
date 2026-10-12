@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -49,6 +50,9 @@ ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 PRICE_LIST_URL = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/{offer}/current/{region}/index.json"
 ROLE_PROPAGATION_DELAYS = (1, 2, 4, 8)
+# preflight alone sends one SimulatePrincipalPolicy per policy statement, and IAM
+# throttles that burst. The default legacy mode waits at most 15 seconds in all.
+RETRIES = Config(retries={"mode": "standard", "max_attempts": 10})
 COMMON_ACTIONS = [
     "iam:CreateRole",
     "iam:DeleteRole",
@@ -801,9 +805,9 @@ def resource_exists(client, operation: str, **kwargs) -> bool:
         return False
 
 
-def clients_for(session) -> dict:
-    return {name: session.client(name) for name in
-            ("sts", "logs", "secretsmanager", "iam", "scheduler", "s3")}
+def clients_for(session, *extra: str) -> dict:
+    return {name: session.client(name, config=RETRIES) for name in
+            ("sts", "logs", "secretsmanager", "iam", "scheduler", "s3", *extra)}
 
 
 def delete_secret(secrets, name: str) -> None:
