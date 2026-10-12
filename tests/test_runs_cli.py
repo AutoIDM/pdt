@@ -834,8 +834,8 @@ def test_follow_of_a_run_stopped_without_its_exit_line_says_so(monkeypatch, caps
                          "report", ["--follow"], store="Azure Log Analytics",
                          delay=runs_cli.LOG_DELAY) == 1
     assert capsys.readouterr().out.splitlines()[-1] == (
-        "note: run 1 stopped before it wrote its exit line, for example at a timeout or when "
-        "it ran out of memory, so its log may end early.")
+        "note: Azure Log Analytics does not show the exit line of run 1, so its log may end "
+        "early.")
 
 
 @pytest.mark.parametrize("rest, says", [([], "run 1 wrote no lines."),

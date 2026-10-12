@@ -497,7 +497,7 @@ def say_lag(run: Run, app_name: str, total: int, store: str | None, delay: timed
         console.note(f"run {console.value(run.number)} ended at "
                      f"{local_text(run.ended, '%H:%M:%S')}, and "
                      f"{store} can take up to {minutes_text(delay)} to show a line, so "
-                     f"{'no lines are' if total == 0 else 'the last lines may not be'} "
+                     f"{f'no {kind} are' if total == 0 else 'the last lines may not be'} "
                      "there yet.")
         console.command(f"{again} --follow",
                         f"wait for them, until {local_text(settled, '%H:%M:%S')}")
@@ -566,9 +566,8 @@ def follow(list_runs: Callable[[], list[Run]],
             run, exit_line = follow_store(list_runs, read_lines, resolve, run, errors, delay,
                                           hold, seen)
             if exit_line is None:
-                console.note(f"run {console.value(run.number)} stopped before it wrote its exit "
-                             "line, for example at a timeout or when it ran out of memory, so "
-                             "its log may end early.")
+                console.note(f"{store} does not show the exit line of run "
+                             f"{console.value(run.number)}, so its log may end early.")
     except KeyboardInterrupt:
         console.say()
         return 130
