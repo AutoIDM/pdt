@@ -35,12 +35,7 @@ Check: `pdt --version` prints the newest release.
 
 pdt builds each cloud app with Docker on this computer. An app that runs on a Windows PC does not need Docker.
 
-1. Do not install Docker yourself. Never install Docker Desktop.
-2. pdt gets Docker ready during the first cloud deploy. It starts an installed Docker that is not running. When Docker is not installed, pdt asks once, then installs a free Docker and starts it:
-   - macOS with Homebrew: Colima
-   - Windows x64: Rancher Desktop
-   - Linux: Docker Engine
-3. If pdt stops with a Docker message, show that message to the user and do what it says.
+During a cloud deploy, pdt starts Docker when it is installed but not running. When Docker is not installed, pdt asks once, then installs Docker and starts it. If pdt stops with a Docker message, show the message to the user and do what it says.
 
 Check: after the first cloud deploy, `docker info` succeeds.
 
