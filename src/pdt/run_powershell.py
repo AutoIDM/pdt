@@ -50,6 +50,8 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pdt.utils.web import trust_os_certificates
+trust_os_certificates()
 from pdt import config, powershell
 from pdt.pwsh import ensure_pwsh
 from pdt.utils import storage

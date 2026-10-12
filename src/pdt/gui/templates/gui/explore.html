@@ -44,13 +44,24 @@
     </div>
 </section>
 <script type="module" src="{% url 'static_file' 'workbench.js' %}"></script>
+{% elif fetching %}
+<meta http-equiv="refresh" content="5">
+<section class="card">
+    <div class="card-head">
+        <div>
+            <h1>{{ active.name }}</h1>
+            <p class="hint">pdt is downloading the SQL tools this page needs ({{ download_mb }} MB, once). This page refreshes itself until they are ready; until then, <a href="{{ active.download_url }}">Download</a> the file.</p>
+        </div>
+    </div>
+</section>
 {% else %}
 <section class="card">
     <div class="card-head">
         <div>
             <h1>{{ active.name }}</h1>
-            <p class="hint">DuckDB is not installed yet, so this file cannot open in the browser. Start <code>pdt gui</code> again to download it; until then, <a href="{{ active.download_url }}">Download</a> the file.</p>
+            <p class="hint">The SQL tools this page needs did not download, so this file cannot open in the browser. The reason is in <code>{{ log_file }}</code>. Try again, or <a href="{{ active.download_url }}">Download</a> the file.</p>
         </div>
+        <form method="post">{% csrf_token %}<button type="submit">Try again</button></form>
     </div>
 </section>
 {% endif %}

@@ -80,7 +80,7 @@ from typing import Any, Callable
 
 import backoff
 
-from pdt import config, console, download, lifecycle
+from pdt import config, console, lifecycle
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
@@ -295,7 +295,7 @@ ECB_RATES = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
 
 
 def ecb_xml() -> bytes:
-    with urllib.request.urlopen(ECB_RATES, timeout=30, context=download.CONTEXT) as response:
+    with urllib.request.urlopen(ECB_RATES, timeout=30) as response:
         return response.read()
 
 
@@ -423,7 +423,7 @@ def backoff_handler(details) -> None:
 def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
     """GET a JSON document, backing off and retrying whatever can pass."""
     try:
-        with urllib.request.urlopen(request, timeout=timeout, context=download.CONTEXT) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
         validate_response(error)

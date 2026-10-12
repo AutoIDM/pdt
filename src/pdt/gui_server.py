@@ -25,8 +25,7 @@ the script's own environment. It serves the project named by PDT_PROJECT
 (or the nearest pdt.yml) on localhost and runs its migrations first, so a
 new pdt version upgrades the project's .pdt/gui.sqlite3 on start. It
 also fetches the DuckDB-WASM files of the SQL workbench (see
-`duckdb_wasm`) once, and starts without them when that fails; the SQL
-workbench page then says so, and .pdt/gui.log says why.
+`duckdb_wasm`) once, in a thread, so a first start does not wait for them.
 """
 
 from __future__ import annotations
@@ -38,6 +37,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pdt.utils.web import trust_os_certificates
+trust_os_certificates()
 from pdt import config, duckdb_wasm, gui_cli
 
 
@@ -52,16 +53,16 @@ def main() -> int:
     from django.core.management import call_command
     from django.core.servers.basehttp import get_internal_wsgi_application, run
     call_command("migrate", verbosity=0)
-    try:
-        duckdb_wasm.ensure()
-    except duckdb_wasm.DuckdbWasmError as e:
-        logging.getLogger("pdt.gui").warning("%s", e)
+    duckdb_wasm.fetch_in_background()
     from pdt.gui import worker
     worker.start()
     try:
         run("127.0.0.1", args.port, get_internal_wsgi_application(), threading=True)
     except KeyboardInterrupt:
         pass
+    except OSError as e:
+        logging.getLogger("pdt.gui").error("could not listen on port %s: %s", args.port, e)
+        return 1
     return 0
 
 

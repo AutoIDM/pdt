@@ -22,7 +22,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
-from pdt import config, duckdb_wasm, runs_cli
+from pdt import config, duckdb_wasm, gui_cli, runs_cli
 from pdt.gui import health, sync, worker
 from pdt.gui.models import Run, Timing
 from pdt.gui.pdt_cmd import run_pdt
@@ -217,6 +217,12 @@ def csv_files(run, name: str) -> list[dict]:
 def explore(request, name, pk):
     project = sync.project_row()
     run = run_or_404(project, name, pk)
+    if request.method == "POST":
+        duckdb_wasm.fetch_in_background()
+        return redirect(request.get_full_path())
+    installed = duckdb_wasm.installed()
+    if not installed and duckdb_wasm.failure == "":
+        duckdb_wasm.fetch_in_background()
     if sync.needs_artifacts(run):
         worker.ask(run)
     files = csv_files(run, name)
@@ -230,7 +236,10 @@ def explore(request, name, pk):
         "number": next((item["number"] for item in numbered_runs(run.app)
                         if item["run"].pk == pk), 0),
         "duckdb": {key: reverse("duckdb_file", args=[file]) for key, file in DUCKDB_FILES.items()},
-        "installed": duckdb_wasm.installed(),
+        "installed": installed,
+        "fetching": duckdb_wasm.fetching(),
+        "download_mb": round(sum(size for _base, _sum, size in duckdb_wasm.FILES.values()) / 2**20),
+        "log_file": Path(project.path) / config.STATE_DIR / gui_cli.LOG_FILE,
         "query_command": f"pdt storage {name} query",
     })
 

@@ -82,8 +82,3 @@ def test_a_download_with_a_terminal_keeps_its_progress_display(tmp_path, monkeyp
     fetch_verified(path.as_uri(), digest, stage, FetchError)
 
     assert progress == ["  0 / 0 MB", "ended"]
-
-
-def test_every_download_trusts_the_operating_systems_certificate_store():
-    import truststore
-    assert isinstance(download.CONTEXT, truststore.SSLContext)

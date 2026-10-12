@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -27,6 +28,8 @@ from pdt import config, console
 
 PID_FILE = "gui.pid"
 LOG_FILE = "gui.log"
+# The log keeps its newest half when it grows past this.
+LOG_LIMIT = 1024 * 1024
 START_TIMEOUT = 300
 POLL = 0.3
 
@@ -50,6 +53,19 @@ def is_up(port: int) -> bool:
         return True
     except OSError:
         return False
+    return True
+
+
+def port_free(port: int) -> bool:
+    with socket.socket() as probe:
+        # Elsewhere a stopped server's closed connections would block the port for a
+        # minute without it; on Windows it would let the probe bind over a live server.
+        if os.name != "nt":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
     return True
 
 
@@ -94,9 +110,16 @@ def start(port: int, background: bool, open_the_browser: bool) -> int:
         if open_the_browser:
             open_browser(known["port"])
         return 0
+    log_path = state / LOG_FILE
+    if log_path.is_file() and log_path.stat().st_size > LOG_LIMIT:
+        log_path.write_bytes(log_path.read_bytes()[-LOG_LIMIT // 2:])
+    if not port_free(port):
+        console.error(f"another program uses port {console.value(port)}. Run "
+                      f"{console.value(f'pdt gui --port {port + 1}')} to use another port.")
+        return 1
     env = dict(os.environ, PDT_PROJECT=str(project))
     if background:
-        log = open(state / LOG_FILE, "ab")
+        log = open(log_path, "ab")
         detached = ({"creationflags": subprocess.DETACHED_PROCESS
                      | subprocess.CREATE_NEW_PROCESS_GROUP}
                     if os.name == "nt" else {"start_new_session": True})
@@ -111,8 +134,7 @@ def start(port: int, background: bool, open_the_browser: bool) -> int:
         (state / PID_FILE).unlink(missing_ok=True)
         if proc.poll() is None:
             proc.terminate()
-        console.error("pdt gui did not start"
-                      + (f"; see {console.value(state / LOG_FILE)}" if background else ""))
+        console.error(f"pdt gui did not start; see {console.value(state / LOG_FILE)}")
         return 1
     if open_the_browser:
         open_browser(port)
