@@ -438,7 +438,7 @@ def set_scheduler_paused(project: str, region: str, job: str, paused: bool) -> N
     state = scheduler_state(project, region, job)
     if state is None:
         fail(f"Cloud Scheduler job {console.value(job)} does not exist; run "
-             f"{console.value('pdt deploy')} first")
+             f"{console.value('pdt deploy ' + job.removeprefix('pdt-'))} first")
     if (state == "PAUSED") == paused:
         return
     run_quiet("scheduler", "jobs", "pause" if paused else "resume", job,

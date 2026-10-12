@@ -268,7 +268,8 @@ def test_logs_failed_picks_the_newest_failed_run_in_the_window(capsys):
 
 def test_runs_with_no_runs(capsys):
     assert runs_cli.runs(list, "my-report", []) == 0
-    assert capsys.readouterr().out == "my-report has not run yet.\n"
+    assert capsys.readouterr().out == ("my-report has not run yet.\n"
+                                       "  pdt run my-report --deployed  start one run now\n")
 
 
 def test_logs_shows_the_newest_run_without_the_marker(capsys):
@@ -377,7 +378,8 @@ def test_logs_errors_keeps_warnings_errors_and_plain_lines(capsys):
 
 def test_logs_with_no_runs(capsys):
     assert runs_cli.logs(list, read, "my-report", ["--failed"]) == 0
-    assert capsys.readouterr().out == "my-report has not run yet.\n"
+    assert capsys.readouterr().out == ("my-report has not run yet.\n"
+                                       "  pdt run my-report --deployed  start one run now\n")
 
 
 @pytest.mark.parametrize("list_runs, rest", [

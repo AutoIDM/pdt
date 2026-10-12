@@ -222,6 +222,7 @@ def say_not_run(app_name: str, args: argparse.Namespace, since: datetime | None,
                 span: timedelta | None) -> None:
     if since is None:
         console.say(f"{console.value(app_name)} has not run yet.")
+        console.command(f"pdt run {app_name} --deployed", "start one run now")
     elif span is None:
         console.say(f"{console.value(app_name)} has not run since {console.value(args.since)}.")
     else:

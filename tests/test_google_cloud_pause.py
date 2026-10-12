@@ -51,7 +51,7 @@ def test_a_missing_scheduler_job_says_deploy_first(monkeypatch, capsys):
     fake_gcloud(monkeypatch, None)
     with pytest.raises(SystemExit):
         deploy_google_cloud.set_scheduler_paused("p", "us-central1", "pdt-my-app", True)
-    assert "run pdt deploy first" in capsys.readouterr().out
+    assert "run pdt deploy my-app first" in capsys.readouterr().out
 
 
 def test_start_executes_the_job_and_names_the_execution(monkeypatch, capsys):
