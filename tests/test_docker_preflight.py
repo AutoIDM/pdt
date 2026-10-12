@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -350,7 +351,7 @@ def test_a_mac_without_homebrew_downloads_colima_and_starts_it(monkeypatch, caps
     assert docker_setup.os.environ["PATH"] == f"/usr/bin{docker_setup.os.pathsep}{bin_dir}"
     for tool in ("limactl", "docker", "docker-buildx", "colima"):
         assert (bin_dir / tool).exists()
-    assert sys.platform == "win32" or (bin_dir / "colima").stat().st_mode & 0o777 == 0o755
+    assert os.name == "nt" or (bin_dir / "colima").stat().st_mode & 0o777 == 0o755
     assert (docker_setup.DOCKER_DIR / "share" / "lima" / "lima-guestagent.Linux-aarch64.gz").exists()
     assert machine.commands == [["docker", "context", "show"], ["colima", "start"]]
     link = home / ".docker" / "cli-plugins" / "docker-buildx"
@@ -512,6 +513,7 @@ def test_a_new_desktop_puts_its_docker_on_this_runs_path(monkeypatch, tmp_path, 
     assert docker_setup.os.environ["PATH"].startswith(str(tmp_path / bin_dir))
 
 
+@pytest.mark.skipif(os.name == "nt", reason="macOS app paths use / separators")
 @pytest.mark.parametrize("installed, name, bin_dir", [
     ([MAC_RANCHER], "Rancher Desktop", MAC_RANCHER),
     ([MAC_DOCKER, MAC_RANCHER], "Docker Desktop", MAC_DOCKER),
