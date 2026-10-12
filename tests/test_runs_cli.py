@@ -794,3 +794,68 @@ def test_follow_opens_a_quiet_live_log_again_at_once(monkeypatch, capsys):
     assert runs_cli.follow(lambda: [RUNNING], no_store, None, RUNNING, False,
                            timedelta(minutes=5), [], stream=stream) == 0
     assert sleeps == []
+
+
+def test_follow_of_a_recently_ended_run_with_its_exit_line_prints_what_logs_prints(monkeypatch,
+                                                                                   capsys):
+    ended_at = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=60)
+    ended = Run("stream-4", ended_at - timedelta(seconds=8), ended_at, "failed", 7)
+    lines = [Line(ended.started, "INFO", "started"), Line(ended_at, "", "pdt: exit 7")]
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: pytest.fail("nothing to wait for"))
+    options = {"store": "CloudWatch Logs", "delay": runs_cli.LOG_DELAY,
+               "hold": timedelta(seconds=10)}
+    assert runs_cli.logs(lambda: [ended], lambda run, since: lines, "report", [], **options) == 1
+    plain = capsys.readouterr().out
+    assert runs_cli.logs(lambda: [ended], lambda run, since: lines, "report", ["--follow"],
+                         **options) == 1
+    assert capsys.readouterr().out == plain
+
+
+def test_follow_ends_with_the_exit_code_the_store_shows_late(monkeypatch, capsys):
+    ended_at = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=20)
+    ended = Run("stream-4", ended_at - timedelta(seconds=8), ended_at, "failed")
+    started = Line(ended.started, "INFO", "started")
+    reads = iter([[started], [started, Line(ended_at, "", "pdt: exit 7")]])
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.logs(lambda: [ended], lambda run, since: next(reads), "report", ["--follow"],
+                         store="Azure Log Analytics", delay=runs_cli.LOG_DELAY) == 1
+    out = capsys.readouterr().out
+    assert out.splitlines()[0].endswith(", 8s, failed")
+    assert out.rstrip().endswith("run 1 failed after 8s, exit 7")
+
+
+def test_follow_of_a_run_stopped_without_its_exit_line_says_so(monkeypatch, capsys):
+    now = T0 + timedelta(hours=1)
+    ended = Run("stream-4", now - timedelta(seconds=28), now - timedelta(seconds=20), "failed")
+    monkeypatch.setattr(runs_cli, "datetime", Clock)
+    Clock.moments = [now, now, now + runs_cli.LOG_DELAY]
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.logs(lambda: [ended], lambda run, since: [Line(ended.started, "INFO", "started")],
+                         "report", ["--follow"], store="Azure Log Analytics",
+                         delay=runs_cli.LOG_DELAY) == 1
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "note: run 1 stopped before it wrote its exit line, for example at a timeout or when "
+        "it ran out of memory, so its log may end early.")
+
+
+@pytest.mark.parametrize("rest, says", [([], "run 1 wrote no lines."),
+                                        (["--errors"], "run 1 wrote no warning or error lines.")])
+def test_logs_of_a_live_run_that_has_just_ended_names_no_store(rest, says, capsys):
+    snapshot = [Line(T0, "INFO", "started"), Line(T1, "", "pdt: exit 0")]
+    if not rest:
+        snapshot = snapshot[1:]
+    stream = live_stream(snapshot, [])
+    options = {"store": "Azure Log Analytics", "delay": runs_cli.LOG_DELAY, "stream": stream}
+    assert runs_cli.logs(lambda: [RUNNING], no_store, "report", rest, **options) == 0
+    plain = capsys.readouterr().out
+    assert plain.splitlines()[-1] == f"note: {says}"
+    assert runs_cli.logs(lambda: [RUNNING], no_store, "report", [*rest, "--follow"],
+                         **options) == 0
+    assert capsys.readouterr().out == plain
+
+
+def test_logs_errors_of_a_run_with_only_info_lines_says_so(capsys):
+    assert runs_cli.logs(list_two, lambda run, since: [Line(T0, "INFO", "row")], "report",
+                         ["--errors"], store="CloudWatch Logs") == 0
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "note: CloudWatch Logs has no warning or error lines from run 1.")
