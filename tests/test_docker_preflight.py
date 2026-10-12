@@ -31,7 +31,8 @@ class Machine:
     """A computer as docker_setup sees it: the tools on the PATH and what docker answers."""
 
     def __init__(self, monkeypatch, system, tools=(), running=False, desktop=False,
-                 context="default", group=True, starts=True, cpu=None, buildx=True):
+                 context="default", group=True, starts=True, cpu=None, buildx=True,
+                 macos="15.5"):
         self.system = system
         self.tools = set(tools)
         self.running = running
@@ -51,6 +52,8 @@ class Machine:
         monkeypatch.setattr(docker_setup.platform, "system", lambda: self.system)
         monkeypatch.setattr(docker_setup.platform, "machine",
                             lambda: cpu or {"Windows": "AMD64", "Darwin": "arm64"}.get(system, "aarch64"))
+        monkeypatch.setattr(docker_setup.platform, "mac_ver",
+                            lambda: (macos if system == "Darwin" else "", ("", "", ""), ""))
         monkeypatch.setattr(docker_setup.shutil, "which",
                             lambda name: f"/bin/{name}" if name in self.tools else None)
         monkeypatch.setattr(docker_setup, "desktop", self.desktop_app)
@@ -313,6 +316,20 @@ def test_windows_arm64_installs_nothing_and_names_the_install_page(monkeypatch):
     assert docker_setup.INSTALL_PAGES["Windows"] in problem
     assert machine.commands == []
     assert not machine.profile
+
+
+@pytest.mark.parametrize("tools", [{"brew"}, set()])
+def test_macos_12_installs_nothing_and_says_why(monkeypatch, tools):
+    machine = Machine(monkeypatch, "Darwin", tools=tools, macos="12.7.6")
+    fetched = fake_downloads(monkeypatch)
+    problem = docker_setup.ensure("AWS", assume_yes=True)
+    assert Text.from_markup(problem).plain == (
+        "Docker is not installed. pdt builds the image for AWS with Docker on this computer. "
+        "The Colima that pdt installs needs macOS 13 or later, and this Mac runs macOS 12.7.6. "
+        f"Install Docker from {docker_setup.INSTALL_PAGES['Darwin']}, then run the same "
+        "command again.")
+    assert machine.commands == []
+    assert fetched == []
 
 
 def fake_downloads(monkeypatch, machine=None):

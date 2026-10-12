@@ -14,7 +14,9 @@ Every cloud provider builds its image with docker on this computer, with
   Colima when it is stopped. Colima runs its Linux VM on Apple's
   Virtualization framework (macOS 13 or later), so it needs no QEMU, no
   administrator password, and no window. `colima delete` removes the VM,
-  and deleting DOCKER_DIR removes the rest.
+  and deleting DOCKER_DIR removes the rest. On macOS 12 and older, Colima
+  uses QEMU (abiosoft/colima `environment.DefaultVMType`), which pdt does
+  not install, so pdt installs nothing there.
   Windows x64 gets Rancher Desktop from winget, with the Moby engine and no
   Kubernetes, started with no window; winget prints nothing. When
   `wsl --status` answers, WSL is installed and the MSI installs for this
@@ -38,8 +40,8 @@ Every cloud provider builds its image with docker on this computer, with
   list, and prints a line only when binfmt adds the handler.
 - When Rancher Desktop does not start, the last error lines of its
   background.log follow pdt's error.
-- Anything else, Windows ARM64 included: one line with the install page for
-  this system.
+- Anything else, Windows ARM64 and macOS 12 or older included: one line
+  with the install page for this system.
 
 To bump a pin, take the asset and its sha256 from the project's release:
 abiosoft/colima (`colima-Darwin-<cpu>.sha256sum`), lima-vm/lima
@@ -89,6 +91,7 @@ LINUX_SOCKET = "/var/run/docker.sock"
 RESTART_WINDOWS = "Restart Windows to finish the Docker install, then run the same command again."
 START_SECONDS = 300
 RANCHER_ERROR_LINES = 3
+MIN_MACOS = 13
 BREW_COLIMA_SERVICE = Path("Library/LaunchAgents/homebrew.mxcl.colima.plist")
 BINFMT_TAG = "qemu-v10.2.3"
 BINFMT_DIGEST = "sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
@@ -274,6 +277,11 @@ def install(provider: str, assume_yes: bool) -> str:
     missing = (f"Docker is not installed. pdt builds the image for {provider} with Docker "
                "on this computer.")
     tool, commands = INSTALLERS.get(platform.system(), ("", []))
+    macos = platform.mac_ver()[0]
+    if platform.system() == "Darwin" and int(macos.split(".")[0] or 0) < MIN_MACOS:
+        return (f"{missing} The Colima that pdt installs needs macOS {MIN_MACOS} or later, and "
+                f"this Mac runs macOS {console.value(macos)}. Install Docker from "
+                f"{console.value(install_page())}, then run the same command again.")
     downloads = []
     if platform.system() == "Darwin" and shutil.which(tool) is None:
         downloads = COLIMA_DOWNLOADS.get(platform.machine(), [])
