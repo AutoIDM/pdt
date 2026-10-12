@@ -30,7 +30,7 @@ class Machine:
     """A computer as docker_setup sees it: the tools on the PATH and what docker answers."""
 
     def __init__(self, monkeypatch, system, tools=(), running=False, desktop=False,
-                 context="default", group=True, starts=True, cpu=None):
+                 context="default", group=True, starts=True, cpu=None, buildx=True):
         self.system = system
         self.tools = set(tools)
         self.running = running
@@ -38,6 +38,8 @@ class Machine:
         self.context = context
         self.group = group
         self.starts = starts
+        self.buildx = buildx
+        self.brew_prefix = "/opt/homebrew"
         self.chown_works = True
         self.restart = False
         self.profile = False
@@ -47,7 +49,7 @@ class Machine:
         self.now = 0.0
         monkeypatch.setattr(docker_setup.platform, "system", lambda: self.system)
         monkeypatch.setattr(docker_setup.platform, "machine",
-                            lambda: cpu or ("AMD64" if system == "Windows" else "aarch64"))
+                            lambda: cpu or {"Windows": "AMD64", "Darwin": "arm64"}.get(system, "aarch64"))
         monkeypatch.setattr(docker_setup.shutil, "which",
                             lambda name: f"/bin/{name}" if name in self.tools else None)
         monkeypatch.setattr(docker_setup, "desktop", self.desktop_app)
@@ -82,16 +84,23 @@ class Machine:
         if command == ["docker", "buildx", "inspect"]:
             return SimpleNamespace(returncode=0, stdout="Platforms: linux/amd64, linux/arm64\n",
                                    stderr="")
+        if command == ["docker", "buildx", "version"]:
+            return SimpleNamespace(returncode=0 if self.buildx else 1, stdout="", stderr="")
         self.commands.append(command)
         if command == ["wsl", "--status"]:
             return SimpleNamespace(returncode=self.wsl_status, stdout=b"", stderr=b"")
         if command == ["docker", "context", "show"]:
             return SimpleNamespace(returncode=0, stdout=f"{self.context}\n", stderr="")
         if command == ["brew", "--prefix"]:
-            return SimpleNamespace(returncode=0, stdout="/opt/homebrew\n", stderr="")
-        if command[0] in ("open", f"{MAC_RANCHER}/rdctl") or command in (["colima", "start"],
-                                               ["sudo", "systemctl", "start", "docker"]):
+            return SimpleNamespace(returncode=0, stdout=f"{self.brew_prefix}\n", stderr="")
+        if command[0] in ("open", f"{MAC_RANCHER}/rdctl") or command in (
+                ["colima", "start"], ["brew", "services", "start", "colima"],
+                ["sudo", "systemctl", "start", "docker"]):
             self.running = self.starts
+        if command == "brew services start colima":
+            service = docker_setup.Path.home() / docker_setup.BREW_COLIMA_SERVICE
+            service.parent.mkdir(parents=True, exist_ok=True)
+            service.touch()
         if command[:2] == ["sudo", "chown"]:
             self.group = self.chown_works
         if isinstance(command, str):
@@ -112,6 +121,14 @@ def said(capsys):
 @pytest.fixture(autouse=True)
 def no_terminal(monkeypatch):
     monkeypatch.setenv("CI", "true")
+
+
+@pytest.fixture(autouse=True)
+def home(monkeypatch, tmp_path):
+    monkeypatch.setattr(docker_setup.Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(docker_setup, "DOCKER_DIR", tmp_path / "pdt" / "docker")
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    return tmp_path / "home"
 
 
 @pytest.mark.parametrize("module, provider, first_cloud_call", PROVIDERS)
@@ -235,7 +252,8 @@ def test_a_rancher_desktop_with_no_log_stops_with_one_line(monkeypatch, tmp_path
 
 
 @pytest.mark.parametrize("system, tools, commands", [
-    ("Darwin", {"brew"}, ["brew install colima docker docker-buildx", ["colima", "start"]]),
+    ("Darwin", {"brew"}, ["brew install colima docker docker-buildx", "brew services start colima",
+                          ["brew", "services", "start", "colima"]]),
     ("Windows", {"winget"}, [WINGET, DESKTOPS["Windows", "Rancher Desktop"]]),
     ("Linux", {"curl"}, ["curl -fsSL https://get.docker.com | sudo sh",
                          "sudo systemctl enable --now docker"]),
@@ -279,7 +297,7 @@ def test_a_windows_install_prints_only_pdt_lines(monkeypatch, capsys):
     assert quiet and all(quiet)
     assert capsys.readouterr().out.splitlines() == [
         "Docker is not installed. pdt builds the image for AWS with Docker on this computer.",
-        "pdt will install Docker with these commands:",
+        "pdt will install Docker with these steps:",
         f"  {WINGET}",
         f"==> {WINGET}",
         "Starting Rancher Desktop...",
@@ -296,12 +314,118 @@ def test_windows_arm64_installs_nothing_and_names_the_install_page(monkeypatch):
     assert not machine.profile
 
 
-def test_a_homebrew_install_links_buildx_where_docker_looks(monkeypatch, tmp_path):
-    monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path))
-    Machine(monkeypatch, "Darwin", tools={"brew"})
-    docker_setup.ensure("AWS", assume_yes=True)
-    link = tmp_path / "cli-plugins" / "docker-buildx"
-    assert link.readlink() == Path("/opt/homebrew/lib/docker/cli-plugins/docker-buildx")
+def fake_downloads(monkeypatch, machine=None):
+    """fetch_verified that writes each file the real archive or binary holds, and records
+    each (url, sha256). A finished colima download puts colima and docker on the PATH."""
+    fetched = []
+
+    def fetch(url, sha256, stage, error):
+        fetched.append((url, sha256))
+        name = Path(url).name
+        if name.endswith(".tar.gz"):
+            files = ["bin/limactl", "share/lima/lima-guestagent.Linux-aarch64.gz"]
+        elif name.endswith(".tgz"):
+            files = ["docker/docker"]
+        else:
+            files = [name]
+        for file in files:
+            (stage / file).parent.mkdir(parents=True, exist_ok=True)
+            (stage / file).write_text(url)
+        if machine is not None and name.startswith("colima-"):
+            machine.tools |= {"colima", "docker"}
+        return stage
+
+    monkeypatch.setattr(docker_setup, "fetch_verified", fetch)
+    return fetched
+
+
+def test_a_mac_without_homebrew_downloads_colima_and_starts_it(monkeypatch, capsys, home):
+    machine = Machine(monkeypatch, "Darwin", buildx=False)
+    fetched = fake_downloads(monkeypatch, machine)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    assert docker_setup.ensure("AWS", assume_yes=True) == ""
+    downloads = docker_setup.COLIMA_DOWNLOADS["arm64"]
+    assert fetched == [(url, sha256) for url, sha256, *_ in downloads]
+    bin_dir = docker_setup.DOCKER_DIR / "bin"
+    assert docker_setup.os.environ["PATH"] == f"/usr/bin{docker_setup.os.pathsep}{bin_dir}"
+    for tool in ("limactl", "docker", "docker-buildx", "colima"):
+        assert (bin_dir / tool).exists()
+    assert (bin_dir / "colima").stat().st_mode & 0o777 == 0o755
+    assert (docker_setup.DOCKER_DIR / "share" / "lima" / "lima-guestagent.Linux-aarch64.gz").exists()
+    assert machine.commands == [["docker", "context", "show"], ["colima", "start"]]
+    link = home / ".docker" / "cli-plugins" / "docker-buildx"
+    assert link.readlink() == bin_dir / "docker-buildx"
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[:8] == [
+        "Docker is not installed. pdt builds the image for AWS with Docker on this computer.",
+        "pdt will install Docker with these steps:",
+        f"  Download Colima, Lima, the docker CLI, and docker-buildx to {docker_setup.DOCKER_DIR}, "
+        "and check each file's sha256:",
+        *(f"    {url}" for url, *_ in downloads),
+        f"  Link docker-buildx into {home / '.docker' / 'cli-plugins'}.",
+    ]
+    assert lines[8:] == [
+        "  Run colima start, now and on each deploy that finds Colima stopped.",
+        "Starting Colima...",
+        "Docker is running.",
+        f"Linked {bin_dir / 'docker-buildx'} into {home / '.docker' / 'cli-plugins'}, so docker "
+        "has the buildx plugin.",
+    ]
+
+
+def test_a_mac_download_that_fails_starts_nothing(monkeypatch):
+    machine = Machine(monkeypatch, "Darwin")
+
+    def fetch(url, sha256, stage, error):
+        raise error(f"checksum mismatch for {url}")
+
+    monkeypatch.setattr(docker_setup, "fetch_verified", fetch)
+    problem = docker_setup.ensure("AWS", assume_yes=True)
+    assert problem.startswith("checksum mismatch for https://github.com/lima-vm/lima/")
+    assert machine.commands == []
+    assert not (docker_setup.DOCKER_DIR / "bin" / "colima").exists()
+
+
+def test_a_later_run_finds_the_downloaded_colima_on_the_path(monkeypatch):
+    (docker_setup.DOCKER_DIR / "bin").mkdir(parents=True)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    Machine(monkeypatch, "Darwin", tools={"docker"}, running=True)
+    assert docker_setup.ensure("AWS", assume_yes=False) == ""
+    bin_dir = docker_setup.DOCKER_DIR / "bin"
+    assert docker_setup.os.environ["PATH"] == f"/usr/bin{docker_setup.os.pathsep}{bin_dir}"
+
+
+def test_a_docker_without_buildx_links_homebrews_buildx(monkeypatch, capsys, tmp_path, home):
+    machine = Machine(monkeypatch, "Darwin", tools={"brew", "docker"}, running=True, buildx=False)
+    machine.brew_prefix = str(tmp_path / "brew")
+    brewed = tmp_path / "brew" / "lib" / "docker" / "cli-plugins" / "docker-buildx"
+    brewed.parent.mkdir(parents=True)
+    brewed.touch()
+    fetched = fake_downloads(monkeypatch)
+    assert docker_setup.ensure("AWS", assume_yes=False) == ""
+    assert (home / ".docker" / "cli-plugins" / "docker-buildx").readlink() == brewed
+    assert fetched == []
+    assert "so docker has the buildx plugin." in said(capsys)
+
+
+@pytest.mark.parametrize("system, cpu", [("Darwin", "arm64"), ("Darwin", "x86_64"),
+                                         ("Linux", "x86_64"), ("Linux", "aarch64")])
+def test_a_docker_without_buildx_gets_the_pinned_buildx(monkeypatch, tmp_path, system, cpu):
+    monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path / "config"))
+    Machine(monkeypatch, system, tools={"docker"}, running=True, cpu=cpu, buildx=False)
+    fetched = fake_downloads(monkeypatch)
+    assert docker_setup.ensure("AWS", assume_yes=False) == ""
+    assert fetched == [docker_setup.BUILDX_DOWNLOADS[system, cpu]]
+    link = tmp_path / "config" / "cli-plugins" / "docker-buildx"
+    assert link.readlink() == docker_setup.DOCKER_DIR / "bin" / "docker-buildx"
+    assert link.read_text() == fetched[0][0]
+
+
+def test_a_docker_without_buildx_and_no_pinned_one_names_the_page(monkeypatch):
+    Machine(monkeypatch, "Windows", tools={"docker"}, running=True, buildx=False)
+    problem = docker_setup.ensure("AWS", assume_yes=False)
+    assert problem.startswith("Docker has no buildx plugin")
+    assert docker_setup.BUILDX_PAGE in problem
 
 
 def test_a_windows_install_that_waits_for_a_restart_says_so_and_starts_nothing(monkeypatch):
@@ -318,7 +442,7 @@ def test_a_desktop_that_does_not_start_before_a_restart_asks_for_the_restart(mon
     assert docker_setup.ensure("AWS", assume_yes=False) == docker_setup.RESTART_WINDOWS
 
 
-@pytest.mark.parametrize("system", ["Darwin", "Windows", "Linux"])
+@pytest.mark.parametrize("system", ["Windows", "Linux"])
 def test_without_an_installer_pdt_names_the_install_page(monkeypatch, system):
     machine = Machine(monkeypatch, system)
     problem = docker_setup.ensure("Google Cloud", assume_yes=True)
@@ -490,7 +614,7 @@ def test_a_builder_without_the_platform_gets_the_emulator(
     commands = builder(monkeypatch, platforms,
                        binfmt=(0, f"installing: {cpu} OK\n", ["linux/riscv64", image_platform]))
     assert docker_setup.emulate(image_platform) == ""
-    assert commands[1:] == [["docker", "run", "--privileged", "--rm", "tonistiigi/binfmt",
+    assert commands[1:] == [["docker", "run", "--privileged", "--rm", docker_setup.BINFMT,
                              "--install", cpu]]
     assert f"Added the {cpu} emulator with docker run" in said(capsys)
 
@@ -536,6 +660,6 @@ def test_a_failed_emulator_install_names_the_command_and_its_error(
         monkeypatch, capsys, binfmt, reason):
     builder(monkeypatch, "linux/amd64", binfmt=binfmt)
     problem = Text.from_markup(docker_setup.emulate("linux/arm64")).plain
-    assert problem.startswith("docker run --privileged --rm tonistiigi/binfmt --install arm64 failed")
+    assert problem.startswith(f"docker run --privileged --rm {docker_setup.BINFMT} --install arm64 failed")
     assert reason in problem
     assert capsys.readouterr().out == ""
