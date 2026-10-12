@@ -83,9 +83,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          previous="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --exclude-drafts --limit 2 --json tagName --jq "[.[].tagName | select(. != \"${GITHUB_REF_NAME}\")][0] // \"\"")"
+          previous="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --exclude-drafts --limit 2 --json tagName --jq "[.[].tagName | select(. != \"${GITHUB_REF_NAME}\")][0] // \"\"")" || previous=""
           if ! uv run --no-project --python 3.12 python ci/release_notes.py "${GITHUB_REPOSITORY}" "${previous}" "${GITHUB_REF_NAME}" > release-notes.md; then
-            echo "::warning title=Release notes::ci/release_notes.py failed, so the notes hold only the changelog link."
+            echo "::warning title=Release notes::ci/release_notes.py failed, so the notes hold at most the changelog link."
             if [ -n "${previous}" ]; then
               echo "**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${previous}...${GITHUB_REF_NAME}" > release-notes.md
             else
