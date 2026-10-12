@@ -350,11 +350,11 @@ def test_a_mac_without_homebrew_downloads_colima_and_starts_it(monkeypatch, caps
     assert docker_setup.os.environ["PATH"] == f"/usr/bin{docker_setup.os.pathsep}{bin_dir}"
     for tool in ("limactl", "docker", "docker-buildx", "colima"):
         assert (bin_dir / tool).exists()
-    assert (bin_dir / "colima").stat().st_mode & 0o777 == 0o755
+    assert sys.platform == "win32" or (bin_dir / "colima").stat().st_mode & 0o777 == 0o755
     assert (docker_setup.DOCKER_DIR / "share" / "lima" / "lima-guestagent.Linux-aarch64.gz").exists()
     assert machine.commands == [["docker", "context", "show"], ["colima", "start"]]
     link = home / ".docker" / "cli-plugins" / "docker-buildx"
-    assert link.readlink() == bin_dir / "docker-buildx"
+    assert link.resolve() == (bin_dir / "docker-buildx").resolve()
     lines = capsys.readouterr().out.splitlines()
     assert lines[:8] == [
         "Docker is not installed. pdt builds the image for AWS with Docker on this computer.",
@@ -403,7 +403,7 @@ def test_a_docker_without_buildx_links_homebrews_buildx(monkeypatch, capsys, tmp
     brewed.touch()
     fetched = fake_downloads(monkeypatch)
     assert docker_setup.ensure("AWS", assume_yes=False) == ""
-    assert (home / ".docker" / "cli-plugins" / "docker-buildx").readlink() == brewed
+    assert (home / ".docker" / "cli-plugins" / "docker-buildx").resolve() == brewed.resolve()
     assert fetched == []
     assert "so docker has the buildx plugin." in said(capsys)
 
@@ -417,7 +417,7 @@ def test_a_docker_without_buildx_gets_the_pinned_buildx(monkeypatch, tmp_path, s
     assert docker_setup.ensure("AWS", assume_yes=False) == ""
     assert fetched == [docker_setup.BUILDX_DOWNLOADS[system, cpu]]
     link = tmp_path / "config" / "cli-plugins" / "docker-buildx"
-    assert link.readlink() == docker_setup.DOCKER_DIR / "bin" / "docker-buildx"
+    assert link.resolve() == (docker_setup.DOCKER_DIR / "bin" / "docker-buildx").resolve()
     assert link.read_text() == fetched[0][0]
 
 
