@@ -20,7 +20,6 @@ SKILLS = Path(__file__).resolve().parent / "skills"
 if not SKILLS.is_dir():
     SKILLS = Path(__file__).resolve().parents[2] / ".agents" / "skills"
 # Codex and Cursor read .agents/skills, Claude Code reads .claude/skills.
-PROJECT_SKILLS = ("migrate-app",)
 SKILL_FOLDERS = (".agents/skills", ".claude/skills")
 
 PROVIDER_CHOICES = [
@@ -306,9 +305,9 @@ def init(directory: str | None, assume_yes: bool) -> int:
             path.write_text(body)
     private_file(target / ".env")
     for folder in SKILL_FOLDERS:
-        for skill in PROJECT_SKILLS:
-            if not (target / folder / skill).exists():
-                shutil.copytree(SKILLS / skill, target / folder / skill)
+        for skill in sorted(path for path in SKILLS.iterdir() if path.is_dir()):
+            if not (target / folder / skill.name).exists():
+                shutil.copytree(skill, target / folder / skill.name)
     if starting_fresh:
         copy_example(target, STARTER, EXAMPLES / STARTER)
 

@@ -101,15 +101,11 @@ def test_init_copies_the_project_skills_for_every_agent(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert scaffold.init(None, assume_yes=True) == 0
     for folder in (".agents/skills", ".claude/skills"):
-        assert sorted(child.name for child in (tmp_path / folder).iterdir()) == ["migrate-app"]
+        assert sorted(child.name for child in (tmp_path / folder).iterdir()) == sorted(
+            path.name for path in scaffold.SKILLS.iterdir() if path.is_dir())
         skill = tmp_path / folder / "migrate-app" / "SKILL.md"
         assert not skill.is_symlink()
         assert skill.read_text() == (scaffold.SKILLS / "migrate-app" / "SKILL.md").read_text()
-
-
-def test_every_project_skill_ships_with_pdt():
-    for skill in scaffold.PROJECT_SKILLS:
-        assert (scaffold.SKILLS / skill / "SKILL.md").is_file(), skill
 
 
 def test_init_keeps_the_users_own_skills(tmp_path, monkeypatch):
