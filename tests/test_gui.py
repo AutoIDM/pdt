@@ -523,3 +523,30 @@ def test_every_shown_command_is_a_copy_button(gui):
     run = Run.objects.get(run_id="ecs/my-report/task2")
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert '<button type="button" class="chip" data-copy>pdt logs my-report --id ecs/my-report/task2 --full</button>' in html
+
+
+def test_sqlite_takes_the_write_lock_at_begin_so_a_writer_waits_for_another():
+    from django.conf import settings
+    assert settings.DATABASES["default"]["OPTIONS"]["transaction_mode"] == "IMMEDIATE"
+
+
+def test_the_worker_tries_a_locked_database_again_and_prints_nothing(monkeypatch, capsys, caplog):
+    from django.db import OperationalError
+    stop = worker.threading.Event()
+    passes = []
+
+    def fake_tick():
+        passes.append(1)
+        if len(passes) == 1:
+            raise OperationalError("database is locked")
+        stop.set()
+        return True
+
+    waits = []
+    monkeypatch.setattr(worker, "tick", fake_tick)
+    monkeypatch.setattr(stop, "wait", lambda seconds: waits.append(seconds))
+    worker.run_forever(stop)
+    assert len(passes) == 2
+    assert waits[0] == worker.PAUSE.total_seconds()
+    assert "database is locked, trying again" in caplog.text
+    assert capsys.readouterr() == ("", "")

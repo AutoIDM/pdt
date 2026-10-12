@@ -42,9 +42,9 @@ def launcher(project, monkeypatch):
 
 def test_the_server_command_runs_the_script_with_uv(project):
     command = gui_cli.server_command(9000)
-    assert command[:3] == ["uv", "run", "--script"]
-    assert command[3].endswith("gui_server.py")
-    assert command[4:] == ["--port", "9000"]
+    assert command[:4] == ["uv", "run", "--quiet", "--script"]
+    assert command[4].endswith("gui_server.py")
+    assert command[5:] == ["--port", "9000"]
 
 
 def test_wait_up_gives_up_when_the_server_exits(monkeypatch):
@@ -54,6 +54,8 @@ def test_wait_up_gives_up_when_the_server_exits(monkeypatch):
 
 def test_foreground_start_opens_the_browser_and_cleans_up(project, launcher, capsys):
     assert gui_cli.main(8765, False, False, False) == 0
+    assert capsys.readouterr().out == (
+        "pdt gui runs at http://127.0.0.1:8765/. Press Ctrl+C to stop it.\n")
     command, kwargs = launcher.popen[0]
     assert command == gui_cli.server_command(8765)
     assert kwargs["env"]["PDT_PROJECT"] == str(project)

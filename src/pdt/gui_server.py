@@ -15,6 +15,7 @@
 #     "django>=5.2",
 #     "croniter",
 #     "tzlocal",
+#     "truststore",
 # ]
 # ///
 """The `pdt gui` server process.
@@ -24,18 +25,20 @@ the script's own environment. It serves the project named by PDT_PROJECT
 (or the nearest pdt.yml) on localhost and runs its migrations first, so a
 new pdt version upgrades the project's .pdt/gui.sqlite3 on start. It
 also fetches the DuckDB-WASM files of the SQL workbench (see
-`duckdb_wasm`) once, and starts without them when that fails.
+`duckdb_wasm`) once, and starts without them when that fails; the SQL
+workbench page then says so, and .pdt/gui.log says why.
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, duckdb_wasm, gui_cli
+from pdt import config, duckdb_wasm, gui_cli
 
 
 def main() -> int:
@@ -52,11 +55,9 @@ def main() -> int:
     try:
         duckdb_wasm.ensure()
     except duckdb_wasm.DuckdbWasmError as e:
-        console.error(console.escape(str(e)))
+        logging.getLogger("pdt.gui").warning("%s", e)
     from pdt.gui import worker
     worker.start()
-    console.say(f"pdt gui for {console.value(os.environ['PDT_PROJECT'])} at "
-                f"{console.value(gui_cli.url(args.port))}")
     try:
         run("127.0.0.1", args.port, get_internal_wsgi_application(), threading=True)
     except KeyboardInterrupt:

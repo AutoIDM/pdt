@@ -12,6 +12,7 @@
 #     "rich",
 #     "python-dotenv",
 #     "backoff",
+#     "truststore",
 # ]
 #
 # [tool.uv]

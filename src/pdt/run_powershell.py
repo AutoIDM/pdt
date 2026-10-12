@@ -7,6 +7,7 @@
 #     "rich",
 #     "backoff",
 #     "fsspec",
+#     "truststore",
 # ]
 # ///
 """Run a PowerShell app: the part run.py plays for a Python app.

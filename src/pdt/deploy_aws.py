@@ -11,7 +11,7 @@
 #     "fsspec",
 #     "s3fs>=2024",
 #     "duckdb",
-#     "certifi",
+#     "truststore",
 # ]
 # ///
 """Deploy an app to AWS.

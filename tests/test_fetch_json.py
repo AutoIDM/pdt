@@ -30,7 +30,7 @@ def install(monkeypatch, outcomes):
     calls = []
     waits = []
 
-    def fake_urlopen(request, timeout=0):
+    def fake_urlopen(request, timeout=0, context=None):
         calls.append(request)
         outcome = outcomes.pop(0)
         if isinstance(outcome, Exception):
