@@ -67,7 +67,6 @@ import json
 import os
 import re
 import shutil
-import ssl
 import subprocess
 import sys
 import tempfile
@@ -81,7 +80,7 @@ from typing import Any, Callable
 
 import backoff
 
-from pdt import config, console, lifecycle
+from pdt import config, console, download, lifecycle
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
@@ -296,15 +295,7 @@ ECB_RATES = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
 
 
 def ecb_xml() -> bytes:
-    # The ECB certificate chains to Sectigo Root E46, which the CA file of
-    # uv's Python builds lacks. certifi holds it, and every provider script
-    # installs certifi.
-    try:
-        import certifi
-        context = ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        context = None
-    with urllib.request.urlopen(ECB_RATES, timeout=30, context=context) as response:
+    with urllib.request.urlopen(ECB_RATES, timeout=30, context=download.CONTEXT) as response:
         return response.read()
 
 
@@ -432,7 +423,7 @@ def backoff_handler(details) -> None:
 def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
     """GET a JSON document, backing off and retrying whatever can pass."""
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout, context=download.CONTEXT) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
         validate_response(error)

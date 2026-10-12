@@ -2,9 +2,11 @@
 
 The server is `gui_server.py`, run through `uv run --script` like a
 provider script, so Django installs into its own environment and never
-into the user's. It listens on localhost only. `--background` leaves it
-running after the command returns and records its pid in .pdt/gui.pid,
-so `pdt gui --stop` can end it. Running `pdt gui` again while a server
+into the user's. It listens on localhost only. The terminal gets one
+line, the address, and after it only what needs the user: uv runs quiet,
+and the server logs to .pdt/gui.log. `--background` leaves it running
+after the command returns and records its pid in .pdt/gui.pid, so
+`pdt gui --stop` can end it. Running `pdt gui` again while a server
 is up only opens the browser.
 """
 
@@ -65,7 +67,7 @@ def wait_up(proc: subprocess.Popen, port: int, timeout: float | None = None) -> 
 
 def server_command(port: int) -> list[str]:
     script = Path(__file__).with_name("gui_server.py")
-    return ["uv", "run", "--script", str(script), "--port", str(port)]
+    return ["uv", "run", "--quiet", "--script", str(script), "--port", str(port)]
 
 
 def read_pid(state: Path) -> dict | None:
@@ -79,9 +81,7 @@ def read_pid(state: Path) -> dict | None:
 
 
 def open_browser(port: int) -> None:
-    if webbrowser.open(url(port)):
-        console.done(f"Opened {console.value(url(port))} in your browser.")
-    else:
+    if not webbrowser.open(url(port)):
         console.field("Open this in your browser", url(port))
 
 
@@ -105,8 +105,8 @@ def start(port: int, background: bool, open_the_browser: bool) -> int:
     else:
         proc = subprocess.Popen(server_command(port), env=env)
     (state / PID_FILE).write_text(json.dumps({"pid": proc.pid, "port": port}))
-    console.status(f"starting pdt gui on port {console.value(port)} "
-                   "(the first start installs Django)...")
+    if not background:
+        console.say(f"pdt gui runs at {console.value(url(port))}. Press Ctrl+C to stop it.")
     if not wait_up(proc, port):
         (state / PID_FILE).unlink(missing_ok=True)
         if proc.poll() is None:
@@ -121,7 +121,6 @@ def start(port: int, background: bool, open_the_browser: bool) -> int:
                      f"(log: {console.value(state / LOG_FILE)})")
         console.command("pdt gui --stop", "stop it")
         return 0
-    console.say(f"pdt gui is running at {console.value(url(port))}. Press Ctrl+C to stop it.")
     try:
         return proc.wait()
     except KeyboardInterrupt:

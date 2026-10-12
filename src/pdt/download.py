@@ -2,11 +2,17 @@
 
 `gcloud_sdk.py` and `pwsh.py` install their tools this way; each keeps its
 own version, checksum table, and final folder.
+
+Every download pdt makes verifies the server against CONTEXT, which asks the
+operating system's certificate store (Windows CryptoAPI, the macOS keychain,
+OpenSSL's system paths on Linux) through `truststore`. Python's own CA file
+lacks a company TLS proxy's root and any root Windows has not fetched yet.
 """
 
 from __future__ import annotations
 
 import hashlib
+import ssl
 import sys
 import tarfile
 import tempfile
@@ -15,7 +21,11 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+import truststore
+
 from pdt import console
+
+CONTEXT = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
 
 def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
@@ -26,7 +36,7 @@ def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
     tmp = tempfile.NamedTemporaryFile(suffix=Path(url).suffix, delete=False)
     tmp_path = Path(tmp.name)
     try:
-        with tmp, urllib.request.urlopen(url, timeout=60) as resp:
+        with tmp, urllib.request.urlopen(url, timeout=60, context=CONTEXT) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
             done = 0
             while True:

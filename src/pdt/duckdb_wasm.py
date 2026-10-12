@@ -28,8 +28,8 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-from pdt import console
 from pdt.config import data_home
+from pdt.download import CONTEXT
 
 VERSION = "1.33.1-dev57.0"
 ARROW_VERSION = "17.0.0"
@@ -62,16 +62,10 @@ def installed() -> bool:
 def ensure() -> Path:
     """DIR, with every pinned file in it; downloads the ones that are missing."""
     DIR.mkdir(parents=True, exist_ok=True)
-    for name, (base, checksum, size) in FILES.items():
+    for name, (base, checksum, _size) in FILES.items():
         if not (DIR / name).is_file():
-            console.status(f"downloading DuckDB for the browser, {console.value(name)}, "
-                           f"{size_text(size)}, once")
             download(base + name, name, checksum)
     return DIR
-
-
-def size_text(count: int) -> str:
-    return f"{count / 2**20:.0f} MB" if count >= 2**20 else f"{count // 2**10} KB"
 
 
 def download(url: str, name: str, checksum: str) -> None:
@@ -79,7 +73,7 @@ def download(url: str, name: str, checksum: str) -> None:
     tmp = tempfile.NamedTemporaryFile(dir=DIR, prefix=name + ".", delete=False)
     tmp_path = Path(tmp.name)
     try:
-        with tmp, urllib.request.urlopen(url, timeout=60) as resp:
+        with tmp, urllib.request.urlopen(url, timeout=60, context=CONTEXT) as resp:
             while True:
                 chunk = resp.read(1024 * 1024)
                 if chunk == b"":

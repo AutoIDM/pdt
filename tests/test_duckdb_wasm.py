@@ -3,7 +3,7 @@ import io
 
 import pytest
 
-from pdt import duckdb_wasm
+from pdt import download, duckdb_wasm
 
 CONTENT = {name: f"content of {name}".encode() for name in duckdb_wasm.FILES}
 
@@ -22,7 +22,8 @@ def pinned(monkeypatch, tmp_path):
         for name, (base, _checksum, _size) in duckdb_wasm.FILES.items()})
     fetched = []
 
-    def fake_urlopen(url, timeout=0):
+    def fake_urlopen(url, timeout=0, context=None):
+        assert context is download.CONTEXT
         fetched.append(url)
         return FakeResponse(CONTENT[url.rsplit("/", 1)[-1]])
 
