@@ -138,12 +138,30 @@ def test_new_app_pins_the_installed_version(project):
     assert "PDT_VERSION" not in header
 
 
+VERIFY_RUN_PY = Path(__file__).resolve().parent.parent / "verify" / "scripts" / "templates" / "run.py.txt"
+
+
+def test_every_run_py_header_installs_the_apps_extra():
+    headers = {str(path): path.read_text() for path in scaffold.EXAMPLES.glob("*/run.py")}
+    headers["scaffold.RUN_PY_TEXT"] = scaffold.RUN_PY_TEXT
+    headers[str(VERIFY_RUN_PY)] = VERIFY_RUN_PY.read_text()
+    assert [name for name, text in headers.items() if '"pdt-cli[apps]' not in text] == []
+
+
 def test_new_app_copies_a_powershell_example(project, capsys):
     assert scaffold.new_app("my-report", "powershell-report") == 0
     assert (project / "my-report" / "report.ps1").is_file()
     assert not (project / "my-report" / "run.py").exists()
     assert find_apps() == ["my-report"]
     assert "my-report/report.ps1" in capsys.readouterr().out
+
+
+def test_new_app_copies_an_examples_data_files(project):
+    assert scaffold.new_app("license-audit", "azure-license-waste") == 0
+    app = project / "license-audit"
+    assert (app / "LicenseWasteAudit.ps1").is_file()
+    assert (app / "license-prices.csv").read_text().startswith("SkuPartNumber,")
+    assert find_apps() == ["license-audit"]
 
 
 def test_new_app_refuses_an_unknown_example(project):

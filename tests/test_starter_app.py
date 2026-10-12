@@ -27,7 +27,7 @@ def test_an_empty_folder_gets_a_working_starter_app(tmp_path, monkeypatch):
 def test_the_starter_pins_the_installed_version(tmp_path, monkeypatch):
     root = init_into(tmp_path, monkeypatch)
     header = (root / scaffold.STARTER / "run.py").read_text()
-    assert f"pdt-cli=={__version__}" in header
+    assert f"pdt-cli[apps]=={__version__}" in header
     assert "PDT_VERSION" not in header
 
 

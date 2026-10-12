@@ -99,6 +99,7 @@ pdt comes with examples. List them with `pdt examples` and copy one with `pdt ne
 | Example                          | What it does                                                                                                                                                    |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `impossible-travel-report`       | Checks recent Entra ID sign-ins and emails you when one person signs in from two places too far apart for the time between them: Dallas an hour ago, Paris now. |
+| `azure-license-waste`            | A PowerShell app. Finds the Microsoft 365 licenses that a tenant pays for and nobody uses, and keeps a workbook with the monthly and yearly cost of each finding. |
 | `monday-orphaned-account-report` | Lists active Monday users whose email address matches no active Entra ID user.                                                                                  |
 | `powershell-report`              | A PowerShell app. Its script writes a small CSV report, and pdt keeps the file in the app's data store.                                                         |
 | `hello-world`                    | The smallest possible app. `pdt init` puts one in every new project as a place to start.                                                                        |

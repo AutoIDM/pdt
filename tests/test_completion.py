@@ -383,3 +383,81 @@ def test_powershell_tab_completes_app_names(project, tmp_path_factory, shell):
         stdin=subprocess.DEVNULL, capture_output=True, text=True)
 
     assert result.stdout.split() == ["[daily-report,weekly-report]"] * 4 + ["[]"] * 2, result.stderr
+
+
+TAB_IN_SHELL = {
+    "bash": r"""
+PS1='$ '
+unset HISTFILE
+eval "$PDT_SCRIPT"
+""",
+    "zsh": r"""
+PROMPT='$ '
+autoload -Uz compinit
+compinit -u
+eval "$PDT_SCRIPT"
+compadd() {
+  if [[ ${@[1,(i)(-|--)]} == *-(O|A|D)\ * ]]; then builtin compadd "$@"; return; fi
+  local -a hits
+  builtin compadd -A hits "$@"
+  found+=("${hits[@]}")
+  builtin compadd "$@"
+}
+complete-and-save() {
+  local typed=$BUFFER
+  local -a found
+  zle complete-word
+  print -r -- "$typed${(j: :)${(@ou)found}}" >> $TABS
+  BUFFER=
+}
+zle -N complete-and-save
+bindkey '\e*' complete-and-save
+""",
+}
+
+
+@pytest.mark.parametrize("shell", ["bash", "zsh"])
+def test_bash_and_zsh_tab_complete_app_names(project, tmp_path_factory, shell):
+    if os.name == "nt" or shutil.which(shell) is None or shutil.which("pdt") is None:
+        pytest.skip(f"needs {shell} and pdt on the PATH, and a pty")
+    import pty
+
+    add_app(project, "daily-report")
+    add_app(project, "weekly-report")
+    (project / "notes.txt").write_text("")
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    (elsewhere / "notes.txt").write_text("")
+    home = tmp_path_factory.mktemp("home")
+    (home / ".zshrc").write_text(TAB_IN_SHELL["zsh"])
+    (home / ".bashrc").write_text(TAB_IN_SHELL["bash"])
+    tabs = home / "tabs"
+    keys = ""
+    for folder in [project, project / "daily-report", elsewhere]:
+        keys += f"cd '{folder}'\n"
+        for line in ["pdt run ", "pdt logs "]:
+            if shell == "bash":
+                # Meta-* puts every match on the line, also the file names readline adds
+                # when pdt offers nothing; echo then saves the line.
+                keys += line + "\x1b*\x01echo \x05 >> \"$TABS\"\n"
+            else:
+                keys += line + "\x1b*"
+    keys += "exit\n"
+    argv = ([shell, "--noprofile", "--rcfile", str(home / ".bashrc"), "-i"] if shell == "bash"
+            else [shell, "-i"])
+    environment = {**os.environ, "HOME": str(home), "ZDOTDIR": str(home), "TERM": "dumb",
+                   "PDT_SCRIPT": completion._script(shell), "TABS": str(tabs)}
+
+    pid, terminal = pty.fork()
+    if pid == 0:
+        os.execvpe(shell, argv, environment)
+    os.write(terminal, keys.encode())
+    while True:
+        try:
+            if not os.read(terminal, 4096):
+                break
+        except OSError:
+            break
+    os.waitpid(pid, 0)
+
+    found = [sorted(saved.split()[2:]) for saved in tabs.read_text().splitlines()]
+    assert found == [["daily-report", "weekly-report"]] * 4 + [[]] * 2

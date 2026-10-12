@@ -29,6 +29,19 @@ def test_only_the_value_in_a_message_prints_bold(monkeypatch):
         assert out.getvalue() == expected
 
 
+def test_a_name_or_id_prints_bold_and_only_the_state_has_colour(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(
+        file=out, highlight=False, soft_wrap=True, force_terminal=True, color_system="standard"))
+    console.name("report")
+    console.choice(1, "Prod", "sub-1")
+    console.secret_changes([("unchanged", "API_KEY", "a***", "a***")])
+    lines = out.getvalue().splitlines()
+    assert lines[0] == "  \x1b[1mreport\x1b[0m"
+    assert lines[1] == "  \x1b[1;36m1)\x1b[0m Prod  \x1b[1msub-1\x1b[0m"
+    assert lines[3] == ("\x1b[2munchanged\x1b[0m  \x1b[1mAPI_KEY\x1b[0m  a***      a***")
+
+
 def test_progress_returns_to_the_line_start(capsys):
     console.progress("3 / 10 MB")
     assert capsys.readouterr().out == "3 / 10 MB\r"
