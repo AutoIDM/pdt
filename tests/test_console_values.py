@@ -41,7 +41,7 @@ ALLOWED = {
                                        "release.note"},
     "deploy_google_cloud.py": {"wait", "label", "secret_state", "resource"},
     "deploy_windows.py": {"verb", "names"},
-    "docker_setup.py": {"missing", "name", "DESKTOP_LICENSE"},
+    "docker_setup.py": {"missing", "name"},
     "duckdb_wasm.py": {"size_text(size)"},
     "email_auth.py": {"_provider_name(provider)", "name"},
     "gcloud_sdk.py": {"VERSION"},

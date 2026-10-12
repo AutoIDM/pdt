@@ -25,8 +25,12 @@ Every cloud provider builds its image with docker on this computer, with
   Rancher Desktop starts and WSL has no distribution, pdt marks the WSL
   welcome window as seen, because WSL opens it when the first distribution
   registers. An installed Docker Desktop is started instead. Linux gets
-  Docker Engine from get.docker.com.
-- On Linux, a user outside the docker group joins it.
+  Docker Engine from Docker's install script, pinned to a docker/docker-install
+  commit and checked against its sha256.
+- A docker CLI with no Docker to start (a stopped download, Homebrew's
+  docker without Colima) gets the same install.
+- On Linux, a user outside the docker group joins it. An install lists those
+  commands in its steps; otherwise pdt shows them and asks once.
 - A docker with no buildx plugin gets the pinned docker-buildx in
   DOCKER_DIR, linked into ~/.docker/cli-plugins, with no question.
 - Docker builds for another CPU type (AWS's arm64 on an x86_64 computer)
@@ -47,8 +51,10 @@ To bump a pin, take the asset and its sha256 from the project's release:
 abiosoft/colima (`colima-Darwin-<cpu>.sha256sum`), lima-vm/lima
 (`SHA256SUMS`), and docker/buildx (`checksums.txt`, and
 `checksums-signed.txt` for darwin). download.docker.com publishes no
-checksum for the static docker CLI, so hash the downloaded tgz. For binfmt,
-take the digest of the newest `qemu-v*` tag on Docker Hub.
+checksum for the static docker CLI, so hash the downloaded tgz. For the
+Linux install script, take the newest docker/docker-install commit and hash
+its `install.sh`. For binfmt, take the digest of the newest `qemu-v*` tag on
+Docker Hub.
 """
 
 from __future__ import annotations
@@ -77,9 +83,12 @@ INSTALLERS = {
     "Windows": ("winget", ["winget install -e --id SUSE.RancherDesktop --silent "
                            "--accept-source-agreements --accept-package-agreements "
                            "--disable-interactivity"]),
-    "Linux": ("curl", ["curl -fsSL https://get.docker.com | sudo sh",
-                       "sudo systemctl enable --now docker"]),
+    "Linux": ("sudo", ["sudo systemctl enable --now docker"]),
 }
+DOCKER_INSTALL = ("https://raw.githubusercontent.com/docker/docker-install/"
+                  "2b32480025b223ebfddae9a3a8bef09027680f53/install.sh",
+                  "fefa50ccd50efb42f438b506fc3a88574118f314aaf2a7cd5b6e1ffb1bffcf26",
+                  "install.sh", "install.sh")
 RANCHER_START = ["start", "--container-engine.name=moby", "--kubernetes.enabled=false",
                  "--application.start-in-background", "--no-modal-dialogs"]
 RANCHER_PER_USER = ' --custom "MSIINSTALLPERUSER=1"'
@@ -90,7 +99,9 @@ RANCHER_DEFAULTS = [("", "version", 19), ("containerEngine", "name", "moby"),
 LINUX_SOCKET = "/var/run/docker.sock"
 RESTART_WINDOWS = "Restart Windows to finish the Docker install, then run the same command again."
 START_SECONDS = 300
-RANCHER_ERROR_LINES = 3
+FIRST_START_SECONDS = 900
+INFO_SECONDS = 20
+ERROR_LINES = 3
 MIN_MACOS = 13
 BREW_COLIMA_SERVICE = Path("Library/LaunchAgents/homebrew.mxcl.colima.plist")
 BINFMT_TAG = "qemu-v10.2.3"
@@ -150,12 +161,29 @@ def docker_info() -> str | None:
     """None when no docker is on the PATH, "" when Docker answers, else what docker said."""
     if shutil.which("docker") is None:
         return None
-    proc = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False)
+    try:
+        proc = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False,
+                              timeout=INFO_SECONDS)
+    except subprocess.TimeoutExpired:
+        return "no answer"
     return "" if proc.returncode == 0 else (proc.stderr or proc.stdout).strip() or "no answer"
 
 
 def denied(said: str | None) -> bool:
     return platform.system() == "Linux" and "permission denied" in (said or "").lower()
+
+
+def last_lines(proc: subprocess.CompletedProcess) -> str:
+    """Dim lines under pdt's error: the last lines a failed command printed."""
+    lines = (proc.stderr or proc.stdout or "").strip().splitlines()[-ERROR_LINES:]
+    return "".join(f"\n[dim]  {console.escape(line)}[/]" for line in lines)
+
+
+def group_commands() -> list[list[str]]:
+    """The commands that add this user to the docker group. A new group reaches only a new
+    login, so the user also owns the socket until the Docker service restarts."""
+    user = getpass.getuser()
+    return [["sudo", "usermod", "-aG", "docker", user], ["sudo", "chown", user, LINUX_SOCKET]]
 
 
 def restart_pending() -> bool:
@@ -292,7 +320,17 @@ def install(provider: str, assume_yes: bool) -> str:
         commands = [commands[0] + RANCHER_PER_USER]
     console.warn(missing)
     console.say("pdt will install Docker with these steps:")
-    if downloads:
+    if platform.system() == "Linux":
+        script = DOCKER_DIR / DOCKER_INSTALL[3]
+        downloads = [DOCKER_INSTALL]
+        commands = [f"sudo sh {script}", *commands]
+        console.bullet(f"Download {console.value(DOCKER_INSTALL[0])} to {console.value(script)}, "
+                       "and check its sha256.")
+        for command in [*commands, *(" ".join(command) for command in group_commands())]:
+            console.bullet(console.value(command))
+        console.bullet(f"Add the QEMU emulator with {console.value('tonistiigi/binfmt')} when the "
+                       "image is for another CPU type.")
+    elif downloads:
         console.bullet(f"Download Colima, Lima, the docker CLI, and docker-buildx to "
                        f"{console.value(DOCKER_DIR)}, and check each file's sha256:")
         for url, *_ in downloads:
@@ -314,9 +352,14 @@ def install(provider: str, assume_yes: bool) -> str:
     on_path()
     for command in commands:
         console.step(console.value(command))
-        if subprocess.run(command, shell=True, check=False,
-                          capture_output=platform.system() == "Windows").returncode:
-            return f"{console.value(command)} failed. Install Docker from {console.value(install_page())}, then run the same command again."
+        proc = subprocess.run(command, shell=True, capture_output=True, text=True,
+                              errors="replace", check=False)
+        if proc.returncode:
+            if restart_pending():
+                return RESTART_WINDOWS
+            return (f"{console.value(command)} failed. Install Docker from "
+                    f"{console.value(install_page())}, then run the same command again."
+                    + last_lines(proc))
     if platform.system() == "Windows":
         rancher_profile()
     if restart_pending():
@@ -355,22 +398,29 @@ def buildx() -> str:
     return ""
 
 
-def start() -> str:
-    """Start the installed Docker and wait until it answers. Returns "" when it does."""
+def start(first: bool) -> str:
+    """Start the installed Docker and wait until it answers. Returns "" when it does. The
+    first start after an install also downloads the Linux VM image or WSL distribution."""
     found = starter()
     if found is None:
         return "Docker is installed but not running. Start Docker, then run the same command again."
     name, command = found
     console.status(f"Starting {name}...")
+    if first:
+        console.status("The first start takes several minutes.")
     if platform.system() == "Windows":
         if name == "Rancher Desktop":
             skip_wsl_welcome()
         subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    elif subprocess.run(command, check=False).returncode:
-        return f"{console.value(' '.join(command))} failed. Start Docker, then run the same command again."
+    else:
+        proc = subprocess.run(command, capture_output=True, text=True, errors="replace",
+                              check=False)
+        if proc.returncode:
+            return (f"{console.value(' '.join(command))} failed. Start Docker, then run the same "
+                    "command again." + last_lines(proc))
     if name == "Docker Desktop":
         console.status("If Docker Desktop opens a window, answer it. pdt waits until Docker runs.")
-    deadline = time.monotonic() + START_SECONDS
+    deadline = time.monotonic() + (FIRST_START_SECONDS if first else START_SECONDS)
     while time.monotonic() < deadline:
         said = docker_info()
         if said == "" or denied(said):
@@ -394,20 +444,31 @@ def rancher_errors() -> str:
     except OSError:
         return ""
     found = [line for line in lines if ("Error" in line or "unable to start" in line)
-             and "UnhandledRejectionWarning" not in line][-RANCHER_ERROR_LINES:]
+             and "UnhandledRejectionWarning" not in line][-ERROR_LINES:]
     if not found:
         return ""
     return "".join([f"\n[dim]Rancher Desktop's log {console.value(logs / 'background.log')} ends with:[/]",
                     *(f"\n[dim]  {console.escape(line)}[/]" for line in found)])
 
 
-def join_docker_group() -> str:
-    """Add this user to the docker group. A new group reaches only a new login, so the user
-    also owns the socket until the Docker service restarts."""
+def join_docker_group(assume_yes: bool) -> str:
+    """Add this user to the docker group, after the one question unless `assume_yes`."""
+    from pdt.deploy import proceed
+
     user = getpass.getuser()
+    commands = group_commands()
+    if not assume_yes:
+        console.warn(f"Docker answers {console.value(user)} only through sudo.")
+        console.say("pdt will add you to the docker group with these steps:")
+        for command in commands:
+            console.bullet(console.value(" ".join(command)))
+        if not proceed(assume_yes):
+            return (f"Add {console.value(user)} to the docker group with "
+                    f"{console.value(' '.join(commands[0]))}, log out and log in again, then "
+                    "run the same command again.")
     console.status(f"Adding {console.value(user)} to the docker group, so that docker works without sudo...")
-    subprocess.run(["sudo", "usermod", "-aG", "docker", user], check=False)
-    subprocess.run(["sudo", "chown", user, LINUX_SOCKET], check=False)
+    for command in commands:
+        subprocess.run(command, capture_output=True, check=False)
     if docker_info() == "":
         return ""
     return "Log out and log in again so that you can use Docker, then run the same command again."
@@ -421,18 +482,20 @@ def ensure(provider: str, assume_yes: bool) -> str:
         said = docker_info()
     if said == "":
         return buildx()
-    if said is None and starter() is None:
+    installed = False
+    if said != "" and not denied(said) and starter() is None:
         problem = install(provider, assume_yes)
         if problem:
             return problem
+        installed = True
         said = docker_info()
     if said != "" and not denied(said):
-        problem = start()
+        problem = start(installed)
         if problem:
             return problem
         said = docker_info()
     if denied(said):
-        problem = join_docker_group()
+        problem = join_docker_group(assume_yes or installed)
         if problem:
             return problem
     console.done("Docker is running.")
@@ -452,7 +515,11 @@ def emulate(image_platform: str) -> str:
     command = ["docker", "run", "--privileged", "--rm", BINFMT, "--install", cpu]
     proc = subprocess.run(command, capture_output=True, text=True, check=False)
     installing = [line for line in proc.stderr.splitlines() if line.startswith("installing:")]
-    if not proc.returncode and image_platform in json.loads(proc.stdout)["supported"]:
+    try:
+        supported = json.loads(proc.stdout)["supported"]
+    except (ValueError, KeyError, TypeError):
+        supported = []
+    if not proc.returncode and image_platform in supported:
         if f"installing: {cpu} OK" in installing:
             console.status(f"Added the {console.value(cpu)} emulator with "
                            f"{console.value(' '.join(command))}, so Docker can build the "

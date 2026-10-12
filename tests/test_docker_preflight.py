@@ -259,13 +259,15 @@ def test_a_rancher_desktop_with_no_log_stops_with_one_line(monkeypatch, tmp_path
     ("Darwin", {"brew"}, ["brew install colima docker docker-buildx", "brew services start colima",
                           ["brew", "services", "start", "colima"]]),
     ("Windows", {"winget"}, [WINGET, DESKTOPS["Windows", "Rancher Desktop"]]),
-    ("Linux", {"curl"}, ["curl -fsSL https://get.docker.com | sudo sh",
-                         "sudo systemctl enable --now docker"]),
+    ("Linux", {"sudo"}, ["sudo sh SCRIPT", "sudo systemctl enable --now docker"]),
 ])
 def test_a_missing_docker_installs_and_starts_after_yes(
         monkeypatch, capsys, tmp_path, system, tools, commands):
     monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path))
     machine = Machine(monkeypatch, system, tools=tools)
+    fetched = fake_downloads(monkeypatch)
+    commands = [c.replace("SCRIPT", str(docker_setup.DOCKER_DIR / "install.sh"))
+                if isinstance(c, str) else c for c in commands]
     assert docker_setup.ensure("Azure", assume_yes=True) == ""
     assert [c for c in machine.commands if c in commands] == commands
     out = said(capsys)
@@ -273,6 +275,7 @@ def test_a_missing_docker_installs_and_starts_after_yes(
     assert "Docker is running." in out
     assert machine.profile == (system == "Windows")
     assert machine.welcome_skipped == (system == "Windows")
+    assert fetched == ([docker_setup.DOCKER_INSTALL[:2]] if system == "Linux" else [])
 
 
 @pytest.mark.parametrize("wsl_status, command", [(0, f'{WINGET} --custom "MSIINSTALLPERUSER=1"'),
@@ -288,8 +291,29 @@ def test_with_wsl_rancher_desktop_installs_for_this_user_only(monkeypatch, capsy
     assert f"==> {command}" in out
 
 
-def test_a_windows_install_prints_only_pdt_lines(monkeypatch, capsys):
-    machine = Machine(monkeypatch, "Windows", tools={"winget"})
+def install_lines(system):
+    """What an install prints on `system` when every step works."""
+    if system == "Windows":
+        return [f"  {WINGET}", f"==> {WINGET}", "Starting Rancher Desktop...",
+                "The first start takes several minutes."]
+    if system == "Darwin":
+        return ["  brew install colima docker docker-buildx", "  brew services start colima",
+                "==> brew install colima docker docker-buildx", "==> brew services start colima",
+                "Starting Colima...", "The first start takes several minutes."]
+    script = docker_setup.DOCKER_DIR / "install.sh"
+    return [f"  Download {docker_setup.DOCKER_INSTALL[0]} to {script}, and check its sha256.",
+            f"  sudo sh {script}", "  sudo systemctl enable --now docker",
+            "  sudo usermod -aG docker ann", "  sudo chown ann /var/run/docker.sock",
+            "  Add the QEMU emulator with tonistiigi/binfmt when the image is for another CPU "
+            "type.",
+            f"==> sudo sh {script}", "==> sudo systemctl enable --now docker"]
+
+
+@pytest.mark.parametrize("system, tool", [("Windows", "winget"), ("Darwin", "brew"),
+                                          ("Linux", "sudo")])
+def test_an_install_prints_only_pdt_lines(monkeypatch, capsys, system, tool):
+    machine = Machine(monkeypatch, system, tools={tool})
+    fake_downloads(monkeypatch)
     quiet = []
     run, popen = machine.run, machine.popen
     monkeypatch.setattr(docker_setup.subprocess, "run", lambda command, **kwargs: (
@@ -302,11 +326,25 @@ def test_a_windows_install_prints_only_pdt_lines(monkeypatch, capsys):
     assert capsys.readouterr().out.splitlines() == [
         "Docker is not installed. pdt builds the image for AWS with Docker on this computer.",
         "pdt will install Docker with these steps:",
-        f"  {WINGET}",
-        f"==> {WINGET}",
-        "Starting Rancher Desktop...",
+        *install_lines(system),
         "Docker is running.",
     ]
+
+
+@pytest.mark.parametrize("tools", [{"docker"}, {"brew", "docker"}])
+def test_a_docker_cli_with_nothing_to_start_installs_docker(monkeypatch, capsys, tools):
+    (docker_setup.DOCKER_DIR / "bin").mkdir(parents=True)
+    (docker_setup.DOCKER_DIR / "bin" / "docker").write_text("docker")
+    machine = Machine(monkeypatch, "Darwin", tools=tools)
+    fetched = fake_downloads(monkeypatch, machine)
+    assert docker_setup.ensure("AWS", assume_yes=True) == ""
+    if "brew" in tools:
+        assert "brew install colima docker docker-buildx" in machine.commands
+        assert fetched == []
+    else:
+        assert fetched == [(url, sha256) for url, sha256, *_ in docker_setup.COLIMA_DOWNLOADS["arm64"]]
+        assert (docker_setup.DOCKER_DIR / "bin" / "colima").exists()
+    assert "Docker is running." in said(capsys)
 
 
 def test_windows_arm64_installs_nothing_and_names_the_install_page(monkeypatch):
@@ -385,6 +423,7 @@ def test_a_mac_without_homebrew_downloads_colima_and_starts_it(monkeypatch, caps
     assert lines[8:] == [
         "  Run colima start, now and on each deploy that finds Colima stopped.",
         "Starting Colima...",
+        "The first start takes several minutes.",
         "Docker is running.",
         f"Linked {bin_dir / 'docker-buildx'} into {home / '.docker' / 'cli-plugins'}, so docker "
         "has the buildx plugin.",
@@ -478,34 +517,96 @@ def test_with_no_one_to_answer_and_no_yes_nothing_installs(monkeypatch, capsys):
 
 
 def test_a_no_answer_installs_nothing(monkeypatch):
-    machine = Machine(monkeypatch, "Linux", tools={"curl"})
+    machine = Machine(monkeypatch, "Linux", tools={"sudo"})
     monkeypatch.setattr(deploy, "proceed", lambda assume_yes: False)
     assert "https://docs.docker.com/engine/install/" in docker_setup.ensure("AWS", False)
     assert machine.commands == []
 
 
-def test_a_failed_install_names_the_command_and_the_page(monkeypatch):
+@pytest.mark.parametrize("restart", [False, True])
+def test_a_failed_install_names_the_command_the_page_and_its_last_lines(monkeypatch, restart):
     machine = Machine(monkeypatch, "Windows", tools={"winget"})
-    monkeypatch.setattr(docker_setup.subprocess, "run",
-                        lambda command, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr=""))
-    problem = Text.from_markup(docker_setup.ensure("AWS", assume_yes=True)).plain
-    assert problem.startswith(f"{WINGET} failed.")
-    assert docker_setup.INSTALL_PAGES["Windows"] in problem
+    machine.restart = restart
+    commands = []
+    monkeypatch.setattr(docker_setup.subprocess, "run", lambda command, **kwargs: (
+        commands.append(command) or SimpleNamespace(
+            returncode=1, stderr="", stdout="first\nsecond\nthird\nfourth [x]\n")))
+    problem = docker_setup.ensure("AWS", assume_yes=True)
+    assert commands == [WINGET]
+    if restart:
+        assert problem == docker_setup.RESTART_WINDOWS
+        return
+    assert Text.from_markup(problem).plain.splitlines() == [
+        f"{WINGET} failed. Install Docker from {docker_setup.INSTALL_PAGES['Windows']}, then run "
+        "the same command again.",
+        "  second", "  third", "  fourth [x]"]
+    assert "[dim]  fourth \\[x][/]" in problem
+
+
+def test_a_failed_start_shows_its_last_lines(monkeypatch):
+    machine = Machine(monkeypatch, "Linux", tools={"docker", "systemctl"})
+    run = machine.run
+    monkeypatch.setattr(docker_setup.subprocess, "run", lambda command, **kwargs: (
+        SimpleNamespace(returncode=1, stdout="", stderr="Unit docker.service not found.\n")
+        if command[0] == "sudo" else run(command, **kwargs)))
+    problem = Text.from_markup(docker_setup.ensure("AWS", assume_yes=False)).plain
+    assert problem.splitlines() == [
+        "sudo systemctl start docker failed. Start Docker, then run the same command again.",
+        "  Unit docker.service not found."]
+
+
+def test_a_docker_that_never_answers_is_not_running(monkeypatch):
+    Machine(monkeypatch, "Linux", tools={"docker"})
+
+    def run(command, **kwargs):
+        raise docker_setup.subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(docker_setup.subprocess, "run", run)
+    assert docker_setup.docker_info() == "no answer"
+
+
+GROUP = [["sudo", "usermod", "-aG", "docker", "ann"], ["sudo", "chown", "ann", "/var/run/docker.sock"]]
+
+
+def test_a_linux_user_outside_the_docker_group_joins_it_after_one_question(monkeypatch, capsys):
+    machine = Machine(monkeypatch, "Linux", tools={"docker"}, running=True, group=False)
+    asked = []
+    monkeypatch.setattr(deploy, "proceed", lambda assume_yes: asked.append(assume_yes) or True)
+    assert docker_setup.ensure("AWS", assume_yes=False) == ""
+    assert asked == [False]
+    assert machine.commands == GROUP
+    assert capsys.readouterr().out.splitlines() == [
+        "Docker answers ann only through sudo.",
+        "pdt will add you to the docker group with these steps:",
+        "  sudo usermod -aG docker ann",
+        "  sudo chown ann /var/run/docker.sock",
+        "Adding ann to the docker group, so that docker works without sudo...",
+        "Docker is running.",
+    ]
+
+
+def test_a_no_answer_leaves_the_docker_group_alone(monkeypatch):
+    machine = Machine(monkeypatch, "Linux", tools={"docker"}, running=True, group=False)
+    monkeypatch.setattr(deploy, "proceed", lambda assume_yes: False)
+    problem = Text.from_markup(docker_setup.ensure("AWS", assume_yes=False)).plain
+    assert problem.startswith("Add ann to the docker group with sudo usermod -aG docker ann")
     assert machine.commands == []
 
 
-def test_a_linux_user_outside_the_docker_group_joins_it_with_no_new_login(monkeypatch, capsys):
-    machine = Machine(monkeypatch, "Linux", tools={"docker"}, running=True, group=False)
+def test_a_linux_install_joins_the_docker_group_with_no_second_question(monkeypatch):
+    machine = Machine(monkeypatch, "Linux", tools={"sudo"}, group=False)
+    fake_downloads(monkeypatch)
+    asked = []
+    monkeypatch.setattr(deploy, "proceed", lambda assume_yes: asked.append(assume_yes) or True)
     assert docker_setup.ensure("AWS", assume_yes=False) == ""
-    assert machine.commands == [["sudo", "usermod", "-aG", "docker", "ann"],
-                                ["sudo", "chown", "ann", "/var/run/docker.sock"]]
-    assert "Adding ann to the docker group" in said(capsys)
+    assert asked == [False]
+    assert machine.commands[-2:] == GROUP
 
 
 def test_when_the_socket_stays_closed_the_new_group_needs_a_new_login(monkeypatch):
     machine = Machine(monkeypatch, "Linux", tools={"docker"}, running=True, group=False)
     machine.chown_works = False
-    assert docker_setup.ensure("AWS", assume_yes=False).startswith("Log out and log in again")
+    assert docker_setup.ensure("AWS", assume_yes=True).startswith("Log out and log in again")
 
 
 @pytest.mark.parametrize("installed, name, bin_dir", [
@@ -674,6 +775,7 @@ def test_a_builder_that_does_not_answer_is_left_to_the_build(monkeypatch, capsys
      "installing: arm64 cannot register"),
     ((125, "docker: Error response from daemon: pull access denied.\n", None),
      "docker: Error response from daemon: pull access denied."),
+    ((0, "installing: arm64 OK\n", None), "installing: arm64 OK"),
 ])
 def test_a_failed_emulator_install_names_the_command_and_its_error(
         monkeypatch, capsys, binfmt, reason):

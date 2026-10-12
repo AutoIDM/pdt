@@ -349,8 +349,13 @@ def ssh_build_args() -> list[str]:
     # Windows OpenSSH serves its agent on a named pipe, which docker uses when SSH_AUTH_SOCK is
     # unset. os.path.exists cannot see a pipe, so the pipe must be in the pipe listing.
     socket = os.environ.get("SSH_AUTH_SOCK", "").strip() or (WINDOWS_AGENT if os.name == "nt" else "")
+    if os.name == "nt":
+        socket = socket.replace("/", "\\")
     if os.name == "nt" and socket.startswith(PIPES):
-        found = socket[len(PIPES):] in os.listdir(PIPES)
+        try:
+            found = socket[len(PIPES):] in os.listdir(PIPES)
+        except OSError:
+            found = False
     else:
         found = bool(socket) and os.path.exists(socket)
     return ["--ssh", "default"] if found else []

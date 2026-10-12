@@ -23,7 +23,7 @@ def test_a_stale_agent_socket_is_not_forwarded(tmp_path, monkeypatch):
     assert ssh_build_args() == []
 
 
-@pytest.mark.parametrize("sock", [None, "\\\\.\\pipe\\openssh-ssh-agent"])
+@pytest.mark.parametrize("sock", [None, "\\\\.\\pipe\\openssh-ssh-agent", "//./pipe/openssh-ssh-agent"])
 @pytest.mark.parametrize("pipes, args", [
     (["docker_engine", "openssh-ssh-agent"], ["--ssh", "default"]),
     (["docker_engine"], []),
@@ -37,6 +37,17 @@ def test_a_windows_openssh_agent_pipe_is_forwarded_when_it_is_listed(monkeypatch
     else:
         monkeypatch.setenv("SSH_AUTH_SOCK", sock)
     assert ssh_build_args() == args
+
+
+def test_a_pipe_listing_that_fails_forwards_nothing(monkeypatch):
+    monkeypatch.setattr(deploy_common.os, "name", "nt")
+
+    def listdir(path):
+        raise OSError("The system cannot find the file specified")
+
+    monkeypatch.setattr(deploy_common.os, "listdir", listdir)
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    assert ssh_build_args() == []
 
 
 def test_azure_docker_build_forwards_the_agent(tmp_path, monkeypatch):
