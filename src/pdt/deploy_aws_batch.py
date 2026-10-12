@@ -935,4 +935,6 @@ def logs(app: dict, session, rest: list[str]) -> int:
     return runs_cli.logs(
         lambda: list_runs(batch, names["job_definition"]),
         lambda run: read_lines(batch, logs_client, names["log_group"], run),
-        app["name"], rest, store="CloudWatch Logs", delay=runs_cli.LOG_DELAY)
+        app["name"], rest, store="CloudWatch Logs", delay=runs_cli.LOG_DELAY,
+        # Measured in October 2026: CloudWatch Logs showed a line at most 7.0 s after the write.
+        hold=timedelta(seconds=10))

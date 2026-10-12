@@ -21,9 +21,10 @@ and bills each minute; Cloud Logging's TailLogEntries works only over gRPC.
 
 `--follow` prints from the stream while the run runs. Without a stream, it
 reads the store again every FOLLOW_SECONDS, and prints a line only when it is
-ORDER_WINDOW old, so a line the store shows late still prints in time order.
-It stops when the run's exit line is ORDER_WINDOW old, or when the delay has
-passed after the run ended without one. A stream stops at the exit line. Both
+as old as the provider's hold, so a line the store shows late still prints in
+time order. It stops when the run's exit line is as old as the hold, because by
+then the store shows every line written before it, or when the delay has passed
+after the run ended without one. A stream stops at the exit line. Both
 take the run's status and exit code from the exit line when the provider does
 not show the end yet.
 
@@ -53,8 +54,8 @@ FOLLOW_SECONDS = 10
 # AWS and Google document no maximum. The windows provider reads a local file, with no delay.
 LOG_DELAY = timedelta(minutes=5)
 # How long --follow holds a line from a log store before it prints it, so that a line the
-# store shows late prints before a newer line, not after it. Measured in October 2026:
-# CloudWatch Logs showed a line at most 7 s after the job wrote it, Cloud Logging 25 s.
+# store shows late prints before a newer line, not after it. A provider whose store shows
+# lines sooner names a shorter hold; Azure's store fallback and the windows log file use this.
 ORDER_WINDOW = timedelta(seconds=30)
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
 SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
@@ -291,6 +292,7 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
          app_name: str, rest: list[str],
          resolve: Callable[[list[Run]], None] | None = None,
          store: str = "the log", delay: timedelta = timedelta(0),
+         hold: timedelta = ORDER_WINDOW,
          read_many: Callable[[list[Run]], dict[str, list[Line]]] | None = None,
          stream: Callable[[Run, bool], Iterable[Line]] | None = None) -> int:
     """`--id` may repeat: every named run prints, and `--json` then gives an object
@@ -399,7 +401,7 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
             print_line(line)
         if args.follow:
             return follow(list_runs, read_lines, resolve, run, app_name, args.errors, delay,
-                          stream=stream, store=store, shown=raw)
+                          hold=hold, stream=stream, store=store, shown=raw)
         say_lag(run, app_name, total, None if run.id in live else store, delay,
                 exit_code(raw) is not None)
     if args.json:
@@ -479,7 +481,7 @@ def line_key(line: Line) -> tuple:
 
 def follow(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Line]],
            resolve: Callable[[list[Run]], None] | None, run: Run, app_name: str,
-           errors: bool, delay: timedelta,
+           errors: bool, delay: timedelta, hold: timedelta = ORDER_WINDOW,
            stream: Callable[[Run, bool], Iterable[Line]] | None = None,
            store: str = "the log", shown: list[Line] | None = None) -> int:
     """Print each new line of `run`, in time order, until the run has ended.
@@ -499,7 +501,7 @@ def follow(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[
         if live:
             seen, run = follow_stream(list_runs, resolve, run, errors, stream, store, seen)
         if not live or run.status == "running":
-            run = follow_store(list_runs, read_lines, resolve, run, errors, delay, seen)
+            run = follow_store(list_runs, read_lines, resolve, run, errors, delay, hold, seen)
     except KeyboardInterrupt:
         console.say()
         return 130
@@ -560,10 +562,9 @@ def ended_by(run: Run, exit_line: Line | None) -> Run:
 
 def follow_store(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Line]],
                  resolve: Callable[[list[Run]], None] | None, run: Run, errors: bool,
-                 delay: timedelta, seen: Counter | None) -> Run:
+                 delay: timedelta, hold: timedelta, seen: Counter | None) -> Run:
     """Print each new line of `run` from its log store, in time order, until the store
-    has had the run's exit line for ORDER_WINDOW, or `delay` has passed since the run
-    ended."""
+    has had the run's exit line for `hold`, or `delay` has passed since the run ended."""
     held = []
     while True:
         raw = read_lines(run)
@@ -573,7 +574,7 @@ def follow_store(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run],
         exit_line = next((line for line in reversed(raw)
                           if line.message.startswith(EXIT_MARKER)), None)
         done = (exit_line is not None and (
-            exit_line.time is None or exit_line.time <= now - ORDER_WINDOW)) or (
+            exit_line.time is None or exit_line.time <= now - hold)) or (
             run.status != "running" and (run.ended is None or now >= run.ended + delay))
         now_seen = Counter()
         for line in log_lines(raw, errors):
@@ -584,7 +585,7 @@ def follow_store(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run],
                 held.append(line)
         ready, waiting = [], []
         for line in held:
-            if done or line.time is None or line.time <= now - ORDER_WINDOW:
+            if done or line.time is None or line.time <= now - hold:
                 ready.append(line)
             else:
                 waiting.append(line)

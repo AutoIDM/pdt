@@ -565,7 +565,9 @@ class Clock(datetime):
         return cls.moments.pop(0)
 
 
-def test_follow_holds_a_store_line_until_it_is_old_enough_to_print_in_order(monkeypatch, capsys):
+@pytest.mark.parametrize("hold", [runs_cli.ORDER_WINDOW, timedelta(seconds=10)])
+def test_follow_holds_a_store_line_until_it_is_old_enough_to_print_in_order(hold, monkeypatch,
+                                                                            capsys):
     late = Line(T0 + timedelta(seconds=4), "INFO", "late")
     newer = Line(T0 + timedelta(seconds=6), "INFO", "newer")
     done = Line(T0 + timedelta(seconds=8), "INFO", "done")
@@ -574,13 +576,12 @@ def test_follow_holds_a_store_line_until_it_is_old_enough_to_print_in_order(monk
     reads = iter([[], [newer], [late, newer], [late, newer, done, exit_line]])
     ended = dataclasses.replace(RUNNING, ended=T0 + timedelta(seconds=9), status="succeeded")
     states = iter([[RUNNING], [RUNNING], [ended]])
-    window = runs_cli.ORDER_WINDOW
-    Clock.moments = [T0, T0 + window, T0 + window + timedelta(seconds=5),
-                     T0 + window + timedelta(seconds=10)]
+    Clock.moments = [T0, T0 + hold, T0 + hold + timedelta(seconds=5),
+                     T0 + hold + timedelta(seconds=10)]
     monkeypatch.setattr(runs_cli, "datetime", Clock)
     monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
     assert runs_cli.follow(lambda: next(states), lambda run: next(reads), None, RUNNING,
-                           "report", False, timedelta(minutes=5)) == 0
+                           "report", False, timedelta(minutes=5), hold=hold) == 0
     out = capsys.readouterr().out
     assert out.index("late") < out.index("newer") < out.index("done")
 
@@ -600,17 +601,18 @@ def test_follow_stops_at_the_exit_line_without_waiting_for_the_store_delay(monke
     assert sleeps == [runs_cli.FOLLOW_SECONDS]
 
 
-def test_follow_waits_for_late_lines_after_a_new_exit_line(monkeypatch, capsys):
+@pytest.mark.parametrize("hold", [runs_cli.ORDER_WINDOW, timedelta(seconds=10)])
+def test_follow_waits_for_late_lines_after_a_new_exit_line(hold, monkeypatch, capsys):
     now = datetime.now(UTC)
     first = [Line(T0, "INFO", "started")]
     late = Line(now - timedelta(seconds=1), "INFO", "late")
     exit_line = Line(now, "", "pdt: exit 0")
     reads = iter([first, [*first, exit_line], [*first, late, exit_line]])
-    Clock.moments = [now, now + timedelta(seconds=5), now + runs_cli.ORDER_WINDOW]
+    Clock.moments = [now, now + timedelta(seconds=5), now + hold]
     monkeypatch.setattr(runs_cli, "datetime", Clock)
     monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
     assert runs_cli.follow(lambda: [RUNNING], lambda run: next(reads), None, RUNNING, "report",
-                           False, timedelta(minutes=5), shown=first) == 0
+                           False, timedelta(minutes=5), hold=hold, shown=first) == 0
     assert "late" in capsys.readouterr().out
 
 

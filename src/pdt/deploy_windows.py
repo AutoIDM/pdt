@@ -53,7 +53,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -700,7 +700,7 @@ def main() -> int:
     if args.command == "logs":
         return runs_cli.logs(lambda: list_runs(app["name"]),
                              lambda run: read_lines(app["name"], run), app["name"], args.rest,
-                             store="the run's log file")
+                             store="the run's log file", hold=timedelta(0))
     if args.command in ("pause", "unpause"):
         return pause(app, args.command == "pause")
     if args.command == "start":

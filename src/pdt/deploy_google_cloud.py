@@ -1133,7 +1133,9 @@ def logs(app: dict, rest: list[str], assume_yes: bool) -> int:
     job = f"pdt-{app['name']}"
     return runs_cli.logs(lambda: list_runs(project, region, job),
                          lambda run: read_lines(project, run.id), app["name"], rest,
-                         store="Cloud Logging", delay=runs_cli.LOG_DELAY)
+                         store="Cloud Logging", delay=runs_cli.LOG_DELAY,
+                         # Measured in October 2026: Cloud Logging showed a line 27 s after the write.
+                         hold=datetime.timedelta(seconds=30))
 
 
 def pause(app: dict, paused: bool, assume_yes: bool) -> int:
