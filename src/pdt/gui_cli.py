@@ -12,6 +12,7 @@ is up only opens the browser.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import signal
@@ -50,8 +51,9 @@ def is_up(port: int, project: Path) -> bool:
     """True when the pdt gui of `project` answers on the port, not another program."""
     try:
         with urllib.request.urlopen(url(port) + "pdt/", timeout=1) as answer:
-            return answer.read().decode(errors="replace") == str(project)
-    except OSError:
+            expected = str(project).encode()
+            return answer.read(len(expected) + 1) == expected
+    except (OSError, http.client.HTTPException):
         return False
 
 
