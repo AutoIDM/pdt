@@ -1,0 +1,21 @@
+# Finds Microsoft 365 licenses the tenant pays for that nobody uses, and keeps
+# a LicenseWaste-<date>.xlsx workbook in the app's data store each run.
+
+# How often this app runs.
+# Shorthand: hourly, daily, weekly, monthly, yearly.
+# Or a 5-field cron expression, for example "0 * * * *".
+schedule: "weekly"
+
+# The Entra app needs these Microsoft Graph application permissions, with
+# admin consent: User.Read.All, AuditLog.Read.All, Organization.Read.All.
+# Sign-in dates also need an Entra ID P1 license.
+#
+# LICENSE_WASTE_INACTIVE_DAYS is how long an account can go without signing
+# in before its licenses count as waste (90 when unset).
+env:
+  required:
+    - PDT_AZURE_TENANT_ID
+    - PDT_AZURE_CLIENT_ID
+    - PDT_AZURE_CLIENT_SECRET
+  optional:
+    - LICENSE_WASTE_INACTIVE_DAYS

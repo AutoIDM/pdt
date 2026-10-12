@@ -1,0 +1,33 @@
+SkuPartNumber,Name,MonthlyPrice
+Microsoft_365_Copilot,Microsoft 365 Copilot,30.00
+SPE_E5,Microsoft 365 E5,57.00
+DEVELOPERPACK_E5,Microsoft 365 E5 Developer,57.00
+SPE_E3,Microsoft 365 E3,36.00
+SPE_F1,Microsoft 365 F3,8.00
+SPB,Microsoft 365 Business Premium,22.00
+O365_BUSINESS_PREMIUM,Microsoft 365 Business Standard,12.50
+O365_BUSINESS_ESSENTIALS,Microsoft 365 Business Basic,6.00
+O365_BUSINESS,Microsoft 365 Apps for business,8.25
+OFFICESUBSCRIPTION,Microsoft 365 Apps for enterprise,12.00
+ENTERPRISEPREMIUM,Office 365 E5,38.00
+ENTERPRISEPACK,Office 365 E3,23.00
+STANDARDPACK,Office 365 E1,10.00
+EXCHANGESTANDARD,Exchange Online (Plan 1),4.00
+EXCHANGEENTERPRISE,Exchange Online (Plan 2),8.00
+AAD_PREMIUM,Microsoft Entra ID P1,6.00
+AAD_PREMIUM_P2,Microsoft Entra ID P2,9.00
+EMS,Enterprise Mobility + Security E3,10.60
+EMSPREMIUM,Enterprise Mobility + Security E5,16.40
+POWER_BI_PRO,Power BI Pro,14.00
+PBI_PREMIUM_PER_USER,Power BI Premium Per User,24.00
+PROJECTPROFESSIONAL,Project Plan 3,30.00
+VISIOCLIENT,Visio Plan 2,15.00
+FLOW_FREE,Power Automate Free,0
+POWER_BI_STANDARD,Power BI (free),0
+POWERAPPS_VIRAL,Power Apps Plan 2 Trial,0
+POWERAPPS_DEV,Power Apps for Developer,0
+TEAMS_EXPLORATORY,Microsoft Teams Exploratory,0
+CCIBOTS_PRIVPREV_VIRAL,Copilot Studio Viral Trial,0
+STREAM,Microsoft Stream Trial,0
+WINDOWS_STORE,Windows Store for Business,0
+PROJECT_MADEIRA_PREVIEW_IW_SKU,Dynamics 365 Business Central Preview,0
