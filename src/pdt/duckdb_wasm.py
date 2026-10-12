@@ -33,6 +33,7 @@ import urllib.request
 from pathlib import Path
 
 from pdt.config import data_home
+from pdt.utils.web import os_ssl_context
 
 VERSION = "1.33.1-dev57.0"
 ARROW_VERSION = "17.0.0"
@@ -81,6 +82,10 @@ def fetch() -> None:
     """`ensure`, keeping any failure in `failure` and the log; releases FETCH."""
     global failure
     try:
+        # A download stopped with the server leaves its temporary file behind.
+        for name in FILES:
+            for partial in DIR.glob(f"{name}.*"):
+                partial.unlink(missing_ok=True)
         ensure()
         failure = ""
     except Exception as e:  # noqa: BLE001 - a full disk or a cut connection must not stop the server
@@ -104,7 +109,7 @@ def download(url: str, name: str, checksum: str) -> None:
     tmp = tempfile.NamedTemporaryFile(dir=DIR, prefix=name + ".", delete=False)
     tmp_path = Path(tmp.name)
     try:
-        with tmp, urllib.request.urlopen(url, timeout=60) as resp:
+        with tmp, urllib.request.urlopen(url, timeout=60, context=os_ssl_context()) as resp:
             while True:
                 chunk = resp.read(1024 * 1024)
                 if chunk == b"":

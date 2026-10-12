@@ -614,3 +614,23 @@ def test_the_worker_tries_a_locked_database_again_and_prints_nothing(monkeypatch
     assert waits[0] == worker.PAUSE.total_seconds()
     assert "database is locked, trying again" in caplog.text
     assert capsys.readouterr() == ("", "")
+
+
+def test_the_server_names_its_project_so_pdt_gui_knows_it_is_its_own(gui):
+    answer = gui.client.get("/pdt/")
+    assert answer.status_code == 200
+    assert answer.content.decode() == str(config.find_project())
+
+
+def test_a_download_that_ends_while_the_page_reads_shows_the_workbench(
+        run_with_files, gui, duckdb_dir, monkeypatch):
+    def ends_now():
+        install_duckdb(duckdb_dir)
+        return False
+    monkeypatch.setattr(duckdb_wasm, "fetch_in_background", lambda: None)
+    monkeypatch.setattr(duckdb_wasm, "fetching", ends_now)
+    monkeypatch.setattr(duckdb_wasm, "failure", "")
+    html = gui.client.get(f"/apps/my-report/runs/{run_with_files.pk}/explore/",
+                          {"path": f"{FOLDER}/report.csv"}).content.decode()
+    assert "workbench.js" in html
+    assert "did not download" not in html

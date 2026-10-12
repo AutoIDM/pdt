@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import truststore
 from rich.text import Text
 
 from pdt import console, deploy_common, watch
@@ -51,6 +52,15 @@ def waits(monkeypatch):
     monkeypatch.setattr(console, "waiting", watch(console.waiting))
     monkeypatch.setattr(console, "wait_on", watch(console.wait_on))
     return open_waits
+
+
+@pytest.fixture(autouse=True)
+def python_ssl_and_uv_certs(monkeypatch):
+    # pdt.cli.run replaces ssl.SSLContext and sets UV_SYSTEM_CERTS for the rest of the process.
+    monkeypatch.setenv("UV_SYSTEM_CERTS", "")
+    monkeypatch.delenv("UV_SYSTEM_CERTS")
+    yield
+    truststore.extract_from_ssl()
 
 
 @pytest.fixture

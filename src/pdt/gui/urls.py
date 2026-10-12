@@ -4,6 +4,7 @@ from pdt.gui import views
 
 urlpatterns = [
     path("", views.index, name="index"),
+    path("pdt/", views.project_path, name="project_path"),
     path("health/", views.health_grid, name="health_grid"),
     path("health/cell.json", views.health_cell, name="health_cell"),
     path("static/duckdb/<str:name>", views.duckdb_file, name="duckdb_file"),

@@ -3,6 +3,7 @@ import http.client
 import io
 
 import pytest
+import truststore
 
 from pdt import duckdb_wasm
 
@@ -23,7 +24,8 @@ def pinned(monkeypatch, tmp_path):
         for name, (base, _checksum, _size) in duckdb_wasm.FILES.items()})
     fetched = []
 
-    def fake_urlopen(url, timeout=0):
+    def fake_urlopen(url, timeout=0, context=None):
+        assert isinstance(context, truststore.SSLContext)
         fetched.append(url)
         return FakeResponse(CONTENT[url.rsplit("/", 1)[-1]])
 
@@ -71,3 +73,11 @@ def test_a_failed_fetch_is_kept_for_the_page_and_frees_the_next_try(monkeypatch,
     assert duckdb_wasm.failure != ""
     assert "the SQL tools did not download" in caplog.text
     assert not duckdb_wasm.fetching()
+
+
+def test_a_fetch_first_removes_what_a_stopped_download_left(pinned):
+    duckdb_wasm.DIR.mkdir(parents=True)
+    (duckdb_wasm.DIR / "duckdb-eh.wasm.k2j4h1").write_bytes(b"partial")
+    assert duckdb_wasm.FETCH.acquire(blocking=False)
+    duckdb_wasm.fetch()
+    assert sorted(path.name for path in duckdb_wasm.DIR.iterdir()) == sorted(duckdb_wasm.FILES)
