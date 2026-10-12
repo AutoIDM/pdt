@@ -56,9 +56,9 @@ FOLLOW_SECONDS = 10
 # (https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-ingestion-time);
 # AWS and Google document no maximum. The windows provider reads a local file, with no delay.
 LOG_DELAY = timedelta(minutes=5)
-SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
-SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
-               "or a date and time (2026-09-20T14:00)")
+SINCE_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+SINCE_FORMS = ("a count with a unit (5m, 12h, 3d, 2w), a date (2026-09-20), "
+               "a date and time (2026-09-20T14:00), or a UTC time (2026-09-20T14:00Z)")
 EXIT_MARKER = "pdt: exit "
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 TEXT_LINE = re.compile(r"^\d\d:\d\d:\d\d (DEBUG|INFO|WARNING|ERROR)\s+(.*)$")
@@ -190,18 +190,23 @@ def duration_text(run: Run) -> str:
 
 
 def parse_amount(value: str) -> timedelta | None:
-    """The length of time a count with a unit (12h, 3d, 2w) names, or None."""
-    match = re.fullmatch(r"(\d+)([hdw])", value)
+    """The length of time a count with a unit (5m, 12h, 3d, 2w) names, or None."""
+    match = re.fullmatch(r"(\d+)([mhdw])", value)
     if match is None:
         return None
     return timedelta(**{SINCE_UNITS[match.group(2)]: int(match.group(1))})
 
 
 def parse_since(value: str, now: datetime) -> datetime:
-    """The moment `--since VALUE` names; a date without a time is local midnight."""
+    """The moment `--since VALUE` names; a date without a time is local midnight,
+    and a time ending in Z is UTC."""
     amount = parse_amount(value)
     if amount is not None:
         return now - amount
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%MZ").replace(tzinfo=UTC)
+    except ValueError:
+        pass
     for form in ("%Y-%m-%d", "%Y-%m-%dT%H:%M"):
         try:
             return datetime.strptime(value, form).astimezone()

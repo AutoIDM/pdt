@@ -1077,7 +1077,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             revoke_role(store["container_id"], principal_id, STORE_ROLE)
         if orphan_vault:
             console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-            run_quiet("keyvault", "purge", "--name", settings["vault"])
+            run_quiet("keyvault", "purge", "--name", settings["vault"], retry_purge=True)
         if group_exists and not destroy_group(settings, name):
             # Another app joined the group meanwhile, so this one leaves the
             # way it would have with a sibling: its own job, image, and secret.

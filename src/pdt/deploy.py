@@ -126,8 +126,10 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
         problems.append(missing)
     if app["schedule"] is None:
         problems.append("schedule is required to deploy")
-    if config.uses_email(app):
-        problems.extend(email_problems(app["config"], check_oauth=False))
+    failure_email = config.sends_failure_email(app)
+    if config.uses_email(app) or failure_email:
+        problems.extend(email_problems(app["config"], check_oauth=False,
+                                       failure_email=failure_email))
     lines = [f"runs {console.value('run.py')}"]
     if config.powershell_scripts(app["dir"]):
         try:
@@ -147,7 +149,7 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
     if problem != "":
         console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
-    if config.uses_email(app):
+    if config.uses_email(app) or failure_email:
         prepare_email_auth(auth_env_file(app["dir"]))
     code = dispatch(provider, "deploy", app_name, assume_yes)
     # A declined plan exits nonzero, so 0 means the deploy completed.

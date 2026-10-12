@@ -130,6 +130,7 @@ def test_parse_since_reads_a_count_with_a_unit():
     assert runs_cli.parse_since("12h", T0) == T0 - timedelta(hours=12)
     assert runs_cli.parse_since("3d", T0) == T0 - timedelta(days=3)
     assert runs_cli.parse_since("2w", T0) == T0 - timedelta(weeks=2)
+    assert runs_cli.parse_since("5m", T0) == T0 - timedelta(minutes=5)
 
 
 def test_parse_since_reads_a_date_and_a_date_time_in_local_time(monkeypatch):
@@ -138,12 +139,14 @@ def test_parse_since_reads_a_date_and_a_date_time_in_local_time(monkeypatch):
     assert runs_cli.parse_since("2026-09-20", T0) == datetime(2026, 9, 20, 4, 0, tzinfo=UTC)
     assert runs_cli.parse_since("2026-09-20T14:00", T0) == datetime(2026, 9, 20, 18, 0,
                                                                     tzinfo=UTC)
+    assert runs_cli.parse_since("2026-09-20T14:00Z", T0) == datetime(2026, 9, 20, 14, 0,
+                                                                     tzinfo=UTC)
 
 
-@pytest.mark.parametrize("value", ["3", "3m", "d", "yesterday", "2026-09-20 14:00",
+@pytest.mark.parametrize("value", ["3", "3s", "d", "2026-09-20Z", "2026-09-20T14:00:00Z", "yesterday", "2026-09-20 14:00",
                                    "2026-09-20T14:00:00"])
 def test_parse_since_rejects_other_forms(value):
-    with pytest.raises(ValueError, match="12h, 3d, 2w"):
+    with pytest.raises(ValueError, match="5m, 12h, 3d, 2w"):
         runs_cli.parse_since(value, T0)
 
 

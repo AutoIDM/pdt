@@ -129,7 +129,7 @@ pdt login my-report
 | `pdt secrets APP set NAME` | put one value, read from stdin, into the deployed app's secrets |
 | `pdt login APP` | sign in again to the app's platform |
 | `pdt storage APP ls\|get\|query\|unlock\|destroy` | look at, fetch, query, unlock, or delete the app's stored files; `ls PATH --recursive` lists every file under a folder, and `ls --json` prints the list as JSON |
-| `pdt runs APP` | list the deployed app's runs with each run's exit code: the 10 newest, or with `--since 3d` (or `12h`, `2w`, `2026-09-20`, `2026-09-20T14:00`) every run since then, `--span 1d` keeping only the runs within that long after `--since` and `--count N` keeping only the N newest; a run's number is its place among every run pdt can still find, so it stays the same whichever runs print |
+| `pdt runs APP` | list the deployed app's runs with each run's exit code: the 10 newest, or with `--since 3d` (or `5m`, `12h`, `2w`, `2026-09-20`, `2026-09-20T14:00` in local time, `2026-09-20T14:00Z` in UTC) every run since then, `--span 1d` (or `5m`, `12h`, `2w`) keeping only the runs within that long after `--since` and `--count N` keeping only the N newest; a run's number is its place among every run pdt can still find, so it stays the same whichever runs print |
 | `pdt logs APP [N]` | read the log of run N as `pdt runs` numbers it; with no N, the newest run, `--failed` picks the newest failed run instead, and `--id ID` picks a run by the id `pdt runs` shows (repeat it to read several runs; their `--json` is then an object keyed by id); `--since`, `--span`, and `--count` limit which runs those two choose from, `--errors` leaves out DEBUG and INFO lines; the last 20 lines print, `--lines N` prints N instead, `--head` prints the first lines instead of the last, `--full` prints every line, and `--follow` keeps printing new lines, in time order, until the run ends and its log has the run's exit line; on Azure, a running run's lines come from its container's live log, because Azure Log Analytics shows a line a minute or more after the job writes it; a run that is still running, or whose lines have not reached the log store yet, says so |
 | `pdt health [APP] [--all]` | show whether each app's last run succeeded; exits 1 when one failed; inside an app folder it checks only that app, and `--all` checks every app |
 | `pdt gui` | open the project's dashboard in your browser: every app's health, each app's run history, and each run's log and files, with buttons for pause, unpause, and run now; `--background` keeps the server up after the command returns and `pdt gui --stop` ends it; `--port N` and `--no-browser` are there for the rare case |
@@ -205,6 +205,22 @@ The cost estimate before each deploy shows prices in the currency of your comput
 
 A deploy to AWS, Azure, or Google Cloud builds each app's image with Docker on your computer and uploads it to that cloud's image registry. When Docker is installed but not running, the deploy starts it. When Docker is not installed, the deploy shows the steps that install it and asks once. On macOS with Homebrew, it installs Colima through Homebrew and starts it with `brew services start colima`, which also starts it at each login. On macOS without Homebrew, it downloads Colima, Lima, the docker CLI, and docker-buildx to the `docker` folder in the pdt data folder (`$XDG_DATA_HOME/pdt`, by default `~/.local/share/pdt`), checks each file against its pinned sha256, and starts Colima; each later deploy starts Colima when it is stopped. To remove it, run `~/.local/share/pdt/docker/bin/colima delete`, delete that `docker` folder, and delete the link `~/.docker/cli-plugins/docker-buildx`. On Windows x64, it installs Rancher Desktop through winget. On Linux, it downloads Docker's install script at a pinned docker/docker-install commit, checks it against its pinned sha256, runs it with `sudo sh`, and adds you to the docker group. When Docker is installed and only `sudo` reaches it, the deploy shows the two commands that add you to the docker group and asks once. Without winget or sudo, and on Windows ARM64, the deploy names an install page for your system. When Docker runs without the buildx plugin, the deploy links Homebrew's docker-buildx or downloads the pinned one to the same `docker` folder, and links it into `~/.docker/cli-plugins`. On Linux and on Windows, when the image is for another CPU type than your computer's and the emulator is missing, the deploy first adds the QEMU emulator with `docker run --privileged --rm tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install <type>`. The Windows provider does not use Docker.
 
+### Failure notices
+
+After a failed run, pdt sends an email by default. Set the recipient in the app's `config.yml`. The email transport and sender use the existing [email configuration](#send-email).
+
+```yaml
+notify:
+  email:
+    to:
+      - operations@example.com
+      - owner@example.com
+```
+
+`notify.email.to` can also be one email address. To turn failure notices off for one app, set `on_failure: []`. The only supported `on_failure` value is `email`.
+
+The email gives the app, provider, UTC start and end times, exit code, duration, and a `pdt logs APP --failed --since TIME --span 10m` command that prints the failed job's log. TIME is 5 minutes before the start, so the window also holds the provider's start time, which is earlier than the container's start. A sending problem never changes the failed run's exit code. When pdt does not send the email, the job's log has one line `failure notice not sent: REASON`. When `notify.email.to` is set, `pdt validate` and `pdt deploy` check the email settings, and the deploy sends them to the job even when the app's `env:` does not list them.
+
 ### Azure
 
 ```yaml
@@ -250,15 +266,15 @@ platform:
 
 Every cloud provider runs a job as a container: AWS on Batch (Fargate), Azure on Container Apps Jobs, Google Cloud on Cloud Run Jobs. The deploy builds an image for each app from a generated Dockerfile. It copies the app folder and `pdt.yml` into `/workspace`, installs the script-header dependencies of `run.py` with `uv sync --script`, and runs `run.py` as the entrypoint.
 
-Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
+Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`, and `.pdt-runtime/pdt`, the copy of pdt that sends the failure notice. Keep the `COPY .pdt-runtime/pdt /opt/pdt/pdt` line and the entrypoint if you want failure notices. Start from the generated file:
 
 ```dockerfile
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 COPY . /workspace
 WORKDIR /workspace/my-app
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
-RUN uv sync --script run.py
-ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \"pdt: exit $code\"; exit $code"]
+RUN uv export --script run.py --no-hashes --output-file /tmp/pdt-requirements.txt && uv sync --script run.py
+ENTRYPOINT ["sh", "-c", "started=$(date -u +%Y-%m-%dT%H:%M:%SZ); export PDT_APP=my-app PDT_RUN_ID=${AWS_BATCH_JOB_ID:-${CONTAINER_APP_JOB_EXECUTION_NAME:-${CLOUD_RUN_EXECUTION:-$started}}}; uv run --script run.py; code=$?; ended=$(date -u +%Y-%m-%dT%H:%M:%SZ); if [ $code -ne 0 ]; then uv run --with-requirements /tmp/pdt-requirements.txt -m pdt.notify --exit-code $code --started $started --ended $ended; fi; echo \"pdt: exit $code\"; exit $code"]
 ```
 
 A `.dockerignore` in the app folder keeps files out of the image. Write its patterns relative to the app folder (`.meltano`, `output`, `*.csv`); pdt moves them to the root of the build context for you. `.env` and the other secret files never reach the context, with or without a `.dockerignore`.

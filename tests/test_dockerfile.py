@@ -30,6 +30,24 @@ def test_an_app_without_a_dockerfile_gets_the_generated_one(tmp_path):
     assert image_action(app, "build image x") == "build image x"
 
 
+def test_the_generated_dockerfile_installs_the_deploying_notice_script(tmp_path):
+    app, stage = staged(tmp_path, "my-report")
+    write_dockerfile(stage, app)
+    dockerfile = (stage / "Dockerfile").read_text()
+    assert "COPY .pdt-runtime/pdt /opt/pdt/pdt" in dockerfile
+    assert "uv sync --script /opt/pdt/pdt/notify.py" in dockerfile
+    assert "uv run --script /opt/pdt/pdt/notify.py --app-dir /workspace/my-report" in dockerfile
+    assert "export PDT_APP=my-report PDT_RUN_ID=$run_id" in dockerfile
+    assert "uv export" not in dockerfile
+
+
+def test_the_notice_uses_each_cloud_provider_run_identifier():
+    dockerfile = DOCKERFILE.format(app="my-report")
+    assert "AWS_BATCH_JOB_ID" in dockerfile
+    assert "CONTAINER_APP_JOB_EXECUTION_NAME" in dockerfile
+    assert "CLOUD_RUN_EXECUTION" in dockerfile
+
+
 def test_an_app_dockerfile_is_used_as_is_at_the_context_root(tmp_path):
     own = "FROM python:3.12-slim\nCOPY . /workspace\n"
     app, stage = staged(tmp_path, "my-report", own)
@@ -89,11 +107,12 @@ def test_context_ignore_text_keeps_comments_and_blank_lines():
 def test_the_entrypoint_ends_the_log_with_the_exit_code(tmp_path):
     (tmp_path / "uv").write_text("#!/bin/sh\necho working\nexit 3\n")
     (tmp_path / "uv").chmod(0o755)
-    line = next(line for line in DOCKERFILE.splitlines() if line.startswith("ENTRYPOINT "))
+    dockerfile = DOCKERFILE.format(app="my-report")
+    line = next(line for line in dockerfile.splitlines() if line.startswith("ENTRYPOINT "))
     command = json.loads(line.removeprefix("ENTRYPOINT "))
     proc = subprocess.run(command, capture_output=True, text=True,
                           env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
-    assert proc.stdout == "working\npdt: exit 3\n"
+    assert proc.stdout == "working\nworking\npdt: exit 3\n"
     assert proc.returncode == 3
 
 
@@ -148,12 +167,20 @@ def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modul
     (app["dir"] / "requirements.psd1").write_text("@{ 'ImportExcel' = '7.8.6' }\n")
     write_dockerfile(stage, app)
     text = (stage / "Dockerfile").read_text()
-    tail = ("WORKDIR /workspace/my-report\nRUN uv sync --script run.py\n"
-            'ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; '
-            'echo \\"pdt: exit $code\\"; exit $code"]\n')
-    assert text.endswith(tail)
+    assert "WORKDIR /workspace/my-report\nRUN uv sync --script run.py\n" in text
+    assert "export PDT_APP=my-report PDT_RUN_ID=$run_id; uv run --script run.py; code=$?;" in text
     assert text.index("Install-PSResource") < text.index("RUN uv sync")
     assert "pdt.run_powershell" not in text
+
+
+def test_the_powershell_dockerfile_installs_the_deploying_notice_script(powershell_app):
+    app, stage, _scans = powershell_app
+    write_dockerfile(stage, app)
+    dockerfile = (stage / "Dockerfile").read_text()
+    assert "COPY .pdt-runtime/pdt /opt/pdt/pdt" in dockerfile
+    assert "uv sync --script /opt/pdt/pdt/notify.py" in dockerfile
+    assert "uv run --script /opt/pdt/pdt/notify.py --app-dir /workspace/my-report" in dockerfile
+    assert "export PDT_APP=my-report PDT_RUN_ID=$run_id" in dockerfile
 
 
 @pytest.mark.skipif(os.name == "nt" or shutil.which("sh") is None,
@@ -169,9 +196,12 @@ def test_the_powershell_entrypoint_ends_the_log_with_the_exit_code(tmp_path, pow
     line = next(line for line in text.splitlines() if line.startswith("ENTRYPOINT "))
     command = json.loads(line.removeprefix("ENTRYPOINT "))
     command[-1] = command[-1].replace("/opt/pdt/bin/python", str(python))
+    (tmp_path / "uv").write_text("#!/bin/sh\necho \"uv $3\"\n")
+    (tmp_path / "uv").chmod(0o755)
     proc = subprocess.run(command, capture_output=True, text=True,
-                          env={"PATH": "/usr/bin:/bin"})
-    assert proc.stdout == "args: -m pdt.run_powershell .\npdt: exit 4\n"
+                          env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
+    assert proc.stdout == ("args: -m pdt.run_powershell .\nuv /opt/pdt/pdt/notify.py\n"
+                           "pdt: exit 4\n")
     assert proc.returncode == 4
 
 

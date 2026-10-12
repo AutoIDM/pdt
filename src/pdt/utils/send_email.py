@@ -51,6 +51,12 @@ SMTP_VARS = (
     "PDT_SMTP_OAUTH_TENANT_ID",
     email_auth.CACHE_ENV,
 )
+SES_KEY_VARS = (
+    "PDT_SES_ACCESS_KEY_ID",
+    "PDT_SES_SECRET_ACCESS_KEY",
+)
+SES_VARS = ("PDT_SES_REGION", *SES_KEY_VARS)
+EMAIL_VARS = (*SMTP_VARS, *SES_VARS, "PDT_RESEND_API_KEY", *send_email_graph.VARS)
 
 
 def optional_env(name: str) -> str:
@@ -97,24 +103,19 @@ def email_config_problems(check_authorization: bool = False,
     check_oauth is False for a caller that runs the interactive OAuth setup
     itself, so the setup is not blocked by the values it collects.
     """
-    ses_key_vars = (
-        "PDT_SES_ACCESS_KEY_ID",
-        "PDT_SES_SECRET_ACCESS_KEY",
-    )
-    ses_vars = ("PDT_SES_REGION", *ses_key_vars)
     configured = []
     problems = []
     if any(optional_env(name) != "" for name in SMTP_VARS):
         missing = [name for name in SMTP_REQUIRED if optional_env(name) == ""]
         problems.extend(f"missing required env var {name}" for name in missing)
         configured.append("smtp")
-    if any(optional_env(name) != "" for name in ses_vars):
+    if any(optional_env(name) != "" for name in SES_VARS):
         missing = []
         if optional_env("PDT_SES_REGION") == "":
             missing.append("PDT_SES_REGION")
-        supplied_keys = [name for name in ses_key_vars if optional_env(name) != ""]
+        supplied_keys = [name for name in SES_KEY_VARS if optional_env(name) != ""]
         if len(supplied_keys) == 1:
-            missing.extend(name for name in ses_key_vars if optional_env(name) == "")
+            missing.extend(name for name in SES_KEY_VARS if optional_env(name) == "")
         problems.extend(f"missing required env var {name}" for name in missing)
         configured.append("ses")
     if optional_env("PDT_RESEND_API_KEY") != "":
@@ -200,12 +201,21 @@ def _configured() -> list[str]:
     return configured
 
 
-def email_problems(cfg: dict, check_oauth: bool = True) -> list[str]:
-    """Env and config.yml problems for an app that sends email."""
+def email_problems(cfg: dict, check_oauth: bool = True,
+                   failure_email: bool = False) -> list[str]:
+    """Env and config.yml problems for an app that sends email.
+
+    failure_email is True for an app whose failed run emails notify.email.to.
+    Such an email cannot fall back to stdout, so it needs an email option.
+    """
     problems = email_config_problems(check_authorization=True,
                                      check_oauth=check_oauth)
+    if failure_email and not _configured():
+        problems.append("notify.email.to asks for a failure email, but no email option is set; "
+                        "add PDT_SMTP_HOST, PDT_SES_REGION, PDT_RESEND_API_KEY, or "
+                        "PDT_GRAPH_MAIL_USER to the .env file")
     email_from = str(cfg.get("email_from") or "").strip()
-    if _configured() and email_from == "":
+    if (_configured() or failure_email) and email_from == "":
         problems.append("email_from is required when sending email; set it in config.yml")
     mismatch = send_email_graph.sender_mismatch(email_from)
     if mismatch is not None:
