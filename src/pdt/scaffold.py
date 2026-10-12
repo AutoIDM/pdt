@@ -86,7 +86,7 @@ This folder is a pdt project: a set of small scheduled jobs. Every folder holdin
 - A `run.ps1` file is the only entry script. Otherwise, `run_scripts` lists the entry scripts in order, or pdt runs each `.ps1` file that no other `.ps1` file loads in name order. Do not use `run.ps1` and `run_scripts` together.
 - `pdt new <name> --from-scripts` writes `requirements.psd1` (the modules to install) and `run.py` (how the scripts run) into a PowerShell app's folder; once there, `requirements.psd1` replaces the modules pdt finds in the scripts, and `run.py` replaces how pdt runs them.
 - An app folder holding a `Dockerfile` is built from that file instead of the generated one when it deploys to a cloud provider. The build context is the app folder under its own name next to `pdt.yml`; a `.dockerignore` in the app folder, with patterns relative to it, keeps files out of the image.
-- A deploy to AWS, Azure, or Google Cloud builds the image with Docker on this computer, so Docker Desktop must be running. The build forwards this computer's SSH agent, so a `RUN --mount=type=ssh` step in an app's `Dockerfile` can install a private git dependency.
+- A deploy to AWS, Azure, or Google Cloud builds the image with Docker on this computer. The deploy starts Docker when it is installed but not running, and installs it after one question when it is missing. The build forwards this computer's SSH agent, so a `RUN --mount=type=ssh` step in an app's `Dockerfile` can install a private git dependency.
 """
 
 RUN_PY_TEXT = '''\
