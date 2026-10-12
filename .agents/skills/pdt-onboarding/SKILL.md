@@ -35,20 +35,14 @@ Check: `pdt --version` prints the newest release.
 
 pdt builds each cloud app with Docker on this computer. An app that runs on a Windows PC does not need Docker.
 
-1. Run `docker info`. If it succeeds, Docker is ready. Go to step 2.
-2. If Docker is installed but not running, start it, then wait until `docker info` succeeds:
-   - macOS with Colima: `colima start`
-   - macOS with Docker Desktop: `open -a Docker`
-   - Windows: start Docker Desktop from the Start menu, or run `Start-Process "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"`
-   - Linux: `sudo systemctl start docker`
-3. If Docker is not installed, tell the user what you will install and ask once. Then:
-   - macOS with Homebrew: `brew install colima docker docker-buildx`, then `mkdir -p ~/.docker/cli-plugins && ln -sfn "$(brew --prefix)/lib/docker/cli-plugins/docker-buildx" ~/.docker/cli-plugins/docker-buildx`, then `colima start`. This needs no administrator rights and no license.
-   - Windows: `winget install -e --id Docker.DockerDesktop`. It asks for administrator rights. Tell the user that Docker Desktop is free only for personal use, education, and companies with fewer than 250 employees and less than $10 million in yearly revenue. If Windows asks for a restart, stop here and tell the user to restart and start again.
-   - Linux: `curl -fsSL https://get.docker.com | sudo sh`, then `sudo systemctl enable --now docker` and `sudo usermod -aG docker $USER`. The user must log out and log in again before `docker` works without `sudo`.
-   - Any other case: send the user to https://docs.docker.com/get-started/get-docker/ and wait until they say Docker is installed.
-4. Run `docker buildx version`. pdt needs buildx for its builds. If it fails on macOS, run the `ln` command from step 3 again.
+1. Do not install Docker yourself. Never install Docker Desktop.
+2. pdt gets Docker ready during the first cloud deploy. It starts an installed Docker that is not running. When Docker is not installed, pdt asks once, then installs a free Docker and starts it:
+   - macOS with Homebrew: Colima
+   - Windows x64: Rancher Desktop
+   - Linux: Docker Engine
+3. If pdt stops with a Docker message, show that message to the user and do what it says.
 
-Check: `docker info` succeeds.
+Check: after the first cloud deploy, `docker info` succeeds.
 
 ## 2. Introduction
 
