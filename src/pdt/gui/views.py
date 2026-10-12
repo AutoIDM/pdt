@@ -220,9 +220,11 @@ def explore(request, name, pk):
     if request.method == "POST":
         duckdb_wasm.fetch_in_background()
         return redirect(request.get_full_path())
-    installed = duckdb_wasm.installed()
-    if not installed and duckdb_wasm.failure == "":
+    if not duckdb_wasm.installed() and duckdb_wasm.failure == "":
         duckdb_wasm.fetch_in_background()
+    # In this order, a download that ends between the two reads shows as installed.
+    fetching = duckdb_wasm.fetching()
+    installed = duckdb_wasm.installed()
     if sync.needs_artifacts(run):
         worker.ask(run)
     files = csv_files(run, name)
@@ -237,11 +239,16 @@ def explore(request, name, pk):
                         if item["run"].pk == pk), 0),
         "duckdb": {key: reverse("duckdb_file", args=[file]) for key, file in DUCKDB_FILES.items()},
         "installed": installed,
-        "fetching": duckdb_wasm.fetching(),
+        "fetching": fetching,
         "download_mb": round(sum(size for _base, _sum, size in duckdb_wasm.FILES.values()) / 2**20),
         "log_file": Path(project.path) / config.STATE_DIR / gui_cli.LOG_FILE,
         "query_command": f"pdt storage {name} query",
     })
+
+
+def project_path(_request):
+    """The project this server serves, so `pdt gui` tells its own server from another program."""
+    return HttpResponse(str(config.find_project()), content_type="text/plain; charset=utf-8")
 
 
 def health_grid(request):

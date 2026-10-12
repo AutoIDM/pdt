@@ -1,6 +1,9 @@
+import http.server
 import json
 import socket
 import subprocess
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +27,9 @@ class FakeProc:
         self.terminated = True
 
 
+REAL_IS_UP = gui_cli.is_up
+
+
 @pytest.fixture
 def launcher(project, monkeypatch):
     calls = SimpleNamespace(popen=[], opened=[], killed=[], up=True)
@@ -33,7 +39,7 @@ def launcher(project, monkeypatch):
         return FakeProc()
 
     monkeypatch.setattr(gui_cli.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(gui_cli, "is_up", lambda port: calls.up)
+    monkeypatch.setattr(gui_cli, "is_up", lambda port, project: calls.up)
     monkeypatch.setattr(gui_cli.webbrowser, "open", lambda url: calls.opened.append(url) or True)
     monkeypatch.setattr(gui_cli.os, "kill", lambda pid, sig: calls.killed.append(pid))
     monkeypatch.setattr(gui_cli.subprocess, "run", lambda command, **kwargs: calls.killed.append(int(command[2])))
@@ -49,8 +55,8 @@ def test_the_server_command_runs_the_script_with_uv(project):
 
 
 def test_wait_up_gives_up_when_the_server_exits(monkeypatch):
-    monkeypatch.setattr(gui_cli, "is_up", lambda port: False)
-    assert gui_cli.wait_up(FakeProc(exits=True), 8765, timeout=5) is False
+    monkeypatch.setattr(gui_cli, "is_up", lambda port, project: False)
+    assert gui_cli.wait_up(FakeProc(exits=True), 8765, Path("/p"), timeout=5) is False
 
 
 def test_foreground_start_opens_the_browser_and_cleans_up(project, launcher, capsys):
@@ -126,3 +132,47 @@ def test_a_busy_port_prints_one_plain_line_and_starts_nothing(project, launcher,
     assert capsys.readouterr().out == (
         f"error: another program uses port {port}. Run pdt gui --port {port + 1} "
         "to use another port.\n")
+
+
+@pytest.fixture
+def other_server():
+    """An HTTP server of another program on a free port."""
+    server = http.server.HTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield server.server_address[1]
+    server.shutdown()
+    server.server_close()
+
+
+def test_a_stale_pid_file_and_another_program_on_its_port_open_nothing(
+        project, launcher, capsys, monkeypatch, other_server):
+    monkeypatch.setattr(gui_cli, "is_up", REAL_IS_UP)
+    (project / ".pdt").mkdir()
+    (project / ".pdt" / "gui.pid").write_text(json.dumps({"pid": 1, "port": other_server}))
+    assert gui_cli.main(other_server, False, False, False) == 1
+    assert launcher.opened == []
+    assert launcher.popen == []
+    assert "already running" not in capsys.readouterr().out
+
+
+def test_only_the_projects_own_server_counts_as_up(project, monkeypatch, other_server):
+    assert REAL_IS_UP(other_server, project) is False
+
+    class Pdt(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = str(project).encode() if self.path == "/pdt/" else b"?"
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Pdt)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert REAL_IS_UP(server.server_address[1], project) is True
+        assert REAL_IS_UP(server.server_address[1], project / "other") is False
+    finally:
+        server.shutdown()
+        server.server_close()

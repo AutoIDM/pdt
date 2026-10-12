@@ -46,14 +46,13 @@ def url(port: int) -> str:
     return f"http://127.0.0.1:{port}/"
 
 
-def is_up(port: int) -> bool:
+def is_up(port: int, project: Path) -> bool:
+    """True when the pdt gui of `project` answers on the port, not another program."""
     try:
-        urllib.request.urlopen(url(port), timeout=1).close()
-    except urllib.error.HTTPError:
-        return True
+        with urllib.request.urlopen(url(port) + "pdt/", timeout=1) as answer:
+            return answer.read().decode(errors="replace") == str(project)
     except OSError:
         return False
-    return True
 
 
 def port_free(port: int) -> bool:
@@ -69,13 +68,14 @@ def port_free(port: int) -> bool:
     return True
 
 
-def wait_up(proc: subprocess.Popen, port: int, timeout: float | None = None) -> bool:
+def wait_up(proc: subprocess.Popen, port: int, project: Path,
+            timeout: float | None = None) -> bool:
     """True once the server answers; False when it exits first or the timeout passes."""
     deadline = time.monotonic() + (START_TIMEOUT if timeout is None else timeout)
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             return False
-        if is_up(port):
+        if is_up(port, project):
             return True
         time.sleep(POLL)
     return False
@@ -105,7 +105,7 @@ def start(port: int, background: bool, open_the_browser: bool) -> int:
     project = config.find_project()
     state = state_dir(project)
     known = read_pid(state)
-    if known is not None and is_up(known["port"]):
+    if known is not None and is_up(known["port"], project):
         console.say(f"pdt gui is already running at {console.value(url(known['port']))}")
         if open_the_browser:
             open_browser(known["port"])
@@ -130,7 +130,7 @@ def start(port: int, background: bool, open_the_browser: bool) -> int:
     (state / PID_FILE).write_text(json.dumps({"pid": proc.pid, "port": port}))
     if not background:
         console.say(f"pdt gui runs at {console.value(url(port))}. Press Ctrl+C to stop it.")
-    if not wait_up(proc, port):
+    if not wait_up(proc, port, project):
         (state / PID_FILE).unlink(missing_ok=True)
         if proc.poll() is None:
             proc.terminate()

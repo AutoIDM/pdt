@@ -15,6 +15,7 @@ import ast
 import os
 import re
 import ssl
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,11 +33,11 @@ HTTPS = {"urlopen(": "os_ssl_context()", "smtplib.SMTP_SSL(": "os_ssl_context()"
          "credentials.refresh(": "os_requests_session()"}
 
 
-@pytest.fixture
-def restore_ssl():
-    yield
-    truststore.extract_from_ssl()
-
+# The process scripts that pdt alone starts, each injecting when it is imported,
+# and the modules that only they import.
+PROCESS_SCRIPTS = {"deploy_aws", "deploy_aws_batch", "deploy_azure",
+                   "deploy_azure_container_apps", "deploy_google_cloud", "deploy_windows",
+                   "gui_server"}
 
 def scripts():
     return [path for path in sorted(SRC.glob("*.py"))
@@ -44,7 +45,7 @@ def scripts():
             and re.search(r'^#     "', path.read_text(), re.M)]
 
 
-def test_the_helper_puts_truststore_under_ssl_urllib3_and_urllib(restore_ssl):
+def test_the_helper_puts_truststore_under_ssl_urllib3_and_urllib():
     web.trust_os_certificates()
     assert isinstance(ssl.create_default_context(), truststore.SSLContext)
     assert urllib3.util.ssl_.SSLContext is truststore.SSLContext
@@ -63,8 +64,6 @@ def test_the_pdt_command_trusts_the_os_store_first(monkeypatch):
     calls = []
     monkeypatch.setattr(web, "trust_os_certificates", lambda: calls.append(1))
     monkeypatch.setattr(sys, "argv", ["pdt"])
-    monkeypatch.setenv("UV_SYSTEM_CERTS", "")
-    monkeypatch.delenv("UV_SYSTEM_CERTS")
     cli.main()
     assert calls == [1]
     assert os.environ["UV_SYSTEM_CERTS"] == "1"
@@ -72,9 +71,18 @@ def test_the_pdt_command_trusts_the_os_store_first(monkeypatch):
 
 @pytest.mark.parametrize("path", scripts(), ids=lambda path: path.name)
 def test_each_script_trusts_the_os_store_before_any_third_party_import(path):
+    """A process script calls it at import, before its imports; one an app also
+    imports (run_powershell) calls it only when it runs as the process."""
     text = path.read_text()
     assert '#     "truststore",' in text
     tree = ast.parse(text)
+    if path.stem not in PROCESS_SCRIPTS:
+        main = next(node for node in tree.body if isinstance(node, ast.If)
+                    and ast.unparse(node.test) == "__name__ == '__main__'")
+        assert CALL in ast.unparse(main.body[0])
+        assert CALL not in "".join(ast.unparse(node) for node in tree.body if node is not main
+                                   and not isinstance(node, (ast.FunctionDef, ast.Import, ast.ImportFrom)))
+        return
     for node in tree.body:
         if isinstance(node, ast.Expr) and CALL in ast.unparse(node):
             break
@@ -96,3 +104,26 @@ def test_each_https_call_in_the_job_side_utils_trusts_the_os_store(path):
         for start in [m.start() for m in re.finditer(re.escape(call), text)]:
             # The argument is on the call's line, or within the call's next few lines.
             assert needs in text[start:start + 250], f"{path.name}: {call}"
+
+
+
+
+def test_no_module_an_app_may_import_replaces_ssl_in_the_apps_process():
+    """An app that imports boto3 first and then pdt keeps its working botocore:
+    no pdt module an app can import injects truststore at import time."""
+    modules = sorted(f"pdt.{path.relative_to(SRC).with_suffix('').as_posix().replace('/', '.')}"
+                     .replace(".__init__", "")
+                     for path in SRC.rglob("*.py")
+                     if "examples" not in path.parts and "gui" not in path.parts
+                     and path.stem not in PROCESS_SCRIPTS)
+    probe = (
+        "import importlib, ssl, sys, boto3\n"
+        "before = ssl.SSLContext\n"
+        f"for name in {modules!r}:\n"
+        "    importlib.import_module(name)\n"
+        "    assert ssl.SSLContext is before, name\n"
+        "print(len(sys.argv))\n")
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                            cwd=SRC.parent.parent)
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert "pdt.run_powershell" in modules and "pdt.utils.storage" in modules
