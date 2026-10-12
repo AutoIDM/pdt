@@ -388,6 +388,9 @@ REMOTE = "tcp://build.example.com:2376"
     ("Linux", {"docker", "sudo", "systemctl"}, {"context": "build-server"},
      "pdt cannot reach the Docker engine that the docker context build-server names. Start it, "
      "then run the same command again."),
+    ("Linux", {"docker", "sudo", "systemctl"}, {"context": "desktop-linux"},
+     "pdt cannot reach the Docker engine that the docker context desktop-linux names. Start it, "
+     "then run the same command again."),
     ("Linux", {"docker", "sudo", "systemctl"}, {"hangs": True},
      "The Docker engine does not answer docker info in 20 seconds. Restart it, then run the same "
      "command again."),
@@ -665,12 +668,12 @@ def test_a_failed_start_shows_its_last_lines(monkeypatch):
     machine = Machine(monkeypatch, "Linux", tools={"docker", "systemctl"})
     run = machine.run
     monkeypatch.setattr(docker_setup.subprocess, "run", lambda command, **kwargs: (
-        SimpleNamespace(returncode=1, stdout="", stderr="Unit docker.service not found.\n")
+        SimpleNamespace(returncode=1, stdout="", stderr="Job for docker.service failed.\n")
         if command[0] == "sudo" else run(command, **kwargs)))
     problem = Text.from_markup(docker_setup.ensure("AWS", assume_yes=False)).plain
     assert problem.splitlines() == [
         "sudo systemctl start docker failed. Start Docker, then run the same command again.",
-        "  Unit docker.service not found."]
+        "  Job for docker.service failed."]
 
 
 def test_a_docker_that_never_answers_is_not_running(monkeypatch):

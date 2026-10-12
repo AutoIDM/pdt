@@ -345,7 +345,8 @@ def unreachable(said: str | None) -> str:
                 f"{console.value(host)}. Start it, then run the same command again.")
     context = subprocess.run(["docker", "context", "show"], capture_output=True, text=True,
                              check=False).stdout.strip() if said is not None else ""
-    if context and context not in LOCAL_CONTEXTS:
+    linux_desktop = platform.system() == "Linux" and context == "desktop-linux"
+    if context and (context not in LOCAL_CONTEXTS or linux_desktop):
         return (f"pdt cannot reach the Docker engine that the docker context "
                 f"{console.value(context)} names. Start it, then run the same command again.")
     if said == NO_ANSWER:
