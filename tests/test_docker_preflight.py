@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,7 +33,7 @@ class Machine:
 
     def __init__(self, monkeypatch, system, tools=(), running=False, desktop=False,
                  context="default", group=True, starts=True, cpu=None, buildx=True,
-                 macos="15.5"):
+                 macos="15.5", unit=True, apps=()):
         self.system = system
         self.tools = set(tools)
         self.running = running
@@ -41,6 +42,8 @@ class Machine:
         self.group = group
         self.starts = starts
         self.buildx = buildx
+        self.unit = unit
+        self.hangs = False
         self.brew_prefix = "/opt/homebrew"
         self.chown_works = True
         self.restart = False
@@ -57,6 +60,7 @@ class Machine:
         monkeypatch.setattr(docker_setup.shutil, "which",
                             lambda name: f"/bin/{name}" if name in self.tools else None)
         monkeypatch.setattr(docker_setup, "desktop", self.desktop_app)
+        monkeypatch.setattr(docker_setup, "engine_apps", lambda: list(apps))
         monkeypatch.setattr(docker_setup, "restart_pending", lambda: self.restart)
         monkeypatch.setattr(docker_setup, "rancher_profile", lambda: setattr(self, "profile", True))
         monkeypatch.setattr(docker_setup, "skip_wsl_welcome",
@@ -78,6 +82,8 @@ class Machine:
 
     def run(self, command, **kwargs):
         if command == ["docker", "info"]:
+            if self.hangs:
+                raise docker_setup.subprocess.TimeoutExpired(command, kwargs["timeout"])
             if not self.running:
                 return SimpleNamespace(returncode=1, stdout="", stderr="Cannot connect to the "
                                        "Docker daemon. Is the docker daemon running?")
@@ -90,6 +96,8 @@ class Machine:
                                    stderr="")
         if command == ["docker", "buildx", "version"]:
             return SimpleNamespace(returncode=0 if self.buildx else 1, stdout="", stderr="")
+        if command == ["systemctl", "cat", "docker"]:
+            return SimpleNamespace(returncode=0 if self.unit else 1, stdout="", stderr="")
         self.commands.append(command)
         if command == ["wsl", "--status"]:
             return SimpleNamespace(returncode=self.wsl_status, stdout=b"", stderr=b"")
@@ -130,8 +138,9 @@ def no_terminal(monkeypatch):
 @pytest.fixture(autouse=True)
 def home(monkeypatch, tmp_path):
     monkeypatch.setattr(docker_setup.Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setattr(docker_setup, "DOCKER_DIR", tmp_path / "pdt" / "docker")
+    monkeypatch.setattr(docker_setup, "DOCKER_DIR", tmp_path / "pdt data" / "docker")
     monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
     return tmp_path / "home"
 
 
@@ -247,6 +256,25 @@ def test_a_rancher_desktop_that_does_not_start_shows_the_end_of_its_log(
     assert "[dim]Rancher Desktop's log [bold not dim]" in problem
 
 
+@pytest.mark.parametrize("system, settings", [
+    ("Windows", ["AppData", "Roaming", "rancher-desktop", "settings.json"]),
+    ("Darwin", ["Library", "Preferences", "rancher-desktop", "settings.json"])])
+@pytest.mark.parametrize("started_before", [False, True])
+def test_a_rancher_desktop_that_never_started_gets_the_first_start_time(
+        monkeypatch, capsys, tmp_path, system, settings, started_before):
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.setattr(docker_setup.Path, "home", lambda: tmp_path)
+    if started_before:
+        tmp_path.joinpath(*settings).parent.mkdir(parents=True)
+        tmp_path.joinpath(*settings).write_text("{}")
+    machine = Machine(monkeypatch, system, tools={"docker"}, desktop="Rancher Desktop",
+                      starts=False)
+    assert docker_setup.ensure("AWS", assume_yes=False).startswith("Rancher Desktop did not start.")
+    assert ("The first start takes several minutes." in said(capsys)) != started_before
+    limit = docker_setup.START_SECONDS if started_before else docker_setup.FIRST_START_SECONDS
+    assert limit <= machine.now < limit + 5
+
+
 def test_a_rancher_desktop_with_no_log_stops_with_one_line(monkeypatch, tmp_path):
     monkeypatch.setattr(docker_setup.Path, "home", lambda: tmp_path)
     Machine(monkeypatch, "Darwin", tools={"docker"}, desktop="Rancher Desktop", starts=False)
@@ -266,7 +294,7 @@ def test_a_missing_docker_installs_and_starts_after_yes(
     monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path))
     machine = Machine(monkeypatch, system, tools=tools)
     fetched = fake_downloads(monkeypatch)
-    commands = [c.replace("SCRIPT", str(docker_setup.DOCKER_DIR / "install.sh"))
+    commands = [c.replace("SCRIPT", shlex.quote(str(docker_setup.DOCKER_DIR / "install.sh")))
                 if isinstance(c, str) else c for c in commands]
     assert docker_setup.ensure("Azure", assume_yes=True) == ""
     assert [c for c in machine.commands if c in commands] == commands
@@ -302,11 +330,11 @@ def install_lines(system):
                 "Starting Colima...", "The first start takes several minutes."]
     script = docker_setup.DOCKER_DIR / "install.sh"
     return [f"  Download {docker_setup.DOCKER_INSTALL[0]} to {script}, and check its sha256.",
-            f"  sudo sh {script}", "  sudo systemctl enable --now docker",
+            f"  sudo sh {shlex.quote(str(script))}", "  sudo systemctl enable --now docker",
             "  sudo usermod -aG docker ann", "  sudo chown ann /var/run/docker.sock",
             "  Add the QEMU emulator with tonistiigi/binfmt when the image is for another CPU "
             "type.",
-            f"==> sudo sh {script}", "==> sudo systemctl enable --now docker"]
+            f"==> sudo sh {shlex.quote(str(script))}", "==> sudo systemctl enable --now docker"]
 
 
 @pytest.mark.parametrize("system, tool", [("Windows", "winget"), ("Darwin", "brew"),
@@ -329,6 +357,96 @@ def test_an_install_prints_only_pdt_lines(monkeypatch, capsys, system, tool):
         *install_lines(system),
         "Docker is running.",
     ]
+
+
+@pytest.mark.parametrize("system, tools, command", [
+    ("Linux", {"docker", "sudo", "systemctl"}, "sudo systemctl enable --now docker"),
+    ("Windows", {"docker", "winget"}, WINGET),
+])
+def test_a_docker_cli_with_no_engine_installs_one(monkeypatch, capsys, system, tools, command):
+    machine = Machine(monkeypatch, system, tools=tools, unit=False)
+    fake_downloads(monkeypatch)
+    assert docker_setup.ensure("AWS", assume_yes=True) == ""
+    assert command in machine.commands
+    assert ["sudo", "systemctl", "start", "docker"] not in machine.commands
+    out = said(capsys)
+    assert "Docker has no engine on this computer. pdt builds the image for AWS" in out
+    assert "Docker is not installed." not in out
+    assert "Docker is running." in out
+
+
+REMOTE = "tcp://build.example.com:2376"
+
+
+@pytest.mark.parametrize("system, tools, setup, problem", [
+    ("Darwin", {"docker", "brew"}, {"host": REMOTE},
+     f"pdt cannot reach the Docker engine that DOCKER_HOST names, {REMOTE}. Start it, then run "
+     "the same command again."),
+    ("Darwin", set(), {"host": REMOTE},
+     f"pdt cannot reach the Docker engine that DOCKER_HOST names, {REMOTE}. Start it, then run "
+     "the same command again."),
+    ("Linux", {"docker", "sudo", "systemctl"}, {"context": "build-server"},
+     "pdt cannot reach the Docker engine that the docker context build-server names. Start it, "
+     "then run the same command again."),
+    ("Linux", {"docker", "sudo", "systemctl"}, {"hangs": True},
+     "The Docker engine does not answer docker info in 20 seconds. Restart it, then run the same "
+     "command again."),
+    ("Darwin", {"docker", "brew"}, {"apps": ["OrbStack"]},
+     "pdt found OrbStack but cannot start it; start it, then run the same command again."),
+    ("Darwin", {"docker", "brew"}, {"apps": ["Podman Desktop"], "context": "colima"},
+     "pdt found Podman Desktop but cannot start it; start it, then run the same command again."),
+    ("Windows", {"docker", "winget"}, {"apps": ["Docker Desktop"]},
+     "pdt found Docker Desktop but cannot start it; start it, then run the same command again."),
+])
+def test_an_engine_that_pdt_cannot_start_is_never_replaced(
+        monkeypatch, capsys, system, tools, setup, problem):
+    if "host" in setup:
+        monkeypatch.setenv("DOCKER_HOST", setup["host"])
+    machine = Machine(monkeypatch, system, tools=tools, unit=False,
+                      context=setup.get("context", "default"), apps=setup.get("apps", ()))
+    machine.hangs = setup.get("hangs", False)
+    fetched = fake_downloads(monkeypatch)
+    assert Text.from_markup(docker_setup.ensure("AWS", assume_yes=True)).plain == problem
+    assert [c for c in machine.commands if c != ["docker", "context", "show"]] == []
+    assert fetched == []
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="macOS app paths use / separators")
+def test_a_mac_finds_each_engine_app_in_either_applications_folder(monkeypatch, home):
+    installed = {"/Applications/OrbStack.app", str(home / "Applications" / "Docker.app")}
+    monkeypatch.setattr(docker_setup.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(docker_setup.Path, "exists", lambda path: str(path) in installed)
+    assert docker_setup.engine_apps() == ["Docker Desktop", "OrbStack"]
+
+
+def test_windows_finds_each_engine_app_in_the_installed_programs(monkeypatch):
+    programs = {"HKLM": {"Docker Desktop": "Docker Desktop", "{1A2B}": "7-Zip"},
+                "HKCU": {"{3C4D}": "Rancher Desktop", "{5E6F}": None}}
+
+    class Key:
+        def __init__(self, parent, path):
+            self.names = programs[parent] if parent in programs else parent.names
+            self.path = path
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def query(key, name):
+        if key.names[key.path] is None:
+            raise FileNotFoundError(name)
+        return key.names[key.path], 1
+
+    winreg = SimpleNamespace(
+        HKEY_LOCAL_MACHINE="HKLM", HKEY_CURRENT_USER="HKCU", OpenKey=Key, QueryValueEx=query,
+        QueryInfoKey=lambda key: (len(key.names), 0, 0),
+        EnumKey=lambda key, i: list(key.names)[i])
+    monkeypatch.setitem(sys.modules, "winreg", winreg)
+    monkeypatch.setattr(docker_setup.platform, "system", lambda: "Windows")
+    assert docker_setup.engine_apps() == ["Docker Desktop", "Rancher Desktop"]
 
 
 @pytest.mark.parametrize("tools", [{"docker"}, {"brew", "docker"}])
@@ -601,6 +719,20 @@ def test_a_linux_install_joins_the_docker_group_with_no_second_question(monkeypa
     assert docker_setup.ensure("AWS", assume_yes=False) == ""
     assert asked == [False]
     assert machine.commands[-2:] == GROUP
+
+
+def test_yes_skips_the_docker_group_question_but_not_its_steps(monkeypatch, capsys):
+    machine = Machine(monkeypatch, "Linux", tools={"docker"}, running=True, group=False)
+    assert docker_setup.ensure("AWS", assume_yes=True) == ""
+    assert machine.commands == GROUP
+    assert capsys.readouterr().out.splitlines() == [
+        "Docker answers ann only through sudo.",
+        "pdt will add you to the docker group with these steps:",
+        "  sudo usermod -aG docker ann",
+        "  sudo chown ann /var/run/docker.sock",
+        "Adding ann to the docker group, so that docker works without sudo...",
+        "Docker is running.",
+    ]
 
 
 def test_when_the_socket_stays_closed_the_new_group_needs_a_new_login(monkeypatch):

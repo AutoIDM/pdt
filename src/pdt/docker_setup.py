@@ -28,7 +28,12 @@ Every cloud provider builds its image with docker on this computer, with
   Docker Engine from Docker's install script, pinned to a docker/docker-install
   commit and checked against its sha256.
 - A docker CLI with no Docker to start (a stopped download, Homebrew's
-  docker without Colima) gets the same install.
+  docker without Colima, a Linux docker with no docker.service unit) gets
+  the same install, unless an engine may exist that pdt cannot start or that
+  the user chose: DOCKER_HOST or a docker context of their own, a Docker
+  that does not answer, or an engine app that pdt cannot start (OrbStack,
+  Podman Desktop, a Docker Desktop outside /Applications, a desktop app that
+  Windows lists in its installed programs). pdt then says what it found.
 - On Linux, a user outside the docker group joins it. An install lists those
   commands in its steps; otherwise pdt shows them and asks once.
 - A docker with no buildx plugin gets the pinned docker-buildx in
@@ -63,6 +68,7 @@ import getpass
 import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -97,10 +103,16 @@ WSL_USER_KEY = r"Software\Microsoft\Windows\CurrentVersion\Lxss"
 RANCHER_DEFAULTS = [("", "version", 19), ("containerEngine", "name", "moby"),
                     ("kubernetes", "enabled", 0)]
 LINUX_SOCKET = "/var/run/docker.sock"
+LOCAL_CONTEXTS = ("default", "colima", "desktop-linux", "rancher-desktop")
+MAC_ENGINES = [("Docker Desktop", "Docker.app"), ("OrbStack", "OrbStack.app"),
+               ("Podman Desktop", "Podman Desktop.app"), ("Rancher Desktop", "Rancher Desktop.app")]
+WINDOWS_ENGINES = ("Docker Desktop", "Rancher Desktop")
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
 RESTART_WINDOWS = "Restart Windows to finish the Docker install, then run the same command again."
 START_SECONDS = 300
 FIRST_START_SECONDS = 900
 INFO_SECONDS = 20
+NO_ANSWER = "no answer"
 ERROR_LINES = 3
 MIN_MACOS = 13
 BREW_COLIMA_SERVICE = Path("Library/LaunchAgents/homebrew.mxcl.colima.plist")
@@ -165,8 +177,8 @@ def docker_info() -> str | None:
         proc = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False,
                               timeout=INFO_SECONDS)
     except subprocess.TimeoutExpired:
-        return "no answer"
-    return "" if proc.returncode == 0 else (proc.stderr or proc.stdout).strip() or "no answer"
+        return NO_ANSWER
+    return "" if proc.returncode == 0 else (proc.stderr or proc.stdout).strip() or "failed"
 
 
 def denied(said: str | None) -> bool:
@@ -293,17 +305,65 @@ def starter() -> tuple[str, list[str]] | None:
             return "Colima", ["colima", "start"]
     if app is not None:
         return app
-    if platform.system() == "Linux" and shutil.which("docker") and shutil.which("systemctl"):
+    if (platform.system() == "Linux" and shutil.which("docker") and shutil.which("systemctl")
+            and subprocess.run(["systemctl", "cat", "docker"], capture_output=True,
+                               check=False).returncode == 0):
         return "the Docker service", ["sudo", "systemctl", "start", "docker"]
     return None
+
+
+def engine_apps() -> list[str]:
+    """The installed apps that run a Docker engine, including those that pdt cannot start."""
+    if platform.system() == "Darwin":
+        return [name for name, bundle in MAC_ENGINES
+                if any((root / bundle).exists() for root in (Path("/Applications"),
+                                                              Path.home() / "Applications"))]
+    if platform.system() != "Windows":
+        return []
+    import winreg
+    names = set()
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, UNINSTALL_KEY) as key:
+                for i in range(winreg.QueryInfoKey(key)[0]):
+                    with winreg.OpenKey(key, winreg.EnumKey(key, i)) as program:
+                        try:
+                            names.add(winreg.QueryValueEx(program, "DisplayName")[0])
+                        except OSError:
+                            pass
+        except OSError:
+            pass
+    return [name for name in WINDOWS_ENGINES if name in names]
+
+
+def unreachable(said: str | None) -> str:
+    """What to do when an engine may exist that pdt cannot start or that the user chose, so
+    pdt installs no other. "" when pdt can tell that no such engine exists."""
+    host = os.environ.get("DOCKER_HOST")
+    if host:
+        return (f"pdt cannot reach the Docker engine that {console.value('DOCKER_HOST')} names, "
+                f"{console.value(host)}. Start it, then run the same command again.")
+    context = subprocess.run(["docker", "context", "show"], capture_output=True, text=True,
+                             check=False).stdout.strip() if said is not None else ""
+    if context and context not in LOCAL_CONTEXTS:
+        return (f"pdt cannot reach the Docker engine that the docker context "
+                f"{console.value(context)} names. Start it, then run the same command again.")
+    if said == NO_ANSWER:
+        return (f"The Docker engine does not answer {console.value('docker info')} in "
+                f"{INFO_SECONDS} seconds. Restart it, then run the same command again.")
+    apps = engine_apps()
+    if apps:
+        return f"pdt found {apps[0]} but cannot start it; start it, then run the same command again."
+    return ""
 
 
 def install(provider: str, assume_yes: bool) -> str:
     """Install Docker once the user agrees. Returns "" when it is installed, else what to do."""
     from pdt.deploy import proceed
 
-    missing = (f"Docker is not installed. pdt builds the image for {provider} with Docker "
-               "on this computer.")
+    absent = ("Docker has no engine on this computer." if shutil.which("docker")
+              else "Docker is not installed.")
+    missing = f"{absent} pdt builds the image for {provider} with Docker on this computer."
     tool, commands = INSTALLERS.get(platform.system(), ("", []))
     macos = platform.mac_ver()[0]
     if platform.system() == "Darwin" and int(macos.split(".")[0] or 0) < MIN_MACOS:
@@ -323,7 +383,7 @@ def install(provider: str, assume_yes: bool) -> str:
     if platform.system() == "Linux":
         script = DOCKER_DIR / DOCKER_INSTALL[3]
         downloads = [DOCKER_INSTALL]
-        commands = [f"sudo sh {script}", *commands]
+        commands = [f"sudo sh {shlex.quote(str(script))}", *commands]
         console.bullet(f"Download {console.value(DOCKER_INSTALL[0])} to {console.value(script)}, "
                        "and check its sha256.")
         for command in [*commands, *(" ".join(command) for command in group_commands())]:
@@ -344,7 +404,7 @@ def install(provider: str, assume_yes: bool) -> str:
         for command in commands:
             console.bullet(console.value(command))
     if not proceed(assume_yes):
-        return f"Docker is not installed. Install Docker from {console.value(install_page())}, then run the same command again."
+        return f"{absent} Install Docker from {console.value(install_page())}, then run the same command again."
     try:
         download(downloads)
     except DockerError as e:
@@ -400,11 +460,16 @@ def buildx() -> str:
 
 def start(first: bool) -> str:
     """Start the installed Docker and wait until it answers. Returns "" when it does. The
-    first start after an install also downloads the Linux VM image or WSL distribution."""
+    first start after an install also downloads the Linux VM image or WSL distribution, and
+    so does the first start of a Rancher Desktop that has no settings file yet."""
     found = starter()
     if found is None:
         return "Docker is installed but not running. Start Docker, then run the same command again."
     name, command = found
+    if name == "Rancher Desktop":
+        config = (Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+                  if platform.system() == "Windows" else Path.home() / "Library" / "Preferences")
+        first = first or not (config / "rancher-desktop" / "settings.json").exists()
     console.status(f"Starting {name}...")
     if first:
         console.status("The first start takes several minutes.")
@@ -451,13 +516,14 @@ def rancher_errors() -> str:
                     *(f"\n[dim]  {console.escape(line)}[/]" for line in found)])
 
 
-def join_docker_group(assume_yes: bool) -> str:
-    """Add this user to the docker group, after the one question unless `assume_yes`."""
+def join_docker_group(assume_yes: bool, listed: bool) -> str:
+    """Add this user to the docker group. Unless an install plan `listed` the commands, show
+    them and ask the one question (`assume_yes` skips it)."""
     from pdt.deploy import proceed
 
     user = getpass.getuser()
     commands = group_commands()
-    if not assume_yes:
+    if not listed:
         console.warn(f"Docker answers {console.value(user)} only through sudo.")
         console.say("pdt will add you to the docker group with these steps:")
         for command in commands:
@@ -483,8 +549,8 @@ def ensure(provider: str, assume_yes: bool) -> str:
     if said == "":
         return buildx()
     installed = False
-    if said != "" and not denied(said) and starter() is None:
-        problem = install(provider, assume_yes)
+    if not denied(said) and starter() is None:
+        problem = unreachable(said) or install(provider, assume_yes)
         if problem:
             return problem
         installed = True
@@ -495,7 +561,7 @@ def ensure(provider: str, assume_yes: bool) -> str:
             return problem
         said = docker_info()
     if denied(said):
-        problem = join_docker_group(assume_yes or installed)
+        problem = join_docker_group(assume_yes, installed)
         if problem:
             return problem
     console.done("Docker is running.")
