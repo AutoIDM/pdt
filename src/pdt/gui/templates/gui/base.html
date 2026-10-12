@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}pdt{% endblock %} · {{ project_name }}</title>
+    <link rel="stylesheet" href="{% url 'static_file' 'pdt.css' %}">
+</head>
+<body>
+<header class="top">
+    <a class="brand" href="{% url 'index' %}">pdt</a>
+    <span class="project" title="{{ project.path }}">{{ project_name }}</span>
+    <nav>{% block crumbs %}{% endblock %}</nav>
+    <a class="stats-link" href="{% url 'stats' %}">Stats</a>
+</header>
+<main>
+    {% if messages %}
+    <div class="messages">
+        {% for message in messages %}<pre class="msg {{ message.tags }}">{{ message }}</pre>{% endfor %}
+    </div>
+    {% endif %}
+    {% block content %}{% endblock %}
+</main>
+<script>
+    // Every [data-copy] button copies a command: data-copy holds it, or the
+    // button's own text when it is empty (the workbench line changes as you type).
+    document.querySelectorAll("[data-copy]").forEach(function (button) {
+        var command = button.dataset.copy;
+        button.title = command ? "Copy: " + command : "Copy";
+        if (command) button.setAttribute("aria-label", "Copy " + command);
+        button.addEventListener("click", function () {
+            navigator.clipboard.writeText(command || button.textContent.trim()).then(function () {
+                button.classList.add("done");
+                setTimeout(function () { button.classList.remove("done"); }, 1500);
+            });
+        });
+    });
+</script>
+</body>
+</html>

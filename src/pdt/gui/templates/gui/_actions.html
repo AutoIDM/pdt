@@ -1,0 +1,24 @@
+{% comment %}
+The buttons that change an app. Each one runs the pdt command a user would
+type; the button's second segment copies that command, so the terminal is never
+a surprise.
+{% endcomment %}
+<form class="actions" method="post" action="{% url 'app_action' app.name 'refresh' %}">
+    {% csrf_token %}<input type="hidden" name="next" value="{{ next }}">
+    <button type="submit">Refresh</button><button type="button" class="copy" data-copy="pdt runs {{ app.name }}"></button>
+</form>
+{% if config.pause %}
+<form class="actions" method="post" action="{% url 'app_action' app.name 'unpause' %}">
+    {% csrf_token %}<input type="hidden" name="next" value="{{ next }}">
+    <button type="submit">Unpause</button><button type="button" class="copy" data-copy="pdt unpause {{ app.name }}"></button>
+</form>
+{% else %}
+<form class="actions" method="post" action="{% url 'app_action' app.name 'pause' %}">
+    {% csrf_token %}<input type="hidden" name="next" value="{{ next }}">
+    <button type="submit">Pause</button><button type="button" class="copy" data-copy="pdt pause {{ app.name }}"></button>
+</form>
+{% endif %}
+<form class="actions" method="post" action="{% url 'app_action' app.name 'start' %}">
+    {% csrf_token %}<input type="hidden" name="next" value="{{ next }}">
+    <button type="submit"{% if not config.deployed %} disabled{% endif %}>Run now</button><button type="button" class="copy" data-copy="pdt run {{ app.name }} --deployed"></button>
+</form>

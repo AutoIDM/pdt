@@ -72,7 +72,7 @@ def prompt_client(env_file: Path) -> bool:
     console.say("Status: OAuth client setup required")
     console.say()
     for line in setup_help(env_file):
-        console.say(line)
+        console.say(console.escape(line))
     console.say()
     console.say("Paste the value now, or press Enter to stop.")
     value = email_auth._ask(f"{CLIENT_ID_ENV}: ")
@@ -80,7 +80,7 @@ def prompt_client(env_file: Path) -> bool:
         return False
     email_auth._write_env(env_file, CLIENT_ID_ENV, value)
     os.environ[CLIENT_ID_ENV] = value
-    console.done(f"Saved {CLIENT_ID_ENV} in {env_file}.")
+    console.done(f"Saved {console.value(CLIENT_ID_ENV)} in {console.value(env_file)}.")
     return True
 
 
@@ -118,7 +118,7 @@ def mail_json(subject: str, body: str, html: str, to_addrs: list) -> dict:
 def _confirm(user: str) -> None:
     console.say()
     console.say("Email provider: Microsoft Graph")
-    console.say(f"Account: {user}")
+    console.say(f"Account: {console.value(user)}")
     console.say("Authentication: OAuth 2.0")
     console.say("Status: Authorization required")
     console.say()
@@ -214,7 +214,7 @@ def _microsoft_access_token(user: str, client_id: str, tenant_id: str,
         "user": user,
     }, CACHE_ENV)
     account = (result.get("id_token_claims") or {}).get("preferred_username") or user
-    console.done(f"Connected Microsoft Graph for {account}.")
+    console.done(f"Connected Microsoft Graph for {console.value(account)}.")
     return result["access_token"]
 
 

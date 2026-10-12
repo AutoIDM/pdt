@@ -31,6 +31,13 @@ WHEEL_MUST_HOLD = (
     "pdt/examples/impossible-travel-report/env.template",
     "pdt/examples/hello-world/run.py",
     "pdt/examples/hello-world/config.yml",
+    "pdt/gui_server.py",
+    "pdt/gui/templates/gui/base.html",
+    "pdt/gui/static/pdt.css",
+    "pdt/gui/static/workbench.js",
+    "pdt/gui/static/arrow.mjs",
+    "pdt/duckdb_wasm.py",
+    "pdt/gui/migrations/0001_initial.py",
 )
 
 failures = []

@@ -2,12 +2,13 @@ import subprocess
 
 import pytest
 
+from conftest import plain
 from pdt import deploy_azure, deploy_azure_container_apps
 
 SUBSCRIPTION = "11111111-1111-1111-1111-111111111111"
 SHARED = deploy_azure.Environment("pdt-shared", "pdt-eastus2", True)
 MANAGED = {"tags": {"managed-by": "pdt"}, "location": "East US 2"}
-APP = {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}}
+APP = {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}, "pause": False}
 LOCKED = (
     "ERROR: (ScopeLocked) The scope '/subscriptions/x/resourceGroups/pdt' cannot perform "
     "delete operation because following scope(s) are locked: '/subscriptions/x/resourceGroups"
@@ -41,6 +42,7 @@ def fake_deploy(monkeypatch, answers):
         return ""
 
     monkeypatch.setattr(module, "preflight", lambda app, requested: settings())
+    monkeypatch.setattr(module, "docker_preflight", lambda provider: None)
     monkeypatch.setattr(module, "azure_settings", lambda app: {})
     monkeypatch.setattr(module, "gather_secrets", lambda app: {})
     monkeypatch.setattr(module, "check_shared_names", lambda settings: None)
@@ -53,7 +55,7 @@ def fake_deploy(monkeypatch, answers):
     monkeypatch.setattr(module, "secret_state", lambda *args: (False, None))
     monkeypatch.setattr(module, "image_action", lambda app, text: text)
     monkeypatch.setattr(module, "cost_estimate_for", lambda *args: None)
-    monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(actions) or True)
+    monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(plain(actions)) or True)
     monkeypatch.setattr(module, "ensure_environment", lambda *args: None)
     monkeypatch.setattr(module, "ensure_group_and_vault", lambda *args: "/vault")
     monkeypatch.setattr(module, "assign_role", lambda *args: None)
@@ -71,6 +73,18 @@ EXISTING = {
     ("containerapp", "env"): MANAGED,
     ("identity", "show"): MANAGED | {"id": "/identity", "principalId": "p"},
 }
+
+
+def test_deploy_ends_with_the_next_pdt_commands(monkeypatch, capsys):
+    fake_deploy(monkeypatch, EXISTING)
+    assert deploy_azure_container_apps.deploy(APP, True) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[out.index("Next steps:") + 1:] == [
+        "  pdt run report --deployed  start a run now",
+        "  pdt logs report            read the log of the newest run",
+        "  pdt runs report            list the recent runs",
+        "  pdt health report          show whether the last run succeeded",
+    ]
 
 
 def test_deploy_locks_the_registry_and_the_environment_before_the_build(monkeypatch):
@@ -119,7 +133,7 @@ def fake_destroy(monkeypatch, answers, locked_by):
     monkeypatch.setattr(deploy_azure, "delete_unless_locked", delete)
     monkeypatch.setattr(module, "delete_unless_locked", delete)
     monkeypatch.setattr(module, "managed_secret", lambda *args: False)
-    monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(actions) or True)
+    monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(plain(actions)) or True)
     return events, plans
 
 

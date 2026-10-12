@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import os
 import re
 import subprocess
@@ -19,8 +20,8 @@ from pathlib import Path
 
 import rich_argparse
 
-from pdt import (__version__, completion, config, console, deploy, deploy_common, powershell,
-                 pwsh, scaffold, storage_cli)
+from pdt import (__version__, completion, config, console, deploy, deploy_common, gui_cli,
+                 powershell, pwsh, scaffold, storage_cli)
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -46,23 +47,33 @@ def cmd_new(args) -> int:
     return scaffold.new_app(args.app, args.source)
 
 
-def say_no_apps() -> None:
-    console.say("This project has no apps yet.")
-    console.say("Start from an example:")
-    console.command("pdt examples")
-    console.command("pdt new my-report --from <example>")
+def say_no_apps(as_json: bool = False) -> None:
+    """Say why there is no app to act on; with `as_json`, also print the empty list."""
+    if config.app_folders():
+        console.say("This project has no enabled apps. Every app has enabled: false.")
+        console.say("Set enabled: true in an app's config.yml, or delete the line, to turn it on.")
+        console.next_steps([("pdt list", "see every app and whether it is enabled")])
+    else:
+        console.say("This project has no apps yet.")
+        console.next_steps([("pdt examples", "list the examples"),
+                            ("pdt new my-report --from <example>", "copy one into this project")],
+                           "Start from an example:")
+    if as_json:
+        console.data("[]")
 
 
 APP_QUESTIONS = {
     "run": "Which app do you want to run?",
     "deploy": "Which app do you want to deploy?",
-    "login": "Which app's cloud provider do you want to sign in to?",
+    "login": "Which app's platform do you want to sign in to?",
     "destroy": "Which app do you want to destroy?",
     "secrets": "Which app's secrets?",
     "storage": "Which app's files do you want to manage?",
     "runs": "Which app's runs do you want to see?",
     "logs": "Which app's log do you want to read?",
     "health": "Which app do you want to check?",
+    "pause": "Which app do you want to pause?",
+    "unpause": "Which app do you want to unpause?",
 }
 
 SINCE_HELP = ("show every run that started at or after this: 12h, 3d, 2w, 2026-09-20, "
@@ -91,13 +102,14 @@ def choose_app(name: str | None, command: str, quiet: bool = False) -> str | Non
     here = config.current_app() if name is None else None
     if here is not None:
         if not quiet:
-            console.status(f"Using app {here} (current folder).")
+            console.status(f"Using app {console.value(here)} (current folder).")
         return here
     if name is None:
         console.heading(f"{APP_QUESTIONS[command]} This project has:")
     else:
         hint = did_you_mean(name, apps, f"pdt {command} {{}}")
-        console.error(f"no app named {name!r}.{hint} This project has:")
+        console.error(f"no app named {console.value(repr(name))}.{console.escape(hint)} "
+                      "This project has:")
     shown = apps[:5]
     for app in shown:
         console.name(app)
@@ -111,27 +123,40 @@ def choose_app(name: str | None, command: str, quiet: bool = False) -> str | Non
 def cmd_list(args) -> int:
     if args.names:
         for name in config.find_apps():
-            console.say(name)
+            console.say(console.value(name))
         return 0
     apps = config.app_folders()
     if not apps:
-        say_no_apps()
+        say_no_apps(args.json)
         return 0
-    rows = []
+    records = []
     for name in apps:
-        enabled = "true" if config.is_enabled(name) else "false"
+        record = {"name": name, "schedule": None, "platform": None,
+                  "enabled": config.is_enabled(name), "paused": None, "error": None}
         try:
             app = config.merged_app(name)
-            rows.append([name, app["schedule"] or "-",
-                         app["platform"].get("provider", "-"), enabled])
+            record["schedule"] = app["schedule"]
+            record["platform"] = app["platform"].get("provider")
+            record["paused"] = app["pause"]
         except ConfigError as e:
-            rows.append([name, "-", f"config error: {e}", enabled])
-    console.table(["name", "schedule", "provider", "enabled"], rows, ["bold cyan"])
+            record["error"] = str(e)
+        records.append(record)
+    if args.json:
+        console.data(json.dumps(records))
+        return 0
+    rows = [[record["name"], record["schedule"] or "-",
+             f"config error: {record['error']}" if record["error"] else record["platform"] or "-",
+             "true" if record["enabled"] else "false",
+             "-" if record["paused"] is None else "true" if record["paused"] else "false"]
+            for record in records]
+    console.table(["name", "schedule", "platform", "enabled", "paused"], rows, ["bold cyan"])
     return 0
 
 
-def cmd_validate(_args) -> int:
-    problems = config.validate()
+def cmd_validate(args) -> int:
+    if not args.json:
+        console.styled(config.project_line())
+    problems = config.validate_by_app()
     original_env = os.environ.copy()
     try:
         for name in config.find_apps():
@@ -141,40 +166,59 @@ def cmd_validate(_args) -> int:
                 app = config.merged_app(name)
             except ConfigError:
                 continue
+            sources = config.env_file_lines(app["dir"])
             config.load_env(app["dir"])
             if config.powershell_scripts(app["dir"]):
-                problems.extend(powershell_problems(name, app))
+                problems.extend((name, problem)
+                                for problem in powershell_problems(name, app, quiet=args.json))
+            elif not args.json:
+                console.name(name)
+                console.detail(f"runs {console.value('run.py')}")
+            if not args.json:
+                try:
+                    found = config.found_env_lines(app)
+                except ConfigError:
+                    found = []
+                for line in [*found, *sources]:
+                    console.detail(line)
             missing = config.missing_env(app)
             if missing != "":
-                problems.append(f"{name}: {missing}")
+                problems.append((name, f"{name}: {missing}"))
             if config.uses_email(app):
                 for problem in email_problems(app["config"]):
-                    problems.append(f"{name}: {problem}")
+                    problems.append((name, f"{name}: {problem}"))
     finally:
         os.environ.clear()
         os.environ.update(original_env)
+    if args.json:
+        console.data(json.dumps({"ok": not problems, "problems": [
+            {"app": app_name, "message": message} for app_name, message in problems]}))
+        return 1 if problems else 0
     if problems:
-        for problem in problems:
-            console.error(problem)
+        for _app_name, problem in problems:
+            console.error(console.escape(problem))
         console.failed(f"{len(problems)} problem(s) found.")
         return 1
     console.done("Configuration is valid.")
     return 0
 
 
-def powershell_problems(name: str, app: dict) -> list[str]:
-    """Scan a PowerShell app, print what it runs and needs, and return the certain findings."""
-    console.status(f"Scanning the PowerShell scripts in {name}...")
+def powershell_problems(name: str, app: dict, quiet: bool = False) -> list[str]:
+    """Scan a PowerShell app, print what it runs and needs unless `quiet`, and return the
+    certain findings."""
+    console.status(f"Scanning the PowerShell scripts in {console.value(name)}...")
+    if not quiet:
+        console.name(name)
     try:
         scan = powershell.scan(app, app["platform"].get("provider", ""))
     except (pwsh.PwshError, powershell.PowerShellError) as e:
         return [f"{name}: {e}"]
-    console.name(name)
-    for line in powershell.summary_lines(scan):
-        console.detail(line)
+    if not quiet:
+        for line in powershell.summary_lines(scan):
+            console.detail(line)
     problems, warnings = powershell.report(scan)
     for warning in warnings:
-        console.warn(f"{name}: {warning}")
+        console.warn(f"{console.value(name)}: {console.escape(warning)}")
     return [f"{name}: {problem}" for problem in problems]
 
 
@@ -182,19 +226,25 @@ def cmd_run(args) -> int:
     name = choose_app(args.app, "run")
     if name is None:
         return 1
+    if args.deployed:
+        return deploy.start(name)
     app = config.merged_app(name)
+    sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
     missing = config.missing_env(app)
     if missing != "":
-        console.error(f"{name}: {missing}")
+        console.error(f"{console.value(name)}: {console.escape(missing)}")
         return 1
     if config.uses_email(app):
         problems = email_problems(app["config"], check_oauth=False)
         if problems:
             for problem in problems:
-                console.error(f"{name}: {problem}")
+                console.error(f"{console.value(name)}: {console.escape(problem)}")
             return 1
         prepare_email_auth(auth_env_file(app["dir"]))
+    console.name(name)
+    for line in [*run_lines(app), *sources]:
+        console.detail(line)
     if (app["dir"] / "run.py").is_file():
         proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
     else:
@@ -208,6 +258,16 @@ def cmd_run(args) -> int:
         console.say("Try deploying this job:")
         console.command(f"pdt deploy {scaffold.STARTER}")
     return proc.returncode
+
+
+def run_lines(app: dict) -> list[str]:
+    """What `pdt run` starts: run.py, or the PowerShell entry scripts and why."""
+    if (app["dir"] / "run.py").is_file():
+        return [f"runs {console.value('run.py')}"]
+    files = powershell.extract(app["dir"])["files"]
+    entries, helpers = powershell.split_files(files, app["run_scripts"])
+    return powershell.script_lines(entries, helpers,
+                                   powershell.entry_rule(files, app["run_scripts"]))
 
 
 def cmd_deploy(args) -> int:
@@ -237,12 +297,12 @@ def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
         for index, name in enumerate(names, 1):
             os.environ.clear()
             os.environ.update(original_env)
-            console.heading(f"Deploying {name} ({index} of {len(names)})")
+            console.heading(f"Deploying {console.value(name)} ({index} of {len(names)})")
             code = deploy.deploy(name, assume_yes=assume_yes)
             if code == 0:
                 continue
             failed.append(name)
-            console.error(f"{name} did not deploy.")
+            console.error(f"{console.value(name)} did not deploy.")
             if index < len(names) and not skip_failures and not (
                     ask and console.confirm(
                         f"Skip the failing app {name} and deploy the rest?")):
@@ -252,13 +312,14 @@ def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
             if ask and not assume_yes and console.confirm(
                     f"Disable the failing app {name}?"):
                 path = config.set_app_enabled(name, False)
-                console.done(f"Disabled {name} in {path.relative_to(config.find_project())}. "
+                console.done(f"Disabled {console.value(name)} in "
+                             f"{console.value(path.relative_to(config.find_project()))}. "
                              "Set enabled: true there to bring it back.")
     finally:
         os.environ.clear()
         os.environ.update(original_env)
     if failed:
-        console.warn(f"Not deployed: {', '.join(failed)}")
+        console.warn(f"Not deployed: {', '.join(console.value(name) for name in failed)}")
         return 1
     return 0
 
@@ -297,6 +358,20 @@ def use_app_folder(args) -> None:
     args.app = None
 
 
+def cmd_pause(args) -> int:
+    name = choose_app(args.app, "pause")
+    if name is None:
+        return 1
+    return deploy.pause(name, True)
+
+
+def cmd_unpause(args) -> int:
+    name = choose_app(args.app, "unpause")
+    if name is None:
+        return 1
+    return deploy.pause(name, False)
+
+
 def cmd_secrets(args) -> int:
     if args.app in deploy_common.SECRET_ACTIONS and args.action in config.find_apps():
         args.app, args.action = args.action, args.app
@@ -305,8 +380,9 @@ def cmd_secrets(args) -> int:
     if action not in deploy_common.SECRET_ACTIONS:
         hint = did_you_mean(action, deploy_common.SECRET_ACTIONS,
                             f"pdt secrets {args.app or '<app>'} {{}}")
-        console.error(f"no secrets action named {action!r}; "
-                      f"choose {', '.join(deploy_common.SECRET_ACTIONS)}.{hint}")
+        choices = ", ".join(console.value(choice) for choice in deploy_common.SECRET_ACTIONS)
+        console.error(f"no secrets action named {console.value(repr(action))}; "
+                      f"choose {choices}.{console.escape(hint)}")
         return 1
     name = choose_app(args.app, "secrets")
     if name is None:
@@ -315,8 +391,14 @@ def cmd_secrets(args) -> int:
 
 
 def cmd_storage(args) -> int:
+    as_json = "--json" in args.rest
+    if as_json:
+        console.to_stderr()
+        if not config.find_apps():
+            say_no_apps(as_json=True)
+            return 0
     use_app_folder(args)
-    name = choose_app(args.app, "storage")
+    name = choose_app(args.app, "storage", quiet=as_json)
     if name is None:
         return 1
     return deploy.storage(name, args.rest)
@@ -329,6 +411,9 @@ def window_options(args) -> list[str]:
 
 
 def cmd_runs(args) -> int:
+    if args.json and not config.find_apps():
+        say_no_apps(as_json=True)
+        return 0
     name = choose_app(args.app, "runs", quiet=args.json)
     if name is None:
         return 1
@@ -336,6 +421,9 @@ def cmd_runs(args) -> int:
 
 
 def cmd_logs(args) -> int:
+    if args.json and not config.find_apps():
+        say_no_apps(as_json=True)
+        return 0
     use_app_folder(args)
     name = choose_app(args.app, "logs", quiet=args.json)
     if name is None:
@@ -345,7 +433,8 @@ def cmd_logs(args) -> int:
                                    ("--follow", args.follow), ("--json", args.json)) if on]
     lines = [] if args.lines is None else ["--lines", str(args.lines)]
     number = 1 if args.number is None else args.number
-    return deploy.logs(name, [str(number), *window_options(args), *lines, *flags])
+    run_id = [part for wanted in args.id or [] for part in ("--id", wanted)]
+    return deploy.logs(name, [str(number), *run_id, *window_options(args), *lines, *flags])
 
 
 def cmd_health(args) -> int:
@@ -355,7 +444,7 @@ def cmd_health(args) -> int:
     if args.app is None and (args.all or config.current_app() is None):
         names = config.find_apps()
         if not names:
-            say_no_apps()
+            say_no_apps(args.json)
             return 0
     else:
         name = choose_app(args.app, "health", quiet=args.json)
@@ -365,6 +454,10 @@ def cmd_health(args) -> int:
             console.command("pdt health --all", "check every app")
         names = [name]
     return deploy.health(names, args.json)
+
+
+def cmd_gui(args) -> int:
+    return gui_cli.main(args.port, args.background, args.no_browser, args.stop)
 
 
 def cmd_completion(args) -> int:
@@ -409,8 +502,8 @@ rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
 COMMAND_GROUPS = {
     "Get started": ["init", "examples", "new", "completion"],
     "Run and validate": ["list", "validate", "run"],
-    "Deploy": ["deploy", "destroy", "login"],
-    "Check a deployed app": ["health", "runs", "logs"],
+    "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
+    "Check a deployed app": ["health", "runs", "logs", "gui"],
     "Manage app data": ["secrets", "storage"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
@@ -449,13 +542,19 @@ def build_parser() -> argparse.ArgumentParser:
                             "to edit how they run")
     p.set_defaults(func=cmd_new)
     p = add_parser("list", help="show every app")
-    p.add_argument("--names", action="store_true",
-                   help="print only the name of each enabled app, one per line")
+    output = p.add_mutually_exclusive_group()
+    output.add_argument("--names", action="store_true",
+                        help="print only the name of each enabled app, one per line")
+    output.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_list)
-    add_parser("validate", help="check config and env").set_defaults(func=cmd_validate)
+    p = add_parser("validate", help="check config and env")
+    p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
+    p.set_defaults(func=cmd_validate)
     p = add_parser("run", help="run an app locally")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
+    p.add_argument("--deployed", action="store_true",
+                   help="start the deployed job now, instead of running the app on this machine")
     p.set_defaults(func=cmd_run)
     p = add_parser("deploy", help="deploy an app")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
@@ -465,7 +564,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-failures", action="store_true",
                    help="with --all, go on past an app that fails to deploy instead of asking")
     p.set_defaults(func=cmd_deploy)
-    p = add_parser("login", help="sign in again to an app's cloud provider")
+    p = add_parser("login", help="sign in again to an app's platform")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.set_defaults(func=cmd_login)
@@ -474,6 +573,14 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_destroy)
+    p = add_parser("pause", help="stop an app's schedule from starting runs")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
+    app.completer = completion.apps
+    p.set_defaults(func=cmd_pause)
+    p = add_parser("unpause", help="let a paused app's schedule start runs again")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
+    app.completer = completion.apps
+    p.set_defaults(func=cmd_unpause)
     p = add_parser("secrets", help="compare, send, or fetch a deployed app's .env values")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
@@ -490,7 +597,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = add_parser("storage", help="read or manage an app's data store")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
-    p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|destroy [args...]")
+    rest = p.add_argument("rest", nargs=argparse.REMAINDER, help="ls|get|query|unlock|destroy [args...]")
+    rest.completer = completion.storage_args
     p.set_defaults(func=cmd_storage)
     p = add_parser("runs", help="list a deployed app's recent runs")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
@@ -505,6 +613,9 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("number", nargs="?", type=int,
                    help="which run, as `pdt runs` numbers them (default: 1, the newest)")
+    p.add_argument("--id", action="append",
+                   help="which run, by the id `pdt runs` shows, instead of a number; "
+                        "repeat it to read several runs at once")
     p.add_argument("--since", help=SINCE_HELP)
     p.add_argument("--span", help=SPAN_HELP)
     p.add_argument("--count", type=int, help=COUNT_HELP)
@@ -529,6 +640,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="check every enabled app, even inside an app folder")
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_health)
+    p = add_parser("gui", help="open the project's dashboard in your web browser")
+    p.add_argument("--port", type=int, default=gui_cli.DEFAULT_PORT,
+                   help=f"the local port to serve on (default: {gui_cli.DEFAULT_PORT})")
+    p.add_argument("--background", action="store_true",
+                   help="leave the server running after this command returns; "
+                        "stop it with pdt gui --stop")
+    p.add_argument("--no-browser", action="store_true",
+                   help="start the server without opening a browser")
+    p.add_argument("--stop", action="store_true",
+                   help="stop a server started with --background")
+    p.set_defaults(func=cmd_gui)
     p = add_parser("completion", help="turn on tab completion in your shell")
     p.add_argument("shell", nargs="?", choices=completion.SHELLS,
                    help="which shell; pdt works it out when left off")
@@ -537,7 +659,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_completion)
     for name, label in (("aws", "AWS"), ("az", "Azure"), ("gcloud", "Google Cloud")):
         p = add_parser(name, help=f"run the {label} CLI that pdt installs")
-        p.add_argument("args", nargs=argparse.REMAINDER)
+        args = p.add_argument("args", nargs=argparse.REMAINDER)
+        args.completer = completion.files
     parser.commands = sub.choices
     entries = {a.dest: a for a in sub._choices_actions}
     for title, names in COMMAND_GROUPS.items():
@@ -562,10 +685,12 @@ def main() -> int:
     if args.command is None:
         parser.print_help()
         return 0
+    if getattr(args, "json", False):
+        console.to_stderr()
     try:
         return args.func(args)
     except ConfigError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         return 1
     except KeyboardInterrupt:
         console.say()

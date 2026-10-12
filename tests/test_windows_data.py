@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import add_app
+from conftest import add_app, plain
 from pdt import config, deploy_windows
 
 
@@ -66,7 +66,7 @@ def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
     folder = project / "ProgramData" / "pdt" / "my-report"
     actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
                                   "uv.exe", False)
-    assert actions == [
+    assert plain(actions) == [
         "create Windows scheduled task pdt-my-report (runs as SYSTEM)",
         "run my-report hourly at minute 00 (machine local time)",
         f"working directory: {app['dir']}",
@@ -113,7 +113,7 @@ def test_deploy_creates_the_folders_before_registering_the_task(project, monkeyp
         "Register-ScheduledTask")
 
 
-def test_deploy_prints_the_run_logs_folder(project, monkeypatch, capsys):
+def test_deploy_ends_with_the_next_pdt_commands(project, monkeypatch, capsys):
     app = windows_app(project)
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda require_uv=True: ("powershell.exe", "uv.exe"))
@@ -121,8 +121,13 @@ def test_deploy_prints_the_run_logs_folder(project, monkeypatch, capsys):
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run", lambda powershell, script, **kw: True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
-    out = capsys.readouterr().out
-    assert f"Run logs: {project / 'ProgramData' / 'pdt' / 'my-report' / 'logs'}" in out
+    out = capsys.readouterr().out.splitlines()
+    assert out[out.index("Next steps:") + 1:] == [
+        "  pdt run my-report --deployed  start a run now",
+        "  pdt logs my-report            read the log of the newest run",
+        "  pdt runs my-report            list the recent runs",
+        "  pdt health my-report          show whether the last run succeeded",
+    ]
 
 
 
@@ -184,7 +189,7 @@ def test_powershell_deploy_installs_the_gallery_modules_in_the_elevated_step(
 
     assert deploy_windows.deploy(app, assume_yes=True) == 0
 
-    assert actions[-2:] == [
+    assert plain(actions[-2:]) == [
         r"run the app's .ps1 files with PowerShell from C:\ProgramData\pdt\pwsh\pwsh.exe",
         "install PowerShell modules ImportExcel (all users)"]
     assert checked == [(r"C:\ProgramData\pdt\pwsh\pwsh.exe",

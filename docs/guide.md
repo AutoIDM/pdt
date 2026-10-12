@@ -136,23 +136,31 @@ with store.open("report.csv", "wb") as f:
 
 `store.fs()` gives you the full [fsspec](https://filesystem-spec.readthedocs.io/) filesystem, rooted at your app's folder. Output from one run goes under `store.run_folder()`, which names a new `runs/<time>-<id>/` folder each run.
 
-Some apps need files from the last run: a Meltano bookmark, a database. Keep those in one local folder, and copy it down before the work and up after:
+Some apps need files from the last run: a Meltano bookmark, a database. Keep those in the `state` folder that `storage.sync()` hands you, and put anything a person may want to look at afterwards in its `output` folder:
 
 ```python
-from pathlib import Path
 from pdt.utils import storage
 
-store = storage.store()
-lease = store.pull("state/", Path(".pdt-state"))
-# do the work; keep anything the next run needs inside .pdt-state/
-store.push(Path(".pdt-state"), "state/", lease)
+with storage.sync() as run:
+    # do the work; keep anything the next run needs inside run.state/
+    (run.output / "report.csv").write_text("name,count\n")
 ```
 
-`pull` locks the folder, so a second copy of your app cannot run at the same time and mix up the files. `push` checks that nobody else changed them, saves them, and unlocks. If a run crashes, the next one takes over the lock after 30 minutes.
+`sync` copies `state/` down from your app's folder and locks it, so a second copy of your app cannot run at the same time and mix up the files. When the block ends, it uploads `run.output` to this run's `runs/` folder, checks that nobody else changed the state files, saves them, and unlocks. When the block raises, or the run is interrupted, it still uploads `run.output`, unlocks, and leaves `state/` as it was, so the next run starts from the last good state. An app whose state is safe to keep at any point, such as a Meltano bookmark or an OAuth token that rotates on every login, passes `storage.sync(push_state_on_error=True)` so a failed run keeps what it saved. Both local folders live under `.pdt/runs/` in the app folder and stay there for inspection.
+
+The same steps by hand are `store.pull("state/", folder)`, which returns a lease, then `store.push(folder, "state/", lease)` on success or `store.abort(lease)` on failure.
+
+A run that dies without reaching either call leaves the lock behind. The next run takes it over right away when it can tell the holder is gone: the holder ran on the same computer and its process has ended, or it carries the same `PDT_RUN_ID`. Otherwise it waits 30 minutes, or you release the lock yourself with `pdt storage APP unlock`, which asks first.
 
 From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
 
 An app that is not ready sets `enabled: false` in its `config.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it.
+
+## The dashboard
+
+`pdt gui` starts a small web server on your own computer and opens it in your browser. The first page is `pdt health` as a table, with a grid of every run by hour, day, week, or month underneath it. Click an app for its run history, and click a run for its log and the files it kept in storage. A CSV file a run kept opens in a SQL workbench in the browser: a table you can sort, filter, and page, and a SQL view where every CSV of the run is a view you can query and join, with the matching `pdt storage APP query` command shown under it. The workbench runs on DuckDB, which the first `pdt gui` downloads once into the pdt data folder (`~/.local/share/pdt`); a Download link next to each file still saves it. Every number on a page came out of a pdt command (`pdt runs`, `pdt logs`, `pdt storage ls`), and every button runs one (`pdt pause`, `pdt unpause`, `pdt run --deployed`); hover a button to see which. The pages keep what they fetched in `.pdt/gui.sqlite3` inside the project and fetch again when it is older than five minutes or when you press Refresh, so a run stays in the history after the cloud has forgotten it. A worker inside the server checks for work every two minutes: it refreshes each app's runs, asks the provider once for every run it still keeps, and then fetches the log and files of each run that lacks them, newest first, until every run has them. A page shows what is there; it only waits when it asks for something the worker has not reached yet. The Stats link shows how long each page and each pdt command took. The server listens on localhost only and has no login. `pdt gui --background` leaves it running after the command returns; `pdt gui --stop` ends it.
+
+An app that should stay deployed but not run for a while sets `pause: true`. The schedule stays in place and does not fire until the key goes back to `false`. `pdt pause APP` and `pdt unpause APP` write the key into the app's `config.yml` and apply it to the deployed schedule in the same step; `pdt deploy` also honors it. A paused app still runs when you ask for it with `pdt run APP --deployed`.
 
 ## Running pdt from CI
 
@@ -162,6 +170,7 @@ Every command reads its values from the environment it runs in. A build server s
 - `PDT_ENV_JSON` holds every value as one JSON object, for a CI system that keeps one secret instead of many. For example, `PDT_ENV_JSON={"PDT_TOKEN": "abc", "PDT_SMTP_USER": "reports@example.com"}`.
 - pdt creates no `.env` file on a build server. It looks for the `CI` variable that build systems set, and for a missing terminal. Email authorization must therefore be done first: run `pdt run APP` once on a machine with a browser, then copy `PDT_SMTP_OAUTH_CACHE_B64` (or `PDT_GRAPH_MAIL_CACHE_B64` for Microsoft Graph) from your `.env` into the CI variables.
 - `pdt deploy APP` and `pdt destroy APP` ask before they change anything. Add `--yes` so they proceed without asking.
+- With `--json`, `pdt list`, `pdt validate`, `pdt runs`, `pdt logs`, `pdt health`, and `pdt storage APP ls` print only JSON on stdout, and every other line, such as an error or a sign-in question, on stderr. In a project with no enabled apps, `pdt runs`, `pdt logs`, `pdt health`, and `pdt storage APP ls` print `[]`. A command that has no JSON to print exits with a code other than 0 and prints nothing on stdout.
 
 ## Where things live
 

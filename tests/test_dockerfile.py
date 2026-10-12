@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from conftest import add_app
+from conftest import add_app, plain
 from pdt import __version__, powershell
 from pdt.config import validate_app
 from pdt.deploy_common import (
@@ -35,7 +35,7 @@ def test_an_app_dockerfile_is_used_as_is_at_the_context_root(tmp_path):
     app, stage = staged(tmp_path, "my-report", own)
     write_dockerfile(stage, app)
     assert (stage / "Dockerfile").read_text() == own
-    assert image_action(app, "build image x") == "build image x (from my-report/Dockerfile)"
+    assert plain([image_action(app, "build image x")]) == ["build image x (from my-report/Dockerfile)"]
 
 
 def app_with_dockerfile(project, platform_text):
@@ -73,14 +73,12 @@ def test_an_app_dockerignore_is_moved_to_the_context_root(tmp_path):
     write_dockerfile(stage, app)
     expected = "# local state\nmy-report/.meltano\nmy-report/output\n!my-report/output/keep\n\n"
     assert (stage / ".dockerignore").read_text() == expected
-    assert (stage / ".gcloudignore").read_text() == expected
 
 
 def test_no_dockerignore_means_no_ignore_files(tmp_path):
     app, stage = staged(tmp_path, "my-report")
     write_dockerfile(stage, app)
     assert not (stage / ".dockerignore").exists()
-    assert not (stage / ".gcloudignore").exists()
 
 
 def test_context_ignore_text_keeps_comments_and_blank_lines():

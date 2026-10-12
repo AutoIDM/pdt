@@ -24,7 +24,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import yaml
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 from pdt import console
 
@@ -45,7 +45,7 @@ SCHEDULE_SHORTHAND = {
 }
 ROOT_KEYS = {"platform", "apps"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
-            "run_scripts", "continue_on_error"}
+            "run_scripts", "continue_on_error", "pause"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
@@ -67,6 +67,7 @@ KEY_HOME = {
     "enabled": APP_LEVEL,
     "run_scripts": APP_LEVEL,
     "continue_on_error": APP_LEVEL,
+    "pause": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -134,6 +135,15 @@ def find_project(start: Path | None = None) -> Path:
                 f"this is not a pdt project: no {PROJECT_FILE} here or in any "
                 "parent folder. Run `pdt init` to set one up.")
         folder = folder.parent
+
+
+def project_line() -> str:
+    """Which project folder pdt works on, and how it found it."""
+    project = console.value(str(find_project()))
+    if os.environ.get("PDT_PROJECT", "").strip() != "":
+        return f"Project folder: {project}  [dim](from {console.value('PDT_PROJECT')})[/]"
+    return (f"Project folder: {project}  "
+            f"[dim](the first folder with {console.value(PROJECT_FILE)}, from here up)[/]")
 
 
 def powershell_scripts(app_dir: Path) -> list[str]:
@@ -257,7 +267,29 @@ def merged_app(name: str) -> dict:
         "enabled": own.get("enabled", entry.get("enabled", True)),
         "run_scripts": own.get("run_scripts", entry.get("run_scripts")),
         "continue_on_error": own.get("continue_on_error", entry.get("continue_on_error", False)),
+        "pause": own.get("pause", entry.get("pause", False)),
     }
+
+
+def save_app_key(app: dict, key: str, value) -> Path:
+    """Write one top-level key into the app's config.yml, the most specific file.
+
+    Edits the text rather than rewriting the yaml, so the user's comments survive,
+    and holds the same lock and atomic replace as `save_platform_key`.
+    """
+    path = app["dir"] / APP_FILE
+    text = ("true" if value else "false") if isinstance(value, bool) else yaml_quoted(value)
+    with locked(path):
+        lines = path.read_text().splitlines() if path.is_file() else []
+        existing = next((i for i, line in enumerate(lines)
+                         if not line.startswith((" ", "\t")) and line.split("#")[0].strip()
+                         .startswith(f"{key}:")), None)
+        if existing is not None:
+            lines[existing] = f"{key}: {text}"
+        else:
+            lines.append(f"{key}: {text}")
+        write_text_atomically(path, "\n".join(lines) + "\n")
+    return path
 
 
 def save_platform_key(app: dict, key: str, value: str) -> Path:
@@ -291,17 +323,7 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
 
 
 def set_app_enabled(name: str, enabled: bool) -> Path:
-    # Edit the text rather than rewrite the yaml, so the user's comments survive.
-    path = find_project() / name / APP_FILE
-    lines = path.read_text().splitlines() if path.is_file() else []
-    value = f"enabled: {'true' if enabled else 'false'}"
-    existing = next((i for i, line in enumerate(lines) if line.startswith("enabled:")), None)
-    if existing is None:
-        lines.append(value)
-    else:
-        lines[existing] = value
-    path.write_text("\n".join(lines) + "\n")
-    return path
+    return save_app_key({"dir": find_project() / name}, "enabled", enabled)
 
 
 def _indent(line: str) -> str:
@@ -366,7 +388,8 @@ def read_state() -> dict:
     except ValueError:
         state = None
     if not isinstance(state, dict):
-        console.warn(f"{STATE_DIR}/{path.name} is not valid; treating every app as not deployed")
+        console.warn(f"{console.value(f'{STATE_DIR}/{path.name}')} is not valid; "
+                     "treating every app as not deployed")
         return {}
     return state
 
@@ -467,6 +490,84 @@ def _cron_values(field: str, lo: int, hi: int, label: str) -> set[int]:
     return values
 
 
+DAY_WORDS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+MONTH_WORDS = ("January", "February", "March", "April", "May", "June", "July", "August",
+               "September", "October", "November", "December")
+
+
+def _words(items) -> str:
+    items = list(items)
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _ordinal(day: int) -> str:
+    suffix = "th" if 11 <= day % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return f"{day}{suffix}"
+
+
+def _minutes_past(minutes: list[int]) -> str:
+    if minutes == [0]:
+        return "on the hour"
+    return _words(f"{m} minute{'s' if m != 1 else ''}" if m else "0 minutes"
+                  for m in minutes) + " past the hour"
+
+
+def _day_words(days: list[int]) -> str:
+    """Monday to Friday for a run of days, else each day named."""
+    if len(days) >= 3 and days == list(range(days[0], days[-1] + 1)):
+        return f"{DAY_WORDS[days[0]]} to {DAY_WORDS[days[-1]]}"
+    return _words(DAY_WORDS[d] for d in days)
+
+
+def _clock_times(minute: str, hour: str) -> list[str] | None:
+    """The HH:MM times a minute and hour field name, or None when they are not plain lists."""
+    if any(mark in field for field in (minute, hour) for mark in ("*", "/")):
+        return None
+    minutes = sorted(_cron_values(minute, 0, 59, "minute"))
+    hours = sorted(_cron_values(hour, 0, 23, "hour"))
+    if len(minutes) * len(hours) > 12:
+        return None
+    return [f"{h:02d}:{m:02d}" for h in hours for m in minutes]
+
+
+def describe_schedule(schedule) -> str:
+    """A schedule in the words an administrator would use, for a tooltip or a listing.
+
+    Covers the shapes a job has: every N minutes, hourly, daily, on weekdays,
+    on days of the month. Anything else stays as the cron expression.
+    """
+    cron = cron_expression(schedule)
+    minute, hour, dom, month, dow = cron.split()
+    if hour == dom == month == dow == "*":
+        if minute == "*":
+            return "every minute"
+        if minute.startswith("*/"):
+            return f"every {minute[2:]} minutes"
+        if "/" not in minute:
+            minutes = sorted(_cron_values(minute, 0, 59, "minute"))
+            return f"{_minutes_past(minutes)}, every hour"
+    if hour.startswith("*/") and dom == month == dow == "*" and minute.isdigit():
+        return f"every {hour[2:]} hours, {_minutes_past([int(minute)])}"
+    times = _clock_times(minute, hour)
+    if times is None:
+        return f"cron {cron}"
+    when = "at " + _words(times)
+    if dom == month == dow == "*":
+        return f"every day {when}"
+    if dom == month == "*":
+        days = sorted({d % 7 for d in _cron_values(dow, 0, 7, "day-of-week")})
+        return f"every {_day_words(days)} {when}"
+    if dow == "*":
+        days = _words(_ordinal(d) for d in sorted(_cron_values(dom, 1, 31, "day-of-month")))
+        if month == "*":
+            return f"on the {days} of every month {when}"
+        months = _words(MONTH_WORDS[m - 1] for m in sorted(_cron_values(month, 1, 12, "month")))
+        return f"on the {days} of {months} {when}"
+    return f"cron {cron}"
+
+
 def runs_per_month(cron: str) -> float:
     cron = cron_expression(cron)
     minute, hour, dom, month, dow = cron.split()
@@ -512,6 +613,36 @@ def running_app_dir() -> Path:
     if main is not None and Path(main).name == "run.py":
         return Path(main).resolve().parent
     return Path.cwd()
+
+
+def shown_path(path: Path) -> str:
+    """`path` from the project folder when it is inside it, else in full."""
+    try:
+        return str(path.relative_to(find_project()))
+    except (ValueError, ConfigError):
+        return str(path)
+
+
+def env_file_lines(start: Path) -> list[str]:
+    """What load_env(start) reads, for the user: the .env files, and each name this
+    terminal already sets with another value, which the .env value does not replace.
+    Call it before load_env, which adds the .env values to the environment."""
+    files = find_env_files(start)
+    env = console.value(".env")
+    if not files:
+        return [f"no {env} file in {console.value(start.name)} or a folder above it, "
+                "so pdt reads env vars only from this terminal"]
+    if len(files) == 1:
+        lines = [f"{env} file read: {console.value(shown_path(files[0]))}"]
+    else:
+        lines = [f"{env} files read, the first one wins: "
+                 f"{', '.join(console.value(shown_path(path)) for path in files)}"]
+    kept = sorted({name for path in files for name, value in dotenv_values(path).items()
+                   if name in os.environ and os.environ[name] != (value or "")})
+    if kept:
+        lines.append(f"this terminal already sets {', '.join(map(console.value, kept))}, "
+                     f"so pdt uses that value and not the one in {env}")
+    return lines
 
 
 def load_env(start: Path) -> list[Path]:
@@ -566,6 +697,32 @@ def env_spec(app: dict) -> dict:
     except (pwsh.PwshError, powershell.PowerShellError) as e:
         raise ConfigError(str(e))
     return {**spec, "required": [*(spec.get("required") or []), *read_by], "read_by": read_by}
+
+
+def found_env_lines(app: dict) -> list[str]:
+    """The env vars the app's code reads that config.yml does not list, as lines for
+    the user, or none. Raises ConfigError, like env_spec."""
+    spec = env_spec(app)
+    found = [(name, f"required, {_code_line(where)}")
+             for name, where in (spec.get("read_by") or {}).items()]
+    listed = set(app["env"].get("optional") or [])
+    optional = [name for name in spec.get("optional") or [] if name not in listed]
+    if optional:
+        from pdt import python_env
+        first: dict[str, str] = {}
+        for where, name, _kind in python_env.reads(app["dir"]):
+            first.setdefault(name, _code_line(where))
+        found += [(name, f"optional, {first.get(name, 'the code')}") for name in optional]
+    if not found:
+        return []
+    return console.rows(f"env vars the code reads that {console.value(APP_FILE)} does not list:",
+                        found)
+
+
+def _code_line(where: str) -> str:
+    """`report.ps1:4` as `report.ps1 line 4`, the file name bold."""
+    file, _, line = where.rpartition(":")
+    return f"{console.value(file)} line {line}"
 
 
 def check_env(env_spec: dict, values=None) -> list[str]:
@@ -684,11 +841,17 @@ def env_shape_problems(where: str, env: dict) -> list[str]:
 
 
 def validate() -> list[str]:
+    return [problem for _app, problem in validate_by_app()]
+
+
+def validate_by_app() -> list[tuple[str | None, str]]:
+    """Each problem with the app it belongs to, or None when it belongs to the
+    project or to more than one app."""
     problems = []
     try:
         root_cfg = load_yaml(find_project() / PROJECT_FILE)
     except ConfigError as e:
-        return [str(e)]
+        return [(None, str(e))]
     problems.extend(key_problems(PROJECT_FILE, root_cfg, ROOT_KEYS))
     apps = find_apps()
     entries = root_cfg.get("apps")
@@ -701,10 +864,13 @@ def validate() -> list[str]:
             continue
         if entry["name"] not in app_folders():
             problems.append(f"{PROJECT_FILE}: app {entry['name']!r} has no directory with a run.py or a .ps1 file")
-    for name in apps:
-        problems.extend(validate_app(name))
+    found = [(None, problem) for problem in problems]
+    found += [(name, problem) for name in apps for problem in validate_app(name)]
     # Every app re-checks the shared platform: block; report it once.
-    return sorted(set(problems), key=problems.index)
+    owners = {}
+    for name, problem in found:
+        owners[problem] = name if owners.get(problem, name) == name else None
+    return [(name, problem) for problem, name in owners.items()]
 
 
 def builds_image(platform: dict) -> bool:
@@ -775,6 +941,8 @@ def validate_app(name: str) -> list[str]:
     if not isinstance(app["continue_on_error"], bool):
         problems.append(f"{where}: continue_on_error must be true or false")
     problems.extend(f"{where}: {problem}" for problem in run_scripts_problems(app))
+    if not isinstance(app["pause"], bool):
+        problems.append(f"{where}: pause must be true or false")
     return problems
 
 

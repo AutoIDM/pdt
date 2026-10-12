@@ -28,10 +28,19 @@ The image is built from DOCKERFILE (or POWERSHELL_DOCKERFILE) unless the
 app directory holds its own Dockerfile; write_dockerfile puts whichever
 applies at the root of the context, so every cloud provider builds the
 same way. An app's own
-.dockerignore is rewritten to the context root too (and as .gcloudignore,
-which Cloud Build reads instead), so its patterns keep meaning paths
-inside the app directory. The generated image ends every run's output
-with the line `pdt: exit N`, which `pdt runs` reads for the run's status.
+.dockerignore is rewritten to the context root too, so its patterns keep
+meaning paths inside the app directory. The generated image ends every
+run's output with the line `pdt: exit N`, which `pdt runs` reads for the
+run's status.
+
+Every cloud provider builds the image with docker on the deploying
+machine and pushes it to its own registry. Docker is the one tool a
+deploy needs that pdt cannot install, so `docker_preflight` stops the
+deploy before it touches the cloud and says so.
+
+The build forwards the deploying machine's SSH agent when one is
+running, so a RUN step marked `--mount=type=ssh` can install a private
+git dependency.
 
 Every provider also shares one data store per account, named
 `pdt-data-<suffix>` by `store_name` and tagged with `STORE_TAGS`; it
@@ -140,7 +149,6 @@ def write_dockerfile(stage: Path, app: dict) -> None:
     if ignore.is_file():
         text = context_ignore_text(ignore.read_text(), app["name"])
         (stage / ".dockerignore").write_text(text)
-        (stage / ".gcloudignore").write_text(text)
 
 
 def context_ignore_text(text: str, app_name: str) -> str:
@@ -157,10 +165,11 @@ def context_ignore_text(text: str, app_name: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def image_action(app: dict, what: str) -> str:
+def image_action(app: dict, what: console.Markup) -> console.Markup:
     """One plan line for the image build, naming a custom Dockerfile."""
     if own_dockerfile(app) is not None:
-        return f"{what} (from {app['name']}/Dockerfile)"
+        dockerfile = f"{app['name']}/Dockerfile"
+        return console.Markup(f"{what} (from {console.value(dockerfile)})")
     return what
 
 
@@ -184,6 +193,9 @@ class CostEstimate:
 
     def show(self) -> None:
         console.cost(self.items, self.prices, self.excludes, self.currency)
+        if self.currency != "USD":
+            console.status(f"pdt shows {console.value(self.currency)}, the currency of "
+                           "this computer's regional setting.")
 
 
 ECB_RATES = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
@@ -241,13 +253,17 @@ def convert_from_usd(items: list[tuple[str, float]], currency: str,
         return items, "USD", f" in USD, because no USD to {currency} rate could be read ({exc})"
     return ([(label, amount * rate) for label, amount in items], currency,
             f", converted from USD at the ECB rate of {date}")
-def store_plan_lines(description: str, exists: bool, identity: str, app_name: str) -> list[str]:
-    return [("use existing" if exists else "create") + f" {description} (kept after destroy)",
-            f"grant {identity} write access to {app_name}/ in {description}"]
+def store_plan_lines(description: console.Markup, exists: bool, identity: str,
+                     app_name: str) -> list[console.Markup]:
+    return [console.Markup(("use existing" if exists else "create")
+                           + f" {description} (kept after destroy)"),
+            console.Markup(f"grant {console.value(identity)} write access to "
+                           f"{console.value(f'{app_name}/')} in {description}")]
 
 
-def store_kept_line(description: str, count: int, app_name: str) -> str:
-    return f"kept: {description} ({count} objects under {app_name}/)"
+def store_kept_line(description: console.Markup, count: int, app_name: str) -> console.Markup:
+    return console.Markup(f"kept: {description} ({count} objects under "
+                          f"{console.value(f'{app_name}/')})")
 
 
 def store_cost_label(count: int, size_bytes: int) -> str:
@@ -257,7 +273,8 @@ def store_cost_label(count: int, size_bytes: int) -> str:
 def warn_if_locked(store, app_name: str) -> None:
     held = store.held_lock()
     if held is not None:
-        console.warn(f"run {held['run']} of {app_name} started at {held['started']} "
+        console.warn(f"run {console.value(held['run'])} of {console.value(app_name)} started at "
+                     f"{console.escape(held['started'])} "
                      "still holds the state; destroying now loses that run's state")
 
 
@@ -283,6 +300,17 @@ class RetriableAPIError(Exception):
     def __init__(self, message: str, response=None):
         super().__init__(message)
         self.response = response
+
+
+def deployed_next_steps(app_name: str) -> None:
+    """The same commands after every provider's deploy."""
+    console.say()
+    console.next_steps([
+        (f"pdt run {app_name} --deployed", "start a run now"),
+        (f"pdt logs {app_name}", "read the log of the newest run"),
+        (f"pdt runs {app_name}", "list the recent runs"),
+        (f"pdt health {app_name}", "show whether the last run succeeded"),
+    ])
 
 
 def response_error_message(response) -> str:
@@ -322,22 +350,48 @@ def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
         raise
 
 
-def run_build(command: list[str]) -> None:
+def ssh_build_args() -> list[str]:
+    # docker build fails on a socket path that no longer exists, so a stale value is skipped.
+    socket = os.environ.get("SSH_AUTH_SOCK", "").strip()
+    if socket and os.path.exists(socket):
+        return ["--ssh", "default"]
+    return []
+
+
+def docker_preflight(provider: str) -> None:
+    if not shutil.which("docker"):
+        fail(f"Docker is not installed. pdt builds the image for {provider} with Docker on "
+             "this computer. Docker is the one tool pdt cannot install for you, because its "
+             "installer needs administrator rights and a person must accept its license. "
+             "Install Docker Desktop from https://www.docker.com/products/docker-desktop/, "
+             "start it, and run the same command again.")
+    proc = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False)
+    if proc.returncode:
+        fail("Docker is installed but not running. Start Docker Desktop, wait until it "
+             "says Docker is running, and run the same command again.")
+
+
+def run_build(command: list[str], data: str | None = None) -> None:
     proc = subprocess.run(
-        command, capture_output=True, text=True, check=False)
+        command, input=data, capture_output=True, text=True, check=False)
     if proc.returncode:
         if proc.stdout.strip():
-            console.say(proc.stdout.strip())
+            console.say(console.escape(proc.stdout.strip()))
         if proc.stderr.strip():
-            console.say(proc.stderr.strip())
-        fail(f"{' '.join(command[:3])} failed")
+            console.say(console.escape(proc.stderr.strip()))
+        fail(f"{console.value(' '.join(command[:3]))} failed")
+
+
+def secret_contents(values: dict[str, str]) -> str:
+    """The env var names a secret holds, for a plan line. A plan never shows a value."""
+    return f"env vars {', '.join(map(console.value, sorted(values)))}" if values else "no env vars"
 
 
 def gather_secrets(app: dict) -> dict[str, str]:
     try:
         spec = config.env_spec(app)
     except config.ConfigError as e:
-        fail(str(e))
+        fail(console.escape(str(e)))
     names = list(spec.get("required") or [])
     for group in spec.get("one_of") or []:
         names.extend(group)
@@ -355,14 +409,15 @@ def gather_secrets(app: dict) -> dict[str, str]:
             bases += [app["dir"], config.find_project()]
             path = next((base / path for base in bases if (base / path).is_file()), path)
         if not path.is_file():
-            console.note(f"{name} is not a file here; the job gets it as a plain value")
+            console.note(f"{console.value(name)} is not a file here; the job gets it as a "
+                         "plain value")
             continue
         values.setdefault(target, base64.b64encode(path.read_bytes()).decode("ascii"))
         del values[name]
     problems = config.check_env(spec, values)
     if problems:
         for problem in problems:
-            console.error(f"env: {problem}")
+            console.error(f"env: {console.escape(problem)}")
         fail("the secret bundle does not satisfy the app's env spec")
     return values
 
@@ -412,7 +467,9 @@ def run_secrets(action: str, app: dict, current: str | None,
     if action == "set":
         return set_secret(app, current, write, name)
     if current is None:
-        fail(f"{app['name']} has no deployed secrets yet. Run `pdt deploy {app['name']}` first.")
+        command = f"pdt deploy {app['name']}"
+        fail(f"{console.value(app['name'])} has no deployed secrets yet. "
+             f"Run `{console.value(command)}` first.")
     if action == "get":
         return get_secrets(app, current, assume_yes)
     values = gather_secrets(app)
@@ -432,7 +489,7 @@ def run_secrets(action: str, app: dict, current: str | None,
         console.warn("Aborted; nothing was changed.")
         return 0
     write(values)
-    console.done(f"Updated the secrets of {app['name']}. The next run uses them.")
+    console.done(f"Updated the secrets of {console.value(app['name'])}. The next run uses them.")
     return 0
 
 
@@ -440,23 +497,27 @@ def set_secret(app: dict, current: str | None, write: Callable[[dict[str, str]],
                name: str | None) -> int:
     """Put one value, read from stdin, into the deployed secret."""
     if not name:
-        fail("pdt secrets <app> set needs the env var name, with the value on stdin.")
+        fail(f"{console.value('pdt secrets <app> set')} needs the env var name, "
+             "with the value on stdin.")
     if current is None:
-        console.note(f"{app['name']} is not deployed, so there is no secret to update.")
+        console.note(f"{console.value(app['name'])} is not deployed, so there is no secret "
+                     "to update.")
         return 0
     value = sys.stdin.read().strip()
     if value == "":
-        fail(f"no value for {name} on stdin.")
+        fail(f"no value for {console.value(name)} on stdin.")
     try:
         values = json.loads(current)
     except ValueError:
         fail("the deployed secret is not the JSON that pdt writes, so pdt cannot update it.")
     if values.get(name) == value:
-        console.done(f"{name} already has that value in the secrets of {app['name']}.")
+        console.done(f"{console.value(name)} already has that value in the secrets of "
+                     f"{console.value(app['name'])}.")
         return 0
     values[name] = value
     write(values)
-    console.done(f"Updated {name} in the secrets of {app['name']}. The next run uses it.")
+    console.done(f"Updated {console.value(name)} in the secrets of {console.value(app['name'])}. "
+                 "The next run uses it.")
     return 0
 
 
@@ -471,13 +532,13 @@ def get_secrets(app: dict, current: str, assume_yes: bool) -> int:
     answer = console.ask("Save to which file?", default) if can_prompt(None) else ""
     target = Path(app["dir"]) / (answer or default)
     if target.exists():
-        console.warn(f"{target.name} already exists and will be replaced.")
+        console.warn(f"{console.value(target.name)} already exists and will be replaced.")
         if not proceed(assume_yes):
             console.warn("Aborted; nothing was written.")
             return 0
     private_file(target)
     target.write_text("".join(env_line(name, values[name]) + "\n" for name in sorted(values)))
-    console.done(f"Saved {len(values)} value(s) to {target}.")
+    console.done(f"Saved {len(values)} value(s) to {console.value(target)}.")
     return 0
 
 
@@ -502,7 +563,8 @@ def stage_build_context(app: dict) -> Path:
         for name in {*dirs, *files} - left_out:
             path = Path(folder, name)
             if path.is_symlink() and not (target := path.resolve()).is_relative_to(app_dir):
-                fail(f"{path.relative_to(app_dir)} is a link to {target}, "
+                fail(f"{console.value(path.relative_to(app_dir))} is a link to "
+                     f"{console.value(target)}, "
                      "outside the app folder; the image must not carry it")
     stage = Path(tempfile.mkdtemp(prefix="pdt-build-"))
     try:
@@ -515,5 +577,6 @@ def stage_build_context(app: dict) -> Path:
         raise
     left_out = sorted(skip(app_dir, os.listdir(app_dir)))
     if left_out:
-        console.note(f"left out of the image: {', '.join(left_out)}")
+        console.note("left out of the image: "
+                     f"{', '.join(console.value(name) for name in left_out)}")
     return stage

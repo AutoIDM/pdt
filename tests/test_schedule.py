@@ -1,6 +1,6 @@
 import pytest
 
-from pdt.config import ConfigError, cron_expression, runs_per_month
+from pdt.config import ConfigError, cron_expression, describe_schedule, runs_per_month
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -43,3 +43,26 @@ def test_day_of_month_and_day_of_week_are_combined_with_or():
     both_restricted = runs_per_month("0 0 1 * 1")
     only_day_of_month = runs_per_month("0 0 1 * *")
     assert both_restricted > only_day_of_month
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("hourly", "on the hour, every hour"),
+    ("45 * * * *", "45 minutes past the hour, every hour"),
+    ("15,45 * * * *", "15 minutes and 45 minutes past the hour, every hour"),
+    ("*/15 * * * *", "every 15 minutes"),
+    ("* * * * *", "every minute"),
+    ("30 */6 * * *", "every 6 hours, 30 minutes past the hour"),
+    ("daily", "every day at 00:00"),
+    ("0 9,17 * * *", "every day at 09:00 and 17:00"),
+    ("30 9 * * 1-5", "every Monday to Friday at 09:30"),
+    ("30 9 * * 1,3,5", "every Monday, Wednesday and Friday at 09:30"),
+    ("0 8 * * 0,7", "every Sunday at 08:00"),
+    ("monthly", "on the 1st of every month at 00:00"),
+    ("0 6 1,15 * *", "on the 1st and 15th of every month at 06:00"),
+    ("0 6 22 * *", "on the 22nd of every month at 06:00"),
+    ("yearly", "on the 1st of January at 00:00"),
+    ("0 0 1 * 1", "cron 0 0 1 * 1"),
+    ("*/5 9-17 * * *", "cron */5 9-17 * * *"),
+])
+def test_schedules_in_plain_words(text, expected):
+    assert describe_schedule(text) == expected

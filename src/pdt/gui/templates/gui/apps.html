@@ -1,0 +1,39 @@
+{% extends "gui/base.html" %}
+{% block title %}Apps{% endblock %}
+{% block content %}
+{% if running %}<meta http-equiv="refresh" content="30">{% endif %}
+<section class="card">
+    <div class="card-head">
+        <h1>Apps</h1>
+        <p class="hint"><button type="button" class="chip" data-copy>pdt health</button></p>
+    </div>
+    {% if rows %}
+    <table class="grid-table">
+        <thead>
+            <tr><th>App</th><th>Status</th><th>Last run</th><th>Recent</th><th>Schedule</th><th>Platform</th><th></th></tr>
+        </thead>
+        <tbody>
+        {% for row in rows %}
+            <tr>
+                <td><a class="name" href="{% url 'app_detail' row.app.name %}">{{ row.app.name }}</a>
+                    {% if row.config.pause %}<span class="badge paused">paused</span>{% endif %}
+                    {% if not row.config.deployed %}<span class="badge muted">not deployed</span>{% endif %}
+                    {% if row.config.error %}<div class="error">{{ row.config.error }}</div>{% endif %}
+                    {% if row.app.sync_error %}<details class="error"><summary>could not read runs</summary><pre>{{ row.app.sync_error }}</pre></details>{% endif %}
+                </td>
+                <td><span class="status {{ row.health.status|slugify }}">{{ row.health.status }}</span></td>
+                <td>{% if row.health.last_run %}{{ row.app.runs.first.started|date:"Y-m-d H:i:s" }}{% endif %}</td>
+                <td>{% if row.health.runs %}{{ row.health.succeeded }} of {{ row.health.runs }} succeeded{% endif %}</td>
+                <td><code title="{{ row.config.schedule_text }} ({{ row.config.timezone }})">{{ row.config.schedule }}</code> <span class="hint">{{ row.config.timezone }}</span></td>
+                <td>{{ row.config.provider }}</td>
+                <td class="buttons">{% with app=row.app config=row.config next=request.path %}{% include "gui/_actions.html" %}{% endwith %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">This project has no apps yet. Run <code>pdt new my-report --from hello-world</code> to add one.</p>
+    {% endif %}
+</section>
+{% include "gui/_health.html" %}
+{% endblock %}

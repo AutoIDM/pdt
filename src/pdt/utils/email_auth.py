@@ -127,7 +127,7 @@ def prompt_oauth_client(host: str, configured_auth: str, client_id: str,
     console.say("Status: OAuth client setup required")
     console.say()
     for line in oauth_setup_help(host, configured_auth, env_file):
-        console.say(line)
+        console.say(console.escape(line))
     console.say()
     console.say("Paste the values now, or press Enter to stop.")
     values = {}
@@ -140,7 +140,8 @@ def prompt_oauth_client(host: str, configured_auth: str, client_id: str,
     for name, value in values.items():
         _write_env(env_file, name, value)
         os.environ[name] = value
-    console.done(f"Saved {', '.join(values)} in {env_file}.")
+    console.done(f"Saved {', '.join(console.value(name) for name in values)} in "
+                 f"{console.value(env_file)}.")
     return True
 
 
@@ -178,7 +179,7 @@ def _save_cache(env_file: Path | None, data: dict,
         _save_cloud_cache(value, cache_env)
         return
     _write_env(env_file, cache_env, value)
-    console.done(f"Saved email authorization in {env_file}.")
+    console.done(f"Saved email authorization in {console.value(env_file)}.")
 
 
 def _write_env(env_file: Path, name: str, value: str) -> None:
@@ -219,7 +220,7 @@ def _confirm(provider: str, user: str) -> None:
     name = "Google Gmail" if provider == "google" else "Microsoft"
     console.say()
     console.say(f"Email provider: {name}")
-    console.say(f"Account: {user}")
+    console.say(f"Account: {console.value(user)}")
     console.say("Authentication: OAuth 2.0")
     console.say("Status: Authorization required")
     console.say()
@@ -314,7 +315,7 @@ def _google_access_token(user: str, client_id: str, client_secret: str,
         "refresh_token": refresh_token,
         "user": user,
     })
-    console.done(f"Connected Google Gmail for {user}.")
+    console.done(f"Connected Google Gmail for {console.value(user)}.")
     return access_token
 
 
@@ -374,7 +375,7 @@ def _microsoft_access_token(user: str, client_id: str, tenant_id: str,
         "user": user,
     })
     account = (result.get("id_token_claims") or {}).get("preferred_username") or user
-    console.done(f"Connected Microsoft for {account}.")
+    console.done(f"Connected Microsoft for {console.value(account)}.")
     return result["access_token"]
 
 

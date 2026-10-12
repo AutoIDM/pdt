@@ -60,7 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import confirm
-from pdt.deploy_common import CostEstimate, warn_if_locked
+from pdt.deploy_common import CostEstimate, deployed_next_steps, warn_if_locked
 from pdt.pwsh import ensure_pwsh
 
 
@@ -266,7 +266,7 @@ def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
     <AllowHardTerminate>true</AllowHardTerminate>
     <StartWhenAvailable>true</StartWhenAvailable>
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <Enabled>true</Enabled>
+    <Enabled>{"false" if app.get("pause") else "true"}</Enabled>
     <Hidden>false</Hidden>
     <ExecutionTimeLimit>{RUN_TIME_LIMIT}</ExecutionTimeLimit>
     <Priority>7</Priority>
@@ -442,26 +442,32 @@ def _prepare_powershell(app: dict) -> tuple[str | None, list]:
 
 
 def plan(app: dict, verb: str, description: str, user: str, uv: str,
-         on_machine_path: bool, pwsh: str | None = None, modules: list = ()) -> list[str]:
+         on_machine_path: bool, pwsh: str | None = None,
+         modules: list = ()) -> list[console.Markup]:
     name = app["name"]
     actions = [
-        f"{verb} Windows scheduled task {_task_name(name)} (runs as SYSTEM)",
-        f"run {name} {description} (machine local time)",
-        f"working directory: {app['dir']}",
-        "run uv from the system PATH" if on_machine_path else
-        f"run uv from {Path(uv).resolve()} (uv is not on the system PATH; "
-        "a machine-wide install drops the path from the task)",
-        f"keep the app's run data in {app_folder(name)} (SYSTEM: full control; {user}: modify)",
-        f"write one log per run under {logs_folder(name)} (removed on destroy)",
+        console.Markup(f"{verb} Windows scheduled task {console.value(_task_name(name))} "
+                       "(runs as SYSTEM)"),
+        console.Markup(f"run {console.value(name)} {console.escape(description)} "
+                       "(machine local time)" + (" (paused)" if app.get("pause") else "")),
+        console.Markup(f"working directory: {console.value(app['dir'])}"),
+        console.Markup("run uv from the system PATH" if on_machine_path else
+                       f"run uv from {console.value(Path(uv).resolve())} (uv is not on the "
+                       "system PATH; a machine-wide install drops the path from the task)"),
+        console.Markup(f"keep the app's run data in {console.value(app_folder(name))} "
+                       f"(SYSTEM: full control; {console.value(user)}: modify)"),
+        console.Markup(f"write one log per run under {console.value(logs_folder(name))} "
+                       "(removed on destroy)"),
     ]
     if app["storage"]:
-        actions.append(f"use folder {storage_folder(name)} for the app's files "
-                       "(kept after destroy)")
+        actions.append(console.Markup(f"use folder {console.value(storage_folder(name))} for "
+                                      "the app's files (kept after destroy)"))
     if pwsh is not None:
-        actions.append(f"run the app's .ps1 files with PowerShell from {pwsh}")
+        actions.append(console.Markup(f"run the app's .ps1 files with PowerShell from "
+                                      f"{console.value(pwsh)}"))
     if modules:
-        actions.append(f"install PowerShell modules {', '.join(need.name for need in modules)} "
-                       "(all users)")
+        names = ", ".join(console.value(need.name) for need in modules)
+        actions.append(console.Markup(f"install PowerShell modules {names} (all users)"))
     return actions
 
 
@@ -471,7 +477,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         assert uv is not None
         on_machine_path = uv_on_machine_path()
         name = _task_name(app["name"])
-        console.status(f"Checking Windows scheduled task {name}...")
+        console.status(f"Checking Windows scheduled task {console.value(name)}...")
         user = _deploying_user()
         description, xml = task_xml(app, uv, on_machine_path)
         state = _task_state(powershell, name)
@@ -481,7 +487,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         exists = state == "managed"
         pwsh, modules = _prepare_powershell(app)
     except (config.ConfigError, WindowsDeployError) as exc:
-        console.error(str(exc))
+        console.error(console.escape(str(exc)))
         return 1
 
     actions = plan(app, "update" if exists else "create", description, user, uv,
@@ -507,17 +513,15 @@ def deploy(app: dict, assume_yes: bool) -> int:
         "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
         "-ErrorAction Stop | Out-Null"
     )
-    console.status(f"{'Updating' if exists else 'Creating'} Windows scheduled task {name}...")
+    console.status(f"{'Updating' if exists else 'Creating'} Windows scheduled task "
+                   f"{console.value(name)}...")
     try:
         _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
-        console.error(str(exc))
+        console.error(console.escape(str(exc)))
         return 1
-    console.done(f"Deployed {app['name']} as Windows task {name}.")
-    console.field("Run it once", f"Start-ScheduledTask -TaskName {_ps_string(name)}")
-    console.field("Run history", f"Get-ScheduledTaskInfo -TaskName {_ps_string(name)}")
-    console.bullet("or open Task Scheduler > Task Scheduler Library", indent=4)
-    console.field("Run logs", str(logs_folder(app["name"])))
+    console.done(f"Deployed {console.value(app['name'])} as Windows task {console.value(name)}.")
+    deployed_next_steps(app["name"])
     return 0
 
 
@@ -525,57 +529,102 @@ def destroy(app: dict, assume_yes: bool) -> int:
     try:
         powershell, _uv = _preflight(require_uv=False)
         name = _task_name(app["name"])
-        console.status(f"Checking Windows scheduled task {name}...")
+        console.status(f"Checking Windows scheduled task {console.value(name)}...")
         state = _task_state(powershell, name)
         if state == "unmanaged":
             raise WindowsDeployError(
                 f"Windows scheduled task {name} exists but is not managed by PDT")
         exists = state == "managed"
     except WindowsDeployError as exc:
-        console.error(str(exc))
+        console.error(console.escape(str(exc)))
         return 1
     logs = logs_folder(app["name"])
     logs_exist = logs.is_dir()
     if not exists and not logs_exist:
-        console.done(f"Nothing to remove for {app['name']}; task {name} does not exist.")
+        console.done(f"Nothing to remove for {console.value(app['name'])}; task "
+                     f"{console.value(name)} does not exist.")
         if app["storage"]:
             console.say(_kept_storage_line(app["name"]))
         return 0
     actions = []
     script = ""
     if exists:
-        actions.append(f"delete Windows scheduled task {name}")
+        actions.append(console.Markup(f"delete Windows scheduled task {console.value(name)}"))
         script += (f"Unregister-ScheduledTask -TaskName {_ps_string(name)} "
                    "-Confirm:$false -ErrorAction Stop; ")
     if logs_exist:
-        actions.append(f"delete run logs folder {logs}")
+        actions.append(console.Markup(f"delete run logs folder {console.value(logs)}"))
         script += f"Remove-Item -Recurse -Force -Path {_ps_string(str(logs))} -ErrorAction Stop; "
     if app["storage"]:
-        actions.append(f"keep folder {storage_folder(app['name'])} (the app's files)")
+        actions.append(console.Markup(f"keep folder {console.value(storage_folder(app['name']))} "
+                                      "(the app's files)"))
         warn_if_locked(_store(app["name"]), app["name"])
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 1
-    console.status(f"Removing Windows scheduled task {name}..." if exists
-                   else f"Removing {logs}...")
+    console.status(f"Removing Windows scheduled task {console.value(name)}..." if exists
+                   else f"Removing {console.value(logs)}...")
     try:
         _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
-        console.error(str(exc))
+        console.error(console.escape(str(exc)))
         return 1
-    console.done(f"Removed Windows task {name}." if exists
-                 else f"Nothing to remove for {app['name']}; task {name} does not exist.")
+    console.done(f"Removed Windows task {console.value(name)}." if exists
+                 else f"Nothing to remove for {console.value(app['name'])}; task "
+                 f"{console.value(name)} does not exist.")
     if logs_exist:
-        console.say(f"removed: run logs folder {logs}")
+        console.say(f"removed: run logs folder {console.value(logs)}")
     if app["storage"]:
         console.say(_kept_storage_line(app["name"]))
+    return 0
+
+
+def _managed_task(app: dict) -> tuple[str, str]:
+    """The PowerShell path and the task name, once the task exists and is pdt's."""
+    powershell, _uv = _preflight(require_uv=False)
+    name = _task_name(app["name"])
+    state = _task_state(powershell, name)
+    if state == "unmanaged":
+        raise WindowsDeployError(
+            f"Windows scheduled task {name} exists but is not managed by PDT")
+    if state == "absent":
+        raise WindowsDeployError(
+            f"Windows scheduled task {name} does not exist; run pdt deploy {app['name']} first")
+    return powershell, name
+
+
+def pause(app: dict, paused: bool) -> int:
+    verb = "Disable-ScheduledTask" if paused else "Enable-ScheduledTask"
+    try:
+        powershell, name = _managed_task(app)
+        _run(powershell, f"{verb} -TaskName {_ps_string(name)} -ErrorAction Stop | Out-Null",
+             elevate=True)
+    except WindowsDeployError as exc:
+        console.error(console.escape(str(exc)))
+        return 1
+    console.done(f"{'Paused' if paused else 'Unpaused'} {console.value(app['name'])}: Windows "
+                 f"task {console.value(name)} "
+                 f"is {'disabled' if paused else 'enabled'}.")
+    return 0
+
+
+def start(app: dict) -> int:
+    try:
+        powershell, name = _managed_task(app)
+        _run(powershell, f"Start-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
+             elevate=True)
+    except WindowsDeployError as exc:
+        console.error(console.escape(str(exc)))
+        return 1
+    console.done(f"Started {console.value(app['name'])}: Windows task {console.value(name)}.")
+    console.command(f"pdt runs {app['name']}", "see the run")
     return 0
 
 
 def _kept_storage_line(app_name: str) -> str:
     folder = storage_folder(app_name)
     count = sum(1 for file in folder.rglob("*") if file.is_file()) if folder.is_dir() else 0
-    return f"kept: folder {folder} ({count} files)"
+    return f"kept: folder {console.value(folder)} ({count} files)"
 
 
 def _store(app_name: str):
@@ -623,7 +672,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets",
-                                 "runs", "logs"))
+                                 "runs", "logs", "pause", "unpause", "start"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -631,7 +680,7 @@ def main() -> int:
     try:
         app = config.merged_app(args.app)
     except config.ConfigError as exc:
-        console.error(str(exc))
+        console.error(console.escape(str(exc)))
         return 1
     if sys.platform != "win32":
         console.error(
@@ -654,10 +703,15 @@ def main() -> int:
         return runs_cli.logs(lambda: list_runs(app["name"]),
                              lambda run: read_lines(app["name"], run), app["name"], args.rest,
                              store="the run's log file")
+    if args.command in ("pause", "unpause"):
+        return pause(app, args.command == "pause")
+    if args.command == "start":
+        return start(app)
     if args.command == "deploy":
         return deploy(app, args.yes)
     return destroy(app, args.yes)
 
 
 if __name__ == "__main__":
+    console.json_output()
     sys.exit(main())

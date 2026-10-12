@@ -1,6 +1,7 @@
 import json
 import subprocess
 
+from conftest import plain
 from pdt import deploy_google_cloud
 from pdt.deploy_common import store_plan_lines, store_suffix
 
@@ -44,7 +45,7 @@ def test_the_storage_url_is_the_app_folder_with_a_trailing_slash():
 
 def test_plan_lines_use_the_shared_words():
     bucket = deploy_google_cloud.store_bucket("my-project")
-    create, grant = store_plan_lines(f"bucket {bucket}", False, "pdt-runner", "hello-world")
+    create, grant = plain(store_plan_lines(f"bucket {bucket}", False, "pdt-runner", "hello-world"))
     assert create == f"create bucket {bucket} (kept after destroy)"
     assert grant == f"grant pdt-runner write access to hello-world/ in bucket {bucket}"
 

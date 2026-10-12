@@ -89,8 +89,10 @@ def test_read_lines_queries_the_shared_workspace(monkeypatch):
 
     def az_json(*args):
         calls.append(args)
-        return {"tables": [{"columns": [{"name": "TimeGenerated"}, {"name": "Log_s"}],
-                            "rows": [["2026-09-23T10:00:01.1234567Z", "10:00:01 INFO    hello"]]}]}
+        return {"tables": [{"columns": [{"name": "TimeGenerated"}, {"name": "Log_s"},
+                                        {"name": "ContainerGroupName_s"}],
+                            "rows": [["2026-09-23T10:00:01.1234567Z", "10:00:01 INFO    hello",
+                                      "job-a-x1"]]}]}
 
     monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", az_tsv)
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", az_json)
@@ -126,3 +128,21 @@ def test_logs_says_plainly_when_an_old_run_has_no_lines(monkeypatch, capsys):
     monkeypatch.setattr(deploy_azure_container_apps, "read_lines", lambda *args: [])
     assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS, []) == 0
     assert "Azure Log Analytics has no lines from run 1." in capsys.readouterr().out
+
+
+def test_read_many_asks_log_analytics_once_and_splits_the_rows(monkeypatch):
+    queries = []
+
+    def fake_query(settings, query):
+        queries.append(query)
+        return [["2026-09-23T10:00:00Z", "one", "pdt-job-aaa-x1"],
+                ["2026-09-23T10:00:01Z", "two", "pdt-job-bbb-x2"],
+                ["2026-09-23T10:00:02Z", "three", "pdt-job-aaa-x1"]]
+
+    monkeypatch.setattr(deploy_azure_container_apps, "log_query", fake_query)
+    lines = deploy_azure_container_apps.read_many(SETTINGS, "pdt-job", ["pdt-job-aaa", "pdt-job-bbb"])
+    assert len(queries) == 1
+    assert "ContainerGroupName_s startswith 'pdt-job-aaa' or ContainerGroupName_s startswith 'pdt-job-bbb'" in queries[0]
+    assert [line.message for line in lines["pdt-job-aaa"]] == ["one", "three"]
+    assert [line.message for line in lines["pdt-job-bbb"]] == ["two"]
+    assert deploy_azure_container_apps.read_many(SETTINGS, "pdt-job", []) == {}

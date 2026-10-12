@@ -26,8 +26,8 @@ deploy_azure_container_apps.py.
 The Azure CLI is a Python package, so the script header installs it and
 `az` runs it inside this process. A new `python -m azure.cli` process for
 each call cost 2 to 4 seconds on Windows, and a deploy makes dozens of
-calls. Only the browser login, `az acr build`, and `pdt az` start a
-process, because they stream to the terminal. No system install is
+calls. Only the browser login and `pdt az` start a process, because
+they stream to the terminal. No system install is
 needed. Login state lives in ~/.azure either way. azure-cli pins a few of
 its own dependencies to pre-release versions, so the header allows
 pre-releases; without that, uv before 0.12 refuses to resolve it.
@@ -76,8 +76,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, store_cost_label, store_plan_lines,
-    store_suffix)
+    STORE_TAGS, CostEstimate, fail, fetch_json, secret_contents, store_cost_label,
+    store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
@@ -145,7 +145,7 @@ def run_quiet(*args: str, retry_access: bool = False,
         ))
         internal_error = retry_internal and "internalservererror" in output
         if proc.stderr.strip():
-            console.say(proc.stderr.strip())
+            console.say(console.escape(proc.stderr.strip()))
         if wait == 0 or not (access_error or internal_error):
             break
         reason = ("Azure returned an access error" if access_error
@@ -154,14 +154,9 @@ def run_quiet(*args: str, retry_access: bool = False,
         time.sleep(wait)
     for text, hint in (hints or {}).items():
         if text.lower() in output:
-            console.say(hint)
-    fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
-
-
-def run_stream(*args: str) -> None:
-    proc = subprocess.run([*AZ, *args])
-    if proc.returncode != 0:
-        fail(f"pdt az {' '.join(args[:3])} failed; fix the problem above and re-run")
+            console.say(console.escape(hint))
+    command = "pdt az " + " ".join(args[:4])
+    fail(f"{console.value(command)} failed; fix the problem above and re-run")
 
 
 LOCK_NAME = re.compile(r"Microsoft\.Authorization/locks/([^'\s,]+)", re.IGNORECASE)
@@ -175,8 +170,9 @@ def delete_unless_locked(*args: str) -> str:
     if "scopelocked" in proc.stderr.lower() or LOCK_NAME.search(proc.stderr):
         return ", ".join(sorted(set(LOCK_NAME.findall(proc.stderr)))) or "a lock"
     if proc.stderr.strip():
-        console.say(proc.stderr.strip())
-    fail(f"pdt az {' '.join(args[:4])} failed; fix the problem above and re-run")
+        console.say(console.escape(proc.stderr.strip()))
+    command = "pdt az " + " ".join(args[:4])
+    fail(f"{console.value(command)} failed; fix the problem above and re-run")
 
 
 def az_json(*args: str):
@@ -283,8 +279,8 @@ def preflight(app: dict, settings: dict) -> dict:
     account = az_json("account", "show")
     if not account:
         if not can_ask:
-            fail("no Azure sign-in on this computer; run `az login "
-                 "--service-principal -u <id> -p <secret> --tenant <tenant>` "
+            login_command = "az login --service-principal -u <id> -p <secret> --tenant <tenant>"
+            fail(f"no Azure sign-in on this computer; run `{console.value(login_command)}` "
                  "before this command")
         console.warn("You are not logged in to Azure yet.")
         try:
@@ -304,7 +300,7 @@ def preflight(app: dict, settings: dict) -> dict:
         save_subscription(app, account)
     problem = subscription_problem(account)
     if problem:
-        fail(problem)
+        fail(console.escape(problem))
     settings["subscription"] = str(account["id"])
     # A first deploy learns the subscription here, and its names must match
     # every later deploy that reads the saved one.
@@ -316,7 +312,7 @@ def preflight(app: dict, settings: dict) -> dict:
         deployer_id = object_id_from_token(access_token())
     if not deployer_id:
         fail("cannot determine the signed-in Azure principal; set "
-             "PDT_AZURE_DEPLOYER_OBJECT_ID")
+             f"{console.value('PDT_AZURE_DEPLOYER_OBJECT_ID')}")
     settings["deployer_object_id"] = deployer_id
     settings["deployer_principal_type"] = "User" if is_user else "ServicePrincipal"
     return settings
@@ -357,21 +353,24 @@ def access_token() -> str:
 
 def save_subscription(app: dict, sub: dict) -> None:
     saved = config.save_platform_key(app, "subscription", sub["id"])
-    console.done(f"Saved subscription: {sub['id']} to {saved.relative_to(config.find_project())}.")
+    console.done(f"Saved subscription: {console.value(sub['id'])} to "
+                 f"{console.value(saved.relative_to(config.find_project()))}.")
 
 
 def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
     available = az_json("account", "list", "--all") or []
     if not available:
-        fail(f"your Azure account has no subscription yet; create one at {SUBSCRIPTIONS_URL}")
+        fail("your Azure account has no subscription yet; create one at "
+             f"{console.value(SUBSCRIPTIONS_URL)}")
     for sub in available:
         if requested in (sub.get("id"), sub.get("name")):
             return sub
-    console.warn(f"platform.subscription {requested!r} in pdt.yml is not one of your subscriptions.")
+    console.warn(f"platform.subscription {console.value(repr(requested))} in "
+                 f"{console.value('pdt.yml')} is not one of your subscriptions.")
     if not can_ask:
-        fail("no Azure subscription selected; set platform.subscription in "
-             "pdt.yml, or set PDT_AZURE_SUBSCRIPTION, to a subscription id "
-             "this login can use")
+        fail(f"no Azure subscription selected; set {console.value('platform.subscription')} in "
+             f"{console.value('pdt.yml')}, or set {console.value('PDT_AZURE_SUBSCRIPTION')}, "
+             "to a subscription id this login can use")
     console.heading("Your Azure subscriptions:")
     for index, sub in enumerate(available, 1):
         console.choice(index, str(sub.get("name")), str(sub.get("id")))
@@ -397,18 +396,21 @@ def login(requested: str) -> None:
         return
     output = proc.stdout + proc.stderr
     if "No subscriptions found" not in output:
-        console.say(output.strip())
-        fail("pdt az login failed; fix the problem above and re-run")
+        console.say(console.escape(output.strip()))
+        fail(f"{console.value('pdt az login')} failed; fix the problem above and re-run")
     user = re.search(r"No subscriptions found for (\S+)\.", output)
     who = user.group(1) if user else "your Azure account"
-    console.warn(f"The login worked, but {who} has no Azure subscription.")
+    console.warn(f"The login worked, but {console.value(who)} has no Azure subscription.")
     console.say("Azure bills every resource to a subscription, so deploy cannot continue without one.")
-    console.bullet("1. Create one at https://portal.azure.com/#view/Microsoft_Azure_Billing/SubscriptionsBladeV2")
-    console.bullet("(an Azure free account also works: https://azure.microsoft.com/free).", indent=5)
-    console.bullet("2. Put its Subscription ID in platform.subscription in pdt.yml.")
+    console.bullet(f"1. Create one at {console.value(SUBSCRIPTIONS_URL)}")
+    console.bullet("(an Azure free account also works: "
+                   f"{console.value('https://azure.microsoft.com/free')}).", indent=5)
+    console.bullet(f"2. Put its Subscription ID in {console.value('platform.subscription')} in "
+                   f"{console.value('pdt.yml')}.")
     console.bullet("3. Run the same command again.")
     if requested in output:
-        console.note(f"{requested} in pdt.yml is your tenant (directory) id, not a subscription id.")
+        console.note(f"{console.value(requested)} in {console.value('pdt.yml')} is your tenant "
+                     "(directory) id, not a subscription id.")
     raise SystemExit(1)
 
 
@@ -420,7 +422,8 @@ def relogin(requested: str) -> int:
     account = az_json("account", "show")
     if not account:
         fail("Azure login failed")
-    console.done(f"Signed in as {(account.get('user') or {}).get('name') or 'unknown'}")
+    user = (account.get("user") or {}).get("name") or "unknown"
+    console.done(f"Signed in as {console.value(user)}")
     console.field("Subscription", f"{account.get('name')} ({account.get('id')})")
     return 0
 
@@ -541,39 +544,44 @@ def check_shared_names(settings: dict[str, str]) -> None:
             continue
         label, key = shared
         if resource.get("name") != settings[key]:
-            fail(f"an earlier deploy created the {label} {resource['name']} in Azure. "
-                 f"This deploy would create a second one, {settings[key]}, and leave "
-                 f"the first one unused. This happens when the subscription or the "
-                 f"resource group in {config.PROJECT_FILE} changed after that deploy.\n"
-                 f"If other apps still use {resource['name']}, put the earlier "
-                 f"subscription and resource group back in {config.PROJECT_FILE}.\n"
+            delete_command = f"pdt az resource delete --ids {resource.get('id')}"
+            fail(f"an earlier deploy created the {label} {console.value(resource['name'])} in "
+                 "Azure. "
+                 f"This deploy would create a second one, {console.value(settings[key])}, and "
+                 f"leave the first one unused. This happens when the subscription or the "
+                 f"resource group in {console.value(config.PROJECT_FILE)} changed after that "
+                 f"deploy.\n"
+                 f"If other apps still use {console.value(resource['name'])}, put the earlier "
+                 f"subscription and resource group back in "
+                 f"{console.value(config.PROJECT_FILE)}.\n"
                  f"If nothing uses it, remove it and deploy again:\n"
-                 f"  pdt az resource delete --ids {resource.get('id')}")
+                 f"  {console.value(delete_command)}")
 
 
 def secret_state(settings: dict[str, str], sid: str, app_name: str,
                  wanted: bool) -> tuple[bool, str | None]:
     vault = az_json("keyvault", "show", "--name", settings["vault"],
                     "--resource-group", settings["resource_group"])
-    require_managed(vault, f"Key Vault {settings['vault']}")
+    require_managed(vault, f"Key Vault {console.value(settings['vault'])}")
     vault_exists = vault is not None
     current = None
     if vault_exists and wanted:
         current = az_json("keyvault", "secret", "show", "--vault-name",
                           settings["vault"], "--name", sid)
         if current and not managed_secret(settings, sid, app_name):
-            fail(f"Key Vault secret {sid} already exists but is not owned "
-                 f"by PDT app {app_name}; choose another Key Vault")
+            fail(f"Key Vault secret {console.value(sid)} already exists but is not owned "
+                 f"by PDT app {console.value(app_name)}; choose another Key Vault")
     return vault_exists, current.get("value") if current else None
 
 
 def secret_actions(sid: str, values: dict, current: str | None,
-                   payload: str) -> list[str]:
+                   payload: str) -> list[console.Markup]:
     if not values:
         return []
     state = "unchanged" if current == payload else (
         "update" if current else "create")
-    return [f"{state} Key Vault secret {sid} ({len(values)} env vars)"]
+    return [console.Markup(f"{state} Key Vault secret {console.value(sid)} "
+                           f"({secret_contents(values)})")]
 
 
 def register_providers(names: tuple[str, ...]) -> None:
@@ -582,7 +590,8 @@ def register_providers(names: tuple[str, ...]) -> None:
                          "--query", "registrationState") != "Registered"]
     if not pending:
         return
-    console.step(f"registering Azure providers: {', '.join(pending)}")
+    console.step("registering Azure providers: "
+                 f"{', '.join(console.value(name) for name in pending)}")
     console.bullet("(a new subscription can take several minutes for this)", indent=4)
     for name in pending:
         run_quiet("provider", "register", "--namespace", name)
@@ -594,21 +603,22 @@ def register_providers(names: tuple[str, ...]) -> None:
                    if az_tsv("provider", "show", "--namespace", name,
                              "--query", "registrationState") != "Registered"]
         if pending:
-            console.bullet(f"still waiting after {waited}s for: {', '.join(pending)}", indent=4)
+            console.bullet(f"still waiting after {waited}s for: "
+                           f"{', '.join(console.value(name) for name in pending)}", indent=4)
 
 
 def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
                            vault_exists: bool) -> str:
     rg = settings["resource_group"]
     group = az_json("group", "show", "--name", rg)
-    require_managed(group, f"resource group {rg}")
+    require_managed(group, f"resource group {console.value(rg)}")
     register_providers((*COMMON_PROVIDERS, *providers))
-    console.step(f"reconciling resource group {rg}")
+    console.step(f"reconciling resource group {console.value(rg)}")
     run_quiet("group", "create", "--name", rg, "--location", settings["region"],
               "--tags", "managed-by=pdt")
     if not vault_exists:
         purge_deleted_vault(settings)
-        console.step(f"creating Key Vault {settings['vault']}")
+        console.step(f"creating Key Vault {console.value(settings['vault'])}")
         run_quiet("keyvault", "create", "--name", settings["vault"],
                   "--resource-group", rg, "--location", settings["region"],
                   "--enable-rbac-authorization", "true",
@@ -626,9 +636,9 @@ def purge_deleted_vault(settings: dict[str, str]) -> None:
         return
     tags = (deleted.get("properties") or {}).get("tags") or {}
     if tags.get("managed-by") != "pdt":
-        fail(f"a soft-deleted Key Vault named {settings['vault']} exists but is not "
+        fail(f"a soft-deleted Key Vault named {console.value(settings['vault'])} exists but is not "
              "managed by PDT; purge it or deploy to another subscription")
-    console.step(f"purging soft-deleted Key Vault {settings['vault']}")
+    console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
     run_quiet("keyvault", "purge", "--name", settings["vault"])
 
 
@@ -641,7 +651,7 @@ def workspace_resource(settings: dict) -> dict | None:
 def ensure_workspace(settings: dict, exists: bool) -> tuple[str, str]:
     group = settings["environment"].resource_group
     if not exists:
-        console.step(f"creating Log Analytics workspace {settings['workspace']}")
+        console.step(f"creating Log Analytics workspace {console.value(settings['workspace'])}")
         run_quiet("monitor", "log-analytics", "workspace", "create",
                   "--resource-group", group, "--workspace-name", settings["workspace"],
                   "--location", settings["region"], "--tags", "managed-by=pdt")
@@ -656,8 +666,9 @@ def ensure_workspace(settings: dict, exists: bool) -> tuple[str, str]:
 
 def ensure_shared_group(settings: dict) -> None:
     group = settings["environment"].resource_group
-    require_managed(az_json("group", "show", "--name", group), f"resource group {group}")
-    console.step(f"reconciling resource group {group}")
+    require_managed(az_json("group", "show", "--name", group),
+                    f"resource group {console.value(group)}")
+    console.step(f"reconciling resource group {console.value(group)}")
     run_quiet("group", "create", "--name", group, "--location", settings["region"],
               "--tags", "managed-by=pdt")
 
@@ -672,7 +683,7 @@ def ensure_secret(settings: dict[str, str], sid: str, values: dict,
     if not values:
         return None
     if current != payload:
-        console.step(f"writing Key Vault secret {sid}")
+        console.step(f"writing Key Vault secret {console.value(sid)}")
         uri = set_key_vault_secret(settings["vault"], sid, payload, app_name)
     else:
         uri = az_tsv("keyvault", "secret", "show", "--vault-name", settings["vault"],
@@ -758,7 +769,7 @@ def ensure_action_group(rg: str) -> None:
     receivers = []
     for name, role in SMART_ACTION_ROLES:
         receivers += ["--action", "armrole", name, role]
-    console.step(f"creating action group {SMART_ACTION_GROUP}")
+    console.step(f"creating action group {console.value(SMART_ACTION_GROUP)}")
     run_quiet("monitor", "action-group", "create", "--name", SMART_ACTION_GROUP,
               "--resource-group", rg, "--short-name", SMART_ACTION_SHORT_NAME,
               *receivers, "--tags", "managed-by=pdt")
@@ -805,35 +816,39 @@ def destroy_group(settings: dict[str, str], app_name: str) -> bool:
     rg = settings["resource_group"]
     others = other_pdt_apps(rg, app_name)
     if others:
-        console.note(f"kept: resource group {rg} (apps deployed since the plan: "
-                     f"{', '.join(others)})")
+        console.note(f"kept: resource group {console.value(rg)} (apps deployed since the plan: "
+                     f"{', '.join(console.value(other) for other in others)})")
         return False
-    console.step(f"deleting resource group {rg} (takes a few minutes)")
+    console.step(f"deleting resource group {console.value(rg)} (takes a few minutes)")
     locked = delete_unless_locked("group", "delete", "--name", rg, "--yes")
     if locked:
-        console.note(f"kept: resource group {rg} with its ACR and Key Vault (locked by {locked})")
+        console.note(f"kept: resource group {console.value(rg)} with its ACR and Key Vault "
+                     f"(locked by {console.value(locked)})")
         return False
     if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
-        console.step(f"purging soft-deleted Key Vault {settings['vault']}")
+        console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
         run_quiet("keyvault", "purge", "--name", settings["vault"])
     if az_tsv("group", "exists", "--name", rg) == "false":
-        console.done(f"Nothing remains in resource group {rg}.")
+        console.done(f"Nothing remains in resource group {console.value(rg)}.")
     return True
 
 
 def report_shared_kept(rg: str, others: list[str]) -> None:
     if others:
-        console.note(f"apps still deployed in resource group {rg}: {', '.join(others)}. "
+        console.note(f"apps still deployed in resource group {console.value(rg)}: "
+                     f"{', '.join(console.value(other) for other in others)}. "
                      "Shared resources stay until the last app is destroyed.")
     else:
-        console.note(f"resource group {rg} is not fully owned by PDT, so PDT kept it.")
+        console.note(f"resource group {console.value(rg)} is not fully owned by PDT, so PDT "
+                     "kept it.")
     list_remaining(rg)
 
 
 def list_remaining(rg: str) -> None:
     console.heading("Still present:")
     for resource in az_json("resource", "list", "--resource-group", rg) or []:
-        console.bullet(f"{resource.get('name')}  ({resource.get('type')})")
+        console.bullet(f"{console.value(resource.get('name'))}  "
+                       f"({console.escape(str(resource.get('type')))})")
 
 
 def store_settings(settings: dict[str, str]) -> dict[str, str]:
@@ -856,16 +871,17 @@ def store_url(store: dict[str, str], app_name: str) -> str:
             f"/{app_name}/")
 
 
-def store_description(store: dict[str, str]) -> str:
-    return f"storage account {store['account']}, container {store['container']}"
+def store_description(store: dict[str, str]) -> console.Markup:
+    return console.Markup(f"storage account {console.value(store['account'])}, "
+                          f"container {console.value(store['container'])}")
 
 
 def store_exists(store: dict[str, str]) -> bool:
     group = az_json("group", "show", "--name", store["group"])
-    require_managed(group, f"resource group {store['group']}")
+    require_managed(group, f"resource group {console.value(store['group'])}")
     account = az_json("storage", "account", "show", "--name", store["account"],
                       "--resource-group", store["group"])
-    require_managed(account, f"Storage account {store['account']}")
+    require_managed(account, f"Storage account {console.value(store['account'])}")
     if account is None:
         return False
     container = az_json("storage", "container-rm", "show",
@@ -875,7 +891,7 @@ def store_exists(store: dict[str, str]) -> bool:
         return False
     metadata = container.get("metadata") or {}
     if metadata and metadata.get("managed_by") != "pdt":
-        fail(f"container {store['container']} exists but is not managed by PDT")
+        fail(f"container {console.value(store['container'])} exists but is not managed by PDT")
     return bool(metadata)
 
 
@@ -897,10 +913,10 @@ def store_condition(app_name: str) -> str:
 
 
 def store_plan(store: dict[str, str], exists: bool, app_name: str,
-               identity: str) -> list[str]:
+               identity: str) -> list[console.Markup]:
     return store_plan_lines(store_description(store), exists, identity, app_name) + [
-        f"grant the signed-in Azure account write access to {store['container']} "
-        "(for pdt storage)",
+        console.Markup("grant the signed-in Azure account write access to "
+                       f"{console.value(store['container'])} (for pdt storage)"),
     ]
 
 
@@ -976,7 +992,7 @@ def load_app(app_name: str) -> dict:
     try:
         app = config.merged_app(app_name)
     except config.ConfigError as exc:
-        fail(str(exc))
+        fail(console.escape(str(exc)))
     config.load_env(app["dir"])
     return app
 
@@ -986,7 +1002,8 @@ def main() -> int:
         return subprocess.run([*AZ, *sys.argv[2:]]).returncode
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
-                        choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs"))
+                        choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
+                                 "pause", "unpause", "start"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -1002,8 +1019,13 @@ def main() -> int:
         return module.runs(app, preflight(app, azure_settings(app)), args.rest)
     if args.command == "logs":
         return module.logs(app, preflight(app, azure_settings(app)), args.rest)
+    if args.command in ("pause", "unpause"):
+        return module.pause(app, preflight(app, azure_settings(app)), args.command == "pause")
+    if args.command == "start":
+        return module.start(app, preflight(app, azure_settings(app)))
     if app["timezone"] not in ("Etc/UTC", "UTC"):
-        fail("Azure evaluates cron schedules only in UTC; set timezone: Etc/UTC")
+        fail("Azure evaluates cron schedules only in UTC; set "
+             f"{console.value('timezone: Etc/UTC')}")
     if args.command == "secrets":
         return module.secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
@@ -1012,4 +1034,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    console.json_output()
     sys.exit(main())

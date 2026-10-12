@@ -1,5 +1,6 @@
 import pytest
 
+from conftest import plain
 from pdt import deploy_aws_batch
 from pdt.deploy_aws_batch import (
     COMPUTE_ENVIRONMENT, JOB_QUEUE, ensure_shared, legacy_fargate_cleanup, remove,
@@ -212,7 +213,7 @@ class FakeIam:
 
 
 def lines(plan):
-    return [line for line, _action in plan]
+    return plain([line for line, _action in plan])
 
 
 def test_no_fargate_leftovers_means_no_legacy_plan_lines():

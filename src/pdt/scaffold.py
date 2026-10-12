@@ -80,7 +80,7 @@ This folder is a pdt project: a set of small scheduled jobs. Every folder holdin
 - An app declares its dependencies in the script header at the top of its `run.py`. Its `pdt-cli` pin is the pdt version the app runs with. Keep it at the newest pdt release, and run `pdt deploy <name>` after you raise it, so the deployed job uses it too.
 - List the env vars an app reads under `env:` in its `config.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets. Each `$env:NAME` a PowerShell app's scripts read is required even when `config.yml` does not list it; list it under `env: optional:` when the scripts work without it. The same holds for each `os.environ["NAME"]` a Python app's `.py` files read; `os.environ.get("NAME")` and `os.getenv("NAME")` make it optional. pdt does not find a name that the code builds at run time.
 - Check work with `pdt validate`, try it with `pdt run <name>`, ship it with `pdt deploy <name>`.
-- Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all, `--follow` to wait for a running run's lines); add `--json` to any of them for machine-readable output.
+- Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all, `--follow` to wait for a running run's lines); add `--json` to any of them for machine-readable output. Stop a deployed app's schedule with `pdt pause <name>` (it writes `pause: true` into the app's `config.yml`), start it again with `pdt unpause <name>`, and start one run now with `pdt run <name> --deployed`. `pdt gui` shows the same in a browser.
 - Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
 - A `run.ps1` file is the only entry script. Otherwise, `run_scripts` lists the entry scripts in order, or pdt runs each `.ps1` file that no other `.ps1` file loads in name order. Do not use `run.ps1` and `run_scripts` together.
 - `pdt new <name> --from-scripts` writes `requirements.psd1` (the modules to install) and `run.py` (how the scripts run) into a PowerShell app's folder; once there, `requirements.psd1` replaces the modules pdt finds in the scripts, and `run.py` replaces how pdt runs them.
@@ -208,7 +208,7 @@ def choose_target(requested: str | None, assume_yes: bool) -> Path:
     console.say()
     console.field("This folder", str(here))
     if warning != "":
-        console.warn(f"Careful: {warning}")
+        console.warn(f"Careful: {console.escape(warning)}")
 
     labels = ["Make a new folder inside this one", f"Use this folder ({here.name})", "Cancel"]
     default = 1 if warning != "" else 2
@@ -222,7 +222,7 @@ def choose_target(requested: str | None, assume_yes: bool) -> Path:
         folder = (here / name).resolve()
         if not folder.exists():
             return folder
-        console.warn(f"{folder} already exists. Pick another name.")
+        console.warn(f"{console.value(folder)} already exists. Pick another name.")
 
 
 def ask_platform(assume_yes: bool) -> dict:
@@ -241,7 +241,7 @@ def ask_platform(assume_yes: bool) -> dict:
             problem = check(answer)
             if problem == "":
                 break
-            console.warn(problem)
+            console.warn(console.escape(problem))
         settings[key] = answer
     return settings
 
@@ -284,7 +284,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
     target = choose_target(directory, assume_yes)
     marker = target / PROJECT_FILE
     if marker.is_file():
-        console.say(f"{target} is already a pdt project.")
+        console.say(f"{console.value(target)} is already a pdt project.")
         return 0
     starting_fresh = has_nothing_in_it(target)
 
@@ -301,20 +301,22 @@ def init(directory: str | None, assume_yes: bool) -> int:
         copy_example(target, STARTER, EXAMPLES / STARTER)
 
     console.say()
-    console.done(f"Your project is ready: {target}")
-    console.command(PROJECT_FILE, "settings shared by every app")
-    console.command(".env", "secrets, never committed")
-    console.command(".gitignore")
-    console.command("AGENTS.md", "how an AI agent should work in this project (CLAUDE.md points here)")
+    console.done(f"Your project is ready: {console.value(target)}")
+    files = [(PROJECT_FILE, "settings shared by every app"), (".env", "secrets, never committed"),
+             (".gitignore", ""),
+             ("AGENTS.md", "how an AI agent should work in this project "
+                           f"({console.value('CLAUDE.md')} points here)")]
     if starting_fresh:
-        console.command(f"{STARTER}/", "a working app to run and edit")
+        files.append((f"{STARTER}/", "a working app to run and edit"))
+    console.columns(files)
     console.say()
-    console.heading("Next steps:")
+    steps = []
     if target != Path.cwd().resolve():
-        console.command(f"cd {target.name}")
+        steps.append((f"cd {target.name}", "go to the new project"))
     if starting_fresh:
-        console.command(f"pdt run {STARTER}")
-    console.command("pdt examples", "see what else you can start from")
+        steps.append((f"pdt run {STARTER}", "run the starter app on this computer"))
+    steps.append(("pdt examples", "see what else you can start from"))
+    console.next_steps(steps)
     return 0
 
 
@@ -344,7 +346,7 @@ def summary_of(example: Path) -> str:
 def print_examples() -> None:
     for example in examples():
         console.name(example.name)
-        console.detail(summary_of(example))
+        console.detail(console.escape(summary_of(example)))
         console.say()
 
 
@@ -352,7 +354,7 @@ def list_examples() -> int:
     console.heading("Example apps you can start from:")
     console.say()
     print_examples()
-    console.styled("Copy one with:  [bold]pdt new <name> --from <example>[/]")
+    console.say(f"Copy one with:  {console.value('pdt new <name> --from <example>')}")
     return 0
 
 
@@ -374,19 +376,20 @@ def new_app(name: str, source: str | None) -> int:
         raise ConfigError(
             f"there is no example named {source!r}. Run `pdt examples` to see them.")
     copy_example(root, name, example)
-    console.done(f"Created {name}/ from the {example.name} example.")
-    for job in powershell_scripts(destination) or ["run.py"]:
-        console.command(f"{name}/{job}", "the job itself")
-    console.command(f"{name}/config.yml", "how often it runs and what it needs")
+    console.done(f"Created {console.value(f'{name}/')} from the {console.value(example.name)} "
+                 "example.")
+    files = [(f"{name}/{job}", "the job itself") for job in powershell_scripts(destination) or ["run.py"]]
+    files.append((f"{name}/config.yml", "how often it runs and what it needs"))
     needs_secrets = (destination / "env.template").is_file()
     if needs_secrets:
-        console.command(f"{name}/env.template", "the secrets to copy into .env")
+        files.append((f"{name}/env.template", f"the secrets to copy into {console.value('.env')}"))
+    console.columns(files)
     console.say()
-    console.heading("Next steps:")
     if needs_secrets:
-        console.bullet(f"open {name}/env.template and copy the names you need into .env")
-    console.command("pdt validate")
-    console.command(f"pdt run {name}")
+        console.styled(f"Open {console.value(f'{name}/env.template')} and copy the names you need "
+                       f"into {console.value('.env')}.")
+    console.next_steps([("pdt validate", f"check the config and the {console.value('.env')} values"),
+                        (f"pdt run {name}", "run the app on this computer")])
     return 0
 
 
@@ -415,11 +418,11 @@ def from_scripts(name: str) -> int:
         lines.append(f"    {powershell.quoted(m.name)} = {powershell.quoted(version)}")
     (folder / "requirements.psd1").write_text("\n".join(lines + ["}", ""]))
     (folder / "run.py").write_text(RUN_PY_TEXT.replace("PDT_VERSION", __version__))
-    console.done(f"Wrote requirements.psd1 and run.py for the scripts in {name}/.")
-    console.command(f"{name}/requirements.psd1", "the modules pdt installs before the scripts run")
-    console.command(f"{name}/run.py", "how the scripts run")
+    console.done(f"Wrote {console.value('requirements.psd1')} and {console.value('run.py')} for the "
+                 f"scripts in {console.value(f'{name}/')}.")
+    console.columns([(f"{name}/requirements.psd1", "the modules pdt installs before the scripts run"),
+                     (f"{name}/run.py", "how the scripts run")])
     console.say()
-    console.heading("Next steps:")
-    console.command("pdt validate")
-    console.command(f"pdt run {name}")
+    console.next_steps([("pdt validate", f"check the config and the {console.value('.env')} values"),
+                        (f"pdt run {name}", "run the scripts on this computer")])
     return 0

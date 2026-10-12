@@ -90,8 +90,8 @@ def ensure_gcloud() -> str:
         set_sdk_python()
         return str(LOCAL_GCLOUD)
     key = sdk_platform()
-    console.status(f"Installing the Google Cloud CLI {VERSION} (~150 MB) to {SDK_DIR}. "
-                   "This happens once and can take several minutes...")
+    console.status(f"Installing the Google Cloud CLI {VERSION} (~150 MB) to "
+                   f"{console.value(SDK_DIR)}. This happens once and can take several minutes...")
     console.say("Deleting that folder uninstalls it again.")
     download_sdk(key)
     if not LOCAL_GCLOUD.is_file():
@@ -125,7 +125,7 @@ if __name__ == "__main__":
     try:
         path = ensure_gcloud()
     except GcloudError as e:
-        console.error(str(e))
+        console.error(console.escape(str(e)))
         sys.exit(1)
-    console.say(path)
+    console.say(console.value(path))
     subprocess.run([path, "--version"])

@@ -1,6 +1,7 @@
 import pytest
 from botocore.exceptions import ClientError
 
+from conftest import plain
 from pdt import deploy_aws_batch as batch_deploy
 from pdt.deploy_aws_batch import COMPUTE_ENVIRONMENT, JOB_QUEUE, LEGACY_CLUSTER, REPOSITORY
 
@@ -103,7 +104,7 @@ def fake_clients(batch_raises=None, ecs_raises=None, ecr_raises=None,
 def destroy(monkeypatch):
     notes = []
     monkeypatch.setattr(batch_deploy, "BATCH_WAIT_DELAYS", (0, 0))
-    monkeypatch.setattr(batch_deploy.console, "note", notes.append)
+    monkeypatch.setattr(batch_deploy.console, "note", lambda message: notes.extend(plain([message])))
     monkeypatch.setattr(batch_deploy.console, "done", lambda message: None)
     monkeypatch.setattr(batch_deploy, "ensure_session", lambda app: None)
     monkeypatch.setattr(batch_deploy, "aws_settings",

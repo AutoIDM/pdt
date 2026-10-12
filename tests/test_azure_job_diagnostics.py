@@ -103,6 +103,7 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
     }
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",
                         lambda app, requested: settings)
+    monkeypatch.setattr(deploy_azure_container_apps, "docker_preflight", lambda provider: None)
     monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
     monkeypatch.setattr(deploy_azure_container_apps, "gather_secrets", lambda app: {})
     monkeypatch.setattr(deploy_azure_container_apps, "check_shared_names", lambda settings: None)
@@ -127,7 +128,7 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
 
     with pytest.raises(SystemExit) as error:
         deploy_azure_container_apps.deploy(
-            {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}}, True)
+            {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}, "pause": False}, True)
 
     assert error.value.code == 7
     assert reported and reported[0][1] == deploy_azure_container_apps.job_name(SETTINGS, "report")

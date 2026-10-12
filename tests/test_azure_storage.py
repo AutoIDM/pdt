@@ -1,4 +1,5 @@
 import pytest
+from conftest import plain
 from pdt import deploy_azure
 from pdt.deploy_common import store_name, store_suffix
 
@@ -35,7 +36,7 @@ def test_store_url_names_the_app_folder():
 
 def test_plan_lines_use_the_shared_words():
     store = deploy_azure.store_settings(SETTINGS)
-    create, grant, deployer = deploy_azure.store_plan(store, False, "my-report", "pdt-runner")
+    create, grant, deployer = plain(deploy_azure.store_plan(store, False, "my-report", "pdt-runner"))
     assert create == (f"create storage account {store['account']}, container "
                       f"{store['container']} (kept after destroy)")
     assert grant == (f"grant pdt-runner write access to my-report/ in storage account "

@@ -21,7 +21,7 @@ from pdt import console
 def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
     """Unpack the archive at `url` into `stage` and return `stage`. Raises `error`
     when the download fails or its sha256 is not `sha256`."""
-    console.status(f"downloading {url}")
+    console.status(f"downloading {console.value(url)}")
     digest = hashlib.sha256()
     tmp = tempfile.NamedTemporaryFile(suffix=Path(url).suffix, delete=False)
     tmp_path = Path(tmp.name)
@@ -41,7 +41,7 @@ def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
         if sys.stdout.isatty():
             console.say()
         else:
-            console.status(f"downloaded {Path(url).name}")
+            console.status(f"downloaded {console.value(Path(url).name)}")
         if digest.hexdigest() != sha256:
             raise error(
                 f"checksum mismatch for {url}\n"
@@ -50,7 +50,7 @@ def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
                 f"A newer release may have replaced the pinned one; update VERSION "
                 f"and CHECKSUMS in {error.__module__.replace('.', '/')}.py as its "
                 f"docstring describes")
-        console.status(f"unpacking {Path(url).name}")
+        console.status(f"unpacking {console.value(Path(url).name)}")
         if url.endswith(".zip"):
             with zipfile.ZipFile(tmp_path) as archive:
                 archive.extractall(stage)

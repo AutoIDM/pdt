@@ -80,6 +80,17 @@ def test_runner_runs_an_app_without_run_py_through_the_powershell_wrapper(folder
     assert kwargs["cwd"] == str(app_dir)
 
 
+def test_runner_names_the_run_after_its_log(folders, monkeypatch):
+    app_dir, logs, url = folders
+    calls = []
+    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run(calls, b"", 0))
+
+    assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
+
+    (_command, kwargs), = calls
+    assert kwargs["env"]["PDT_RUN_ID"] == only_log(logs).stem
+
+
 def test_runner_without_uv_logs_exit_127(folders, monkeypatch):
     app_dir, logs, url = folders
 

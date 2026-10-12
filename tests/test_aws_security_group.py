@@ -1,5 +1,6 @@
 import pytest
 
+from conftest import plain
 from pdt import deploy_aws_batch as batch_deploy
 from pdt.deploy_aws_batch import (
     COMPUTE_ENVIRONMENT, SECURITY_GROUP, ensure_compute_environment, ensure_security_group,
@@ -101,11 +102,11 @@ def plan(monkeypatch):
     shown = []
 
     def confirm(actions, assume_yes, estimate):
-        shown.extend(actions)
+        shown.extend(plain(actions))
         return False
 
     for name, value in {
-        "docker_preflight": lambda: None,
+        "docker_preflight": lambda provider: None,
         "ensure_session": lambda app: None,
         "aws_settings": lambda app, session: ("123456789012", "us-east-1"),
         "preflight": lambda *args: ("123456789012", {}),
@@ -122,7 +123,7 @@ def plan(monkeypatch):
                    "secretsmanager": None, "sts": None, "iam": None}
         monkeypatch.setattr(batch_deploy, "batch_clients", lambda session: clients)
         app = {"name": "my-app", "storage": False, "schedule": "0 6 * * *",
-               "timezone": "UTC", "dir": "."}
+               "timezone": "UTC", "dir": ".", "pause": False}
         assert batch_deploy.deploy(app, assume_yes=False) == 1
         return [line for line in shown if "security group" in line]
     return run

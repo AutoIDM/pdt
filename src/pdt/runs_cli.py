@@ -221,11 +221,11 @@ def parse_window(args: argparse.Namespace,
 def say_not_run(app_name: str, args: argparse.Namespace, since: datetime | None,
                 span: timedelta | None) -> None:
     if since is None:
-        console.say(f"{app_name} has not run yet.")
+        console.say(f"{console.value(app_name)} has not run yet.")
     elif span is None:
-        console.say(f"{app_name} has not run since {args.since}.")
+        console.say(f"{console.value(app_name)} has not run since {console.value(args.since)}.")
     else:
-        console.say(f"{app_name} has not run between {local_text(since)} "
+        console.say(f"{console.value(app_name)} has not run between {local_text(since)} "
                     f"and {local_text(since + span)}.")
 
 
@@ -242,20 +242,20 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
     try:
         since, span, count = parse_window(args, datetime.now(UTC))
     except ValueError as exc:
-        console.error(str(exc))
+        console.error(console.escape(str(exc)))
         return 1
     found = window(numbered(list_runs), since, span, count)
     if resolve is not None:
         resolve(found)
     if args.json:
-        console.say(json.dumps([run_json(run) for run in found]))
+        console.data(json.dumps([run_json(run) for run in found]))
         return 0
     if not found:
         say_not_run(app_name, args, since, span)
         return 0
     rows = [[str(run.number), started_text(run), duration_text(run), run.status,
              "-" if run.exit_code is None else str(run.exit_code), run.id] for run in found]
-    row_styles = [["", "", "", console.RUN_STATUS_COLOURS[run.status], "", "dim"]
+    row_styles = [["bold", "", "", console.RUN_STATUS_COLOURS[run.status], "", "dim"]
                   for run in found]
     console.table(["#", "Started", "Duration", "Status", "Exit Code", "Id"], rows,
                   row_styles=row_styles)
@@ -265,9 +265,14 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
 def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Line]],
          app_name: str, rest: list[str],
          resolve: Callable[[list[Run]], None] | None = None,
-         store: str = "the log", delay: timedelta = timedelta(0)) -> int:
+         store: str = "the log", delay: timedelta = timedelta(0),
+         read_many: Callable[[list[Run]], dict[str, list[Line]]] | None = None) -> int:
+    """`--id` may repeat: every named run prints, and `--json` then gives an object
+    keyed by id instead of one run's list. `read_many` reads them in one go for a
+    provider that can, such as one Log Analytics query."""
     parser = argparse.ArgumentParser(prog=f"pdt logs {app_name}")
     parser.add_argument("number", nargs="?", type=int)
+    parser.add_argument("--id", action="append")
     parser.add_argument("--failed", action="store_true")
     parser.add_argument("--errors", action="store_true")
     parser.add_argument("--lines", type=int)
@@ -283,60 +288,86 @@ def logs(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Li
     if args.follow and (args.json or args.head):
         console.error("--follow prints lines as they arrive; drop --json and --head")
         return 1
+    if args.follow and len(args.id or []) > 1:
+        console.error("--follow prints one run's lines as they arrive; name one --id")
+        return 1
     if args.lines is not None and args.lines < 1:
         console.error("--lines must be 1 or more")
         return 1
     try:
         since, span, count = parse_window(args, datetime.now(UTC))
     except ValueError as exc:
-        console.error(str(exc))
+        console.error(console.escape(str(exc)))
         return 1
     found = numbered(list_runs)
     shown = window(found, since, span, count)
-    if not shown and (not found or args.failed or args.number is None):
+    if args.id:
+        chosen = []
+        for wanted in args.id:
+            run = next((run for run in found if run.id == wanted), None)
+            if run is None:
+                console.error(f"pdt runs {console.value(app_name)} knows no run with id "
+                              f"{console.value(wanted)}")
+                return 1
+            chosen.append(run)
+        if resolve is not None:
+            resolve(chosen)
+    elif not shown and (not found or args.failed or args.number is None):
         say_not_run(app_name, args, since, span)
+        if args.json:
+            console.data("[]")
         return 0
-    if args.failed:
+    elif args.failed:
         if resolve is not None:
             resolve(shown)
         failed = [run for run in shown if run.status == "failed"]
         if not failed:
-            console.say(f"{app_name} has no failed run in its last {len(shown)} runs.")
+            console.say(f"{console.value(app_name)} has no failed run in its last "
+                        f"{len(shown)} runs.")
+            if args.json:
+                console.data("[]")
             return 0
-        run = failed[0]
+        chosen = [failed[0]]
     else:
         if args.number is not None and not 1 <= args.number <= len(found):
-            console.error(f"pdt runs {app_name} knows {len(found)} runs; "
+            console.error(f"pdt runs {console.value(app_name)} knows {len(found)} runs; "
                           f"pick a number from 1 to {len(found)}")
             return 1
-        run = shown[0] if args.number is None else found[args.number - 1]
+        chosen = [shown[0] if args.number is None else found[args.number - 1]]
         if resolve is not None:
-            resolve([run])
-    lines = log_lines(read_lines, run, args.errors)
-    total = len(lines)
-    if not args.full:
-        keep = args.lines or TAIL_LINES
-        lines = lines[:keep] if args.head else lines[-keep:]
+            resolve(chosen)
+    if read_many is not None:
+        lines_by_id = read_many(chosen)
+    else:
+        lines_by_id = {run.id: read_lines(run) for run in chosen}
+    output = {}
+    for run in chosen:
+        lines = log_lines(lines_by_id.get(run.id, []), args.errors)
+        total = len(lines)
+        if not args.full:
+            keep = args.lines or TAIL_LINES
+            lines = lines[:keep] if args.head else lines[-keep:]
+        if args.json:
+            output[run.id] = [{"time": line.time.isoformat() if line.time else None,
+                               "level": line.level, "message": line.message}
+                              for line in lines]
+            continue
+        console.heading(console.escape(run_heading(run, app_name)))
+        if len(lines) < total:
+            side = "first" if args.head else "last"
+            console.status(f"the {side} {len(lines)} of {total} lines; add --full for all of them")
+        for line in lines:
+            print_line(line)
+        if args.follow:
+            return follow(list_runs, read_lines, resolve, run, app_name, args.errors, delay)
+        say_lag(run, app_name, total, store, delay)
     if args.json:
-        console.say(json.dumps([{"time": line.time.isoformat() if line.time else None,
-                                 "level": line.level, "message": line.message}
-                                for line in lines]))
-        return 1 if run.status == "failed" else 0
-    console.heading(run_heading(run, app_name))
-    if len(lines) < total:
-        side = "first" if args.head else "last"
-        console.status(f"the {side} {len(lines)} of {total} lines; add --full for all of them")
-    for line in lines:
-        print_line(line)
-    if args.follow:
-        return follow(list_runs, read_lines, resolve, run, app_name, args.errors, delay)
-    say_lag(run, app_name, total, store, delay)
-    return 1 if run.status == "failed" else 0
+        console.data(json.dumps(output if len(args.id or []) > 1 else output[chosen[0].id]))
+    return 1 if any(run.status == "failed" for run in chosen) else 0
 
 
-def log_lines(read_lines: Callable[[Run], list[Line]], run: Run, errors: bool) -> list[Line]:
-    lines = in_time_order([line for line in read_lines(run)
-                           if not line.message.startswith(EXIT_MARKER)])
+def log_lines(lines: list[Line], errors: bool) -> list[Line]:
+    lines = in_time_order([line for line in lines if not line.message.startswith(EXIT_MARKER)])
     if errors:
         lines = [line for line in lines if line.level not in ("DEBUG", "INFO")]
     return lines
@@ -363,22 +394,24 @@ def say_lag(run: Run, app_name: str, total: int, store: str, delay: timedelta) -
     again = f"pdt logs {app_name} {run.number}"
     if run.status == "running":
         if total == 0:
-            console.note(f"run {run.number} is still running, and {store} has no lines "
-                         "from it yet.")
+            console.note(f"run {console.value(run.number)} is still running, and {store} "
+                         "has no lines from it yet.")
         else:
-            console.note(f"run {run.number} is still running, so more lines will come.")
+            console.note(f"run {console.value(run.number)} is still running, "
+                         "so more lines will come.")
         console.command(f"{again} --follow", "print each line as it arrives")
         return
     settled = None if run.ended is None else run.ended + delay
     if settled is not None and datetime.now(UTC) < settled:
-        console.note(f"run {run.number} ended at {local_text(run.ended, '%H:%M:%S')}, and "
+        console.note(f"run {console.value(run.number)} ended at "
+                     f"{local_text(run.ended, '%H:%M:%S')}, and "
                      f"{store} can take up to {minutes_text(delay)} to show a line, so "
                      f"{'no lines are' if total == 0 else 'the last lines may not be'} "
                      "there yet.")
         console.command(f"{again} --follow",
                         f"wait for them, until {local_text(settled, '%H:%M:%S')}")
     elif total == 0:
-        console.note(f"{store} has no lines from run {run.number}.")
+        console.note(f"{store} has no lines from run {console.value(run.number)}.")
 
 
 def follow(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Line]],
@@ -388,8 +421,9 @@ def follow(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[
     # A count per distinct line, so a line the job printed twice prints twice, and a
     # line the store shows late, between two older ones, still prints.
     seen = Counter((line.time, line.level, line.message)
-                   for line in log_lines(read_lines, run, errors))
-    console.status(f"waiting for new lines of run {run.number}; press Ctrl+C to stop")
+                   for line in log_lines(read_lines(run), errors))
+    console.status(f"waiting for new lines of run {console.value(run.number)}; "
+                   "press Ctrl+C to stop")
     try:
         while run.status == "running" or run.ended is None or (
                 datetime.now(UTC) < run.ended + delay):
@@ -400,7 +434,7 @@ def follow(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[
                     resolve([current])
                 run = dataclasses.replace(current, number=run.number)
             now_seen = Counter()
-            for line in log_lines(read_lines, run, errors):
+            for line in log_lines(read_lines(run), errors):
                 key = (line.time, line.level, line.message)
                 now_seen[key] += 1
                 if now_seen[key] > seen[key]:
@@ -411,7 +445,7 @@ def follow(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[
     except KeyboardInterrupt:
         console.say()
         return 130
-    console.heading(run_heading(run, app_name))
+    console.heading(console.escape(run_heading(run, app_name)))
     return 1 if run.status == "failed" else 0
 
 
@@ -432,7 +466,7 @@ def health(app_runs: dict[str, list[Run] | None], as_json: bool) -> int:
     """One row per app. `None` stands for an app whose runs could not be read."""
     rows = [health_row(app_name, found) for app_name, found in app_runs.items()]
     if as_json:
-        console.say(json.dumps(rows))
+        console.data(json.dumps(rows))
     else:
         console.table(
             ["App", "Status", "Last run", "Recent"],
