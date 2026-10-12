@@ -514,7 +514,7 @@ def test_logs_reads_an_ended_run_from_the_store(capsys):
 
 def test_follow_prints_a_running_run_from_its_live_log_in_order(monkeypatch, capsys):
     ended = dataclasses.replace(RUNNING, ended=T1, status="succeeded")
-    states = iter([[RUNNING], [RUNNING], [RUNNING], [ended]])
+    states = iter([[RUNNING], [RUNNING], [RUNNING]])
     first = [Line(T0, "INFO", "started")]
     stream = live_stream(first, [
         [],  # the container has not started yet
@@ -530,10 +530,10 @@ def test_follow_prints_a_running_run_from_its_live_log_in_order(monkeypatch, cap
     assert out.count("row") == 2
     assert out.index("row") < out.index("done")
     assert "pdt: exit" not in out
-    # The provider records no exit code yet, so the exit line gives it.
+    # The provider still shows the run as running, so the exit line gives its end.
     assert out.rstrip().endswith("12s, succeeded, exit 0")
-    # One wait for the container to start, one for the provider to record that the run ended.
-    assert sleeps == [runs_cli.FOLLOW_SECONDS] * 2
+    # One wait for the container to start; none for the provider to record the end.
+    assert sleeps == [runs_cli.FOLLOW_SECONDS]
 
 
 def test_follow_reads_the_store_when_the_live_log_fails(monkeypatch, capsys):
@@ -574,8 +574,9 @@ def test_follow_holds_a_store_line_until_it_is_old_enough_to_print_in_order(monk
     reads = iter([[], [newer], [late, newer], [late, newer, done, exit_line]])
     ended = dataclasses.replace(RUNNING, ended=T0 + timedelta(seconds=9), status="succeeded")
     states = iter([[RUNNING], [RUNNING], [ended]])
-    Clock.moments = [T0, T0 + timedelta(seconds=10), T0 + timedelta(seconds=15),
-                     T0 + timedelta(seconds=20)]
+    window = runs_cli.ORDER_WINDOW
+    Clock.moments = [T0, T0 + window, T0 + window + timedelta(seconds=5),
+                     T0 + window + timedelta(seconds=10)]
     monkeypatch.setattr(runs_cli, "datetime", Clock)
     monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
     assert runs_cli.follow(lambda: next(states), lambda run: next(reads), None, RUNNING,
@@ -585,17 +586,32 @@ def test_follow_holds_a_store_line_until_it_is_old_enough_to_print_in_order(monk
 
 
 def test_follow_stops_at_the_exit_line_without_waiting_for_the_store_delay(monkeypatch, capsys):
-    now = datetime.now(UTC)
-    ended = dataclasses.replace(RUNNING, ended=now, status="failed", exit_code=2)
-    states = iter([[RUNNING], [ended]])
+    written = datetime.now(UTC) - runs_cli.ORDER_WINDOW
     first = [Line(T0, "INFO", "started")]
-    after = [*first, Line(now, "ERROR", "boom"), Line(now, "", "pdt: exit 2")]
+    after = [*first, Line(written, "ERROR", "boom"), Line(written, "", "pdt: exit 2")]
     sleeps = []
     monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
-    assert runs_cli.logs(lambda: next(states), lambda run: after if sleeps else first, "report",
+    # The provider still shows the run as running; the exit line ends it.
+    assert runs_cli.logs(lambda: [RUNNING], lambda run: after if sleeps else first, "report",
                          ["--follow"], delay=timedelta(minutes=5)) == 1
-    assert "boom" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "boom" in out
+    assert out.rstrip().endswith("failed, exit 2")
     assert sleeps == [runs_cli.FOLLOW_SECONDS]
+
+
+def test_follow_waits_for_late_lines_after_a_new_exit_line(monkeypatch, capsys):
+    now = datetime.now(UTC)
+    first = [Line(T0, "INFO", "started")]
+    late = Line(now - timedelta(seconds=1), "INFO", "late")
+    exit_line = Line(now, "", "pdt: exit 0")
+    reads = iter([first, [*first, exit_line], [*first, late, exit_line]])
+    Clock.moments = [now, now + timedelta(seconds=5), now + runs_cli.ORDER_WINDOW]
+    monkeypatch.setattr(runs_cli, "datetime", Clock)
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.follow(lambda: [RUNNING], lambda run: next(reads), None, RUNNING, "report",
+                           False, timedelta(minutes=5), shown=first) == 0
+    assert "late" in capsys.readouterr().out
 
 
 def test_an_ended_run_with_its_exit_line_needs_no_wait_note(capsys):
@@ -616,10 +632,11 @@ def test_an_ended_run_without_its_exit_line_says_the_last_lines_may_be_missing(c
 
 def test_follow_prints_a_line_written_after_logs_read_the_store_without_a_wait(monkeypatch,
                                                                               capsys):
-    now = datetime.now(UTC)
-    ended = dataclasses.replace(RUNNING, ended=now, status="succeeded", exit_code=0)
+    written = datetime.now(UTC) - runs_cli.ORDER_WINDOW
+    ended = dataclasses.replace(RUNNING, ended=written, status="succeeded", exit_code=0)
     first = [Line(T0, "INFO", "started")]
-    reads = iter([first, [*first, Line(now, "INFO", "between"), Line(now, "", "pdt: exit 0")]])
+    reads = iter([first, [*first, Line(written, "INFO", "between"),
+                          Line(written, "", "pdt: exit 0")]])
     sleeps = []
     monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
     assert runs_cli.logs(lambda: [ended], lambda run: next(reads), "report", ["--follow"],

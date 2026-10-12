@@ -1096,11 +1096,14 @@ def exit_codes(project: str, job: str, count: int) -> dict[str, int]:
 
 
 def read_lines(project: str, execution_id: str) -> list[runs_cli.Line]:
+    """Every line the execution's container wrote. With no --limit, gcloud reads every
+    page. The two logs leave out Cloud Run's own entries, such as its audit entry."""
     entries = describe_json(
         "logging", "read",
         f'resource.type="cloud_run_job" AND '
-        f'labels."run.googleapis.com/execution_name"="{execution_id}"',
-        "--project", project, "--order", "asc", "--limit", "5000")
+        f'labels."run.googleapis.com/execution_name"="{execution_id}" AND '
+        f'(log_id("run.googleapis.com/stdout") OR log_id("run.googleapis.com/stderr"))',
+        "--project", project, "--order", "asc")
     if not entries:
         return []
     lines = []

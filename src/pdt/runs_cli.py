@@ -13,14 +13,19 @@ gives `stream(run, follow)`, which yields the lines the container has written,
 and with `follow` keeps yielding them until the container exits. `pdt logs`
 reads a running run from the stream and an ended run from the store. Only
 Azure gives a stream: Log Analytics shows a line a minute or more after the
-job writes it. AWS Batch and Cloud Run jobs send a container's console only to
-CloudWatch Logs and Cloud Logging, so for them the store is the only source.
+job writes it. CloudWatch Logs shows a line within seconds, and Cloud Logging
+within half a minute, so AWS and Google Cloud read the store. Their live APIs
+are not worth what they cost here: CloudWatch Logs Live Tail sends only the
+lines it takes in after the session starts, samples them above 500 a second,
+and bills each minute; Cloud Logging's TailLogEntries works only over gRPC.
 
 `--follow` prints from the stream while the run runs. Without a stream, it
 reads the store again every FOLLOW_SECONDS, and prints a line only when it is
 ORDER_WINDOW old, so a line the store shows late still prints in time order.
-It stops when the store has the run's exit line, or when the delay has passed
-after the run ended.
+It stops when the run's exit line is ORDER_WINDOW old, or when the delay has
+passed after the run ended without one. A stream stops at the exit line. Both
+take the run's status and exit code from the exit line when the provider does
+not show the end yet.
 
 A run's number is its place in the full list, starting at 1. A window
 (`--since`, `--span`, `--count`) picks which runs print and never renumbers.
@@ -48,8 +53,9 @@ FOLLOW_SECONDS = 10
 # AWS and Google document no maximum. The windows provider reads a local file, with no delay.
 LOG_DELAY = timedelta(minutes=5)
 # How long --follow holds a line from a log store before it prints it, so that a line the
-# store shows a few seconds late prints before a newer line, not after it.
-ORDER_WINDOW = timedelta(seconds=10)
+# store shows late prints before a newer line, not after it. Measured in October 2026:
+# CloudWatch Logs showed a line at most 7 s after the job wrote it, Cloud Logging 25 s.
+ORDER_WINDOW = timedelta(seconds=30)
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
 SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
                "or a date and time (2026-09-20T14:00)")
@@ -510,49 +516,65 @@ def follow_stream(list_runs: Callable[[], list[Run]],
     Returns the lines seen, None when the stream failed before it gave any, and the
     run as the provider shows it last. A run that is still running after this
     returns had its stream fail."""
-    code = None
+    exit_line = None
     try:
         if seen is None:
             seen = Counter(line_key(line) for line in stream(run, False))
-        while run.status == "running":
-            if code is None:
-                now_seen = Counter()
-                for line in stream(run, True):
-                    key = line_key(line)
-                    now_seen[key] += 1
-                    if now_seen[key] <= seen[key]:
-                        continue
-                    seen[key] = now_seen[key]
-                    if line.message.startswith(EXIT_MARKER):
-                        code = exit_code([line])
-                    elif not errors or line.level not in ("DEBUG", "INFO"):
-                        print_line(line)
+        while run.status == "running" and exit_line is None:
+            now_seen = Counter()
+            for line in stream(run, True):
+                key = line_key(line)
+                now_seen[key] += 1
+                if now_seen[key] <= seen[key]:
+                    continue
+                seen[key] = now_seen[key]
+                if line.message.startswith(EXIT_MARKER):
+                    exit_line = line
+                elif not errors or line.level not in ("DEBUG", "INFO"):
+                    print_line(line)
             # The container has exited, or has not started yet; the run's status says which.
             run = latest(list_runs, resolve, run)
-            if run.status == "running":
+            if run.status == "running" and exit_line is None:
                 time.sleep(FOLLOW_SECONDS)
     except StreamError as exc:
         console.warn(f"pdt cannot read the live log of run {console.value(run.number)}, "
                      f"so it reads {store}: {console.escape(str(exc))}")
         return seen, run
+    return seen, ended_by(run, exit_line)
+
+
+def ended_by(run: Run, exit_line: Line | None) -> Run:
+    """`run` with the status, end, and exit code its exit line gives, where the provider
+    does not show them yet: a provider shows the end of a run some seconds after the
+    job writes its exit line."""
+    if exit_line is None:
+        return run
+    code = exit_code([exit_line])
+    if run.status == "running":
+        run = dataclasses.replace(run, status="succeeded" if code == 0 else "failed",
+                                  ended=exit_line.time or datetime.now(UTC))
     if run.exit_code is None:
         run = dataclasses.replace(run, exit_code=code)
-    return seen, run
+    return run
 
 
 def follow_store(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run], list[Line]],
                  resolve: Callable[[list[Run]], None] | None, run: Run, errors: bool,
                  delay: timedelta, seen: Counter | None) -> Run:
     """Print each new line of `run` from its log store, in time order, until the store
-    has the run's exit line, or `delay` has passed since the run ended."""
+    has had the run's exit line for ORDER_WINDOW, or `delay` has passed since the run
+    ended."""
     held = []
     while True:
         raw = read_lines(run)
         if seen is None:
             seen = Counter(line_key(line) for line in raw)
         now = datetime.now(UTC)
-        done = run.status != "running" and (
-            run.ended is None or exit_code(raw) is not None or now >= run.ended + delay)
+        exit_line = next((line for line in reversed(raw)
+                          if line.message.startswith(EXIT_MARKER)), None)
+        done = (exit_line is not None and (
+            exit_line.time is None or exit_line.time <= now - ORDER_WINDOW)) or (
+            run.status != "running" and (run.ended is None or now >= run.ended + delay))
         now_seen = Counter()
         for line in log_lines(raw, errors):
             key = line_key(line)
@@ -570,7 +592,7 @@ def follow_store(list_runs: Callable[[], list[Run]], read_lines: Callable[[Run],
         for line in in_time_order(ready):
             print_line(line)
         if done:
-            return run
+            return ended_by(run, exit_line)
         time.sleep(FOLLOW_SECONDS)
         run = latest(list_runs, resolve, run)
 

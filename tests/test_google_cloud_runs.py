@@ -152,3 +152,18 @@ def test_read_lines_builds_from_json_and_text_payloads(monkeypatch):
 def test_read_lines_with_no_entries_is_empty(monkeypatch):
     monkeypatch.setattr(deploy_google_cloud, "describe_json", lambda *a: None)
     assert deploy_google_cloud.read_lines("p", "pdt-app-abcde") == []
+
+
+def test_read_lines_reads_every_entry_of_the_container_logs(monkeypatch):
+    calls = []
+
+    def describe_json(*args):
+        calls.append(args)
+        return [{"timestamp": "2026-09-23T10:00:01Z", "textPayload": f"line {number}"}
+                for number in range(6000)]
+
+    monkeypatch.setattr(deploy_google_cloud, "describe_json", describe_json)
+    assert len(deploy_google_cloud.read_lines("p", "pdt-app-abcde")) == 6000
+    [call] = calls
+    assert "--limit" not in call
+    assert 'log_id("run.googleapis.com/stdout") OR log_id("run.googleapis.com/stderr")' in call[2]
