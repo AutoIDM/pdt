@@ -1,5 +1,8 @@
 import datetime
+import http.client
 import json
+import subprocess
+import urllib.request
 
 import pytest
 
@@ -23,11 +26,15 @@ def fake_az(monkeypatch, execs, marker_rows=()):
 
     def az_json(*args):
         calls.append(args)
-        if args[0] == "containerapp":
-            return execs
-        return {"tables": [{"rows": [list(row) for row in marker_rows]}]}
+        return execs
+
+    def az(*args):
+        calls.append(args)
+        rows = {"tables": [{"rows": [list(row) for row in marker_rows]}]}
+        return subprocess.CompletedProcess(args, 0, json.dumps(rows), "")
 
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", az_json)
+    monkeypatch.setattr(deploy_azure_container_apps, "az", az)
     monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "workspace-id")
     return calls
 
@@ -89,15 +96,16 @@ def test_read_lines_queries_the_shared_workspace(monkeypatch):
         calls.append(args)
         return "workspace-customer-id"
 
-    def az_json(*args):
+    def az(*args):
         calls.append(args)
-        return {"tables": [{"columns": [{"name": "TimeGenerated"}, {"name": "Log_s"},
-                                        {"name": "ContainerGroupName_s"}],
-                            "rows": [["2026-09-23T10:00:01.1234567Z", "10:00:01 INFO    hello",
-                                      "job-a-x1"]]}]}
+        return subprocess.CompletedProcess(args, 0, json.dumps(
+            {"tables": [{"columns": [{"name": "TimeGenerated"}, {"name": "Log_s"},
+                                     {"name": "ContainerGroupName_s"}],
+                         "rows": [["2026-09-23T10:00:01.1234567Z", "10:00:01 INFO    hello",
+                                   "job-a-x1"]]}]}), "")
 
     monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", az_tsv)
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json", az_json)
+    monkeypatch.setattr(deploy_azure_container_apps, "az", az)
     lines = deploy_azure_container_apps.read_lines(SETTINGS, "pdt-report", "job-a")
     assert lines == [runs_cli.Line(
         datetime.datetime(2026, 9, 23, 10, 0, 1, 123456, tzinfo=datetime.UTC), "INFO", "hello")]
@@ -155,8 +163,22 @@ def test_read_many_orders_lines_by_the_time_the_container_wrote_them(monkeypatch
     monkeypatch.setattr(deploy_azure_container_apps, "log_query",
                         lambda settings, query: queries.append(query) or [])
     deploy_azure_container_apps.read_many(SETTINGS, "pdt-job", ["pdt-job-aaa"])
-    assert "extend written = coalesce(time_t, TimeGenerated)" in queries[0]
+    assert ("extend written = coalesce(column_ifexists('time_t', datetime(null)), "
+            "TimeGenerated)") in queries[0]
     assert queries[0].endswith("| order by written asc")
+    deploy_azure_container_apps.read_many(
+        SETTINGS, "pdt-job", ["pdt-job-aaa"],
+        datetime.datetime(2026, 10, 9, 21, 15, 44, 479505, tzinfo=datetime.UTC))
+    assert "| where written >= datetime(2026-10-09T21:15:44.479505Z) |" in queries[1]
+
+
+def test_a_failed_log_analytics_query_warns(monkeypatch, capsys):
+    monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "workspace-id")
+    monkeypatch.setattr(deploy_azure_container_apps, "az", lambda *args: subprocess.CompletedProcess(
+        args, 1, "", "ERROR: (BadArgumentError) Failed to resolve table or column expression"))
+    assert deploy_azure_container_apps.read_lines(SETTINGS, "pdt-report", "job-a") == []
+    assert ("Azure Log Analytics did not answer: ERROR: (BadArgumentError) Failed to resolve "
+            "table or column expression") in capsys.readouterr().out
 
 
 STREAM_SETTINGS = {**SETTINGS, "subscription": "123456789012"}
@@ -182,14 +204,18 @@ class Response:
         return iter(self.rows)
 
 
-def fake_stream_api(monkeypatch, replicas, body=b"", calls=None):
-    def az_json(*args):
+def fake_stream_api(monkeypatch, replicas, body=b"", calls=None, job=JOB):
+    def az(*args):
         url = args[args.index("--url") + 1]
         if "/replicas?" in url:
-            return replicas
-        if "/getAuthToken?" in url:
-            return {"properties": {"token": "stream-token"}}
-        return JOB
+            answer = replicas
+        elif "/getAuthToken?" in url:
+            answer = {"properties": {"token": "stream-token"}}
+        else:
+            answer = job
+        if isinstance(answer, str):
+            return subprocess.CompletedProcess(args, 1, "", answer)
+        return subprocess.CompletedProcess(args, 0, json.dumps(answer), "")
 
     def urlopen(request, timeout):
         if calls is not None:
@@ -198,8 +224,8 @@ def fake_stream_api(monkeypatch, replicas, body=b"", calls=None):
             raise body
         return Response(body)
 
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json", az_json)
-    monkeypatch.setattr(deploy_azure_container_apps.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(deploy_azure_container_apps, "az", az)
+    monkeypatch.setattr(deploy_azure_container_apps.STREAM_OPENER, "open", urlopen)
 
 
 def test_stream_lines_reads_the_container_log_with_its_own_times(monkeypatch):
@@ -217,7 +243,7 @@ def test_stream_lines_reads_the_container_log_with_its_own_times(monkeypatch):
     [(url, authorization, _timeout)] = calls
     assert url == ("https://eastus2.azurecontainerapps.dev/subscriptions/123456789012"
                    "/resourceGroups/pdt/jobs/pdt-report/executions/pdt-report-x1"
-                   "/replicas/pdt-report-x1-abc/containers/pdt-report/logstream?follow=true")
+                   "/replicas/pdt-report-x1-abc/containers/pdt-report/logstream?follow=true&output=text")
     assert authorization == "Bearer stream-token"
 
 
@@ -236,11 +262,64 @@ def test_a_quiet_stream_ends_so_follow_opens_it_again(monkeypatch):
 
 
 def test_a_stream_that_azure_refuses_is_a_stream_error(monkeypatch):
-    fake_stream_api(monkeypatch, None)
-    with pytest.raises(runs_cli.StreamError, match="pdt-report"):
+    fake_stream_api(monkeypatch, "ERROR: (ResourceNotFound) The Resource was not found.")
+    with pytest.raises(runs_cli.StreamError, match="ResourceNotFound"):
         list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
                                                       RUNNING_RUN, True))
     fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, ConnectionResetError("reset"))
     with pytest.raises(runs_cli.StreamError, match="reset"):
         list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
                                                       RUNNING_RUN, True))
+
+
+@pytest.mark.parametrize("body, job", [
+    (http.client.IncompleteRead(b"2026-10-09T21:15:44Z stdout F li"), JOB),
+    (b"2026-10-99T21:15:44.4795058Z stdout F a line with no real time\n", JOB),
+    (b"", {"properties": {"template": {"containers": [{"name": "pdt-report"}]}}}),
+])
+def test_a_stream_azure_breaks_off_or_sends_malformed_is_a_stream_error(monkeypatch, body, job):
+    fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, body, job=job)
+    with pytest.raises(runs_cli.StreamError):
+        list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                      RUNNING_RUN, True))
+
+
+def test_a_stream_this_account_may_not_open_names_the_action_and_the_role(monkeypatch):
+    fake_stream_api(monkeypatch, "ERROR: (AuthorizationFailed) The client 'someone' does not have "
+                                 "authorization to perform action "
+                                 "'Microsoft.App/jobs/getAuthToken/action' over scope '/x'")
+    with pytest.raises(runs_cli.StreamError) as raised:
+        list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                      RUNNING_RUN, True))
+    assert str(raised.value) == (
+        "your Azure account may not perform Microsoft.App/jobs/getAuthToken/action on job "
+        "pdt-report; the role Container Apps Jobs Operator on the job allows it")
+
+
+def test_stream_lines_joins_the_parts_of_a_long_line(monkeypatch):
+    body = (b"2026-10-09T21:15:44.1000000Z stdout P first half, \n"
+            b"2026-10-09T21:15:44.2000000Z stdout F second half\n"
+            b"2026-10-09T21:15:45.0000000Z stdout F next\n")
+    fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, body)
+    lines = list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                          RUNNING_RUN, True))
+    assert [line.message for line in lines] == ["first half, second half", "next"]
+
+
+def test_the_log_stream_follows_no_redirect():
+    request = urllib.request.Request("https://eastus2.azurecontainerapps.dev/logstream",
+                                     headers={"Authorization": "Bearer stream-token"})
+    handler = deploy_azure_container_apps.NoRedirect()
+    assert handler.redirect_request(request, None, 302, "Found", {},
+                                    "https://elsewhere.example/") is None
+
+
+def test_a_recorded_stream_line_and_its_log_analytics_row_are_the_same_line(monkeypatch):
+    body = b"2026-10-09T21:15:44.4795058Z stdout F line 0001 burst 0\n"
+    fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, body)
+    [streamed] = deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                          RUNNING_RUN, False)
+    monkeypatch.setattr(deploy_azure_container_apps, "log_query", lambda settings, query: [
+        ["2026-10-09T21:15:44.4795058Z", "line 0001 burst 0", "pdt-report-x1-abc"]])
+    [stored] = deploy_azure_container_apps.read_lines(SETTINGS, "pdt-report", "pdt-report-x1")
+    assert runs_cli.line_key(streamed) == runs_cli.line_key(stored)
