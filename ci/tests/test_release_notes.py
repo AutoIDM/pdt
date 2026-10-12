@@ -1,6 +1,7 @@
 """release_notes.py: grouping by Conventional Commits type and the summary."""
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -96,3 +97,60 @@ def test_a_release_pr_without_a_summary_warns_and_starts_with_the_list(capsys):
     text = notes.render(items, REPO, "v0.1.9", "v0.2.0")
     assert text.startswith("## Breaking changes\n")
     assert capsys.readouterr().err.startswith("::warning title=Release notes::")
+
+
+def test_a_bot_and_an_empty_author_get_no_credit():
+    items = [change("fix: a", 1), change("fix: b", 2), change("fix: c", 3, author="dependabot[bot]"),
+             change("fix: d", None, author="")]
+    assert "by @" not in notes.render(items, REPO, "v0.1.9", "v0.2.0")
+
+
+def test_no_previous_tag_omits_the_compare_link():
+    assert "compare" not in notes.render([change("fix: a", 1)], REPO, "", "v0.1.0")
+
+
+def fake_gh(responses):
+    def gh(path, *args):
+        return responses[path]
+    return gh
+
+
+def pr(number, title, author="jon"):
+    return {"number": number, "title": title, "body": None, "user": {"login": author},
+            "merged_at": "2026-10-12T00:00:00Z"}
+
+
+def commit(message, files, author="jon"):
+    return json.dumps({"commit": {"message": message}, "author": {"login": author} if author else None,
+                       "files": [{"status": "modified", "filename": name} for name in files]})
+
+
+def test_a_merge_commit_pr_is_listed_once_with_the_merge_commit_files(monkeypatch):
+    merged = json.dumps([pr(20, "feat(gui): add a page")])
+    responses = {
+        "repos/AutoIDM/pdt/compare/v0.1.9...v0.2.0?per_page=100": "s1\nb1\nb2\nb3\nm1\nd1\n",
+        "repos/AutoIDM/pdt/commits/s1/pulls": json.dumps([pr(19, "fix: squash", "visch")]),
+        "repos/AutoIDM/pdt/commits/s1": commit("fix: squash (#19)", ["a.py"]),
+        "repos/AutoIDM/pdt/commits/d1/pulls": "[]",
+        "repos/AutoIDM/pdt/commits/d1": commit("docs: direct push\n\nBody.", ["README.md"], author=""),
+        "repos/AutoIDM/pdt/commits/m1/pulls": merged,
+        "repos/AutoIDM/pdt/commits/m1": commit("Merge pull request #20", ["b.py", "c.py", "d.py"]),
+    }
+    for sha in ("b1", "b2", "b3"):
+        responses[f"repos/AutoIDM/pdt/commits/{sha}/pulls"] = merged
+    monkeypatch.setattr(notes, "gh", fake_gh(responses))
+    changes = notes.fetch(REPO, "v0.1.9", "v0.2.0")
+    assert [(c.title, c.number, c.author) for c in changes] == [
+        ("docs: direct push", None, ""), ("feat(gui): add a page", 20, "jon"), ("fix: squash", 19, "visch")]
+    assert [path for _, path in changes[1].files] == ["b.py", "c.py", "d.py"]
+
+
+def test_no_previous_tag_lists_the_history_of_the_tag(monkeypatch):
+    monkeypatch.setattr(notes, "gh", fake_gh({
+        "repos/AutoIDM/pdt/commits?sha=v0.1.0&per_page=100": "c2\nc1\n",
+        "repos/AutoIDM/pdt/commits/c2/pulls": json.dumps([pr(2, "feat: second")]),
+        "repos/AutoIDM/pdt/commits/c2": commit("feat: second (#2)", ["a.py"]),
+        "repos/AutoIDM/pdt/commits/c1/pulls": json.dumps([pr(1, "feat: first")]),
+        "repos/AutoIDM/pdt/commits/c1": commit("feat: first (#1)", ["a.py"]),
+    }))
+    assert [c.number for c in notes.fetch(REPO, "", "v0.1.0")] == [2, 1]
