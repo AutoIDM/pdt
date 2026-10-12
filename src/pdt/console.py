@@ -37,6 +37,9 @@ _console = Console(highlight=False, soft_wrap=True, emoji=False)
 # The real stdout, for `data`, once `json_output` has moved stdout to stderr.
 _data = None
 
+# Each message `warn_once` has printed in this process.
+_warned: set[str] = set()
+
 INDENT = 6
 
 
@@ -116,6 +119,14 @@ def note(message: str) -> None:
 def warn(message: str) -> None:
     """A caution with no label, such as a re-prompt after a bad answer."""
     _console.print(f"[yellow]{message}[/]")
+
+
+def warn_once(message: str) -> None:
+    """A caution that a command may meet again and again, such as a failed read in each
+    poll of `pdt logs --follow`: only its first time prints."""
+    if message not in _warned:
+        _warned.add(message)
+        warn(message)
 
 
 def step(message: str) -> None:

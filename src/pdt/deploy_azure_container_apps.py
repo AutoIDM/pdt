@@ -31,9 +31,12 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import hashlib
+import http.client
 import json
 import re
 import shutil
+import urllib.request
+from typing import Iterator
 
 from pdt import config, console, regions, runs_cli
 from pdt.deploy import confirm
@@ -280,6 +283,24 @@ LOG_ANALYTICS_API = "https://api.loganalytics.io"
 # from this api-version on, and it is what reports properties.runningState.
 MANAGEMENT_API = "https://management.azure.com"
 JOBS_API_VERSION = "2026-07-01"
+# A running execution's replicas, and the token for the job's log stream, exist only
+# in this preview api-version, the one `az containerapp job logs show` uses.
+LOG_STREAM_API_VERSION = "2023-11-02-preview"
+# One line of the log stream: the container runtime's time, stdout or stderr, F for a
+# whole line or P for part of a long one, and the text the container wrote.
+STREAM_LINE = re.compile(r"(\S+Z) (stdout|stderr) ([FP]) ?(.*)")
+# A quiet container sends nothing; after this many seconds pdt opens the stream again.
+STREAM_TIMEOUT = 60
+# The actions the log stream needs. The built-in roles that hold getAuthToken also hold
+# listSecrets, which reads the job's secrets
+# (https://learn.microsoft.com/en-us/azure/container-apps/jobs#permissions).
+STREAM_ACTIONS = ("Microsoft.App/jobs/read", "Microsoft.App/jobs/executions/read",
+                  "Microsoft.App/jobs/execution/read", "Microsoft.App/jobs/getAuthToken/action")
+# The built-in role, and the one action, that let an account query a workspace
+# (https://learn.microsoft.com/en-us/azure/azure-monitor/logs/manage-access).
+QUERY_ROLE = "Log Analytics Reader"
+QUERY_ACTION = "Microsoft.OperationalInsights/workspaces/query/read"
+DENIED_ACTION = re.compile(r"perform action '([^']+)'")
 EXIT_CODE = re.compile(r"exit code '(\d+)'")
 RUN_STATUS = {"Succeeded": "succeeded", "Running": "running", "Processing": "running"}
 
@@ -320,33 +341,131 @@ def log_query(settings: dict, query: str) -> list[list]:
                           "--workspace-name", settings["workspace"], "--query", "customerId")
     # `az monitor log-analytics query` needs an extension that pip cannot install
     # into pdt's uv environment, so this calls the query API directly.
-    result = az_json("rest", "--method", "post", "--resource", LOG_ANALYTICS_API,
-                     "--url", f"{LOG_ANALYTICS_API}/v1/workspaces/{workspace_id}/query",
-                     "--body", json.dumps({"query": query})) or {}
+    proc = az("rest", "--method", "post", "--resource", LOG_ANALYTICS_API,
+              "--url", f"{LOG_ANALYTICS_API}/v1/workspaces/{workspace_id}/query",
+              "--body", json.dumps({"query": query}), "--output", "json")
+    if proc.returncode != 0:
+        if "InsufficientAccessError" in proc.stderr:
+            console.warn_once("your Azure account may not query Log Analytics workspace "
+                              f"{console.value(settings['workspace'])}; the role "
+                              f"{console.value(QUERY_ROLE)} on the workspace allows it, as does "
+                              f"{console.value(QUERY_ACTION)}")
+        else:
+            console.warn_once("Azure Log Analytics did not answer: "
+                              f"{console.escape(proc.stderr.strip())}")
+        return []
+    result = json.loads(proc.stdout or "null") or {}
     return result.get("tables", [{}])[0].get("rows", [])
 
 
-def read_lines(settings: dict, job: str, execution: str) -> list[runs_cli.Line]:
-    return read_many(settings, job, [execution])[execution]
+def read_lines(settings: dict, job: str, execution: str,
+               since: datetime.datetime | None = None) -> list[runs_cli.Line]:
+    return read_many(settings, job, [execution], since)[execution]
 
 
-def read_many(settings: dict, job: str, executions: list[str]) -> dict[str, list[runs_cli.Line]]:
-    """The lines of several executions from one Log Analytics query, keyed by execution."""
+def read_many(settings: dict, job: str, executions: list[str],
+              since: datetime.datetime | None = None) -> dict[str, list[runs_cli.Line]]:
+    """The lines of several executions from one Log Analytics query, keyed by execution,
+    from `since` on.
+
+    A line's time is time_t, the time the container runtime read it from the
+    container. TimeGenerated is the time Log Analytics collected it, which one
+    batch of lines shares, so it cannot put the lines of a batch in order. A
+    workspace that has never had a time_t column has only TimeGenerated."""
     if not executions:
         return {}
     wanted = " or ".join(f"ContainerGroupName_s startswith '{execution}'"
                          for execution in executions)
+    after = "" if since is None else (
+        f"| where written >= datetime({since.astimezone(datetime.UTC):%Y-%m-%dT%H:%M:%S.%fZ}) ")
     rows = log_query(settings, f"ContainerAppConsoleLogs_CL | where ContainerJobName_s == '{job}' "
-                               f"and ({wanted}) | project TimeGenerated, Log_s, ContainerGroupName_s "
-                               "| order by TimeGenerated asc")
+                               f"and ({wanted}) | extend written = coalesce("
+                               "column_ifexists('time_t', datetime(null)), TimeGenerated) "
+                               f"{after}| project written, Log_s, ContainerGroupName_s "
+                               "| order by written asc")
     lines = {execution: [] for execution in executions}
-    for generated, log, group in rows:
+    for written, log, group in rows:
         for execution in executions:
             if group.startswith(execution):
                 lines[execution].append(
-                    runs_cli.parse_line(log, datetime.datetime.fromisoformat(generated)))
+                    runs_cli.parse_line(log, datetime.datetime.fromisoformat(written)))
                 break
     return lines
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses a redirect, so the log stream's token goes to no other host."""
+
+    def redirect_request(self, *args):
+        return None
+
+
+STREAM_OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def stream_json(job: str, *args: str):
+    """What one `az` call for the log stream returns; a refusal or an empty answer is a
+    StreamError, which names the actions a custom role needs on an authorization error."""
+    proc = az(*args, "--output", "json")
+    if proc.returncode == 0:
+        answer = json.loads(proc.stdout or "null")
+        if answer is None:
+            raise runs_cli.StreamError(f"Azure sent an empty answer for the log stream of job {job}")
+        return answer
+    denied = DENIED_ACTION.search(proc.stderr)
+    if denied:
+        raise runs_cli.StreamError(
+            f"your Azure account may not perform {denied.group(1)} on job {job}; "
+            f"a custom role on the job with the actions {', '.join(STREAM_ACTIONS)} allows it")
+    raise runs_cli.StreamError(proc.stderr.strip()
+                               or f"Azure did not open the log stream of job {job}")
+
+
+def stream_lines(settings: dict, job: str, run: runs_cli.Run,
+                 follow: bool) -> Iterator[runs_cli.Line]:
+    """The lines a running execution's container has written, from the job's live log stream.
+
+    With `follow`, the stream stays open and yields each new line until the container
+    exits. An execution whose container has not started yet has no lines. The
+    container runtime splits a long line into parts; the parts of each of stdout and
+    stderr are joined again."""
+    url = f"{MANAGEMENT_API}{resource_id(settings, 'Microsoft.App', 'jobs', job)}"
+    version = f"api-version={LOG_STREAM_API_VERSION}"
+    try:
+        replicas = stream_json(job, "rest", "--method", "get",
+                               "--url", f"{url}/executions/{run.id}/replicas?{version}")
+        if not replicas.get("value"):
+            return
+        token = stream_json(job, "rest", "--method", "post", "--url", f"{url}/getAuthToken?{version}")
+        current = stream_json(job, "rest", "--method", "get", "--url", job_url(settings, job))
+        endpoint = current["properties"]["eventStreamEndpoint"]
+        container = current["properties"]["template"]["containers"][0]["name"]
+        stream_url = (f"{endpoint[:endpoint.index('/subscriptions/')]}"
+                      f"/subscriptions/{settings['subscription']}"
+                      f"/resourceGroups/{settings['resource_group']}/jobs/{job}"
+                      f"/executions/{run.id}/replicas/{replicas['value'][0]['name']}"
+                      f"/containers/{container}/logstream?follow={str(follow).lower()}&output=text")
+        request = urllib.request.Request(
+            stream_url, headers={"Authorization": f"Bearer {token['properties']['token']}"})
+        with STREAM_OPENER.open(request, timeout=STREAM_TIMEOUT) as response:
+            parts = {"stdout": "", "stderr": ""}
+            for raw in response:
+                match = STREAM_LINE.fullmatch(raw.decode("utf-8", "replace").rstrip("\r\n"))
+                if match is None:
+                    continue
+                written, output, tag, text = match.groups()
+                if tag == "P":
+                    parts[output] += text
+                    continue
+                yield runs_cli.parse_line(parts[output] + text,
+                                          datetime.datetime.fromisoformat(written))
+                parts[output] = ""
+    except TimeoutError:
+        return
+    except (OSError, http.client.HTTPException) as exc:
+        raise runs_cli.StreamError(str(exc)) from exc
+    except (LookupError, ValueError) as exc:
+        raise runs_cli.StreamError(f"Azure sent a log stream pdt cannot read: {exc!r}") from exc
 
 
 def runs(app: dict, settings: dict, rest: list[str]) -> int:
@@ -399,10 +518,15 @@ def start(app: dict, settings: dict) -> int:
 def logs(app: dict, settings: dict, rest: list[str]) -> int:
     job, _current = find_job(settings, app["name"])
     return runs_cli.logs(lambda: list_runs(settings, job),
-                         lambda run: read_lines(settings, job, run.id), app["name"], rest,
+                         lambda run, since: read_lines(settings, job, run.id, since),
+                         app["name"], rest,
                          store="Azure Log Analytics", delay=runs_cli.LOG_DELAY,
+                         # Measured in October 2026: Log Analytics showed a line up to 133 s
+                         # after the write. Only a run with no live log reads it.
+                         hold=datetime.timedelta(seconds=150),
                          read_many=lambda chosen: read_many(settings, job,
-                                                            [run.id for run in chosen]))
+                                                            [run.id for run in chosen]),
+                         stream=lambda run, follow: stream_lines(settings, job, run, follow))
 
 
 def cost_estimate_for(region: str, currency: str, cron: str, job: str, rg: str,

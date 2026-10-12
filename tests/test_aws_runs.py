@@ -48,9 +48,12 @@ class FakeLogs:
     def __init__(self, pages):
         self.pages = pages
         self.streams_read = []
+        self.start_times = []
 
-    def get_log_events(self, logGroupName, logStreamName, startFromHead, nextToken=None):
+    def get_log_events(self, logGroupName, logStreamName, startFromHead, nextToken=None,
+                       startTime=None):
         self.streams_read.append(logStreamName)
+        self.start_times.append(startTime)
         events, token = self.pages[0 if nextToken is None else nextToken]
         return {"events": events, "nextForwardToken": token}
 
@@ -114,6 +117,15 @@ def test_read_lines_reads_the_job_log_stream_until_the_token_repeats():
     lines = read_lines(FakeBatch(), logs, NAMES["log_group"], run)
     assert [line.message for line in lines] == ["starting", "pdt: exit 0"]
     assert logs.streams_read == [STREAM, STREAM]
+    assert logs.start_times == [None, None]
+
+
+def test_read_lines_from_a_time_asks_only_for_the_events_from_it():
+    logs = FakeLogs(pages={0: ([], 0)})
+    run = Run("job-1", datetime.fromtimestamp(0, tz=timezone.utc), None, "running")
+    read_lines(FakeBatch(), logs, NAMES["log_group"], run,
+               datetime.fromtimestamp(1_700_000_001.25, tz=timezone.utc))
+    assert logs.start_times == [1_700_000_001_250]
 
 
 def test_a_job_without_a_log_stream_has_no_lines():

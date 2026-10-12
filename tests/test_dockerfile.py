@@ -173,3 +173,10 @@ def test_the_powershell_entrypoint_ends_the_log_with_the_exit_code(tmp_path, pow
                           env={"PATH": "/usr/bin:/bin"})
     assert proc.stdout == "args: -m pdt.run_powershell .\npdt: exit 4\n"
     assert proc.returncode == 4
+
+
+def test_python_writes_each_line_as_it_prints_it_in_every_image():
+    # A held stdout would put a print() line after a later stderr line in the log.
+    for dockerfile in (DOCKERFILE, POWERSHELL_DOCKERFILE):
+        env = next(line for line in dockerfile.splitlines() if line.startswith("ENV "))
+        assert "PYTHONUNBUFFERED=1" in env.split()

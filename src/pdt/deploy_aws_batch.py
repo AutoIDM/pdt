@@ -857,7 +857,8 @@ def log_stream(batch, run: runs_cli.Run) -> str | None:
     return (jobs[0].get("container") or {}).get("logStreamName") if jobs else None
 
 
-def read_lines(batch, logs, log_group: str, run: runs_cli.Run) -> list[runs_cli.Line]:
+def read_lines(batch, logs, log_group: str, run: runs_cli.Run,
+               since: datetime | None = None) -> list[runs_cli.Line]:
     stream = log_stream(batch, run)
     if stream is None:
         return []
@@ -865,6 +866,8 @@ def read_lines(batch, logs, log_group: str, run: runs_cli.Run) -> list[runs_cli.
     token = None
     while True:
         kwargs = {"logGroupName": log_group, "logStreamName": stream, "startFromHead": True}
+        if since is not None:
+            kwargs["startTime"] = int(since.timestamp() * 1000)
         if token is not None:
             kwargs["nextToken"] = token
         try:
@@ -934,5 +937,7 @@ def logs(app: dict, session, rest: list[str]) -> int:
     batch, logs_client = session.client("batch"), session.client("logs")
     return runs_cli.logs(
         lambda: list_runs(batch, names["job_definition"]),
-        lambda run: read_lines(batch, logs_client, names["log_group"], run),
-        app["name"], rest, store="CloudWatch Logs", delay=runs_cli.LOG_DELAY)
+        lambda run, since: read_lines(batch, logs_client, names["log_group"], run, since),
+        app["name"], rest, store="CloudWatch Logs", delay=runs_cli.LOG_DELAY,
+        # Measured in October 2026: CloudWatch Logs showed a line at most 7.0 s after the write.
+        hold=timedelta(seconds=10))

@@ -1095,12 +1095,23 @@ def exit_codes(project: str, job: str, count: int) -> dict[str, int]:
     return codes
 
 
-def read_lines(project: str, execution_id: str) -> list[runs_cli.Line]:
-    entries = describe_json(
+def read_lines(project: str, execution_id: str,
+               since: datetime.datetime | None = None) -> list[runs_cli.Line]:
+    """Every line the execution's container wrote from `since` on. With no --limit,
+    gcloud reads every page. The two logs leave out Cloud Run's own entries, such as
+    its audit entry. A read that fails warns, so it does not look like a log with no lines."""
+    after = "" if since is None else f' AND timestamp>="{since.isoformat()}"'
+    proc = gcloud(
         "logging", "read",
         f'resource.type="cloud_run_job" AND '
-        f'labels."run.googleapis.com/execution_name"="{execution_id}"',
-        "--project", project, "--order", "asc", "--limit", "5000")
+        f'labels."run.googleapis.com/execution_name"="{execution_id}" AND '
+        f'(log_id("run.googleapis.com/stdout") OR log_id("run.googleapis.com/stderr")){after}',
+        "--project", project, "--order", "asc", "--format=json")
+    if proc.returncode != 0:
+        console.warn_once("Cloud Logging did not return the lines of "
+                          f"{console.value(execution_id)}: {console.escape(proc.stderr.strip())}")
+        return []
+    entries = json.loads(proc.stdout or "null")
     if not entries:
         return []
     lines = []
@@ -1129,8 +1140,10 @@ def logs(app: dict, rest: list[str], assume_yes: bool) -> int:
     project = preflight(app, project, assume_yes)
     job = f"pdt-{app['name']}"
     return runs_cli.logs(lambda: list_runs(project, region, job),
-                         lambda run: read_lines(project, run.id), app["name"], rest,
-                         store="Cloud Logging", delay=runs_cli.LOG_DELAY)
+                         lambda run, since: read_lines(project, run.id, since), app["name"], rest,
+                         store="Cloud Logging", delay=runs_cli.LOG_DELAY,
+                         # Measured in October 2026: Cloud Logging showed a line 27 s after the write.
+                         hold=datetime.timedelta(seconds=30))
 
 
 def pause(app: dict, paused: bool, assume_yes: bool) -> int:

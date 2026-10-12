@@ -699,7 +699,7 @@ def main() -> int:
         return runs_cli.runs(lambda: list_runs(app["name"]), app["name"], args.rest)
     if args.command == "logs":
         return runs_cli.logs(lambda: list_runs(app["name"]),
-                             lambda run: read_lines(app["name"], run), app["name"], args.rest,
+                             lambda run, since: read_lines(app["name"], run), app["name"], args.rest,
                              store="the run's log file")
     if args.command in ("pause", "unpause"):
         return pause(app, args.command == "pause")
