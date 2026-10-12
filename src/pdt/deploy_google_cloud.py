@@ -1108,8 +1108,8 @@ def read_lines(project: str, execution_id: str,
         f'(log_id("run.googleapis.com/stdout") OR log_id("run.googleapis.com/stderr")){after}',
         "--project", project, "--order", "asc", "--format=json")
     if proc.returncode != 0:
-        console.warn(f"Cloud Logging did not return the lines of {console.value(execution_id)}: "
-                      f"{console.escape(proc.stderr.strip())}")
+        console.warn_once("Cloud Logging did not return the lines of "
+                          f"{console.value(execution_id)}: {console.escape(proc.stderr.strip())}")
         return []
     entries = json.loads(proc.stdout or "null")
     if not entries:

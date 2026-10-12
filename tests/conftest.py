@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "verify" / "scri
 def console_on_stdout(monkeypatch):
     # A --json command moves pdt.console to stderr for the rest of the process.
     monkeypatch.setattr(console._console, "stderr", False)
+    monkeypatch.setattr(console, "_warned", set())
 
 
 @pytest.fixture

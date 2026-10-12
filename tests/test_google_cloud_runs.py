@@ -170,7 +170,8 @@ def test_read_lines_with_no_entries_is_empty(monkeypatch):
 def test_a_failed_read_warns_instead_of_looking_empty(monkeypatch, capsys):
     fake_logging(monkeypatch, None, 1, "ERROR: (gcloud.logging.read) RESOURCE_EXHAUSTED: Quota exceeded")
     assert deploy_google_cloud.read_lines("p", "pdt-app-abcde") == []
-    assert "RESOURCE_EXHAUSTED: Quota exceeded" in capsys.readouterr().out
+    assert deploy_google_cloud.read_lines("p", "pdt-app-abcde") == []
+    assert capsys.readouterr().out.count("RESOURCE_EXHAUSTED: Quota exceeded") == 1
 
 
 def test_read_lines_reads_every_entry_of_the_container_logs(monkeypatch):

@@ -177,8 +177,24 @@ def test_a_failed_log_analytics_query_warns(monkeypatch, capsys):
     monkeypatch.setattr(deploy_azure_container_apps, "az", lambda *args: subprocess.CompletedProcess(
         args, 1, "", "ERROR: (BadArgumentError) Failed to resolve table or column expression"))
     assert deploy_azure_container_apps.read_lines(SETTINGS, "pdt-report", "job-a") == []
-    assert ("Azure Log Analytics did not answer: ERROR: (BadArgumentError) Failed to resolve "
-            "table or column expression") in capsys.readouterr().out
+    assert deploy_azure_container_apps.read_lines(SETTINGS, "pdt-report", "job-a") == []
+    assert capsys.readouterr().out.count(
+        "Azure Log Analytics did not answer: ERROR: (BadArgumentError) Failed to resolve "
+        "table or column expression") == 1
+
+
+def test_a_log_analytics_query_this_account_may_not_run_names_the_action_and_the_role(
+        monkeypatch, capsys):
+    monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "workspace-id")
+    monkeypatch.setattr(deploy_azure_container_apps, "az", lambda *args: subprocess.CompletedProcess(
+        args, 1, "", 'ERROR: Forbidden({"error":{"message":"The provided credentials have '
+                     'insufficient access to perform the requested operation",'
+                     '"code":"InsufficientAccessError"}})'))
+    assert deploy_azure_container_apps.read_lines(SETTINGS, "pdt-report", "job-a") == []
+    assert ("your Azure account may not query Log Analytics workspace "
+            f"{SETTINGS['workspace']}; the role Log Analytics Reader on the workspace "
+            "allows it, as does Microsoft.OperationalInsights/workspaces/query/read") in " ".join(
+        capsys.readouterr().out.split())
 
 
 STREAM_SETTINGS = {**SETTINGS, "subscription": "123456789012"}
@@ -293,17 +309,28 @@ def test_a_stream_this_account_may_not_open_names_the_action_and_the_role(monkey
                                                       RUNNING_RUN, True))
     assert str(raised.value) == (
         "your Azure account may not perform Microsoft.App/jobs/getAuthToken/action on job "
-        "pdt-report; the role Container Apps Jobs Operator on the job allows it")
+        "pdt-report; a custom role on the job with the actions Microsoft.App/jobs/read, "
+        "Microsoft.App/jobs/executions/read, Microsoft.App/jobs/execution/read, "
+        "Microsoft.App/jobs/getAuthToken/action allows it")
+
+
+def test_an_empty_answer_from_az_is_a_stream_error(monkeypatch):
+    monkeypatch.setattr(deploy_azure_container_apps, "az",
+                        lambda *args: subprocess.CompletedProcess(args, 0, "", ""))
+    with pytest.raises(runs_cli.StreamError, match="empty answer"):
+        list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                      RUNNING_RUN, True))
 
 
 def test_stream_lines_joins_the_parts_of_a_long_line(monkeypatch):
     body = (b"2026-10-09T21:15:44.1000000Z stdout P first half, \n"
+            b"2026-10-09T21:15:44.1500000Z stderr F an error\n"
             b"2026-10-09T21:15:44.2000000Z stdout F second half\n"
             b"2026-10-09T21:15:45.0000000Z stdout F next\n")
     fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, body)
     lines = list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
                                                           RUNNING_RUN, True))
-    assert [line.message for line in lines] == ["first half, second half", "next"]
+    assert [line.message for line in lines] == ["an error", "first half, second half", "next"]
 
 
 def test_the_log_stream_follows_no_redirect():

@@ -56,10 +56,6 @@ FOLLOW_SECONDS = 10
 # (https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-ingestion-time);
 # AWS and Google document no maximum. The windows provider reads a local file, with no delay.
 LOG_DELAY = timedelta(minutes=5)
-# How long --follow holds a line from a log store before it prints it, so that a line the
-# store shows late prints before a newer line, not after it. Each provider names its own
-# hold from a measurement; this one is for a provider that names none.
-ORDER_WINDOW = timedelta(seconds=30)
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
 SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
                "or a date and time (2026-09-20T14:00)")
@@ -296,7 +292,7 @@ def logs(list_runs: Callable[[], list[Run]],
          app_name: str, rest: list[str],
          resolve: Callable[[list[Run]], None] | None = None,
          store: str = "the log", delay: timedelta = timedelta(0),
-         hold: timedelta = ORDER_WINDOW,
+         hold: timedelta = timedelta(0),
          read_many: Callable[[list[Run]], dict[str, list[Line]]] | None = None,
          stream: Callable[[Run, bool], Iterable[Line]] | None = None) -> int:
     """`--id` may repeat: every named run prints, and `--json` then gives an object
@@ -506,7 +502,7 @@ def unseen(lines: list[Line], errors: bool, seen: Counter) -> list[Line]:
 def follow(list_runs: Callable[[], list[Run]],
            read_lines: Callable[[Run, datetime | None], list[Line]],
            resolve: Callable[[list[Run]], None] | None, run: Run, app_name: str,
-           errors: bool, delay: timedelta, shown: list[Line], hold: timedelta = ORDER_WINDOW,
+           errors: bool, delay: timedelta, shown: list[Line], hold: timedelta = timedelta(0),
            stream: Callable[[Run, bool], Iterable[Line]] | None = None,
            store: str = "the log") -> int:
     """Print each new line of `run`, in time order, until the run has ended.
@@ -591,21 +587,25 @@ def follow_store(list_runs: Callable[[], list[Run]],
     """Print each new line of `run` from its log store, in time order, until the store
     has had the run's exit line for `hold`, or `delay` has passed since the run ended.
 
-    A store can show a line later than the hold a provider measured, so after the
-    exit line ends the wait, follow reads the store once more. Each read after the
-    first asks only for the lines from the newest line read minus the hold on."""
+    A store can show a line later than the hold a provider measured, so when the
+    exit line ends the wait after the first read, follow reads the store once more.
+    Each read after the first asks only for the lines from the newest line old
+    enough to print minus the hold on, so a line the store shows up to about two
+    holds late still prints."""
     held = []
     since = None
+    first = True
     while True:
         raw = read_lines(run, since)
-        times = [line.time for line in raw if line.time is not None]
-        if times:
-            since = max(times) - hold
         now = datetime.now(UTC)
         exit_line = last_exit_line(raw)
         done = (exit_line is not None and (
             exit_line.time is None or exit_line.time <= now - hold)) or (
             run.status != "running" and (run.ended is None or now >= run.ended + delay))
+        times = [line.time for line in raw
+                 if line.time is not None and (done or line.time <= now - hold)]
+        if times:
+            since = max(times) - hold
         held += unseen(raw, errors, seen)
         ready, waiting = [], []
         for line in held:
@@ -617,11 +617,12 @@ def follow_store(list_runs: Callable[[], list[Run]],
         for line in in_time_order(ready):
             print_line(line)
         if done:
-            if exit_line is not None and hold:
+            if exit_line is not None and hold and not first:
                 time.sleep(FOLLOW_SECONDS)
                 for line in unseen(read_lines(run, since), errors, seen):
                     print_line(line)
             return ended_by(run, exit_line)
+        first = False
         time.sleep(FOLLOW_SECONDS)
         run = latest(list_runs, resolve, run)
 

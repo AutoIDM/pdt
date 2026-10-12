@@ -564,7 +564,7 @@ class Clock(datetime):
         return cls.moments.pop(0)
 
 
-@pytest.mark.parametrize("hold", [runs_cli.ORDER_WINDOW, timedelta(seconds=10)])
+@pytest.mark.parametrize("hold", [timedelta(seconds=30), timedelta(seconds=10)])
 def test_follow_holds_a_store_line_until_it_is_old_enough_to_print_in_order(hold, monkeypatch,
                                                                             capsys):
     late = Line(T0 + timedelta(seconds=4), "INFO", "late")
@@ -586,21 +586,22 @@ def test_follow_holds_a_store_line_until_it_is_old_enough_to_print_in_order(hold
 
 
 def test_follow_stops_at_the_exit_line_without_waiting_for_the_store_delay(monkeypatch, capsys):
-    written = datetime.now(UTC) - runs_cli.ORDER_WINDOW
+    hold = timedelta(seconds=30)
+    written = datetime.now(UTC) - hold
     first = [Line(T0, "INFO", "started")]
     after = [*first, Line(written, "ERROR", "boom"), Line(written, "", "pdt: exit 2")]
     sleeps = []
     monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
     # The provider still shows the run as running; the exit line ends it.
     assert runs_cli.logs(lambda: [RUNNING], lambda run, since: after if sleeps else first, "report",
-                         ["--follow"], delay=timedelta(minutes=5)) == 1
+                         ["--follow"], delay=timedelta(minutes=5), hold=hold) == 1
     out = capsys.readouterr().out
     assert "boom" in out
     assert out.rstrip().endswith("failed, exit 2")
     assert sleeps == [runs_cli.FOLLOW_SECONDS] * 2
 
 
-@pytest.mark.parametrize("hold", [runs_cli.ORDER_WINDOW, timedelta(seconds=10)])
+@pytest.mark.parametrize("hold", [timedelta(seconds=30), timedelta(seconds=10)])
 def test_follow_waits_for_late_lines_after_a_new_exit_line(hold, monkeypatch, capsys):
     now = datetime.now(UTC)
     first = [Line(T0, "INFO", "started")]
@@ -632,7 +633,8 @@ def test_an_ended_run_without_its_exit_line_says_the_last_lines_may_be_missing(c
 
 
 def test_follow_prints_a_line_written_after_logs_read_the_store(monkeypatch, capsys):
-    written = datetime.now(UTC) - runs_cli.ORDER_WINDOW
+    hold = timedelta(seconds=30)
+    written = datetime.now(UTC) - hold
     ended = dataclasses.replace(RUNNING, ended=written, status="succeeded", exit_code=0)
     first = [Line(T0, "INFO", "started")]
     reads = iter([first, *[[*first, Line(written, "INFO", "between"),
@@ -640,9 +642,9 @@ def test_follow_prints_a_line_written_after_logs_read_the_store(monkeypatch, cap
     sleeps = []
     monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
     assert runs_cli.logs(lambda: [ended], lambda run, since: next(reads), "report", ["--follow"],
-                         delay=timedelta(minutes=5)) == 0
+                         delay=timedelta(minutes=5), hold=hold) == 0
     assert "between" in capsys.readouterr().out
-    assert sleeps == [runs_cli.FOLLOW_SECONDS]
+    assert sleeps == []
 
 
 def test_follow_with_no_lines_shown_prints_every_line_of_the_live_log(monkeypatch, capsys):
@@ -687,8 +689,8 @@ def test_follow_prints_a_line_the_store_shows_later_than_the_hold(monkeypatch, c
     first = [Line(T0, "INFO", "started")]
     exit_line = Line(now - timedelta(seconds=11), "", "pdt: exit 0")
     late = Line(now - timedelta(seconds=12), "INFO", "late")
-    reads = [[*first, exit_line], [*first, late, exit_line]]
-    Clock.moments = [now]
+    reads = [first, [*first, exit_line], [*first, late, exit_line]]
+    Clock.moments = [now, now]
     monkeypatch.setattr(runs_cli, "datetime", Clock)
     monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
     assert runs_cli.follow(lambda: [RUNNING], lambda run, since: reads.pop(0), None, RUNNING, "report",
@@ -697,25 +699,43 @@ def test_follow_prints_a_line_the_store_shows_later_than_the_hold(monkeypatch, c
     assert "late" in capsys.readouterr().out
 
 
-def test_follow_reads_the_store_from_the_newest_line_read_minus_the_hold(monkeypatch, capsys):
+def test_follow_of_a_run_whose_exit_line_is_old_reads_the_store_once(monkeypatch, capsys):
+    now = T0 + timedelta(hours=1)
+    reads = [[Line(T0, "INFO", "started"), Line(T1, "", "pdt: exit 0")]]
+    sleeps = []
+    Clock.moments = [now]
+    monkeypatch.setattr(runs_cli, "datetime", Clock)
+    monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
+    assert runs_cli.follow(lambda: [RUNNING], lambda run, since: reads.pop(0), None, RUNNING, "report",
+                           False, timedelta(minutes=5), hold=timedelta(seconds=10), shown=[]) == 0
+    assert "started" in capsys.readouterr().out
+    assert sleeps == []
+
+
+def test_follow_reads_the_store_from_the_newest_line_printed_minus_the_hold(monkeypatch, capsys):
     hold = timedelta(seconds=10)
+    now = T0 + timedelta(hours=1)
     first = [Line(T0, "INFO", "started")]
-    newer = Line(T1, "INFO", "newer")
-    exit_line = Line(T1, "", "pdt: exit 0")
+    late = Line(now - timedelta(seconds=20), "INFO", "late")
+    newer = Line(now - timedelta(seconds=2), "INFO", "newer")
+    exit_line = Line(now + timedelta(seconds=1), "", "pdt: exit 0")
+    shows = [[*first, newer], [*first, late, newer], [*first, late, newer, exit_line]]
     asked = []
-    reads = [[*first, newer], [newer, exit_line], [exit_line]]
 
     def read_lines(run, since):
         asked.append(since)
-        return reads.pop(0)
+        lines = shows.pop(0) if len(shows) > 1 else shows[0]
+        return [line for line in lines if since is None or line.time >= since]
 
-    Clock.moments = [T1 + timedelta(seconds=5), T1 + hold]
+    Clock.moments = [now, now + hold, now + 2 * hold]
     monkeypatch.setattr(runs_cli, "datetime", Clock)
     monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
     assert runs_cli.follow(lambda: [RUNNING], read_lines, None, RUNNING, "report", False,
                            timedelta(minutes=5), first, hold=hold) == 0
-    assert asked == [None, T1 - hold, T1 - hold]
-    assert capsys.readouterr().out.count("newer") == 1
+    out = capsys.readouterr().out
+    assert out.index("late") < out.index("newer")
+    assert out.count("newer") == 1
+    assert asked == [None, T0 - hold, newer.time - hold, exit_line.time - hold]
 
 
 def test_follow_opens_a_quiet_live_log_again_at_once(monkeypatch, capsys):
