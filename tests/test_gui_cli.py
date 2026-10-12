@@ -1,4 +1,5 @@
 import json
+import socket
 import subprocess
 from types import SimpleNamespace
 
@@ -104,3 +105,24 @@ def test_stop_ends_the_recorded_process(project, launcher, capsys):
 def test_stop_with_nothing_running_says_so(project, launcher, capsys):
     assert gui_cli.main(8765, False, False, True) == 0
     assert "not running" in capsys.readouterr().out
+
+
+def test_a_start_trims_a_long_log_to_its_newest_half(project, launcher, monkeypatch):
+    monkeypatch.setattr(gui_cli, "LOG_LIMIT", 10)
+    (project / ".pdt").mkdir()
+    (project / ".pdt" / "gui.log").write_bytes(b"0123456789abcdef")
+    assert gui_cli.main(8765, False, False, False) == 0
+    assert (project / ".pdt" / "gui.log").read_bytes() == b"bcdef"
+
+
+def test_a_busy_port_prints_one_plain_line_and_starts_nothing(project, launcher, capsys):
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        port = taken.getsockname()[1]
+        assert gui_cli.main(port, False, False, False) == 1
+    assert launcher.popen == []
+    assert launcher.opened == []
+    assert capsys.readouterr().out == (
+        f"error: another program uses port {port}. Run pdt gui --port {port + 1} "
+        "to use another port.\n")

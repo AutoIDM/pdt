@@ -85,7 +85,7 @@ from typing import Any, Callable
 
 import backoff
 
-from pdt import config, console, download, lifecycle
+from pdt import config, console, lifecycle
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
@@ -383,7 +383,7 @@ ECB_RATES = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
 
 
 def ecb_xml() -> bytes:
-    with urllib.request.urlopen(ECB_RATES, timeout=30, context=download.CONTEXT) as response:
+    with urllib.request.urlopen(ECB_RATES, timeout=30) as response:
         return response.read()
 
 

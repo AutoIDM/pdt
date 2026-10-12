@@ -1,9 +1,10 @@
 import hashlib
+import http.client
 import io
 
 import pytest
 
-from pdt import download, duckdb_wasm
+from pdt import duckdb_wasm
 
 CONTENT = {name: f"content of {name}".encode() for name in duckdb_wasm.FILES}
 
@@ -22,8 +23,7 @@ def pinned(monkeypatch, tmp_path):
         for name, (base, _checksum, _size) in duckdb_wasm.FILES.items()})
     fetched = []
 
-    def fake_urlopen(url, timeout=0, context=None):
-        assert context is download.CONTEXT
+    def fake_urlopen(url, timeout=0):
         fetched.append(url)
         return FakeResponse(CONTENT[url.rsplit("/", 1)[-1]])
 
@@ -57,3 +57,17 @@ def test_a_bad_checksum_fails_and_leaves_nothing_behind(pinned, monkeypatch):
     assert not (duckdb_wasm.DIR / "duckdb-eh.wasm").exists()
     assert not [path for path in duckdb_wasm.DIR.iterdir() if "wasm" in path.name]
     assert not duckdb_wasm.installed()
+
+
+@pytest.mark.parametrize("problem", [PermissionError("access denied"),
+                                     http.client.IncompleteRead(b"partial")])
+def test_a_failed_fetch_is_kept_for_the_page_and_frees_the_next_try(monkeypatch, problem, caplog):
+    def broken():
+        raise problem
+    monkeypatch.setattr(duckdb_wasm, "ensure", broken)
+    monkeypatch.setattr(duckdb_wasm, "failure", "")
+    assert duckdb_wasm.FETCH.acquire(blocking=False)
+    duckdb_wasm.fetch()
+    assert duckdb_wasm.failure != ""
+    assert "the SQL tools did not download" in caplog.text
+    assert not duckdb_wasm.fetching()

@@ -23,6 +23,7 @@ import rich_argparse
 
 from pdt import completion, config, watch
 from pdt.config import ConfigError
+from pdt.utils import web
 
 if not completion.COMPLETING:
     from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold,
@@ -798,6 +799,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run() -> int:
+    web.trust_os_certificates()
+    # uv's own downloads (a script's packages) then pass a company TLS proxy too.
+    os.environ.setdefault("UV_SYSTEM_CERTS", "1")
     parser = build_parser()
     completion.configure(parser)
     try:

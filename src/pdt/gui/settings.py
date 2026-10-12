@@ -61,7 +61,7 @@ DATABASES = {"default": {
     "OPTIONS": {"timeout": 30, "transaction_mode": "IMMEDIATE"},
 }}
 # The terminal shows only what pdt gui prints; the worker's errors and the
-# server's warnings go to .pdt/gui.log.
+# server's errors go to .pdt/gui.log, which gui_cli trims at each start.
 if STATE:
     LOGGING = {
         "version": 1,
@@ -70,7 +70,7 @@ if STATE:
         "handlers": {"file": {"class": "logging.FileHandler", "filename": STATE / gui_cli.LOG_FILE,
                               "formatter": "plain", "delay": True, "encoding": "utf-8"}},
         "root": {"handlers": ["file"], "level": "INFO"},
-        "loggers": {name: {"handlers": ["file"], "level": "WARNING", "propagate": False}
+        "loggers": {name: {"handlers": ["file"], "level": "ERROR", "propagate": False}
                     for name in ("django", "django.server")},
     }
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
