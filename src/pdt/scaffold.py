@@ -14,6 +14,14 @@ from pdt.utils.env_secret import private_file
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
 STARTER = "hello-world"
+# The wheel holds the skills in pdt/skills. A clone runs pdt from src/, so
+# there they stay in the repo's .agents/skills.
+SKILLS = Path(__file__).resolve().parent / "skills"
+if not SKILLS.is_dir():
+    SKILLS = Path(__file__).resolve().parents[2] / ".agents" / "skills"
+# Codex and Cursor read .agents/skills, Claude Code reads .claude/skills.
+PROJECT_SKILLS = ("migrate-app",)
+SKILL_FOLDERS = (".agents/skills", ".claude/skills")
 
 PROVIDER_CHOICES = [
     ("azure", "Microsoft Azure"),
@@ -297,6 +305,10 @@ def init(directory: str | None, assume_yes: bool) -> int:
         if not path.exists():
             path.write_text(body)
     private_file(target / ".env")
+    for folder in SKILL_FOLDERS:
+        for skill in PROJECT_SKILLS:
+            if not (target / folder / skill).exists():
+                shutil.copytree(SKILLS / skill, target / folder / skill)
     if starting_fresh:
         copy_example(target, STARTER, EXAMPLES / STARTER)
 
@@ -305,7 +317,8 @@ def init(directory: str | None, assume_yes: bool) -> int:
     files = [(PROJECT_FILE, "settings shared by every app"), (".env", "secrets, never committed"),
              (".gitignore", ""),
              ("AGENTS.md", "how an AI agent should work in this project "
-                           f"({console.value('CLAUDE.md')} points here)")]
+                           f"({console.value('CLAUDE.md')} points here)"),
+             (".agents/skills/", f"skills for an AI agent (a copy is in {console.value('.claude/skills/')})")]
     if starting_fresh:
         files.append((f"{STARTER}/", "a working app to run and edit"))
     console.columns(files)

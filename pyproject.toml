@@ -50,8 +50,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/pdt"]
 
+[tool.hatch.build.targets.wheel.force-include]
+".agents/skills" = "pdt/skills"
+
 [tool.hatch.build.targets.sdist]
-include = ["src/pdt", "README.md", "tests"]
+include = ["src/pdt", ".agents/skills", "README.md", "tests"]
 
 [dependency-groups]
 dev = ["pytest", "ruff", "fsspec", "boto3", "django>=5.2", "croniter", "tzlocal"]

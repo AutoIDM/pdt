@@ -81,14 +81,15 @@ def test_init_lists_the_files_it_wrote_in_the_same_columns(width, tmp_path, monk
     monkeypatch.chdir(tmp_path)
     assert scaffold.init(None, assume_yes=True) == 0
     out = capsys.readouterr().out.splitlines()
-    first = out.index("  pdt.yml       settings shared by every app")
-    assert out[first:first + 6] == [
-        "  pdt.yml       settings shared by every app",
-        "  .env          secrets, never committed",
+    first = out.index("  pdt.yml          settings shared by every app")
+    assert out[first:first + 7] == [
+        "  pdt.yml          settings shared by every app",
+        "  .env             secrets, never committed",
         "  .gitignore",
-        "  AGENTS.md     how an AI agent should work in this project (CLAUDE.md points",
-        "                here)",
-        "  hello-world/  a working app to run and edit",
+        "  AGENTS.md        how an AI agent should work in this project (CLAUDE.md points",
+        "                   here)",
+        "  .agents/skills/  skills for an AI agent (a copy is in .claude/skills/)",
+        "  hello-world/     a working app to run and edit",
     ]
 
 

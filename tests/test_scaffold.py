@@ -96,6 +96,33 @@ def test_init_keeps_the_users_own_agent_docs(tmp_path, monkeypatch):
     assert (tmp_path / "CLAUDE.md").read_text().strip() == "@AGENTS.md"
 
 
+def test_init_copies_the_project_skills_for_every_agent(tmp_path, monkeypatch):
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert scaffold.init(None, assume_yes=True) == 0
+    for folder in (".agents/skills", ".claude/skills"):
+        assert sorted(child.name for child in (tmp_path / folder).iterdir()) == ["migrate-app"]
+        skill = tmp_path / folder / "migrate-app" / "SKILL.md"
+        assert not skill.is_symlink()
+        assert skill.read_text() == (scaffold.SKILLS / "migrate-app" / "SKILL.md").read_text()
+
+
+def test_every_project_skill_ships_with_pdt():
+    for skill in scaffold.PROJECT_SKILLS:
+        assert (scaffold.SKILLS / skill / "SKILL.md").is_file(), skill
+
+
+def test_init_keeps_the_users_own_skills(tmp_path, monkeypatch):
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    mine = tmp_path / ".claude" / "skills" / "migrate-app" / "SKILL.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("mine\n")
+    assert scaffold.init(None, assume_yes=True) == 0
+    assert mine.read_text() == "mine\n"
+    assert (tmp_path / ".agents" / "skills" / "migrate-app" / "SKILL.md").is_file()
+
+
 def test_init_on_an_existing_project_changes_nothing(project):
     before = (project / PROJECT_FILE).read_text()
     assert scaffold.init(None, assume_yes=True) == 0
