@@ -83,8 +83,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           previous="$(gh release list --repo "${GITHUB_REPOSITORY}" --exclude-pre-releases --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${GITHUB_REF_NAME}" -f previous_tag_name="${previous}" --jq .body \
-            | awk '/^## New Contributors/ {skip = 1; next} /^(## |\*\*Full Changelog)/ {skip = 0} !skip' > release-notes.md
+          uv run --no-project --python 3.12 python ci/release_notes.py "${GITHUB_REPOSITORY}" "${previous}" "${GITHUB_REF_NAME}" > release-notes.md
 
       - if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
