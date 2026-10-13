@@ -86,7 +86,7 @@ class FakeGcloud:
             return subprocess.CompletedProcess(command, 0, "\n".join(self.enabled), "")
         if args[:2] == ["builds", "submit"]:
             source = Path(args[2])
-            self.uploaded = sorted(str(path.relative_to(source))
+            self.uploaded = sorted(path.relative_to(source).as_posix()
                                    for path in source.rglob("*") if path.is_file())
             self.build_config = json.loads(Path(args[args.index("--config") + 1]).read_text())
             self.ignore = (source / ".gcloudignore").read_text()

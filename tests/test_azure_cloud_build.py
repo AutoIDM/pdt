@@ -43,7 +43,7 @@ def fake_az(monkeypatch, returncode=0, stderr=""):
         call = {"args": args, "stdout_errors": sys.stdout.errors}
         if args[:2] == ("acr", "build"):
             stage = Path(args[-1])
-            call["files"] = sorted(str(path.relative_to(stage)) for path in stage.rglob("*"))
+            call["files"] = sorted(path.relative_to(stage).as_posix() for path in stage.rglob("*"))
         calls.append(call)
         return subprocess.CompletedProcess(args, returncode, "", stderr)
 
