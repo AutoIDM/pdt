@@ -44,7 +44,7 @@ import shutil
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from pdt import config, console, regions, runs_cli
 from pdt.deploy import confirm
@@ -569,7 +569,7 @@ def pause(app: dict, settings: dict, paused: bool) -> int:
     return 0
 
 
-def start(app: dict, settings: dict) -> int:
+def start(app: dict, settings: dict, follow: bool = False) -> int:
     job, _current = find_job(settings, app["name"])
     output = run_quiet("containerapp", "job", "start", "--name", job,
                        "--resource-group", settings["resource_group"], "--output", "json")
@@ -580,10 +580,13 @@ def start(app: dict, settings: dict) -> int:
     name = (execution or {}).get("name")
     console.done(f"Started {console.value(app['name'])}: execution {console.value(name)}."
                  if name else f"Started {console.value(app['name'])}.")
-    return 0
+    if not follow:
+        return 0
+    return logs(app, settings, ["--follow"], new=lambda run: run.id == name)
 
 
-def logs(app: dict, settings: dict, rest: list[str]) -> int:
+def logs(app: dict, settings: dict, rest: list[str],
+         new: Callable[[runs_cli.Run], bool] | None = None) -> int:
     job, _current = find_job(settings, app["name"])
     return runs_cli.logs(lambda: list_runs(settings, job),
                          lambda run, since: read_lines(settings, job, run.id, since),
@@ -594,7 +597,8 @@ def logs(app: dict, settings: dict, rest: list[str]) -> int:
                          hold=datetime.timedelta(seconds=150),
                          read_many=lambda chosen: read_many(settings, job,
                                                             [run.id for run in chosen]),
-                         stream=lambda run, follow: stream_lines(settings, job, run, follow))
+                         stream=lambda run, follow: stream_lines(settings, job, run, follow),
+                         new=new)
 
 
 def cost_estimate_for(region: str, currency: str, cron: str, job: str, rg: str,

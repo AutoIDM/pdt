@@ -913,7 +913,7 @@ def main() -> int:
         if args.command in ("pause", "unpause"):
             return batch.pause(app, ensure_session(app), args.command == "pause")
         if args.command == "start":
-            return batch.start(app, ensure_session(app))
+            return batch.start(app, ensure_session(app), "--follow" in args.rest)
         return batch.destroy(app, args.yes)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",

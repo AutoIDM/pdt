@@ -21,6 +21,7 @@ from pdt import console
 DEFAULT_RUNS = 10
 TAIL_LINES = 20
 FOLLOW_SECONDS = 10
+NEW_RUN_TRIES = 6
 # https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-ingestion-time
 LOG_DELAY = timedelta(minutes=5)
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
@@ -250,7 +251,9 @@ def logs(list_runs: Callable[[], list[Run]],
          store: str = "the log", delay: timedelta = timedelta(0),
          hold: timedelta = timedelta(0),
          read_many: Callable[[list[Run]], dict[str, list[Line]]] | None = None,
-         stream: Callable[[Run, bool], Iterable[Line]] | None = None) -> int:
+         stream: Callable[[Run, bool], Iterable[Line]] | None = None,
+         new: Callable[[Run], bool] | None = None) -> int:
+    """`new` picks the run a start just made; the list may show it a few seconds late."""
     parser = argparse.ArgumentParser(prog=f"pdt logs {app_name}")
     parser.add_argument("number", nargs="?", type=int)
     parser.add_argument("--id", action="append")
@@ -280,9 +283,26 @@ def logs(list_runs: Callable[[], list[Run]],
     except ValueError as exc:
         console.error(console.escape(str(exc)))
         return 1
-    found = numbered(list_runs)
+    chosen = []
+    with console.waiting("reading the run list") as wait:
+        found = numbered(list_runs)
+        for attempt in range(NEW_RUN_TRIES if new is not None else 0):
+            if attempt > 0:
+                wait.now("waiting for the new run to show in the run list")
+                time.sleep(FOLLOW_SECONDS)
+                found = numbered(list_runs)
+            chosen = [run for run in found if new(run)][:1]
+            if chosen:
+                break
     shown = window(found, since, span, count)
-    if args.id:
+    if new is not None:
+        if not chosen:
+            console.note("the run list does not show the new run yet.")
+            console.command(f"pdt logs {app_name} --follow", "print its lines as they arrive")
+            return 0
+        if resolve is not None:
+            resolve(chosen)
+    elif args.id:
         chosen = []
         for wanted in args.id:
             run = next((run for run in found if run.id == wanted), None)
@@ -319,19 +339,20 @@ def logs(list_runs: Callable[[], list[Run]],
             resolve(chosen)
     lines_by_id = {}
     live = set()
-    for run in chosen:
-        if stream is not None and run.status == "running":
-            try:
-                lines_by_id[run.id] = list(stream(run, False))
-                live.add(run.id)
-            except StreamError as exc:
-                console.warn(f"pdt cannot read the live log of run {console.value(run.number)}, "
-                             f"so it reads {store}: {console.escape(str(exc))}")
-    stored = [run for run in chosen if run.id not in live]
-    if stored and read_many is not None:
-        lines_by_id.update(read_many(stored))
-    else:
-        lines_by_id.update({run.id: read_lines(run, None) for run in stored})
+    with console.waiting("reading the log"):
+        for run in chosen:
+            if stream is not None and run.status == "running":
+                try:
+                    lines_by_id[run.id] = list(stream(run, False))
+                    live.add(run.id)
+                except StreamError as exc:
+                    console.warn(f"pdt cannot read the run's live log, so it reads {store}: "
+                                 f"{console.escape(str(exc))}")
+        stored = [run for run in chosen if run.id not in live]
+        if stored and read_many is not None:
+            lines_by_id.update(read_many(stored))
+        else:
+            lines_by_id.update({run.id: read_lines(run, None) for run in stored})
     now = datetime.now(UTC)
     output = {}
     results = []
@@ -355,13 +376,14 @@ def logs(list_runs: Callable[[], list[Run]],
         settled = settles(run, finished, delay)
         following = args.follow and (run.status == "running"
                                      or (settled is not None and now < settled))
-        console.heading(console.escape(run_heading(run, app_name)))
+        console.heading(console.escape(run_heading(run, app_name, outcome=not following)))
         if following and run.status == "running":
-            console.status(f"following run {console.value(run.number)} until it ends; "
-                           "press Ctrl+C to stop following, the run keeps going")
+            console.status(f"watching for log output for {console.value(app_name)}; "
+                           "press Ctrl+C to stop, the run keeps going")
         elif following:
-            console.status(f"waiting until {local_text(settled, '%H:%M:%S')} at the latest for "
-                           f"the last lines of run {console.value(run.number)} in {store}; "
+            console.status(f"the run ended at {local_text(run.ended, '%H:%M:%S')}, and {store} "
+                           f"can take up to {minutes_text(delay)} to show its last lines, so pdt "
+                           f"waits until {local_text(settled, '%H:%M:%S')} at the latest; "
                            "press Ctrl+C to stop")
         if len(lines) < total:
             side = "first" if args.head else "last"
@@ -379,23 +401,25 @@ def logs(list_runs: Callable[[], list[Run]],
 
 
 def log_lines(lines: list[Line], errors: bool) -> list[Line]:
-    lines = in_time_order([line for line in lines if not line.message.startswith(EXIT_MARKER)])
+    lines = in_time_order(lines)
     if errors:
         lines = [line for line in lines if line.level not in ("DEBUG", "INFO")]
     return lines
 
 
-def run_heading(run: Run, app_name: str) -> str:
+def run_heading(run: Run, app_name: str, outcome: bool = True) -> str:
+    heading = f"run {run.number} of {app_name}: started {started_text(run)}"
+    if not outcome:
+        return heading
     exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
     duration = "" if run.ended is None else f"{duration_text(run)}, "
-    return (f"run {run.number} of {app_name}: started {started_text(run)}, "
-            f"{duration}{run.status}{exit_part}")
+    return f"{heading}, {duration}{run.status}{exit_part}"
 
 
 def say_result(run: Run) -> None:
     after = "" if run.ended is None else f" after {duration_text(run)}"
     exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
-    result_text = f"run {console.value(run.number)} {run.status}{after}{exit_part}"
+    result_text = f"the run {run.status}{after}{exit_part}"
     if run.status == "succeeded":
         console.done(result_text)
     else:
@@ -483,35 +507,35 @@ def follow(list_runs: Callable[[], list[Run]],
            delay: timedelta, shown: list[Line], hold: timedelta = timedelta(0),
            stream: Callable[[Run, bool], Iterable[Line]] | None = None,
            store: str = "the log") -> int:
-    before = run
     # Counts, not a set: a line the job wrote twice prints twice; a reconnected stream's replay prints once.
     seen = Counter(line_key(line) for line in shown)
     live = stream is not None and run.status == "running"
     try:
-        if live:
-            run = follow_stream(list_runs, resolve, run, errors, stream, store, seen,
-                                last_exit_line(shown))
-        if not live or run.status == "running":
-            run, exit_line = follow_store(list_runs, read_lines, resolve, run, errors, delay,
-                                          hold, seen)
-            if exit_line is None:
-                console.note(f"{store} does not show the exit line of run "
-                             f"{console.value(run.number)}, so its log may end early.")
+        with console.waiting("waiting for the run's next line") as wait:
+            if live:
+                run = follow_stream(list_runs, resolve, run, errors, stream, store, seen,
+                                    last_exit_line(shown), wait)
+            if not live or run.status == "running":
+                run, exit_line = follow_store(list_runs, read_lines, resolve, run, errors, delay,
+                                              hold, store, seen, wait)
+                if exit_line is None:
+                    console.note(f"{store} does not show the run's exit line, so its "
+                                 "log may end early.")
     except KeyboardInterrupt:
         console.say()
         return 130
-    if before.status == "running" or before.exit_code != run.exit_code:
-        say_result(run)
+    say_result(run)
     return 1 if run.status == "failed" else 0
 
 
 def follow_stream(list_runs: Callable[[], list[Run]],
                   resolve: Callable[[list[Run]], None] | None, run: Run, errors: bool,
                   stream: Callable[[Run, bool], Iterable[Line]], store: str,
-                  seen: Counter, exit_line: Line | None) -> Run:
+                  seen: Counter, exit_line: Line | None, wait: console.Wait) -> Run:
     """A run still running after this returns had its stream fail."""
     try:
         while run.status == "running" and exit_line is None:
+            wait.now("waiting for the run's next line in its live log")
             opened = time.monotonic()
             now_seen = Counter()
             for line in stream(run, True):
@@ -522,15 +546,15 @@ def follow_stream(list_runs: Callable[[], list[Run]],
                 seen[key] = now_seen[key]
                 if line.message.startswith(EXIT_MARKER):
                     exit_line = line
-                elif not errors or line.level not in ("DEBUG", "INFO"):
+                if not errors or line.level not in ("DEBUG", "INFO"):
                     print_line(line)
             run = latest(list_runs, resolve, run)
             if (run.status == "running" and exit_line is None
                     and time.monotonic() - opened < FOLLOW_SECONDS):
                 time.sleep(FOLLOW_SECONDS)
     except StreamError as exc:
-        console.warn(f"pdt cannot read the live log of run {console.value(run.number)}, "
-                     f"so it reads {store}: {console.escape(str(exc))}")
+        console.warn(f"pdt cannot read the run's live log, so it reads {store}: "
+                     f"{console.escape(str(exc))}")
         return run
     return ended_by(run, exit_line)
 
@@ -551,13 +575,16 @@ def ended_by(run: Run, exit_line: Line | None) -> Run:
 def follow_store(list_runs: Callable[[], list[Run]],
                  read_lines: Callable[[Run, datetime | None], list[Line]],
                  resolve: Callable[[list[Run]], None] | None, run: Run, errors: bool,
-                 delay: timedelta, hold: timedelta, seen: Counter) -> tuple[Run, Line | None]:
+                 delay: timedelta, hold: timedelta, store: str, seen: Counter,
+                 wait: console.Wait) -> tuple[Run, Line | None]:
     """A line prints once it is `hold` old, so a line the store shows late still prints
     in time order. The extra read after the exit line catches a line later than `hold`."""
     held = []
     since = None
     first = True
     while True:
+        wait.now(f"reading {store} every {FOLLOW_SECONDS}s for the run's next line"
+                 if run.status == "running" else f"waiting for {store} to show the run's last lines")
         raw = read_lines(run, since)
         now = datetime.now(UTC)
         exit_line = last_exit_line(raw)
@@ -580,6 +607,7 @@ def follow_store(list_runs: Callable[[], list[Run]],
             print_line(line)
         if done:
             if exit_line is not None and hold and not first:
+                wait.now(f"waiting {FOLLOW_SECONDS}s for lines {store} shows late")
                 time.sleep(FOLLOW_SECONDS)
                 for line in unseen(read_lines(run, since), errors, seen):
                     print_line(line)

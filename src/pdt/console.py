@@ -25,6 +25,9 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import contextmanager
+from time import monotonic
+from typing import Iterator
 
 from rich.console import Console
 from rich.markup import escape
@@ -91,6 +94,31 @@ def styled(message: str) -> None:
 def status(message: str) -> None:
     """A line about work in progress, such as a fetch or a login."""
     _console.print(f"[dim]{message}[/]")
+
+
+class Wait:
+    """What pdt waits for, and the seconds since it started waiting for it."""
+
+    def __init__(self, message: str) -> None:
+        self.now(message)
+
+    def now(self, message: str) -> None:
+        if getattr(self, "message", None) != message:
+            self.message, self.start = message, monotonic()
+
+    def __rich__(self) -> str:
+        return f"[dim]{self.message} ({round(monotonic() - self.start)}s)[/]"
+
+
+@contextmanager
+def waiting(message: str) -> Iterator[Wait]:
+    """On a terminal, a spinner line under the output that names the wait and counts its seconds."""
+    wait = Wait(message)
+    if not _console.is_terminal:
+        yield wait
+        return
+    with _console.status(wait):
+        yield wait
 
 
 def field(label: str, value: str) -> None:

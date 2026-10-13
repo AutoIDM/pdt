@@ -16,7 +16,6 @@ def project(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert scaffold.init(None, assume_yes=True) == 0
     (tmp_path / "pdt.yml").write_text("platform:\n  provider: aws\n  region: us-east-1\n")
-    monkeypatch.setattr(deploy.time, "sleep", lambda seconds: None)
     return tmp_path
 
 
@@ -29,16 +28,14 @@ def runs_json(found):
 
 
 class Cloud:
-    """A provider that records each command and lists `history`, then `after` once started."""
+    """A provider that records each command and lists `history`."""
 
-    def __init__(self, monkeypatch, history, after=None, terminal=True, answer="y",
-                 deploy_code=0, logs_code=0, runs_code=0):
+    def __init__(self, monkeypatch, history, terminal=True, answer="y",
+                 deploy_code=0, start_code=0, runs_code=0):
         self.calls = []
         self.history = history
-        self.after = after if after is not None else [run("new", "running"), *history]
-        self.started = False
         self.asked = []
-        self.codes = {"deploy": deploy_code, "logs": logs_code}
+        self.codes = {"deploy": deploy_code, "start": start_code}
         self.runs_code = runs_code
         monkeypatch.setattr(deploy, "dispatch", self.dispatch)
         monkeypatch.setattr(deploy, "dispatch_output", self.dispatch_output)
@@ -48,14 +45,12 @@ class Cloud:
 
     def dispatch(self, provider, command, app_name, assume_yes, extra=None):
         self.calls.append((command, *(extra or [])))
-        if command == "start":
-            self.started = True
         return self.codes.get(command, 0)
 
     def dispatch_output(self, provider, command, app_name, extra):
         assert (command, extra) == ("runs", ["--", "--json"])
         self.calls.append(("runs",))
-        return self.runs_code, runs_json(self.after if self.started else self.history)
+        return self.runs_code, runs_json(self.history)
 
     def confirm(self, question="Proceed?"):
         self.asked.append(question)
@@ -67,7 +62,7 @@ class Cloud:
         return [call[0] for call in self.calls]
 
 
-FOLLOW = ("logs", "--", "--follow", "--id", "new")
+FOLLOW = ("start", "--", "--follow")
 QUESTION = "Start a run now and show its log?"
 
 
@@ -80,7 +75,7 @@ def test_a_yes_at_the_terminal_starts_the_run_and_follows_it(project, monkeypatc
     cloud = Cloud(monkeypatch, history)
     assert deploy.deploy(APP) == 0
     assert cloud.asked == [QUESTION]
-    assert cloud.calls == [("deploy",), ("runs",), ("start",), ("runs",), FOLLOW]
+    assert cloud.calls == [("deploy",), ("runs",), FOLLOW]
     out = capsys.readouterr().out
     assert said in out
     assert f"pdt run {APP} --deployed" not in out
@@ -117,7 +112,7 @@ def test_run_starts_the_run_with_no_question(project, monkeypatch, assume_yes, t
     cloud = Cloud(monkeypatch, [run("old", "failed")], terminal=terminal)
     assert deploy.deploy(APP, assume_yes=assume_yes, run=True) == 0
     assert cloud.asked == []
-    assert cloud.calls == [("deploy",), ("runs",), ("start",), ("runs",), FOLLOW]
+    assert cloud.calls == [("deploy",), ("runs",), FOLLOW]
 
 
 @pytest.mark.parametrize("run_option", [None, True])
@@ -148,42 +143,9 @@ def test_a_failed_deploy_offers_nothing(project, monkeypatch):
 
 
 def test_the_exit_code_is_the_runs(project, monkeypatch, capsys):
-    cloud = Cloud(monkeypatch, [], logs_code=1)
+    cloud = Cloud(monkeypatch, [], start_code=1)
     assert deploy.deploy(APP) == 1
     assert cloud.calls[-1] == FOLLOW
-
-
-def test_follow_waits_for_the_new_run_and_never_follows_an_old_one(project, monkeypatch):
-    old = [run("old", "failed")]
-    cloud = Cloud(monkeypatch, old)
-    listed = iter([old, old, [run("new", "running"), *old]])
-    cloud.dispatch_output = lambda *a: (cloud.calls.append(("runs",)) or 0,
-                                        runs_json(next(listed) if cloud.started else old))
-    monkeypatch.setattr(deploy, "dispatch_output", cloud.dispatch_output)
-    assert deploy.deploy(APP) == 0
-    assert cloud.calls == [("deploy",), ("runs",), ("start",), ("runs",), ("runs",), ("runs",),
-                           FOLLOW]
-
-
-def test_a_run_the_list_never_shows_ends_with_the_command_to_follow_it(project, monkeypatch,
-                                                                       capsys):
-    sleeps = []
-    monkeypatch.setattr(deploy.time, "sleep", sleeps.append)
-    cloud = Cloud(monkeypatch, [], after=[])
-    assert deploy.deploy(APP) == 0
-    assert cloud.commands() == ["deploy", "runs", "start", *["runs"] * deploy.NEW_RUN_TRIES]
-    assert sleeps == [runs_cli.FOLLOW_SECONDS] * (deploy.NEW_RUN_TRIES - 1)
-    out = capsys.readouterr().out
-    assert "the run list does not show the new run yet" in out
-    assert f"pdt logs {APP} --follow" in out
-    assert f"pdt run {APP} --deployed" not in out
-
-
-def test_a_start_that_fails_ends_the_deploy_with_its_code(project, monkeypatch):
-    cloud = Cloud(monkeypatch, [])
-    cloud.codes["start"] = 1
-    assert deploy.deploy(APP) == 1
-    assert cloud.commands() == ["deploy", "runs", "start"]
 
 
 @pytest.mark.parametrize("start_code, hint", [(0, True), (1, False)])
