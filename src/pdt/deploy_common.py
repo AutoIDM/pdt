@@ -40,8 +40,8 @@ touches the cloud. When `docker info` answers, Docker on this computer
 builds the image and pushes it to the provider's registry. When it does
 not, the provider's cloud builder (ACR Tasks, Cloud Build, CodeBuild)
 builds it from an upload of the staged context. The `docker-build` key
-(config.DOCKER_BUILDS) forces either place. pdt never installs or starts
-Docker, and a failed build never runs again in the other place.
+(config.DOCKER_BUILDS) forces either place. A failed build stops the
+deploy.
 
 A local build forwards the deploying machine's SSH agent when one is
 running, so a RUN step marked `--mount=type=ssh` can install a private

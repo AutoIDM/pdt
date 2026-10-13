@@ -208,19 +208,15 @@ A deploy to AWS, Azure, or Google Cloud builds each app's image in one of two pl
 - When `docker info` answers, Docker on your computer builds the image and uploads it to the cloud's image registry.
 - When Docker is not installed or not running, the cloud builds the image: ACR Tasks on Azure, Cloud Build on Google Cloud, and CodeBuild on AWS. The deploy uploads the app folder and `pdt.yml`, without `.env` and the other secret files, and the cloud builder builds them with the same Dockerfile, the same base image, and the same CPU type as a build on your computer.
 
-pdt never installs or starts Docker. When a build fails, the deploy shows the error and stops; it does not try the other place.
+When a build fails, the deploy shows the error and stops.
 
 Set `docker-build` to choose the place yourself. Put it at the top level of `pdt.yml` for every app, or at the top level of an app's `config.yml` (or its `apps:` entry) for one app. The app's value wins.
 
 ```yaml
 docker-build: auto   # Docker on this computer when it answers, else the cloud (the default)
 # docker-build: local  # Docker on this computer only; the deploy stops when Docker is not running
-# docker-build: cloud  # the cloud only; the deploy does not look for Docker
+# docker-build: cloud  # the cloud only
 ```
-
-A build in the cloud cannot use the SSH agent of your computer. When an app's `Dockerfile` has a `RUN --mount=type=ssh` step, a build in the cloud stops before the deploy changes anything and names the step. Start Docker and deploy again, because a build with Docker on your computer forwards the agent.
-
-The Windows provider does not build an image.
 
 ### Azure
 
@@ -282,7 +278,7 @@ A `.dockerignore` in the app folder keeps files out of the image. Write its patt
 
 The `ENTRYPOINT` ends each run's output with the line `pdt: exit N`, which `pdt runs` reads for the run's exit code. Keep that line when you change the rest of the file.
 
-A build with Docker on your computer forwards your computer's SSH agent when one is running, so a `RUN --mount=type=ssh` step can install a private git dependency. A build in the cloud has no agent, so the deploy stops on such a step and asks you to start Docker.
+A `RUN --mount=type=ssh` step in your own `Dockerfile` can install a private git dependency with your computer's SSH agent. Only a build with Docker on your computer has the agent, so a deploy that would build such an app in the cloud stops and names the step.
 
 The Windows provider never builds an image, so `pdt validate` reports a Dockerfile in an app that uses it.
 
