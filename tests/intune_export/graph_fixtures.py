@@ -1,5 +1,5 @@
-"""Recorded Microsoft Graph responses for the IntuneExport.ps1 harness, in the shape of a
-full-metadata response, for the tenant of Contoso. `build()` returns the map the harness
+"""Hand-made Microsoft Graph responses for the IntuneExport.ps1 harness, written in the
+shape of full-metadata responses from the Graph documentation, for the tenant of Contoso. `build()` returns the map the harness
 reads: "<METHOD> <path>" to a response."""
 
 import base64
@@ -140,6 +140,7 @@ def build():
         g[f"GET {api}/{gid(101)}/getOmaSettingPlainTextValue(secretReferenceValueId='{secret}')"] = ok(
             {"@odata.context": f"{GRAPH}$metadata#Edm.String", "value": value})
     g[f"GET {api}/{gid(102)}?$expand=assignments"] = full(api, wifi, assignments=[], **{
+        "rootCertificateForServerValidation@odata.associationLink": f"{GRAPH}{certificate}/$ref",
         "rootCertificateForServerValidation@odata.navigationLink": GRAPH + certificate})
     g[f"GET {certificate}"] = ok({"@odata.context": f"{GRAPH}$metadata#deviceManagement/deviceConfigurations/$entity",
                                   "@odata.type": "#microsoft.graph.androidWorkProfileTrustedRootCertificate",
@@ -170,10 +171,11 @@ def build():
     g[f"GET {api}/{gid(402)}"] = full(api, second)
 
     api = "deviceManagement/intents"
-    simple(g, api, "deviceManagementIntent", 501, displayName="Contoso Firewall", templateId=gid(502), expand="?$expand=assignments")
-    g[f"GET {api}/{gid(501)}/settings"] = ok({"value": [
-        {"@odata.type": "#microsoft.graph.deviceManagementBooleanSettingInstance", "id": "firewall", "definitionId": "firewallEnabled",
-         "valueJson": "true", "value": True}]})
+    firewall = [{"@odata.type": "#microsoft.graph.deviceManagementBooleanSettingInstance", "id": "firewall",
+                 "definitionId": "firewallEnabled", "valueJson": "true", "value": True}]
+    simple(g, api, "deviceManagementIntent", 501, ("assignments", "settings"), displayName="Contoso Firewall", templateId=gid(502),
+           expand="?$expand=assignments,settings", details={"settings": firewall})
+    g[f"GET {api}/{gid(501)}/settings"] = ok({"value": firewall})
 
     api = "deviceManagement/deviceCompliancePolicies"
     compliance = item(api, "windows10CompliancePolicy", 601, ["assignments"], displayName="Contoso Compliance")
@@ -226,11 +228,14 @@ def build():
     g[f"GET {api}?$filter=id eq '{gid(1401)}'"] = listing(api, [{"id": gid(1401), "policyConfigurationIngestionType": "custom"}])
     g[f"GET {api}/{gid(1401)}/definitionValues?$expand=definition"] = ok({"value": [
         {"id": gid(1402), "enabled": True, "createdDateTime": "2024-01-02T03:04:05Z",
-         "definition": {"id": gid(1403), "displayName": "Home page", "classType": "user", "categoryPath": "\\Contoso\\Edge"}}]})
+         "definition": {"id": gid(1403), "displayName": "Home page", "classType": "user", "categoryPath": "\\Contoso\\Edge"}},
+        {"id": gid(1406), "enabled": True, "createdDateTime": "2024-01-02T03:04:05Z",
+         "definition": {"id": gid(1407), "displayName": "Allow Bluetooth", "classType": "machine"}}]})
     g[f"GET {api}/{gid(1401)}/definitionValues/{gid(1402)}/presentationValues?$expand=presentation"] = ok({"value": [
         {"@odata.type": "#microsoft.graph.groupPolicyPresentationValueText", "id": gid(1404), "value": "https://contoso.com",
          "lastModifiedDateTime": "2024-01-02T03:04:05Z", "createdDateTime": "2024-01-02T03:04:05Z",
          "presentation": {"id": gid(1405), "label": "Home page URL"}}]})
+    g[f"GET {api}/{gid(1401)}/definitionValues/{gid(1406)}/presentationValues?$expand=presentation"] = ok({"value": []})
 
     for api, odata_type, number, name, file_name in (
             ("deviceManagement/deviceManagementScripts", "deviceManagementScript", 1501, "Contoso Script", "contoso.ps1"),

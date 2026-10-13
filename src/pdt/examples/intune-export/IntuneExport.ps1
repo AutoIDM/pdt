@@ -30,6 +30,8 @@
 
 # One entry per IntuneManagement view item, in its order. Per-type behavior lives
 # only here and in the hook functions the entries call.
+# InfoView marks the items of IntuneManagement's "Intune Info" view, which its
+# bulk export leaves out. They export only when object_types names them.
 $IntuneTypes = @(
     @{ Id = 'DeviceConfiguration'; Title = 'Device Configuration'; API = '/deviceManagement/deviceConfigurations'
         QueryList = "`$filter=not%20isof(%27microsoft.graph.windowsUpdateForBusinessConfiguration%27)%20and%20not%20isof(%27microsoft.graph.iosUpdateConfiguration%27)"
@@ -112,16 +114,19 @@ $IntuneTypes = @(
     @{ Id = 'W365UserSettings'; Title = 'W365 User Settings'; API = '/deviceManagement/virtualEndpoint/userSettings' }
     @{ Id = 'DriverUpdateProfiles'; Title = 'Driver Update Profiles'; API = '/deviceManagement/windowsDriverUpdateProfiles' }
     @{ Id = 'DeviceCategories'; Title = 'Device Categories'; API = '/deviceManagement/deviceCategories'; QueryList = "`$top=500" }
-    @{ Id = 'BaselineTemplates'; Title = 'Baseline Templates - Intent'; API = '/deviceManagement/templates' }
-    @{ Id = 'BaselineTemplatesSettingsCatalog'; Title = 'Baseline Templates - Settings Catalog'
+    @{ Id = 'BaselineTemplates'; InfoView = $true; Title = 'Baseline Templates - Intent'; API = '/deviceManagement/templates' }
+    @{ Id = 'BaselineTemplatesSettingsCatalog'; InfoView = $true; Title = 'Baseline Templates - Settings Catalog'
         API = '/deviceManagement/configurationPolicyTemplates'; QueryList = "`$filter=(templateFamily eq 'Baseline')" }
-    @{ Id = 'AndroidGooglePlay'; Title = 'Android Google Play'; API = '/deviceManagement/androidManagedStoreAccountEnterpriseSettings' }
-    @{ Id = 'AndroidEnrolmentProfiles'; Title = 'Android Enrolment Profiles'; API = 'deviceManagement/androidDeviceOwnerEnrollmentProfiles' }
-    @{ Id = 'AppleVPPTokens'; Title = 'Apple VPP Tokens'; API = '/deviceAppManagement/vppTokens' }
-    @{ Id = 'AppleEnrollmentTokens'; Title = 'Apple Enrollment Tokens'; API = '/deviceManagement/depOnboardingSettings/?$top=100' }
-    @{ Id = 'TenantSettings'; Title = 'Tenant Settings'; API = 'deviceManagement/settings'; NameProperty = 'Name'
+    @{ Id = 'AndroidGooglePlay'; InfoView = $true; Title = 'Android Google Play'; API = '/deviceManagement/androidManagedStoreAccountEnterpriseSettings' }
+    @{ Id = 'AndroidEnrolmentProfiles'; InfoView = $true; Title = 'Android Enrolment Profiles'; API = 'deviceManagement/androidDeviceOwnerEnrollmentProfiles' }
+    @{ Id = 'AppleVPPTokens'; InfoView = $true; Title = 'Apple VPP Tokens'; API = '/deviceAppManagement/vppTokens' }
+    @{ Id = 'AppleEnrollmentTokens'; InfoView = $true; Title = 'Apple Enrollment Tokens'; API = '/deviceManagement/depOnboardingSettings/?$top=100' }
+    @{ Id = 'TenantSettings'; InfoView = $true; Title = 'Tenant Settings'; API = 'deviceManagement/settings'; NameProperty = 'Name'
         GetObjectName = { Start-GetObjectNameTenantSettings @args } }
 )
+
+# A Graph call that has not answered after this many seconds is retried.
+$RequestTimeoutSec = 120
 
 # Setting -> its default. A default's type decides how the value is read.
 $ConfigDefaults = [ordered]@{
@@ -134,9 +139,9 @@ $ConfigDefaults = [ordered]@{
     export_script_content  = $true
     export_policy_files    = $true
     export_app_files       = $false
-    app_encryption_folder  = ''
+    decrypt_oma_settings   = $true
     resolve_reference_info = $true
-    use_batch_api          = $false
+    use_batch_api          = $true
     graph_version          = 'beta'
     sort_json_properties   = $false
 }
@@ -179,13 +184,18 @@ function Get-ExportConfig {
 
 function Get-GraphToken {
     if (-not $script:Token -or $script:Token.ExpiresOn -lt (Get-Date).AddMinutes(5)) {
-        $response = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$($env:PDT_AZURE_TENANT_ID)/oauth2/v2.0/token" -Body @{
+        $response = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$($env:PDT_AZURE_TENANT_ID)/oauth2/v2.0/token" -TimeoutSec $RequestTimeoutSec -Body @{
             client_id     = $env:PDT_AZURE_CLIENT_ID
             client_secret = $env:PDT_AZURE_CLIENT_SECRET
             scope         = 'https://graph.microsoft.com/.default'
             grant_type    = 'client_credentials'
         }
         $script:Token = @{ AccessToken = $response.access_token; ExpiresOn = (Get-Date).AddSeconds($response.expires_in) }
+        # PDT_AZURE_TENANT_ID may be a domain name. The token names the tenant
+        # id, which IntuneManagement also takes from the token.
+        $claims = $response.access_token.Split('.')[1].Replace('-', '+').Replace('_', '/')
+        $claims += '=' * ((4 - $claims.Length % 4) % 4)
+        $script:TenantId = ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($claims)) | ConvertFrom-Json).tid
     }
     $script:Token.AccessToken
 }
@@ -211,7 +221,7 @@ function Invoke-GraphRequest {
         if ($Method -eq 'GET' -and $ODataMetadata -ne 'skip') {
             $headers.Accept = "application/json;odata.metadata=$ODataMetadata"
         }
-        $params = @{ Uri = $Url; Method = $Method; Headers = $headers }
+        $params = @{ Uri = $Url; Method = $Method; Headers = $headers; TimeoutSec = $RequestTimeoutSec }
         if ($Body) { $params.Body = [Text.Encoding]::UTF8.GetBytes($Body) }
         $attempt = 0
         $response = $null
@@ -220,8 +230,9 @@ function Invoke-GraphRequest {
                 $response = Invoke-RestMethod @params
                 break
             } catch {
+                # Status 0: no answer (timeout, DNS, or a dropped connection).
                 $status = [int]$_.Exception.Response.StatusCode
-                if ($status -in 429, 503, 504 -and $attempt -lt 10) {
+                if ($status -in 0, 429, 503, 504 -and $attempt -lt 10) {
                     $attempt++
                     $wait = $_.Exception.Response.Headers.RetryAfter.Delta.TotalSeconds
                     Start-Sleep -Seconds ($wait ? [int]$wait : 5)
@@ -230,7 +241,11 @@ function Invoke-GraphRequest {
                 if ($NoError) { return }
                 $details = $_.ErrorDetails.Message
                 $message = try { ($details | ConvertFrom-Json).error.message } catch { $details }
-                $failure = [Exception]::new("$Method $Url returned $status. $message".Trim())
+                $failure = if ($status -eq 0) {
+                    [Exception]::new("$Method $Url got no answer from Microsoft Graph. $($_.Exception.Message)".Trim())
+                } else {
+                    [Exception]::new("$Method $Url returned $status. $message".Trim())
+                }
                 $failure.Data['StatusCode'] = $status
                 throw $failure
             }
@@ -245,11 +260,35 @@ function Invoke-GraphRequest {
     $response
 }
 
+function Invoke-HookRequest {
+    param(
+        [Parameter(Mandatory)] [string]$Url,
+        [ValidateSet('full', 'minimal', 'none', 'skip')] [string]$ODataMetadata = 'full'
+    )
+
+    # IntuneManagement logs a failed extra request and exports the object
+    # without that data. The run then fails, so the gap is not silent.
+    try {
+        Invoke-GraphRequest -Url $Url -ODataMetadata $ODataMetadata
+    } catch {
+        Add-ExportFailure $_.Exception
+        Write-Warning "$($script:CurrentObject): $($_.Exception.Message)"
+    }
+}
+
+function Add-ExportFailure {
+    param([Exception]$Exception, $Status = $Exception.Data['StatusCode'] ?? 'error')
+
+    $status = $Status
+    $failure = "$($script:CurrentObject) ($status)"
+    if ($failure -notin $script:Failures) { $script:Failures.Add($failure) }
+}
+
 function Get-GraphMetadata {
     if (-not $script:MetadataLoaded) {
         $script:MetadataLoaded = $true
         try {
-            [xml]$script:Metadata = (Invoke-WebRequest -Uri 'https://graph.microsoft.com/beta/$metadata' -UseBasicParsing).Content
+            [xml]$script:Metadata = (Invoke-WebRequest -Uri 'https://graph.microsoft.com/beta/$metadata' -UseBasicParsing -TimeoutSec $RequestTimeoutSec).Content
         } catch {
             Write-Warning "Could not download the Microsoft Graph metadata, so references are not resolved: $($_.Exception.Message)"
         }
@@ -453,10 +492,12 @@ function Get-GraphObject {
     Add-GraphObjectProperties @($response) $ObjectType
 }
 
+# Sends GET requests 20 per $batch call and retries the throttled ones.
+# Returns request id -> its last response (status, body).
 function Invoke-GraphBatchRequest {
     param($Requests)
 
-    $results = @()
+    $results = @{}
     for ($start = 0; $start -lt $Requests.Count; $start += 20) {
         $pending = @($Requests[$start..([Math]::Min($start + 19, $Requests.Count - 1))])
         $attempt = 0
@@ -464,24 +505,17 @@ function Invoke-GraphBatchRequest {
             $response = Invoke-GraphRequest -Url '$batch' -Method POST -Body (@{ requests = $pending } | ConvertTo-Json -Depth 50)
             $retry = @()
             $wait = 0
-            foreach ($result in ($response.responses | Sort-Object { [int]$_.id })) {
-                $request = $pending | Where-Object id -EQ $result.id
-                if ($result.status -lt 300 -and $result.body) {
-                    $results += $result.body
-                } elseif ($result.status -eq 429 -and $request) {
-                    $retry += $request
+            foreach ($result in $response.responses) {
+                $results["$($result.id)"] = $result
+                if ($result.status -eq 429) {
+                    $retry += $pending | Where-Object id -EQ $result.id
                     $wait = [Math]::Max($wait, [int]$result.headers.'Retry-After')
-                } else {
-                    Write-Warning "Batch result $($result.status) for URL $($request.url). Skipping."
                 }
             }
             $pending = $retry
             if ($pending) {
                 $attempt++
-                if ($attempt -gt 10) {
-                    Write-Warning "Microsoft Graph still returned 429 after 10 retries. Skipping $($pending.Count) objects."
-                    break
-                }
+                if ($attempt -gt 10) { break }
                 Start-Sleep -Seconds ([Math]::Max($wait, 5))
             }
         }
@@ -495,14 +529,25 @@ function Get-GraphBatchObjects {
     $metadata = $ObjectType.ODataMetadata ?? 'full'
     $requests = @(for ($i = 0; $i -lt $Objects.Count; $i++) {
         [pscustomobject]@{
-            id      = "$($i + 1)"
+            id      = "$i"
             method  = 'GET'
             url     = Get-GraphObjectUrl $Objects[$i].Object $ObjectType
             headers = @{ Accept = "application/json;odata.metadata=$metadata" }
         }
     })
     if (-not $requests) { return }
-    Add-GraphObjectProperties @(Invoke-GraphBatchRequest $requests) $ObjectType
+    $responses = Invoke-GraphBatchRequest $requests
+    $bodies = for ($i = 0; $i -lt $Objects.Count; $i++) {
+        $result = $responses["$i"]
+        if ($result.status -lt 300 -and $result.body) {
+            $result.body
+        } else {
+            $script:CurrentObject = "$($ObjectType.Title): $(Get-GraphObjectName $Objects[$i].Object $ObjectType)"
+            Add-ExportFailure -Status ($result.status ?? 'error')
+            Write-Warning "$($script:CurrentObject): Microsoft Graph returned $($result.status) in a batch. $($result.body.error.message)"
+        }
+    }
+    Add-GraphObjectProperties @($bodies) $ObjectType
 }
 
 function Add-GraphNavigationProperties {
@@ -580,7 +625,12 @@ function Export-GraphObject {
     if (-not $script:Config.export_assignments -and $Object.assignments) {
         $Object.PSObject.Properties.Remove('assignments')
     }
-    Save-GraphObjectToFile $Object (Join-Path $Folder "$(Get-ExportFileName $Object $ObjectType).json")
+    $path = Join-Path $Folder "$(Get-ExportFileName $Object $ObjectType).json"
+    if (-not $script:ExportedFiles.Add($path)) {
+        Write-Warning ("$($script:CurrentObject) has the same file name as another object, ignoring case, so it replaces that file. " +
+            'Set add_id_to_file_name: true in config.yml to keep both.')
+    }
+    Save-GraphObjectToFile $Object $path
     if ($ObjectType.PostExport) { Invoke-Command $ObjectType.PostExport -ArgumentList $Object, $ObjectType, $Folder }
     Add-GraphMigrationInfo $Object
 }
@@ -597,7 +647,7 @@ function Add-EMAssignmentsToExportFile {
     if (-not $script:Config.export_assignments) { return }
     $path = Join-Path $Folder "$(Get-ExportFileName $Object $ObjectType).json"
     $saved = Get-GraphObjectFromFile $path
-    $assignments = (Invoke-GraphRequest -Url "$($ObjectType.API)/$($Object.id)/assignments" -ODataMetadata minimal).value
+    $assignments = (Invoke-HookRequest -Url "$($ObjectType.API)/$($Object.id)/assignments" -ODataMetadata minimal).value
     if ($assignments) {
         $saved | Add-Member -NotePropertyName assignments -NotePropertyValue $assignments -Force
         Save-GraphObjectToFile $saved $path
@@ -617,8 +667,9 @@ function Save-EMDefaultPolicy {
 function Start-PostGetDeviceConfiguration {
     param($Item, $ObjectType)
 
+    if (-not $script:Config.decrypt_oma_settings) { return }
     foreach ($omaSetting in ($Item.Object.omaSettings | Where-Object isEncrypted -EQ $true)) {
-        $plain = Invoke-GraphRequest -Url "/deviceManagement/deviceConfigurations/$($Item.Object.id)/getOmaSettingPlainTextValue(secretReferenceValueId='$($omaSetting.secretReferenceValueId)')"
+        $plain = Invoke-HookRequest -Url "/deviceManagement/deviceConfigurations/$($Item.Object.id)/getOmaSettingPlainTextValue(secretReferenceValueId='$($omaSetting.secretReferenceValueId)')"
         if ($plain.value) {
             $omaSetting.isEncrypted = $false
             $omaSetting.secretReferenceValueId = $null
@@ -647,7 +698,7 @@ function Start-PostExportTermsOfUse {
     param($Object, $ObjectType, [string]$Folder)
 
     foreach ($file in $Object.files) {
-        $data = (Invoke-GraphRequest -Url "agreements/$($Object.id)/file/localizations('$($file.id)')/fileData/data" -ODataMetadata minimal).value
+        $data = (Invoke-HookRequest -Url "agreements/$($Object.id)/file/localizations('$($file.id)')/fileData/data" -ODataMetadata minimal).value
         if ($data) { Save-Base64File (Join-Path $Folder (Remove-InvalidFileNameChars $file.fileName)) $data }
     }
 }
@@ -655,7 +706,7 @@ function Start-PostExportTermsOfUse {
 function Start-PostExportEndpointSecurity {
     param($Object, $ObjectType, [string]$Folder)
 
-    $settings = Invoke-GraphRequest -Url "$($ObjectType.API)/$($Object.id)/settings"
+    $settings = Invoke-HookRequest -Url "$($ObjectType.API)/$($Object.id)/settings"
     # IntuneManagement saves this text through its JSON writer, so the file
     # holds one JSON string. Its import reads the file that way.
     $settingsJson = "{ `"settings`": $(ConvertTo-Json $settings.value -Depth 20)`n}"
@@ -676,7 +727,7 @@ function Start-PostGetIntuneBranding {
     param($Item, $ObjectType)
 
     foreach ($image in 'themeColorLogo', 'lightBackgroundLogo', 'landingPageCustomizedImage') {
-        $response = Invoke-GraphRequest -Url "$($ObjectType.API)/$($Item.Object.id)/$image"
+        $response = Invoke-HookRequest -Url "$($ObjectType.API)/$($Item.Object.id)/$image"
         if ($response.value) { $Item.Object | Add-Member -NotePropertyName $image -NotePropertyValue $response -Force }
     }
 }
@@ -724,14 +775,29 @@ function Get-GPOObjectSettings {
     param($GPOObject)
 
     if ($GPOObject.policyConfigurationIngestionType -eq 'unknown') {
-        $listed = @((Invoke-GraphRequest -Url "/deviceManagement/groupPolicyConfigurations?`$filter=id eq '$($GPOObject.id)'").value)[0]
+        $listed = @((Invoke-HookRequest -Url "/deviceManagement/groupPolicyConfigurations?`$filter=id eq '$($GPOObject.id)'").value)[0]
         if ($listed.policyConfigurationIngestionType) { $GPOObject.policyConfigurationIngestionType = $listed.policyConfigurationIngestionType }
     }
 
-    $definitionValues = Invoke-GraphRequest -Url "/deviceManagement/groupPolicyConfigurations/$($GPOObject.id)/definitionValues?`$expand=definition" -ODataMetadata skip
+    $definitionValues = Invoke-HookRequest -Url "/deviceManagement/groupPolicyConfigurations/$($GPOObject.id)/definitionValues?`$expand=definition" -ODataMetadata skip
+    # One presentationValues call per definition value would be the slowest part
+    # of a big tenant, so they go through $batch.
+    $requests = @(foreach ($definitionValue in $definitionValues.value) {
+        [pscustomobject]@{
+            id     = "$($definitionValue.id)"
+            method = 'GET'
+            url    = "/deviceManagement/groupPolicyConfigurations/$($GPOObject.id)/definitionValues/$($definitionValue.id)/presentationValues?`$expand=presentation"
+        }
+    })
+    $responses = if ($requests) { Invoke-GraphBatchRequest $requests } else { @{} }
     foreach ($definitionValue in $definitionValues.value) {
         $definition = $definitionValue.definition
-        $presentationValues = Invoke-GraphRequest -Url "/deviceManagement/groupPolicyConfigurations/$($GPOObject.id)/definitionValues/$($definitionValue.id)/presentationValues?`$expand=presentation" -ODataMetadata skip
+        $result = $responses["$($definitionValue.id)"]
+        if ($result.status -ge 300 -or -not $result) {
+            Add-ExportFailure -Status ($result.status ?? 'error')
+            Write-Warning "$($script:CurrentObject): the values of setting $($definition.displayName) returned $($result.status)."
+        }
+        $presentationValues = $result.body
         $setting = [ordered]@{
             'enabled'               = $definitionValue.enabled
             'definition@odata.bind' = "https://graph.microsoft.com/beta/deviceManagement/groupPolicyDefinitions('$($definition.id)')"
@@ -810,7 +876,7 @@ function Start-PostExportAppConfiguration {
     $path = Join-Path $Folder "$(Get-ExportFileName $Object $ObjectType).json"
     $saved = Get-GraphObjectFromFile $path
     $targetedApps = @(foreach ($appId in $saved.targetedMobileApps) {
-        $app = Invoke-GraphRequest -Url "/deviceAppManagement/mobileApps/$appId"
+        $app = Invoke-HookRequest -Url "/deviceAppManagement/mobileApps/$appId"
         if ($app) { "$($app.displayName)|!|$($app.id)|!|$($app.'@odata.type')" }
     })
     if ($targetedApps) {
@@ -841,7 +907,7 @@ function Start-PostGetApplications {
 
     $app = $Item.Object
     if (($app.dependentAppCount -as [int]) -gt 0 -or ($app.supersededAppCount -as [int]) -gt 0) {
-        $relationships = (Invoke-GraphRequest -Url "/deviceAppManagement/mobileApps/$($app.id)/relationships?`$filter=targetType%20eq%20microsoft.graph.mobileAppRelationshipType%27child%27").value
+        $relationships = (Invoke-HookRequest -Url "/deviceAppManagement/mobileApps/$($app.id)/relationships?`$filter=targetType%20eq%20microsoft.graph.mobileAppRelationshipType%27child%27").value
         $dependencies = @($relationships | Where-Object '@odata.type' -EQ '#microsoft.graph.mobileAppDependency' | ForEach-Object {
             "$($_.targetDisplayName)|!|$($_.targetDisplayVersion)|!|$($_.targetId)|!|$($_.dependencyType)"
         })
@@ -854,8 +920,8 @@ function Start-PostGetApplications {
 
     if ($app.'@odata.type' -eq '#microsoft.graph.win32LobApp' -and ($app.activeInstallScript.targetId -or $app.activeUninstallScript.targetId)) {
         $scriptsUrl = "/deviceAppManagement/mobileApps/$($app.id)/microsoft.graph.win32LobApp/contentVersions/$($app.committedContentVersion)/scripts"
-        foreach ($scriptInfo in (Invoke-GraphRequest -Url "$scriptsUrl/").value) {
-            $content = (Invoke-GraphRequest -Url "$scriptsUrl/$($scriptInfo.id)?`$select=Id,Content").content
+        foreach ($scriptInfo in (Invoke-HookRequest -Url "$scriptsUrl/").value) {
+            $content = (Invoke-HookRequest -Url "$scriptsUrl/$($scriptInfo.id)?`$select=Id,Content").content
             if ($content) { $scriptInfo | Add-Member -NotePropertyName content -NotePropertyValue $content -Force }
             $target = if ($app.activeInstallScript.targetId -eq $scriptInfo.id) {
                 $app.activeInstallScript
@@ -892,26 +958,30 @@ function Start-PostExportApplications {
     if ($script:Config.export_app_files -and $Object.committedContentVersion) { Save-AppPackage $Object $Folder }
 }
 
-function Find-AppEncryptionFile {
+function Find-AppEncryptionInfo {
     param($Object, $ContentFile)
 
-    $folder = $script:Config.app_encryption_folder
-    if (-not $folder) { return }
-    if (-not [IO.Path]::IsPathRooted($folder)) { $folder = Join-Path $PSScriptRoot $folder }
+    if (-not $env:INTUNE_APP_ENCRYPTION_KEYS) { return }
+    try {
+        $keys = $env:INTUNE_APP_ENCRYPTION_KEYS | ConvertFrom-Json -AsHashtable
+    } catch {
+        throw 'INTUNE_APP_ENCRYPTION_KEYS in .env is not JSON. Set it to an object that maps each encryption file name, without .json, to that file''s content.'
+    }
     foreach ($name in "$($Object.displayName)_$($Object.id)_$($Object.committedContentVersion)",
         "$([IO.Path]::GetFileNameWithoutExtension($Object.fileName))_$($ContentFile.size)",
         "$($Object.displayName)_$($ContentFile.size)") {
-        $path = Join-Path $folder "$name.json"
-        if ([IO.File]::Exists($path)) { return $path }
+        $info = $keys[$name]
+        if ($info) { return $info.fileEncryptionInfo ?? $info }
     }
 }
 
 function Save-AppPackage {
     param($Object, [string]$Folder)
 
-    $app = Invoke-GraphRequest -Url "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$($Object.id)"
+    $app = Invoke-HookRequest -Url "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$($Object.id)"
+    if (-not $app) { return }
     $filesUrl = "/deviceAppManagement/mobileApps/$($Object.id)/$($app.'@odata.type'.Trim('#'))/contentVersions/$($app.committedContentVersion)/files"
-    $files = @((Invoke-GraphRequest -Url $filesUrl).value)
+    $files = @((Invoke-HookRequest -Url $filesUrl).value)
     $contentFile = $null
     # Intune does not always list the files in upload order, so the last one
     # is only the first guess.
@@ -924,43 +994,46 @@ function Save-AppPackage {
         Write-Warning "Could not find the package file of app $($Object.displayName) ($($Object.id))."
         return
     }
-    $encryptionFile = Find-AppEncryptionFile $Object $contentFile
-    if (-not $encryptionFile) {
-        Write-Host "No encryption file for app $($Object.displayName), so its package is not exported."
+    $encryption = Find-AppEncryptionInfo $Object $contentFile
+    if (-not $encryption) {
+        Write-Output "No encryption key in INTUNE_APP_ENCRYPTION_KEYS for app $($Object.displayName), so its package is not exported."
         return
     }
 
     $packageName = Remove-InvalidFileNameChars $Object.fileName
     $encrypted = Join-Path $Folder "$packageName.encrypted"
-    Invoke-WebRequest -Uri $contentFile.azureStorageUri -OutFile $encrypted -UseBasicParsing
-    $encryption = Get-Content -LiteralPath $encryptionFile -Raw | ConvertFrom-Json
-    if ($encryption.fileEncryptionInfo) { $encryption = $encryption.fileEncryptionInfo }
-
+    $package = Join-Path $Folder $packageName
     $aes = [Security.Cryptography.Aes]::Create()
-    $source = [IO.File]::OpenRead($encrypted)
-    $target = [IO.File]::Create((Join-Path $Folder $packageName))
+    $decryptor = $source = $target = $null
+    $done = $false
     try {
+        Invoke-WebRequest -Uri $contentFile.azureStorageUri -OutFile $encrypted -UseBasicParsing -TimeoutSec $RequestTimeoutSec
         $decryptor = $aes.CreateDecryptor([Convert]::FromBase64String($encryption.encryptionKey),
             [Convert]::FromBase64String($encryption.initializationVector))
-        $stream = [Security.Cryptography.CryptoStream]::new($target, $decryptor, [Security.Cryptography.CryptoStreamMode]::Write)
+        $source = [IO.File]::OpenRead($encrypted)
+        $target = [IO.File]::Create($package)
+        $stream = [Security.Cryptography.CryptoStream]::new($target, $decryptor, [Security.Cryptography.CryptoStreamMode]::Write, $true)
         # The first 48 bytes of an Intune package are its HMAC and IV.
         [void]$source.Seek(48, [IO.SeekOrigin]::Begin)
         $source.CopyTo($stream)
         $stream.FlushFinalBlock()
         $stream.Dispose()
+        $done = $true
+    } catch {
+        Add-ExportFailure $_.Exception
+        Write-Warning "$($script:CurrentObject): the package could not be downloaded or decrypted: $($_.Exception.Message)"
     } finally {
-        $target.Dispose()
-        $source.Dispose()
-        $aes.Dispose()
+        foreach ($disposable in $target, $source, $decryptor, $aes) { if ($disposable) { $disposable.Dispose() } }
+        Remove-Item -LiteralPath $encrypted -ErrorAction Ignore
+        if (-not $done) { Remove-Item -LiteralPath $package -ErrorAction Ignore }
     }
-    Remove-Item -LiteralPath $encrypted
 }
 
 function Start-PostGetSettingsCatalog {
     param($Item, $ObjectType)
 
     if (-not $Item.Object.assignments) {
-        $assignments = (Invoke-GraphRequest -Url "$($ObjectType.API)/$($Item.Object.id)/assignments").value
+        $assignments = (Invoke-HookRequest -Url "$($ObjectType.API)/$($Item.Object.id)/assignments").value
         if ($assignments) { $Item.Object | Add-Member -NotePropertyName assignments -NotePropertyValue $assignments -Force }
     }
 }
@@ -972,7 +1045,8 @@ function Start-PostExportPolicyFile {
     if ($content -and $script:Config.export_policy_files) {
         # IntuneManagement reads a property of the object that never exists,
         # so a policy without fileName is written as ".json".
-        Save-Base64File (Join-Path $Folder (Remove-InvalidFileNameChars ($Object.fileName ?? '.json'))) $content
+        $fileName = if ([string]::IsNullOrEmpty($Object.fileName)) { '.json' } else { $Object.fileName }
+        Save-Base64File (Join-Path $Folder (Remove-InvalidFileNameChars $fileName)) $content
     }
 }
 
@@ -982,7 +1056,7 @@ function Start-PostExportRoleDefinitions {
     $path = Join-Path $Folder "$(Get-ExportFileName $Object $ObjectType).json"
     $saved = Get-GraphObjectFromFile $path
     $roleAssignments = @(foreach ($roleAssignment in $saved.roleAssignments) {
-        $assignment = Invoke-GraphRequest -Url "/deviceManagement/roleAssignments/$($roleAssignment.id)?`$expand=microsoft.graph.deviceAndAppManagementRoleAssignment/roleScopeTags" -ODataMetadata minimal
+        $assignment = Invoke-HookRequest -Url "/deviceManagement/roleAssignments/$($roleAssignment.id)?`$expand=microsoft.graph.deviceAndAppManagementRoleAssignment/roleScopeTags" -ODataMetadata minimal
         if ($assignment) {
             foreach ($groupId in @($assignment.resourceScopes) + @($assignment.members)) { Add-GraphMigrationObject $groupId '/groups' 'Group' }
             $assignment
@@ -997,7 +1071,7 @@ function Start-PostExportRoleDefinitions {
 function Start-PostGetScopeTags {
     param($Item, $ObjectType)
 
-    $assignments = (Invoke-GraphRequest -Url "$($ObjectType.API)/$($Item.Object.id)/assignments").value
+    $assignments = (Invoke-HookRequest -Url "$($ObjectType.API)/$($Item.Object.id)/assignments").value
     if ($assignments) { $Item.Object | Add-Member -NotePropertyName assignments -NotePropertyValue $assignments -Force }
 }
 
@@ -1013,7 +1087,7 @@ function Start-PostExportDeviceHealthScripts {
 function Start-PostGetReusableSettings {
     param($Item, $ObjectType)
 
-    $response = Invoke-GraphRequest -Url "$($ObjectType.API)/$($Item.Object.id)?`$select=settinginstance,displayname,description"
+    $response = Invoke-HookRequest -Url "$($ObjectType.API)/$($Item.Object.id)?`$select=settinginstance,displayname,description"
     if ($response.settingInstance) {
         $Item.Object | Add-Member -NotePropertyName settingInstance -NotePropertyValue $response.settingInstance -Force
     }
@@ -1025,12 +1099,14 @@ function Start-GetObjectNameTenantSettings {
 
 function Start-IntuneExport {
     $script:Config = Get-ExportConfig $env:PDT_CONFIG_JSON
-    $script:TenantId = $env:PDT_AZURE_TENANT_ID
     $script:Token = $null
+    [void](Get-GraphToken)
     $script:Metadata = $null
     $script:MetadataLoaded = $false
     $script:MigrationCache = @{}
     $script:MigrationObjects = [Collections.Generic.List[object]]::new()
+    $script:Failures = [Collections.Generic.List[string]]::new()
+    $script:ExportedFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
     $script:Organization = @((Invoke-GraphRequest -Url 'organization' -ODataMetadata skip -NoError).value)[0]
     if (-not $script:Organization) {
@@ -1038,73 +1114,88 @@ function Start-IntuneExport {
         $script:Organization = [pscustomobject]@{ id = $script:TenantId; displayName = '' }
     }
 
-    $outputDir = $env:PDT_OUTPUT_DIR ?? $PSScriptRoot
+    # Outside pdt the zip goes to the temp folder, not the app folder, because
+    # it can hold secrets and a deploy copies the app folder into the image.
+    $outputDir = $env:PDT_OUTPUT_DIR ?? [IO.Path]::GetTempPath()
     $name = "IntuneExport-$(Get-Date -Format yyyy-MM-dd)"
-    $work = Join-Path $outputDir 'intune-export-work'
+    $work = Join-Path ([IO.Path]::GetTempPath()) "intune-export-$([guid]::NewGuid())"
     $root = Join-Path $work $name
-    Remove-Item $work -Recurse -Force -ErrorAction Ignore
-    [IO.Directory]::CreateDirectory($root) | Out-Null
-    $script:MigrationFolder = $root
-    if ($script:Config.add_company_name) {
-        $script:MigrationFolder = Join-Path $root (Remove-InvalidFileNameChars $script:Organization.displayName)
-    }
-
-    $types = if ($script:Config.object_types) { $IntuneTypes | Where-Object Id -In $script:Config.object_types } else { $IntuneTypes }
-    $filter = $script:Config.name_filter.Trim()
-    $failed = @()
-    $total = 0
-    foreach ($type in $types) {
-        $folder = $script:MigrationFolder
-        if ($script:Config.add_object_type) { $folder = Join-Path $folder $type.Id }
-        try {
-            $objects = @(Get-GraphObjects $type | Where-Object {
-                -not $filter -or (Get-GraphObjectName $_.Object $type) -match [regex]::Escape($filter)
-            })
-            $items = if ($script:Config.use_batch_api) { @(Get-GraphBatchObjects $objects $type) } else { $objects }
-        } catch {
-            $status = $_.Exception.Data['StatusCode'] ?? 'no HTTP status'
-            $failed += "$($type.Id) ($status)"
-            Write-Warning "$($type.Title): $($_.Exception.Message)"
-            continue
+    try {
+        [IO.Directory]::CreateDirectory($root) | Out-Null
+        $script:MigrationFolder = $root
+        if ($script:Config.add_company_name) {
+            $script:MigrationFolder = Join-Path $root (Remove-InvalidFileNameChars $script:Organization.displayName)
         }
-        $count = 0
-        foreach ($item in $items) {
-            $objectName = Get-GraphObjectName $item.Object $type
+
+        $types = if ($script:Config.object_types) { $IntuneTypes | Where-Object Id -In $script:Config.object_types } else { $IntuneTypes | Where-Object { -not $_.InfoView } }
+        $filter = $script:Config.name_filter.Trim()
+        $total = 0
+        foreach ($type in $types) {
+            $folder = $script:MigrationFolder
+            if ($script:Config.add_object_type) { $folder = Join-Path $folder $type.Id }
             try {
-                $full = if ($script:Config.use_batch_api) { $item } else { Get-GraphObject $item.Object $type }
-                if ($type.PostGet) { Invoke-Command $type.PostGet -ArgumentList $full, $type }
-                Export-GraphObject $full.Object $type $folder
-                $count++
+                $objects = @(Get-GraphObjects $type | Where-Object {
+                    -not $filter -or (Get-GraphObjectName $_.Object $type) -match [regex]::Escape($filter)
+                })
+                $items = if ($script:Config.use_batch_api) { @(Get-GraphBatchObjects $objects $type) } else { $objects }
             } catch {
-                Write-Warning "$($type.Title): $($objectName): $($_.Exception.Message)"
+                $script:CurrentObject = $type.Title
+                Add-ExportFailure $_.Exception
+                Write-Warning "$($type.Title): $($_.Exception.Message)"
+                continue
             }
+            $count = 0
+            foreach ($item in $items) {
+                $script:CurrentObject = "$($type.Title): $(Get-GraphObjectName $item.Object $type)"
+                try {
+                    $full = if ($script:Config.use_batch_api) { $item } else { Get-GraphObject $item.Object $type }
+                    if ($type.PostGet) { Invoke-Command $type.PostGet -ArgumentList $full, $type }
+                    Export-GraphObject $full.Object $type $folder
+                    $count++
+                } catch {
+                    Add-ExportFailure $_.Exception
+                    Write-Warning "$($script:CurrentObject): $($_.Exception.Message)"
+                }
+            }
+            Write-Output "$($type.Title): $count objects"
+            $total += $count
         }
-        Write-Output "$($type.Title): $count objects"
-        $total += $count
-    }
 
-    if ($script:MigrationObjects.Count -gt 0) {
-        [IO.Directory]::CreateDirectory($script:MigrationFolder) | Out-Null
-        # IntuneManagement compares TenantId with the tenant it imports into,
-        # so this file keeps the real id.
-        $table = [ordered]@{
-            TenantId     = $script:Organization.id
-            Organization = $script:Organization.displayName
-            Objects      = @($script:MigrationObjects)
+        if ($script:MigrationObjects.Count -gt 0) {
+            [IO.Directory]::CreateDirectory($script:MigrationFolder) | Out-Null
+            # IntuneManagement compares TenantId with the tenant it imports into,
+            # so this file keeps the real id.
+            $table = [ordered]@{
+                TenantId     = $script:Organization.id
+                Organization = $script:Organization.displayName
+                Objects      = @($script:MigrationObjects)
+            }
+            [IO.File]::WriteAllText((Join-Path $script:MigrationFolder 'MigrationTable.json'),
+                ($table | ConvertTo-Json -Depth 50) + [Environment]::NewLine, [Text.UTF8Encoding]::new($true))
         }
-        [IO.File]::WriteAllText((Join-Path $script:MigrationFolder 'MigrationTable.json'),
-            ($table | ConvertTo-Json -Depth 50) + [Environment]::NewLine, [Text.UTF8Encoding]::new($true))
-    }
 
-    $zip = Join-Path $outputDir "$name.zip"
-    Remove-Item $zip -Force -ErrorAction Ignore
-    [IO.Compression.ZipFile]::CreateFromDirectory($root, $zip, [IO.Compression.CompressionLevel]::Optimal, $true)
-    Remove-Item $work -Recurse -Force
+        $zip = Join-Path $outputDir "$name.zip"
+        Remove-Item $zip -Force -ErrorAction Ignore
+        [IO.Compression.ZipFile]::CreateFromDirectory($root, $zip, [IO.Compression.CompressionLevel]::Optimal, $true)
+    } finally {
+        Remove-Item $work -Recurse -Force -ErrorAction Ignore
+    }
     Write-Output "Wrote $name.zip with $total objects."
+    if (-not $env:PDT_OUTPUT_DIR) { Write-Output "It is in $outputDir." }
 
-    if ($failed) {
-        throw ("These object types failed: $($failed -join ', '). Grant the app the Microsoft Graph permission " +
-            'each one needs, or remove the type from object_types in config.yml.')
+    if ($script:Failures.Count -gt 0) {
+        $typeFailures = @($script:Failures | Where-Object { $_ -notlike '*: *' })
+        $message = @("The zip is incomplete. These failed: $($script:Failures -join ', ').")
+        if ($script:Failures -match '\(403\)$') {
+            $message += '403 means the app lacks a Microsoft Graph permission: add it to the app in Entra and grant admin consent.'
+        }
+        if ($typeFailures -match '\(40[04]\)$') {
+            $message += '400 or 404 for a whole object type often means the tenant does not use that feature: remove the type from object_types in config.yml.'
+        }
+        if ($script:Failures | Where-Object { $_ -notmatch '\(403\)$' -and ($_ -like '*: *' -or $_ -notmatch '\(40[04]\)$') }) {
+            $message += 'For any other failure, check the named object in Intune. The next run tries again.'
+        }
+        throw ($message -join ' ')
     }
 }
 

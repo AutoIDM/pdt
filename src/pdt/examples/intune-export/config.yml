@@ -11,7 +11,11 @@ schedule: "weekly"
 # are its defaults.
 config:
   # The object types to export, by IntuneManagement folder name, for example
-  # [DeviceConfiguration, SettingsCatalog]. Empty exports every type.
+  # [DeviceConfiguration, SettingsCatalog]. Empty exports the 46 types of
+  # IntuneManagement's bulk export. These read-only types export only when
+  # listed here: BaselineTemplates, BaselineTemplatesSettingsCatalog,
+  # AndroidGooglePlay, AndroidEnrolmentProfiles, AppleVPPTokens,
+  # AppleEnrollmentTokens, TenantSettings.
   object_types: []
 
   # Export only objects whose name contains this text. Empty exports all.
@@ -35,18 +39,26 @@ config:
   export_script_content: true
   export_policy_files: true
 
+  # Write custom OMA-URI values that Intune stores encrypted (passwords,
+  # keys) as plain text, so an import can set them again. The zip in the
+  # data store then holds those secrets. Set false to keep them encrypted.
+  decrypt_oma_settings: true
+
   # Also download app packages. Intune keeps them encrypted, so this works
   # only for apps uploaded with IntuneManagement's "Save Encryption File"
-  # setting. Put those encryption files in this folder, inside the app.
+  # setting. Put the keys in .env, never in this folder: set
+  # INTUNE_APP_ENCRYPTION_KEYS to one JSON object that maps each encryption
+  # file name, without .json, to that file's content. `pdt deploy` uploads
+  # it as a secret.
   export_app_files: false
-  app_encryption_folder: ""
 
   # Add the names of referenced objects (for example the certificate of a
   # VPN profile), so an import can link them again.
   resolve_reference_info: true
 
-  # Read up to 20 objects per Microsoft Graph call.
-  use_batch_api: false
+  # Read up to 20 objects per Microsoft Graph call. This keeps a large tenant
+  # inside the run time limit. The files are the same either way.
+  use_batch_api: true
 
   # Microsoft Graph version: beta or v1.0. Some object types exist only in
   # beta.
@@ -67,3 +79,5 @@ env:
     - PDT_AZURE_TENANT_ID
     - PDT_AZURE_CLIENT_ID
     - PDT_AZURE_CLIENT_SECRET
+  optional:
+    - INTUNE_APP_ENCRYPTION_KEYS

@@ -12,7 +12,9 @@ param(
     [Parameter(Mandatory)] [string]$Fixtures,
     [Parameter(Mandatory)] [string]$OutputDir,
     [Parameter(Mandatory)] [string]$Log,
-    [string]$ConfigJson = '{}'
+    [string]$ConfigJson = '{}',
+    [string]$TenantId = '00000000-0000-0000-0000-000000000000',
+    [string]$TokenTenant = '00000000-0000-0000-0000-000000000000'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,11 +54,12 @@ function ConvertTo-Response {
 }
 
 function Invoke-RestMethod {
-    param([string]$Uri, [string]$Method = 'GET', $Headers, $Body)
+    param([string]$Uri, [string]$Method = 'GET', $Headers, $Body, [int]$TimeoutSec)
 
-    $script:HarnessRequests.Add([ordered]@{ method = $Method.ToUpper(); url = $Uri; accept = $Headers.Accept; batch = $false })
+    $script:HarnessRequests.Add([ordered]@{ method = $Method.ToUpper(); url = $Uri; accept = $Headers.Accept; batch = $false; timeout = $TimeoutSec })
     if ($Uri -like 'https://login.microsoftonline.com/*') {
-        return [pscustomobject]@{ access_token = 'token'; expires_in = 3599 }
+        $claims = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((@{ tid = $TokenTenant } | ConvertTo-Json -Compress))).TrimEnd('=')
+        return [pscustomobject]@{ access_token = "header.$($claims.Replace('+', '-').Replace('/', '_')).signature"; expires_in = 3599 }
     }
     if ($Uri -match '/\$batch$') {
         $batch = [Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json
@@ -69,6 +72,9 @@ function Invoke-RestMethod {
     }
     $fixture = Get-Fixture (Get-FixtureKey $Method $Uri)
     $status = $fixture.status ?? 200
+    if ($status -eq 0) {
+        throw [Net.Http.HttpRequestException]::new('The request was canceled due to the configured HttpClient.Timeout.')
+    }
     if ($status -ge 300) {
         $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]$status)
         if ($fixture.headers.'Retry-After') {
@@ -84,9 +90,9 @@ function Invoke-RestMethod {
 }
 
 function Invoke-WebRequest {
-    param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing)
+    param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing, [int]$TimeoutSec)
 
-    $script:HarnessRequests.Add([ordered]@{ method = 'GET'; url = $Uri; accept = $null; batch = $false })
+    $script:HarnessRequests.Add([ordered]@{ method = 'GET'; url = $Uri; accept = $null; batch = $false; timeout = $TimeoutSec })
     $fixture = Get-Fixture (Get-FixtureKey 'GET' $Uri)
     if ($OutFile) {
         [IO.File]::WriteAllBytes($OutFile, [Convert]::FromBase64String($fixture.bytes))
@@ -103,7 +109,7 @@ function Start-Sleep {
 
 $env:PDT_OUTPUT_DIR = $OutputDir
 $env:PDT_CONFIG_JSON = $ConfigJson
-$env:PDT_AZURE_TENANT_ID = '00000000-0000-0000-0000-000000000000'
+$env:PDT_AZURE_TENANT_ID = $TenantId
 $env:PDT_AZURE_CLIENT_ID = '00000000-0000-0000-0000-000000000001'
 $env:PDT_AZURE_CLIENT_SECRET = 'secret'
 

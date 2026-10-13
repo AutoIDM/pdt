@@ -2,6 +2,7 @@
 against recorded Microsoft Graph responses, and these tests read the zip it writes."""
 
 import json
+import os
 import shutil
 import subprocess
 import zipfile
@@ -15,6 +16,21 @@ from intune_export.graph_fixtures import TENANT, gid
 SCRIPT = Path(__file__).resolve().parent.parent / "src/pdt/examples/intune-export/IntuneExport.ps1"
 HARNESS = Path(__file__).resolve().parent / "intune_export/harness.ps1"
 GENERIC = ["AutoPilot", "NamedLocations", "ComplianceScripts", "AzureBranding", "TenantSettings", "DeviceCategories"]
+
+REGISTRY = [
+    "DeviceConfiguration", "ConditionalAccess", "TermsOfUse", "NamedLocations", "EndpointSecurity",
+    "CompliancePolicies", "CompliancePoliciesV2", "ComplianceScripts", "IntuneBranding", "AzureBranding",
+    "EnrollmentStatusPage", "EnrollmentRestrictions", "CoManagementSettings", "AdministrativeTemplates",
+    "PowerShellScripts", "MacScripts", "MacCustomAttributes", "TermsAndConditions", "AppProtection",
+    "AppConfigurationManagedApp", "AppConfigurationManagedDevice", "Applications", "AutoPilot", "PolicySets",
+    "UpdatePolicies", "FeatureUpdates", "QualityUpdates", "QualityUpdatePolicies", "SettingsCatalog",
+    "InventoryPolicies", "HardwareConfigurations", "RoleDefinitions", "ScopeTags", "Notifications",
+    "AndroidOEMConfig", "AppleEnrollmentTypes", "AssignmentFilters", "DeviceHealthScripts", "ADMXFiles",
+    "ReusableSettings", "AuthenticationStrengths", "AuthenticationContext", "W365ProvisioningPolicies",
+    "W365UserSettings", "DriverUpdateProfiles", "DeviceCategories",
+    "BaselineTemplates", "BaselineTemplatesSettingsCatalog", "AndroidGooglePlay", "AndroidEnrolmentProfiles",
+    "AppleVPPTokens", "AppleEnrollmentTokens", "TenantSettings",
+]
 
 needs_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs pwsh")
 
@@ -41,7 +57,7 @@ class Export:
         return [request["url"] for request in self.log["requests"]]
 
 
-def run_export(tmp_path, config=None, fixtures=None):
+def run_export(tmp_path, config=None, fixtures=None, env=None, tenant=None):
     fixtures = graph_fixtures.build() if fixtures is None else fixtures
     (tmp_path / "output").mkdir()
     (tmp_path / "fixtures.json").write_text(json.dumps(fixtures))
@@ -49,8 +65,8 @@ def run_export(tmp_path, config=None, fixtures=None):
         [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-File", str(HARNESS),
          "-Script", str(SCRIPT), "-Fixtures", str(tmp_path / "fixtures.json"),
          "-OutputDir", str(tmp_path / "output"), "-Log", str(tmp_path / "log.json"),
-         "-ConfigJson", json.dumps(config or {})],
-        capture_output=True, text=True, timeout=300)
+         "-ConfigJson", json.dumps(config or {}), *(["-TenantId", tenant] if tenant else [])],
+        capture_output=True, text=True, timeout=300, env={**os.environ, **(env or {})})
     export = Export(tmp_path, result)
     assert export.log["unknown"] == [], result.stdout + result.stderr
     return export
@@ -127,25 +143,12 @@ def test_requests_send_the_odata_metadata_accept_header_and_follow_pages(tmp_pat
 def test_the_registry_holds_every_intune_object_type_in_order():
     ids = json.loads(pwsh_eval("$IntuneTypes.Id | ConvertTo-Json"))
 
-    assert ids == [
-        "DeviceConfiguration", "ConditionalAccess", "TermsOfUse", "NamedLocations", "EndpointSecurity",
-        "CompliancePolicies", "CompliancePoliciesV2", "ComplianceScripts", "IntuneBranding", "AzureBranding",
-        "EnrollmentStatusPage", "EnrollmentRestrictions", "CoManagementSettings", "AdministrativeTemplates",
-        "PowerShellScripts", "MacScripts", "MacCustomAttributes", "TermsAndConditions", "AppProtection",
-        "AppConfigurationManagedApp", "AppConfigurationManagedDevice", "Applications", "AutoPilot", "PolicySets",
-        "UpdatePolicies", "FeatureUpdates", "QualityUpdates", "QualityUpdatePolicies", "SettingsCatalog",
-        "InventoryPolicies", "HardwareConfigurations", "RoleDefinitions", "ScopeTags", "Notifications",
-        "AndroidOEMConfig", "AppleEnrollmentTypes", "AssignmentFilters", "DeviceHealthScripts", "ADMXFiles",
-        "ReusableSettings", "AuthenticationStrengths", "AuthenticationContext", "W365ProvisioningPolicies",
-        "W365UserSettings", "DriverUpdateProfiles", "DeviceCategories",
-        "BaselineTemplates", "BaselineTemplatesSettingsCatalog", "AndroidGooglePlay", "AndroidEnrolmentProfiles",
-        "AppleVPPTokens", "AppleEnrollmentTokens", "TenantSettings",
-    ]
+    assert ids == REGISTRY
 
 
 @pytest.fixture(scope="module")
 def full_export(tmp_path_factory):
-    return run_export(tmp_path_factory.mktemp("full"))
+    return run_export(tmp_path_factory.mktemp("full"), {"object_types": REGISTRY, "use_batch_api": False})
 
 
 def decoded(export, name):
@@ -156,9 +159,24 @@ def decoded(export, name):
 def test_every_type_exports_its_objects(full_export):
     assert full_export.result.returncode == 0, full_export.result.stdout + full_export.result.stderr
     folders = {name.split("/")[1] for name in full_export.names() if name.count("/") == 2}
-    ids = json.loads(pwsh_eval("$IntuneTypes.Id | ConvertTo-Json"))
-    assert set(ids) <= folders
+    assert set(REGISTRY) <= folders
     assert "Wrote " in full_export.result.stdout
+
+
+@needs_pwsh
+def test_by_default_only_the_intune_management_bulk_export_types_export(tmp_path):
+    export = run_export(tmp_path)
+
+    folders = {name.split("/")[1] for name in export.names() if name.count("/") == 2} - {"Groups"}
+    assert folders == set(REGISTRY[:46])
+
+
+@needs_pwsh
+def test_the_default_batch_api_writes_the_same_zip_as_one_request_per_object(full_export, tmp_path):
+    batched = run_export(tmp_path, {"object_types": REGISTRY})
+
+    assert any(r["batch"] for r in batched.log["requests"])
+    assert {n: batched.raw(n) for n in batched.names()} == {n: full_export.raw(n) for n in full_export.names()}
 
 
 @needs_pwsh
@@ -197,8 +215,12 @@ def test_endpoint_security_writes_its_settings_as_a_json_string(full_export):
 
 @needs_pwsh
 def test_administrative_templates_write_definition_values(full_export):
-    settings = full_export.json("Contoso/AdministrativeTemplates/Contoso Edge_Settings.json")
-    assert settings == {
+    custom, builtin = full_export.json("Contoso/AdministrativeTemplates/Contoso Edge_Settings.json")
+    assert builtin == {
+        "enabled": True,
+        "definition@odata.bind": f"https://graph.microsoft.com/beta/deviceManagement/groupPolicyDefinitions('{gid(1407)}')",
+    }
+    assert custom == {
         "enabled": True,
         "definition@odata.bind": f"https://graph.microsoft.com/beta/deviceManagement/groupPolicyDefinitions('{gid(1403)}')",
         "#Definition_Id": gid(1403),
@@ -310,9 +332,41 @@ def test_a_type_that_fails_is_reported_after_the_zip_exists(tmp_path):
     assert export.result.returncode == 1
     assert export.names() == ["Contoso/AutoPilot/Contoso Autopilot.json", "Contoso/Groups/Contoso Sales.json",
                               "Contoso/MigrationTable.json"]
-    assert "DeviceCategories (403)" in export.log["failure"]
-    assert "object_types in config.yml" in export.log["failure"]
+    assert "These failed: Device Categories (403)." in export.log["failure"]
+    assert "add it to the app in Entra and grant admin consent" in export.log["failure"]
+    assert "object_types" not in export.log["failure"]
     assert "Missing scope permissions." in export.result.stdout + export.result.stderr
+
+
+@needs_pwsh
+def test_a_failed_decryption_keeps_the_object_and_fails_the_run(tmp_path):
+    fixtures = graph_fixtures.build()
+    api = "deviceManagement/deviceConfigurations"
+    fixtures[f"GET {api}/{gid(101)}/getOmaSettingPlainTextValue(secretReferenceValueId='secret-1')"] = graph_fixtures.error(
+        403, "Forbidden.")
+
+    export = run_export(tmp_path, {"object_types": ["DeviceConfiguration"]}, fixtures)
+
+    assert export.result.returncode == 1
+    proxy, profile, _ = export.json("Contoso/DeviceConfiguration/Contoso OMA.json")["omaSettings"]
+    assert (proxy["isEncrypted"], proxy["value"]) == (True, "****")
+    assert profile["isEncrypted"] is False
+    assert f"https://graph.microsoft.com/beta/groups/{gid(902)}" in export.urls()
+    assert "Device Configuration: Contoso OMA (403)" in export.log["failure"]
+
+
+@needs_pwsh
+def test_a_missing_targeted_app_keeps_the_object_and_fails_the_run(tmp_path):
+    fixtures = graph_fixtures.build()
+    fixtures[f"GET deviceAppManagement/mobileApps/{gid(2201)}"] = graph_fixtures.error(404, "Not found.")
+
+    export = run_export(tmp_path, {"object_types": ["AppConfigurationManagedDevice"]}, fixtures)
+
+    assert export.result.returncode == 1
+    config = export.json("Contoso/AppConfigurationManagedDevice/Contoso Outlook Config.json")
+    assert "#CustomRefTargetedApps" not in config
+    assert config["targetedMobileApps"] == [gid(2201)]
+    assert "App Configuration (Device): Contoso Outlook Config (404)" in export.log["failure"]
 
 
 @needs_pwsh
@@ -370,12 +424,13 @@ def test_sort_json_properties_orders_annotations_before_their_property(tmp_path)
     wifi = export.json("Contoso/DeviceConfiguration/Contoso WiFi.json")
     assert list(wifi) == [
         "@odata.context", "@odata.type", "assignments@odata.navigationLink", "assignments",
-        "rootCertificateForServerValidation@odata.navigationLink", "displayName", "id",
+        "rootCertificateForServerValidation@odata.associationLink", "rootCertificateForServerValidation@odata.navigationLink",
+        "displayName", "id",
         "#CustomRef_rootCertificateForServerValidation"]
 
 
 @needs_pwsh
-def test_the_batch_api_reads_full_objects_twenty_at_a_time_and_retries_throttled_ones(tmp_path):
+def test_the_batch_api_reads_full_objects_in_batch_requests_and_retries_throttled_ones(tmp_path):
     fixtures = graph_fixtures.build()
     key = f"GET deviceManagement/windowsAutopilotDeploymentProfiles/{gid(2301)}?$expand=assignments"
     fixtures[key] = [{"status": 429, "headers": {"Retry-After": "2"}}, fixtures[key]]
@@ -420,15 +475,14 @@ def test_name_filter_and_file_switches(tmp_path):
     assert "https://graph.microsoft.com/beta/$metadata" not in export.urls()
 
 
-@needs_pwsh
-def test_app_files_are_decrypted_with_an_intunemanagement_encryption_file(tmp_path):
-    keys = tmp_path / "keys"
-    keys.mkdir()
-    (keys / f"Contoso Agent_{gid(2202)}_1.json").write_text(json.dumps({"fileEncryptionInfo": {
-        "encryptionKey": graph_fixtures.PACKAGE_KEY, "initializationVector": graph_fixtures.PACKAGE_IV}}))
+KEYS = {f"Contoso Agent_{gid(2202)}_1": {"fileEncryptionInfo": {
+    "encryptionKey": graph_fixtures.PACKAGE_KEY, "initializationVector": graph_fixtures.PACKAGE_IV}}}
 
-    export = run_export(tmp_path, {"object_types": ["Applications"], "export_app_files": True,
-                                   "app_encryption_folder": str(keys)})
+
+@needs_pwsh
+def test_app_files_are_decrypted_with_an_intunemanagement_encryption_key(tmp_path):
+    export = run_export(tmp_path, {"object_types": ["Applications"], "export_app_files": True},
+                        env={"INTUNE_APP_ENCRYPTION_KEYS": json.dumps(KEYS)})
 
     assert export.raw("Contoso/Applications/agent.intunewin") == b"Contoso Agent package"
     assert not [n for n in export.names() if n.endswith(".encrypted")]
@@ -436,12 +490,84 @@ def test_app_files_are_decrypted_with_an_intunemanagement_encryption_file(tmp_pa
 
 
 @needs_pwsh
-def test_app_files_without_an_encryption_file_are_skipped(tmp_path):
-    export = run_export(tmp_path, {"object_types": ["Applications"], "export_app_files": True})
+def test_app_files_without_an_encryption_key_are_skipped(tmp_path):
+    export = run_export(tmp_path, {"object_types": ["Applications"], "export_app_files": True},
+                        env={"INTUNE_APP_ENCRYPTION_KEYS": ""})
 
     assert "Contoso/Applications/agent.intunewin" not in export.names()
-    assert "No encryption file for app Contoso Agent" in export.result.stdout
+    assert "No encryption key in INTUNE_APP_ENCRYPTION_KEYS for app Contoso Agent" in export.result.stdout
     assert graph_fixtures.PACKAGE_URL not in export.urls()
+
+
+@needs_pwsh
+def test_a_package_that_cannot_be_decrypted_leaves_no_partial_file_and_fails_the_run(tmp_path):
+    keys = {name: {"fileEncryptionInfo": {**info["fileEncryptionInfo"], "encryptionKey": "AAAA"}} for name, info in KEYS.items()}
+
+    export = run_export(tmp_path, {"object_types": ["Applications"], "export_app_files": True},
+                        env={"INTUNE_APP_ENCRYPTION_KEYS": json.dumps(keys)})
+
+    assert export.result.returncode == 1
+    assert not [n for n in export.names() if n.endswith((".intunewin", ".encrypted"))]
+    assert "Applications: Contoso Agent (error)" in export.log["failure"]
+
+
+@needs_pwsh
+def test_decrypt_oma_settings_false_keeps_the_values_encrypted(tmp_path):
+    export = run_export(tmp_path, {"object_types": ["DeviceConfiguration"], "decrypt_oma_settings": False})
+
+    proxy, profile, _ = export.json("Contoso/DeviceConfiguration/Contoso OMA.json")["omaSettings"]
+    assert proxy["isEncrypted"] and profile["isEncrypted"]
+    assert not [url for url in export.urls() if "getOmaSettingPlainTextValue" in url]
+
+
+@needs_pwsh
+def test_a_tenant_domain_name_still_replaces_the_tenant_id_from_the_token(tmp_path):
+    fixtures = graph_fixtures.build()
+    fixtures["GET organization"] = graph_fixtures.error(403, "Forbidden.")
+
+    export = run_export(tmp_path, {"object_types": ["AzureBranding"]}, fixtures, tenant="contoso.onmicrosoft.com")
+
+    assert f"https://graph.microsoft.com/beta/organization/{TENANT}/branding/localizations" in export.urls()
+    assert all(r["timeout"] == 120 for r in export.log["requests"] if not r["batch"])
+
+
+@needs_pwsh
+def test_a_request_with_no_answer_is_retried(tmp_path):
+    fixtures = graph_fixtures.build()
+    key = "GET deviceManagement/windowsAutopilotDeploymentProfiles"
+    fixtures[key] = [{"status": 0}, fixtures[key]]
+
+    export = run_export(tmp_path, {"object_types": ["AutoPilot"]}, fixtures)
+
+    assert export.result.returncode == 0, export.result.stdout + export.result.stderr
+    assert export.log["sleeps"] == [5]
+
+
+@needs_pwsh
+def test_two_objects_whose_names_differ_only_in_case_get_a_warning(tmp_path):
+    fixtures = graph_fixtures.build()
+    key = "GET deviceManagement/windowsAutopilotDeploymentProfiles"
+    listing = fixtures[key]["body"]
+    twin = {**listing["value"][0], "id": gid(2399), "displayName": "CONTOSO AUTOPILOT"}
+    listing["value"].append(twin)
+    detail = fixtures[f"{key}/{gid(2301)}?$expand=assignments"]
+    fixtures[f"{key}/{gid(2399)}?$expand=assignments"] = {**detail, "body": {**detail["body"], **twin}}
+
+    export = run_export(tmp_path, {"object_types": ["AutoPilot"]}, fixtures)
+
+    assert "Autopilot: CONTOSO AUTOPILOT has the same file name as another object" in export.result.stdout
+
+
+@needs_pwsh
+def test_a_policy_file_with_an_empty_file_name_is_written_as_dot_json(tmp_path):
+    fixtures = graph_fixtures.build()
+    for key, value in fixtures.items():
+        if key.startswith("GET deviceManagement/hardwareConfigurations/") and isinstance(value, dict):
+            value["body"]["fileName"] = ""
+
+    export = run_export(tmp_path, {"object_types": ["HardwareConfigurations"]}, fixtures)
+
+    assert "Contoso/HardwareConfigurations/.json" in export.names()
 
 
 @needs_pwsh
@@ -459,7 +585,22 @@ def test_a_wrong_config_value_names_config_yml_and_the_key(config, message):
 
 
 @needs_pwsh
-def test_config_reads_strings_from_env_overrides():
+def test_an_env_override_of_a_config_key_reaches_the_script_as_a_string(project, monkeypatch):
+    from pdt import config, scaffold
+
+    assert scaffold.new_app("intune-backup", "intune-export") == 0
+    monkeypatch.setenv("PDT_INTUNE_BACKUP_USE_BATCH_API", "false")
+    monkeypatch.setenv("PDT_INTUNE_BACKUP_OBJECT_TYPES", "AutoPilot, NamedLocations")
+    merged = json.dumps(config.merged_app("intune-backup")["config"], default=str).replace("'", "''")
+
+    parsed = json.loads(pwsh_eval(f"Get-ExportConfig '{merged}' | ConvertTo-Json"))
+
+    assert parsed["use_batch_api"] is False
+    assert parsed["object_types"] == ["AutoPilot", "NamedLocations"]
+
+
+@needs_pwsh
+def test_config_accepts_strings_for_booleans_and_lists():
     config = json.loads(pwsh_eval(
         "Get-ExportConfig '{\"object_types\": \"AutoPilot, NamedLocations\", \"use_batch_api\": \"True\", "
         "\"add_company_name\": \"false\", \"name_filter\": null}' | ConvertTo-Json"))
