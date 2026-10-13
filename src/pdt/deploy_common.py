@@ -80,7 +80,7 @@ from typing import Callable
 
 import backoff
 
-from pdt import config, console
+from pdt import config, console, lifecycle
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
@@ -575,8 +575,17 @@ def run_secrets(action: str, app: dict, current: str | None,
                 name: str | None = None) -> int:
     """`pdt secrets <app> diff|save|get|set`, once the provider has read the deployed secret."""
     from pdt.deploy import proceed
+
+    def update(values: dict[str, str]) -> None:
+        count = sum(kind != "unchanged" for kind, *_rest in secret_changes(current, values))
+        write(values)
+        lifecycle.emit(lifecycle.APP_SECRETS_UPDATED,
+                       **lifecycle.app_params(app["name"], app["platform"]["provider"]),
+                       action=action, count=count)
+        lifecycle.flush()
+
     if action == "set":
-        return set_secret(app, current, write, name)
+        return set_secret(app, current, update, name)
     if current is None:
         command = f"pdt deploy {app['name']}"
         fail(f"{console.value(app['name'])} has no deployed secrets yet. "
@@ -599,7 +608,7 @@ def run_secrets(action: str, app: dict, current: str | None,
     if not proceed(assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 0
-    write(values)
+    update(values)
     console.done(f"Updated the secrets of {console.value(app['name'])}. The next run uses them.")
     return 0
 

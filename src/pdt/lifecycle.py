@@ -42,7 +42,7 @@ of the app itself. The names pdt emits are the constants below; `emit`
 takes any name, so an app can emit its own. The standard parameters are
 project, app, and provider (the configured one), and for a `job:run-*` event
 run_id, deployed (false for a local `pdt run`), and trigger (`schedule` or
-`manual`).
+`manual`). `app:secrets-updated` adds action and count, and no env var name or value.
 
 `run_job` runs an app's command between `job:run-started` and
 `job:run-completed`, `job:run-failed`, or `job:run-cancelled`, and gives the
@@ -89,6 +89,7 @@ APP_DESTROY_STARTED = "app:destroy-started"
 APP_DESTROY_COMPLETED = "app:destroy-completed"
 APP_DESTROY_FAILED = "app:destroy-failed"
 APP_DESTROY_CANCELLED = "app:destroy-cancelled"
+APP_SECRETS_UPDATED = "app:secrets-updated"
 # Set to `manual` for one execution by the pdt command that starts a deployed run.
 TRIGGER_ENV = "PDT_TRIGGER"
 
