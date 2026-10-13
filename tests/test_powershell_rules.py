@@ -495,7 +495,8 @@ def test_each_env_var_a_script_reads_and_config_does_not_list_is_found_once():
     seen = facts(script("r.ps1", envReads=[
         env_read("TENANT_ID", 2), env_read("TENANT_ID", 9), env_read("Client_Secret", 3),
         env_read("NOTE", 4), env_read("PDT_OUTPUT_DIR", 5), env_read("TEMP", 6),
-        env_read("SCRATCH", 7, set=True), env_read("SCRATCH", 8), env_read("Either", 10)]),
+        env_read("SCRATCH", 7, set=True), env_read("SCRATCH", 8), env_read("Either", 10),
+        env_read("XDG_DATA_HOME", 11)]),
         script("lib/helper.ps1", envReads=[env_read("API_URL", 3)]))
     env = {"required": ["CLIENT_SECRET"], "optional": ["NOTE"], "one_of": [["EITHER"], ["OR"]]}
     assert powershell.unlisted_env_reads(seen, env) == {
