@@ -19,33 +19,45 @@
 Shared login, IAM, secret, log, and schedule code lives here. The job
 itself, a scheduled AWS Batch job on Fargate, is in deploy_aws_batch.py.
 
-The deploy itself talks to AWS through boto3. `pdt aws` and the SSO login
-run AWS CLI v2 through `uvx`. Credentials live in ~/.aws.
+The deploy and the SSO sign-in talk to AWS through boto3. Only `pdt aws`
+runs AWS CLI v2 through `uvx`. Credentials live in ~/.aws.
 """
 
 from __future__ import annotations
 
 import argparse
+import configparser
+import getpass
 import hashlib
 import json
 import os
+import re
+import ssl
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
+import webbrowser
 from collections.abc import Callable
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 
 import boto3
+import certifi
+import botocore.session
+from botocore import UNSIGNED
 from botocore.config import Config
-from botocore.exceptions import ClientError, MissingDependencyException
+from botocore.exceptions import BotoCoreError, ClientError, MissingDependencyException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_PREFIX, STORE_TAGS, CostEstimate, convert_from_usd, fail, fetch_json, store_cost_label, store_name)
 from pdt.utils import email_auth
+from pdt.utils.env_secret import private_file
 from pdt.utils.storage import Store
 
 AWS_CLI_V2 = "awscli @ https://github.com/aws/aws-cli/archive/refs/tags/2.36.49.tar.gz"
@@ -60,6 +72,11 @@ ROLE_PROPAGATION_DELAYS = (1, 2, 4, 8)
 RETRIES = Config(retries={"mode": "standard", "total_max_attempts": 8})
 PREFLIGHT_PASSES = "aws_preflight_passes"
 PREFLIGHT_VALID_SECONDS = 24 * 3600
+SSO_OIDC = Config(signature_version=UNSIGNED, connect_timeout=5, read_timeout=10,
+                  retries={"mode": "standard", "total_max_attempts": 2})
+# boto3.client shares one default session, which is not safe to use from two threads at once.
+CLIENT_LOCK = threading.Lock()
+PORTAL_ENV = re.compile(r'<script[^>]*\bid="env"[^>]*>(.*?)</script>', re.DOTALL)
 COMMON_ACTIONS = [
     "iam:CreateRole",
     "iam:DeleteRole",
@@ -396,13 +413,12 @@ def ask(prompt: str) -> str:
 def choose_profile(app: dict, session) -> str:
     profiles = session.available_profiles
     if not profiles:
-        console.warn("No AWS credentials or profiles were found on this computer.")
-        console.next_steps([("pdt aws configure sso",
-                             f"create a profile (or: {console.value('pdt aws configure')})"),
-                            ("profile: <profile-name>", f"select it under {console.value('platform:')} "
-                                                        f"in {console.value('pdt.yml')}")],
-                           "Create a profile first, then select it:")
-        fail("run the same command again after you create a profile")
+        if not can_ask():
+            fail(f"no AWS profile is on this computer; create one, then add "
+                 f"`{console.value('profile: <name>')}` under {console.value('platform:')} in "
+                 f"{console.value('pdt.yml')}, or set {console.value('AWS_ACCESS_KEY_ID')} and "
+                 f"{console.value('AWS_SECRET_ACCESS_KEY')}")
+        return save_profile(app, create_profile(app))
     if len(profiles) == 1:
         console.field("Using the only AWS profile on this computer", profiles[0])
         return profiles[0]
@@ -423,10 +439,124 @@ def choose_profile(app: dict, session) -> str:
         fail(f"no AWS profile selected; add `{console.value('profile: <name>')}` under "
              f"{console.value('platform:')} in {console.value('pdt.yml')}, or set "
              f"{console.value('AWS_PROFILE=<name>')}")
+    return save_profile(app, profile)
+
+
+def save_profile(app: dict, profile: str) -> str:
     saved = config.save_platform_key(app, "profile", profile)
     console.done(f"Saved profile {console.value(profile)} to "
                  f"{console.value(saved.relative_to(config.find_project()))}.")
     return profile
+
+
+def aws_file(variable: str, name: str) -> Path:
+    return Path(os.path.expanduser(os.environ.get(variable) or os.path.join("~", ".aws", name)))
+
+
+def sections(path: Path) -> list[str]:
+    parser = configparser.RawConfigParser()
+    parser.read(path)
+    return parser.sections()
+
+
+def append_section(path: Path, header: str, values: dict[str, str]) -> None:
+    """Add a section at the end of an AWS config file, so its comments and order stay."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old = path.read_text() if path.exists() else ""
+    gap = ("" if old.endswith("\n") else "\n") + "\n" if old else ""
+    lines = [f"[{header}]", *(f"{key} = {setting}" for key, setting in values.items())]
+    with path.open("a") as file:
+        file.write(gap + "\n".join(lines) + "\n")
+
+
+def create_profile(app: dict) -> str:
+    console.warn("No AWS profile is on this computer yet.")
+    console.heading("How do you sign in to AWS?")
+    console.choice(1, "AWS IAM Identity Center (single sign-on)", "recommended")
+    console.choice(2, "An access key", "an access key ID and secret access key")
+    answer = ask("Which one? [1-2] ") or "1"
+    if answer == "1":
+        return create_sso_profile(app)
+    if answer == "2":
+        return create_key_profile()
+    fail("no AWS profile created; run the same command again and choose 1 or 2")
+
+
+def pick(options: list[tuple[str, str]], only: str, question: str) -> str:
+    """The id of one (id, name) option: the only one, or the one the user picks by number or id."""
+    if len(options) == 1:
+        key, label = options[0]
+        console.field(only, key if key == label else f"{label} ({key})")
+        return key
+    for number, (key, label) in enumerate(options, start=1):
+        console.choice(number, label, "" if key == label else key)
+    answer = ask(f"{question} [1-{len(options)}] ")
+    if answer.isdigit() and 1 <= int(answer) <= len(options):
+        return options[int(answer) - 1][0]
+    if answer in {key for key, _ in options}:
+        return answer
+    fail(f"no choice made; run the same command again and choose 1 to {len(options)}")
+
+
+def create_sso_profile(app: dict) -> str:
+    url = console.ask("Your AWS access portal URL (for example "
+                      "https://d-1234567890.awsapps.com/start)")
+    url = url.strip("\"' ").split("#", 1)[0].rstrip("/")
+    if not url:
+        fail("no AWS access portal URL given; run the same command again and paste the URL "
+             "your AWS administrator sent you")
+    name = (urlparse(url).hostname or "").split(".")[0] or "pdt"
+    region, started = find_sso_region(url, app["platform"].get("region") or "")
+    console.field("Your IAM Identity Center is in", region)
+    token = sso_finish(started, name, url, region)
+    sso = boto3.client("sso", region_name=region, config=Config(signature_version=UNSIGNED))
+    accounts = [(account["accountId"], account.get("accountName") or account["accountId"])
+                for page in sso.get_paginator("list_accounts").paginate(accessToken=token)
+                for account in page["accountList"]]
+    if not accounts:
+        fail("your AWS access portal has no account for you yet; ask your AWS administrator "
+             "for access")
+    account = pick(accounts, "Using your only AWS account", "Which account should hold your jobs?")
+    roles = [(role["roleName"], role["roleName"])
+             for page in sso.get_paginator("list_account_roles").paginate(
+                 accessToken=token, accountId=account)
+             for role in page["roleList"]]
+    if not roles:
+        fail(f"you have no role in AWS account {console.value(account)} yet; ask your AWS "
+             f"administrator for access")
+    role = pick(roles, "Using your only role in this account", "Which role should pdt use?")
+    profile = f"{role}-{account}"
+    path = aws_file("AWS_CONFIG_FILE", "config")
+    present = sections(path)
+    if f"sso-session {name}" not in present:
+        append_section(path, f"sso-session {name}", {
+            "sso_start_url": url, "sso_region": region,
+            "sso_registration_scopes": "sso:account:access"})
+    settings = {"sso_session": name, "sso_account_id": account, "sso_role_name": role}
+    if app["platform"].get("region"):
+        settings["region"] = app["platform"]["region"]
+    if f"profile {profile}" not in present:
+        append_section(path, f"profile {profile}", settings)
+    console.done(f"Created AWS profile {console.value(profile)} in {console.value(path)}.")
+    return profile
+
+
+def create_key_profile() -> str:
+    key_id = console.ask("Access key ID")
+    secret = getpass.getpass("Secret access key (hidden): ").strip()
+    if not key_id or not secret:
+        fail("no access key given; run the same command again and paste the access key ID "
+             "and the secret access key")
+    path = aws_file("AWS_SHARED_CREDENTIALS_FILE", "credentials")
+    if "default" in sections(path):
+        fail(f"{console.value(path)} already holds a profile named {console.value('default')}; "
+             f"add `{console.value('profile: default')}` under {console.value('platform:')} in "
+             f"{console.value('pdt.yml')}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    private_file(path)
+    append_section(path, "default", {"aws_access_key_id": key_id, "aws_secret_access_key": secret})
+    console.done(f"Created AWS profile {console.value('default')} in {console.value(path)}.")
+    return "default"
 
 
 def aws_cli() -> list[str]:
@@ -453,34 +583,188 @@ def aws_cli() -> list[str]:
     return ["uvx", *(["--offline"] if cached else []), "--from", AWS_CLI_V2, "aws"]
 
 
-def sso_login(profile: str | None) -> bool:
-    command = [*aws_cli(), "sso", "login"]
-    shown = "pdt aws sso login"
-    if profile:
-        command += ["--profile", profile]
-        shown += f" --profile {profile}"
+def utc_text(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def portal_html(start_url: str) -> str:
+    context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(start_url + "/", timeout=10, context=context) as response:
+        return response.read().decode()
+
+
+def portal_region(start_url: str) -> str:
+    """The region the access portal page names in its env script, or "". The page is not a
+    documented API, so any surprise counts as no answer."""
+    try:
+        match = PORTAL_ENV.search(portal_html(start_url))
+        return str(json.loads(match.group(1)).get("region") or "") if match else ""
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def sso_start(start_url: str, region: str) -> tuple:
+    """Register pdt and start a device sign-in; AWS refuses a start URL from another region."""
+    with CLIENT_LOCK:
+        oidc = boto3.client("sso-oidc", region_name=region, config=SSO_OIDC)
+    client = oidc.register_client(clientName="pdt", clientType="public",
+                                  scopes=["sso:account:access"])
+    device = oidc.start_device_authorization(
+        clientId=client["clientId"], clientSecret=client["clientSecret"], startUrl=start_url)
+    return oidc, client, device
+
+
+def sso_region(start_url: str, first: list[str]) -> tuple[str, tuple] | None:
+    """The region whose IAM Identity Center accepts the start URL. One region at most accepts
+    it, so the first answer wins and a region that does not answer delays nothing."""
+    candidates = list(dict.fromkeys([*first, *boto3.Session().get_available_regions("sso-oidc")]))
+    pool = ThreadPoolExecutor(max_workers=len(candidates))
+    futures = {pool.submit(sso_start, start_url, region): region for region in candidates}
+    try:
+        for future in as_completed(futures):
+            try:
+                return futures[future], future.result()
+            except (BotoCoreError, ClientError):
+                continue
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return None
+
+
+def checked_start(start_url: str, region: str, section: str = "") -> tuple:
+    try:
+        return sso_start(start_url, region)
+    except (BotoCoreError, ClientError) as exc:
+        if error_code(exc) != "InvalidRequestException":
+            fail(f"AWS could not start the sign-in at {console.value(start_url)} in "
+                 f"{console.value(region)}: {console.escape(str(exc))}")
+        if section:
+            fail(f"the AWS access portal URL {console.value(start_url)} and the region "
+                 f"{console.value(region)} in {console.value(aws_file('AWS_CONFIG_FILE', 'config'))} "
+                 f"do not match; set {console.value('sso_region')} in the "
+                 f"{console.value(f'[{section}]')} section to the region of your IAM Identity Center")
+        fail(f"the AWS access portal URL {console.value(start_url)} and the region "
+             f"{console.value(region)} do not match; run the same command again and check both on "
+             f"your AWS access portal page")
+
+
+def find_sso_region(start_url: str, platform_region: str) -> tuple[str, tuple]:
+    region = portal_region(start_url)
+    if region:
+        try:
+            return region, sso_start(start_url, region)
+        except (BotoCoreError, ClientError):
+            pass
+    found = sso_region(start_url, [name for name in (platform_region, "us-east-1") if name])
+    if found:
+        return found
+    if not can_ask():
+        fail(f"AWS did not accept the access portal URL {console.value(start_url)} in any region; "
+             f"check the URL on your AWS access portal page, for example "
+             f"{console.value('https://d-1234567890.awsapps.com/start')}")
+    region = console.ask("Which AWS Region holds your IAM Identity Center?", "us-east-1") or "us-east-1"
+    return region, checked_start(start_url, region)
+
+
+def sso_sign_in(session_name: str | None, start_url: str, region: str, section: str) -> str:
+    return sso_finish(checked_start(start_url, region, section), session_name, start_url, region)
+
+
+def sso_finish(started: tuple, session_name: str | None, start_url: str, region: str, *,
+               sleep=time.sleep) -> str:
+    """Open the browser, wait for the sign-in, and cache the token where botocore reads it."""
+    oidc, client, device = started
+    console.status("Opening your browser to sign in to AWS...")
+    webbrowser.open(device["verificationUriComplete"])
+    console.bullet(f"If no browser opens, go to {console.value(device['verificationUriComplete'])}")
+    console.bullet(f"Check that the browser shows the code {console.value(device['userCode'])}.")
+    interval = device.get("interval") or 5
+    waited = 0
+    while waited < device["expiresIn"]:
+        try:
+            token = oidc.create_token(
+                grantType="urn:ietf:params:oauth:grant-type:device_code",
+                deviceCode=device["deviceCode"], clientId=client["clientId"],
+                clientSecret=client["clientSecret"])
+            break
+        except ClientError as exc:
+            if error_code(exc) == "SlowDownException":
+                interval += 5
+            elif error_code(exc) != "AuthorizationPendingException":
+                fail(f"the AWS sign-in failed: {console.escape(str(exc))}")
+        sleep(interval)
+        waited += interval
+    else:
+        fail("the AWS sign-in timed out; run the same command again and approve it in the browser")
+    cache = {
+        "startUrl": start_url,
+        "region": region,
+        "accessToken": token["accessToken"],
+        "expiresAt": utc_text(datetime.now(UTC) + timedelta(seconds=token["expiresIn"])),
+        "clientId": client["clientId"],
+        "clientSecret": client["clientSecret"],
+        "registrationExpiresAt": utc_text(datetime.fromtimestamp(client["clientSecretExpiresAt"], UTC)),
+    }
+    if token.get("refreshToken"):
+        cache["refreshToken"] = token["refreshToken"]
+    folder = Path(os.path.expanduser(os.path.join("~", ".aws", "sso", "cache")))
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / (hashlib.sha1((session_name or start_url).encode(),
+                                  usedforsecurity=False).hexdigest() + ".json")
+    private_file(path)
+    path.write_text(json.dumps(cache))
+    return token["accessToken"]
+
+
+def sso_target(profile: str) -> tuple[str | None, str, str, str] | None:
+    """The (session name, start URL, region, config section) a profile signs in with; None for
+    an access key."""
+    full = botocore.session.Session().full_config
+    settings = full["profiles"].get(profile, {})
+    name = settings.get("sso_session")
+    sso = full["sso_sessions"].get(name, {}) if name else settings
+    if not sso.get("sso_start_url") or not sso.get("sso_region"):
+        return None
+    if name:
+        section = f"sso-session {name}"
+    else:
+        section = "default" if profile == "default" else f"profile {profile}"
+    return name, sso["sso_start_url"], sso["sso_region"], section
+
+
+def sso_login(app: dict, profile: str) -> bool:
+    target = sso_target(profile)
+    if target is None:
+        return False
     console.warn("Your AWS login has expired or is missing.")
     if not can_ask():
-        console.say(f"Log in first: {console.value(shown)}")
+        console.say(f"Sign in first: {console.value('pdt login ' + app['name'])}")
         return False
-    answer = ask(f"Log in now with `{shown}` (opens a browser)? [y/N] ")
+    answer = ask("Sign in to AWS now (opens a browser)? [y/N] ")
     if answer.lower() not in ("y", "yes"):
         return False
-    return subprocess.run(command, check=False).returncode == 0
+    sso_sign_in(*target)
+    return True
 
 
 def relogin(app: dict) -> int:
     session = boto3.Session()
+    known = session.available_profiles
     name = app["platform"].get("profile") or os.environ.get("AWS_PROFILE") or ""
-    if name not in session.available_profiles:
+    if name not in known:
         name = choose_profile(app, session)
-    console.status(f"Logging in to AWS profile {console.value(name)}...")
-    if subprocess.run([*aws_cli(), "sso", "login", "--profile", name]).returncode != 0:
-        configure = f"pdt aws configure --profile {name}"
-        console.warn(f"If {console.value(name)} uses access keys instead of SSO there is no "
-                     f"login to refresh; run `{console.value(configure)}` to replace the keys.")
-        fail(f"{console.value('pdt aws sso login')} failed")
-    identity = boto3.Session(profile_name=name).client("sts", config=RETRIES).get_caller_identity()
+    if name in known:
+        target = sso_target(name)
+        if target:
+            console.status(f"Signing in to AWS profile {console.value(name)}...")
+            sso_sign_in(*target)
+        else:
+            console.warn(f"AWS profile {console.value(name)} uses an access key, so there is no "
+                         "sign-in to refresh.")
+    try:
+        identity = boto3.Session(profile_name=name).client("sts", config=RETRIES).get_caller_identity()
+    except Exception as exc:  # noqa: BLE001 - credential providers raise several types
+        fail(f"AWS did not accept AWS profile {console.value(name)}: {console.escape(str(exc))}")
     console.done(f"Signed in as {console.value(identity['Arn'])}")
     console.field("Account", identity["Account"])
     return 0
@@ -519,11 +803,9 @@ def ensure_session(app: dict):
     try:
         session.client("sts", config=RETRIES).get_caller_identity()
     except Exception as exc:  # noqa: BLE001 - credential providers raise several types
-        if not login_error(exc) or not sso_login(session.profile_name):
-            profile = session.profile_name or "<profile-name>"
+        if not login_error(exc) or not sso_login(app, session.profile_name):
             fail(f"AWS credentials are unavailable or invalid: {console.escape(str(exc))}\n"
-                 f"Log in first (for example: "
-                 f"{console.value(f'pdt aws sso login --profile {profile}')}), "
+                 f"Sign in first with {console.value('pdt login ' + app['name'])}, "
                  f"then run the same command again.")
         session = boto3.Session(region_name=region, profile_name=session.profile_name)
     return session
