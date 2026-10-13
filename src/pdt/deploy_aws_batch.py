@@ -39,7 +39,9 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
+
+from botocore.exceptions import BotoCoreError, ClientError
 
 from pdt import config, console, regions, runs_cli
 from pdt.deploy import confirm
@@ -72,6 +74,8 @@ COMPUTE_MAX_VCPUS = 16
 SUBMIT_JOB_TARGET = "arn:aws:scheduler:::aws-sdk:batch:submitJob"
 JOB_STATUSES = {"SUCCEEDED": "succeeded", "FAILED": "failed"}
 BATCH_WAIT_DELAYS = (2, 3, 5, 5, 10, 10, 15, 15, 15, *[30] * 18)
+# Measured in October 2026: CloudWatch Logs showed a line at most 7.0 s after the write.
+HOLD = timedelta(seconds=10)
 BATCH_ACTIONS = [
     "batch:CreateComputeEnvironment",
     "batch:CreateJobQueue",
@@ -1128,6 +1132,57 @@ def read_lines(batch, logs, log_group: str, run: runs_cli.Run,
         token = next_token
 
 
+def session_events(events) -> Iterator[dict]:
+    """A live tail's events; the session's 3-hour limit ends it normally."""
+    try:
+        yield from events
+    except ClientError as exc:
+        if error_code(exc) != "SessionTimeoutException":
+            raise runs_cli.StreamError(str(exc)) from exc
+    except BotoCoreError as exc:
+        raise runs_cli.StreamError(str(exc)) from exc
+
+
+def tail_lines(updates: Iterator[dict]) -> Iterator[runs_cli.Line]:
+    heard = time.monotonic()
+    for update in updates:
+        results = update.get("sessionUpdate", {}).get("sessionResults", [])
+        for result in results:
+            yield runs_cli.parse_line(result["message"], ms_to_utc(result["timestamp"]))
+        if results:
+            heard = time.monotonic()
+        elif time.monotonic() - heard >= runs_cli.STREAM_QUIET:
+            return
+
+
+def stream_lines(batch, logs, log_group: str, run: runs_cli.Run,
+                 follow: bool) -> Iterator[runs_cli.Line]:
+    """With `follow`, the store's lines and then each line of a live tail."""
+    if not follow:
+        yield from read_lines(batch, logs, log_group, run)
+        return
+    group = find_log_group(logs, log_group)
+    stream = log_stream(batch, run)
+    if group is None or stream is None:
+        return
+    try:
+        events = logs.start_live_tail(logGroupIdentifiers=[group["logGroupArn"]],
+                                      logStreamNames=[stream])["responseStream"]
+    except (BotoCoreError, ClientError) as exc:
+        if error_code(exc) == "AccessDeniedException":
+            raise runs_cli.StreamError(f"your AWS login may not perform logs:StartLiveTail on "
+                                       f"log group {log_group}: {exc}") from exc
+        raise runs_cli.StreamError(str(exc)) from exc
+    try:
+        updates = session_events(events)
+        # The tail sends only what arrives after its sessionStart, so the store read waits for it.
+        next(updates, None)
+        yield from runs_cli.store_and_tail(
+            lambda since: read_lines(batch, logs, log_group, run, since), tail_lines(updates), HOLD)
+    finally:
+        events.close()
+
+
 def runs(app: dict, session, rest: list[str]) -> int:
     names = resource_names(app["name"])
     batch = session.client("batch", config=RETRIES)
@@ -1185,6 +1240,6 @@ def logs(app: dict, session, rest: list[str],
     return runs_cli.logs(
         lambda: list_runs(batch, names["job_definition"]),
         lambda run, since: read_lines(batch, logs_client, names["log_group"], run, since),
-        app["name"], rest, store="CloudWatch Logs", delay=runs_cli.LOG_DELAY,
-        # Measured in October 2026: CloudWatch Logs showed a line at most 7.0 s after the write.
-        hold=timedelta(seconds=10), new=new)
+        app["name"], rest, store="CloudWatch Logs", delay=runs_cli.LOG_DELAY, hold=HOLD,
+        stream=lambda run, follow: stream_lines(batch, logs_client, names["log_group"], run, follow),
+        new=new)

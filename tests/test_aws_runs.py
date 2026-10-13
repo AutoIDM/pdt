@@ -1,10 +1,15 @@
 from datetime import datetime, timezone
 
-from pdt.deploy_aws_batch import job_run, list_runs, read_lines, resource_names
-from pdt.runs_cli import Run
+import pytest
+from botocore.exceptions import ClientError
+
+from pdt import deploy_aws_batch
+from pdt.deploy_aws_batch import job_run, list_runs, read_lines, resource_names, stream_lines
+from pdt.runs_cli import Run, StreamError
 
 NAMES = resource_names("my-app")
 STREAM = "pdt-my-app/default/task-1"
+GROUP_ARN = "arn:aws:logs:us-east-1:123456789012:log-group:/pdt/my-app"
 
 
 def job(job_id="job-1", status="SUCCEEDED", created=0, started=1_000, stopped=2_000,
@@ -45,13 +50,25 @@ class MissingQueue:
 
 
 class FakeLogs:
-    def __init__(self, pages):
+    def __init__(self, pages, tail=None, calls=None):
         self.pages = pages
+        self.tail = tail
+        self.calls = [] if calls is None else calls
         self.streams_read = []
         self.start_times = []
 
+    def describe_log_groups(self, logGroupNamePrefix):
+        return {"logGroups": [{"logGroupName": NAMES["log_group"], "logGroupArn": GROUP_ARN}]}
+
+    def start_live_tail(self, logGroupIdentifiers, logStreamNames):
+        self.calls.append(("start_live_tail", logGroupIdentifiers, logStreamNames))
+        if isinstance(self.tail, Exception):
+            raise self.tail
+        return {"responseStream": self.tail}
+
     def get_log_events(self, logGroupName, logStreamName, startFromHead, nextToken=None,
                        startTime=None):
+        self.calls.append("get_log_events")
         self.streams_read.append(logStreamName)
         self.start_times.append(startTime)
         events, token = self.pages[0 if nextToken is None else nextToken]
@@ -131,3 +148,98 @@ def test_read_lines_from_a_time_asks_only_for_the_events_from_it():
 def test_a_job_without_a_log_stream_has_no_lines():
     run = Run("job-1", datetime.fromtimestamp(0, tz=timezone.utc), None, "failed")
     assert read_lines(FakeBatch(stream=None), FakeLogs({}), NAMES["log_group"], run) == []
+
+
+class FakeEventStream:
+    """A StartLiveTail response stream; an exception in `events` raises when it is reached."""
+
+    def __init__(self, events, calls):
+        self.events = events
+        self.calls = calls
+        self.closed = False
+
+    def __iter__(self):
+        for event in self.events:
+            if isinstance(event, Exception):
+                raise event
+            self.calls.append(next(iter(event)))
+            yield event
+
+    def close(self):
+        self.closed = True
+
+
+def update(*results):
+    return {"sessionUpdate": {"sessionResults": [
+        {"timestamp": stamp, "message": message} for stamp, message in results]}}
+
+
+def client_error(code):
+    return ClientError({"Error": {"Code": code, "Message": f"{code} message"}}, "StartLiveTail")
+
+
+STARTED = (1_700_000_000_000, "10:00:00 INFO   starting")
+RUNNING = Run("job-1", datetime.fromtimestamp(0, tz=timezone.utc), None, "running")
+
+
+def live(events):
+    """A FakeLogs whose store holds STARTED, and whose live tail sends `events`."""
+    calls = []
+    stream = FakeEventStream(events, calls)
+    pages = {0: ([{"message": STARTED[1], "timestamp": STARTED[0]}], 1), 1: ([], 1)}
+    return FakeLogs(pages, stream, calls), stream
+
+
+def test_follow_streams_the_store_then_each_new_line_of_the_live_tail():
+    logs, stream = live([{"sessionStart": {}}, update(),
+                         update(STARTED, (1_700_000_001_000, "row")),
+                         update((1_700_000_002_000, "pdt: exit 0")), update((0, "never"))])
+    lines = list(stream_lines(FakeBatch(), logs, NAMES["log_group"], RUNNING, True))
+    assert [line.message for line in lines] == ["starting", "row", "pdt: exit 0"]
+    # The session has started before the store read, so no line falls between them.
+    assert logs.calls[:3] == [("start_live_tail", [GROUP_ARN], [STREAM]), "sessionStart",
+                              "get_log_events"]
+    assert stream.closed
+
+
+def test_the_session_time_limit_ends_the_tail_normally():
+    logs, stream = live([{"sessionStart": {}}, update((1_700_000_001_000, "row")),
+                         client_error("SessionTimeoutException")])
+    lines = list(stream_lines(FakeBatch(), logs, NAMES["log_group"], RUNNING, True))
+    assert [line.message for line in lines] == ["starting", "row"]
+    assert stream.closed
+
+
+def test_another_error_in_the_tail_is_a_stream_error():
+    logs, stream = live([{"sessionStart": {}}, client_error("ServiceUnavailableException")])
+    with pytest.raises(StreamError, match="ServiceUnavailableException"):
+        list(stream_lines(FakeBatch(), logs, NAMES["log_group"], RUNNING, True))
+    assert stream.closed
+
+
+def test_a_login_that_may_not_tail_is_told_the_action_it_needs():
+    logs = FakeLogs({}, client_error("AccessDeniedException"))
+    with pytest.raises(StreamError, match="logs:StartLiveTail"):
+        list(stream_lines(FakeBatch(), logs, NAMES["log_group"], RUNNING, True))
+
+
+def test_a_quiet_tail_ends_after_the_quiet_limit(monkeypatch):
+    clock = iter([0, 30, deploy_aws_batch.runs_cli.STREAM_QUIET])
+    monkeypatch.setattr(deploy_aws_batch.time, "monotonic", lambda: next(clock))
+    logs, stream = live([{"sessionStart": {}}, update(), update(), update((0, "never"))])
+    lines = list(stream_lines(FakeBatch(), logs, NAMES["log_group"], RUNNING, True))
+    assert [line.message for line in lines] == ["starting"]
+    assert stream.closed
+
+
+def test_a_job_with_no_log_stream_yet_has_no_live_lines():
+    logs, stream = live([{"sessionStart": {}}])
+    assert list(stream_lines(FakeBatch(stream=None), logs, NAMES["log_group"], RUNNING, True)) == []
+    assert logs.calls == []
+
+
+def test_without_follow_the_stream_reads_the_store_only():
+    logs, stream = live([])
+    lines = list(stream_lines(FakeBatch(), logs, NAMES["log_group"], RUNNING, False))
+    assert [line.message for line in lines] == ["starting"]
+    assert logs.calls == ["get_log_events", "get_log_events"]

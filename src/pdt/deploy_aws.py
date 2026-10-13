@@ -73,6 +73,7 @@ COMMON_ACTIONS = [
     "logs:GetLogEvents",
     "logs:ListTagsForResource",
     "logs:PutRetentionPolicy",
+    "logs:StartLiveTail",
     "logs:TagResource",
     "scheduler:CreateSchedule",
     "scheduler:CreateScheduleGroup",
@@ -137,7 +138,7 @@ POLICY_SCOPES = [
      "Resource": ["arn:aws:iam::{account}:user/*", "arn:aws:iam::{account}:role/*"]},
     {"Action": ["logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:DescribeLogStreams",
                 "logs:FilterLogEvents", "logs:ListTagsForResource",
-                "logs:PutRetentionPolicy", "logs:TagResource"],
+                "logs:PutRetentionPolicy", "logs:StartLiveTail", "logs:TagResource"],
      "Resource": LOG_GROUP_ARNS},
     # GetLogEvents reads a log stream, which only the ":*" group ARNs cover.
     {"Action": ["logs:GetLogEvents"],

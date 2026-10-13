@@ -10,6 +10,7 @@
 #     "fsspec",
 #     "google-cloud-storage",
 #     "google-auth",
+#     "google-cloud-logging==3.17.0",
 #     "duckdb",
 # ]
 # ///
@@ -55,17 +56,19 @@ import argparse
 import datetime
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # gRPC logs an info line on every gcloud subprocess once the store has been
@@ -134,6 +137,8 @@ JOB_VCPU = 1.0
 JOB_MEMORY_GIB = 0.5
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
+# Measured in October 2026: Cloud Logging showed a line 27 s after the write.
+HOLD = datetime.timedelta(seconds=30)
 
 
 # A freshly enabled API reports SERVICE_DISABLED for a few minutes, Cloud
@@ -1277,18 +1282,32 @@ def exit_codes(project: str, job: str, count: int) -> dict[str, int]:
     return codes
 
 
+def execution_filter(execution_id: str) -> str:
+    """The two logs leave out Cloud Run's own entries, such as its audit entry."""
+    return (f'resource.type="cloud_run_job" AND '
+            f'labels."run.googleapis.com/execution_name"="{execution_id}" AND '
+            f'(log_id("run.googleapis.com/stdout") OR log_id("run.googleapis.com/stderr"))')
+
+
+def entry_line(entry: dict) -> runs_cli.Line:
+    time = datetime.datetime.fromisoformat(entry["timestamp"]) if entry.get("timestamp") else None
+    payload = entry.get("jsonPayload")
+    if payload is not None and "message" in payload:
+        # A tail entry gives a json number as a float: 3.0 where the store gives 3.
+        payload = {key: int(value) if isinstance(value, float) and value.is_integer() else value
+                   for key, value in payload.items()}
+        # Cloud Logging moves a json line's severity out of the payload into the entry.
+        return runs_cli.json_line({**payload, "severity": entry.get("severity", "")}, time)
+    return runs_cli.parse_line(entry.get("textPayload") or json.dumps(payload), time)
+
+
 def read_lines(project: str, execution_id: str,
                since: datetime.datetime | None = None) -> list[runs_cli.Line]:
     """Every line the execution's container wrote from `since` on. With no --limit,
-    gcloud reads every page. The two logs leave out Cloud Run's own entries, such as
-    its audit entry. A read that fails warns, so it does not look like a log with no lines."""
+    gcloud reads every page. A read that fails warns, so it does not look like a log with no lines."""
     after = "" if since is None else f' AND timestamp>="{since.isoformat()}"'
-    proc = gcloud(
-        "logging", "read",
-        f'resource.type="cloud_run_job" AND '
-        f'labels."run.googleapis.com/execution_name"="{execution_id}" AND '
-        f'(log_id("run.googleapis.com/stdout") OR log_id("run.googleapis.com/stderr")){after}',
-        "--project", project, "--order", "asc", "--format=json")
+    proc = gcloud("logging", "read", execution_filter(execution_id) + after,
+                  "--project", project, "--order", "asc", "--format=json")
     if proc.returncode != 0:
         console.warn_once("Cloud Logging did not return the lines of "
                           f"{console.value(execution_id)}: {console.escape(proc.stderr.strip())}")
@@ -1296,18 +1315,68 @@ def read_lines(project: str, execution_id: str,
     entries = json.loads(proc.stdout or "null")
     if not entries:
         return []
-    lines = []
-    for entry in entries:
-        time = datetime.datetime.fromisoformat(entry["timestamp"]) if entry.get("timestamp") else None
-        payload = entry.get("jsonPayload")
-        if payload is not None and "message" in payload:
-            # Cloud Logging moves a json line's severity out of the payload into the entry.
-            lines.append(runs_cli.json_line({**payload, "severity": entry.get("severity", "")},
-                                            time))
-        else:
-            lines.append(runs_cli.parse_line(entry.get("textPayload") or json.dumps(payload),
-                                             time))
-    return lines
+    return [entry_line(entry) for entry in entries]
+
+
+def tail_entries(project: str, log_filter: str, stop: threading.Event) -> Iterator[dict]:
+    """Opens a Cloud Logging tail at once, until `stop`; its entries end after
+    runs_cli.STREAM_QUIET quiet seconds."""
+    from google.api_core.exceptions import GoogleAPICallError
+    from google.cloud.logging_v2.services.logging_service_v2 import LoggingServiceV2Client
+    from google.cloud.logging_v2.types import LogEntry, TailLogEntriesRequest
+    from google.oauth2.credentials import Credentials
+    from google.protobuf import json_format
+
+    token = gcloud("auth", "print-access-token")
+    if token.returncode != 0:
+        raise runs_cli.StreamError(token.stderr.strip() or "gcloud gave no access token")
+    client = LoggingServiceV2Client(credentials=Credentials(token.stdout.strip()))
+    found = queue.Queue()
+
+    def requests():
+        yield TailLogEntriesRequest(resource_names=[f"projects/{project}"], filter=log_filter)
+        # The server ends the tail once the requests end.
+        stop.wait()
+
+    def receive():
+        try:
+            for response in client.tail_log_entries(requests()):
+                for entry in response.entries:
+                    found.put(json_format.MessageToDict(LogEntry.pb(entry)))
+        except GoogleAPICallError as exc:
+            found.put(runs_cli.StreamError(exc.message))
+        finally:
+            found.put(None)
+
+    # The call waits for the first entry, so it runs beside the store reads.
+    threading.Thread(target=receive, daemon=True).start()
+
+    def entries():
+        while True:
+            try:
+                item = found.get(timeout=runs_cli.STREAM_QUIET)
+            except queue.Empty:
+                return
+            if item is None:
+                return
+            if isinstance(item, runs_cli.StreamError):
+                raise item
+            yield item
+    return entries()
+
+
+def stream_lines(project: str, run: runs_cli.Run, follow: bool) -> Iterator[runs_cli.Line]:
+    """With `follow`, the store's lines and then each line of a live tail."""
+    if not follow:
+        yield from read_lines(project, run.id)
+        return
+    stop = threading.Event()
+    tail = tail_entries(project, execution_filter(run.id), stop)
+    try:
+        yield from runs_cli.store_and_tail(lambda since: read_lines(project, run.id, since),
+                                           (entry_line(entry) for entry in tail), HOLD)
+    finally:
+        stop.set()
 
 
 def runs(app: dict, rest: list[str], assume_yes: bool) -> int:
@@ -1324,9 +1393,8 @@ def logs(app: dict, rest: list[str], assume_yes: bool,
     job = f"pdt-{app['name']}"
     return runs_cli.logs(lambda: list_runs(project, region, job),
                          lambda run, since: read_lines(project, run.id, since), app["name"], rest,
-                         store="Cloud Logging", delay=runs_cli.LOG_DELAY,
-                         # Measured in October 2026: Cloud Logging showed a line 27 s after the write.
-                         hold=datetime.timedelta(seconds=30), new=new)
+                         store="Cloud Logging", delay=runs_cli.LOG_DELAY, hold=HOLD,
+                         stream=lambda run, follow: stream_lines(project, run, follow), new=new)
 
 
 def pause(app: dict, paused: bool, assume_yes: bool) -> int:

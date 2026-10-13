@@ -721,6 +721,83 @@ def test_follow_ends_at_an_exit_line_the_live_log_showed_before_it_started(monke
     assert sleeps == []
 
 
+def store_reads(batches):
+    """A fake store read: one batch per call, and the `since` of each call."""
+    asked = []
+    found = iter(batches)
+
+    def read(since):
+        asked.append(since)
+        return next(found)
+    return read, asked
+
+
+def test_store_and_tail_gives_the_store_then_each_new_tail_line(monkeypatch):
+    hold = timedelta(seconds=30)
+    started, row, late = Line(T0, "INFO", "started"), Line(T1, "INFO", "row"), Line(T0, "INFO", "late")
+    read, asked = store_reads([[started], [started, late]])
+    Clock.moments = [T0, T0, T0 + timedelta(seconds=1), T0 + timedelta(seconds=2)]
+    monkeypatch.setattr(runs_cli, "datetime", Clock)
+    # The tail repeats a line the store gave; the job wrote "row" twice.
+    lines = list(runs_cli.store_and_tail(read, [started, row, row], hold))
+    assert lines == [started, row, row, late]
+    # The tail ended before `hold` passed, so the store is read again from before it opened.
+    assert asked == [None, T0 - hold]
+
+
+def test_store_and_tail_reads_the_store_again_once_hold_has_passed(monkeypatch):
+    hold = timedelta(seconds=10)
+    started, late = Line(T0, "INFO", "started"), Line(T0, "INFO", "late")
+    first, second = Line(T0, "INFO", "first"), Line(T1, "INFO", "second")
+    read, asked = store_reads([[started], [started, late, first]])
+    Clock.moments = [T0, T0 + timedelta(seconds=5), T0 + hold]
+    monkeypatch.setattr(runs_cli, "datetime", Clock)
+    lines = list(runs_cli.store_and_tail(read, [first, second, Line(T1, "INFO", "third")], hold))
+    assert lines == [started, first, late, second, Line(T1, "INFO", "third")]
+    assert asked == [None, T0 - hold]
+
+
+def test_store_and_tail_ends_at_the_exit_line_after_one_more_store_read(monkeypatch):
+    hold = timedelta(seconds=30)
+    started, exit_line = Line(T0, "INFO", "started"), Line(T1, "", "pdt: exit 0")
+    read, asked = store_reads([[started], [started]])
+
+    def tail():
+        yield exit_line
+        raise AssertionError("the tail is not read past the exit line")
+    Clock.moments = [T0]
+    monkeypatch.setattr(runs_cli, "datetime", Clock)
+    assert list(runs_cli.store_and_tail(read, tail(), hold)) == [started, exit_line]
+    assert asked == [None, T0 - hold]
+
+
+def test_store_and_tail_with_the_exit_line_in_the_store_never_reads_the_tail(monkeypatch):
+    exit_line = Line(T1, "", "pdt: exit 0")
+    read, asked = store_reads([[Line(T0, "INFO", "started"), exit_line]])
+
+    def tail():
+        raise AssertionError("the store already holds the exit line")
+        yield
+    lines = list(runs_cli.store_and_tail(read, tail(), timedelta(seconds=30)))
+    assert lines[-1] == exit_line
+    assert asked == [None]
+
+
+def test_follow_prints_each_line_of_the_store_and_the_tail_once(monkeypatch, capsys):
+    store = [Line(T0, "INFO", "started"), Line(T0, "INFO", "row")]
+    tail = [Line(T0, "INFO", "row"), Line(T1, "INFO", "done"), Line(T1, "", "pdt: exit 0")]
+
+    def stream(run, follow):
+        if not follow:
+            return list(store)
+        return runs_cli.store_and_tail(lambda since: store, tail, timedelta(0))
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.logs(lambda: [RUNNING], no_store, "report", ["--follow"], stream=stream) == 0
+    out = capsys.readouterr().out
+    assert [out.count(text) for text in ("INFO    started", "row", "done", "pdt: exit 0")] == [1, 1, 1, 1]
+    assert out.rstrip().endswith("the run succeeded after 12s, exit 0")
+
+
 def test_follow_holds_the_newest_lines_of_its_first_read_of_the_store(monkeypatch, capsys):
     now = T0 + timedelta(hours=1)
     started = Line(T0, "INFO", "started")
