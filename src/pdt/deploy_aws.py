@@ -33,6 +33,7 @@ import time
 from pathlib import Path
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -49,6 +50,9 @@ ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 PRICE_LIST_URL = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/{offer}/current/{region}/index.json"
 ROLE_PROPAGATION_DELAYS = (1, 2, 4, 8)
+# preflight alone sends one SimulatePrincipalPolicy per policy statement, and IAM
+# throttles that burst. The default legacy mode waits at most 15 seconds in all.
+RETRIES = Config(retries={"mode": "standard", "total_max_attempts": 8})
 COMMON_ACTIONS = [
     "iam:CreateRole",
     "iam:DeleteRole",
@@ -270,7 +274,7 @@ def with_role_propagation_retry(operation, sleep=time.sleep):
 
 def adopt_account(app: dict, session) -> str:
     # AWS gives one account per credential set, so there is nothing to pick.
-    identity = session.client("sts").get_caller_identity()
+    identity = session.client("sts", config=RETRIES).get_caller_identity()
     account = identity["Account"]
     console.field("These credentials belong to AWS account", account)
     console.bullet(console.value(identity["Arn"]))
@@ -454,7 +458,7 @@ def relogin(app: dict) -> int:
         console.warn(f"If {console.value(name)} uses access keys instead of SSO there is no "
                      f"login to refresh; run `{console.value(configure)}` to replace the keys.")
         fail(f"{console.value('pdt aws sso login')} failed")
-    identity = boto3.Session(profile_name=name).client("sts").get_caller_identity()
+    identity = boto3.Session(profile_name=name).client("sts", config=RETRIES).get_caller_identity()
     console.done(f"Signed in as {console.value(identity['Arn'])}")
     console.field("Account", identity["Account"])
     return 0
@@ -478,7 +482,7 @@ def ensure_session(app: dict):
     if session.get_credentials() is None:
         session = boto3.Session(region_name=region, profile_name=choose_profile(app, session))
     try:
-        session.client("sts").get_caller_identity()
+        session.client("sts", config=RETRIES).get_caller_identity()
     except Exception as exc:  # noqa: BLE001 - credential providers raise several types
         if not login_error(exc) or not sso_login(session.profile_name):
             profile = session.profile_name or "<profile-name>"
@@ -801,9 +805,9 @@ def resource_exists(client, operation: str, **kwargs) -> bool:
         return False
 
 
-def clients_for(session) -> dict:
-    return {name: session.client(name) for name in
-            ("sts", "logs", "secretsmanager", "iam", "scheduler", "s3")}
+def clients_for(session, *extra: str) -> dict:
+    return {name: session.client(name, config=RETRIES) for name in
+            ("sts", "logs", "secretsmanager", "iam", "scheduler", "s3", *extra)}
 
 
 def delete_secret(secrets, name: str) -> None:
@@ -904,7 +908,7 @@ def main() -> int:
             account, region = aws_settings(app, session)
             identity = "the current AWS login"
             try:
-                identity = session.client("sts").get_caller_identity()["Arn"]
+                identity = session.client("sts", config=RETRIES).get_caller_identity()["Arn"]
             except Exception:  # noqa: BLE001,S110 - retain the original permission error
                 pass
             print_permission_help(identity, str(exc), batch.DEPLOYER_ACTIONS, account, region)

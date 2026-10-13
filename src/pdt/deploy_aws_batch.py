@@ -33,7 +33,7 @@ from typing import Callable
 from pdt import config, console, regions, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_aws import (
-    COMMON_ACTIONS, MANAGED_TAGS, SCHEDULE_GROUP, aws_schedule_expression,
+    COMMON_ACTIONS, MANAGED_TAGS, RETRIES, SCHEDULE_GROUP, aws_schedule_expression,
     aws_settings, clients_for, cost_estimate, delete_log_group, delete_role,
     delete_secret, list_price, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
@@ -540,9 +540,7 @@ def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
 
 
 def batch_clients(session) -> dict:
-    clients = clients_for(session)
-    clients.update({name: session.client(name) for name in ("batch", "ec2", "ecr", "ecs")})
-    return clients
+    return clients_for(session, "batch", "ec2", "ecr", "ecs")
 
 
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
@@ -886,7 +884,7 @@ def read_lines(batch, logs, log_group: str, run: runs_cli.Run,
 
 def runs(app: dict, session, rest: list[str]) -> int:
     names = resource_names(app["name"])
-    batch = session.client("batch")
+    batch = session.client("batch", config=RETRIES)
     return runs_cli.runs(lambda: list_runs(batch, names["job_definition"]), app["name"], rest)
 
 
@@ -906,7 +904,7 @@ SCHEDULE_FIELDS = ("Name", "GroupName", "ScheduleExpression", "ScheduleExpressio
 
 
 def pause(app: dict, session, paused: bool) -> int:
-    scheduler = session.client("scheduler")
+    scheduler = session.client("scheduler", config=RETRIES)
     names = resource_names(app["name"])
     schedule = current_schedule(scheduler, names["schedule"], app["name"])
     state = "DISABLED" if paused else "ENABLED"
@@ -920,7 +918,7 @@ def pause(app: dict, session, paused: bool) -> int:
 
 def start(app: dict, session) -> int:
     """Submit the job the schedule would submit, with the same input."""
-    scheduler, batch = session.client("scheduler"), session.client("batch")
+    scheduler, batch = session.client("scheduler", config=RETRIES), session.client("batch", config=RETRIES)
     names = resource_names(app["name"])
     target = current_schedule(scheduler, names["schedule"], app["name"])["Target"]
     request = json.loads(target["Input"])
@@ -934,7 +932,7 @@ def start(app: dict, session) -> int:
 
 def logs(app: dict, session, rest: list[str]) -> int:
     names = resource_names(app["name"])
-    batch, logs_client = session.client("batch"), session.client("logs")
+    batch, logs_client = session.client("batch", config=RETRIES), session.client("logs", config=RETRIES)
     return runs_cli.logs(
         lambda: list_runs(batch, names["job_definition"]),
         lambda run, since: read_lines(batch, logs_client, names["log_group"], run, since),
