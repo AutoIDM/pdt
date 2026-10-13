@@ -1,42 +1,8 @@
 """CLI helpers behind `pdt runs`, `pdt logs`, and `pdt health`.
 
-Every provider gives this module two callables, and a third when it needs one:
-`list_runs()` returns every run the provider keeps, newest first,
-`read_lines(run, since)` returns one run's log lines, oldest first, from `since` on
-(every line when `since` is None; a provider may return older lines too), and
-`resolve(runs)` fills status and exit code on the runs about to print or read,
-for a provider whose list does not already know them.
-
-A provider whose log store shows a line some time after the job writes it
-names the store and that delay, so `pdt logs` can say when a run's lines are
-not there yet. A provider that can read a running job's console directly also
-gives `stream(run, follow)`, which yields the lines the container has written,
-and with `follow` keeps yielding them until the container exits. `pdt logs`
-reads a running run from the stream and an ended run from the store. Only
-Azure gives a stream: Log Analytics shows a line a minute or more after the
-job writes it. CloudWatch Logs shows a line within seconds, and Cloud Logging
-within half a minute, so AWS and Google Cloud read the store. Their live APIs
-are not worth what they cost here: CloudWatch Logs Live Tail sends only the
-lines it takes in after the session starts, samples them above 500 a second,
-and bills each minute; Cloud Logging's TailLogEntries works only over gRPC.
-
-`--follow` on a run that has ended prints what `pdt logs` prints, unless the
-store may not show the run's last lines yet; then it waits for them. On a
-running run it prints from the stream while the run runs. Without a stream, it
-reads the store again every FOLLOW_SECONDS, and prints a line only when it is
-as old as the provider's hold, so a line the store shows late still prints in
-time order. It stops when the run's exit line is as old as the hold, because by
-then the store shows every line written before it, or when the delay has passed
-after the run ended without one. A stream stops at the exit line. Both
-take the run's status and exit code from the exit line when the provider does
-not show the end yet. The hold compares this computer's clock with the times the
-cloud gives each line, so a clock that runs ahead of the cloud's makes the hold
-shorter by that much, and one that runs behind makes it longer. The same skew
-moves the end of the wait for an ended run's last lines, which counts from the
-end time the cloud gives.
-
-A run's number is its place in the full list, starting at 1. A window
-(`--since`, `--span`, `--count`) picks which runs print and never renumbers.
+Only Azure passes a live `stream`: Log Analytics shows a line a minute or more
+after the job writes it. A run's number is its place in the full list, so a
+window never renumbers.
 """
 
 from __future__ import annotations
@@ -55,10 +21,7 @@ from pdt import console
 DEFAULT_RUNS = 10
 TAIL_LINES = 20
 FOLLOW_SECONDS = 10
-# How long a cloud provider's log store can take to show a line, the same on every cloud.
-# Azure Monitor lists resource logs as "usually available within 3 to 10 minutes"
-# (https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-ingestion-time);
-# AWS and Google document no maximum. The windows provider reads a local file, with no delay.
+# https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-ingestion-time
 LOG_DELAY = timedelta(minutes=5)
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
 SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
@@ -66,7 +29,6 @@ SINCE_FORMS = ("a count with a unit (12h, 3d, 2w), a date (2026-09-20), "
 EXIT_MARKER = "pdt: exit "
 LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 TEXT_LINE = re.compile(r"^\d\d:\d\d:\d\d (DEBUG|INFO|WARNING|ERROR)\s+(.*)$")
-# Meltano's structlog lines: `2026-09-23T13:00:35.009777Z [warning  ] dbt   message`.
 MELTANO_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z) "
                           r"\[(debug|info|warning|error|critical)\s*\] (.*)$")
 MELTANO_LEVELS = {"debug": "DEBUG", "info": "INFO", "warning": "WARNING",
@@ -91,11 +53,10 @@ class Line:
 
 
 class StreamError(Exception):
-    """A provider's live console stream could not be read."""
+    pass
 
 
 def parse_line(raw: str, time: datetime | None) -> Line:
-    """One raw log line, in either format `pdt.utils.log` writes, or as plain text."""
     raw = raw.rstrip()
     if raw.startswith("{"):
         try:
@@ -115,7 +76,6 @@ def parse_line(raw: str, time: datetime | None) -> Line:
 
 
 def in_time_order(lines: list[Line]) -> list[Line]:
-    """Lines by their own times; a line with no time keeps its place after the one before it."""
     keyed = []
     last = None
     for index, line in enumerate(lines):
@@ -127,7 +87,6 @@ def in_time_order(lines: list[Line]) -> list[Line]:
 
 
 def json_line(record: dict, time: datetime | None) -> Line:
-    """A `pdt.utils.log` json record, with its extra keys shown as the text form shows them."""
     level = str(record.get("severity", "")).upper()
     extra = " ".join(f"{key}={value}" for key, value in record.items()
                      if key not in ("severity", "message"))
@@ -146,7 +105,6 @@ def exit_code(lines: list[Line]) -> int | None:
 
 
 def marker_status(lines: list[Line], running: Callable[[], bool]) -> str:
-    """The status of a run whose log ends with EXIT_MARKER once it has finished."""
     code = exit_code(lines)
     if code is not None:
         return "succeeded" if code == 0 else "failed"
@@ -160,7 +118,6 @@ def run_json(run: Run) -> dict:
 
 
 def parse_runs(output: str) -> list[Run] | None:
-    """The runs in the last line of `runs --json` output, or None when it holds none."""
     lines = output.strip().splitlines()
     try:
         records = json.loads(lines[-1]) if lines else None
@@ -174,7 +131,6 @@ def parse_runs(output: str) -> list[Run] | None:
 
 
 def local_text(moment: datetime, form: str = "%Y-%m-%d %H:%M:%S") -> str:
-    """A UTC moment in the user's local time zone."""
     return f"{moment.astimezone():{form}}"
 
 
@@ -194,7 +150,6 @@ def duration_text(run: Run) -> str:
 
 
 def parse_amount(value: str) -> timedelta | None:
-    """The length of time a count with a unit (12h, 3d, 2w) names, or None."""
     match = re.fullmatch(r"(\d+)([hdw])", value)
     if match is None:
         return None
@@ -202,7 +157,6 @@ def parse_amount(value: str) -> timedelta | None:
 
 
 def parse_since(value: str, now: datetime) -> datetime:
-    """The moment `--since VALUE` names; a date without a time is local midnight."""
     amount = parse_amount(value)
     if amount is not None:
         return now - amount
@@ -216,7 +170,6 @@ def parse_since(value: str, now: datetime) -> datetime:
 
 def window(found: list[Run], since: datetime | None, span: timedelta | None,
            count: int | None) -> list[Run]:
-    """The runs started in `[since, since + span)`, at most `count`, with their numbers kept."""
     if since is not None:
         found = [run for run in found if run.started >= since
                  and (span is None or run.started < since + span)]
@@ -231,7 +184,6 @@ def add_window_arguments(parser: argparse.ArgumentParser) -> None:
 
 def parse_window(args: argparse.Namespace,
                  now: datetime) -> tuple[datetime | None, timedelta | None, int | None]:
-    """The `window` arguments; the DEFAULT_RUNS newest when no `--since` is given."""
     if args.span is not None and args.since is None:
         raise ValueError("--span needs --since")
     if args.count is not None and args.count < 1:
@@ -299,10 +251,6 @@ def logs(list_runs: Callable[[], list[Run]],
          hold: timedelta = timedelta(0),
          read_many: Callable[[list[Run]], dict[str, list[Line]]] | None = None,
          stream: Callable[[Run, bool], Iterable[Line]] | None = None) -> int:
-    """`--id` may repeat: every named run prints, and `--json` then gives an object
-    keyed by id instead of one run's list. `read_many` reads them in one go for a
-    provider that can, such as one Log Analytics query. `stream` reads a running
-    run's lines from its container, as the module docstring says."""
     parser = argparse.ArgumentParser(prog=f"pdt logs {app_name}")
     parser.add_argument("number", nargs="?", type=int)
     parser.add_argument("--id", action="append")
@@ -445,8 +393,6 @@ def run_heading(run: Run, app_name: str) -> str:
 
 
 def say_result(run: Run) -> None:
-    """The end of a run that `pdt logs --follow` saw running, or whose exit code it
-    found while it waited."""
     after = "" if run.ended is None else f" after {duration_text(run)}"
     exit_part = "" if run.exit_code is None else f", exit {run.exit_code}"
     result_text = f"run {console.value(run.number)} {run.status}{after}{exit_part}"
@@ -467,17 +413,11 @@ def minutes_text(delay: timedelta) -> str:
 
 
 def settles(run: Run, finished: bool, delay: timedelta) -> datetime | None:
-    """When the store shows every line of `run`: None while the run runs, or when
-    `finished` says its lines already hold the exit line."""
     return None if run.ended is None or finished else run.ended + delay
 
 
 def say_lag(run: Run, app_name: str, total: int, store: str | None, delay: timedelta,
             finished: bool, errors: bool = False) -> None:
-    """Tell the user when the lines printed may not be all the run's lines yet.
-
-    `store` is None when the lines came from the run's live log. `finished` is True
-    when the lines hold the run's exit line, so no line can still be on its way."""
     again = f"pdt logs {app_name} {run.number}"
     kind = "warning or error lines" if errors else "lines"
     if run.status == "running":
@@ -509,7 +449,6 @@ def say_lag(run: Run, app_name: str, total: int, store: str | None, delay: timed
 
 def latest(list_runs: Callable[[], list[Run]], resolve: Callable[[list[Run]], None] | None,
            run: Run) -> Run:
-    """`run` as the provider shows it now, with its number kept."""
     current = next((item for item in list_runs() if item.id == run.id), None)
     if current is None:
         return run
@@ -527,7 +466,6 @@ def last_exit_line(lines: list[Line]) -> Line | None:
 
 
 def unseen(lines: list[Line], errors: bool, seen: Counter) -> list[Line]:
-    """The lines to print that `seen` does not count yet, which `seen` then counts."""
     now_seen = Counter()
     new = []
     for line in log_lines(lines, errors):
@@ -545,17 +483,8 @@ def follow(list_runs: Callable[[], list[Run]],
            delay: timedelta, shown: list[Line], hold: timedelta = timedelta(0),
            stream: Callable[[Run, bool], Iterable[Line]] | None = None,
            store: str = "the log") -> int:
-    """Print each new line of `run`, in time order, until the run has ended, then
-    its result when it was running or its exit code was not known yet. Say so when
-    the wait ends with no exit line.
-
-    `shown` holds the lines already printed. A running run with a `stream` prints
-    from its live log. Otherwise, or when the stream fails, follow reads the store,
-    as the module docstring says."""
     before = run
-    # A count per distinct line, so a line the job printed twice prints twice, and a
-    # line that a source shows again, such as a stream that starts from the first line
-    # each time it connects, prints once.
+    # Counts, not a set: a line the job wrote twice prints twice; a reconnected stream's replay prints once.
     seen = Counter(line_key(line) for line in shown)
     live = stream is not None and run.status == "running"
     try:
@@ -580,10 +509,7 @@ def follow_stream(list_runs: Callable[[], list[Run]],
                   resolve: Callable[[list[Run]], None] | None, run: Run, errors: bool,
                   stream: Callable[[Run, bool], Iterable[Line]], store: str,
                   seen: Counter, exit_line: Line | None) -> Run:
-    """Print the new lines of a running run from its live log until the run has ended.
-
-    Returns the run as the provider shows it last. A run that is still running after
-    this returns had its stream fail."""
+    """A run still running after this returns had its stream fail."""
     try:
         while run.status == "running" and exit_line is None:
             opened = time.monotonic()
@@ -598,8 +524,6 @@ def follow_stream(list_runs: Callable[[], list[Run]],
                     exit_line = line
                 elif not errors or line.level not in ("DEBUG", "INFO"):
                     print_line(line)
-            # The container has exited, has not started yet, or wrote nothing for a while;
-            # the run's status says which.
             run = latest(list_runs, resolve, run)
             if (run.status == "running" and exit_line is None
                     and time.monotonic() - opened < FOLLOW_SECONDS):
@@ -612,9 +536,7 @@ def follow_stream(list_runs: Callable[[], list[Run]],
 
 
 def ended_by(run: Run, exit_line: Line | None) -> Run:
-    """`run` with the status, end, and exit code its exit line gives, where the provider
-    does not show them yet: a provider shows the end of a run some seconds after the
-    job writes its exit line."""
+    """A provider shows a run's end some seconds after the job writes its exit line."""
     if exit_line is None:
         return run
     code = exit_code([exit_line])
@@ -630,15 +552,8 @@ def follow_store(list_runs: Callable[[], list[Run]],
                  read_lines: Callable[[Run, datetime | None], list[Line]],
                  resolve: Callable[[list[Run]], None] | None, run: Run, errors: bool,
                  delay: timedelta, hold: timedelta, seen: Counter) -> tuple[Run, Line | None]:
-    """Print each new line of `run` from its log store, in time order, until the store
-    has had the run's exit line for `hold`, or `delay` has passed since the run ended.
-    Returns the run and its exit line, None when the wait ended without one.
-
-    A store can show a line later than the hold a provider measured, so when the
-    exit line ends the wait after the first read, follow reads the store once more.
-    Each read after the first asks only for the lines from the newest line old
-    enough to print minus the hold on, so a line the store shows up to about two
-    holds late still prints."""
+    """A line prints once it is `hold` old, so a line the store shows late still prints
+    in time order. The extra read after the exit line catches a line later than `hold`."""
     held = []
     since = None
     first = True
@@ -688,7 +603,6 @@ def health_row(app_name: str, found: list[Run] | None) -> dict:
 
 
 def health(app_runs: dict[str, list[Run] | None], as_json: bool) -> int:
-    """One row per app. `None` stands for an app whose runs could not be read."""
     rows = [health_row(app_name, found) for app_name, found in app_runs.items()]
     if as_json:
         console.data(json.dumps(rows))
