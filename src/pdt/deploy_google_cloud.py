@@ -1477,4 +1477,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     console.json_output()
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

@@ -129,16 +129,16 @@ def test_validate_says_what_it_found_for_each_app(py_app, project, monkeypatch, 
 
 
 def test_run_says_which_scripts_run_and_why(ps_app, monkeypatch, capsys):
-    monkeypatch.setattr(cli.subprocess, "run", lambda command, **kwargs: (
-        cli.subprocess.CompletedProcess(command, 0)))
+    monkeypatch.setattr(deploy, "run_child", lambda command, **kwargs: (
+        deploy.subprocess.CompletedProcess(command, 0)))
     assert run_cli(monkeypatch, "run", "ps-report") == 0
     assert ("ps-report runs, in order: cleanup.ps1, report.ps1 (each .ps1 that no other "
             "script loads, in name order) no .env file in ps-report") in text(capsys)
 
 
 def test_run_says_it_runs_run_py(py_app, monkeypatch, capsys):
-    monkeypatch.setattr(cli.subprocess, "run", lambda command, **kwargs: (
-        cli.subprocess.CompletedProcess(command, 0)))
+    monkeypatch.setattr(deploy, "run_child", lambda command, **kwargs: (
+        deploy.subprocess.CompletedProcess(command, 0)))
     assert run_cli(monkeypatch, "run", "py-report") == 0
     assert "py-report runs run.py no .env file in py-report" in text(capsys)
 

@@ -14,7 +14,6 @@ import difflib
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -721,27 +720,28 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     completion.configure(parser)
-    if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
-        # Before argparse, so the cloud CLI parses its own flags. --project keeps
-        # `uvx pdt aws` working; deploy.provider_command explains why.
-        script = Path(__file__).with_name(CLOUD_CLIS[sys.argv[1]])
-        deploy.announce_install(script)
-        return subprocess.run(
-            ["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
-             *sys.argv[1:]]).returncode
-    args = parser.parse_args()
-    if args.command is None:
-        parser.print_help()
-        return 0
-    if getattr(args, "json", False):
-        console.to_stderr()
     try:
+        if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
+            # Before argparse, so the cloud CLI parses its own flags. --project keeps
+            # `uvx pdt aws` working; deploy.provider_command explains why.
+            script = Path(__file__).with_name(CLOUD_CLIS[sys.argv[1]])
+            deploy.announce_install(script)
+            return deploy.run_child(
+                ["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
+                 *sys.argv[1:]]).returncode
+        args = parser.parse_args()
+        if args.command is None:
+            parser.print_help()
+            return 0
+        if getattr(args, "json", False):
+            console.to_stderr()
         return args.func(args)
     except ConfigError as e:
         console.error(console.escape(str(e)))
         return 1
     except KeyboardInterrupt:
         console.say()
+        console.failed("Stopped.")
         return 130
     finally:
         lifecycle.flush()
