@@ -49,15 +49,20 @@ config:
   # setting. Put the keys in .env, never in this folder: set
   # INTUNE_APP_ENCRYPTION_KEYS to one JSON object that maps each encryption
   # file name, without .json, to that file's content. `pdt deploy` uploads
-  # it as a secret.
+  # it as a secret. It fits the keys of about 50 apps on Azure (a Key Vault
+  # secret holds at most 25 KB) and about 70 on Windows (an env var holds at
+  # most 32767 characters).
   export_app_files: false
 
   # Add the names of referenced objects (for example the certificate of a
   # VPN profile), so an import can link them again.
   resolve_reference_info: true
 
-  # Read up to 20 objects per Microsoft Graph call. This keeps a large tenant
-  # inside the run time limit. The files are the same either way.
+  # Read up to 20 objects per Microsoft Graph call, which keeps a large
+  # tenant inside the run time limit. An object whose answer lacks the full
+  # metadata the export needs, or whose batch call fails, is read again on
+  # its own. Set false to read every object on its own, as IntuneManagement
+  # does by default.
   use_batch_api: true
 
   # Microsoft Graph version: beta or v1.0. Some object types exist only in

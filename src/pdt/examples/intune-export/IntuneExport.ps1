@@ -290,6 +290,10 @@ function Get-GraphMetadata {
         try {
             [xml]$script:Metadata = (Invoke-WebRequest -Uri 'https://graph.microsoft.com/beta/$metadata' -UseBasicParsing -TimeoutSec $RequestTimeoutSec).Content
         } catch {
+            $object = $script:CurrentObject
+            $script:CurrentObject = 'Microsoft Graph metadata'
+            Add-ExportFailure $_.Exception ([int]$_.Exception.Response.StatusCode)
+            $script:CurrentObject = $object
             Write-Warning "Could not download the Microsoft Graph metadata, so references are not resolved: $($_.Exception.Message)"
         }
     }
@@ -492,22 +496,53 @@ function Get-GraphObject {
     Add-GraphObjectProperties @($response) $ObjectType
 }
 
-# Sends GET requests 20 per $batch call and retries the throttled ones.
-# Returns request id -> its last response (status, body).
+function Invoke-DirectRequest {
+    param($Request)
+
+    $metadata = if ("$($Request.headers.Accept)" -match 'odata\.metadata=(\w+)') { $Matches[1] } else { 'skip' }
+    try {
+        [pscustomobject]@{ id = $Request.id; status = 200; direct = $true; body = (Invoke-GraphRequest -Url $Request.url -ODataMetadata $metadata) }
+    } catch {
+        [pscustomobject]@{ id = $Request.id; status = $_.Exception.Data['StatusCode'] ?? 'error'; direct = $true
+            body = [pscustomobject]@{ error = [pscustomobject]@{ message = $_.Exception.Message } } }
+    }
+}
+
+function Test-FullMetadata {
+    param($Response)
+
+    $contentType = "$($Response.headers.'Content-Type')"
+    if ($contentType) { return $contentType -match 'odata\.metadata=full' }
+    [bool]($Response.body.PSObject.Properties.Name -match '@odata\.(id|navigationLink|associationLink)$')
+}
+
+# Sends GET requests 20 per $batch call and retries what direct calls retry.
+# A request whose $batch call fails, or whose answer lacks the full metadata it
+# asked for, is sent again on its own: Microsoft Graph does not document that
+# $batch honors odata.metadata=full, and IntuneManagement reads navigation
+# links from it. Returns request id -> its last response (status, body).
 function Invoke-GraphBatchRequest {
-    param($Requests)
+    param($Requests, [string]$Title)
 
     $results = @{}
+    $fellBack = $false
     for ($start = 0; $start -lt $Requests.Count; $start += 20) {
-        $pending = @($Requests[$start..([Math]::Min($start + 19, $Requests.Count - 1))])
+        $chunk = @($Requests[$start..([Math]::Min($start + 19, $Requests.Count - 1))])
+        $pending = $chunk
         $attempt = 0
         while ($pending) {
-            $response = Invoke-GraphRequest -Url '$batch' -Method POST -Body (@{ requests = $pending } | ConvertTo-Json -Depth 50)
+            try {
+                $response = Invoke-GraphRequest -Url '$batch' -Method POST -Body (@{ requests = $pending } | ConvertTo-Json -Depth 50)
+            } catch {
+                Write-Warning "$($Title): a `$batch call failed, so its $($pending.Count) requests are sent one by one. $($_.Exception.Message)"
+                foreach ($request in $pending) { $results["$($request.id)"] = Invoke-DirectRequest $request }
+                break
+            }
             $retry = @()
             $wait = 0
             foreach ($result in $response.responses) {
                 $results["$($result.id)"] = $result
-                if ($result.status -eq 429) {
+                if ($result.status -in 429, 503, 504) {
                     $retry += $pending | Where-Object id -EQ $result.id
                     $wait = [Math]::Max($wait, [int]$result.headers.'Retry-After')
                 }
@@ -519,6 +554,17 @@ function Invoke-GraphBatchRequest {
                 Start-Sleep -Seconds ([Math]::Max($wait, 5))
             }
         }
+        foreach ($request in $chunk) {
+            $result = $results["$($request.id)"]
+            if ($request.headers.Accept -match 'odata\.metadata=full' -and $result.status -lt 300 -and $result.body -and
+                -not $result.direct -and -not (Test-FullMetadata $result)) {
+                $fellBack = $true
+                $results["$($request.id)"] = Invoke-DirectRequest $request
+            }
+        }
+    }
+    if ($fellBack) {
+        Write-Host "$($Title): Microsoft Graph answered `$batch requests without full metadata, so those objects were read one by one."
     }
     $results
 }
@@ -536,7 +582,7 @@ function Get-GraphBatchObjects {
         }
     })
     if (-not $requests) { return }
-    $responses = Invoke-GraphBatchRequest $requests
+    $responses = Invoke-GraphBatchRequest $requests $ObjectType.Title
     $bodies = for ($i = 0; $i -lt $Objects.Count; $i++) {
         $result = $responses["$i"]
         if ($result.status -lt 300 -and $result.body) {
@@ -544,7 +590,7 @@ function Get-GraphBatchObjects {
         } else {
             $script:CurrentObject = "$($ObjectType.Title): $(Get-GraphObjectName $Objects[$i].Object $ObjectType)"
             Add-ExportFailure -Status ($result.status ?? 'error')
-            Write-Warning "$($script:CurrentObject): Microsoft Graph returned $($result.status) in a batch. $($result.body.error.message)"
+            Write-Warning "$($script:CurrentObject): Microsoft Graph returned $($result.status). $($result.body.error.message)"
         }
     }
     Add-GraphObjectProperties @($bodies) $ObjectType
@@ -789,7 +835,7 @@ function Get-GPOObjectSettings {
             url    = "/deviceManagement/groupPolicyConfigurations/$($GPOObject.id)/definitionValues/$($definitionValue.id)/presentationValues?`$expand=presentation"
         }
     })
-    $responses = if ($requests) { Invoke-GraphBatchRequest $requests } else { @{} }
+    $responses = if ($requests) { Invoke-GraphBatchRequest $requests $script:CurrentObject } else { @{} }
     foreach ($definitionValue in $definitionValues.value) {
         $definition = $definitionValue.definition
         $result = $responses["$($definitionValue.id)"]
@@ -958,20 +1004,38 @@ function Start-PostExportApplications {
     if ($script:Config.export_app_files -and $Object.committedContentVersion) { Save-AppPackage $Object $Folder }
 }
 
+function Get-AppEncryptionKeys {
+    if ($null -eq $script:AppEncryptionKeys) {
+        $script:AppEncryptionKeys = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+        if ($env:INTUNE_APP_ENCRYPTION_KEYS) {
+            try {
+                $keys = $env:INTUNE_APP_ENCRYPTION_KEYS | ConvertFrom-Json -AsHashtable
+                # A value pasted with its quotes escaped arrives as one JSON string.
+                if ($keys -is [string]) { $keys = $keys | ConvertFrom-Json -AsHashtable }
+            } catch {
+                $keys = $null
+            }
+            if ($keys -isnot [Collections.IDictionary]) {
+                throw ('INTUNE_APP_ENCRYPTION_KEYS in .env is not a JSON object. Set it to one object that maps each ' +
+                    'encryption file name, without .json, to that file''s content.')
+            }
+            foreach ($name in $keys.Keys) { $script:AppEncryptionKeys[$name] = $keys[$name] }
+        }
+    }
+    $script:AppEncryptionKeys
+}
+
 function Find-AppEncryptionInfo {
     param($Object, $ContentFile)
 
-    if (-not $env:INTUNE_APP_ENCRYPTION_KEYS) { return }
-    try {
-        $keys = $env:INTUNE_APP_ENCRYPTION_KEYS | ConvertFrom-Json -AsHashtable
-    } catch {
-        throw 'INTUNE_APP_ENCRYPTION_KEYS in .env is not JSON. Set it to an object that maps each encryption file name, without .json, to that file''s content.'
-    }
+    $keys = Get-AppEncryptionKeys
     foreach ($name in "$($Object.displayName)_$($Object.id)_$($Object.committedContentVersion)",
         "$([IO.Path]::GetFileNameWithoutExtension($Object.fileName))_$($ContentFile.size)",
         "$($Object.displayName)_$($ContentFile.size)") {
-        $info = $keys[$name]
-        if ($info) { return $info.fileEncryptionInfo ?? $info }
+        if ($keys.ContainsKey($name)) {
+            $info = $keys[$name]
+            return $info.fileEncryptionInfo ?? $info
+        }
     }
 }
 
@@ -1106,6 +1170,7 @@ function Start-IntuneExport {
     $script:MigrationCache = @{}
     $script:MigrationObjects = [Collections.Generic.List[object]]::new()
     $script:Failures = [Collections.Generic.List[string]]::new()
+    $script:AppEncryptionKeys = $null
     $script:ExportedFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
     $script:Organization = @((Invoke-GraphRequest -Url 'organization' -ODataMetadata skip -NoError).value)[0]
@@ -1184,17 +1249,24 @@ function Start-IntuneExport {
     if (-not $env:PDT_OUTPUT_DIR) { Write-Output "It is in $outputDir." }
 
     if ($script:Failures.Count -gt 0) {
-        $typeFailures = @($script:Failures | Where-Object { $_ -notlike '*: *' })
+        $statusOf = { if ($args[0] -match '\((\w+)\)$') { $Matches[1] } }
+        $all = @($script:Failures | ForEach-Object { & $statusOf $_ })
+        $ofTypes = @($script:Failures | Where-Object { $_ -notlike '*: *' } | ForEach-Object { & $statusOf $_ })
+        $ofObjects = @($script:Failures | Where-Object { $_ -like '*: *' } | ForEach-Object { & $statusOf $_ })
         $message = @("The zip is incomplete. These failed: $($script:Failures -join ', ').")
-        if ($script:Failures -match '\(403\)$') {
+        if ('403' -in $all) {
             $message += '403 means the app lacks a Microsoft Graph permission: add it to the app in Entra and grant admin consent.'
         }
-        if ($typeFailures -match '\(40[04]\)$') {
+        if ($ofTypes -match '^40[04]$') {
             $message += '400 or 404 for a whole object type often means the tenant does not use that feature: remove the type from object_types in config.yml.'
         }
-        if ($script:Failures | Where-Object { $_ -notmatch '\(403\)$' -and ($_ -like '*: *' -or $_ -notmatch '\(40[04]\)$') }) {
-            $message += 'For any other failure, check the named object in Intune. The next run tries again.'
+        if ($ofObjects | Where-Object { $_ -notmatch '^(0|403|429|5\d\d)$' }) {
+            $message += 'For an object, any other status means Microsoft Graph could not return part of it: check the named object in Intune.'
         }
+        if ('0' -in $all) { $message += '0 means Microsoft Graph did not answer.' }
+        if ('429' -in $all) { $message += '429 means Microsoft Graph throttled the app.' }
+        if ($all -match '^5\d\d$') { $message += 'A status from 500 to 599 is a Microsoft Graph service error.' }
+        if ($all -match '^(0|429|5\d\d)$') { $message += 'The next run tries again.' }
         throw ($message -join ' ')
     }
 }

@@ -370,6 +370,31 @@ def test_a_missing_targeted_app_keeps_the_object_and_fails_the_run(tmp_path):
 
 
 @needs_pwsh
+def test_a_service_error_on_a_whole_type_says_the_next_run_tries_again(tmp_path):
+    fixtures = graph_fixtures.build()
+    fixtures["GET deviceManagement/deviceCategories?$top=500"] = graph_fixtures.error(500, "Internal error.")
+
+    export = run_export(tmp_path, {"object_types": ["DeviceCategories"]}, fixtures)
+
+    assert export.result.returncode == 1
+    assert "These failed: Device Categories (500)." in export.log["failure"]
+    assert "Microsoft Graph service error. The next run tries again." in export.log["failure"]
+    assert "check the named object" not in export.log["failure"]
+
+
+@needs_pwsh
+def test_a_failed_metadata_download_fails_the_run(tmp_path):
+    fixtures = graph_fixtures.build()
+    fixtures["GET $metadata"] = graph_fixtures.error(503, "Unavailable.")
+
+    export = run_export(tmp_path, {"object_types": ["DeviceConfiguration"]}, fixtures)
+
+    assert export.result.returncode == 1
+    assert "Microsoft Graph metadata (503)" in export.log["failure"]
+    assert "Contoso/DeviceConfiguration/Contoso WiFi.json" in export.names()
+
+
+@needs_pwsh
 def test_throttled_requests_wait_and_retry(tmp_path):
     fixtures = graph_fixtures.build()
     key = "GET deviceManagement/windowsAutopilotDeploymentProfiles"
@@ -449,6 +474,69 @@ def test_the_batch_api_reads_full_objects_in_batch_requests_and_retries_throttle
     assert "Contoso/NamedLocations/Contoso Countries.json" in export.names()
 
 
+AUTOPILOT = "deviceManagement/windowsAutopilotDeploymentProfiles"
+WIFI = f"deviceManagement/deviceConfigurations/{gid(102)}?$expand=assignments"
+
+
+@needs_pwsh
+def test_a_batch_response_without_full_metadata_is_read_again_directly(tmp_path):
+    fixtures = graph_fixtures.build()
+    full_body = fixtures[f"GET {WIFI}"]["body"]
+    minimal = {k: v for k, v in full_body.items() if "@odata." not in k or k == "@odata.type"}
+    fixtures[f"BATCH GET {WIFI}"] = {"headers": {"Content-Type": "application/json;odata.metadata=minimal"}, "body": minimal}
+
+    export = run_export(tmp_path, {"object_types": ["DeviceConfiguration"]}, fixtures)
+
+    assert export.result.returncode == 0, export.result.stdout + export.result.stderr
+    assert f"https://graph.microsoft.com/beta/{WIFI}" in export.urls()
+    assert "#CustomRef_rootCertificateForServerValidation" in export.json("Contoso/DeviceConfiguration/Contoso WiFi.json")
+    assert export.result.stdout.count("without full metadata") == 1
+
+
+@needs_pwsh
+def test_a_batch_response_with_503_is_retried(tmp_path):
+    fixtures = graph_fixtures.build()
+    key = f"GET {AUTOPILOT}/{gid(2301)}?$expand=assignments"
+    fixtures[f"BATCH {key}"] = [{"status": 503, "body": {"error": {"message": "Unavailable"}}}, fixtures[key]]
+
+    export = run_export(tmp_path, {"object_types": ["AutoPilot"]}, fixtures)
+
+    assert export.result.returncode == 0, export.result.stdout + export.result.stderr
+    assert export.log["sleeps"] == [5]
+    assert "Contoso/AutoPilot/Contoso Autopilot.json" in export.names()
+
+
+@needs_pwsh
+def test_a_failed_batch_call_reads_its_objects_directly(tmp_path):
+    fixtures = graph_fixtures.build()
+    fixtures["POST $batch"] = [{"status": 500, "body": {"error": {"message": "Internal error"}}}, {}]
+
+    export = run_export(tmp_path, {"object_types": ["AutoPilot", "NamedLocations"]}, fixtures)
+
+    assert export.result.returncode == 0, export.result.stdout + export.result.stderr
+    assert "Contoso/NamedLocations/Contoso Office.json" in export.names()
+    assert "Contoso/AutoPilot/Contoso Autopilot.json" in export.names()
+    assert any(not r["batch"] and "namedLocations/" in r["url"] for r in export.log["requests"])
+
+
+@needs_pwsh
+def test_the_batch_api_sends_twenty_requests_per_call(tmp_path):
+    fixtures = graph_fixtures.build()
+    listing = fixtures[f"GET {AUTOPILOT}"]["body"]
+    detail = fixtures[f"GET {AUTOPILOT}/{gid(2301)}?$expand=assignments"]
+    for n in range(1, 25):
+        twin = {**listing["value"][0], "id": gid(2400 + n), "displayName": f"Contoso Autopilot {n}"}
+        listing["value"].append(twin)
+        fixtures[f"GET {AUTOPILOT}/{gid(2400 + n)}?$expand=assignments"] = {**detail, "body": {**detail["body"], **twin}}
+
+    export = run_export(tmp_path, {"object_types": ["AutoPilot"]}, fixtures)
+
+    posts = [r for r in export.log["requests"] if r["url"].endswith("$batch")]
+    assert len(posts) == 2
+    assert len([r for r in export.log["requests"] if r["batch"]]) == 25
+    assert len([n for n in export.names() if n.startswith("Contoso/AutoPilot/")]) == 25
+
+
 @needs_pwsh
 def test_graph_version_v1_sends_relative_urls_to_v1(tmp_path):
     export = run_export(tmp_path, {"object_types": ["AppProtection"], "graph_version": "v1.0"})
@@ -487,6 +575,30 @@ def test_app_files_are_decrypted_with_an_intunemanagement_encryption_key(tmp_pat
     assert export.raw("Contoso/Applications/agent.intunewin") == b"Contoso Agent package"
     assert not [n for n in export.names() if n.endswith(".encrypted")]
     assert graph_fixtures.PACKAGE_URL in export.urls()
+
+
+@needs_pwsh
+@pytest.mark.parametrize("value", [
+    json.dumps({name.lower(): info for name, info in KEYS.items()}),
+    json.dumps(json.dumps(KEYS)),
+])
+def test_encryption_keys_match_any_case_and_may_be_an_escaped_json_string(tmp_path, value):
+    export = run_export(tmp_path, {"object_types": ["Applications"], "export_app_files": True},
+                        env={"INTUNE_APP_ENCRYPTION_KEYS": value})
+
+    assert export.result.returncode == 0, export.result.stdout + export.result.stderr
+    assert export.raw("Contoso/Applications/agent.intunewin") == b"Contoso Agent package"
+
+
+@needs_pwsh
+def test_invalid_encryption_keys_name_the_variable_but_not_its_value(tmp_path):
+    export = run_export(tmp_path, {"object_types": ["Applications"], "export_app_files": True},
+                        env={"INTUNE_APP_ENCRYPTION_KEYS": "{secret-key-material"})
+
+    assert export.result.returncode == 1
+    output = export.result.stdout + export.result.stderr
+    assert "INTUNE_APP_ENCRYPTION_KEYS in .env is not a JSON object." in output
+    assert "secret-key-material" not in output + export.log["failure"]
 
 
 @needs_pwsh

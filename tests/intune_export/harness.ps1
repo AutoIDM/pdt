@@ -62,31 +62,42 @@ function Invoke-RestMethod {
         return [pscustomobject]@{ access_token = "header.$($claims.Replace('+', '-').Replace('/', '_')).signature"; expires_in = 3599 }
     }
     if ($Uri -match '/\$batch$') {
+        if ($script:HarnessGraph.ContainsKey('POST $batch')) { Assert-FixtureStatus (Get-Fixture 'POST $batch') }
         $batch = [Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json
         $responses = foreach ($request in $batch.requests) {
             $script:HarnessRequests.Add([ordered]@{ method = $request.method; url = $request.url; accept = $request.headers.Accept; batch = $true })
-            $fixture = Get-Fixture (Get-FixtureKey $request.method $request.url)
-            @{ id = $request.id; status = $fixture.status ?? 200; headers = $fixture.headers ?? @{}; body = $fixture.body }
+            $key = Get-FixtureKey $request.method $request.url
+            $fixture = if ($script:HarnessGraph.ContainsKey("BATCH $key")) { Get-Fixture "BATCH $key" } else { Get-Fixture $key }
+            $metadata = if ("$($request.headers.Accept)" -match 'odata\.metadata=(\w+)') { $Matches[1] } else { 'minimal' }
+            $headers = @{ 'Content-Type' = "application/json;odata.metadata=$metadata;odata.streaming=true;IEEE754Compatible=false;charset=utf-8" }
+            if ($fixture.headers) { foreach ($name in $fixture.headers.Keys) { $headers[$name] = $fixture.headers[$name] } }
+            @{ id = $request.id; status = $fixture.status ?? 200; headers = $headers; body = $fixture.body }
         }
         return ConvertTo-Response @{ responses = @($responses) }
     }
     $fixture = Get-Fixture (Get-FixtureKey $Method $Uri)
-    $status = $fixture.status ?? 200
+    Assert-FixtureStatus $fixture
+    ConvertTo-Response $fixture.body
+}
+
+function Assert-FixtureStatus {
+    param($Fixture)
+
+    $status = $Fixture.status ?? 200
     if ($status -eq 0) {
         throw [Net.Http.HttpRequestException]::new('The request was canceled due to the configured HttpClient.Timeout.')
     }
     if ($status -ge 300) {
         $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]$status)
-        if ($fixture.headers.'Retry-After') {
-            $response.Headers.RetryAfter = [Net.Http.Headers.RetryConditionHeaderValue]::new([TimeSpan]::FromSeconds($fixture.headers.'Retry-After'))
+        if ($Fixture.headers.'Retry-After') {
+            $response.Headers.RetryAfter = [Net.Http.Headers.RetryConditionHeaderValue]::new([TimeSpan]::FromSeconds($Fixture.headers.'Retry-After'))
         }
         $exception = [Microsoft.PowerShell.Commands.HttpResponseException]::new(
             "Response status code does not indicate success: $status.", $response)
         $record = [Management.Automation.ErrorRecord]::new($exception, 'WebCmdletWebResponseException', 'InvalidOperation', $null)
-        $record.ErrorDetails = [Management.Automation.ErrorDetails]::new(($fixture.body | ConvertTo-Json -Depth 100 -Compress))
+        $record.ErrorDetails = [Management.Automation.ErrorDetails]::new(($Fixture.body | ConvertTo-Json -Depth 100 -Compress))
         throw $record
     }
-    ConvertTo-Response $fixture.body
 }
 
 function Invoke-WebRequest {
@@ -94,6 +105,7 @@ function Invoke-WebRequest {
 
     $script:HarnessRequests.Add([ordered]@{ method = 'GET'; url = $Uri; accept = $null; batch = $false; timeout = $TimeoutSec })
     $fixture = Get-Fixture (Get-FixtureKey 'GET' $Uri)
+    Assert-FixtureStatus $fixture
     if ($OutFile) {
         [IO.File]::WriteAllBytes($OutFile, [Convert]::FromBase64String($fixture.bytes))
         return
