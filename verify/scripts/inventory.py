@@ -352,8 +352,8 @@ def google_cloud_inventory(settings: dict[str, str]) -> Inventory:
         name = str(item["email"]).split("@", 1)[0]
         if not name.startswith("pdt") or item["email"] == own:
             continue
-        # A service account takes no labels, so pdt marks it by display name.
-        managed = item.get("displayName") == "pdt job runner"
+        # A service account takes no labels, so pdt marks it by description.
+        managed = item.get("description") == "Managed by PDT"
         found.append(Resource("iam.googleapis.com/ServiceAccount", item["name"],
                               dict(MANAGED) if managed else {}, name))
     return found

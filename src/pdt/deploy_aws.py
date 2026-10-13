@@ -113,6 +113,7 @@ BATCH_ARNS = {
     "job_definition_revision": "arn:aws:batch:{region}:{account}:job-definition/pdt-*:*",
 }
 SECURITY_GROUP_ARN = "arn:aws:ec2:{region}:{account}:security-group/*"
+BUILD_BUCKET_PREFIX = "pdt-build"
 # Each action pdt calls, grouped with the ARNs of the pdt resources it touches.
 # deployer_policy prints these and preflight simulates them, so both agree.
 POLICY_SCOPES = [
@@ -121,10 +122,12 @@ POLICY_SCOPES = [
                 "iam:TagRole", "iam:UpdateAssumeRolePolicy"],
      "Resource": [ROLE_ARN]},
     # The job definition hands the execution and job roles to Batch, which runs them
-    # as ECS tasks; the schedule hands its role to the scheduler.
+    # as ECS tasks; the schedule hands its role to the scheduler, and the CodeBuild
+    # project its role to CodeBuild.
     {"Action": ["iam:PassRole"], "Resource": [ROLE_ARN],
      "Condition": {"StringEquals": {"iam:PassedToService": [
-         "batch.amazonaws.com", "ecs-tasks.amazonaws.com", "scheduler.amazonaws.com"]}}},
+         "batch.amazonaws.com", "codebuild.amazonaws.com", "ecs-tasks.amazonaws.com",
+         "scheduler.amazonaws.com"]}}},
     # Creating the compute environment creates Batch's service-linked role on first use.
     {"Action": ["iam:CreateServiceLinkedRole"],
      "Resource": ["arn:aws:iam::{account}:role/aws-service-role/batch.amazonaws.com/*"],
@@ -154,6 +157,16 @@ POLICY_SCOPES = [
                 "s3:PutBucketPublicAccessBlock", "s3:PutBucketTagging"],
      "Resource": [f"arn:aws:s3:::{STORE_PREFIX}-*"]},
     {"Action": ["s3:GetObject"], "Resource": [f"arn:aws:s3:::{STORE_PREFIX}-*/*"]},
+    {"Action": ["s3:CreateBucket", "s3:DeleteBucket", "s3:GetBucketTagging", "s3:ListBucket",
+                "s3:PutBucketPublicAccessBlock", "s3:PutBucketTagging",
+                "s3:PutLifecycleConfiguration"],
+     "Resource": [f"arn:aws:s3:::{BUILD_BUCKET_PREFIX}-*"]},
+    {"Action": ["s3:DeleteObject", "s3:PutObject"],
+     "Resource": [f"arn:aws:s3:::{BUILD_BUCKET_PREFIX}-*/*"]},
+    {"Action": ["codebuild:BatchGetBuilds", "codebuild:BatchGetProjects",
+                "codebuild:CreateProject", "codebuild:DeleteProject", "codebuild:StartBuild",
+                "codebuild:UpdateProject"],
+     "Resource": ["arn:aws:codebuild:{region}:{account}:project/pdt"]},
     {"Action": ["ecr:BatchCheckLayerAvailability", "ecr:BatchDeleteImage",
                 "ecr:CompleteLayerUpload", "ecr:CreateRepository", "ecr:DeleteRepository",
                 "ecr:DescribeImages", "ecr:DescribeRepositories", "ecr:InitiateLayerUpload",
@@ -246,11 +259,12 @@ def role_propagation_error(exc: Exception) -> bool:
     message = f"{exc} {response_message}".lower()
     return (
         code in {"InvalidParameterValueException", "ValidationException",
-                 "ClientException", "InvalidParameterException"}
+                 "ClientException", "InvalidParameterException", "InvalidInputException"}
         and "role" in message
         and any(fragment in message for fragment in (
             "cannot be assumed", "could not be assumed", "does not exist",
             "not valid", "unable to assume", "assume the role", "pass role",
+            "not authorized to perform: sts:assumerole",
         ))
     )
 
@@ -599,7 +613,7 @@ def store_exists(s3, name: str) -> bool:
         raise
 
 
-def ensure_store(s3, name: str, region: str) -> None:
+def ensure_store(s3, name: str, region: str, tags: dict[str, str] = STORE_TAGS) -> None:
     if store_exists(s3, name):
         tags = s3.get_bucket_tagging(Bucket=name).get("TagSet", [])
         if not has_managed_tag(tags, "Key", "Value"):
@@ -613,7 +627,7 @@ def ensure_store(s3, name: str, region: str) -> None:
         "BlockPublicPolicy": True, "RestrictPublicBuckets": True,
     })
     s3.put_bucket_tagging(Bucket=name, Tagging={
-        "TagSet": [{"Key": key, "Value": value} for key, value in STORE_TAGS.items()]})
+        "TagSet": [{"Key": key, "Value": value} for key, value in tags.items()]})
 
 
 def store_cost(usage: tuple[int, int], region: str) -> tuple[str, float]:

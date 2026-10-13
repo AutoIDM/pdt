@@ -72,13 +72,14 @@ def test_every_scoped_arn_names_a_pdt_resource():
             assert ACCOUNT in arn or arn.startswith("arn:aws:s3:::"), arn
 
 
-def test_pass_role_reaches_only_pdt_roles_for_batch_ecs_and_the_scheduler():
+def test_pass_role_reaches_only_pdt_roles_for_batch_codebuild_ecs_and_the_scheduler():
     [statement] = [s for s in policy()["Statement"] if "iam:PassRole" in listed(s["Action"])]
     assert listed(statement["Action"]) == ["iam:PassRole"]
     assert listed(statement["Resource"]) == [f"arn:aws:iam::{ACCOUNT}:role/pdt-*"]
     services = statement["Condition"]["StringEquals"]["iam:PassedToService"]
     assert sorted(services) == [
-        "batch.amazonaws.com", "ecs-tasks.amazonaws.com", "scheduler.amazonaws.com"]
+        "batch.amazonaws.com", "codebuild.amazonaws.com", "ecs-tasks.amazonaws.com",
+        "scheduler.amazonaws.com"]
 
 
 def test_the_service_linked_role_grant_is_for_batch_only():

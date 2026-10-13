@@ -60,10 +60,10 @@ def test_azure_docker_build_forwards_the_agent(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setenv("SSH_AUTH_SOCK", str(socket))
     monkeypatch.setattr(azure, "stage_build_context", lambda app: stage)
-    monkeypatch.setattr(azure, "run_quiet", lambda *args: None)
-    monkeypatch.setattr(azure, "run_build", lambda args: calls.append(tuple(args)))
-    azure.build_image({"name": "report", "dir": app_dir}, "pdtregistry", "report")
-    assert calls[0][:6] == ("docker", "build", "--platform", "linux/amd64", "--ssh", "default")
+    monkeypatch.setattr(azure, "run_quiet", lambda *args: '{"accessToken": "t", "loginServer": "pdtregistry.azurecr.io"}')
+    monkeypatch.setattr(azure, "run_build", lambda args, **_: calls.append(tuple(args)))
+    azure.build_image({"name": "report", "dir": app_dir}, {"registry": "pdtregistry"}, "report", False)
+    assert calls[1][:6] == ("docker", "build", "--platform", "linux/amd64", "--ssh", "default")
 
 
 def test_google_cloud_docker_build_forwards_the_agent(tmp_path, monkeypatch):
@@ -77,6 +77,6 @@ def test_google_cloud_docker_build_forwards_the_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("SSH_AUTH_SOCK", str(socket))
     monkeypatch.setattr(google, "stage_build_context", lambda app: stage)
     monkeypatch.setattr(google, "run_quiet", lambda *args: "token")
-    monkeypatch.setattr(google, "run_build", lambda args, data=None: calls.append(tuple(args)))
+    monkeypatch.setattr(google, "run_build", lambda args, **_: calls.append(tuple(args)))
     google.build_image({"name": "report", "dir": app_dir}, "image", "us-central1")
     assert calls[1][:6] == ("docker", "build", "--platform", "linux/amd64", "--ssh", "default")

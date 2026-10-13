@@ -1,13 +1,12 @@
-"""Download a pinned archive or file, verify its sha256, and unpack it.
+"""Download a pinned archive, verify its sha256, and unpack it.
 
-`gcloud_sdk.py`, `pwsh.py`, and `docker_setup.py` install their tools this
-way; each keeps its own version, checksum table, and final folder.
+`gcloud_sdk.py` and `pwsh.py` install their tools this way; each keeps its
+own version, checksum table, and final folder.
 """
 
 from __future__ import annotations
 
 import hashlib
-import shutil
 import sys
 import tarfile
 import tempfile
@@ -20,9 +19,8 @@ from pdt import console
 
 
 def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
-    """Unpack the archive at `url` into `stage`, or copy a file that is no .zip, .tar.gz, or
-    .tgz there under its own name, and return `stage`. Raises `error` when the download
-    fails or its sha256 is not `sha256`."""
+    """Unpack the archive at `url` into `stage` and return `stage`. Raises `error`
+    when the download fails or its sha256 is not `sha256`."""
     console.status(f"downloading {console.value(url)}")
     digest = hashlib.sha256()
     tmp = tempfile.NamedTemporaryFile(suffix=Path(url).suffix, delete=False)
@@ -49,12 +47,9 @@ def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
                 f"checksum mismatch for {url}\n"
                 f"  expected {sha256}\n"
                 f"  got      {digest.hexdigest()}\n"
-                f"A newer release may have replaced the pinned one; update the pin "
-                f"and its checksum in {error.__module__.replace('.', '/')}.py as its "
+                f"A newer release may have replaced the pinned one; update VERSION "
+                f"and CHECKSUMS in {error.__module__.replace('.', '/')}.py as its "
                 f"docstring describes")
-        if not url.endswith((".zip", ".tar.gz", ".tgz")):
-            shutil.copyfile(tmp_path, stage / Path(url).name)
-            return stage
         console.status(f"unpacking {console.value(Path(url).name)}")
         if url.endswith(".zip"):
             with zipfile.ZipFile(tmp_path) as archive:

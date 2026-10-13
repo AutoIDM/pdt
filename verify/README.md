@@ -30,7 +30,7 @@ Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one
 
 The `windows` provider deploys to the computer you run it on, so run it only on a Windows machine you are willing to add scheduled tasks to.
 
-Each cloud job builds container images with Docker on the GitHub Actions runner and uploads them to that cloud's registry, the same way a deploy does on a user's computer. No job uses ACR Tasks or Cloud Build.
+Each cloud job builds container images with Docker on the GitHub Actions runner and uploads them to that cloud's registry, the same way a deploy does on a user's computer where Docker runs. No job uses ACR Tasks, Cloud Build, or CodeBuild, so the live run does not test a build in the cloud.
 
 ## GitHub Actions settings
 
@@ -95,7 +95,7 @@ Four kinds cannot hold a tag, so pdt marks each one another way and the listing 
 
 - An EventBridge Scheduler schedule. pdt tags the `pdt` schedule group instead; membership in it is the marker.
 - A Cloud Scheduler job. pdt writes `Managed by PDT app <name>` in its description.
-- A Google Cloud service account. pdt sets its display name to `pdt job runner`.
+- A Google Cloud service account. pdt writes `Managed by PDT` in its description.
 - A Windows scheduled task. pdt starts its description with `Managed by pdt;`.
 
 An Azure Key Vault secret is not a resource either. `az resource list` returns the vault, not what is inside it, so the vault stands for the secrets pdt put in it.

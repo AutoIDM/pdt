@@ -26,6 +26,14 @@ Shared across apps:
   Storage bucket         pdt-data-<suffix> (kept after destroy; one managed
                          folder per app, the runner may list and write only
                          its own)
+Shared across apps, created only by a deploy that builds in the cloud:
+  Service account        pdt-builder@<project>, the identity of each Cloud
+                         Build build (Artifact Registry writer on the repo,
+                         Storage Admin on the build bucket only)
+  Storage bucket         pdt-build-<suffix> (labeled managed-by=pdt; holds the
+                         uploaded build context and the build log, deletes
+                         objects after 1 day, no soft delete)
+  Both go with the last app in the project.
 
 If gcloud is not installed, pdt/gcloud_sdk.py downloads a
 pinned copy to the pdt data folder and every call here uses that copy.
@@ -33,7 +41,12 @@ pinned copy to the pdt data folder and every call here uses that copy.
 Deploy reconciles: it creates what is missing and updates what changed,
 so it is safe to re-run after a failure. Secrets and the image build
 context are prepared by pdt/deploy_common.py. Docker on this computer
-builds the image and pushes it to Artifact Registry.
+builds the image and pushes it to Artifact Registry; when
+deploy_common.build_in_cloud chooses the cloud, Cloud Build in the
+deploy region builds the same staged context with the same
+`docker build --platform linux/amd64` and pushes it. Cloud Run runs only
+linux/amd64 and Cloud Build machines are amd64, so both places build the
+same image with no emulation.
 """
 
 from __future__ import annotations
@@ -46,6 +59,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -62,10 +76,10 @@ from pdt import gcloud_sdk
 from pdt import regions
 from pdt.deploy import confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, convert_from_usd, docker_preflight, fail,
+    STORE_TAGS, CostEstimate, build_in_cloud, convert_from_usd, fail,
     fetch_json, gather_secrets, image_action, run_build, run_secrets, secret_contents,
     ssh_build_args, stage_build_context, store_cost_label, store_kept_line, store_name,
-    store_plan_lines, warn_if_locked, write_dockerfile)
+    store_plan_lines, store_suffix, warn_if_locked, write_dockerfile)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -95,6 +109,23 @@ DESTROY_APIS = (
     "storage.googleapis.com",
 )
 STORE_ROLE = "roles/storage.objectUser"
+
+CLOUD_BUILD_API = "cloudbuild.googleapis.com"
+BUILDER = "pdt-builder"
+BUILDER_DISPLAY_NAME = "pdt image builder"
+BUILD_BUCKET_PREFIX = "pdt-build"
+BUILD_PUSH_ROLE = "roles/artifactregistry.writer"
+# Cloud Build writes the log to a user-created bucket only with Storage Admin:
+# https://docs.cloud.google.com/build/docs/securing-builds/store-manage-build-logs
+BUILD_BUCKET_ROLE = "roles/storage.admin"
+BUILD_LIFECYCLE = {"rule": [{"action": {"type": "Delete"}, "condition": {"age": 1}}]}
+# What the deployer needs to submit a build as the builder, keyed by what the
+# refusal names: (marker in the error, role, what to grant it on).
+BUILD_SUBMIT_ROLES = (
+    (re.compile(r"actAs|act as", re.I), "roles/iam.serviceAccountUser", "service account"),
+    (re.compile(r"cloudbuild\.builds\.create", re.I), "roles/cloudbuild.builds.editor",
+     "project"),
+)
 
 BILLING_API = "https://cloudbilling.googleapis.com/v1"
 # Cloud Run job defaults; the deploy below does not override them.
@@ -363,6 +394,14 @@ def store_bucket(project: str) -> str:
     return store_name(project)
 
 
+def build_bucket(project: str) -> str:
+    return f"{BUILD_BUCKET_PREFIX}-{store_suffix(project)}"
+
+
+def builder_email(project: str) -> str:
+    return f"{BUILDER}@{project}.iam.gserviceaccount.com"
+
+
 def store_url(bucket: str, app_name: str) -> str:
     return f"gs://{bucket}/{app_name}/"
 
@@ -470,6 +509,10 @@ def service_account_owned(resource: dict | None) -> bool:
     return resource is not None and resource.get("displayName") == "pdt job runner"
 
 
+def builder_owned(resource: dict | None) -> bool:
+    return resource is not None and resource.get("displayName") == BUILDER_DISPLAY_NAME
+
+
 def image_name(image: dict) -> str:
     value = str(image.get("package") or image.get("name") or "").rstrip("/")
     return value.rsplit("/", 1)[-1]
@@ -508,13 +551,100 @@ def build_image(app: dict, image: str, region: str) -> None:
         # https://docs.cloud.google.com/artifact-registry/docs/docker/authentication#token
         token = run_quiet("auth", "print-access-token").strip()
         run_build(["docker", "login", "--username", "oauth2accesstoken", "--password-stdin",
-                   f"https://{region}-docker.pkg.dev"], data=token)
+                   f"https://{region}-docker.pkg.dev"], data=token, quiet=True)
         # Cloud Run runs only linux/amd64 images.
         run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
                    "-t", image, str(stage)])
         run_build(["docker", "push", image])
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+
+
+def cloud_build_config(image: str, bucket: str) -> dict:
+    """The same docker build as on this computer, run by Cloud Build on the staged context.
+
+    A build with a user-specified service account must name a logs bucket or log only to
+    Cloud Logging, and `gcloud builds submit` streams the log only from Cloud Storage:
+    https://docs.cloud.google.com/build/docs/securing-builds/configure-user-specified-service-accounts
+    """
+    return {
+        "steps": [{"name": "gcr.io/cloud-builders/docker",
+                   "env": ["DOCKER_BUILDKIT=1"],
+                   "args": ["build", "--platform", "linux/amd64", "-t", image, "."]}],
+        "images": [image],
+        "logsBucket": f"gs://{bucket}/logs",
+        "options": {"logging": "GCS_ONLY"},
+    }
+
+
+def missing_submit_roles(stderr: str) -> list[tuple[str, str]]:
+    """The roles the deployer lacks to submit the build, from gcloud's refusal.
+
+    A refusal that names neither permission gets both roles.
+    """
+    if "PERMISSION_DENIED" not in stderr:
+        return []
+    found = [(role, kind) for marker, role, kind in BUILD_SUBMIT_ROLES if marker.search(stderr)]
+    return found or [(role, kind) for _, role, kind in BUILD_SUBMIT_ROLES]
+
+
+def cloud_build_image(app: dict, image: str, project: str, region: str,
+                      builder: str, bucket: str) -> None:
+    stage = stage_build_context(app)
+    try:
+        write_dockerfile(stage, app)
+        # With no .gitignore or .git at the top of the upload, gcloud already uploads
+        # every file; this file makes that so whatever gcloud's default becomes.
+        (stage / ".gcloudignore").write_text("/.gcloudignore\n/cloudbuild.json\n")
+        build_config = stage / "cloudbuild.json"
+        build_config.write_text(json.dumps(cloud_build_config(image, bucket)))
+        proc = subprocess.run(
+            [GCLOUD, "builds", "submit", str(stage), "--config", str(build_config),
+             "--region", region, "--project", project,
+             "--service-account", f"projects/{project}/serviceAccounts/{builder}",
+             "--gcs-source-staging-dir", f"gs://{bucket}/source"],
+            stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    if proc.returncode == 0:
+        return
+    console.say(console.escape(proc.stderr.strip()))
+    roles = missing_submit_roles(proc.stderr)
+    if roles:
+        fail("Cloud Build refused the build for your Google account; "
+             + "; ".join(f"add the role {console.value(role)} for your account on "
+                         f"{console.escape(kind)} "
+                         f"{console.value(builder if kind == 'service account' else project)}"
+                         for role, kind in roles)
+             + ", then run the deploy again")
+    fail(f"the Cloud Build build of {console.value(image)} failed; fix the problem above "
+         "and run the deploy again")
+
+
+def ensure_builder(project: str, region: str, repo: str, builder: str, bucket: str,
+                   builder_exists: bool, bucket_exists: bool) -> None:
+    if not builder_exists:
+        console.step(f"creating service account {console.value(builder)}")
+        run_quiet("iam", "service-accounts", "create", BUILDER,
+                  "--project", project, "--display-name", BUILDER_DISPLAY_NAME,
+                  "--description", "Managed by PDT")
+    if not bucket_exists:
+        console.step(f"creating bucket {console.value(bucket)}")
+        with tempfile.TemporaryDirectory(prefix="pdt-") as folder:
+            lifecycle = Path(folder, "lifecycle.json")
+            lifecycle.write_text(json.dumps(BUILD_LIFECYCLE))
+            run_quiet("storage", "buckets", "create", f"gs://{bucket}",
+                      "--location", region, "--project", project,
+                      "--uniform-bucket-level-access", "--public-access-prevention",
+                      "--soft-delete-duration", "0", "--lifecycle-file", str(lifecycle))
+        run_quiet("storage", "buckets", "update", f"gs://{bucket}",
+                  "--update-labels", "managed-by=pdt")
+    member = f"serviceAccount:{builder}"
+    run_quiet("artifacts", "repositories", "add-iam-policy-binding", repo,
+              "--location", region, "--project", project,
+              "--member", member, "--role", BUILD_PUSH_ROLE)
+    run_quiet("storage", "buckets", "add-iam-policy-binding", f"gs://{bucket}",
+              "--member", member, "--role", BUILD_BUCKET_ROLE)
 
 
 def billing_list(path: str, key: str, project: str, currency: str = "") -> list:
@@ -706,12 +836,13 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
-    docker_preflight("Google Cloud", "linux/amd64", assume_yes)
+    cloud = build_in_cloud(app, "Cloud Build", "linux/amd64")
     name = app["name"]
     project, region = project_region(app)
     console.status("Checking your Google Cloud sign-in...")
     project = preflight(app, project, assume_yes)
-    billing_confirmed = ensure_apis(project, assume_yes)
+    billing_confirmed = ensure_apis(project, assume_yes,
+                                    (*APIS, CLOUD_BUILD_API) if cloud else APIS)
 
     cron = config.cron_expression(app["schedule"])
     timezone = app["timezone"]
@@ -737,6 +868,17 @@ def deploy(app: dict, assume_yes: bool) -> int:
             and not service_account_owned(service_account)):
         fail(f"service account {console.value(sa)} exists but is not managed by PDT")
     sa_exists = service_account is not None
+    builder = builder_email(project)
+    builds = build_bucket(project)
+    builder_exists = builds_exists = False
+    if cloud:
+        builder_account = service_account_or_none(project, builder)
+        if builder_account is not None and not builder_owned(builder_account):
+            fail(f"service account {console.value(builder)} exists but is not managed by PDT")
+        builder_exists = builder_account is not None
+        described = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+        require_managed(described, f"bucket {console.value(builds)}")
+        builds_exists = described is not None
     bucket_exists = False
     if store:
         described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
@@ -767,8 +909,18 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
     actions = [console.Markup(("use existing" if repo_exists else "create")
                               + f" Artifact Registry repo {console.value(repo)}")]
+    if cloud:
+        actions.append(console.Markup(("use existing" if builder_exists else "create")
+                                      + f" service account {console.value(builder)} for "
+                                      "Cloud Build"))
+        actions.append(console.Markup(("use existing" if builds_exists else "create")
+                                      + f" bucket {console.value(builds)} for the Cloud Build "
+                                      "upload and log (objects deleted after 1 day)"))
+        actions.append(console.Markup(f"allow {console.value(builder)} to push to "
+                                      f"{console.value(repo)} and use bucket "
+                                      f"{console.value(builds)}"))
     actions.append(image_action(app, console.Markup(
-        f"build and push image {console.value(image)}")))
+        f"build and push image {console.value(image)}"), "Cloud Build" if cloud else ""))
     if secret_state:
         actions.append(console.Markup(f"{secret_state} secret {console.value(sid)} "
                                       f"({secret_contents(values)}, as one json blob)"))
@@ -798,8 +950,13 @@ def deploy(app: dict, assume_yes: bool) -> int:
         run_quiet("artifacts", "repositories", "create", repo,
                   "--repository-format", "docker", "--location", region,
                   "--project", project, "--labels", "managed-by=pdt")
-    console.step(f"building image {console.value(image)}")
-    build_image(app, image, region)
+    if cloud:
+        ensure_builder(project, region, repo, builder, builds, builder_exists, builds_exists)
+        console.step(f"building image {console.value(image)} with Cloud Build")
+        cloud_build_image(app, image, project, region, builder, builds)
+    else:
+        console.step(f"building image {console.value(image)} with Docker on this computer")
+        build_image(app, image, region)
     if not sa_exists:
         if not sa.startswith("pdt-runner@"):
             fail(f"CLOUD_RUN_SERVICE_ACCOUNT {console.value(sa)} does not exist in project "
@@ -948,6 +1105,13 @@ def destroy(app: dict, assume_yes: bool) -> int:
     delete_image = bool(app_images) and not delete_repo
     delete_sa = (sa == default_sa and service_account_owned(service_account)
                  and not other_project_jobs and not unmanaged_app_resource)
+    builder = builder_email(project)
+    builder_account = service_account_or_none(project, builder)
+    builds = build_bucket(project)
+    builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+    last_app = not other_project_jobs and not unmanaged_app_resource
+    delete_builder = last_app and builder_owned(builder_account)
+    delete_builds = last_app and managed_by_pdt(builds_bucket)
 
     actions = []
     if revoke_grant:
@@ -967,6 +1131,12 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if delete_sa:
         actions.append(console.Markup(f"delete service account {console.value(sa)} "
                                       "(no other apps use it)"))
+    if delete_builder:
+        actions.append(console.Markup(f"delete service account {console.value(builder)} "
+                                      "(no other apps use it)"))
+    if delete_builds:
+        actions.append(console.Markup(f"delete bucket {console.value(builds)} and its objects "
+                                      "(no other apps use it)"))
     kept = []
     if scheduler is not None and not delete_scheduler:
         kept.append(f"Cloud Scheduler job {console.value(job)}")
@@ -978,6 +1148,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
         kept.append(f"Artifact Registry repository {console.value(repo)}")
     if service_account is not None and not delete_sa:
         kept.append(f"service account {console.value(sa)}")
+    if builder_account is not None and not delete_builder:
+        kept.append(f"service account {console.value(builder)}")
+    if builds_bucket is not None and not delete_builds:
+        kept.append(f"bucket {console.value(builds)}")
     if store_present:
         kept.append(store_kept_line(f"bucket {console.value(bucket)}", store.usage()[0], name))
     for item in other_project_jobs:
@@ -1033,6 +1207,13 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.step(f"deleting service account {console.value(sa)}")
         run_quiet("iam", "service-accounts", "delete", sa,
                   "--project", project, "--quiet")
+    if delete_builder:
+        console.step(f"deleting service account {console.value(builder)}")
+        run_quiet("iam", "service-accounts", "delete", builder,
+                  "--project", project, "--quiet")
+    if delete_builds:
+        console.step(f"deleting bucket {console.value(builds)}")
+        run_quiet("storage", "rm", "--recursive", f"gs://{builds}/", "--project", project)
     console.done(f"Removed {console.value(name)} from project {console.value(project)}.")
     remaining = sorted(set(other_jobs))
     if remaining:

@@ -24,6 +24,12 @@ and would stop a sibling app from deleting its own job; a locked ACR still
 blocks `az group delete`. The lock on the environment carries the
 project's resource group in its name, because two projects can each have
 an app of the same name.
+
+When Docker on this computer cannot build the image (`build_in_cloud`), an
+ACR Tasks quick build (`az acr build`) builds it from the same staged
+context and pushes it to the project's ACR. It needs no Azure resource
+beyond the ACR: the build runs on Azure's shared agents, and its run
+record and log stay in the registry, so destroy removes them with it.
 """
 
 from __future__ import annotations
@@ -35,7 +41,9 @@ import http.client
 import json
 import re
 import shutil
+import sys
 import urllib.request
+from pathlib import Path
 from typing import Iterator
 
 from pdt import config, console, regions, runs_cli
@@ -52,7 +60,7 @@ from pdt.deploy_azure import (
     store_plan, store_settings, store_url, store_usage, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, convert_from_usd, docker_preflight, fail, gather_secrets,
+    CostEstimate, build_in_cloud, convert_from_usd, fail, gather_secrets,
     image_action, run_build, run_secrets, ssh_build_args, stage_build_context, store_kept_line,
     warn_if_locked, write_dockerfile)
 
@@ -69,17 +77,77 @@ QUOTA_HINT = (
     "Apps environments in the Azure portal (Subscriptions > Usage + quotas).")
 
 
-def build_image(app: dict, registry: str, image_name: str) -> None:
+def build_image(app: dict, settings: dict, image_name: str, cloud: bool) -> None:
+    registry = settings["registry"]
     stage = stage_build_context(app)
     try:
         write_dockerfile(stage, app)
+        if cloud:
+            cloud_build(settings, stage, image_name)
+            return
         image = f"{registry}.azurecr.io/{image_name}:latest"
-        run_quiet("acr", "login", "--name", registry)
+        login = json.loads(run_quiet("acr", "login", "--name", registry, "--expose-token"))
+        run_build(["docker", "login", "--username", "00000000-0000-0000-0000-000000000000",
+                   "--password-stdin", login["loginServer"]], data=login["accessToken"],
+                  quiet=True)
         run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
                    "-t", image, str(stage)])
         run_build(["docker", "push", image])
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+
+
+ACR_TASKS_ROLE = "Container Registry Tasks Contributor"
+DENIED_ACTION = re.compile(r"perform action '([^']+)'")
+
+
+def cloud_build(settings: dict, stage: Path, image_name: str) -> None:
+    """Build and push the image with an ACR Tasks quick build, showing its log as it runs.
+
+    `az acr build` prints the log with print(). A Windows console or pipe in a legacy code
+    page cannot encode every character of it, and the UnicodeEncodeError would stop the
+    command while the build goes on (Azure/azure-cli#7011, #22301), so stdout replaces such
+    a character for the length of the build. `--no-format` keeps colorama from replacing
+    sys.stdout for the rest of the deploy.
+    """
+    registry, rg = settings["registry"], settings["resource_group"]
+    errors = getattr(sys.stdout, "errors", None)
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure:
+        reconfigure(errors="replace")
+    try:
+        proc = az("acr", "build", "--registry", registry, "--resource-group", rg,
+                  "--image", f"{image_name}:latest", "--platform", "linux/amd64",
+                  "--no-format", str(stage))
+    finally:
+        if reconfigure:
+            reconfigure(errors=errors)
+    if proc.returncode == 0:
+        return
+    error = proc.stderr.strip()
+    if "tasksoperationsnotallowed" in error.lower():
+        fail(f"Azure does not run ACR Tasks builds in subscription "
+             f"{console.value(settings['subscription'])}. Azure pauses ACR Tasks for "
+             "subscriptions on free credits, such as Free Trial and Azure for Students. Start "
+             "Docker on this computer and run the same command again to build the image there, "
+             "or upgrade the subscription to pay-as-you-go in the Azure portal.")
+    denied = DENIED_ACTION.search(error)
+    if denied or "authorizationfailed" in error.lower():
+        acr_id = resource_id(settings, "Microsoft.ContainerRegistry", "registries", registry)
+        command = (f"pdt az role assignment create --assignee-object-id "
+                   f"{settings['deployer_object_id']} --assignee-principal-type "
+                   f"{settings['deployer_principal_type']} --role \"{ACR_TASKS_ROLE}\" "
+                   f"--scope {acr_id}")
+        fail(f"Your Azure sign-in has no permission to build images with ACR Tasks on ACR "
+             f"{console.value(registry)}"
+             + (f" (Azure refused {console.value(denied.group(1))})" if denied else "")
+             + f". Add the role {console.value(ACR_TASKS_ROLE)} on the registry: "
+             f"{console.value(command)}. The command needs the Owner or Role Based Access "
+             "Control Administrator role. Or start Docker on this computer and run the same "
+             "command again to build the image there.")
+    if error:
+        console.say(console.escape(error))
+    fail(f"{console.value('pdt az acr build')} failed; the build log and the error above say why")
 
 
 def acr_arm_auth_enabled(registry: str) -> bool:
@@ -754,7 +822,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
-    docker_preflight("Azure", "linux/amd64", assume_yes)
+    cloud = build_in_cloud(app, "ACR Tasks", "linux/amd64")
     console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     name = app["name"]
@@ -841,7 +909,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if store:
         actions += store_plan(store, store_present, name, job)
     actions.append(image_action(
-        app, console.Markup(f"build and push image {console.value(image)}")))
+        app, console.Markup(f"build and push image {console.value(image)}"),
+        "ACR Tasks" if cloud else ""))
     actions += secret_actions(sid, values, current_secret, payload)
     if legacy_job:
         actions.append(console.Markup(f"delete Container Apps Job {console.value(legacy)} "
@@ -889,8 +958,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.step(f"enabling ACR authentication-as-arm on {console.value(settings['registry'])}")
     enable_acr_arm_auth(settings["registry"])
 
-    console.step(f"building image {console.value(image)}")
-    build_image(app, settings["registry"], name)
+    console.step(f"building image {console.value(image)} with "
+                 f"{console.value('ACR Tasks') if cloud else 'Docker on this computer'}")
+    build_image(app, settings, name, cloud)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
     if legacy_job:
         retire_job(settings, legacy, legacy_job, store, sid)

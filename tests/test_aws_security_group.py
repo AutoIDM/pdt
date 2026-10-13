@@ -106,7 +106,7 @@ def plan(monkeypatch):
         return False
 
     for name, value in {
-        "docker_preflight": lambda provider, image_platform, assume_yes: None,
+        "build_in_cloud": lambda app, builder, image_platform: False,
         "ensure_session": lambda app: None,
         "aws_settings": lambda app, session: ("123456789012", "us-east-1"),
         "preflight": lambda *args: ("123456789012", {}),

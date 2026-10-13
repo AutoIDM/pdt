@@ -27,7 +27,9 @@ def test_an_app_without_a_dockerfile_gets_the_generated_one(tmp_path):
     app, stage = staged(tmp_path, "my-report")
     write_dockerfile(stage, app)
     assert (stage / "Dockerfile").read_text() == DOCKERFILE.format(app="my-report")
-    assert image_action(app, "build image x") == "build image x"
+    assert image_action(app, "build image x") == "build image x with Docker on this computer"
+    assert plain([image_action(app, "build image x", "Cloud Build")]) == [
+        "build image x in the cloud with Cloud Build"]
 
 
 def test_an_app_dockerfile_is_used_as_is_at_the_context_root(tmp_path):
@@ -35,7 +37,8 @@ def test_an_app_dockerfile_is_used_as_is_at_the_context_root(tmp_path):
     app, stage = staged(tmp_path, "my-report", own)
     write_dockerfile(stage, app)
     assert (stage / "Dockerfile").read_text() == own
-    assert plain([image_action(app, "build image x")]) == ["build image x (from my-report/Dockerfile)"]
+    assert plain([image_action(app, "build image x")]) == [
+        "build image x with Docker on this computer (from my-report/Dockerfile)"]
 
 
 def app_with_dockerfile(project, platform_text):
