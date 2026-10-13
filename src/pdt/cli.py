@@ -20,11 +20,13 @@ from pathlib import Path
 
 import rich_argparse
 
-from pdt import (__version__, alerts_cli, completion, config, console, deploy, deploy_common,
-                 gui_cli, lifecycle, powershell, pwsh, scaffold, storage_cli)
+from pdt import completion, config
 from pdt.config import ConfigError
-from pdt.utils.email_auth import can_prompt
-from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
+
+if not completion.COMPLETING:
+    from pdt import alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold
+    from pdt.utils.email_auth import can_prompt
+    from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
 CLOUD_CLIS = {
     "aws": "deploy_aws.py",
@@ -365,11 +367,11 @@ def use_app_folder(args) -> None:
     value = args.app
     if value is None or value in config.find_apps() or config.current_app() is None:
         return
-    if args.command == "secrets" and value in deploy_common.SECRET_ACTIONS and args.name is None:
+    if args.command == "secrets" and value in config.SECRET_ACTIONS and args.name is None:
         args.action, args.name = value, args.action
     elif args.command == "logs" and value.isdigit() and args.number is None:
         args.number = int(value)
-    elif args.command == "storage" and value in storage_cli.COMMANDS:
+    elif args.command == "storage" and value in config.STORAGE_COMMANDS:
         args.rest = [value, *args.rest]
     else:
         return
@@ -391,14 +393,14 @@ def cmd_unpause(args) -> int:
 
 
 def cmd_secrets(args) -> int:
-    if args.app in deploy_common.SECRET_ACTIONS and args.action in config.find_apps():
+    if args.app in config.SECRET_ACTIONS and args.action in config.find_apps():
         args.app, args.action = args.action, args.app
     use_app_folder(args)
     action = args.action or "diff"
-    if action not in deploy_common.SECRET_ACTIONS:
-        hint = did_you_mean(action, deploy_common.SECRET_ACTIONS,
+    if action not in config.SECRET_ACTIONS:
+        hint = did_you_mean(action, config.SECRET_ACTIONS,
                             f"pdt secrets {args.app or '<app>'} {{}}")
-        choices = ", ".join(console.value(choice) for choice in deploy_common.SECRET_ACTIONS)
+        choices = ", ".join(console.value(choice) for choice in config.SECRET_ACTIONS)
         console.error(f"no secrets action named {console.value(repr(action))}; "
                       f"choose {choices}.{console.escape(hint)}")
         return 1
@@ -510,7 +512,16 @@ class Parser(argparse.ArgumentParser):
             self.error(f"unrecognized arguments: {' '.join(extras)}.{hint}")
         return args
 
+    @property
+    def version(self) -> str:
+        # argparse reads this only for --version, so tab completion never looks it up.
+        from pdt import __version__
+        return __version__
+
     def error(self, message):
+        if completion.COMPLETING:
+            # argcomplete hides this output, and the usage line would load rich to format it.
+            self.exit(2)
         typo = re.search(r"invalid choice: '([^']*)'", message)
         if typo is not None:
             choices = [choice for action in self._actions for choice in action.choices or []]
@@ -537,7 +548,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = Parser(
         prog="pdt", description=summary, epilog=note, usage="pdt [-h] [--version] <command> ...",
         formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
-    parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--version", action="version")
     # The commands are listed under COMMAND_GROUPS instead of the one argparse section.
     sub = parser.add_subparsers(dest="command", metavar="<command>", help=argparse.SUPPRESS,
                                 prog="pdt")
@@ -611,7 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     action = p.add_argument("action", nargs="?",
-                            metavar="{" + ",".join(deploy_common.SECRET_ACTIONS) + "}",
+                            metavar="{" + ",".join(config.SECRET_ACTIONS) + "}",
                             help="diff shows what save would change (the default); "
                                  "save sends your .env values to the deployed app; "
                                  "get copies the deployed values into a file; "
@@ -678,8 +689,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
     p.set_defaults(func=cmd_alerts)
     p = add_parser("gui", help="open the project's dashboard in your web browser")
-    p.add_argument("--port", type=int, default=gui_cli.DEFAULT_PORT,
-                   help=f"the local port to serve on (default: {gui_cli.DEFAULT_PORT})")
+    p.add_argument("--port", type=int, default=config.GUI_PORT,
+                   help=f"the local port to serve on (default: {config.GUI_PORT})")
     p.add_argument("--background", action="store_true",
                    help="leave the server running after this command returns; "
                         "stop it with pdt gui --stop")

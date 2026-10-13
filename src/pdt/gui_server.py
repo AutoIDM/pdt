@@ -40,7 +40,7 @@ from pdt import config, console, duckdb_wasm, gui_cli
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=gui_cli.DEFAULT_PORT)
+    parser.add_argument("--port", type=int, default=config.GUI_PORT)
     args = parser.parse_args()
     os.environ["PDT_PROJECT"] = str(config.find_project())
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "pdt.gui.settings")

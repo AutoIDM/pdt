@@ -86,6 +86,26 @@ def test_typed_dash_offers_options(project, tmp_path):
     assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "--yes", "--all", "--skip-failures", "--run"]
 
 
+@pytest.mark.parametrize("line", ["pdt ", "pdt deploy ", "pdt logs --"])
+def test_tab_completion_skips_the_slow_imports(project, tmp_path, line):
+    """Each TAB starts pdt, so a completion must not wait for what only a command needs."""
+    add_app(project, "daily-report")
+    imported = tmp_path / "imported"
+    script = (f"import sys; log = open({str(imported)!r}, 'w', buffering=1); "
+              "sys.addaudithook(lambda event, args: event == 'import' and log.write(args[0] + '\\n')); "
+              "from pdt import cli; cli.main()")
+    environment = {**os.environ, "_ARGCOMPLETE": "1", "_ARGCOMPLETE_IFS": "\n",
+                   "_ARGCOMPLETE_STDOUT_FILENAME": str(tmp_path / "completions"),
+                   "COMP_LINE": line, "COMP_POINT": str(len(line))}
+    subprocess.run([sys.executable, "-c", script], env=environment, stdin=subprocess.DEVNULL,
+                   capture_output=True)
+
+    modules = set(imported.read_text().split())
+    assert "pdt.cli" in modules
+    assert modules.isdisjoint({"rich", "importlib.metadata", "backoff", "pdt.console",
+                               "pdt.deploy", "pdt.scaffold"})
+
+
 def test_install_preserves_content_and_replaces_owned_block(tmp_path):
     path = tmp_path / ".zshrc"
     path.write_text("before\n# pdt completion start\nold\n# pdt completion end\nafter\n")

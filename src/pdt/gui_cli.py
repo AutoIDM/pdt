@@ -23,7 +23,6 @@ from pathlib import Path
 
 from pdt import config, console
 
-DEFAULT_PORT = 8765
 PID_FILE = "gui.pid"
 LOG_FILE = "gui.log"
 START_TIMEOUT = 300
@@ -159,4 +158,4 @@ def main(port: int, background: bool, no_browser: bool, stop_it: bool) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(DEFAULT_PORT, False, False, False))
+    sys.exit(main(config.GUI_PORT, False, False, False))
