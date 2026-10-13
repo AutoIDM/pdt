@@ -20,7 +20,8 @@ unhandled, and goes to each entry with `unhandled` in its `events` (its
 `exclude-events` still apply). When no entry names `unhandled` in `events`
 or `exclude-events`, the list ends with the implicit entry
 {type: console, events: [unhandled]}, so with no `alerts:` the console
-prints every event, marked unhandled.
+prints every event, marked unhandled. `alerts: false` is an empty list with no
+implicit entry, so no entry receives any event.
 
 A Transport is a name, the extra entry keys it allows, and
 `deliver(event, entry, unhandled)`, where `unhandled` says the entry got the
@@ -33,7 +34,7 @@ end of every pdt command call, waits for every open delivery for at most
 FLUSH_SECONDS in total. An event that a transport did not deliver in that
 time, or whose `deliver` raised (with a warning on stderr that names the
 error), prints on the console marked `not delivered to <type>`. A
-transport never changes the exit code of a run or a deploy, and pdt emits
+transport never changes the exit code of a run, a deploy, or a destroy, and pdt emits
 no event about a failed delivery.
 
 `job:` names are events of a scheduled job's run, `app:` names are events
@@ -84,6 +85,10 @@ APP_DEPLOY_STARTED = "app:deploy-started"
 APP_DEPLOY_COMPLETED = "app:deploy-completed"
 APP_DEPLOY_FAILED = "app:deploy-failed"
 APP_DEPLOY_CANCELLED = "app:deploy-cancelled"
+APP_DESTROY_STARTED = "app:destroy-started"
+APP_DESTROY_COMPLETED = "app:destroy-completed"
+APP_DESTROY_FAILED = "app:destroy-failed"
+APP_DESTROY_CANCELLED = "app:destroy-cancelled"
 # Set to `manual` for one execution by the pdt command that starts a deployed run.
 TRIGGER_ENV = "PDT_TRIGGER"
 
@@ -101,7 +106,7 @@ def event_text(event: Event) -> str:
 
 
 def print_event(event: Event, entry: dict, unhandled: bool) -> None:
-    console.event(event_text(event), "unhandled" if unhandled else "", dim=unhandled)
+    console.event(event_text(event), UNHANDLED if unhandled else "", "red")
 
 
 @dataclass(frozen=True)
@@ -119,10 +124,13 @@ TRANSPORTS: dict[str, Transport] = {"console": Transport("console", frozenset(),
 
 def parse_alerts(alerts: object, where: str) -> list[dict]:
     """The checked entries, with `all` as `*`, and the implicit unhandled entry at the end
-    when no entry names `unhandled`."""
+    when no entry names `unhandled`; none for `alerts: false`."""
     known = ", ".join(TRANSPORTS)
+    if alerts is False:
+        return []
     if not isinstance(alerts, list):
-        raise config.ConfigError(f"{where}: alerts must be a list of entries, each with a type")
+        raise config.ConfigError(
+            f"{where}: alerts must be a list of entries, each with a type, or false")
     parsed = []
     for alert in alerts:
         if not isinstance(alert, dict) or "type" not in alert:

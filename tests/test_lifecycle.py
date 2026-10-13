@@ -103,19 +103,41 @@ def test_the_app_alerts_replace_the_project_list(project, monkeypatch):
     assert seen == [("job:paused", False)]
 
 
+@pytest.mark.parametrize(("project_alerts", "app_alerts", "seen"), [
+    ("false", None, []),
+    ("[{type: console, events: [all]}]", "false", []),
+    ("false", "[{type: console, events: [all]}]", [("job:paused", False)]),
+])
+def test_alerts_false_turns_off_every_alert_and_the_most_specific_level_wins(
+        project, monkeypatch, project_alerts, app_alerts, seen):
+    (project / "pdt.yml").write_text(f"alerts: {project_alerts}\n")
+    add_app(project, "report", "" if app_alerts is None else f"alerts: {app_alerts}\n")
+    got = record(monkeypatch)
+    event = lifecycle.emit("job:paused", app="report")
+    assert got == seen
+    assert event.name == "job:paused"
+
+
+def test_alerts_true_is_an_error_that_names_a_list_or_false(project):
+    (project / "pdt.yml").write_text("alerts: true\n")
+    assert ("pdt.yml: alerts must be a list of entries, each with a type, or false"
+            in config.validate())
+
+
 @pytest.mark.parametrize("name", ["all", "unhandled"])
 def test_all_and_unhandled_are_not_event_names(project, name):
     with pytest.raises(ValueError, match="reserved"):
         lifecycle.emit(name)
 
 
-def test_the_console_prints_a_handled_event_bold_and_an_unhandled_one_dim(project, monkeypatch):
+def test_the_console_prints_an_event_bold_and_the_unhandled_mark_red(project, monkeypatch):
     out = colour_output(monkeypatch)
     lifecycle.emit("job:run-completed", app="report", exit_code=0)
     (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [all]\n")
     lifecycle.emit("job:run-completed", app="report", exit_code=0)
     unhandled, handled = out.getvalue().splitlines()
-    assert unhandled.startswith("\x1b[2;35m[event] unhandled job:run-completed at=")
+    assert unhandled.startswith(
+        "\x1b[1;35m[event] \x1b[0m\x1b[1;31munhandled\x1b[0m\x1b[1;35m job:run-completed at=")
     assert handled.startswith("\x1b[1;35m[event] job:run-completed at=")
     assert handled.endswith(" app=report exit_code=0\x1b[0m")
 
@@ -226,28 +248,41 @@ def deployable(tmp_path, monkeypatch):
     return seen
 
 
-def test_ctrl_c_in_a_deploy_ends_it_cancelled(deployable, monkeypatch):
+STEPS = {"deploy": lambda: deploy.deploy(scaffold.STARTER, assume_yes=True, run=False),
+         "destroy": lambda: deploy.destroy(scaffold.STARTER, assume_yes=True)}
+
+
+@pytest.mark.parametrize("command", STEPS)
+def test_ctrl_c_in_a_deploy_or_destroy_ends_it_cancelled(deployable, monkeypatch, command):
     def dispatch(*args, **kwargs):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(deploy, "dispatch", dispatch)
     with pytest.raises(KeyboardInterrupt):
-        deploy.deploy(scaffold.STARTER, assume_yes=True, run=False)
+        STEPS[command]()
     assert [(name, params.get("reason")) for name, params in deployable] == [
-        ("app:deploy-started", None), ("app:deploy-cancelled", "interrupted")]
+        (f"app:{command}-started", None), (f"app:{command}-cancelled", "interrupted")]
 
 
+@pytest.mark.parametrize("command", STEPS)
 @pytest.mark.parametrize(("code", "event", "reason"), [
-    (deploy.DECLINED, "app:deploy-cancelled", "declined"),
-    (130, "app:deploy-cancelled", "interrupted"),
-    (1, "app:deploy-failed", None),
+    (deploy.DECLINED, "cancelled", "declined"),
+    (130, "cancelled", "interrupted"),
+    (1, "failed", None),
+    (0, "completed", None),
 ])
-def test_a_declined_plan_ends_the_deploy_cancelled_and_a_failure_failed(
-        deployable, monkeypatch, code, event, reason):
+def test_a_declined_plan_ends_the_step_cancelled_a_failure_failed_and_a_success_completed(
+        deployable, monkeypatch, command, code, event, reason):
     monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: code)
-    assert deploy.deploy(scaffold.STARTER, assume_yes=True, run=False) == code
-    assert deployable[-1][0] == event
+    monkeypatch.setattr(deploy, "deployed_next_steps", lambda *args, **kwargs: None)
+    marked = []
+    monkeypatch.setattr(config, "mark_deployed",
+                        lambda app, deployed: marked.append((app, deployed)))
+    assert STEPS[command]() == code
+    assert [name for name, _ in deployable] == [f"app:{command}-started", f"app:{command}-{event}"]
     assert deployable[-1][1].get("reason") == reason
+    assert deployable[-1][1]["app"] == scaffold.STARTER
+    assert marked == ([(scaffold.STARTER, command == "deploy")] if code == 0 else [])
 
 
 @pytest.mark.parametrize(("deployed", "override", "trigger"), [
