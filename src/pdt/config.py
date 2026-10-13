@@ -43,9 +43,9 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
-ROOT_KEYS = {"platform", "apps", "docker-build"}
+ROOT_KEYS = {"platform", "apps", "docker-build", "alerts"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
-            "run_scripts", "continue_on_error", "pause", "docker-build"}
+            "run_scripts", "continue_on_error", "pause", "docker-build", "alerts"}
 # Where a cloud provider builds the image: with Docker on this computer when
 # `docker info` answers, else with the provider's cloud builder (auto), only
 # with Docker (local), or only in the cloud (cloud).
@@ -73,6 +73,7 @@ KEY_HOME = {
     "continue_on_error": APP_LEVEL,
     "pause": APP_LEVEL,
     "docker-build": f"the top level of {PROJECT_FILE}, or {APP_LEVEL}",
+    "alerts": f"the top level of {PROJECT_FILE}, or {APP_LEVEL}",
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -100,10 +101,17 @@ class ConfigError(Exception):
 def load_yaml(path: Path) -> dict:
     if not path.is_file():
         return {}
+    text = path.read_text()
     try:
-        data = yaml.safe_load(path.read_text())
+        data = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        raise ConfigError(f"{path}: not valid yaml: {e}")
+        lines = text.splitlines()
+        marked = [lines[mark.line] for mark in (getattr(e, "context_mark", None),
+                                                getattr(e, "problem_mark", None))
+                  if mark is not None and mark.line < len(lines)]
+        hint = ("\nA value that starts with ! or * must be in quotes, for example \"!app:*\"."
+                if any("!" in line or "*" in line for line in marked) else "")
+        raise ConfigError(f"{path}: not valid yaml: {e}{hint}")
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -254,10 +262,14 @@ def merged_app(name: str) -> dict:
         **mapping(entry, "platform", entry_where),
         **mapping(own, "platform", own_where),
     }
+    from pdt import lifecycle
     docker_build, docker_build_from = "auto", ""
+    alerts, alerts_from = lifecycle.DEFAULT_ALERTS, PROJECT_FILE
     for section, where in ((root_cfg, PROJECT_FILE), (entry, entry_where), (own, own_where)):
         if "docker-build" in section:
             docker_build, docker_build_from = section["docker-build"], where
+        if "alerts" in section:
+            alerts, alerts_from = section["alerts"], where
     default_timezone = platform.get(
         "timezone", "local" if platform.get("provider") == "windows" else "Etc/UTC")
     return {
@@ -279,6 +291,7 @@ def merged_app(name: str) -> dict:
         "pause": own.get("pause", entry.get("pause", False)),
         "docker_build": docker_build,
         "docker_build_from": docker_build_from,
+        "alerts": lifecycle.parse_alerts(alerts, alerts_from),
     }
 
 
@@ -864,6 +877,12 @@ def validate_by_app() -> list[tuple[str | None, str]]:
     except ConfigError as e:
         return [(None, str(e))]
     problems.extend(key_problems(PROJECT_FILE, root_cfg, ROOT_KEYS))
+    if "alerts" in root_cfg:
+        from pdt import lifecycle
+        try:
+            lifecycle.parse_alerts(root_cfg["alerts"], PROJECT_FILE)
+        except ConfigError as e:
+            problems.append(str(e))
     apps = find_apps()
     entries = root_cfg.get("apps")
     if entries is not None and not isinstance(entries, list):

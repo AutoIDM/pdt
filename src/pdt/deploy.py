@@ -146,7 +146,7 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
     params = lifecycle.app_params(app_name, provider)
-    lifecycle.emit(lifecycle.APP_DEPLOY_START, **params)
+    lifecycle.emit(lifecycle.APP_DEPLOY_STARTED, **params)
     code = dispatch(provider, "deploy", app_name, assume_yes)
     # A declined plan exits nonzero, so 0 means the deploy completed.
     if code != 0:
