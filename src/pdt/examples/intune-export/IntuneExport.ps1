@@ -508,12 +508,24 @@ function Invoke-DirectRequest {
     }
 }
 
+function Get-RetryAfterSeconds {
+    param($Value)
+
+    # Retry-After is either seconds or an HTTP date.
+    $seconds = 0
+    $date = [DateTimeOffset]::MinValue
+    if ([int]::TryParse("$Value", [ref]$seconds)) { return $seconds }
+    if ([DateTimeOffset]::TryParse("$Value", [ref]$date)) { return [int][Math]::Max(0, ($date - [DateTimeOffset]::UtcNow).TotalSeconds) }
+    0
+}
+
 function Test-FullMetadata {
     param($Response)
 
     $contentType = "$($Response.headers.'Content-Type')"
     if ($contentType) { return $contentType -match 'odata\.metadata=full' }
-    [bool]($Response.body.PSObject.Properties.Name -match '@odata\.(id|navigationLink|associationLink)$')
+    # Minimal metadata can carry @odata.id too; only full metadata carries links.
+    [bool]($Response.body.PSObject.Properties.Name -match '@odata\.(navigationLink|associationLink)$')
 }
 
 # Sends GET requests 20 per $batch call and retries what direct calls retry.
@@ -544,7 +556,7 @@ function Invoke-GraphBatchRequest {
                 $results["$($result.id)"] = $result
                 if ($result.status -in 429, 503, 504) {
                     $retry += $pending | Where-Object id -EQ $result.id
-                    $wait = [Math]::Max($wait, [int]$result.headers.'Retry-After')
+                    $wait = [Math]::Max($wait, (Get-RetryAfterSeconds $result.headers.'Retry-After'))
                 }
             }
             $pending = $retry
@@ -1006,7 +1018,7 @@ function Start-PostExportApplications {
 
 function Get-AppEncryptionKeys {
     if ($null -eq $script:AppEncryptionKeys) {
-        $script:AppEncryptionKeys = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+        $keys = @{}
         if ($env:INTUNE_APP_ENCRYPTION_KEYS) {
             try {
                 $keys = $env:INTUNE_APP_ENCRYPTION_KEYS | ConvertFrom-Json -AsHashtable
@@ -1015,13 +1027,17 @@ function Get-AppEncryptionKeys {
             } catch {
                 $keys = $null
             }
-            if ($keys -isnot [Collections.IDictionary]) {
-                throw ('INTUNE_APP_ENCRYPTION_KEYS in .env is not a JSON object. Set it to one object that maps each ' +
-                    'encryption file name, without .json, to that file''s content.')
-            }
+        }
+        if ($keys -isnot [Collections.IDictionary]) {
+            # Every app that needs a key fails with this, not only the first.
+            $script:AppEncryptionKeys = 'INTUNE_APP_ENCRYPTION_KEYS in .env is not a JSON object. Set it to one object that maps each ' +
+                'encryption file name, without .json, to that file''s content.'
+        } else {
+            $script:AppEncryptionKeys = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
             foreach ($name in $keys.Keys) { $script:AppEncryptionKeys[$name] = $keys[$name] }
         }
     }
+    if ($script:AppEncryptionKeys -is [string]) { throw $script:AppEncryptionKeys }
     $script:AppEncryptionKeys
 }
 
@@ -1032,10 +1048,14 @@ function Find-AppEncryptionInfo {
     foreach ($name in "$($Object.displayName)_$($Object.id)_$($Object.committedContentVersion)",
         "$([IO.Path]::GetFileNameWithoutExtension($Object.fileName))_$($ContentFile.size)",
         "$($Object.displayName)_$($ContentFile.size)") {
-        if ($keys.ContainsKey($name)) {
-            $info = $keys[$name]
-            return $info.fileEncryptionInfo ?? $info
+        if (-not $keys.ContainsKey($name)) { continue }
+        $info = $keys[$name]
+        if ($info -is [string]) { $info = try { $info | ConvertFrom-Json -AsHashtable } catch { $null } }
+        $info = $info.fileEncryptionInfo ?? $info
+        if (-not $info.encryptionKey -or -not $info.initializationVector) {
+            throw "INTUNE_APP_ENCRYPTION_KEYS has no encryptionKey for $name. Copy that encryption file's content into it again."
         }
+        return $info
     }
 }
 
@@ -1251,7 +1271,8 @@ function Start-IntuneExport {
     if ($script:Failures.Count -gt 0) {
         $statusOf = { if ($args[0] -match '\((\w+)\)$') { $Matches[1] } }
         $all = @($script:Failures | ForEach-Object { & $statusOf $_ })
-        $ofTypes = @($script:Failures | Where-Object { $_ -notlike '*: *' } | ForEach-Object { & $statusOf $_ })
+        $ofTypes = @($script:Failures | Where-Object { $_ -notlike '*: *' -and $_ -notlike 'Microsoft Graph metadata *' } |
+            ForEach-Object { & $statusOf $_ })
         $ofObjects = @($script:Failures | Where-Object { $_ -like '*: *' } | ForEach-Object { & $statusOf $_ })
         $message = @("The zip is incomplete. These failed: $($script:Failures -join ', ').")
         if ('403' -in $all) {
@@ -1262,6 +1283,9 @@ function Start-IntuneExport {
         }
         if ($ofObjects | Where-Object { $_ -notmatch '^(0|403|429|5\d\d)$' }) {
             $message += 'For an object, any other status means Microsoft Graph could not return part of it: check the named object in Intune.'
+        }
+        if ($script:Failures -like 'Microsoft Graph metadata *') {
+            $message += 'Without the Microsoft Graph metadata document, the files lack the references to other objects (#CustomRef_ fields). The next run tries again.'
         }
         if ('0' -in $all) { $message += '0 means Microsoft Graph did not answer.' }
         if ('429' -in $all) { $message += '429 means Microsoft Graph throttled the app.' }

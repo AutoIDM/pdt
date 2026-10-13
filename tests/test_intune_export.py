@@ -395,6 +395,18 @@ def test_a_failed_metadata_download_fails_the_run(tmp_path):
 
 
 @needs_pwsh
+def test_a_missing_metadata_document_gets_its_own_sentence(tmp_path):
+    fixtures = graph_fixtures.build()
+    fixtures["GET $metadata"] = graph_fixtures.error(404, "Not found.")
+
+    export = run_export(tmp_path, {"object_types": ["DeviceConfiguration"]}, fixtures)
+
+    assert "Microsoft Graph metadata (404)" in export.log["failure"]
+    assert "object_types" not in export.log["failure"]
+    assert "references to other objects" in export.log["failure"]
+
+
+@needs_pwsh
 def test_throttled_requests_wait_and_retry(tmp_path):
     fixtures = graph_fixtures.build()
     key = "GET deviceManagement/windowsAutopilotDeploymentProfiles"
@@ -491,6 +503,33 @@ def test_a_batch_response_without_full_metadata_is_read_again_directly(tmp_path)
     assert f"https://graph.microsoft.com/beta/{WIFI}" in export.urls()
     assert "#CustomRef_rootCertificateForServerValidation" in export.json("Contoso/DeviceConfiguration/Contoso WiFi.json")
     assert export.result.stdout.count("without full metadata") == 1
+
+
+@needs_pwsh
+def test_a_batch_answer_with_only_an_odata_id_is_read_again_directly(tmp_path):
+    fixtures = graph_fixtures.build()
+    full_body = fixtures[f"GET {WIFI}"]["body"]
+    minimal = {k: v for k, v in full_body.items() if "@odata." not in k or k == "@odata.type"}
+    minimal["@odata.id"] = f"https://graph.microsoft.com/v2/{TENANT}/deviceConfigurations/{gid(102)}"
+    fixtures[f"BATCH GET {WIFI}"] = {"headers": {"Content-Type": None}, "body": minimal}
+
+    export = run_export(tmp_path, {"object_types": ["DeviceConfiguration"]}, fixtures)
+
+    assert f"https://graph.microsoft.com/beta/{WIFI}" in export.urls()
+    assert "#CustomRef_rootCertificateForServerValidation" in export.json("Contoso/DeviceConfiguration/Contoso WiFi.json")
+
+
+@needs_pwsh
+def test_a_batch_retry_after_given_as_a_date_waits_the_minimum(tmp_path):
+    fixtures = graph_fixtures.build()
+    key = f"GET {AUTOPILOT}/{gid(2301)}?$expand=assignments"
+    fixtures[f"BATCH {key}"] = [{"status": 429, "headers": {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}}, fixtures[key]]
+
+    export = run_export(tmp_path, {"object_types": ["AutoPilot"]}, fixtures)
+
+    assert export.result.returncode == 0, export.result.stdout + export.result.stderr
+    assert export.log["sleeps"] == [5]
+    assert "Contoso/AutoPilot/Contoso Autopilot.json" in export.names()
 
 
 @needs_pwsh
@@ -599,6 +638,54 @@ def test_invalid_encryption_keys_name_the_variable_but_not_its_value(tmp_path):
     output = export.result.stdout + export.result.stderr
     assert "INTUNE_APP_ENCRYPTION_KEYS in .env is not a JSON object." in output
     assert "secret-key-material" not in output + export.log["failure"]
+
+
+def with_second_packaged_app(fixtures):
+    api = "deviceAppManagement/mobileApps"
+    for key, value in fixtures.items():
+        if key.startswith(f"GET {api}") and isinstance(value, dict) and isinstance(value.get("body"), dict):
+            body = value["body"]
+            for obj in body.get("value", [body]):
+                if isinstance(obj, dict) and obj.get("id") == gid(2201):
+                    obj.update(fileName="outlook.ipa", committedContentVersion="1")
+    files = f"{api}/{gid(2201)}/microsoft.graph.iosStoreApp/contentVersions/1/files"
+    fixtures[f"GET {files}"] = graph_fixtures.ok({"value": [{"id": gid(2230)}]})
+    fixtures[f"GET {files}/{gid(2230)}"] = graph_fixtures.ok({"id": gid(2230), "size": 9, "azureStorageUri": graph_fixtures.PACKAGE_URL})
+    return fixtures
+
+
+@needs_pwsh
+def test_invalid_encryption_keys_fail_every_app_that_needs_a_key(tmp_path):
+    export = run_export(tmp_path, {"object_types": ["Applications"], "export_app_files": True},
+                        with_second_packaged_app(graph_fixtures.build()), env={"INTUNE_APP_ENCRYPTION_KEYS": "{not json"})
+
+    assert "Applications: Contoso Agent (error)" in export.log["failure"]
+    assert "Applications: Contoso Outlook (error)" in export.log["failure"]
+    assert "No encryption key" not in export.result.stdout
+
+
+@needs_pwsh
+def test_a_key_whose_value_is_an_escaped_json_string_is_read(tmp_path):
+    keys = {name: json.dumps(info) for name, info in KEYS.items()}
+
+    export = run_export(tmp_path, {"object_types": ["Applications"], "export_app_files": True},
+                        env={"INTUNE_APP_ENCRYPTION_KEYS": json.dumps(keys)})
+
+    assert export.result.returncode == 0, export.result.stdout + export.result.stderr
+    assert export.raw("Contoso/Applications/agent.intunewin") == b"Contoso Agent package"
+
+
+@needs_pwsh
+def test_a_key_without_an_encryption_key_names_the_file_but_not_the_value(tmp_path):
+    keys = {name: {"fileEncryptionInfo": {"initializationVector": "secret-iv-value"}} for name in KEYS}
+
+    export = run_export(tmp_path, {"object_types": ["Applications"], "export_app_files": True},
+                        env={"INTUNE_APP_ENCRYPTION_KEYS": json.dumps(keys)})
+
+    output = export.result.stdout + export.result.stderr
+    assert export.result.returncode == 1
+    assert f"INTUNE_APP_ENCRYPTION_KEYS has no encryptionKey for Contoso Agent_{gid(2202)}_1." in output
+    assert "secret-iv-value" not in output + export.log["failure"]
 
 
 @needs_pwsh
