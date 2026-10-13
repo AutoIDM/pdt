@@ -1,0 +1,3 @@
+{"value": [{"@odata.type": "#microsoft.graph.windows10CompliancePolicy", "id": "cmp-1", "displayName": "Win10 Compliance", "description": "", "bitLockerEnabled": true,
+  "scheduledActionsForRule": [{"ruleName": "PasswordRequired", "scheduledActionConfigurations": [{"actionType": "block", "gracePeriodHours": 0}]}],
+  "assignments": [{"id": "cmp-1_aaaaaaaa-0000-0000-0000-000000000001", "target": {"@odata.type": "#microsoft.graph.groupAssignmentTarget", "groupId": "aaaaaaaa-0000-0000-0000-000000000001"}}]}]}

@@ -1,0 +1,2 @@
+{"value": [{"@odata.type": "#microsoft.graph.windows10GeneralConfiguration", "id": "dc-1", "displayName": "Win10 Baseline", "description": "", "passwordRequired": true,
+  "assignments": [{"id": "dc-1_aaaaaaaa-0000-0000-0000-000000000001", "target": {"@odata.type": "#microsoft.graph.groupAssignmentTarget", "groupId": "aaaaaaaa-0000-0000-0000-000000000001"}}]}]}

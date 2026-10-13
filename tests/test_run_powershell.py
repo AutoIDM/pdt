@@ -1,5 +1,6 @@
 """The wrapper that runs a PowerShell app: `src/pdt/run_powershell.py`."""
 
+import json
 import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -80,6 +81,52 @@ def test_scripts_run_in_order_and_the_output_is_stored(app_dir, wrapper, monkeyp
     out = capsys.readouterr().out
     assert "starting a.ps1" in out and "b.ps1 ended  exit_code=0" in out
     assert "uploaded 2 output file(s) to " in out
+
+
+def test_each_script_gets_the_merged_config_section_as_json(app_dir, wrapper, monkeypatch):
+    (app_dir / "a.ps1").write_text("")
+    (app_dir / "config.yml").write_text("schedule: daily\nconfig:\n  days: 7\n  types: [A, B]\n")
+    monkeypatch.setenv("PDT_MY_REPORT_DAYS", "30")
+    calls = []
+    monkeypatch.setattr(wrapper.subprocess, "run", fake_pwsh(calls, {"a.ps1": 0}))
+
+    assert wrapper.main([str(app_dir)]) == 0
+
+    (_, kwargs), = calls
+    assert json.loads(kwargs["env"]["PDT_CONFIG_JSON"]) == {"days": "30", "types": ["A", "B"]}
+
+
+def test_a_yaml_date_in_the_config_section_reaches_the_script_as_text(app_dir, wrapper, monkeypatch):
+    (app_dir / "a.ps1").write_text("")
+    (app_dir / "config.yml").write_text("schedule: daily\nconfig:\n  since: 2026-01-31\n")
+    calls = []
+    monkeypatch.setattr(wrapper.subprocess, "run", fake_pwsh(calls, {"a.ps1": 0}))
+
+    assert wrapper.main([str(app_dir)]) == 0
+
+    (_, kwargs), = calls
+    assert json.loads(kwargs["env"]["PDT_CONFIG_JSON"]) == {"since": "2026-01-31"}
+
+
+def test_the_from_scripts_run_py_passes_the_config_section_too(app_dir, monkeypatch):
+    from pdt import scaffold
+
+    (app_dir / "a.ps1").write_text("")
+    (app_dir / "config.yml").write_text("schedule: daily\nconfig:\n  since: 2026-01-31\n  days: 7\n")
+    run_py = app_dir / "run.py"
+    run_py.write_text(scaffold.RUN_PY_TEXT)
+    namespace = {"__file__": str(run_py), "__name__": "run_py"}
+    exec(compile(scaffold.RUN_PY_TEXT, str(run_py), "exec"), namespace)
+    monkeypatch.setitem(namespace, "ensure_pwsh", lambda: "/fake/pwsh")
+    monkeypatch.setattr(namespace["powershell"], "extract", lambda folder: {"files": [
+        {"file": "a.ps1", "localInvocations": [], "envReads": []}]})
+    calls = []
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_pwsh(calls, {"a.ps1": 0}))
+
+    assert namespace["main"]() == 0
+
+    (_, kwargs), = calls
+    assert json.loads(kwargs["env"]["PDT_CONFIG_JSON"]) == {"since": "2026-01-31", "days": 7}
 
 
 def test_the_first_failure_stops_the_run_and_its_output_is_still_stored(

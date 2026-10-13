@@ -1,0 +1,67 @@
+# Exports the Intune configuration once a week with IntuneManagement's own
+# export (github.com/Micke-K/IntuneManagement, version 4), and keeps an
+# IntuneExport-<date>.zip in the app's data store each run. To import, unzip
+# it and point IntuneManagement's import at the company folder inside.
+
+# How often this app runs.
+# Shorthand: hourly, daily, weekly, monthly, yearly.
+# Or a 5-field cron expression, for example "0 * * * *".
+schedule: "weekly"
+
+config:
+  # The policy types or policy groups to export, by IntuneManagement id, for
+  # example [SettingsCatalog, CompliancePolicies] or [DeviceConfiguration].
+  # Both empty exports every type that IntuneManagement's bulk export covers.
+  policy_types: []
+  policy_groups: []
+
+  # Export only objects whose name contains this text. Empty exports all.
+  name_filter: ""
+
+  # IntuneManagement settings, by the key its Get-IMSettingDefinition command
+  # lists. The values shown are its defaults. Add any other key the same way.
+  settings:
+    # Put each object type in its own folder, and all of them in a folder
+    # named for the company.
+    AddObjectType: true
+    AddCompanyName: true
+
+    # Add the object id to each file name, for objects that share a name.
+    AddIDToExportFile: true
+
+    # Keep each object's assignments, and list the assigned groups in
+    # MigrationTable.json so an import into another tenant can map them.
+    ExportAssignments: true
+
+    # Add the names of referenced objects, so an import can link them again.
+    ResolveReferenceInfo: true
+
+    # Read many objects per Microsoft Graph call.
+    UseBatchAPI: true
+
+    # Use Microsoft Graph v1.0 instead of beta. Some object types exist only
+    # in beta.
+    UseGraphV1: false
+
+    # Write JSON properties in a fixed order, so two exports compare line by
+    # line.
+    SortJsonProperties: false
+
+# The Entra app needs these Microsoft Graph application permissions, with
+# admin consent: DeviceManagementConfiguration.Read.All,
+# DeviceManagementApps.Read.All, DeviceManagementServiceConfig.Read.All,
+# DeviceManagementScripts.Read.All, DeviceManagementRBAC.Read.All,
+# Policy.Read.All, Agreement.Read.All, Organization.Read.All,
+# CloudPC.Read.All, Group.Read.All.
+#
+# Sign in with a client secret or a certificate. PDT_AZURE_PRIVATE_KEY_B64 is
+# the base64 of a .pfx file; PDT_AZURE_PRIVATE_KEY_PATH is the path of one.
+# PDT_AZURE_PRIVATE_KEY_PASSWORD is its password, if it has one.
+env:
+  required: [PDT_AZURE_TENANT_ID, PDT_AZURE_CLIENT_ID]
+  one_of:
+    - [PDT_AZURE_CLIENT_SECRET]
+    - [PDT_AZURE_PRIVATE_KEY_B64]
+    - [PDT_AZURE_PRIVATE_KEY_PATH]
+  optional:
+    - PDT_AZURE_PRIVATE_KEY_PASSWORD

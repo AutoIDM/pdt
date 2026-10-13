@@ -1,0 +1,2 @@
+{"value": [{"@odata.type": "#microsoft.graph.deviceManagementScript", "id": "ps-1", "displayName": "Set Time Zone", "description": "", "fileName": "SetTimeZone.ps1", "runAsAccount": "system", "enforceSignatureCheck": false, "runAs32Bit": false,
+  "scriptContent": "U2V0LVRpbWVab25lIC1JZCAnVVRDJw==", "assignments": []}]}
