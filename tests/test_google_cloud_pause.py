@@ -60,5 +60,6 @@ def test_start_executes_the_job_and_names_the_execution(monkeypatch, capsys):
     monkeypatch.setattr(deploy_google_cloud, "preflight", lambda app, project, assume_yes: project)
     assert deploy_google_cloud.start({"name": "my-app"}, False) == 0
     assert calls == [("run", "jobs", "execute", "pdt-my-app", "--region", "us-central1",
-                      "--project", "p", "--async", "--format=json")]
+                      "--project", "p", "--async", "--format=json",
+                      "--update-env-vars=PDT_TRIGGER=manual")]
     assert "pdt-my-app-k7x2m" in capsys.readouterr().out

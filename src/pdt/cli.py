@@ -251,12 +251,13 @@ def cmd_run(args) -> int:
         except (pwsh.PwshError, powershell.PowerShellError) as e:
             console.error(f"{console.value(name)}: {console.escape(str(e))}")
             return 1
+    provider = app["platform"].get("provider", "")
     if (app["dir"] / "run.py").is_file():
-        code = lifecycle.run_job(name, "local", ["uv", "run", "--script", "run.py"], app["dir"])
+        code = lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"])
     else:
         wrapper = Path(__file__).with_name("run_powershell.py")
         code = lifecycle.run_job(
-            name, "local",
+            name, provider,
             ["uv", "run", "--project", str(Path.cwd()), "--script", str(wrapper), str(app["dir"])],
             app["dir"], dict(os.environ, PDT_PROJECT=str(config.find_project())))
     if (code == 0 and name == scaffold.STARTER
@@ -710,6 +711,8 @@ def main() -> int:
     except KeyboardInterrupt:
         console.say()
         return 130
+    finally:
+        lifecycle.flush()
 
 
 if __name__ == "__main__":

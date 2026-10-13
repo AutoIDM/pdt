@@ -125,3 +125,19 @@ def test_runner_process_exit_code_is_the_child_exit_code(folders, tmp_path):
     assert proc.stdout == b"" and proc.stderr == b""
     assert only_log(logs).read_text() == (f"args: run --script {LIFECYCLE} -- {fake_uv} run --script run.py"
                                           "\noops\npdt: exit 5\n")
+
+
+@pytest.mark.parametrize(("age", "trigger"), [(0, "manual"), (600, None)])
+def test_runner_marks_a_run_manual_when_pdt_left_a_fresh_marker(folders, monkeypatch, age, trigger):
+    app_dir, logs, url = folders
+    logs.mkdir()
+    marker = logs / run_windows_task.MANUAL_START
+    marker.touch()
+    old = marker.stat().st_mtime - age
+    os.utime(marker, (old, old))
+    calls = []
+    monkeypatch.delenv("PDT_TRIGGER", raising=False)
+    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run(calls, b"", 0))
+    assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
+    assert calls[0][1]["env"].get("PDT_TRIGGER") == trigger
+    assert not marker.exists()

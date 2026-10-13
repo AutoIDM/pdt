@@ -1,6 +1,7 @@
 import pytest
 
 from conftest import plain
+from pdt.deploy import DECLINED
 from pdt import deploy_aws_batch as batch_deploy
 from pdt.deploy_aws_batch import (
     COMPUTE_ENVIRONMENT, SECURITY_GROUP, ensure_compute_environment, ensure_security_group,
@@ -124,7 +125,7 @@ def plan(monkeypatch):
         monkeypatch.setattr(batch_deploy, "batch_clients", lambda session: clients)
         app = {"name": "my-app", "storage": False, "schedule": "0 6 * * *",
                "timezone": "UTC", "dir": ".", "pause": False}
-        assert batch_deploy.deploy(app, assume_yes=False) == 1
+        assert batch_deploy.deploy(app, assume_yes=False) == DECLINED
         return [line for line in shown if "security group" in line]
     return run
 

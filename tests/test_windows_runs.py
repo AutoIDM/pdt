@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from conftest import add_app, plain
+from pdt.deploy import DECLINED
 from pdt import config, deploy_windows, runs_cli
 
 
@@ -65,7 +66,7 @@ def deploy_plan(project, monkeypatch, on_machine_path: bool) -> list[str]:
     monkeypatch.setattr(deploy_windows, "uv_on_machine_path", lambda: on_machine_path)
     monkeypatch.setattr(deploy_windows, "confirm",
                         lambda actions, assume_yes, cost: shown.extend(plain(actions)))
-    assert deploy_windows.deploy(app, assume_yes=False) == 1
+    assert deploy_windows.deploy(app, assume_yes=False) == DECLINED
     return shown
 
 

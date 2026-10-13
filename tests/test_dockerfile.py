@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -9,7 +10,7 @@ from conftest import add_app, plain
 from pdt import __version__, powershell
 from pdt.config import validate_app
 from pdt.deploy_common import (
-    DOCKERFILE, POWERSHELL_DOCKERFILE, context_ignore_text, image_action, write_dockerfile)
+    DOCKERFILE, ENTRYPOINT, POWERSHELL_DOCKERFILE, context_ignore_text, image_action, write_dockerfile)
 
 
 def staged(tmp_path, name, own=None):
@@ -92,7 +93,8 @@ def test_context_ignore_text_keeps_comments_and_blank_lines():
 def test_the_entrypoint_runs_the_app_in_lifecycle_and_ends_the_log_with_the_exit_code(tmp_path):
     (tmp_path / "uv").write_text("#!/bin/sh\necho \"uv $*\"\nexit 3\n")
     (tmp_path / "uv").chmod(0o755)
-    line = next(line for line in DOCKERFILE.splitlines() if line.startswith("ENTRYPOINT "))
+    line = next(line for line in DOCKERFILE.format(app="report").splitlines()
+                if line.startswith("ENTRYPOINT "))
     command = json.loads(line.removeprefix("ENTRYPOINT "))
     proc = subprocess.run(command, capture_output=True, text=True,
                           env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
@@ -100,6 +102,23 @@ def test_the_entrypoint_runs_the_app_in_lifecycle_and_ends_the_log_with_the_exit
                            "uv run --script run.py\npdt: exit 3\n")
     assert proc.returncode == 3
 
+
+
+@pytest.mark.skipif(os.name == "nt" or shutil.which("sh") is None, reason="needs a POSIX shell")
+def test_the_entrypoint_passes_sigterm_on_and_still_ends_the_log_with_the_exit_code(tmp_path):
+    ready = tmp_path / "ready"
+    (tmp_path / "uv").write_text(
+        f"#!/bin/sh\ntrap 'echo stopped; exit 143' TERM\ntouch {ready}\nwhile :; do sleep 0.1; done\n")
+    (tmp_path / "uv").chmod(0o755)
+    line = next(line for line in DOCKERFILE.format(app="report").splitlines()
+                if line.startswith("ENTRYPOINT "))
+    proc = subprocess.Popen(json.loads(line.removeprefix("ENTRYPOINT ")), stdout=subprocess.PIPE,
+                            text=True, env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
+    while not ready.exists():
+        time.sleep(0.05)
+    proc.terminate()
+    assert proc.communicate(timeout=10)[0] == "stopped\npdt: exit 143\n"
+    assert proc.returncode == 143
 
 @pytest.fixture
 def powershell_app(tmp_path, monkeypatch):
@@ -153,9 +172,7 @@ def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modul
     write_dockerfile(stage, app)
     text = (stage / "Dockerfile").read_text()
     tail = ("WORKDIR /workspace/my-report\nRUN uv sync --script run.py\n"
-            'ENTRYPOINT ["sh", "-c", "uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- '
-            'uv run --script run.py; code=$?; '
-            'echo \\"pdt: exit $code\\"; exit $code"]\n')
+            + ENTRYPOINT.replace("{start}", "uv run --script run.py").format())
     assert text.endswith(tail)
     assert text.index("Install-PSResource") < text.index("RUN uv sync")
     assert "pdt.run_powershell" not in text

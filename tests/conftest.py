@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.text import Text
@@ -38,3 +39,9 @@ def add_app(root, name, config_text="", run_body="def main():\n    return 0\n"):
     if config_text:
         (folder / "config.yml").write_text(config_text)
     return folder
+
+
+def started(run):
+    """A subprocess.Popen for lifecycle.run_job that calls `run` as if it were subprocess.run."""
+    return lambda command, **kwargs: SimpleNamespace(
+        wait=lambda: run(command, **kwargs).returncode)

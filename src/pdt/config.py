@@ -109,8 +109,8 @@ def load_yaml(path: Path) -> dict:
         marked = [lines[mark.line] for mark in (getattr(e, "context_mark", None),
                                                 getattr(e, "problem_mark", None))
                   if mark is not None and mark.line < len(lines)]
-        hint = ("\nA value that starts with ! or * must be in quotes, for example \"!app:*\"."
-                if any("!" in line or "*" in line for line in marked) else "")
+        hint = ("\nA value that starts with * must be in quotes, for example \"*/15 * * * *\"."
+                if any("*" in line for line in marked) else "")
         raise ConfigError(f"{path}: not valid yaml: {e}{hint}")
     if data is None:
         return {}
@@ -264,7 +264,7 @@ def merged_app(name: str) -> dict:
     }
     from pdt import lifecycle
     docker_build, docker_build_from = "auto", ""
-    alerts, alerts_from = lifecycle.DEFAULT_ALERTS, PROJECT_FILE
+    alerts, alerts_from = [], PROJECT_FILE
     for section, where in ((root_cfg, PROJECT_FILE), (entry, entry_where), (own, own_where)):
         if "docker-build" in section:
             docker_build, docker_build_from = section["docker-build"], where

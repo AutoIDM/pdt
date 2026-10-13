@@ -21,6 +21,7 @@ JSON on stderr; see `pdt.console.json_output`.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 from pathlib import Path
 
@@ -147,8 +148,15 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
         prepare_email_auth(auth_env_file(app["dir"]))
     params = lifecycle.app_params(app_name, provider)
     lifecycle.emit(lifecycle.APP_DEPLOY_STARTED, **params)
-    code = dispatch(provider, "deploy", app_name, assume_yes)
-    # A declined plan exits nonzero, so 0 means the deploy completed.
+    try:
+        code = dispatch(provider, "deploy", app_name, assume_yes)
+    except KeyboardInterrupt:
+        lifecycle.emit(lifecycle.APP_DEPLOY_CANCELLED, **params, reason="interrupted")
+        raise
+    if code in (DECLINED, 130, -signal.SIGINT):
+        lifecycle.emit(lifecycle.APP_DEPLOY_CANCELLED, **params, exit_code=code,
+                       reason="declined" if code == DECLINED else "interrupted")
+        return code
     if code != 0:
         lifecycle.emit(lifecycle.APP_DEPLOY_FAILED, **params, exit_code=code)
         return code
@@ -325,6 +333,11 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
     if code == 0:
         config.mark_deployed(app_name, False)
     return code
+
+
+# The exit code of a provider script whose plan the user declined, so deploy can tell a
+# cancelled deploy from a failed one.
+DECLINED = 10
 
 
 def confirm(actions: list[str], assume_yes: bool,

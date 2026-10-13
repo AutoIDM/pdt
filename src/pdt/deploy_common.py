@@ -88,6 +88,14 @@ from pdt.utils.env_secret import private_file
 # To bump it, read the digest of the tag's index from ghcr.io.
 BASE_IMAGE = ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
               "@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58")
+# sh as PID 1 ignores SIGTERM, so the entrypoint passes a platform's stop on to
+# lifecycle.py, which ends the run with job:run-cancelled, and the log still ends
+# with `pdt: exit N`.
+ENTRYPOINT = ('ENTRYPOINT ["sh", "-c", "stop() {{ kill -s $1 $pid; wait $pid; finish $?; }}; '
+              'finish() {{ echo \\"pdt: exit $1\\"; exit $1; }}; '
+              'trap \\"stop TERM\\" TERM; trap \\"stop INT\\" INT; '
+              'uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- {start} & pid=$!; '
+              'wait $pid; finish $?"]\n')
 DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
 COPY .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
@@ -95,8 +103,7 @@ COPY . /workspace
 WORKDIR /workspace/{app}
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false PYTHONUNBUFFERED=1
 RUN uv sync --script run.py
-ENTRYPOINT ["sh", "-c", "uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- uv run --script run.py; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
-"""
+""" + ENTRYPOINT.replace("{start}", "uv run --script run.py")
 POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFFERED=1
@@ -106,8 +113,7 @@ RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pw
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 COPY . /workspace
 WORKDIR /workspace/{app}
-{sync}ENTRYPOINT ["sh", "-c", "uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- {start}; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
-"""
+{sync}""" + ENTRYPOINT
 LIFECYCLE_MODULES = ("__init__.py", "config.py", "console.py", "lifecycle.py",
                      "utils/__init__.py", "utils/storage.py")
 # Secret shapes and local state that never belong in an image. The version-control names are

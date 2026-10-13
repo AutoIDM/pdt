@@ -12,7 +12,8 @@ script instead of run.py. It sets PDT_STORAGE_URL and PDT_RUN_ID (the UTC start,
 so the app's `runs/` folder is named after the run `pdt runs` lists), runs
 `uv run --script run.py` in the app folder with the uv that started it (or, for
 an app with no run.py, `uv run --script run_powershell.py <app dir>`) inside
-`lifecycle.py`, which adds the job's lifecycle events to the log, writes
+`lifecycle.py`, which adds the job's lifecycle events to the log (with
+PDT_TRIGGER=manual when it finds MANUAL_START), writes
 both streams to
 <logs folder>\\<UTC start>.log, ends the file with `pdt: exit N` (the marker
 `pdt runs` reads), and exits with the child's exit code so
@@ -28,12 +29,18 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 USAGE = "usage: run_windows_task.py <app dir> <logs folder> <storage url>"
 EXIT_MARKER = "pdt: exit "
 MISSING_UV = 127
+# `pdt run APP --deployed` writes this file in the logs folder before it starts the task,
+# since Task Scheduler passes nothing to one run. A run that finds it, at most
+# MANUAL_START_SECONDS old, is manual.
+MANUAL_START = "manual-start"
+MANUAL_START_SECONDS = 300
 
 
 def main(argv: list[str]) -> int:
@@ -46,6 +53,11 @@ def main(argv: list[str]) -> int:
     stamp = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
     log = folder / f"{stamp}.log"
     env = {**os.environ, "PDT_STORAGE_URL": storage_url, "PDT_RUN_ID": stamp}
+    marker = folder / MANUAL_START
+    if marker.is_file():
+        if time.time() - marker.stat().st_mtime < MANUAL_START_SECONDS:
+            env["PDT_TRIGGER"] = "manual"
+        marker.unlink(missing_ok=True)
     env.setdefault("PYTHONIOENCODING", "utf-8")
     # Python holds stdout written to a file or pipe until a buffer fills, so a print()
     # line would land after a later stderr line. The cloud images set the same.

@@ -110,6 +110,8 @@ def test_start_submits_the_job_the_schedule_would_submit(capsys):
     assert request["jobQueue"] == batch_deploy.JOB_QUEUE.name
     assert request["jobDefinition"] == "pdt-my-app"
     assert request["tags"] == {"managed-by": "pdt"}
+    assert request["containerOverrides"] == {
+        "environment": [{"name": "PDT_TRIGGER", "value": "manual"}]}
     assert "abc123" in capsys.readouterr().out
 
 

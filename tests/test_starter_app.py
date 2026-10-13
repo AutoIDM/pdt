@@ -3,7 +3,8 @@ from types import SimpleNamespace
 
 import yaml
 
-from pdt import __version__, cli, config, scaffold
+from conftest import started
+from pdt import __version__, cli, config, lifecycle, scaffold
 from pdt.config import find_apps, validate_app
 
 
@@ -63,8 +64,8 @@ def test_the_starter_is_also_offered_as_an_example():
 
 
 def run_app(monkeypatch, name, returncode=0):
-    monkeypatch.setattr(cli.subprocess, "run",
-                        lambda *a, **k: SimpleNamespace(returncode=returncode))
+    monkeypatch.setattr(lifecycle.subprocess, "Popen",
+                        started(lambda *a, **k: SimpleNamespace(returncode=returncode)))
     return cli.cmd_run(SimpleNamespace(app=name, deployed=False))
 
 

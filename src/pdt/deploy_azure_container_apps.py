@@ -46,8 +46,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Iterator
 
-from pdt import config, console, regions, runs_cli
-from pdt.deploy import confirm
+from pdt import config, console, lifecycle, regions, runs_cli
+from pdt.deploy import DECLINED, confirm
 from pdt.deploy_azure import (
     ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cost_estimate, delete_unless_locked, deployer_store,
@@ -570,9 +570,22 @@ def pause(app: dict, settings: dict, paused: bool) -> int:
 
 
 def start(app: dict, settings: dict, follow: bool = False) -> int:
-    job, _current = find_job(settings, app["name"])
+    job, current = find_job(settings, app["name"])
+    if current is None:
+        fail(f"{console.value(app['name'])} has no Container Apps Job yet; run "
+             f"{console.value('pdt deploy ' + app['name'])} first.")
+    # A start with an override replaces the container, so it repeats the job's own one.
+    container = current["properties"]["template"]["containers"][0]
+    env = [f"{var['name']}=secretref:{var['secretRef']}" if "secretRef" in var
+           else f"{var['name']}={var.get('value', '')}"
+           for var in container.get("env") or [] if var["name"] != lifecycle.TRIGGER_ENV]
+    resources = container.get("resources") or {}
     output = run_quiet("containerapp", "job", "start", "--name", job,
-                       "--resource-group", settings["resource_group"], "--output", "json")
+                       "--resource-group", settings["resource_group"],
+                       "--container-name", container["name"], "--image", container["image"],
+                       "--cpu", str(resources.get("cpu", CPU)),
+                       "--memory", resources.get("memory", MEMORY),
+                       "--env-vars", *env, f"{lifecycle.TRIGGER_ENV}=manual", "--output", "json")
     try:
         execution = json.loads(output or "null")
     except ValueError:
@@ -931,7 +944,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
             current_job is not None,
             1 if values else 0, usage)):
         console.warn("Aborted; nothing was changed.")
-        return 1
+        return DECLINED
 
     ensure_environment(settings, environment_exists, logs_exist)
     vault_id = ensure_group_and_vault(settings, PROVIDERS, vault_exists)
@@ -1144,7 +1157,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             return 0
         if not confirm(actions, assume_yes):
             console.warn("Aborted; nothing was changed.")
-            return 1
+            return DECLINED
         for lock in held:
             lock.remove()
         if grant:
@@ -1180,7 +1193,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         return 0
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
-        return 1
+        return DECLINED
     for lock in held:
         lock.remove()
     if grant:

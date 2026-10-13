@@ -77,8 +77,9 @@ os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 from pdt import config
 from pdt import console
 from pdt import gcloud_sdk
+from pdt import lifecycle
 from pdt import regions
-from pdt.deploy import confirm
+from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, build_in_cloud, convert_from_usd, fail,
     fetch_json, gather_secrets, image_action, run_build, run_secrets, secret_contents,
@@ -378,7 +379,7 @@ def ensure_apis(project: str, assume_yes: bool,
                for api in missing]
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
-        raise SystemExit(1)
+        raise SystemExit(DECLINED)
     console.step("enabling required Google Cloud APIs")
     run_quiet("services", "enable", *missing, "--project", project)
     return "cloudbilling.googleapis.com" in missing
@@ -792,7 +793,7 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                                       "cost estimate")]
             if not confirm(actions, assume_yes):
                 console.warn("Aborted; nothing was changed.")
-                raise SystemExit(1)
+                raise SystemExit(DECLINED)
             console.step("enabling the Cloud Billing API")
             run_quiet("services", "enable", "cloudbilling.googleapis.com",
                       "--project", project)
@@ -949,7 +950,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
 
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
-        return 1
+        return DECLINED
 
     if not repo_exists:
         console.step(f"creating Artifact Registry repo {console.value(repo)}")
@@ -1186,7 +1187,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         warn_if_locked(store, name)
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
-        return 1
+        return DECLINED
 
     if revoke_grant:
         revoke_store_access(bucket, name, sa, revoke_folder, revoke_bucket)
@@ -1413,7 +1414,8 @@ def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
     project = preflight(app, project, assume_yes)
     job = f"pdt-{app['name']}"
     output = run_quiet("run", "jobs", "execute", job, "--region", region,
-                       "--project", project, "--async", "--format=json")
+                       "--project", project, "--async", "--format=json",
+                       f"--update-env-vars={lifecycle.TRIGGER_ENV}=manual")
     try:
         execution = json.loads(output or "null")
     except ValueError:
