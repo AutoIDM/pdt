@@ -170,6 +170,11 @@ def failed(message: str) -> None:
     _console.print(f"[red]{message}[/]")
 
 
+def event(text: str) -> None:
+    """One lifecycle event (pdt.lifecycle), bold magenta so it stands out in a run's output."""
+    _console.print(f"[bold magenta]\\[event] {escape(text)}[/]")
+
+
 def heading(message: str) -> None:
     _console.print(f"[bold]{message}[/]")
 

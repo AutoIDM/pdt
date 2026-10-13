@@ -11,7 +11,8 @@ Task Scheduler discards stdout and stderr, so the task `pdt-<app>` runs this
 script instead of run.py. It sets PDT_STORAGE_URL and PDT_RUN_ID (the UTC start,
 so the app's `runs/` folder is named after the run `pdt runs` lists), runs
 `uv run --script run.py` in the app folder with the uv that started it (or, for
-an app with no run.py, `uv run --script run_powershell.py <app dir>`), writes
+an app with no run.py, `uv run --script run_powershell.py <app dir>`) inside
+`lifecycle.py`, which adds the job's lifecycle events to the log, writes
 both streams to
 <logs folder>\\<UTC start>.log, ends the file with `pdt: exit N` (the marker
 `pdt runs` reads), and exits with the child's exit code so
@@ -54,6 +55,7 @@ def main(argv: list[str]) -> int:
         command = [uv, "run", "--script", "run.py"]
     else:
         command = [uv, "run", "--script", str(Path(__file__).with_name("run_powershell.py")), app_dir]
+    command = [uv, "run", "--script", str(Path(__file__).with_name("lifecycle.py")), "--", *command]
     with log.open("wb") as out:
         try:
             code = subprocess.run(

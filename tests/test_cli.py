@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import add_app
-from pdt import cli, config, console, deploy, powershell
+from pdt import cli, config, console, deploy, lifecycle, powershell
 
 
 def run_cli(monkeypatch, *argv):
@@ -75,7 +75,7 @@ def test_command_without_app_in_empty_project(project, monkeypatch, capsys, comm
 def record_app(monkeypatch, command):
     picked = []
     if command == "run":
-        monkeypatch.setattr(cli.subprocess, "run", lambda argv, cwd: picked.append(cwd.name)
+        monkeypatch.setattr(cli.subprocess, "run", lambda argv, cwd, env: picked.append(cwd.name)
                             or cli.subprocess.CompletedProcess(argv, 0))
     else:
         target = "pause" if command == "unpause" else command
@@ -212,7 +212,8 @@ def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
     assert kwargs["cwd"] == folder
     assert kwargs["env"]["PDT_PROJECT"] == str(project)
     assert os.environ["PSModulePath"] == "MODULE-PATH"
-    assert kwargs["env"] == dict(os.environ, PDT_PROJECT=str(project))
+    assert kwargs["env"] == dict(os.environ, PDT_PROJECT=str(project),
+                                 PDT_RUN_ID=lifecycle.storage.RUN_ID)
 
 
 def test_run_stops_when_a_powershell_module_does_not_install(project, monkeypatch, capsys):
@@ -242,7 +243,8 @@ def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
     monkeypatch.setattr(cli.subprocess, "run", lambda command, **kwargs: calls.append(
         (command, kwargs)) or subprocess.CompletedProcess(command, 0))
     assert run_cli(monkeypatch, "run", "ps-report") == 0
-    assert calls == [(["uv", "run", "--script", "run.py"], {"cwd": folder})]
+    assert calls == [(["uv", "run", "--script", "run.py"],
+                      {"cwd": folder, "env": dict(os.environ, PDT_RUN_ID=lifecycle.storage.RUN_ID)})]
     assert os.environ["PSModulePath"] == "MODULE-PATH"
 
 

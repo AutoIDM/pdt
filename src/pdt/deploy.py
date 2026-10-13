@@ -24,7 +24,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from pdt import __version__, config, console, powershell, pwsh, regions, runs_cli
+from pdt import __version__, config, console, lifecycle, powershell, pwsh, regions, runs_cli
 from pdt.config import ConfigError
 from pdt.deploy_common import CostEstimate
 from pdt.utils.email_auth import can_prompt
@@ -145,11 +145,15 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
         return 1
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
+    params = lifecycle.app_params(app_name, provider)
+    lifecycle.emit("app:deploy-start", **params)
     code = dispatch(provider, "deploy", app_name, assume_yes)
     # A declined plan exits nonzero, so 0 means the deploy completed.
     if code != 0:
+        lifecycle.emit("app:deploy-failed", **params, exit_code=code)
         return code
     config.mark_deployed(app_name, True)
+    lifecycle.emit("app:deploy-completed", **params)
     run_code = first_run(app_name, provider, assume_yes, run)
     deployed_next_steps(app_name, started=run_code is not None)
     return run_code or 0
@@ -262,13 +266,18 @@ def pause(app_name: str, paused: bool) -> int:
     setting = f"pause: {'true' if paused else 'false'}"
     console.done(f"{console.value(app_name)}: {console.value(setting)} saved in "
                  f"{console.value(path)}")
+    name = "job:paused" if paused else "job:unpaused"
     if not config.is_deployed(app_name):
         state = "paused" if paused else "running"
         console.say(f"{console.value(app_name)} is not deployed; the next pdt deploy will create "
                     f"it {state}.")
+        lifecycle.emit(name, **lifecycle.app_params(app_name, provider), deployed=False)
         return 0
     config.load_env(app["dir"])
-    return dispatch(provider, "pause" if paused else "unpause", app_name, False)
+    code = dispatch(provider, "pause" if paused else "unpause", app_name, False)
+    if code == 0:
+        lifecycle.emit(name, **lifecycle.app_params(app_name, provider), deployed=True)
+    return code
 
 
 def start(app_name: str) -> int:
