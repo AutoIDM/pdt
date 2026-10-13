@@ -769,14 +769,14 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
         clients["sts"], clients["iam"], expected_account, region, DEPLOYER_ACTIONS)
     wait_for_permissions()
     client = clients["secretsmanager"]
-    name = resource_names(app["name"])["secret"]
+    sid = resource_names(app["name"])["secret"]
     current = None
-    if resource_exists(client, "describe_secret", SecretId=name):
-        current = client.get_secret_value(SecretId=name).get("SecretString", "")
+    if resource_exists(client, "describe_secret", SecretId=sid):
+        current = client.get_secret_value(SecretId=sid).get("SecretString", "")
 
     def write(values: dict[str, str]) -> None:
-        console.step(f"updating secret {console.value(name)}")
-        ensure_secret(client, name, json.dumps(values, sort_keys=True))
+        console.step(f"updating secret {console.value(sid)}")
+        ensure_secret(client, sid, json.dumps(values, sort_keys=True))
 
     return run_secrets(action, app, current, write, assume_yes, name)
 

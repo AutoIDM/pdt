@@ -172,3 +172,33 @@ def test_no_event_when_nothing_changes_or_the_prompt_is_declined(project, monkey
     monkeypatch.setattr("sys.stdin", io.StringIO("new\n"))
     deploy_common.run_secrets("set", app_dir(project), json.dumps({"A": "new"}), None, True, "A")
     assert seen == []
+
+
+def test_aws_set_stores_the_value_under_the_env_var_name(monkeypatch):
+    from pdt import deploy_aws_batch as batch_deploy
+
+    class FakeSecretsManager:
+        def __init__(self):
+            self.payload = json.dumps({"TOKEN": "old"})
+
+        def describe_secret(self, SecretId):
+            return {"ARN": f"arn:{SecretId}", "Tags": batch_deploy.iam_tags()}
+
+        def get_secret_value(self, SecretId):
+            return {"SecretString": self.payload}
+
+        def put_secret_value(self, SecretId, SecretString):
+            self.payload = SecretString
+
+        def tag_resource(self, SecretId, Tags):
+            pass
+
+    client = FakeSecretsManager()
+    monkeypatch.setattr(batch_deploy, "ensure_session", lambda app: None)
+    monkeypatch.setattr(batch_deploy, "aws_settings", lambda app, session: ("123456789012", "us-east-1"))
+    monkeypatch.setattr(batch_deploy, "preflight", lambda *args: ("123456789012", {}))
+    monkeypatch.setattr(batch_deploy, "batch_clients", lambda session: {
+        "sts": None, "iam": None, "secretsmanager": client})
+    monkeypatch.setattr("sys.stdin", io.StringIO("new\n"))
+    assert batch_deploy.secrets({"name": "demo"}, "set", True, "TOKEN") == 0
+    assert json.loads(client.payload) == {"TOKEN": "new"}
