@@ -25,7 +25,8 @@ import signal
 import subprocess
 from pathlib import Path
 
-from pdt import __version__, config, console, lifecycle, powershell, pwsh, regions, runs_cli
+from pdt import (__version__, alerts_cli, config, console, lifecycle, powershell, pwsh, regions,
+                 runs_cli)
 from pdt.config import ConfigError
 from pdt.deploy_common import CostEstimate
 from pdt.utils.email_auth import can_prompt
@@ -146,6 +147,7 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
         return 1
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
+    alerts_cli.offer(app_name, assume_yes)
     code = provider_step("deploy", provider, app_name, assume_yes)
     if code != 0:
         return code

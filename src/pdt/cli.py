@@ -20,8 +20,8 @@ from pathlib import Path
 
 import rich_argparse
 
-from pdt import (__version__, completion, config, console, deploy, deploy_common, gui_cli,
-                 lifecycle, powershell, pwsh, scaffold, storage_cli)
+from pdt import (__version__, alerts_cli, completion, config, console, deploy, deploy_common,
+                 gui_cli, lifecycle, powershell, pwsh, scaffold, storage_cli)
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -467,6 +467,11 @@ def cmd_health(args) -> int:
     return deploy.health(names, args.json)
 
 
+def cmd_alerts(args) -> int:
+    config.find_project()
+    return alerts_cli.setup() if args.action == "setup" else alerts_cli.test()
+
+
 def cmd_gui(args) -> int:
     return gui_cli.main(args.port, args.background, args.no_browser, args.stop)
 
@@ -514,7 +519,7 @@ COMMAND_GROUPS = {
     "Get started": ["init", "examples", "new", "completion"],
     "Run and validate": ["list", "validate", "run"],
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
-    "Check a deployed app": ["health", "runs", "logs", "gui"],
+    "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
@@ -656,6 +661,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="check every enabled app, even inside an app folder")
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_health)
+    p = add_parser("alerts", help="choose where pdt posts deploys and runs, such as Slack")
+    actions = p.add_subparsers(dest="action", metavar="<action>", required=True)
+    actions.add_parser(
+        "setup", help="choose the alert types and events, connect each one, and send a test "
+                      "message", formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
+    actions.add_parser(
+        "test", help="send a test message to every alert that is set up",
+        formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
+    p.set_defaults(func=cmd_alerts)
     p = add_parser("gui", help="open the project's dashboard in your web browser")
     p.add_argument("--port", type=int, default=gui_cli.DEFAULT_PORT,
                    help=f"the local port to serve on (default: {gui_cli.DEFAULT_PORT})")

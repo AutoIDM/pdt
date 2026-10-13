@@ -25,8 +25,9 @@ implicit entry, so no entry receives any event.
 
 A Transport is a name, the extra entry keys it allows, and
 `deliver(event, entry, unhandled)`, where `unhandled` says the entry got the
-event through `unhandled`. The one type, console, prints a `[event]` line; a
-later transport (email, a webhook, the GUI history) adds its own Transport.
+event through `unhandled`. The console type prints a `[event]` line, and the
+slack type (pdt.slack) posts to a Slack channel; a later transport (email,
+the GUI history) adds its own Transport.
 `deliver` must not change the event. The console prints at once; every
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the
@@ -72,7 +73,7 @@ from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console
+from pdt import config, console, slack
 from pdt.utils import storage
 
 JOB_RUN_STARTED = "job:run-started"
@@ -112,12 +113,19 @@ class Transport:
     name: str
     keys: frozenset[str]
     deliver: Callable[[Event, dict, bool], None]
+    # The keys an entry must set, and the env vars that hold its secrets, which
+    # config.env_spec adds to every app's env spec so deploy sends them.
+    required: frozenset[str] = frozenset()
+    secrets: Callable[[dict], list[str]] = lambda entry: []
 
 
 ENTRY_KEYS = ("type", "events", "exclude-events")
 ALL = "all"
 UNHANDLED = "unhandled"
-TRANSPORTS: dict[str, Transport] = {"console": Transport("console", frozenset(), print_event)}
+TRANSPORTS: dict[str, Transport] = {
+    "console": Transport("console", frozenset(), print_event),
+    "slack": Transport("slack", slack.KEYS, slack.deliver, slack.KEYS, slack.secrets),
+}
 
 
 def parse_alerts(alerts: object, where: str) -> list[dict]:
@@ -142,6 +150,11 @@ def parse_alerts(alerts: object, where: str) -> list[dict]:
                 raise config.ConfigError(
                     f"{where}: alerts: unknown key {key!r}; a {alert['type']} entry takes: "
                     + ", ".join(allowed))
+        missing = sorted(TRANSPORTS[alert["type"]].required - set(alert))
+        if missing:
+            raise config.ConfigError(
+                f"{where}: the {alert['type']} alerts entry needs {', '.join(missing)}; "
+                "run pdt alerts setup to add one")
         if "events" not in alert and "exclude-events" not in alert:
             raise config.ConfigError(
                 f"{where}: the {alert['type']} alerts entry needs events, for example "
