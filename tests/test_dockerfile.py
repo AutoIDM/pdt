@@ -89,14 +89,15 @@ def test_context_ignore_text_keeps_comments_and_blank_lines():
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
-def test_the_entrypoint_ends_the_log_with_the_exit_code(tmp_path):
-    (tmp_path / "uv").write_text("#!/bin/sh\necho working\nexit 3\n")
+def test_the_entrypoint_runs_the_app_in_lifecycle_and_ends_the_log_with_the_exit_code(tmp_path):
+    (tmp_path / "uv").write_text("#!/bin/sh\necho \"uv $*\"\nexit 3\n")
     (tmp_path / "uv").chmod(0o755)
     line = next(line for line in DOCKERFILE.splitlines() if line.startswith("ENTRYPOINT "))
     command = json.loads(line.removeprefix("ENTRYPOINT "))
     proc = subprocess.run(command, capture_output=True, text=True,
                           env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
-    assert proc.stdout == "working\npdt: exit 3\n"
+    assert proc.stdout == ("uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- "
+                           "uv run --script run.py\npdt: exit 3\n")
     assert proc.returncode == 3
 
 
@@ -152,7 +153,8 @@ def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modul
     write_dockerfile(stage, app)
     text = (stage / "Dockerfile").read_text()
     tail = ("WORKDIR /workspace/my-report\nRUN uv sync --script run.py\n"
-            'ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; '
+            'ENTRYPOINT ["sh", "-c", "uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- '
+            'uv run --script run.py; code=$?; '
             'echo \\"pdt: exit $code\\"; exit $code"]\n')
     assert text.endswith(tail)
     assert text.index("Install-PSResource") < text.index("RUN uv sync")
@@ -161,20 +163,25 @@ def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modul
 
 @pytest.mark.skipif(os.name == "nt" or shutil.which("sh") is None,
                     reason="runs a Linux image's entrypoint with POSIX paths")
-def test_the_powershell_entrypoint_ends_the_log_with_the_exit_code(tmp_path, powershell_app):
+def test_the_powershell_entrypoint_runs_the_app_in_lifecycle_with_its_exit_code(
+        tmp_path, powershell_app):
     app, stage, _scans = powershell_app
     write_dockerfile(stage, app)
     python = tmp_path / "opt" / "pdt" / "bin" / "python"
     python.parent.mkdir(parents=True)
     python.write_text("#!/bin/sh\necho \"args: $*\"\nexit 4\n")
     python.chmod(0o755)
+    uv = tmp_path / "uv"
+    uv.write_text("#!/bin/sh\necho \"uv $*\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n")
+    uv.chmod(0o755)
     text = (stage / "Dockerfile").read_text()
     line = next(line for line in text.splitlines() if line.startswith("ENTRYPOINT "))
     command = json.loads(line.removeprefix("ENTRYPOINT "))
     command[-1] = command[-1].replace("/opt/pdt/bin/python", str(python))
     proc = subprocess.run(command, capture_output=True, text=True,
-                          env={"PATH": "/usr/bin:/bin"})
-    assert proc.stdout == "args: -m pdt.run_powershell .\npdt: exit 4\n"
+                          env={"PATH": f"{tmp_path}:/usr/bin:/bin"})
+    assert proc.stdout == (f"uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- {python} "
+                           "-m pdt.run_powershell .\nargs: -m pdt.run_powershell .\npdt: exit 4\n")
     assert proc.returncode == 4
 
 

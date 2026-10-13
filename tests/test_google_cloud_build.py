@@ -6,7 +6,7 @@ import pytest
 
 from conftest import add_app
 from pdt import deploy_google_cloud as google
-from pdt.deploy_common import CostEstimate, store_suffix
+from pdt.deploy_common import LIFECYCLE_MODULES, CostEstimate, store_suffix
 
 IMAGE = "us-central1-docker.pkg.dev/my-project/pdt/report:latest"
 BUILDER = "pdt-builder@my-project.iam.gserviceaccount.com"
@@ -144,8 +144,9 @@ def test_the_cloud_path_submits_the_staged_context_to_cloud_build_and_runs_no_do
         "logsBucket": f"gs://{BUILDS}/logs",
         "options": {"logging": "GCS_ONLY"},
     }
-    assert fake.uploaded == [".gcloudignore", "Dockerfile", "cloudbuild.json", "pdt.yml",
-                             "report/data.csv", "report/run.py"]
+    assert fake.uploaded == sorted([
+        ".gcloudignore", "Dockerfile", "cloudbuild.json", "pdt.yml", "report/data.csv",
+        "report/run.py", *(f".pdt-lifecycle/pdt/{module}" for module in LIFECYCLE_MODULES)])
     assert fake.ignore == "/.gcloudignore\n/cloudbuild.json\n"
     assert not Path(submit[2]).exists()
 

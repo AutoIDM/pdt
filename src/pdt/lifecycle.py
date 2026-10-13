@@ -16,14 +16,16 @@ prints the event as a `[event]` line; a later transport (email, a webhook,
 the GUI history) appends its own function to HANDLERS.
 
 `job:` names are events of a scheduled job's run, `app:` names are events
-of the app itself. The standard parameters are project, app, provider, and
-run_id where a run exists.
+of the app itself. The names pdt emits are the constants below; `emit`
+takes any name, so an app can emit its own. The standard parameters are
+project, app, provider, and run_id where a run exists.
 
 `run_job` runs an app's command between `job:run-started` and
 `job:completed` or `job:failed`, and gives the command PDT_RUN_ID so the
 app's `runs/` folder ends with the run_id of the events. `pdt run` calls it,
-and the Windows task runs this file as a script around the app's command,
-from the app folder, so the events land in the run's log.
+and the Windows task and every cloud image (a copy at /opt/pdt-lifecycle,
+deploy_common.LIFECYCLE_MODULES) run this file as a script around the app's
+command, from the app folder, so the events land in the run's log.
 """
 
 from __future__ import annotations
@@ -39,6 +41,15 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console
 from pdt.utils import storage
+
+JOB_RUN_STARTED = "job:run-started"
+JOB_COMPLETED = "job:completed"
+JOB_FAILED = "job:failed"
+JOB_PAUSED = "job:paused"
+JOB_UNPAUSED = "job:unpaused"
+APP_DEPLOY_START = "app:deploy-start"
+APP_DEPLOY_COMPLETED = "app:deploy-completed"
+APP_DEPLOY_FAILED = "app:deploy-failed"
 
 
 @dataclass(frozen=True)
@@ -70,10 +81,10 @@ def app_params(app: str, provider: str) -> dict[str, object]:
 def run_job(app: str, provider: str, command: list[str], cwd: Path,
             env: dict[str, str] | None = None) -> int:
     params = {**app_params(app, provider), "run_id": storage.RUN_ID}
-    emit("job:run-started", **params)
+    emit(JOB_RUN_STARTED, **params)
     code = subprocess.run(command, cwd=cwd, env={**(env or os.environ),
                                                  "PDT_RUN_ID": storage.RUN_ID}).returncode
-    emit("job:completed" if code == 0 else "job:failed", **params, exit_code=code,
+    emit(JOB_COMPLETED if code == 0 else JOB_FAILED, **params, exit_code=code,
          state=f"runs/*-{storage.RUN_ID}/")
     return code
 

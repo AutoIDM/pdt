@@ -1,9 +1,11 @@
 import tempfile
+from pathlib import Path
 
 import pytest
 
+import pdt
 from conftest import add_app
-from pdt.deploy_common import stage_build_context
+from pdt.deploy_common import LIFECYCLE_MODULES, stage_build_context
 
 
 @pytest.fixture(autouse=True)
@@ -60,3 +62,10 @@ def test_a_meltano_link_into_the_uv_cache_is_left_out(project, tmp_path_factory)
     (app["dir"] / ".meltano" / "run" / "bin").symlink_to(outside)
     staged = stage_build_context(app) / "my-report"
     assert not (staged / ".meltano").exists()
+
+
+def test_the_context_carries_this_pdts_lifecycle_outside_the_app_folder(project):
+    app = app_in(project)
+    vendored = stage_build_context(app) / ".pdt-lifecycle" / "pdt"
+    for module in LIFECYCLE_MODULES:
+        assert (vendored / module).read_bytes() == (Path(pdt.__file__).parent / module).read_bytes()
