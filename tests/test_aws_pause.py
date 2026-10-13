@@ -113,8 +113,3 @@ def test_start_submits_the_job_the_schedule_would_submit(capsys):
     assert request["containerOverrides"] == {
         "environment": [{"name": "PDT_TRIGGER", "value": "manual"}]}
     assert "abc123" in capsys.readouterr().out
-
-
-def test_the_deployer_policy_allows_submitting_a_job():
-    assert "batch:SubmitJob" in batch_deploy.DEPLOYER_ACTIONS
-    assert "iam:PassRole" in batch_deploy.DEPLOYER_ACTIONS

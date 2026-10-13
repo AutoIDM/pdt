@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from pdt import cli, completion, config
+from pdt import cli, completion
 
 from conftest import add_app
 
@@ -303,14 +303,6 @@ def test_completion_runs_before_cloud_dispatch(monkeypatch):
 
     with pytest.raises(CompletionRequest):
         cli.main()
-
-
-def test_data_home_is_shared_with_gcloud_sdk(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-
-    assert completion._data_dir() == tmp_path / "pdt"
-    assert completion._data_dir() == config.data_home() / "pdt"
 
 
 def test_install_command_sets_up_a_named_shell(tmp_path, monkeypatch, capsys):

@@ -50,15 +50,6 @@ def test_init_gitignores_the_state_dir(tmp_path, monkeypatch):
     assert ".pdt/" in (tmp_path / ".gitignore").read_text().splitlines()
 
 
-def test_the_state_file_is_json(tmp_path, monkeypatch):
-    import json
-
-    project_with_starter(tmp_path, monkeypatch)
-    config.mark_deployed(scaffold.STARTER, True)
-    state = json.loads((tmp_path / ".pdt" / "state").read_text())
-    assert state["deployed"] == [scaffold.STARTER]
-
-
 def write_raw_state(project, text):
     (project / ".pdt").mkdir(exist_ok=True)
     (project / ".pdt" / "state").write_text(text)

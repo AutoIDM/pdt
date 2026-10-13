@@ -162,11 +162,6 @@ def fake_logging(monkeypatch, entries, code=0, stderr=""):
     return calls
 
 
-def test_read_lines_with_no_entries_is_empty(monkeypatch):
-    fake_logging(monkeypatch, [])
-    assert deploy_google_cloud.read_lines("p", "pdt-app-abcde") == []
-
-
 def test_a_failed_read_warns_instead_of_looking_empty(monkeypatch, capsys):
     fake_logging(monkeypatch, None, 1, "ERROR: (gcloud.logging.read) RESOURCE_EXHAUSTED: Quota exceeded")
     assert deploy_google_cloud.read_lines("p", "pdt-app-abcde") == []

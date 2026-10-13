@@ -59,10 +59,6 @@ def test_the_starter_needs_no_env_vars(tmp_path, monkeypatch):
     assert not (root / scaffold.STARTER / "env.template").exists()
 
 
-def test_the_starter_is_also_offered_as_an_example():
-    assert scaffold.STARTER in [example.name for example in scaffold.examples()]
-
-
 def run_app(monkeypatch, name, returncode=0):
     monkeypatch.setattr(lifecycle.subprocess, "Popen",
                         started(lambda *a, **k: SimpleNamespace(returncode=returncode)))

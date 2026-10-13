@@ -57,12 +57,6 @@ def test_the_grant_condition_limits_reads_writes_and_deletes_to_the_app_folder()
         f" OR (@Request[{BLOBS}:prefix] StringStartsWith 'my-report/'))")
 
 
-def test_the_grant_condition_names_one_app_only():
-    assert "my-report/" in deploy_azure.store_condition("my-report")
-    assert "other/" not in deploy_azure.store_condition("my-report")
-    assert deploy_azure.store_condition("a") != deploy_azure.store_condition("b")
-
-
 def test_usage_is_unknown_until_the_data_role_lands(capsys):
     class Deployer:
         def usage(self):

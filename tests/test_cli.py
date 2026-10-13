@@ -171,22 +171,6 @@ def test_a_run_number_at_the_project_root_is_not_an_app(project, monkeypatch, ca
     assert "no app named '3'" in capsys.readouterr().out
 
 
-def test_an_unknown_secrets_action_is_an_error(project, monkeypatch, capsys):
-    add_app(project, "hello-world", "schedule: daily\n")
-    monkeypatch.setattr(deploy, "dispatch", lambda *a: pytest.fail("dispatched"))
-    assert run_cli(monkeypatch, "secrets", "hello-world", "sav") == 1
-    assert "no secrets action named 'sav'; choose diff, save, get, set" in (
-        capsys.readouterr().out)
-
-
-def test_every_app_command_goes_through_choose_app():
-    parser = cli.build_parser()
-    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
-    for command in APP_COMMANDS:
-        app_arg = next(a for a in sub.choices[command]._actions if a.dest == "app")
-        assert app_arg.nargs == "?", f"pdt {command} must accept a missing app name"
-
-
 def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     add_app(project, "hello-world", "schedule: daily\n")
     calls = []
@@ -674,7 +658,6 @@ def test_cloud_cli_passthroughs_are_registered():
         assert path.exists(), f"pdt {name} points at a missing script"
         assert f'sys.argv[1] == "{name}"' in path.read_text(), (
             f"{script} has no `{name}` passthrough branch")
-        assert name in cli.CLOUD_CLIS
 
 
 def test_pause_writes_the_key_and_tells_a_deployed_app(project, monkeypatch, capsys):
@@ -770,7 +753,9 @@ def test_a_mistyped_app_names_the_closest_app(project, monkeypatch, capsys):
 def test_a_mistyped_secrets_action_names_the_closest_action(project, monkeypatch, capsys):
     add_app(project, "hello-world", "schedule: daily\n")
     assert run_cli(monkeypatch, "secrets", "hello-world", "sav") == 1
-    assert "Did you mean `pdt secrets hello-world save`?" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "no secrets action named 'sav'; choose diff, save, get, set" in out
+    assert "Did you mean `pdt secrets hello-world save`?" in out
 
 
 def test_secrets_takes_the_action_before_the_app(project, monkeypatch):

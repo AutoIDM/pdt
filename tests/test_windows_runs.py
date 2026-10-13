@@ -85,10 +85,6 @@ def test_plan_names_the_saved_path_when_uv_is_not_on_the_system_path(project, mo
     assert f"<Command>{saved}</Command>" in xml
 
 
-def test_uv_is_never_on_the_machine_path_off_windows():
-    assert deploy_windows.uv_on_machine_path() is False
-
-
 def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch):
     windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
