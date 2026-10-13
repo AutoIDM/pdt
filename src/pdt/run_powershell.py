@@ -20,7 +20,8 @@ runner, and the container image start it there; it also runs as
 It loads the app's config and env (PDT_ENV_JSON secrets become env vars),
 stops when an env var that config.yml lists as required, or that a script
 reads and config.yml does not list, is not set,
-exports an empty folder as PDT_OUTPUT_DIR, then runs each entry script in
+exports an empty folder as PDT_OUTPUT_DIR and the app's merged `config:`
+section as JSON in PDT_CONFIG_JSON, then runs each entry script in
 order through pwsh. It stops at the first failure unless `continue_on_error`
 is true. The entry scripts are
 `run_scripts` from config when set, otherwise what `pdt.powershell` finds:
@@ -32,6 +33,7 @@ to `runs/<run>/output/` in the app's data store, unless the app sets
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -79,7 +81,8 @@ def main(argv: list[str]) -> int:
         die(1, str(exc))
     code = 0
     with tempfile.TemporaryDirectory(prefix="pdt-output-") as output:
-        env = {**os.environ, "PDT_OUTPUT_DIR": output}
+        env = {**os.environ, "PDT_OUTPUT_DIR": output,
+               "PDT_CONFIG_JSON": json.dumps(app["config"])}
         for script in entries:
             log("info", f"starting {script}")
             result = subprocess.run(

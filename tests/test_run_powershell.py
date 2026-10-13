@@ -1,5 +1,6 @@
 """The wrapper that runs a PowerShell app: `src/pdt/run_powershell.py`."""
 
+import json
 import shutil
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -80,6 +81,19 @@ def test_scripts_run_in_order_and_the_output_is_stored(app_dir, wrapper, monkeyp
     out = capsys.readouterr().out
     assert "starting a.ps1" in out and "b.ps1 ended  exit_code=0" in out
     assert "uploaded 2 output file(s) to " in out
+
+
+def test_each_script_gets_the_merged_config_section_as_json(app_dir, wrapper, monkeypatch):
+    (app_dir / "a.ps1").write_text("")
+    (app_dir / "config.yml").write_text("schedule: daily\nconfig:\n  days: 7\n  types: [A, B]\n")
+    monkeypatch.setenv("PDT_MY_REPORT_DAYS", "30")
+    calls = []
+    monkeypatch.setattr(wrapper.subprocess, "run", fake_pwsh(calls, {"a.ps1": 0}))
+
+    assert wrapper.main([str(app_dir)]) == 0
+
+    (_, kwargs), = calls
+    assert json.loads(kwargs["env"]["PDT_CONFIG_JSON"]) == {"days": "30", "types": ["A", "B"]}
 
 
 def test_the_first_failure_stops_the_run_and_its_output_is_still_stored(
