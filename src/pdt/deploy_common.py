@@ -464,9 +464,10 @@ def runs(image_platform: str) -> bool:
                            "true"], capture_output=True, check=False).returncode == 0
 
 
-def run_build(command: list[str], data: str | None = None) -> None:
+def run_build(command: list[str], data: str | None = None, quiet: bool = False) -> None:
+    """Run a docker command and show its output as it runs, or only on failure when `quiet`."""
     proc = subprocess.run(
-        command, input=data, capture_output=True, text=True, check=False)
+        command, input=data, capture_output=quiet, text=True, check=False)
     if proc.returncode:
         if proc.stdout.strip():
             console.say(console.escape(proc.stdout.strip()))

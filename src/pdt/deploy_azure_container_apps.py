@@ -86,7 +86,10 @@ def build_image(app: dict, settings: dict, image_name: str, cloud: bool) -> None
             cloud_build(settings, stage, image_name)
             return
         image = f"{registry}.azurecr.io/{image_name}:latest"
-        run_quiet("acr", "login", "--name", registry)
+        login = json.loads(run_quiet("acr", "login", "--name", registry, "--expose-token"))
+        run_build(["docker", "login", "--username", "00000000-0000-0000-0000-000000000000",
+                   "--password-stdin", login["loginServer"]], data=login["accessToken"],
+                  quiet=True)
         run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
                    "-t", image, str(stage)])
         run_build(["docker", "push", image])
@@ -955,7 +958,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.step(f"enabling ACR authentication-as-arm on {console.value(settings['registry'])}")
     enable_acr_arm_auth(settings["registry"])
 
-    console.step(f"building image {console.value(image)}")
+    console.step(f"building image {console.value(image)} with "
+                 f"{console.value('ACR Tasks') if cloud else 'Docker on this computer'}")
     build_image(app, settings, name, cloud)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
     if legacy_job:

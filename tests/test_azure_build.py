@@ -16,12 +16,14 @@ def test_builds_with_docker_and_pushes_to_acr(tmp_path, monkeypatch):
     calls = []
     monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     monkeypatch.setattr(azure, "stage_build_context", lambda app: stage)
-    monkeypatch.setattr(azure, "run_quiet", lambda *args: calls.append(args))
-    monkeypatch.setattr(azure, "run_build", lambda args: calls.append(tuple(args)))
+    monkeypatch.setattr(azure, "run_quiet", lambda *args: calls.append(args) or '{"accessToken": "t", "loginServer": "pdtregistry.azurecr.io"}')
+    monkeypatch.setattr(azure, "run_build", lambda args, **_: calls.append(tuple(args)))
     azure.build_image(app_at(tmp_path), {"registry": "pdtregistry"}, "report", False)
     image = "pdtregistry.azurecr.io/report:latest"
     assert calls == [
-        ("acr", "login", "--name", "pdtregistry"),
+        ("acr", "login", "--name", "pdtregistry", "--expose-token"),
+        ("docker", "login", "--username", "00000000-0000-0000-0000-000000000000",
+         "--password-stdin", "pdtregistry.azurecr.io"),
         ("docker", "build", "--platform", "linux/amd64", "-t", image, str(stage)),
         ("docker", "push", image),
     ]
@@ -33,15 +35,16 @@ def test_a_failed_docker_build_does_not_push_and_removes_the_context(tmp_path, m
     stage.mkdir()
     calls = []
 
-    def build(command):
+    def build(command, **_):
         calls.append(command[:2])
-        raise SystemExit(1)
+        if command[1] == "build":
+            raise SystemExit(1)
 
     monkeypatch.setattr(azure, "stage_build_context", lambda app: stage)
-    monkeypatch.setattr(azure, "run_quiet", lambda *args: None)
+    monkeypatch.setattr(azure, "run_quiet", lambda *args: '{"accessToken": "t", "loginServer": "pdtregistry.azurecr.io"}')
     monkeypatch.setattr(azure, "run_build", build)
     with pytest.raises(SystemExit):
         azure.build_image(app_at(tmp_path), {"registry": "pdtregistry"}, "report", False)
-    assert calls == [["docker", "build"]]
+    assert calls == [["docker", "login"], ["docker", "build"]]
     assert not stage.exists()
 

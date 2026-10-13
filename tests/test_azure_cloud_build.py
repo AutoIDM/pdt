@@ -31,6 +31,9 @@ def app_in(project) -> dict:
     return {"name": "report", "dir": folder, "platform": {"provider": "azure"}}
 
 
+LOGIN = '{"accessToken": "t", "loginServer": "pdtregistry.azurecr.io"}'
+
+
 def fake_az(monkeypatch, returncode=0, stderr=""):
     """`az` as the build sees it, and a subprocess.run that no build may reach.
 
@@ -52,7 +55,7 @@ def fake_az(monkeypatch, returncode=0, stderr=""):
 
     monkeypatch.setattr(deploy_azure_container_apps, "az", az)
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
-                        lambda *args, **kwargs: calls.append({"args": args}) or "")
+                        lambda *args, **kwargs: calls.append({"args": args}) or LOGIN)
     monkeypatch.setattr(deploy_common.subprocess, "run", no_process)
     return calls
 
@@ -131,13 +134,15 @@ def test_the_local_build_never_runs_acr_tasks(project, monkeypatch):
     calls = fake_az(monkeypatch)
     commands = []
     monkeypatch.setattr(deploy_azure_container_apps, "run_build",
-                        lambda command: commands.append(command))
+                        lambda command, **_: commands.append(command))
     monkeypatch.setattr(deploy_azure_container_apps, "ssh_build_args", lambda: [])
     deploy_azure_container_apps.build_image(app_in(project), SETTINGS, "report", False)
-    assert [call["args"] for call in calls] == [("acr", "login", "--name", "pdtregistry")]
+    assert [call["args"] for call in calls] == [
+        ("acr", "login", "--name", "pdtregistry", "--expose-token")]
     image = "pdtregistry.azurecr.io/report:latest"
-    assert commands[0][:5] == ["docker", "build", "--platform", "linux/amd64", "-t"]
-    assert commands[1] == ["docker", "push", image]
+    assert commands[0][:2] == ["docker", "login"]
+    assert commands[1][:5] == ["docker", "build", "--platform", "linux/amd64", "-t"]
+    assert commands[2] == ["docker", "push", image]
 
 
 @pytest.mark.parametrize("cloud, where", [

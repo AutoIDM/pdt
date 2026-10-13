@@ -34,7 +34,7 @@ def test_logs_in_builds_for_amd64_and_pushes_to_artifact_registry(tmp_path, monk
     calls = []
     monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     stage = fake_build(monkeypatch, tmp_path,
-                       lambda command, data=None: calls.append((command, data)))
+                       lambda command, data=None, **_: calls.append((command, data)))
     google.build_image(app_at(tmp_path), IMAGE, "us-central1")
     assert calls == [
         (["docker", "login", "--username", "oauth2accesstoken", "--password-stdin",
@@ -48,7 +48,7 @@ def test_logs_in_builds_for_amd64_and_pushes_to_artifact_registry(tmp_path, monk
 def test_a_failed_docker_build_does_not_push_and_removes_the_context(tmp_path, monkeypatch):
     calls = []
 
-    def build(command, data=None):
+    def build(command, data=None, **_):
         calls.append(command[:2])
         if command[1] == "build":
             raise SystemExit(1)

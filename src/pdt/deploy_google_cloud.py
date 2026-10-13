@@ -551,7 +551,7 @@ def build_image(app: dict, image: str, region: str) -> None:
         # https://docs.cloud.google.com/artifact-registry/docs/docker/authentication#token
         token = run_quiet("auth", "print-access-token").strip()
         run_build(["docker", "login", "--username", "oauth2accesstoken", "--password-stdin",
-                   f"https://{region}-docker.pkg.dev"], data=token)
+                   f"https://{region}-docker.pkg.dev"], data=token, quiet=True)
         # Cloud Run runs only linux/amd64 images.
         run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
                    "-t", image, str(stage)])
@@ -955,7 +955,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.step(f"building image {console.value(image)} with Cloud Build")
         cloud_build_image(app, image, project, region, builder, builds)
     else:
-        console.step(f"building image {console.value(image)}")
+        console.step(f"building image {console.value(image)} with Docker on this computer")
         build_image(app, image, region)
     if not sa_exists:
         if not sa.startswith("pdt-runner@"):

@@ -56,7 +56,7 @@ from pdt.deploy_aws import (
 )
 from pdt.deploy_common import (
     CostEstimate, build_in_cloud, fail, gather_secrets, image_action,
-    run_secrets, secret_contents, ssh_build_args, stage_build_context, store_kept_line,
+    run_build, run_secrets, secret_contents, ssh_build_args, stage_build_context, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked, write_dockerfile,
 )
 
@@ -546,16 +546,11 @@ def docker_build(stage: Path, image: str, ecr) -> None:
     auth = ecr.get_authorization_token()["authorizationData"][0]
     username, password = base64.b64decode(auth["authorizationToken"]).decode().split(":", 1)
     registry = auth["proxyEndpoint"]
-    commands = [
-        (["docker", "login", "--username", username, "--password-stdin", registry], password),
-        (["docker", "build", "--platform", DOCKER_PLATFORM, *ssh_build_args(),
-          "-t", image, str(stage)], None),
-        (["docker", "push", image], None),
-    ]
-    for command, stdin in commands:
-        proc = subprocess.run(command, input=stdin, text=True, check=False)
-        if proc.returncode:
-            fail(f"{console.value(' '.join(command[:2]))} failed")
+    run_build(["docker", "login", "--username", username, "--password-stdin", registry],
+              data=password, quiet=True)
+    run_build(["docker", "build", "--platform", DOCKER_PLATFORM, *ssh_build_args(),
+               "-t", image, str(stage)])
+    run_build(["docker", "push", image])
 
 
 def build_bucket(account: str, region: str) -> str:
@@ -897,7 +892,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         image_digest = build_and_push(app, image, clients["ecr"], lambda stage: codebuild_build(
             stage, image, clients, uploads, app["name"]))
     else:
-        console.step(f"building and pushing {console.value(image)}")
+        console.step(f"building and pushing {console.value(image)} with Docker on this computer")
         image_digest = build_and_push(app, image, clients["ecr"],
                                       lambda stage: docker_build(stage, image, clients["ecr"]))
     console.step("reconciling job definition and schedule")
