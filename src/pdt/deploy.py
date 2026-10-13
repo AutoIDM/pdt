@@ -95,19 +95,38 @@ def provider_env(extra: list[str] | None = None, rebuild: bool = False) -> dict[
     return env
 
 
+def run_child(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """subprocess.run, but Ctrl+C waits for the child to stop before it raises KeyboardInterrupt.
+
+    A terminal sends Ctrl+C to every process in the job. subprocess.run kills its
+    child 0.25 s later, and when that child is uv, the provider script uv started
+    goes on alone: it can reach the plan and change the cloud after pdt has exited."""
+    with subprocess.Popen(args, **kwargs) as proc:
+        try:
+            stdout, _ = proc.communicate()
+        except KeyboardInterrupt:
+            while True:
+                try:
+                    proc.communicate()
+                    break
+                except KeyboardInterrupt:
+                    pass
+            raise
+    return subprocess.CompletedProcess(args, proc.returncode, stdout)
+
+
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
              extra: list[str] | None = None, rebuild: bool = False) -> int:
     args = provider_command(provider, command, app_name, assume_yes, extra)
-    return subprocess.run(args, check=False, env=provider_env(extra, rebuild)).returncode
+    return run_child(args, env=provider_env(extra, rebuild)).returncode
 
 
 def dispatch_output(provider: str, command: str, app_name: str,
                     extra: list[str], stderr=None) -> tuple[int, str]:
     """Like dispatch, but return what the provider script prints on stdout. `stderr` is a file
     for the script's other lines, or None for this process's stderr."""
-    proc = subprocess.run(provider_command(provider, command, app_name, False, extra),
-                          check=False, env=provider_env(extra), stdout=subprocess.PIPE,
-                          stderr=stderr, text=True)
+    proc = run_child(provider_command(provider, command, app_name, False, extra),
+                     env=provider_env(extra), stdout=subprocess.PIPE, stderr=stderr, text=True)
     return proc.returncode, proc.stdout
 
 

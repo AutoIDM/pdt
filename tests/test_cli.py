@@ -1082,7 +1082,7 @@ def test_rebuild_reaches_the_provider_script_as_pdt_rebuild(project, monkeypatch
     monkeypatch.delenv(REBUILD_ENV, raising=False)
     envs = []
     monkeypatch.setattr(deploy, "announce_install", lambda script: None)
-    monkeypatch.setattr(deploy.subprocess, "run", lambda args, **kwargs: envs.append(
+    monkeypatch.setattr(deploy, "run_child", lambda args, **kwargs: envs.append(
         kwargs["env"]) or SimpleNamespace(returncode=0))
     assert run_cli(monkeypatch, "deploy", "hello-world", "--yes", *argv) == 0
     assert [env.get(REBUILD_ENV) for env in envs] == [rebuild]

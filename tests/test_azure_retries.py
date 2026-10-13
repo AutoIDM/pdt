@@ -114,10 +114,16 @@ def test_job_create_retries_an_internal_error(monkeypatch):
 
 
 class FakeCli:
-    """Sets up its log handler once, on sys.stderr as it is then, as knack does."""
+    """Sets up its log handler once, on sys.stderr as it is then, and turns Ctrl+C
+    into exit code 1, as knack does."""
 
     def invoke(self, args, out_file):
         import logging
+        import types
+        self.result = types.SimpleNamespace(error=None)
+        if args[0] == "interrupt":
+            self.result.error = KeyboardInterrupt()
+            return 1
         logger = logging.getLogger("cli")
         logger.propagate = False
         if not logger.handlers:
@@ -129,7 +135,8 @@ class FakeCli:
         return 0
 
 
-def test_az_runs_in_process_and_keeps_each_call_output_apart(monkeypatch):
+@pytest.fixture
+def fake_cli(monkeypatch):
     import sys
     import types
     core = types.ModuleType("azure.cli.core")
@@ -141,6 +148,8 @@ def test_az_runs_in_process_and_keeps_each_call_output_apart(monkeypatch):
                          "knack.log": knack_log}.items():
         monkeypatch.setitem(sys.modules, name, module)
 
+
+def test_az_runs_in_process_and_keeps_each_call_output_apart(fake_cli):
     first = deploy_azure.az("fail", "one")
     second = deploy_azure.az("fail", "two")
     third = deploy_azure.az("group", "list")
@@ -148,3 +157,8 @@ def test_az_runs_in_process_and_keeps_each_call_output_apart(monkeypatch):
     assert (first.returncode, first.stderr) == (2, "ERROR: one\n")
     assert (second.returncode, second.stderr) == (2, "ERROR: two\n")
     assert (third.returncode, third.stdout, third.stderr) == (0, "group list", "")
+
+
+def test_ctrl_c_during_an_az_call_stops_the_deploy(fake_cli):
+    with pytest.raises(KeyboardInterrupt):
+        deploy_azure.az("interrupt")

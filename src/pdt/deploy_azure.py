@@ -145,10 +145,14 @@ def az(*args: str) -> subprocess.CompletedProcess:
     saved = sys.stdin, sys.stderr
     sys.stdin, sys.stderr = io.StringIO(), err
     try:
+        cli = get_default_cli()
         try:
-            code = get_default_cli().invoke(list(args), out_file=out)
+            code = cli.invoke(list(args), out_file=out)
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else 1
+        # knack turns Ctrl+C into exit code 1, and the deploy would go on to the plan.
+        if isinstance(cli.result.error, KeyboardInterrupt):
+            raise cli.result.error
     finally:
         sys.stdin, sys.stderr = saved
         # The CLI adds its log handlers once, on sys.stderr as it is then.
@@ -1203,4 +1207,7 @@ def run_command(app: dict, args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     console.json_output()
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
