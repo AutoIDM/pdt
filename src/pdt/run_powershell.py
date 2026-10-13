@@ -82,7 +82,7 @@ def main(argv: list[str]) -> int:
     code = 0
     with tempfile.TemporaryDirectory(prefix="pdt-output-") as output:
         env = {**os.environ, "PDT_OUTPUT_DIR": output,
-               "PDT_CONFIG_JSON": json.dumps(app["config"])}
+               "PDT_CONFIG_JSON": json.dumps(app["config"], default=str)}
         for script in entries:
             log("info", f"starting {script}")
             result = subprocess.run(
