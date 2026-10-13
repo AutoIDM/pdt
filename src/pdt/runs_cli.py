@@ -1,7 +1,7 @@
 """CLI helpers behind `pdt runs`, `pdt logs`, and `pdt health`.
 
-Only Azure passes a live `stream`: Log Analytics shows a line a minute or more
-after the job writes it. A run's number is its place in the full list, so a
+Azure, Google Cloud, and AWS pass a live `stream`; the store reads are for ended
+runs and for the fallback. A run's number is its place in the full list, so a
 window never renumbers.
 """
 
@@ -14,7 +14,7 @@ import re
 import time
 from collections import Counter
 from datetime import UTC, datetime, timedelta
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Iterator
 
 from pdt import console
 
@@ -22,6 +22,8 @@ DEFAULT_RUNS = 10
 TAIL_LINES = 20
 FOLLOW_SECONDS = 10
 NEW_RUN_TRIES = 6
+# A quiet live tail ends after this many seconds, so follow re-reads the run's status.
+STREAM_QUIET = 60
 # https://learn.microsoft.com/en-us/azure/azure-monitor/logs/data-ingestion-time
 LOG_DELAY = timedelta(minutes=5)
 SINCE_UNITS = {"h": "hours", "d": "days", "w": "weeks"}
@@ -499,6 +501,37 @@ def unseen(lines: list[Line], errors: bool, seen: Counter) -> list[Line]:
             seen[key] = now_seen[key]
             new.append(line)
     return new
+
+
+def store_and_tail(read: Callable[[datetime | None], list[Line]], tail: Iterable[Line],
+                   hold: timedelta) -> Iterator[Line]:
+    """The store's lines, then each new tail line, until the exit line. A second store read
+    from `hold` before the tail opened gives the lines the store showed late."""
+    opened = datetime.now(UTC)
+    printed = Counter()
+    lines = unseen(read(None), False, printed)
+    yield from lines
+    if last_exit_line(lines) is not None:
+        return
+    reread = False
+    tailed = Counter()
+    for line in tail:
+        exit_line = line.message.startswith(EXIT_MARKER)
+        if not reread and (exit_line or datetime.now(UTC) >= opened + hold):
+            reread = True
+            lines = unseen(read(opened - hold), False, printed)
+            yield from lines
+            if last_exit_line(lines) is not None:
+                return
+        key = line_key(line)
+        tailed[key] += 1
+        if tailed[key] > printed[key]:
+            printed[key] = tailed[key]
+            yield line
+        if exit_line:
+            return
+    if not reread:
+        yield from unseen(read(opened - hold), False, printed)
 
 
 def follow(list_runs: Callable[[], list[Run]],

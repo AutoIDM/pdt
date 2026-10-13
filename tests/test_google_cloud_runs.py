@@ -191,3 +191,52 @@ def test_read_lines_from_a_time_asks_only_for_the_entries_from_it(monkeypatch):
                                    datetime(2026, 9, 23, 10, 0, 1, tzinfo=timezone.utc))
     [call] = calls
     assert call[2].endswith(' AND timestamp>="2026-09-23T10:00:01+00:00"')
+
+
+STORED = {"timestamp": "2026-09-23T10:00:01Z", "severity": "INFO",
+          "jsonPayload": {"message": "starting", "rows": 3}}
+# The same entry from a tail, as json_format.MessageToDict gives it.
+TAILED = {"timestamp": "2026-09-23T10:00:01Z", "severity": "INFO",
+          "jsonPayload": {"message": "starting", "rows": 3.0}}
+
+
+def test_a_tail_entry_gives_the_line_the_store_gives():
+    assert deploy_google_cloud.entry_line(TAILED) == deploy_google_cloud.entry_line(STORED)
+    assert deploy_google_cloud.entry_line(TAILED).message == "starting  rows=3"
+    half = {**TAILED, "jsonPayload": {"message": "ratio", "share": 2.5}}
+    assert deploy_google_cloud.entry_line(half).message == "ratio  share=2.5"
+
+
+def test_follow_streams_the_store_then_each_new_line_of_the_tail(monkeypatch):
+    calls = fake_logging(monkeypatch, [STORED])
+    exit_entry = {"timestamp": "2026-09-23T10:00:02Z", "textPayload": "pdt: exit 0"}
+
+    stops = []
+
+    def tail_entries(project, log_filter, stop):
+        calls.append(("tail", project, log_filter))
+        stops.append(stop)
+        return iter([TAILED, exit_entry])
+
+    monkeypatch.setattr(deploy_google_cloud, "tail_entries", tail_entries)
+    run = runs_cli.Run("pdt-app-abcde", datetime(2026, 9, 23, 10, tzinfo=timezone.utc), None,
+                       "running")
+    lines = list(deploy_google_cloud.stream_lines("p", run, True))
+    assert [line.message for line in lines] == ["starting  rows=3", "pdt: exit 0"]
+    # The tail opens before the first store read, so no line falls between them.
+    assert calls[0] == ("tail", "p", deploy_google_cloud.execution_filter("pdt-app-abcde"))
+    assert calls[1][:2] == ("logging", "read")
+    assert stops[0].is_set()
+
+
+def test_without_follow_the_stream_reads_the_store_only(monkeypatch):
+    fake_logging(monkeypatch, [STORED])
+
+    def tail_entries(project, log_filter, stop):
+        raise AssertionError("a snapshot opens no tail")
+
+    monkeypatch.setattr(deploy_google_cloud, "tail_entries", tail_entries)
+    run = runs_cli.Run("pdt-app-abcde", datetime(2026, 9, 23, 10, tzinfo=timezone.utc), None,
+                       "running")
+    assert [line.message for line in deploy_google_cloud.stream_lines("p", run, False)] == [
+        "starting  rows=3"]
