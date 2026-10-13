@@ -95,7 +95,7 @@ Four kinds cannot hold a tag, so pdt marks each one another way and the listing 
 
 - An EventBridge Scheduler schedule. pdt tags the `pdt` schedule group instead; membership in it is the marker.
 - A Cloud Scheduler job. pdt writes `Managed by PDT app <name>` in its description.
-- A Google Cloud service account. pdt sets its display name to `pdt job runner`.
+- A Google Cloud service account. pdt writes `Managed by PDT` in its description.
 - A Windows scheduled task. pdt starts its description with `Managed by pdt;`.
 
 An Azure Key Vault secret is not a resource either. `az resource list` returns the vault, not what is inside it, so the vault stands for the secrets pdt put in it.

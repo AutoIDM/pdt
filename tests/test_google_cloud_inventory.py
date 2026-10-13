@@ -13,7 +13,7 @@ def test_the_account_the_run_signs_in_with_is_not_a_leftover(monkeypatch):
                  "email": "pdt-ci@verify.iam.gserviceaccount.com", "displayName": "CI"},
                 {"name": "projects/verify/serviceAccounts/pdt-runner@verify.iam.gserviceaccount.com",
                  "email": "pdt-runner@verify.iam.gserviceaccount.com",
-                 "displayName": "pdt job runner"},
+                 "displayName": "pdt job runner", "description": "Managed by PDT"},
             ]
         return []
 
