@@ -415,20 +415,20 @@ def build_in_cloud(app: dict, builder: str, image_platform: str) -> bool:
     setting, source = app["docker_build"], app["docker_build_from"]
     key = console.value(f"docker-build: {setting}")
     if setting == "cloud":
-        console.status(f"{key} in {console.value(source)}, so {console.value(builder)} builds "
-                       "the image in the cloud.")
+        console.status(f"{key} in {console.value(source)}, so the deploy will build "
+                       f"the image in the cloud with {console.value(builder)}.")
     else:
         problem = console.escape(docker_problem()) or emulate(image_platform)
         if problem == "":
-            console.status("Docker found: docker info answered, so Docker on this computer "
-                           "builds the image.")
+            console.status("Docker found, so the deploy will build the image with Docker on this "
+                           "computer.")
             return False
         if setting == "local":
             fail(f"Docker on this computer cannot build the image: {problem}. "
                  f"{key} in {console.value(source)} builds only with Docker. Fix Docker and "
                  f"run the same command again, or remove {key} to build in the cloud.")
         console.status(f"Docker on this computer cannot build the image: {problem}. "
-                       f"{console.value(builder)} builds the image in the cloud.")
+                       f"The deploy will build it in the cloud with {console.value(builder)}.")
     dependency = ssh_dependency(app)
     if dependency:
         fail(f"{console.value(app['name'])} needs {console.value(dependency)}, which installs "

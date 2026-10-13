@@ -87,7 +87,7 @@ def test_docker_found_builds_on_this_computer(tmp_path, monkeypatch, capsys):
     emulated = []
     monkeypatch.setattr(deploy_common, "emulate", lambda platform: emulated.append(platform) or "")
     assert build_in_cloud(app_for(tmp_path), "CodeBuild", "linux/arm64") is False
-    assert "Docker found: docker info answered, so Docker on this computer builds the image." in (
+    assert "Docker found, so the deploy will build the image with Docker on this computer." in (
         said(capsys))
     assert emulated == ["linux/arm64"]
 
@@ -100,8 +100,8 @@ def test_no_docker_builds_in_the_cloud_and_says_why(tmp_path, monkeypatch, capsy
     docker(monkeypatch, on_path=on_path, returncode=1, stderr="Is the docker daemon running?")
     monkeypatch.setattr(deploy_common, "emulate", lambda platform: pytest.fail("no local build"))
     assert build_in_cloud(app_for(tmp_path), "ACR Tasks", "linux/amd64") is True
-    assert (f"Docker on this computer cannot build the image: {reason}. ACR Tasks builds the "
-            "image in the cloud.") in said(capsys)
+    assert (f"Docker on this computer cannot build the image: {reason}. The deploy will "
+            "build it in the cloud with ACR Tasks.") in said(capsys)
 
 
 def test_local_without_docker_stops_and_names_the_file(tmp_path, monkeypatch, capsys):
@@ -120,16 +120,16 @@ def test_cloud_never_asks_docker(tmp_path, monkeypatch, capsys):
     app = app_for(tmp_path, "cloud", "pdt.yml")
     assert build_in_cloud(app, "Cloud Build", "linux/amd64") is True
     assert commands == []
-    assert "docker-build: cloud in pdt.yml, so Cloud Build builds the image in the cloud." in (
-        said(capsys))
+    assert ("docker-build: cloud in pdt.yml, so the deploy will build the image in the cloud "
+            "with Cloud Build.") in said(capsys)
 
 
 def test_an_emulator_that_cannot_be_added_builds_in_the_cloud(tmp_path, monkeypatch, capsys):
     docker(monkeypatch)
     monkeypatch.setattr(deploy_common, "emulate", lambda platform: "it cannot run arm64")
     assert build_in_cloud(app_for(tmp_path), "CodeBuild", "linux/arm64") is True
-    assert ("Docker on this computer cannot build the image: it cannot run arm64. CodeBuild "
-            "builds the image in the cloud.") in said(capsys)
+    assert ("Docker on this computer cannot build the image: it cannot run arm64. The deploy "
+            "will build it in the cloud with CodeBuild.") in said(capsys)
 
 
 def test_local_with_an_emulator_that_cannot_be_added_stops(tmp_path, monkeypatch, capsys):
