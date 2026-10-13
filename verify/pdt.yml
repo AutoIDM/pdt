@@ -2,33 +2,39 @@
 # every shared resource is used by more than one app while one is destroyed.
 apps:
   - name: aws-fargate-a
+    docker-build: cloud
     schedule: daily
     platform:
       provider: aws
       region: us-east-1
   - name: aws-fargate-b
+    docker-build: cloud
     schedule: daily
     platform:
       provider: aws
       region: us-east-1
   - name: azure-container-apps-a
+    docker-build: cloud
     schedule: daily
     platform:
       provider: azure
       region: eastus2
       resource_group: pdt-verify
   - name: azure-container-apps-b
+    docker-build: cloud
     schedule: daily
     platform:
       provider: azure
       region: eastus2
       resource_group: pdt-verify
   - name: google-cloud-a
+    docker-build: cloud
     schedule: daily
     platform:
       provider: google-cloud
       region: us-central1
   - name: google-cloud-b
+    docker-build: cloud
     schedule: daily
     platform:
       provider: google-cloud
