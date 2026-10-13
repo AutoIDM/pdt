@@ -42,7 +42,7 @@ def fake_deploy(monkeypatch, answers):
         return ""
 
     monkeypatch.setattr(module, "preflight", lambda app, requested: settings())
-    monkeypatch.setattr(module, "docker_preflight", lambda provider, image_platform, assume_yes: None)
+    monkeypatch.setattr(module, "build_in_cloud", lambda app, builder, image_platform: False)
     monkeypatch.setattr(module, "azure_settings", lambda app: {})
     monkeypatch.setattr(module, "gather_secrets", lambda app: {})
     monkeypatch.setattr(module, "check_shared_names", lambda settings: None)
@@ -53,7 +53,7 @@ def fake_deploy(monkeypatch, answers):
     monkeypatch.setattr(module, "workspace_resource", lambda settings: MANAGED)
     monkeypatch.setattr(module, "acr_arm_auth_enabled", lambda registry: True)
     monkeypatch.setattr(module, "secret_state", lambda *args: (False, None))
-    monkeypatch.setattr(module, "image_action", lambda app, text: text)
+    monkeypatch.setattr(module, "image_action", lambda app, text, cloud_builder="": text)
     monkeypatch.setattr(module, "cost_estimate_for", lambda *args: None)
     monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(plain(actions)) or True)
     monkeypatch.setattr(module, "ensure_environment", lambda *args: None)

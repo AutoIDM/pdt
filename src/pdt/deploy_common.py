@@ -33,13 +33,20 @@ meaning paths inside the app directory. The generated image ends every
 run's output with the line `pdt: exit N`, which `pdt runs` reads for the
 run's status.
 
-Every cloud provider builds the image with docker on the deploying
-machine and pushes it to its own registry. `docker_preflight` gets Docker
-ready through `pdt.docker_setup` before the deploy touches the cloud.
+Every cloud provider builds the image from the same staged context, the
+same Dockerfile, the same pinned BASE_IMAGE, and the same target platform,
+in one of two places, which `build_in_cloud` chooses before the deploy
+touches the cloud. When `docker info` answers, Docker on this computer
+builds the image and pushes it to the provider's registry. When it does
+not, the provider's cloud builder (ACR Tasks, Cloud Build, CodeBuild)
+builds it from an upload of the staged context. The `docker-build` key
+(config.DOCKER_BUILDS) forces either place. pdt never installs or starts
+Docker, and a failed build never runs again in the other place.
 
-The build forwards the deploying machine's SSH agent when one is
+A local build forwards the deploying machine's SSH agent when one is
 running, so a RUN step marked `--mount=type=ssh` can install a private
-git dependency.
+git dependency. A cloud build has no agent, so `build_in_cloud` stops a
+deploy whose app needs one (`ssh_dependency`).
 
 Every provider also shares one data store per account, named
 `pdt-data-<suffix>` by `store_name` and tagged with `STORE_TAGS`; it
@@ -68,20 +75,22 @@ from typing import Callable
 
 import backoff
 
-from pdt import config, console, docker_setup
+from pdt import config, console
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
-DOCKERFILE = """\
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+# The multi-platform index digest, so a local and a cloud build start from the same layers.
+# To bump it, read the digest of the tag's index from ghcr.io.
+BASE_IMAGE = ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
+              "@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58")
+DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
 COPY . /workspace
 WORKDIR /workspace/{app}
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false PYTHONUNBUFFERED=1
 RUN uv sync --script run.py
 ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
 """
-POWERSHELL_DOCKERFILE = """\
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFFERED=1
 RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
@@ -90,9 +99,11 @@ RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pw
 WORKDIR /workspace/{app}
 {sync}ENTRYPOINT ["sh", "-c", "{start}; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
 """
-# Secret shapes and local state that never belong in an image.
+# Secret shapes and local state that never belong in an image. The version-control names are
+# the ones `az acr build` always leaves out, so every build place gets the same context.
 BUILD_EXCLUDES = (
     ".env", ".env.*", ".secrets", ".git", ".venv", "__pycache__",
+    ".gitignore", ".bzr", "bzrignore", ".bzrignore", ".hg", ".hgignore", ".svn",
     ".DS_Store", ".gcloud", "*.json.key", "*-key.json",
     "service-account*.json", "*.pem", "*.key", "*.p12", "*.pfx", "*.jks",
     "credentials.json", "credentials", "id_rsa*", "id_ed25519*", "id_ecdsa*",
@@ -164,12 +175,17 @@ def context_ignore_text(text: str, app_name: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def image_action(app: dict, what: console.Markup) -> console.Markup:
-    """One plan line for the image build, naming a custom Dockerfile."""
+def image_action(app: dict, what: console.Markup, cloud_builder: str = "") -> console.Markup:
+    """One plan line for the image build: where it builds, and a custom Dockerfile.
+
+    `cloud_builder` names the provider's cloud builder when it builds the image, else "".
+    """
+    where = (f" in the cloud with {console.value(cloud_builder)}" if cloud_builder
+             else " with Docker on this computer")
     if own_dockerfile(app) is not None:
         dockerfile = f"{app['name']}/Dockerfile"
-        return console.Markup(f"{what} (from {console.value(dockerfile)})")
-    return what
+        return console.Markup(f"{what}{where} (from {console.value(dockerfile)})")
+    return console.Markup(f"{what}{where}")
 
 
 def fail(message: str) -> None:
@@ -361,10 +377,105 @@ def ssh_build_args() -> list[str]:
     return ["--ssh", "default"] if found else []
 
 
-def docker_preflight(provider: str, image_platform: str, assume_yes: bool) -> None:
-    problem = docker_setup.ensure(provider, assume_yes) or docker_setup.emulate(image_platform)
-    if problem:
-        fail(problem)
+DOCKER_INFO_SECONDS = 20
+BINFMT_TAG = "qemu-v10.2.3"
+BINFMT_DIGEST = "sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+BINFMT = f"tonistiigi/binfmt:{BINFMT_TAG}@{BINFMT_DIGEST}"
+
+
+def docker_problem() -> str:
+    """"" when `docker info` answers, else why Docker on this computer cannot build."""
+    if shutil.which("docker") is None:
+        return "the docker command is not on the PATH"
+    try:
+        proc = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False,
+                              timeout=DOCKER_INFO_SECONDS)
+    except subprocess.TimeoutExpired:
+        return f"docker info did not answer within {DOCKER_INFO_SECONDS} seconds"
+    if proc.returncode == 0:
+        return ""
+    lines = (proc.stderr or proc.stdout).strip().splitlines()
+    return f"docker info failed: {lines[-1].strip() if lines else f'exit code {proc.returncode}'}"
+
+
+def ssh_dependency(app: dict) -> str:
+    """The SSH step in the app's own Dockerfile, which only a local build can forward, or ""."""
+    own = own_dockerfile(app)
+    if own is not None and "type=ssh" in own.read_text():
+        return f"the RUN --mount=type=ssh step in {app['name']}/Dockerfile"
+    return ""
+
+
+def build_in_cloud(app: dict, builder: str, image_platform: str) -> bool:
+    """Whether the provider's cloud `builder` builds the image, not Docker on this computer.
+
+    Says which place builds and why. Stops the deploy when `docker-build: local` finds no
+    Docker, and when a cloud build would need this computer's SSH agent.
+    """
+    setting, source = app["docker_build"], app["docker_build_from"]
+    key = console.value(f"docker-build: {setting}")
+    if setting == "cloud":
+        console.status(f"{key} in {console.value(source)}, so {console.value(builder)} builds "
+                       "the image in the cloud.")
+    else:
+        problem = docker_problem()
+        if problem == "" or setting == "local":
+            if problem:
+                fail(f"Docker is not available on this computer: {console.escape(problem)}. "
+                     f"{key} in {console.value(source)} builds only with Docker. Start Docker "
+                     f"and run the same command again, or remove {key} to build in the cloud "
+                     "when Docker is not available.")
+            console.status("Docker found: docker info answered, so Docker on this computer "
+                           "builds the image.")
+            problem = emulate(image_platform)
+            if problem:
+                fail(problem)
+            return False
+        console.status(f"Docker not available: {console.escape(problem)}. "
+                       f"{console.value(builder)} builds the image in the cloud.")
+    dependency = ssh_dependency(app)
+    if dependency:
+        fail(f"{console.value(app['name'])} needs {console.value(dependency)}, which installs "
+             f"over SSH. A build in the cloud with {console.value(builder)} cannot use the SSH "
+             "agent of this computer. A build with Docker on this computer can: start Docker"
+             + (f", remove {key} from {console.value(source)}," if setting == "cloud" else "")
+             + " and run the same command again.")
+    return True
+
+
+def emulate(image_platform: str) -> str:
+    """Let Docker build `image_platform` ("linux/arm64") on a computer of another CPU type.
+
+    Docker builds for another CPU type only through a QEMU handler in the kernel that runs
+    Docker, which a restart removes. When `docker buildx inspect` does not list the platform,
+    tonistiigi/binfmt at a pinned digest registers the handler (Docker Engine on Linux needs
+    it; Docker Desktop registers it itself). Returns "" when Docker can build it, else the
+    error and the one step left for the user.
+    """
+    proc = subprocess.run(["docker", "buildx", "inspect"], capture_output=True, text=True,
+                          check=False)
+    supported = [name.strip().rstrip("*") for line in proc.stdout.splitlines()
+                 if line.startswith("Platforms:") for name in line.split(":", 1)[1].split(",")]
+    if proc.returncode or image_platform in supported:
+        return ""
+    cpu = image_platform.split("/")[1]
+    command = ["docker", "run", "--privileged", "--rm", BINFMT, "--install", cpu]
+    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    installing = [line for line in proc.stderr.splitlines() if line.startswith("installing:")]
+    try:
+        supported = json.loads(proc.stdout)["supported"]
+    except (ValueError, KeyError, TypeError):
+        supported = []
+    if not proc.returncode and image_platform in supported:
+        if f"installing: {cpu} OK" in installing:
+            console.status(f"Added the {console.value(cpu)} emulator with "
+                           f"{console.value(' '.join(command))}, so Docker can build the "
+                           f"{console.value(cpu)} image.")
+        return ""
+    reason = (installing or proc.stderr.strip().splitlines() or ["no output"])[-1]
+    return (f"{console.value(' '.join(command))} failed, so Docker cannot build the "
+            f"{console.value(cpu)} image: {console.value(reason)}. "
+            "Run it yourself, then run the same command again.")
 
 
 def run_build(command: list[str], data: str | None = None) -> None:

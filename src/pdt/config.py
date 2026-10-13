@@ -43,9 +43,13 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
-ROOT_KEYS = {"platform", "apps"}
+ROOT_KEYS = {"platform", "apps", "docker-build"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
-            "run_scripts", "continue_on_error", "pause"}
+            "run_scripts", "continue_on_error", "pause", "docker-build"}
+# Where a cloud provider builds the image: with Docker on this computer when
+# `docker info` answers, else with the provider's cloud builder (auto), only
+# with Docker (local), or only in the cloud (cloud).
+DOCKER_BUILDS = ("auto", "local", "cloud")
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
@@ -68,6 +72,7 @@ KEY_HOME = {
     "run_scripts": APP_LEVEL,
     "continue_on_error": APP_LEVEL,
     "pause": APP_LEVEL,
+    "docker-build": f"the top level of {PROJECT_FILE}, or {APP_LEVEL}",
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -249,6 +254,10 @@ def merged_app(name: str) -> dict:
         **mapping(entry, "platform", entry_where),
         **mapping(own, "platform", own_where),
     }
+    docker_build, docker_build_from = "auto", ""
+    for section, where in ((root_cfg, PROJECT_FILE), (entry, entry_where), (own, own_where)):
+        if "docker-build" in section:
+            docker_build, docker_build_from = section["docker-build"], where
     default_timezone = platform.get(
         "timezone", "local" if platform.get("provider") == "windows" else "Etc/UTC")
     return {
@@ -268,6 +277,8 @@ def merged_app(name: str) -> dict:
         "run_scripts": own.get("run_scripts", entry.get("run_scripts")),
         "continue_on_error": own.get("continue_on_error", entry.get("continue_on_error", False)),
         "pause": own.get("pause", entry.get("pause", False)),
+        "docker_build": docker_build,
+        "docker_build_from": docker_build_from,
     }
 
 
@@ -943,6 +954,12 @@ def validate_app(name: str) -> list[str]:
     problems.extend(f"{where}: {problem}" for problem in run_scripts_problems(app))
     if not isinstance(app["pause"], bool):
         problems.append(f"{where}: pause must be true or false")
+    if app["docker_build_from"] and not builds_image(app["platform"]):
+        problems.append(f"{app['docker_build_from']}: docker-build: "
+                        f"{dockerfile_problem(app['platform']).replace('the file', 'the key')}")
+    elif app["docker_build"] not in DOCKER_BUILDS:
+        problems.append(f"{app['docker_build_from']}: docker-build must be "
+                        f"{', '.join(DOCKER_BUILDS[:-1])}, or {DOCKER_BUILDS[-1]}")
     return problems
 
 

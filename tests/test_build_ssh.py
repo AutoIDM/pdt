@@ -62,7 +62,7 @@ def test_azure_docker_build_forwards_the_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(azure, "stage_build_context", lambda app: stage)
     monkeypatch.setattr(azure, "run_quiet", lambda *args: None)
     monkeypatch.setattr(azure, "run_build", lambda args: calls.append(tuple(args)))
-    azure.build_image({"name": "report", "dir": app_dir}, "pdtregistry", "report")
+    azure.build_image({"name": "report", "dir": app_dir}, {"registry": "pdtregistry"}, "report", False)
     assert calls[0][:6] == ("docker", "build", "--platform", "linux/amd64", "--ssh", "default")
 
 

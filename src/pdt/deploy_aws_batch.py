@@ -11,6 +11,15 @@ schedule `pdt-<app>` whose target is the universal target
 `arn:aws:scheduler:::aws-sdk:batch:submitJob`. Every resource is tagged
 `managed-by=pdt` and named `pdt-<app>` or `pdt`.
 
+When CodeBuild builds the image (deploy_common.build_in_cloud), the
+account and region also hold the CodeBuild project `pdt` (ARM_CONTAINER,
+privileged for docker), its service role `pdt-codebuild`, the log group
+BUILD_LOG_GROUP, and the private bucket `pdt-build-<suffix>` whose objects
+expire after a day. A deploy uploads the staged context to that bucket as
+a zip, builds and pushes the image with one build, and deletes the upload.
+A deploy that builds with Docker on this computer creates none of them.
+Destroy removes them with the shared ECR repository.
+
 Destroy also clears what a Fargate deployment of the same app left behind
 (LEGACY_ACTIONS, legacy_fargate_cleanup); drop both once every project has
 moved to Batch.
@@ -27,13 +36,16 @@ import json
 import shutil
 import subprocess
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable
 
 from pdt import config, console, regions, runs_cli
 from pdt.deploy import confirm
 from pdt.deploy_aws import (
-    COMMON_ACTIONS, MANAGED_TAGS, RETRIES, SCHEDULE_GROUP, aws_schedule_expression,
+    BUILD_BUCKET_PREFIX, COMMON_ACTIONS, MANAGED_TAGS, RETRIES, SCHEDULE_GROUP,
+    aws_schedule_expression,
     aws_settings, clients_for, cost_estimate, delete_log_group, delete_role,
     delete_secret, list_price, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
@@ -43,9 +55,9 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, docker_preflight, fail, gather_secrets, image_action,
+    CostEstimate, build_in_cloud, fail, gather_secrets, image_action,
     run_secrets, secret_contents, ssh_build_args, stage_build_context, store_kept_line,
-    store_name, store_plan_lines, warn_if_locked, write_dockerfile,
+    store_name, store_plan_lines, store_suffix, warn_if_locked, write_dockerfile,
 )
 
 REPOSITORY = "pdt"
@@ -97,6 +109,18 @@ BATCH_ACTIONS = [
     "ecr:UploadLayerPart",
     "iam:CreateServiceLinkedRole",
 ]
+CODEBUILD_ACTIONS = [
+    "codebuild:BatchGetBuilds",
+    "codebuild:BatchGetProjects",
+    "codebuild:CreateProject",
+    "codebuild:DeleteProject",
+    "codebuild:StartBuild",
+    "codebuild:UpdateProject",
+    "s3:DeleteBucket",
+    "s3:DeleteObject",
+    "s3:PutLifecycleConfiguration",
+    "s3:PutObject",
+]
 # Destroy still removes what a Fargate deployment of the same app left behind.
 LEGACY_ACTIONS = [
     "ecs:DeleteCluster",
@@ -107,7 +131,28 @@ LEGACY_ACTIONS = [
     "ecs:ListTaskDefinitions",
     "ecs:ListTasks",
 ]
-DEPLOYER_ACTIONS = sorted(COMMON_ACTIONS + BATCH_ACTIONS + LEGACY_ACTIONS)
+DEPLOYER_ACTIONS = sorted(COMMON_ACTIONS + BATCH_ACTIONS + CODEBUILD_ACTIONS + LEGACY_ACTIONS)
+BUILD_PROJECT = "pdt"
+BUILD_ROLE = "pdt-codebuild"
+# Under /pdt/ so the deployer's log grants cover it, and two levels deep so no app's
+# /pdt/<app> group can take the name.
+BUILD_LOG_GROUP = "/pdt/shared/codebuild"
+BUILD_IMAGE = "aws/codebuild/amazonlinux-aarch64-standard:3.0"
+BUILD_COMPUTE = "BUILD_GENERAL1_SMALL"
+BUILD_POLL_SECONDS = 5
+# CloudWatch Logs shows a line some seconds after CodeBuild writes it.
+BUILD_LOG_SETTLE_SECONDS = 10
+BUILDSPEC = f"""\
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password | docker login --username AWS --password-stdin "${{IMAGE%%/*}}"
+  build:
+    commands:
+      - docker build --platform {DOCKER_PLATFORM} -t "$IMAGE" .
+      - docker push "$IMAGE"
+"""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -484,28 +529,201 @@ def submit_job_target(names: dict[str, str]) -> dict:
     }
 
 
-def build_and_push(app: dict, image: str, ecr) -> str:
+def build_and_push(app: dict, image: str, ecr, build: Callable[[Path], None]) -> str:
+    """Stage the context, let `build` build and push it, and return the pushed digest."""
     stage = stage_build_context(app)
     try:
         write_dockerfile(stage, app)
-        auth = ecr.get_authorization_token()["authorizationData"][0]
-        username, password = base64.b64decode(auth["authorizationToken"]).decode().split(":", 1)
-        registry = auth["proxyEndpoint"]
-        commands = [
-            (["docker", "login", "--username", username, "--password-stdin", registry], password),
-            (["docker", "build", "--platform", DOCKER_PLATFORM, *ssh_build_args(),
-              "-t", image, str(stage)], None),
-            (["docker", "push", image], None),
-        ]
-        for command, stdin in commands:
-            proc = subprocess.run(command, input=stdin, text=True, check=False)
-            if proc.returncode:
-                fail(f"{console.value(' '.join(command[:2]))} failed")
+        build(stage)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     images = ecr.describe_images(
         repositoryName=REPOSITORY, imageIds=[{"imageTag": image.rsplit(":", 1)[1]}])
     return images["imageDetails"][0]["imageDigest"]
+
+
+def docker_build(stage: Path, image: str, ecr) -> None:
+    auth = ecr.get_authorization_token()["authorizationData"][0]
+    username, password = base64.b64decode(auth["authorizationToken"]).decode().split(":", 1)
+    registry = auth["proxyEndpoint"]
+    commands = [
+        (["docker", "login", "--username", username, "--password-stdin", registry], password),
+        (["docker", "build", "--platform", DOCKER_PLATFORM, *ssh_build_args(),
+          "-t", image, str(stage)], None),
+        (["docker", "push", image], None),
+    ]
+    for command, stdin in commands:
+        proc = subprocess.run(command, input=stdin, text=True, check=False)
+        if proc.returncode:
+            fail(f"{console.value(' '.join(command[:2]))} failed")
+
+
+def build_bucket(account: str, region: str) -> str:
+    # CodeBuild reads its source only from a bucket in the build's own region.
+    return f"{BUILD_BUCKET_PREFIX}-{store_suffix(f'{account}/{region}')}"
+
+
+def build_project(codebuild) -> dict | None:
+    projects = codebuild.batch_get_projects(names=[BUILD_PROJECT]).get("projects", [])
+    return projects[0] if projects else None
+
+
+def build_statements(account: str, region: str, bucket: str) -> list[dict]:
+    """What the CodeBuild role may do: push to the pdt repository, write its log, read uploads."""
+    return [
+        {"Effect": "Allow", "Action": ["ecr:GetAuthorizationToken"], "Resource": "*"},
+        {"Effect": "Allow",
+         "Action": ["ecr:BatchCheckLayerAvailability", "ecr:CompleteLayerUpload",
+                    "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart"],
+         "Resource": f"arn:aws:ecr:{region}:{account}:repository/{REPOSITORY}"},
+        {"Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+         "Resource": f"arn:aws:logs:{region}:{account}:log-group:{BUILD_LOG_GROUP}:*"},
+        {"Effect": "Allow", "Action": ["s3:GetObject", "s3:GetObjectVersion"],
+         "Resource": f"arn:aws:s3:::{bucket}/*"},
+        {"Effect": "Allow", "Action": ["s3:GetBucketAcl", "s3:GetBucketLocation"],
+         "Resource": f"arn:aws:s3:::{bucket}"},
+    ]
+
+
+def desired_build_project(role_arn: str) -> dict:
+    return {
+        "name": BUILD_PROJECT,
+        "description": "Builds pdt job images",
+        # Each build names its upload with sourceTypeOverride and sourceLocationOverride.
+        "source": {"type": "NO_SOURCE", "buildspec": BUILDSPEC},
+        "artifacts": {"type": "NO_ARTIFACTS"},
+        "environment": {"type": "ARM_CONTAINER", "image": BUILD_IMAGE,
+                        "computeType": BUILD_COMPUTE, "privilegedMode": True},
+        "serviceRole": role_arn,
+        "logsConfig": {"cloudWatchLogs": {"status": "ENABLED", "groupName": BUILD_LOG_GROUP},
+                       "s3Logs": {"status": "DISABLED"}},
+        "tags": [{"key": key, "value": value} for key, value in shared_tags().items()],
+    }
+
+
+def ensure_build_resources(clients: dict, account: str, region: str, bucket: str,
+                           project: dict | None) -> None:
+    ensure_log_group(clients["logs"], BUILD_LOG_GROUP)
+    ensure_store(clients["s3"], bucket, region, MANAGED_TAGS)
+    clients["s3"].put_bucket_lifecycle_configuration(Bucket=bucket, LifecycleConfiguration={
+        "Rules": [{"ID": "pdt-expire-build-uploads", "Status": "Enabled",
+                   "Filter": {"Prefix": ""}, "Expiration": {"Days": 1}}]})
+    role = ensure_role(clients["iam"], BUILD_ROLE, "codebuild.amazonaws.com", "pdt-codebuild",
+                       build_statements(account, region, bucket))
+    codebuild = clients["codebuild"]
+    desired = desired_build_project(role)
+    if project is None:
+        with_role_propagation_retry(lambda: codebuild.create_project(**desired))
+    elif not has_managed_tag(project.get("tags", []), "key", "value"):
+        fail(f"CodeBuild project {console.value(BUILD_PROJECT)} exists but is not managed by PDT")
+    else:
+        with_role_propagation_retry(lambda: codebuild.update_project(**desired))
+
+
+def show_build_log(logs, where: dict, token: str | None) -> str | None:
+    """Print the build log lines after `token`; return the token to read on from."""
+    group, stream = where.get("groupName"), where.get("streamName")
+    if not group or not stream:
+        return token
+    while True:
+        kwargs = {"logGroupName": group, "logStreamName": stream, "startFromHead": True}
+        if token is not None:
+            kwargs["nextToken"] = token
+        try:
+            response = logs.get_log_events(**kwargs)
+        except Exception as exc:
+            if not not_found(exc):
+                raise
+            return token
+        for event in response["events"]:
+            console.bullet(console.escape(event["message"].rstrip()), indent=4)
+        if not response["events"] or response["nextForwardToken"] == token:
+            return response["nextForwardToken"]
+        token = response["nextForwardToken"]
+
+
+def follow_build(codebuild, logs, build_id: str) -> dict:
+    """Wait for the build, printing its log as it arrives; return the finished build."""
+    token = None
+    while True:
+        build = codebuild.batch_get_builds(ids=[build_id])["builds"][0]
+        if build.get("buildComplete"):
+            time.sleep(BUILD_LOG_SETTLE_SECONDS)
+            show_build_log(logs, build.get("logs") or {}, token)
+            return build
+        token = show_build_log(logs, build.get("logs") or {}, token)
+        time.sleep(BUILD_POLL_SECONDS)
+
+
+def failed_phase(build: dict) -> tuple[str, str]:
+    """The phase that failed and what CodeBuild said about it."""
+    for phase in build.get("phases") or []:
+        if phase.get("phaseStatus") not in (None, "SUCCEEDED"):
+            reason = "; ".join(context["message"] for context in phase.get("contexts") or []
+                               if context.get("message"))
+            return phase["phaseType"], reason or phase["phaseStatus"]
+    return build.get("currentPhase", "unknown"), build.get("buildStatus", "unknown")
+
+
+def codebuild_build(stage: Path, image: str, clients: dict, bucket: str, app_name: str) -> None:
+    """Build and push `image` from `stage` with one CodeBuild build."""
+    key = f"{app_name}/{uuid.uuid4().hex}.zip"
+    archive = Path(shutil.make_archive(f"{stage}-source", "zip", root_dir=stage))
+    try:
+        clients["s3"].upload_file(str(archive), bucket, key)
+    finally:
+        archive.unlink(missing_ok=True)
+    try:
+        build = clients["codebuild"].start_build(
+            projectName=BUILD_PROJECT, sourceTypeOverride="S3",
+            sourceLocationOverride=f"{bucket}/{key}", buildspecOverride=BUILDSPEC,
+            environmentVariablesOverride=[{"name": "IMAGE", "value": image,
+                                           "type": "PLAINTEXT"}])["build"]
+        console.status(f"CodeBuild build {console.value(build['id'])} started; its log follows.")
+        build = follow_build(clients["codebuild"], clients["logs"], build["id"])
+    finally:
+        clients["s3"].delete_object(Bucket=bucket, Key=key)
+    if build["buildStatus"] != "SUCCEEDED":
+        phase, reason = failed_phase(build)
+        fail(f"CodeBuild build {console.value(build['id'])} failed in phase "
+             f"{console.value(phase)}: {console.escape(reason)}. The build log is above.")
+
+
+def build_cleanup(clients: dict, bucket: str) -> list[tuple[str, Callable]]:
+    """One plan line and its action per CodeBuild resource that exists and that pdt manages."""
+    plan = []
+    project = build_project(clients["codebuild"])
+    if project is not None and has_managed_tag(project.get("tags", []), "key", "value"):
+        plan.append((console.Markup(f"delete CodeBuild project {console.value(BUILD_PROJECT)} "
+                                    "(no other apps use it)"),
+                     lambda: note_if_gone(f"CodeBuild project {console.value(BUILD_PROJECT)}",
+                                          delete_if_present(clients["codebuild"].delete_project,
+                                                            name=BUILD_PROJECT))))
+    if resource_exists(clients["iam"], "get_role", RoleName=BUILD_ROLE):
+        plan.append((console.Markup(f"delete tagged IAM role {console.value(BUILD_ROLE)}"),
+                     lambda: delete_role(clients["iam"], BUILD_ROLE)))
+    if store_exists(clients["s3"], bucket):
+        plan.append((console.Markup(f"delete tagged S3 bucket {console.value(bucket)} and the "
+                                    "build uploads in it"),
+                     lambda: delete_build_bucket(clients["s3"], bucket)))
+    if find_log_group(clients["logs"], BUILD_LOG_GROUP) is not None:
+        plan.append((console.Markup(f"delete tagged log group {console.value(BUILD_LOG_GROUP)}"),
+                     lambda: delete_log_group(clients["logs"], BUILD_LOG_GROUP)))
+    return plan
+
+
+def delete_build_bucket(s3, name: str) -> None:
+    if not store_exists(s3, name):
+        return
+    if not has_managed_tag(s3.get_bucket_tagging(Bucket=name).get("TagSet", []), "Key", "Value"):
+        return
+    while True:
+        objects = s3.list_objects_v2(Bucket=name).get("Contents", [])
+        if not objects:
+            break
+        s3.delete_objects(Bucket=name, Delete={"Objects": [{"Key": item["Key"]}
+                                                           for item in objects]})
+    s3.delete_bucket(Bucket=name)
 
 
 def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
@@ -540,7 +758,7 @@ def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
 
 
 def batch_clients(session) -> dict:
-    return clients_for(session, "batch", "ec2", "ecr", "ecs")
+    return clients_for(session, "batch", "codebuild", "ec2", "ecr", "ecs")
 
 
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
@@ -563,7 +781,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def deploy(app: dict, assume_yes: bool) -> int:
-    docker_preflight("AWS", DOCKER_PLATFORM, assume_yes)
+    cloud = build_in_cloud(app, "CodeBuild", DOCKER_PLATFORM)
     console.status("Checking your AWS sign-in...")
     session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
@@ -595,12 +813,18 @@ def deploy(app: dict, assume_yes: bool) -> int:
         Name=names["schedule"], GroupName=SCHEDULE_GROUP)
     secret_exists = resource_exists(
         clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
+    uploads = build_bucket(account, region)
+    if cloud:
+        project = build_project(clients["codebuild"])
+        build_role_exists = resource_exists(clients["iam"], "get_role", RoleName=BUILD_ROLE)
+        uploads_present = store_exists(clients["s3"], uploads)
+        build_log_present = find_log_group(clients["logs"], BUILD_LOG_GROUP) is not None
     actions = [
         console.Markup(f"reconcile shared ECR repository {console.value(REPOSITORY)}, Batch "
                        f"compute environment {console.value(COMPUTE_ENVIRONMENT.name)}, and job "
                        f"queue {console.value(JOB_QUEUE.name)}"),
         image_action(app, console.Markup(f"build and push Docker image {console.value(image)} "
-                                         f"({DOCKER_PLATFORM})")),
+                                         f"({DOCKER_PLATFORM})"), "CodeBuild" if cloud else ""),
         console.Markup(("update" if secret_exists else "create")
                        + f" Secrets Manager secret {console.value(names['secret'])} "
                        f"({secret_contents(secrets)})"),
@@ -620,6 +844,20 @@ def deploy(app: dict, assume_yes: bool) -> int:
                        + f" in default VPC {console.value(vpc_id)}"),
         "run jobs in the default VPC subnets with a public IP",
     ]
+    if cloud:
+        actions += [
+            console.Markup(("update" if project else "create")
+                           + f" shared CodeBuild project {console.value(BUILD_PROJECT)} "
+                           f"({console.value(BUILD_COMPUTE)}, {console.value(BUILD_IMAGE)})"),
+            console.Markup(("update" if build_role_exists else "create")
+                           + f" IAM role {console.value(BUILD_ROLE)} (push to ECR repository "
+                           f"{console.value(REPOSITORY)}, read build uploads, write the build log)"),
+            console.Markup(("use" if uploads_present else "create")
+                           + f" private S3 bucket {console.value(uploads)} for build uploads "
+                           "(each upload is deleted after its build, and expires after 1 day)"),
+            console.Markup(("use" if build_log_present else "create")
+                           + f" log group {console.value(BUILD_LOG_GROUP)} for the build log"),
+        ]
     if move_environment:
         groups = ", ".join(console.value(group) for group in environment_groups)
         actions.append(console.Markup(
@@ -652,8 +890,16 @@ def deploy(app: dict, assume_yes: bool) -> int:
     execution, job_role, scheduler_role = ensure_roles(
         clients["iam"], names, account, region, secret_arn, grants)
     image = f"{repository_uri}:{names['image_tag']}"
-    console.step(f"building and pushing {console.value(image)}")
-    image_digest = build_and_push(app, image, clients["ecr"])
+    if cloud:
+        ensure_build_resources(clients, account, region, uploads, project)
+        console.step(f"building and pushing {console.value(image)} with "
+                     f"{console.value('CodeBuild')}")
+        image_digest = build_and_push(app, image, clients["ecr"], lambda stage: codebuild_build(
+            stage, image, clients, uploads, app["name"]))
+    else:
+        console.step(f"building and pushing {console.value(image)}")
+        image_digest = build_and_push(app, image, clients["ecr"],
+                                      lambda stage: docker_build(stage, image, clients["ecr"]))
     console.step("reconciling job definition and schedule")
     desired = desired_job_definition(
         names, image, region, execution, job_role, secret_arn, environment)
@@ -792,7 +1038,12 @@ def destroy(app: dict, assume_yes: bool) -> int:
                                         "(no other apps use it)"),
                          lambda: note_if_gone(f"security group {console.value(SECURITY_GROUP)}",
                                               delete_security_group(clients["ec2"], group["GroupId"]))))
-    if repository_unused_after(clients["ecr"], names["image_tag"]):
+    repository_unused = repository_unused_after(clients["ecr"], names["image_tag"])
+    # With the repository already gone, an earlier destroy stopped before the build resources.
+    if repository_unused or not resource_exists(
+            clients["ecr"], "describe_repositories", repositoryNames=[REPOSITORY]):
+        plan += build_cleanup(clients, build_bucket(account, region))
+    if repository_unused:
         plan.append((console.Markup(f"delete ECR repository {console.value(REPOSITORY)} "
                                     "(no other apps use it)"),
                      lambda: note_if_gone(f"ECR repository {console.value(REPOSITORY)}",

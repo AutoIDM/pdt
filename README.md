@@ -83,7 +83,7 @@ my-jobs/
 pdt deploy my-report
 ```
 
-A deploy to AWS, Azure, or Google Cloud builds the app's image with Docker on your computer. The deploy starts Docker when it is installed but not running, and installs it after one question when it is missing (see [Choosing where jobs run](#choosing-where-jobs-run)). The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question.
+A deploy to AWS, Azure, or Google Cloud builds the app's image with Docker on your computer when Docker is running, and in the cloud when it is not (see [Choosing where jobs run](#choosing-where-jobs-run)). The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question.
 
 When the app has no successful run yet (it never ran, or every run failed), the deploy then asks `Start a run now and show its log? [y/N]`. A yes starts one run, as `pdt run my-report --deployed` does, and prints the run's log lines as they arrive, as `pdt logs my-report --follow` does. The deploy then exits with the run's result: 0 when the run succeeded, 1 when it failed. A run can have side effects, for example an email to real people, so the answer is no unless you type `y`. With `--yes`, or with no terminal (a build server), pdt does not ask and starts no run. Add `--run` to start the run and follow its log with no question. `pdt deploy --all` does not offer a run.
 
@@ -203,7 +203,24 @@ Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for 
 
 The cost estimate before each deploy shows prices in the currency of your computer's regional setting, or in US dollars when pdt cannot read it. pdt takes the price in that currency from the cloud when the cloud lists one. Otherwise it converts from US dollars at the cloud's own exchange rate, or at the European Central Bank's daily reference rate, and the estimate names the rate it used.
 
-A deploy to AWS, Azure, or Google Cloud builds each app's image with Docker on your computer and uploads it to that cloud's image registry. When Docker is installed but not running, the deploy starts it. When Docker is not installed, the deploy shows the steps that install it and asks once. On macOS with Homebrew, it installs Colima through Homebrew and starts it with `brew services start colima`, which also starts it at each login. On macOS without Homebrew, it downloads Colima, Lima, the docker CLI, and docker-buildx to the `docker` folder in the pdt data folder (`$XDG_DATA_HOME/pdt`, by default `~/.local/share/pdt`), checks each file against its pinned sha256, and starts Colima; each later deploy starts Colima when it is stopped. To remove it, run `~/.local/share/pdt/docker/bin/colima delete`, delete that `docker` folder, and delete the link `~/.docker/cli-plugins/docker-buildx`. On Windows x64, it installs Rancher Desktop through winget. On Linux, it downloads Docker's install script at a pinned docker/docker-install commit, checks it against its pinned sha256, runs it with `sudo sh`, and adds you to the docker group. When Docker is installed and only `sudo` reaches it, the deploy shows the two commands that add you to the docker group and asks once. Without winget or sudo, and on Windows ARM64, the deploy names an install page for your system. When Docker runs without the buildx plugin, the deploy links Homebrew's docker-buildx or downloads the pinned one to the same `docker` folder, and links it into `~/.docker/cli-plugins`. On Linux and on Windows, when the image is for another CPU type than your computer's and the emulator is missing, the deploy first adds the QEMU emulator with `docker run --privileged --rm tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install <type>`. The Windows provider does not use Docker.
+A deploy to AWS, Azure, or Google Cloud builds each app's image in one of two places, and it says which place and why:
+
+- When `docker info` answers, Docker on your computer builds the image and uploads it to the cloud's image registry.
+- When Docker is not installed or not running, the cloud builds the image: ACR Tasks on Azure, Cloud Build on Google Cloud, and CodeBuild on AWS. The deploy uploads the app folder and `pdt.yml`, without `.env` and the other secret files, and the cloud builder builds them with the same Dockerfile, the same base image, and the same CPU type as a build on your computer.
+
+pdt never installs or starts Docker. When a build fails, the deploy shows the error and stops; it does not try the other place.
+
+Set `docker-build` to choose the place yourself. Put it at the top level of `pdt.yml` for every app, or at the top level of an app's `config.yml` (or its `apps:` entry) for one app. The app's value wins.
+
+```yaml
+docker-build: auto   # Docker on this computer when it answers, else the cloud (the default)
+# docker-build: local  # Docker on this computer only; the deploy stops when Docker is not running
+# docker-build: cloud  # the cloud only; the deploy does not look for Docker
+```
+
+A build in the cloud cannot use the SSH agent of your computer. When an app's `Dockerfile` has a `RUN --mount=type=ssh` step, a build in the cloud stops before the deploy changes anything and names the step. Start Docker and deploy again, because a build with Docker on your computer forwards the agent.
+
+The Windows provider does not build an image.
 
 ### Azure
 
@@ -253,7 +270,7 @@ Every cloud provider runs a job as a container: AWS on Batch (Fargate), Azure on
 Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
 
 ```dockerfile
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58
 COPY . /workspace
 WORKDIR /workspace/my-app
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
@@ -265,7 +282,7 @@ A `.dockerignore` in the app folder keeps files out of the image. Write its patt
 
 The `ENTRYPOINT` ends each run's output with the line `pdt: exit N`, which `pdt runs` reads for the run's exit code. Keep that line when you change the rest of the file.
 
-The build forwards your computer's SSH agent when one is running, so a `RUN --mount=type=ssh` step can install a private git dependency.
+A build with Docker on your computer forwards your computer's SSH agent when one is running, so a `RUN --mount=type=ssh` step can install a private git dependency. A build in the cloud has no agent, so the deploy stops on such a step and asks you to start Docker.
 
 The Windows provider never builds an image, so `pdt validate` reports a Dockerfile in an app that uses it.
 

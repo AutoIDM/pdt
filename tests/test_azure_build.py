@@ -18,7 +18,7 @@ def test_builds_with_docker_and_pushes_to_acr(tmp_path, monkeypatch):
     monkeypatch.setattr(azure, "stage_build_context", lambda app: stage)
     monkeypatch.setattr(azure, "run_quiet", lambda *args: calls.append(args))
     monkeypatch.setattr(azure, "run_build", lambda args: calls.append(tuple(args)))
-    azure.build_image(app_at(tmp_path), "pdtregistry", "report")
+    azure.build_image(app_at(tmp_path), {"registry": "pdtregistry"}, "report", False)
     image = "pdtregistry.azurecr.io/report:latest"
     assert calls == [
         ("acr", "login", "--name", "pdtregistry"),
@@ -41,7 +41,7 @@ def test_a_failed_docker_build_does_not_push_and_removes_the_context(tmp_path, m
     monkeypatch.setattr(azure, "run_quiet", lambda *args: None)
     monkeypatch.setattr(azure, "run_build", build)
     with pytest.raises(SystemExit):
-        azure.build_image(app_at(tmp_path), "pdtregistry", "report")
+        azure.build_image(app_at(tmp_path), {"registry": "pdtregistry"}, "report", False)
     assert calls == [["docker", "build"]]
     assert not stage.exists()
 

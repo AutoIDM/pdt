@@ -87,7 +87,8 @@ def fake_clients(batch_raises=None, ecs_raises=None, ecr_raises=None,
     batch = FakeBatch(batch_raises)
     return {
         "sts": Fake({}),
-        "s3": Fake({}),
+        "s3": Fake({}, {"head_bucket": client_error("404")}),
+        "codebuild": Fake({"batch_get_projects": {"projects": []}}),
         "batch": batch,
         "ec2": FakeEc2(batch, group_deletes),
         "scheduler": Fake({"list_schedules": {"Schedules": []}},

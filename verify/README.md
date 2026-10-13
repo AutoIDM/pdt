@@ -30,7 +30,7 @@ Add `--report verify-aws.xml` to write a JUnit XML report. The runner prints one
 
 The `windows` provider deploys to the computer you run it on, so run it only on a Windows machine you are willing to add scheduled tasks to.
 
-Each cloud job builds container images with Docker on the GitHub Actions runner and uploads them to that cloud's registry, the same way a deploy does on a user's computer. No job uses ACR Tasks or Cloud Build.
+Each cloud job builds container images with Docker on the GitHub Actions runner and uploads them to that cloud's registry, the same way a deploy does on a user's computer where Docker runs. No job uses ACR Tasks, Cloud Build, or CodeBuild, so the live run does not test a build in the cloud.
 
 ## GitHub Actions settings
 
