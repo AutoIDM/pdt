@@ -65,6 +65,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # gRPC logs an info line on every gcloud subprocess once the store has been
@@ -1316,7 +1317,8 @@ def runs(app: dict, rest: list[str], assume_yes: bool) -> int:
     return runs_cli.runs(lambda: list_runs(project, region, job), app["name"], rest)
 
 
-def logs(app: dict, rest: list[str], assume_yes: bool) -> int:
+def logs(app: dict, rest: list[str], assume_yes: bool,
+         new: Callable[[runs_cli.Run], bool] | None = None) -> int:
     project, region = project_region(app)
     project = preflight(app, project, assume_yes)
     job = f"pdt-{app['name']}"
@@ -1324,7 +1326,7 @@ def logs(app: dict, rest: list[str], assume_yes: bool) -> int:
                          lambda run, since: read_lines(project, run.id, since), app["name"], rest,
                          store="Cloud Logging", delay=runs_cli.LOG_DELAY,
                          # Measured in October 2026: Cloud Logging showed a line 27 s after the write.
-                         hold=datetime.timedelta(seconds=30))
+                         hold=datetime.timedelta(seconds=30), new=new)
 
 
 def pause(app: dict, paused: bool, assume_yes: bool) -> int:
@@ -1338,7 +1340,7 @@ def pause(app: dict, paused: bool, assume_yes: bool) -> int:
     return 0
 
 
-def start(app: dict, assume_yes: bool) -> int:
+def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
     project, region = project_region(app)
     project = preflight(app, project, assume_yes)
     job = f"pdt-{app['name']}"
@@ -1352,7 +1354,9 @@ def start(app: dict, assume_yes: bool) -> int:
     console.done(f"Started {console.value(app['name'])}: Cloud Run execution "
                  f"{console.value(name)}." if name
                  else f"Started {console.value(app['name'])}.")
-    return 0
+    if not follow:
+        return 0
+    return logs(app, ["--follow"], assume_yes, new=lambda run: run.id == name)
 
 
 def main() -> int:
@@ -1386,7 +1390,7 @@ def main() -> int:
     if args.command in ("pause", "unpause"):
         return pause(app, args.command == "pause", args.yes)
     if args.command == "start":
-        return start(app, args.yes)
+        return start(app, args.yes, "--follow" in args.rest)
     if args.command == "secrets":
         return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":

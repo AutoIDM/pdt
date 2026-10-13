@@ -1022,7 +1022,7 @@ def main() -> int:
     if args.command in ("pause", "unpause"):
         return module.pause(app, preflight(app, azure_settings(app)), args.command == "pause")
     if args.command == "start":
-        return module.start(app, preflight(app, azure_settings(app)))
+        return module.start(app, preflight(app, azure_settings(app)), "--follow" in args.rest)
     if app["timezone"] not in ("Etc/UTC", "UTC"):
         fail("Azure evaluates cron schedules only in UTC; set "
              f"{console.value('timezone: Etc/UTC')}")

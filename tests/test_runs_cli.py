@@ -1,9 +1,11 @@
 import dataclasses
+import io
 import json
 import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from rich.console import Console
 
 from pdt import console, runs_cli
 from pdt.runs_cli import Line, Run
@@ -272,13 +274,14 @@ def test_runs_with_no_runs(capsys):
                                        "  pdt run my-report --deployed  start one run now\n")
 
 
-def test_logs_shows_the_newest_run_without_the_marker(capsys):
+def test_logs_shows_the_newest_run_with_its_exit_line(capsys):
     assert runs_cli.logs(list_two, read, "my-report", []) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == "run 1 of my-report: started 2026-09-23 10:00:12, 12s, succeeded, exit 0"
     assert lines[1] == "10:00:12 DEBUG   connecting"
     assert lines[3] == "10:00:24 WARNING slow"
-    assert len(lines) == 4
+    assert lines[4] == "10:00:24         pdt: exit 0"
+    assert len(lines) == 5
 
 
 def test_logs_picks_run_n_and_exits_1_when_it_failed(capsys):
@@ -313,7 +316,7 @@ def test_logs_several_ids_give_an_object_keyed_by_id(capsys):
     assert asked == [["stream-2", "stream-1"]]
     assert list(out) == ["stream-2", "stream-1"]
     assert [line["message"] for line in out["stream-1"]] == [
-        "boom", "Traceback (most recent)", "done"]
+        "boom", "Traceback (most recent)", "done", "pdt: exit 1"]
 
 
 def test_logs_id_unknown_names_the_id(capsys):
@@ -372,7 +375,8 @@ def test_logs_lines_must_be_1_or_more(capsys):
 def test_logs_errors_keeps_warnings_errors_and_plain_lines(capsys):
     assert runs_cli.logs(list_two, read, "my-report", ["2", "--errors", "--json"]) == 1
     records = json.loads(capsys.readouterr().out)
-    assert [record["message"] for record in records] == ["boom", "Traceback (most recent)"]
+    assert [record["message"] for record in records] == [
+        "boom", "Traceback (most recent)", "pdt: exit 1"]
     assert records[0] == {"time": EARLIER.isoformat(), "level": "ERROR", "message": "boom"}
 
 
@@ -468,13 +472,60 @@ def test_follow_prints_each_new_line_once_until_the_run_ends(monkeypatch, capsys
     assert out.count("INFO    started") == 1
     assert out.count("row") == 2
     assert out.count("done") == 1
-    assert out.rstrip().endswith("run 1 of report: started 2026-09-23 10:00:12, 12s, succeeded, exit 0")
+    assert out.count("run 1 of report") == 1
+    assert out.rstrip().endswith("the run succeeded after 12s, exit 0")
     assert sleeps == [runs_cli.FOLLOW_SECONDS] * 2
 
 
 def test_follow_with_json_or_head_is_an_error(capsys):
     assert runs_cli.logs(list_two, read, "report", ["--follow", "--json"]) == 1
     assert "--follow prints lines as they arrive" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("options", [
+    {}, {"store": "CloudWatch Logs", "delay": timedelta(minutes=5), "hold": timedelta(seconds=10)}])
+def test_follow_of_an_ended_run_prints_what_logs_prints(options, monkeypatch, capsys):
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: pytest.fail("nothing to wait for"))
+    assert runs_cli.logs(list_two, read, "report", [], **options) == 0
+    plain = capsys.readouterr().out
+    assert runs_cli.logs(list_two, read, "report", ["--follow"], **options) == 0
+    assert capsys.readouterr().out == plain
+
+
+def test_follow_of_a_running_run_says_so_once_and_ends_with_its_result(monkeypatch, capsys):
+    started = Line(T0, "INFO", "started")
+    reads = iter([[started], [started, Line(T1, "ERROR", "boom"), Line(T1, "", "pdt: exit 7")]])
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.logs(lambda: [RUNNING], lambda run, since: next(reads), "report",
+                         ["--follow"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "run 1 of report: started 2026-09-23 10:00:12",
+        "watching for log output for report; press Ctrl+C to stop, the run keeps going",
+        "10:00:12 INFO    started",
+        "10:00:24 ERROR   boom",
+        "10:00:24         pdt: exit 7",
+        "the run failed after 12s, exit 7",
+    ]
+
+
+def test_follow_of_an_ended_run_waits_for_the_lines_the_store_has_not_shown(monkeypatch, capsys):
+    ended_at = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=20)
+    ended = Run("stream-4", ended_at - timedelta(seconds=8), ended_at, "failed", 7)
+    started = Line(ended.started, "INFO", "started")
+    reads = iter([[started], [started, Line(ended_at, "ERROR", "boom"),
+                              Line(ended_at, "", "pdt: exit 7")]])
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.logs(lambda: [ended], lambda run, since: next(reads), "report", ["--follow"],
+                         store="CloudWatch Logs", delay=timedelta(minutes=5)) == 1
+    out = capsys.readouterr().out
+    until = runs_cli.local_text(ended_at + timedelta(minutes=5), "%H:%M:%S")
+    assert out.splitlines()[:2] == [
+        f"run 1 of report: started {runs_cli.started_text(ended)}",
+        f"the run ended at {runs_cli.local_text(ended_at, '%H:%M:%S')}, and CloudWatch Logs can "
+        f"take up to 5 minutes to show its last lines, so pdt waits until {until} at the latest; "
+        "press Ctrl+C to stop"]
+    assert out.count("failed") == 1
+    assert out.rstrip().endswith("pdt: exit 7\nthe run failed after 8s, exit 7")
 
 
 def live_stream(snapshot, connections):
@@ -528,9 +579,8 @@ def test_follow_prints_a_running_run_from_its_live_log_in_order(monkeypatch, cap
     assert out.count("INFO    started") == 1
     assert out.count("row") == 2
     assert out.index("INFO    started") < out.index("row") < out.index("done")
-    assert "pdt: exit" not in out
     # The provider still shows the run as running, so the exit line gives its end.
-    assert out.rstrip().endswith("12s, succeeded, exit 0")
+    assert out.rstrip().endswith("pdt: exit 0\nthe run succeeded after 12s, exit 0")
     # One wait for the container to start; none for the provider to record the end.
     assert sleeps == [runs_cli.FOLLOW_SECONDS]
 
@@ -551,7 +601,7 @@ def test_follow_reads_the_store_when_the_live_log_fails(monkeypatch, capsys):
     assert runs_cli.logs(lambda: next(states), lambda run, since: store, "report", ["--follow"],
                          store="Azure Log Analytics", stream=stream) == 0
     out = capsys.readouterr().out
-    assert "pdt cannot read the live log of run 1, so it reads Azure Log Analytics" in out
+    assert "pdt cannot read the run's live log, so it reads Azure Log Analytics" in out
     assert out.count("row 1") == 1
     assert out.count("row 2") == 1
 
@@ -580,7 +630,7 @@ def test_follow_holds_a_store_line_until_it_is_old_enough_to_print_in_order(hold
     monkeypatch.setattr(runs_cli, "datetime", Clock)
     monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
     assert runs_cli.follow(lambda: next(states), lambda run, since: next(reads), None, RUNNING,
-                           "report", False, timedelta(minutes=5), [], hold=hold) == 0
+                           False, timedelta(minutes=5), [], hold=hold) == 0
     out = capsys.readouterr().out
     assert out.index("late") < out.index("newer") < out.index("done")
 
@@ -597,7 +647,8 @@ def test_follow_stops_at_the_exit_line_without_waiting_for_the_store_delay(monke
                          ["--follow"], delay=timedelta(minutes=5), hold=hold) == 1
     out = capsys.readouterr().out
     assert "boom" in out
-    assert out.rstrip().endswith("failed, exit 2")
+    assert out.splitlines()[-1].startswith("the run failed after ")
+    assert out.rstrip().endswith(", exit 2")
     assert sleeps == [runs_cli.FOLLOW_SECONDS] * 2
 
 
@@ -611,7 +662,7 @@ def test_follow_waits_for_late_lines_after_a_new_exit_line(hold, monkeypatch, ca
     Clock.moments = [now, now + timedelta(seconds=5), now + hold]
     monkeypatch.setattr(runs_cli, "datetime", Clock)
     monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
-    assert runs_cli.follow(lambda: [RUNNING], lambda run, since: next(reads), None, RUNNING, "report",
+    assert runs_cli.follow(lambda: [RUNNING], lambda run, since: next(reads), None, RUNNING,
                            False, timedelta(minutes=5), hold=hold, shown=first) == 0
     assert "late" in capsys.readouterr().out
 
@@ -652,7 +703,7 @@ def test_follow_with_no_lines_shown_prints_every_line_of_the_live_log(monkeypatc
     stream = live_stream([Line(T0, "INFO", "started")],
                          [[Line(T0, "INFO", "started"), Line(T1, "INFO", "done")]])
     monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
-    assert runs_cli.follow(lambda: [ended], no_store, None, RUNNING, "report", False,
+    assert runs_cli.follow(lambda: [ended], no_store, None, RUNNING, False,
                            timedelta(minutes=5), stream=stream, shown=[]) == 0
     out = capsys.readouterr().out
     assert out.index("INFO    started") < out.index("done")
@@ -664,7 +715,9 @@ def test_follow_ends_at_an_exit_line_the_live_log_showed_before_it_started(monke
     monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
     assert runs_cli.logs(lambda: [RUNNING], no_store, "report", ["--follow"],
                          stream=stream) == 1
-    assert capsys.readouterr().out.rstrip().endswith("12s, failed, exit 3")
+    out = capsys.readouterr().out
+    assert out.splitlines()[0].endswith("12s, failed, exit 3")
+    assert "following" not in out
     assert sleeps == []
 
 
@@ -693,7 +746,7 @@ def test_follow_prints_a_line_the_store_shows_later_than_the_hold(monkeypatch, c
     Clock.moments = [now, now]
     monkeypatch.setattr(runs_cli, "datetime", Clock)
     monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
-    assert runs_cli.follow(lambda: [RUNNING], lambda run, since: reads.pop(0), None, RUNNING, "report",
+    assert runs_cli.follow(lambda: [RUNNING], lambda run, since: reads.pop(0), None, RUNNING,
                            False, timedelta(minutes=5), hold=timedelta(seconds=10),
                            shown=first) == 0
     assert "late" in capsys.readouterr().out
@@ -706,7 +759,7 @@ def test_follow_of_a_run_whose_exit_line_is_old_reads_the_store_once(monkeypatch
     Clock.moments = [now]
     monkeypatch.setattr(runs_cli, "datetime", Clock)
     monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
-    assert runs_cli.follow(lambda: [RUNNING], lambda run, since: reads.pop(0), None, RUNNING, "report",
+    assert runs_cli.follow(lambda: [RUNNING], lambda run, since: reads.pop(0), None, RUNNING,
                            False, timedelta(minutes=5), hold=timedelta(seconds=10), shown=[]) == 0
     assert "started" in capsys.readouterr().out
     assert sleeps == []
@@ -730,7 +783,7 @@ def test_follow_reads_the_store_from_the_newest_line_printed_minus_the_hold(monk
     Clock.moments = [now, now + hold, now + 2 * hold]
     monkeypatch.setattr(runs_cli, "datetime", Clock)
     monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
-    assert runs_cli.follow(lambda: [RUNNING], read_lines, None, RUNNING, "report", False,
+    assert runs_cli.follow(lambda: [RUNNING], read_lines, None, RUNNING, False,
                            timedelta(minutes=5), first, hold=hold) == 0
     out = capsys.readouterr().out
     assert out.index("late") < out.index("newer")
@@ -745,6 +798,113 @@ def test_follow_opens_a_quiet_live_log_again_at_once(monkeypatch, capsys):
     monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
     stream = live_stream([], [[Line(T0, "INFO", "started")],
                               [Line(T0, "INFO", "started"), Line(T1, "", "pdt: exit 0")]])
-    assert runs_cli.follow(lambda: [RUNNING], no_store, None, RUNNING, "report", False,
+    assert runs_cli.follow(lambda: [RUNNING], no_store, None, RUNNING, False,
                            timedelta(minutes=5), [], stream=stream) == 0
     assert sleeps == []
+
+
+def test_follow_of_a_recently_ended_run_with_its_exit_line_prints_what_logs_prints(monkeypatch,
+                                                                                   capsys):
+    ended_at = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=60)
+    ended = Run("stream-4", ended_at - timedelta(seconds=8), ended_at, "failed", 7)
+    lines = [Line(ended.started, "INFO", "started"), Line(ended_at, "", "pdt: exit 7")]
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: pytest.fail("nothing to wait for"))
+    options = {"store": "CloudWatch Logs", "delay": runs_cli.LOG_DELAY,
+               "hold": timedelta(seconds=10)}
+    assert runs_cli.logs(lambda: [ended], lambda run, since: lines, "report", [], **options) == 1
+    plain = capsys.readouterr().out
+    assert runs_cli.logs(lambda: [ended], lambda run, since: lines, "report", ["--follow"],
+                         **options) == 1
+    assert capsys.readouterr().out == plain
+
+
+def test_follow_ends_with_the_exit_code_the_store_shows_late(monkeypatch, capsys):
+    ended_at = datetime.now(UTC).replace(microsecond=0) - timedelta(seconds=20)
+    ended = Run("stream-4", ended_at - timedelta(seconds=8), ended_at, "failed")
+    started = Line(ended.started, "INFO", "started")
+    reads = iter([[started], [started, Line(ended_at, "", "pdt: exit 7")]])
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.logs(lambda: [ended], lambda run, since: next(reads), "report", ["--follow"],
+                         store="Azure Log Analytics", delay=runs_cli.LOG_DELAY) == 1
+    out = capsys.readouterr().out
+    assert out.splitlines()[0] == f"run 1 of report: started {runs_cli.started_text(ended)}"
+    assert out.rstrip().endswith("the run failed after 8s, exit 7")
+
+
+def test_follow_of_a_run_stopped_without_its_exit_line_says_so(monkeypatch, capsys):
+    now = T0 + timedelta(hours=1)
+    ended = Run("stream-4", now - timedelta(seconds=28), now - timedelta(seconds=20), "failed")
+    monkeypatch.setattr(runs_cli, "datetime", Clock)
+    Clock.moments = [now, now, now + runs_cli.LOG_DELAY]
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.logs(lambda: [ended], lambda run, since: [Line(ended.started, "INFO", "started")],
+                         "report", ["--follow"], store="Azure Log Analytics",
+                         delay=runs_cli.LOG_DELAY) == 1
+    assert capsys.readouterr().out.splitlines()[-2:] == [
+        "note: Azure Log Analytics does not show the run's exit line, so its log may end early.",
+        "the run failed after 8s"]
+
+
+@pytest.mark.parametrize("rest", [[], ["--errors"]])
+def test_logs_of_a_live_run_that_has_just_ended_ends_with_its_exit_line(rest, capsys):
+    snapshot = [Line(T0, "INFO", "started"), Line(T1, "", "pdt: exit 0")]
+    stream = live_stream(snapshot, [])
+    options = {"store": "Azure Log Analytics", "delay": runs_cli.LOG_DELAY, "stream": stream}
+    assert runs_cli.logs(lambda: [RUNNING], no_store, "report", rest, **options) == 0
+    plain = capsys.readouterr().out
+    assert plain.splitlines()[-1] == "10:00:24         pdt: exit 0"
+    assert runs_cli.logs(lambda: [RUNNING], no_store, "report", [*rest, "--follow"],
+                         **options) == 0
+    assert capsys.readouterr().out == plain
+
+
+def test_logs_errors_of_a_run_with_only_info_lines_says_so(capsys):
+    assert runs_cli.logs(list_two, lambda run, since: [Line(T0, "INFO", "row")], "report",
+                         ["--errors"], store="CloudWatch Logs") == 0
+    assert capsys.readouterr().out.splitlines()[-1] == (
+        "note: CloudWatch Logs has no warning or error lines from run 1.")
+
+
+def test_follow_of_a_new_run_waits_for_the_list_to_show_it_and_never_follows_an_old_one(
+        monkeypatch, capsys):
+    new = dataclasses.replace(RUNNING, id="new")
+    lists = iter([[OLDER], [OLDER], [new, OLDER], [new, OLDER]])
+    stream = live_stream([Line(T0, "INFO", "Hello, world!")],
+                         [[Line(T0, "INFO", "Hello, world!"), Line(T1, "", "pdt: exit 0")]])
+    sleeps = []
+    monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
+    assert runs_cli.logs(lambda: next(lists), no_store, "report", ["--follow"],
+                         store="Azure Log Analytics", stream=stream,
+                         new=lambda run: run.id == "new") == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "run 1 of report: started 2026-09-23 10:00:12",
+        "watching for log output for report; press Ctrl+C to stop, the run keeps going",
+        "10:00:12 INFO    Hello, world!",
+        "10:00:24         pdt: exit 0",
+        "the run succeeded after 12s, exit 0",
+    ]
+    assert sleeps == [runs_cli.FOLLOW_SECONDS] * 2
+
+
+def test_a_new_run_the_list_never_shows_ends_with_the_command_to_follow_it(monkeypatch, capsys):
+    listed = []
+    sleeps = []
+    monkeypatch.setattr(runs_cli.time, "sleep", sleeps.append)
+    assert runs_cli.logs(lambda: listed.append(1) or [OLDER], no_store, "report", ["--follow"],
+                         new=lambda run: False) == 0
+    assert len(listed) == runs_cli.NEW_RUN_TRIES
+    assert sleeps == [runs_cli.FOLLOW_SECONDS] * (runs_cli.NEW_RUN_TRIES - 1)
+    out = capsys.readouterr().out
+    assert "the run list does not show the new run yet" in out
+    assert "pdt logs report --follow" in out
+
+
+def test_a_wait_names_what_it_waits_for_and_counts_its_seconds(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
+    with console.waiting("reading the run list") as wait:
+        wait.start -= 7
+        wait.now("reading the run list")
+        console._console.print("a line")
+    assert "reading the run list (7s)" in out.getvalue()
+    assert "a line" in out.getvalue()

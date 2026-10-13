@@ -55,6 +55,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, regions, runs_cli
@@ -607,7 +608,8 @@ def pause(app: dict, paused: bool) -> int:
     return 0
 
 
-def start(app: dict) -> int:
+def start(app: dict, follow: bool = False) -> int:
+    before = {run.id for run in list_runs(app["name"])}
     try:
         powershell, name = _managed_task(app)
         _run(powershell, f"Start-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
@@ -616,7 +618,15 @@ def start(app: dict) -> int:
         console.error(console.escape(str(exc)))
         return 1
     console.done(f"Started {console.value(app['name'])}: Windows task {console.value(name)}.")
-    return 0
+    if not follow:
+        return 0
+    return logs(app, ["--follow"], new=lambda run: run.id not in before)
+
+
+def logs(app: dict, rest: list[str], new: Callable[[runs_cli.Run], bool] | None = None) -> int:
+    return runs_cli.logs(lambda: list_runs(app["name"]),
+                         lambda run, since: read_lines(app["name"], run), app["name"], rest,
+                         store="the run's log file", new=new)
 
 
 def _kept_storage_line(app_name: str) -> str:
@@ -698,13 +708,11 @@ def main() -> int:
     if args.command == "runs":
         return runs_cli.runs(lambda: list_runs(app["name"]), app["name"], args.rest)
     if args.command == "logs":
-        return runs_cli.logs(lambda: list_runs(app["name"]),
-                             lambda run, since: read_lines(app["name"], run), app["name"], args.rest,
-                             store="the run's log file")
+        return logs(app, args.rest)
     if args.command in ("pause", "unpause"):
         return pause(app, args.command == "pause")
     if args.command == "start":
-        return start(app)
+        return start(app, "--follow" in args.rest)
     if args.command == "deploy":
         return deploy(app, args.yes)
     return destroy(app, args.yes)

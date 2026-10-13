@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
 from pathlib import Path
 
 from pdt import __version__, config, console, powershell, pwsh, regions, runs_cli
@@ -37,9 +36,6 @@ PROVIDERS = {
     "azure": "deploy_azure.py",
     "windows": "deploy_windows.py",
 }
-
-# How many times pdt reads the run list, FOLLOW_SECONDS apart, for the run it just started.
-NEW_RUN_TRIES = 6
 
 
 def _load(app_name: str):
@@ -162,14 +158,14 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
 def first_run(app_name: str, provider: str, assume_yes: bool, run: bool | None) -> int | None:
     """Start a run of an app with no successful run yet and follow its log.
 
-    Returns the exit code of `pdt logs --follow` (the run's result), or None
-    when pdt started no run."""
+    Returns the run's result, or None when pdt started no run."""
     if run is False or (run is None and (assume_yes or not can_prompt(None))):
         return None
+    console.say()
+    console.status(f"Reading the runs of {console.value(app_name)}...")
     history = run_history(provider, app_name)
     if history is None or any(item.status == "succeeded" for item in history):
         return None
-    console.say()
     console.say(f"{console.value(app_name)} has "
                 f"{'no successful run' if history else 'not run'} yet.")
     if not run:
@@ -178,20 +174,8 @@ def first_run(app_name: str, provider: str, assume_yes: bool, run: bool | None) 
                 return None
         except EOFError:
             return None
-    code = dispatch(provider, "start", app_name, False)
-    if code != 0:
-        return code
-    before = {item.id for item in history}
-    for attempt in range(NEW_RUN_TRIES):
-        if attempt > 0:
-            time.sleep(runs_cli.FOLLOW_SECONDS)
-        found = [item for item in run_history(provider, app_name) or [] if item.id not in before]
-        if found:
-            return dispatch(provider, "logs", app_name, False,
-                            ["--", "--follow", "--id", found[0].id])
-    console.note("the run list does not show the new run yet.")
-    console.command(f"pdt logs {app_name} --follow", "print its lines as they arrive")
-    return 0
+    console.status(f"Starting a run of {console.value(app_name)}...")
+    return dispatch(provider, "start", app_name, False, ["--", "--follow"])
 
 
 def run_history(provider: str, app_name: str) -> list[runs_cli.Run] | None:

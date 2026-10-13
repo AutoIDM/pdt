@@ -1162,7 +1162,7 @@ def pause(app: dict, session, paused: bool) -> int:
     return 0
 
 
-def start(app: dict, session) -> int:
+def start(app: dict, session, follow: bool = False) -> int:
     """Submit the job the schedule would submit, with the same input."""
     scheduler, batch = session.client("scheduler", config=RETRIES), session.client("batch", config=RETRIES)
     names = resource_names(app["name"])
@@ -1173,10 +1173,13 @@ def start(app: dict, session) -> int:
         jobDefinition=request["JobDefinition"], tags=dict(MANAGED_TAGS))
     console.done(f"Started {console.value(app['name'])}: Batch job "
                  f"{console.value(response['jobId'])}.")
-    return 0
+    if not follow:
+        return 0
+    return logs(app, session, ["--follow"], new=lambda run: run.id == response["jobId"])
 
 
-def logs(app: dict, session, rest: list[str]) -> int:
+def logs(app: dict, session, rest: list[str],
+         new: Callable[[runs_cli.Run], bool] | None = None) -> int:
     names = resource_names(app["name"])
     batch, logs_client = session.client("batch", config=RETRIES), session.client("logs", config=RETRIES)
     return runs_cli.logs(
@@ -1184,4 +1187,4 @@ def logs(app: dict, session, rest: list[str]) -> int:
         lambda run, since: read_lines(batch, logs_client, names["log_group"], run, since),
         app["name"], rest, store="CloudWatch Logs", delay=runs_cli.LOG_DELAY,
         # Measured in October 2026: CloudWatch Logs showed a line at most 7.0 s after the write.
-        hold=timedelta(seconds=10))
+        hold=timedelta(seconds=10), new=new)

@@ -120,3 +120,11 @@ def test_a_value_in_a_description_prints_bold_on_a_terminal_and_plain_when_piped
                                                          **options))
         console.columns(rows)
         assert out.getvalue() == expected
+
+
+@pytest.mark.parametrize("module", [deploy_aws_batch, deploy_azure_container_apps,
+                                    deploy_google_cloud, deploy_windows])
+def test_every_provider_start_follows_the_run_it_started(module):
+    source = inspect.getsource(module.start)
+    assert "if not follow:" in source
+    assert "new=lambda run:" in source
