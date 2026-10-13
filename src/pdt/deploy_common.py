@@ -418,20 +418,16 @@ def build_in_cloud(app: dict, builder: str, image_platform: str) -> bool:
         console.status(f"{key} in {console.value(source)}, so {console.value(builder)} builds "
                        "the image in the cloud.")
     else:
-        problem = docker_problem()
-        if problem == "" or setting == "local":
-            if problem:
-                fail(f"Docker is not available on this computer: {console.escape(problem)}. "
-                     f"{key} in {console.value(source)} builds only with Docker. Start Docker "
-                     f"and run the same command again, or remove {key} to build in the cloud "
-                     "when Docker is not available.")
+        problem = console.escape(docker_problem()) or emulate(image_platform)
+        if problem == "":
             console.status("Docker found: docker info answered, so Docker on this computer "
                            "builds the image.")
-            problem = emulate(image_platform)
-            if problem:
-                fail(problem)
             return False
-        console.status(f"Docker not available: {console.escape(problem)}. "
+        if setting == "local":
+            fail(f"Docker on this computer cannot build the image: {problem}. "
+                 f"{key} in {console.value(source)} builds only with Docker. Fix Docker and "
+                 f"run the same command again, or remove {key} to build in the cloud.")
+        console.status(f"Docker on this computer cannot build the image: {problem}. "
                        f"{console.value(builder)} builds the image in the cloud.")
     dependency = ssh_dependency(app)
     if dependency:
@@ -444,38 +440,28 @@ def build_in_cloud(app: dict, builder: str, image_platform: str) -> bool:
 
 
 def emulate(image_platform: str) -> str:
-    """Let Docker build `image_platform` ("linux/arm64") on a computer of another CPU type.
+    """"" when Docker on this computer can run `image_platform` programs, else why not.
 
-    Docker builds for another CPU type only through a QEMU handler in the kernel that runs
-    Docker, which a restart removes. When `docker buildx inspect` does not list the platform,
-    tonistiigi/binfmt at a pinned digest registers the handler (Docker Engine on Linux needs
-    it; Docker Desktop registers it itself). Returns "" when Docker can build it, else the
-    error and the one step left for the user.
+    Docker runs another CPU type only through an emulator in the kernel that runs Docker.
+    When the base image does not run, tonistiigi/binfmt at a pinned digest adds one.
     """
-    proc = subprocess.run(["docker", "buildx", "inspect"], capture_output=True, text=True,
-                          check=False)
-    supported = [name.strip().rstrip("*") for line in proc.stdout.splitlines()
-                 if line.startswith("Platforms:") for name in line.split(":", 1)[1].split(",")]
-    if proc.returncode or image_platform in supported:
+    if runs(image_platform):
         return ""
     cpu = image_platform.split("/")[1]
     command = ["docker", "run", "--privileged", "--rm", BINFMT, "--install", cpu]
-    proc = subprocess.run(command, capture_output=True, text=True, check=False)
-    installing = [line for line in proc.stderr.splitlines() if line.startswith("installing:")]
-    try:
-        supported = json.loads(proc.stdout)["supported"]
-    except (ValueError, KeyError, TypeError):
-        supported = []
-    if not proc.returncode and image_platform in supported:
-        if f"installing: {cpu} OK" in installing:
-            console.status(f"Added the {console.value(cpu)} emulator with "
-                           f"{console.value(' '.join(command))}, so Docker can build the "
-                           f"{console.value(cpu)} image.")
+    subprocess.run(command, capture_output=True, check=False)
+    if runs(image_platform):
+        console.status(f"Added the {console.value(cpu)} emulator with "
+                       f"{console.value(' '.join(command))}, so Docker can build the "
+                       f"{console.value(cpu)} image.")
         return ""
-    reason = (installing or proc.stderr.strip().splitlines() or ["no output"])[-1]
-    return (f"{console.value(' '.join(command))} failed, so Docker cannot build the "
-            f"{console.value(cpu)} image: {console.value(reason)}. "
-            "Run it yourself, then run the same command again.")
+    return (f"it cannot run {console.value(image_platform)} programs, and "
+            f"{console.value(' '.join(command))} did not add an emulator for them")
+
+
+def runs(image_platform: str) -> bool:
+    return subprocess.run(["docker", "run", "--rm", "--platform", image_platform, BASE_IMAGE,
+                           "true"], capture_output=True, check=False).returncode == 0
 
 
 def run_build(command: list[str], data: str | None = None) -> None:

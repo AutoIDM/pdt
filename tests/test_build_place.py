@@ -100,7 +100,8 @@ def test_no_docker_builds_in_the_cloud_and_says_why(tmp_path, monkeypatch, capsy
     docker(monkeypatch, on_path=on_path, returncode=1, stderr="Is the docker daemon running?")
     monkeypatch.setattr(deploy_common, "emulate", lambda platform: pytest.fail("no local build"))
     assert build_in_cloud(app_for(tmp_path), "ACR Tasks", "linux/amd64") is True
-    assert f"Docker not available: {reason}. ACR Tasks builds the image in the cloud." in said(capsys)
+    assert (f"Docker on this computer cannot build the image: {reason}. ACR Tasks builds the "
+            "image in the cloud.") in said(capsys)
 
 
 def test_local_without_docker_stops_and_names_the_file(tmp_path, monkeypatch, capsys):
@@ -109,7 +110,8 @@ def test_local_without_docker_stops_and_names_the_file(tmp_path, monkeypatch, ca
     with pytest.raises(SystemExit):
         build_in_cloud(app, "Cloud Build", "linux/amd64")
     out = said(capsys)
-    assert "Docker is not available on this computer: the docker command is not on the PATH." in out
+    assert ("Docker on this computer cannot build the image: the docker command is not on the "
+            "PATH.") in out
     assert "docker-build: local in report/config.yml builds only with Docker." in out
 
 
@@ -122,12 +124,20 @@ def test_cloud_never_asks_docker(tmp_path, monkeypatch, capsys):
         said(capsys))
 
 
-def test_a_failed_emulator_stops_the_local_build(tmp_path, monkeypatch, capsys):
+def test_an_emulator_that_cannot_be_added_builds_in_the_cloud(tmp_path, monkeypatch, capsys):
     docker(monkeypatch)
-    monkeypatch.setattr(deploy_common, "emulate", lambda platform: "binfmt failed")
+    monkeypatch.setattr(deploy_common, "emulate", lambda platform: "it cannot run arm64")
+    assert build_in_cloud(app_for(tmp_path), "CodeBuild", "linux/arm64") is True
+    assert ("Docker on this computer cannot build the image: it cannot run arm64. CodeBuild "
+            "builds the image in the cloud.") in said(capsys)
+
+
+def test_local_with_an_emulator_that_cannot_be_added_stops(tmp_path, monkeypatch, capsys):
+    docker(monkeypatch)
+    monkeypatch.setattr(deploy_common, "emulate", lambda platform: "it cannot run arm64")
     with pytest.raises(SystemExit):
-        build_in_cloud(app_for(tmp_path), "CodeBuild", "linux/arm64")
-    assert "binfmt failed" in said(capsys)
+        build_in_cloud(app_for(tmp_path, "local", "pdt.yml"), "CodeBuild", "linux/arm64")
+    assert "cannot build the image: it cannot run arm64" in said(capsys)
 
 
 def test_an_own_dockerfile_with_an_ssh_mount_needs_the_agent(tmp_path):
@@ -192,80 +202,33 @@ def test_docker_build_on_the_windows_provider_is_told_to_go(project):
         "report/config.yml: docker-build: not used by the windows provider; remove the key"]
 
 
-def builder(monkeypatch, platforms, inspect_code=0, binfmt=None):
-    """A Docker whose builder lists `platforms` in `docker buildx inspect`, and whose
-    tonistiigi/binfmt run returns `binfmt` (returncode, stderr, supported)."""
+def docker_runs(monkeypatch, results):
     commands = []
 
-    def run(command, **kwargs):
+    def run(command, **_kwargs):
         commands.append(command)
-        if command == ["docker", "buildx", "inspect"]:
-            return SimpleNamespace(returncode=inspect_code, stderr="", stdout=(
-                "Name:   default\nDriver: docker\n\nNodes:\nName:   default\n"
-                f"Platforms: {platforms}\nLabels:\n"))
-        returncode, stderr, supported = binfmt
-        stdout = json.dumps({"supported": supported, "emulators": []}) if supported else ""
-        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+        code = results.pop(0) if command[:2] == ["docker", "run"] and "true" in command else 0
+        return SimpleNamespace(returncode=code)
 
-    monkeypatch.setattr(deploy_common.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
     return commands
 
 
-@pytest.mark.parametrize("platforms, image_platform", [
-    ("linux/amd64, linux/amd64/v2, linux/386", "linux/arm64"),
-    ("linux/arm64, linux/arm/v7", "linux/amd64")])
-def test_a_builder_without_the_platform_gets_the_emulator(
-        monkeypatch, capsys, platforms, image_platform):
-    cpu = image_platform.split("/")[1]
-    commands = builder(monkeypatch, platforms,
-                       binfmt=(0, f"installing: {cpu} OK\n", ["linux/riscv64", image_platform]))
-    assert emulate(image_platform) == ""
-    assert commands[1:] == [["docker", "run", "--privileged", "--rm", BINFMT, "--install", cpu]]
-    assert f"Added the {cpu} emulator with docker run" in said(capsys)
+def test_a_platform_docker_runs_needs_no_emulator(monkeypatch, capsys):
+    commands = docker_runs(monkeypatch, [0])
+    assert emulate("linux/amd64") == ""
+    assert len(commands) == 1
+    assert said(capsys) == ""
 
 
-def test_a_registered_emulator_that_the_builder_does_not_list_prints_nothing(
-        monkeypatch, capsys):
-    builder(monkeypatch, "linux/amd64, linux/amd64/v2, linux/amd64/v3",
-            binfmt=(0, "installing: arm64 qemu-aarch64 already registered\n",
-                    ["linux/amd64", "linux/arm64", "linux/386"]))
+def test_a_platform_docker_cannot_run_gets_the_emulator(monkeypatch, capsys):
+    commands = docker_runs(monkeypatch, [1, 0])
     assert emulate("linux/arm64") == ""
-    assert capsys.readouterr().out == ""
+    assert ["docker", "run", "--privileged", "--rm", BINFMT, "--install", "arm64"] in commands
+    assert "Added the arm64 emulator" in said(capsys)
 
 
-@pytest.mark.parametrize("platforms, image_platform", [
-    ("linux/amd64, linux/amd64/v2, linux/386", "linux/amd64"),
-    ("linux/amd64*, linux/arm64*", "linux/arm64"),
-    ("linux/arm64, linux/amd64, linux/amd64/v2, linux/riscv64", "linux/amd64"),
-])
-def test_a_builder_that_lists_the_platform_needs_nothing(
-        monkeypatch, capsys, platforms, image_platform):
-    commands = builder(monkeypatch, platforms)
-    assert emulate(image_platform) == ""
-    assert commands == [["docker", "buildx", "inspect"]]
-    assert capsys.readouterr().out == ""
-
-
-def test_a_builder_that_does_not_answer_is_left_to_the_build(monkeypatch, capsys):
-    commands = builder(monkeypatch, "", inspect_code=1)
-    assert emulate("linux/arm64") == ""
-    assert commands == [["docker", "buildx", "inspect"]]
-    assert capsys.readouterr().out == ""
-
-
-@pytest.mark.parametrize("binfmt, reason", [
-    ((0, "installing: arm64 cannot register \"/usr/bin/qemu-aarch64\" to "
-         "/proc/sys/fs/binfmt_misc/register: write /proc/sys/fs/binfmt_misc/register: "
-         "invalid argument\n", ["linux/amd64"]),
-     "installing: arm64 cannot register"),
-    ((125, "docker: Error response from daemon: pull access denied.\n", None),
-     "docker: Error response from daemon: pull access denied."),
-    ((0, "installing: arm64 OK\n", None), "installing: arm64 OK"),
-])
-def test_a_failed_emulator_install_names_the_command_and_its_error(
-        monkeypatch, capsys, binfmt, reason):
-    builder(monkeypatch, "linux/amd64", binfmt=binfmt)
-    problem = Text.from_markup(emulate("linux/arm64")).plain
-    assert problem.startswith(f"docker run --privileged --rm {BINFMT} --install arm64 failed")
-    assert reason in problem
-    assert capsys.readouterr().out == ""
+def test_an_emulator_that_does_not_help_is_the_reason(monkeypatch):
+    docker_runs(monkeypatch, [1, 1])
+    reason = Text.from_markup(emulate("linux/arm64")).plain
+    assert reason.startswith("it cannot run linux/arm64 programs, and docker run --privileged")
