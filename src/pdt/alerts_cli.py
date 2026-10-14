@@ -11,7 +11,8 @@ sends the browser on to a server on 127.0.0.1 here with that code, and pdt
 trades the code at CONNECT_URL for the webhook URL and its channel. CONNECT_URL
 holds the app's client secret, so it is a server and not this program. Without
 it, the user pastes a webhook URL, and pdt can open Slack with a filled-in app
-manifest that makes one.
+manifest that makes one. A Teams entry always connects by pasting: pdt prints the
+steps that make a Teams workflow, and the user pastes its URL.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from typing import Callable
 
 from dotenv import set_key
 
-from pdt import config, console, lifecycle, slack
+from pdt import alert_message, config, console, lifecycle, slack, teams
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
@@ -136,7 +137,7 @@ def connect_slack() -> tuple[str, str] | None:
         CONNECT_URL, data=json.dumps({"code": answer["code"]}).encode(), method="POST",
         headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=slack.TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=alert_message.TIMEOUT_SECONDS) as response:
             webhook = json.loads(response.read())
     except (urllib.error.URLError, ValueError) as e:
         console.warn(f"pdt could not get the webhook from Slack: {console.escape(str(e))}")
@@ -162,18 +163,25 @@ def paste_webhook() -> tuple[str, str] | None:
         console.bullet("3. Click Incoming Webhooks on the left, and copy the webhook URL at the "
                        "bottom.")
         url = console.ask("Paste the webhook URL")
+    return paste(url, "Slack webhook", lambda host: host in slack.WEBHOOK_HOSTS,
+                 "https://hooks.slack.com/services/")
+
+
+def paste(url: str, noun: str, known, starts: str) -> tuple[str, str] | None:
+    """The URL the user pasted, asked again until it is a web address, and its channel."""
+    link = noun.rpartition(" ")[2]
     while True:
         if url == "":
             return None
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme in ("http", "https") and parsed.hostname:
-            if parsed.hostname in slack.WEBHOOK_HOSTS or console.confirm(
-                    f"{url} is not a Slack webhook address. Use it anyway?"):
+            if known(parsed.hostname) or console.confirm(
+                    f"{url} is not a {console.escape(noun)} address. Use it anyway?"):
                 break
         else:
-            console.warn("A Slack webhook URL starts with https://hooks.slack.com/services/. "
+            console.warn(f"A {console.escape(noun)} URL starts with {console.escape(starts)}. "
                          "Press Enter to stop.")
-        url = console.ask("Paste the webhook URL")
+        url = console.ask(f"Paste the {console.escape(link)} URL")
     channel = ""
     while channel == "":
         channel = console.ask("Which channel does it post to? For example it-alerts").lstrip("#")
@@ -184,11 +192,38 @@ def slack_test(entry: dict, project: str) -> None:
     slack.send(entry, slack.ready_message(project, entry["channel"], entry.get("events", [])))
 
 
+def teams_configure() -> tuple[dict, dict[str, str]] | None:
+    console.say("pdt posts to Microsoft Teams through a workflow: a secret link that posts into "
+                "one channel.")
+    url = console.ask("Paste the workflow URL, or press Enter to see how to make one")
+    if url == "":
+        console.bullet("1. In Teams, go to the channel for alerts, select More options (...) "
+                       "next to its name, then select Workflows.")
+        console.bullet("2. Pick the template Send webhook alerts to a channel.")
+        console.bullet("3. Check the team and channel, then select Save.")
+        console.bullet("4. Copy the webhook link that Teams shows.")
+        url = console.ask("Paste the workflow URL")
+    found = paste(url, "Teams workflow", lambda host: host.endswith(teams.WEBHOOK_HOST),
+                  f"https:// and ends in {teams.WEBHOOK_HOST}")
+    if found is None:
+        return None
+    url, channel = found
+    return {"channel": channel}, {teams.secret_name(channel): url}
+
+
+def teams_test(entry: dict, project: str) -> None:
+    teams.send(entry, teams.ready_message(project, entry["channel"], entry.get("events", [])))
+
+
 SETUPS = {
     "slack": Setup("Slack: a message in a Slack channel",
                    (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
                     lifecycle.JOB_RUN_FAILED),
                    slack_configure, slack_test, lambda entry: f"Slack #{entry['channel']}"),
+    "teams": Setup("Microsoft Teams: a message in a Teams channel",
+                   (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
+                    lifecycle.JOB_RUN_FAILED),
+                   teams_configure, teams_test, lambda entry: f"Teams {entry['channel']}"),
     "console": Setup("Console: a line in the output of pdt and of each run", lifecycle.EVENTS,
                      lambda: ({}, {}), None, lambda entry: "console"),
 }
@@ -245,7 +280,7 @@ def setup() -> int:
         checked = current[name].events if name in current else list(item.events)
         console.say()
         events = checkboxes(f"Which events should go to {item.label.partition(':')[0]}?",
-                            [(event, f"{slack.event_words(event)} ({event})")
+                            [(event, f"{alert_message.event_words(event)} ({event})")
                              for event in lifecycle.EVENTS],
                             checked)
         if not events:
@@ -369,8 +404,8 @@ def offer(app_name: str, assume_yes: bool) -> None:
     if "alerts" in root_cfg or app_name in own_alerts_apps():
         return
     console.say()
-    console.say(f"pdt can post to Slack when {console.value(app_name)} deploys, or when a run "
-                "fails.")
+    console.say(f"pdt can post to Slack or Microsoft Teams when {console.value(app_name)} deploys, "
+                "or when a run fails.")
     try:
         answer = console.confirm("Set up alerts now?")
     except EOFError:
