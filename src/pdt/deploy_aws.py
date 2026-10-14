@@ -3,6 +3,7 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "boto3",
+#     "boto3[crt]; sys_platform != 'win32' or platform_machine != 'ARM64'",
 #     "pyyaml",
 #     "rich",
 #     "python-dotenv",
@@ -34,7 +35,7 @@ from pathlib import Path
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, MissingDependencyException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
@@ -494,7 +495,20 @@ def ensure_session(app: dict):
                      "this computer.")
         profile = choose_profile(app, boto3.Session())
     session = boto3.Session(region_name=region, profile_name=profile)
-    if session.get_credentials() is None:
+    try:
+        credentials = session.get_credentials()
+    except MissingDependencyException:
+        name = session.profile_name
+        fail(f"AWS profile {console.value(name)} signs in with {console.value('aws login')}, "
+             f"which needs the awscrt package. awscrt is not available on this computer.\n"
+             f"Use a profile that signs in another way: "
+             f"{console.value('pdt aws configure sso')} or {console.value('pdt aws configure')}.\n"
+             f"Or add this profile to your AWS config file:\n"
+             f"  {console.value(f'[profile {name}-export]')}\n"
+             f"  {console.value(f'credential_process = aws configure export-credentials --profile {name}')}\n"
+             f"Then set {console.value(f'profile: {name}-export')} under "
+             f"{console.value('platform:')} in {console.value('pdt.yml')}.")
+    if credentials is None:
         session = boto3.Session(region_name=region, profile_name=choose_profile(app, session))
     try:
         session.client("sts", config=RETRIES).get_caller_identity()
