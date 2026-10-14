@@ -5,7 +5,6 @@
 #     "pyyaml",
 #     "python-dotenv",
 #     "rich",
-#     "backoff",
 #     "fsspec",
 # ]
 # ///

@@ -11,7 +11,6 @@
 #     "pyyaml",
 #     "rich",
 #     "python-dotenv",
-#     "backoff",
 # ]
 #
 # [tool.uv]
