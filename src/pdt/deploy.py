@@ -154,28 +154,28 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
     return run_code or 0
 
 
-# The started, completed, failed, and cancelled events of each provider_step command.
+# The started, completed, and failed events of each provider_step command.
 STEP_EVENTS = {
     "deploy": (lifecycle.APP_DEPLOY_STARTED, lifecycle.APP_DEPLOY_COMPLETED,
-               lifecycle.APP_DEPLOY_FAILED, lifecycle.APP_DEPLOY_CANCELLED),
+               lifecycle.APP_DEPLOY_FAILED),
     "destroy": (lifecycle.APP_DESTROY_STARTED, lifecycle.APP_DESTROY_COMPLETED,
-                lifecycle.APP_DESTROY_FAILED, lifecycle.APP_DESTROY_CANCELLED),
+                lifecycle.APP_DESTROY_FAILED),
 }
 
 
 def provider_step(command: str, provider: str, app_name: str, assume_yes: bool) -> int:
     """Run `deploy` or `destroy` through the provider script between its STEP_EVENTS, and
     on success record whether the app is now deployed."""
-    started, completed, failed, cancelled = STEP_EVENTS[command]
+    started, completed, failed = STEP_EVENTS[command]
     params = lifecycle.app_params(app_name, provider)
     lifecycle.emit(started, **params)
     try:
         code = dispatch(provider, command, app_name, assume_yes)
     except KeyboardInterrupt:
-        lifecycle.emit(cancelled, **params, reason="interrupted")
+        lifecycle.emit(failed, **params, reason="interrupted")
         raise
     if code in (DECLINED, 130, -signal.SIGINT):
-        lifecycle.emit(cancelled, **params, exit_code=code,
+        lifecycle.emit(failed, **params, exit_code=code,
                        reason="declined" if code == DECLINED else "interrupted")
         return code
     if code != 0:
@@ -352,7 +352,7 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
 
 
 # The exit code of a provider script whose plan the user declined, so provider_step can
-# tell a cancelled deploy or destroy from a failed one.
+# give a declined deploy or destroy reason=declined.
 DECLINED = 10
 
 

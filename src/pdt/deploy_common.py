@@ -89,7 +89,7 @@ from pdt.utils.env_secret import private_file
 BASE_IMAGE = ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
               "@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58")
 # sh as PID 1 ignores SIGTERM, so the entrypoint passes a platform's stop on to
-# lifecycle.py, which ends the run with job:run-cancelled, and the log still ends
+# lifecycle.py, which ends the run with job:run-failed, and the log still ends
 # with `pdt: exit N`.
 ENTRYPOINT = ('ENTRYPOINT ["sh", "-c", "stop() {{ kill -s $1 $pid; wait $pid; finish $?; }}; '
               'finish() {{ echo \\"pdt: exit $1\\"; exit $1; }}; '

@@ -209,13 +209,14 @@ def test_run_job_names_the_run_and_its_exit_code(project, monkeypatch):
     assert code == 3
     assert [name for name, _params in seen] == ["job:run-started", "job:run-failed"]
     assert seen[1][1]["exit_code"] == 3
+    assert "reason" not in seen[1][1]
     assert seen[1][1]["run_id"] == seen[0][1]["run_id"]
     assert seen[1][1]["state"] == f"runs/*-{seen[0][1]['run_id']}/"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="sends a POSIX signal")
 @pytest.mark.parametrize(("signum", "code"), [(signal.SIGTERM, 143), (signal.SIGINT, 130)])
-def test_a_signal_to_run_job_stops_the_command_and_ends_the_run_cancelled(
+def test_a_signal_to_run_job_stops_the_command_and_fails_the_run_interrupted(
         project, monkeypatch, signum, code):
     seen = []
     monkeypatch.setattr(lifecycle, "emit", lambda name, **params: seen.append((name, params)))
@@ -231,8 +232,9 @@ def test_a_signal_to_run_job_stops_the_command_and_ends_the_run_cancelled(
     before = signal.getsignal(signum)
     threading.Thread(target=send, daemon=True).start()
     assert lifecycle.run_job("report", "local", command, project) == code
-    assert seen[-1][0] == "job:run-cancelled"
+    assert seen[-1][0] == "job:run-failed"
     assert seen[-1][1]["exit_code"] == code
+    assert seen[-1][1]["reason"] == "interrupted"
     assert seen[-1][1]["signal"] == signum.name
     assert signal.getsignal(signum) == before
 
@@ -253,7 +255,7 @@ STEPS = {"deploy": lambda: deploy.deploy(scaffold.STARTER, assume_yes=True, run=
 
 
 @pytest.mark.parametrize("command", STEPS)
-def test_ctrl_c_in_a_deploy_or_destroy_ends_it_cancelled(deployable, monkeypatch, command):
+def test_ctrl_c_in_a_deploy_or_destroy_fails_it_interrupted(deployable, monkeypatch, command):
     def dispatch(*args, **kwargs):
         raise KeyboardInterrupt
 
@@ -261,17 +263,17 @@ def test_ctrl_c_in_a_deploy_or_destroy_ends_it_cancelled(deployable, monkeypatch
     with pytest.raises(KeyboardInterrupt):
         STEPS[command]()
     assert [(name, params.get("reason")) for name, params in deployable] == [
-        (f"app:{command}-started", None), (f"app:{command}-cancelled", "interrupted")]
+        (f"app:{command}-started", None), (f"app:{command}-failed", "interrupted")]
 
 
 @pytest.mark.parametrize("command", STEPS)
 @pytest.mark.parametrize(("code", "event", "reason"), [
-    (deploy.DECLINED, "cancelled", "declined"),
-    (130, "cancelled", "interrupted"),
+    (deploy.DECLINED, "failed", "declined"),
+    (130, "failed", "interrupted"),
     (1, "failed", None),
     (0, "completed", None),
 ])
-def test_a_declined_plan_ends_the_step_cancelled_a_failure_failed_and_a_success_completed(
+def test_a_declined_plan_or_a_failure_fails_the_step_and_a_success_completes_it(
         deployable, monkeypatch, command, code, event, reason):
     monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: code)
     monkeypatch.setattr(deploy, "deployed_next_steps", lambda *args, **kwargs: None)

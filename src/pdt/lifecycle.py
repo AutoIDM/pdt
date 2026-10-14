@@ -45,10 +45,10 @@ run_id, deployed (false for a local `pdt run`), and trigger (`schedule` or
 `manual`). `app:secrets-updated` adds action and count, and no env var name or value.
 
 `run_job` runs an app's command between `job:run-started` and
-`job:run-completed`, `job:run-failed`, or `job:run-cancelled`, and gives the
+`job:run-completed` or `job:run-failed`, and gives the
 command PDT_RUN_ID so the app's `runs/` folder ends with the run_id of the
 events. A SIGINT or SIGTERM to `run_job` goes on to the command, and the
-run ends with `job:run-cancelled` once the command exits. `pdt run` calls
+run ends with `job:run-failed` and reason=interrupted once the command exits. `pdt run` calls
 it, and the Windows task and every cloud image (a copy at
 /opt/pdt-lifecycle, deploy_common.LIFECYCLE_MODULES) run this file as a
 script around the app's command, from the app folder, so the events land in
@@ -78,17 +78,14 @@ from pdt.utils import storage
 JOB_RUN_STARTED = "job:run-started"
 JOB_RUN_COMPLETED = "job:run-completed"
 JOB_RUN_FAILED = "job:run-failed"
-JOB_RUN_CANCELLED = "job:run-cancelled"
 JOB_PAUSED = "job:paused"
 JOB_UNPAUSED = "job:unpaused"
 APP_DEPLOY_STARTED = "app:deploy-started"
 APP_DEPLOY_COMPLETED = "app:deploy-completed"
 APP_DEPLOY_FAILED = "app:deploy-failed"
-APP_DEPLOY_CANCELLED = "app:deploy-cancelled"
 APP_DESTROY_STARTED = "app:destroy-started"
 APP_DESTROY_COMPLETED = "app:destroy-completed"
 APP_DESTROY_FAILED = "app:destroy-failed"
-APP_DESTROY_CANCELLED = "app:destroy-cancelled"
 APP_SECRETS_UPDATED = "app:secrets-updated"
 # Set to `manual` for one execution by the pdt command that starts a deployed run.
 TRIGGER_ENV = "PDT_TRIGGER"
@@ -299,7 +296,7 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
             code = 128 - code
         state = f"runs/*-{storage.RUN_ID}/"
         if stopped:
-            emit(JOB_RUN_CANCELLED, **params, exit_code=code,
+            emit(JOB_RUN_FAILED, **params, exit_code=code, reason="interrupted",
                  signal=signal.Signals(stopped[0]).name, state=state)
         else:
             emit(JOB_RUN_COMPLETED if code == 0 else JOB_RUN_FAILED, **params, exit_code=code,
