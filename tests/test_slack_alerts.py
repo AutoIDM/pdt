@@ -211,6 +211,8 @@ def test_setup_sends_no_test_message_on_the_default_answer_and_names_pdt_alerts_
     assert "Send one later with pdt alerts test." in capsys.readouterr().out
 
 
+APP_EVENTS = ["app:deploy-started", "app:deploy-completed", "app:deploy-failed", "app:destroy-started",
+      "app:destroy-completed", "app:destroy-failed", "app:secrets-updated"]
 SET_UP = ('platform:\n  provider: azure\nalerts:\n'
           '  - type: slack\n    channel: ops\n    events: ["app:*"]\n'
           '  - type: slack\n    channel: other\n    events: [all]\n'
@@ -238,9 +240,8 @@ def test_setup_starts_from_the_entries_in_pdt_yml(project, monkeypatch):
     assert alerts_cli.setup() == 0
     assert shown == {
         "Where should pdt send alerts?": ["[x] Slack: a message in a Slack channel"],
-        "Which events should go to Slack?": ["[x] Deploy started (app:deploy-started)",
-                                             "[x] Deploy completed (app:deploy-completed)",
-                                             "[x] Deploy failed (app:deploy-failed)"]}
+        "Which events should go to Slack?": [
+            f"[x] {slack.event_words(event)} ({event})" for event in APP_EVENTS]}
 
 
 def test_enter_at_every_question_leaves_pdt_yml_as_it_is(project, monkeypatch):
@@ -251,8 +252,7 @@ def test_enter_at_every_question_leaves_pdt_yml_as_it_is(project, monkeypatch):
 
 
 @pytest.mark.parametrize("events, checked", [
-    ("[all]\n    exclude-events: [\"job:*\"]",
-     ["app:deploy-started", "app:deploy-completed", "app:deploy-failed"]),
+    ("[all]\n    exclude-events: [\"job:*\"]", APP_EVENTS),
     ("[\"job:run-*\", app:deploy-failed]",
      ["app:deploy-failed", "job:run-started", "job:run-completed", "job:run-failed"]),
 ])
@@ -289,9 +289,26 @@ def test_console_starts_unchecked_and_adds_an_entry_with_no_secret_and_no_test(
     assert alerts_cli.setup() == 0
     assert shown["Where should pdt send alerts?"] == ["[x] Slack: a message in a Slack channel"]
     assert config.load_yaml(project / "pdt.yml")["alerts"] == [{"type": "console", "events": [
-        "app:deploy-started", "app:deploy-completed", "job:run-started", "job:run-failed",
-        "job:paused", "job:unpaused"]}]
+        event for event in lifecycle.EVENTS
+        if event not in ("app:deploy-failed", "job:run-completed")]}]
     assert not (project / ".env").exists()
+
+
+def test_every_event_checked_is_written_as_all(project, monkeypatch):
+    answers(monkeypatch, "1 2", "", "")
+    alerts_cli.setup()
+    assert (project / "pdt.yml").read_text().endswith(
+        "alerts:\n  - type: console\n    events: [all]\n")
+
+
+@pytest.mark.parametrize("events, shown", [
+    (["all"], "all events"),
+    (["app:*", "job:run-failed"], "app:*, Run failed"),
+])
+def test_the_ready_message_shows_the_events_in_the_words_of_pdt_yml(events, shown):
+    payload = slack.ready_message("contoso-jobs", "it-alerts", events)
+    assert payload["attachments"][0]["blocks"][1]["text"]["text"] == (
+        f"pdt will post here for these events of the project *contoso-jobs*: {shown}.")
 
 
 def test_setup_through_the_slack_app_gets_the_webhook_and_channel_from_connect_url(
@@ -349,6 +366,7 @@ def test_alerts_test_sends_the_ready_message_to_every_slack_entry(project, webho
     monkeypatch.setenv("SLACK_WEBHOOK_REPORT_ALERTS", url)
     assert alerts_cli.test() == 0
     assert [payload["text"] for payload in seen] == ["Success, you're ready!"] * 2
+    assert seen[0]["attachments"][0]["blocks"][1]["text"]["text"].endswith(": all events.")
 
 
 def offer_setup(monkeypatch):
