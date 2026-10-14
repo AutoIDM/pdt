@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -21,6 +22,85 @@ def test_app_completer_outside_project_returns_no_candidates(tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
 
     assert completion.apps("") == []
+
+
+def _later(path):
+    """Move a path's modification time a second on, past the filesystem's time resolution."""
+    stamp = path.stat().st_mtime_ns + 1_000_000_000
+    os.utime(path, ns=(stamp, stamp))
+
+
+def _no_scan():
+    raise AssertionError("find_apps ran")
+
+
+def test_app_completer_reads_the_cache_while_nothing_changed(project, monkeypatch):
+    add_app(project, "daily-report", "enabled: true\n")
+    assert completion.apps("") == ["daily-report"]
+
+    monkeypatch.setattr(config, "find_apps", _no_scan)
+
+    assert completion.apps("") == ["daily-report"]
+
+
+def test_a_changed_config_yml_rescans_the_apps(project):
+    folder = add_app(project, "daily-report", "enabled: true\n")
+    completion.apps("")
+
+    (folder / "config.yml").write_text("enabled: false\n")
+    _later(folder / "config.yml")
+
+    assert completion.apps("") == []
+
+
+def test_a_new_app_folder_rescans_the_apps(project):
+    add_app(project, "daily-report")
+    completion.apps("")
+
+    add_app(project, "weekly-report")
+    _later(project)
+
+    assert completion.apps("") == ["daily-report", "weekly-report"]
+
+
+def test_a_removed_app_folder_rescans_the_apps(project):
+    add_app(project, "daily-report")
+    add_app(project, "weekly-report")
+    completion.apps("")
+
+    shutil.rmtree(project / "weekly-report")
+    _later(project)
+
+    assert completion.apps("") == ["daily-report"]
+
+
+def test_a_new_pdt_rescans_the_apps(project, tmp_path_factory, monkeypatch):
+    code = tmp_path_factory.mktemp("pdt") / "config.py"
+    code.write_text("")
+    monkeypatch.setattr(config, "__file__", str(code))
+    add_app(project, "daily-report")
+    completion.apps("")
+
+    monkeypatch.setattr(config, "find_apps", lambda: ["from-the-new-pdt"])
+    _later(code)
+
+    assert completion.apps("") == ["from-the-new-pdt"]
+
+
+def test_a_corrupt_cache_is_rewritten(project):
+    add_app(project, "daily-report")
+    (project / ".pdt").mkdir()
+    (project / ".pdt" / "apps").write_text('{"stamps": [')
+
+    assert completion.apps("") == ["daily-report"]
+    assert json.loads((project / ".pdt" / "apps").read_text())["apps"] == ["daily-report"]
+
+
+def test_a_cache_that_cannot_be_written_still_completes(project):
+    add_app(project, "daily-report")
+    (project / ".pdt").write_text("not a folder")
+
+    assert completion.apps("") == ["daily-report"]
 
 
 def test_example_completer_lists_matching_examples():

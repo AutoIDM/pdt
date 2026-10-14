@@ -442,8 +442,8 @@ def locked(path: Path):
 STATE_DIR = ".pdt"
 
 
-def _state_path() -> Path:
-    return find_project() / STATE_DIR / "state"
+def _state_path(name: str = "state") -> Path:
+    return find_project() / STATE_DIR / name
 
 
 def read_state() -> dict:
@@ -462,8 +462,8 @@ def read_state() -> dict:
     return state
 
 
-def write_state(state: dict) -> None:
-    path = _state_path()
+def write_state(state: dict, name: str = "state") -> None:
+    path = _state_path(name)
     path.parent.mkdir(exist_ok=True)
     # Self-ignoring, so projects created before this dir existed stay clean.
     (path.parent / ".gitignore").write_text("*\n")
@@ -483,6 +483,40 @@ def mark_deployed(name: str, deployed: bool) -> None:
 
 def is_deployed(name: str) -> bool:
     return name in (read_state().get("deployed") or [])
+
+
+def _stamps(paths) -> list:
+    return [[str(path), path.stat().st_mtime_ns if path.exists() else None] for path in paths]
+
+
+def cached_apps() -> list[str]:
+    """find_apps for tab completion, which runs pdt on every TAB. .pdt/apps keeps the names
+    with the modification time of each path find_apps reads and of this file, whose code
+    decides the names, so a TAB reads no yaml until one of them changes."""
+    project = find_project()
+    try:
+        cache = json.loads((project / STATE_DIR / "apps").read_text())
+        if cache["stamps"] == _stamps(Path(name) for name, _ in cache["stamps"]):
+            return cache["apps"]
+    except Exception:
+        pass
+    # Making .pdt changes the project folder's time, so it comes before the stamps.
+    try:
+        (project / STATE_DIR).mkdir(exist_ok=True)
+    except OSError:
+        return find_apps()
+    # A new app folder changes the project folder's time; a new run.py, .ps1, or config.yml
+    # changes the time of the folder that holds it.
+    folders = [child for child in sorted(project.iterdir())
+               if not child.name.startswith(".") and child.is_dir()]
+    stamps = _stamps([Path(__file__), project, project / PROJECT_FILE,
+                      *folders, *(folder / APP_FILE for folder in folders)])
+    apps = find_apps()
+    try:
+        write_state({"stamps": stamps, "apps": apps}, "apps")
+    except OSError:
+        pass
+    return apps
 
 
 def aws_account_problem(account: str) -> str:

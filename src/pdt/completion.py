@@ -36,7 +36,7 @@ ALLOW_PROFILE = "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
 
 def apps(prefix: str, **_kwargs) -> list[str]:
     try:
-        return [name for name in config.find_apps() if name.startswith(prefix)]
+        return [name for name in config.cached_apps() if name.startswith(prefix)]
     except (config.ConfigError, OSError):
         return []
 
