@@ -39,7 +39,6 @@ WEBHOOK_HOSTS = ("hooks.slack.com", "hooks.slack-gov.com")
 OUTCOMES = {
     "completed": ("#2EB67D", ":large_green_circle:"),
     "failed": ("#E01E5A", ":red_circle:"),
-    "cancelled": ("#ECB22E", ":large_yellow_circle:"),
 }
 OTHER = ("#1D9BD1", ":large_blue_circle:")
 UNHANDLED = ("#868686", ":white_circle:")

@@ -71,7 +71,7 @@ def test_a_failed_scheduled_run_is_red_and_lists_every_parameter_in_order():
 
 @pytest.mark.parametrize(("name", "colour", "emoji"), [
     ("app:deploy-completed", "#2EB67D", ":large_green_circle:"),
-    ("app:deploy-cancelled", "#ECB22E", ":large_yellow_circle:"),
+    ("app:deploy-failed", "#E01E5A", ":red_circle:"),
     ("job:paused", "#1D9BD1", ":large_blue_circle:"),
 ])
 def test_the_colour_and_the_title_say_the_outcome(name, colour, emoji):
@@ -160,11 +160,11 @@ def test_setup_with_a_pasted_webhook_writes_pdt_yml_and_env_then_sends_the_test(
         project, webhook, monkeypatch):
     url, seen, _answer = webhook
     monkeypatch.delenv("SLACK_WEBHOOK_IT_ALERTS", raising=False)
-    answers(monkeypatch, "", "4", "", url, "y", "#it-alerts")
+    answers(monkeypatch, "", "1", "", url, "y", "#it-alerts")
     assert alerts_cli.setup() == 0
     assert config.load_yaml(project / "pdt.yml")["alerts"] == [{
         "type": "slack", "channel": "it-alerts",
-        "events": ["app:deploy-completed", "app:deploy-failed", "app:deploy-cancelled",
+        "events": ["app:deploy-started", "app:deploy-completed", "app:deploy-failed",
                    "job:run-failed"]}]
     assert (project / ".env").read_text() == f"SLACK_WEBHOOK_IT_ALERTS={url}\n"
     assert [payload["text"] for payload in seen] == ["Success, you're ready!"]
@@ -176,7 +176,7 @@ def test_setup_again_for_the_same_channel_replaces_its_entry(project, webhook, m
     monkeypatch.delenv("SLACK_WEBHOOK_IT_ALERTS", raising=False)
     answers(monkeypatch, "", "", url, "y", "it-alerts")
     alerts_cli.setup()
-    answers(monkeypatch, "", "5", "", url, "y", "it-alerts")
+    answers(monkeypatch, "", "4", "", url, "y", "it-alerts")
     alerts_cli.setup()
     assert [entry["events"] for entry in config.load_yaml(project / "pdt.yml")["alerts"]] == [
         ["app:deploy-completed", "app:deploy-failed", "job:run-started", "job:run-failed"]]

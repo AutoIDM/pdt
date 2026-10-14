@@ -41,9 +41,8 @@ from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
 EVENTS = (lifecycle.APP_DEPLOY_STARTED, lifecycle.APP_DEPLOY_COMPLETED,
-          lifecycle.APP_DEPLOY_FAILED, lifecycle.APP_DEPLOY_CANCELLED,
-          lifecycle.JOB_RUN_STARTED, lifecycle.JOB_RUN_COMPLETED, lifecycle.JOB_RUN_FAILED,
-          lifecycle.JOB_RUN_CANCELLED, lifecycle.JOB_PAUSED, lifecycle.JOB_UNPAUSED)
+          lifecycle.APP_DEPLOY_FAILED, lifecycle.JOB_RUN_STARTED, lifecycle.JOB_RUN_COMPLETED,
+          lifecycle.JOB_RUN_FAILED, lifecycle.JOB_PAUSED, lifecycle.JOB_UNPAUSED)
 OFFERED = "alerts_offered"
 # The pdt Slack app. Both stay empty until the app and its CONNECT_URL server exist;
 # until then setup asks for a webhook URL.
