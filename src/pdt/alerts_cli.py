@@ -81,12 +81,15 @@ def checkboxes(question: str, options: list[tuple[str, str]], chosen) -> list[st
 
 def slack_configure() -> tuple[dict, dict[str, str]] | None:
     found = connect_slack() if CLIENT_ID and CONNECT_URL else None
-    if found is None:
-        found = paste_webhook()
-    if found is None:
-        return None
-    url, channel = found
-    return {"channel": channel}, {slack.secret_name(channel): url}
+    if found is not None:
+        url, channel = found
+        keys = {"webhook": slack.webhook_id(url), "name": "#" + channel.lstrip("#")}
+    else:
+        url = paste_webhook()
+        if url is None:
+            return None
+        keys = {"webhook": slack.webhook_id(url)}
+    return keys, {slack.secret_name(keys): url}
 
 
 def connect_slack() -> tuple[str, str] | None:
@@ -147,7 +150,7 @@ def connect_slack() -> tuple[str, str] | None:
     return webhook["url"], str(webhook.get("channel") or "slack").lstrip("#")
 
 
-def paste_webhook() -> tuple[str, str] | None:
+def paste_webhook() -> str | None:
     console.say("pdt posts to Slack through a webhook: a secret link that posts into one "
                 "channel.")
     url = console.ask("Paste a webhook URL, or press Enter to make one in your browser")
@@ -166,7 +169,7 @@ def paste_webhook() -> tuple[str, str] | None:
                  "https://hooks.slack.com/services/")
 
 
-def paste(url: str, noun: str, known, starts: str) -> tuple[str, str] | None:
+def paste(url: str, noun: str, known, starts: str) -> str | None:
     link = noun.rpartition(" ")[2]
     while True:
         if url == "":
@@ -175,19 +178,15 @@ def paste(url: str, noun: str, known, starts: str) -> tuple[str, str] | None:
         if parsed.scheme in ("http", "https") and parsed.hostname:
             if known(parsed.hostname) or console.confirm(
                     f"{url} is not a {console.escape(noun)} address. Use it anyway?"):
-                break
+                return url
         else:
             console.warn(f"A {console.escape(noun)} URL starts with {console.escape(starts)}. "
                          "Press Enter to stop.")
         url = console.ask(f"Paste the {console.escape(link)} URL")
-    channel = ""
-    while channel == "":
-        channel = console.ask("Which channel does it post to? For example it-alerts").lstrip("#")
-    return url, channel
 
 
 def slack_test(entry: dict, project: str) -> None:
-    slack.send(entry, slack.ready_message(project, entry["channel"], entry.get("events", [])))
+    slack.send(entry, slack.ready_message(project, entry))
 
 
 def teams_configure() -> tuple[dict, dict[str, str]] | None:
@@ -201,27 +200,27 @@ def teams_configure() -> tuple[dict, dict[str, str]] | None:
         console.bullet("3. Check the team and channel, then select Save.")
         console.bullet("4. Copy the webhook link that Teams shows.")
         url = console.ask("Paste the workflow URL")
-    found = paste(url, "Teams workflow", lambda host: host.endswith(teams.WEBHOOK_HOST),
-                  f"https:// and ends in {teams.WEBHOOK_HOST}")
-    if found is None:
+    url = paste(url, "Teams workflow", lambda host: host.endswith(teams.WEBHOOK_HOST),
+                f"https:// and ends in {teams.WEBHOOK_HOST}")
+    if url is None:
         return None
-    url, channel = found
-    return {"channel": channel}, {teams.secret_name(channel): url}
+    keys = {"webhook": teams.webhook_id(url)}
+    return keys, {teams.secret_name(keys): url}
 
 
 def teams_test(entry: dict, project: str) -> None:
-    teams.send(entry, teams.ready_message(project, entry["channel"], entry.get("events", [])))
+    teams.send(entry, teams.ready_message(project, entry))
 
 
 SETUPS = {
     "slack": Setup("Slack: a message in a Slack channel",
                    (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
                     lifecycle.JOB_RUN_FAILED),
-                   slack_configure, slack_test, lambda entry: f"Slack #{entry['channel']}"),
+                   slack_configure, slack_test, lambda entry: f"Slack {slack.label(entry)}"),
     "teams": Setup("Microsoft Teams: a message in a Teams channel",
                    (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
                     lifecycle.JOB_RUN_FAILED),
-                   teams_configure, teams_test, lambda entry: f"Teams {entry['channel']}"),
+                   teams_configure, teams_test, lambda entry: f"Teams {teams.label(entry)}"),
     "console": Setup("Console: a line in the output of pdt and of each run", lifecycle.EVENTS,
                      lambda: ({}, {}), None, lambda entry: "console"),
 }

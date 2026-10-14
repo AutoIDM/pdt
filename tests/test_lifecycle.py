@@ -63,6 +63,19 @@ def test_an_unknown_entry_key_names_the_key_and_the_keys_of_its_type(project, mo
     assert lifecycle.parse_alerts([{"type": "webhook", "events": ["all"], "url": "x"}], "pdt.yml")
 
 
+@pytest.mark.parametrize(("entry", "error"), [
+    ({"type": "slack"}, "the slack alerts entry needs webhook or channel; run pdt alerts setup"),
+    ({"type": "slack", "webhook": "B1", "channel": "ops"},
+     "the slack alerts entry sets both webhook and channel; keep only one"),
+    ({"type": "teams"}, "the teams alerts entry needs webhook; run pdt alerts setup"),
+    ({"type": "teams", "channel": "ops"},
+     "alerts: unknown key 'channel'; a teams entry takes: type, events, exclude-events, name, webhook"),
+])
+def test_a_chat_entry_sets_exactly_one_of_its_webhook_keys(entry, error):
+    with pytest.raises(config.ConfigError, match=f"pdt.yml: {error}"):
+        lifecycle.parse_entry({**entry, "events": ["all"]}, "pdt.yml")
+
+
 def test_validate_names_an_unknown_alerts_type_and_the_known_types(project):
     add_app(project, "report", "alerts:\n  - type: slack-webhook\n    channel: pdt\n")
     assert ("report/config.yml: alerts type 'slack-webhook' is not known; use one of: console, slack, teams"

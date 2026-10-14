@@ -11,6 +11,7 @@ says the outcome in words, so the tone is never the only sign of it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -61,8 +62,12 @@ CLOUDS = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
 MAX_FIELDS = 10
 
 
-def env_name(prefix: str, channel: str) -> str:
-    return prefix + re.sub(r"[^A-Z0-9]+", "_", channel.lstrip("#").upper()).strip("_")
+def env_name(prefix: str, key: str) -> str:
+    return prefix + re.sub(r"[^A-Z0-9]+", "_", key.lstrip("#").upper()).strip("_")
+
+
+def url_id(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()[:8].upper()
 
 
 def event_words(name: str) -> str:

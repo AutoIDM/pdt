@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 import urllib.parse
 import urllib.request
@@ -111,13 +112,45 @@ def test_a_url_parameter_becomes_a_button():
 
 
 def test_the_ready_message_names_the_project_and_the_events():
-    payload = slack.ready_message("contoso-jobs", "it-alerts", ["job:run-failed"])
+    payload = slack.ready_message("contoso-jobs", {"webhook": "B1", "events": ["job:run-failed"]})
     assert payload["text"] == "Success, you're ready!"
     assert "*contoso-jobs*" in payload["attachments"][0]["blocks"][1]["text"]["text"]
     assert "Run failed" in payload["attachments"][0]["blocks"][1]["text"]["text"]
 
 
-def test_deliver_posts_the_message_to_the_webhook_of_the_channel(webhook, monkeypatch):
+@pytest.mark.parametrize(("entry", "target"), [
+    ({"webhook": "B1"}, "webhook B1"),
+    ({"channel": "it-alerts"}, "#it-alerts"),
+    ({"webhook": "B1", "name": "#ops"}, "#ops"),
+    ({"channel": "it-alerts", "name": "IT team"}, "IT team"),
+])
+def test_the_ready_footer_and_describe_name_the_entry_by_its_label(entry, target):
+    footer = slack.ready_message("contoso-jobs", entry)["attachments"][0]["blocks"][-1]
+    assert footer["elements"][0]["text"] == f"Test message to {target}, sent by `pdt alerts test`"
+    assert alerts_cli.SETUPS["slack"].describe(entry) == f"Slack {target}"
+
+
+@pytest.mark.parametrize(("url", "found"), [
+    ("https://hooks.slack.com/services/T0123ABC/B0456DEF/xyz", "B0456DEF"),
+    ("http://127.0.0.1:8080/services/T1/B1/x", "B1"),
+])
+def test_the_webhook_id_is_the_b_part_of_the_url(url, found):
+    assert slack.webhook_id(url) == found
+
+
+def test_a_url_with_no_webhook_id_gets_a_stable_hash():
+    found = slack.webhook_id("https://example.com/hook")
+    assert re.fullmatch("[0-9A-F]{8}", found)
+    assert found == slack.webhook_id("https://example.com/hook") == alert_message.url_id(
+        "https://example.com/hook")
+
+
+def test_the_env_var_of_an_entry_comes_from_webhook_or_from_an_old_channel():
+    assert slack.secret_name({"webhook": "B0456DEF", "name": "#ops"}) == "SLACK_WEBHOOK_B0456DEF"
+    assert slack.secret_name({"channel": "#it-alerts"}) == "SLACK_WEBHOOK_IT_ALERTS"
+
+
+def test_deliver_posts_the_message_to_the_webhook_of_an_old_channel_entry(webhook, monkeypatch):
     url, seen, _answer = webhook
     monkeypatch.setenv("SLACK_WEBHOOK_IT_ALERTS", url)
     event = lifecycle.Event("app:deploy-failed", AT, PARAMS)
@@ -140,18 +173,32 @@ def test_a_missing_webhook_names_the_env_var_and_the_fix(project, monkeypatch):
         slack.deliver(lifecycle.Event("job:paused", AT, PARAMS), {"channel": "it-alerts"}, False)
 
 
+def test_deliver_posts_to_the_webhook_of_a_webhook_entry(webhook, monkeypatch):
+    url, seen, _answer = webhook
+    monkeypatch.setenv("SLACK_WEBHOOK_B1", url)
+    event = lifecycle.Event("app:deploy-failed", AT, PARAMS)
+    slack.deliver(event, {"type": "slack", "webhook": "B1"}, False)
+    assert seen == [slack.message(event)]
+
+
+def test_a_missing_webhook_of_a_webhook_entry_names_its_label(project, monkeypatch):
+    monkeypatch.delenv("SLACK_WEBHOOK_B1", raising=False)
+    monkeypatch.delenv("PDT_ENV_JSON", raising=False)
+    with pytest.raises(RuntimeError, match="SLACK_WEBHOOK_B1 is not set; run pdt alerts setup to "
+                                           "connect Slack webhook B1"):
+        slack.deliver(lifecycle.Event("job:paused", AT, PARAMS), {"webhook": "B1"}, False)
+
+
 def test_a_cloud_job_finds_the_webhook_in_its_env_secret(monkeypatch):
     monkeypatch.delenv("SLACK_WEBHOOK_OPS", raising=False)
     monkeypatch.setenv("PDT_ENV_JSON", json.dumps({"SLACK_WEBHOOK_OPS": "https://hooks.slack.com/x"}))
     assert alert_message.secret_value("SLACK_WEBHOOK_OPS") == "https://hooks.slack.com/x"
 
 
-def test_a_slack_entry_needs_a_channel_and_takes_no_other_key(project):
-    with pytest.raises(config.ConfigError, match="the slack alerts entry needs channel"):
-        lifecycle.parse_alerts([{"type": "slack", "events": ["all"]}], "pdt.yml")
+def test_a_slack_entry_takes_no_other_key(project):
     with pytest.raises(config.ConfigError, match="a slack entry takes: type, events, "
-                                                 "exclude-events, channel"):
-        lifecycle.parse_alerts([{"type": "slack", "channel": "a", "url": "x", "events": ["all"]}],
+                                                 "exclude-events, channel, name, webhook"):
+        lifecycle.parse_alerts([{"type": "slack", "webhook": "B1", "url": "x", "events": ["all"]}],
                                "pdt.yml")
 
 
@@ -173,39 +220,63 @@ def test_save_root_alerts_replaces_only_the_alerts_block(project):
         "    channel: it-alerts\n    events: [\"job:*\"]\n\napps:\n  - name: report\n")
 
 
+@pytest.mark.parametrize("webhook_id", ["01234567", "12345678", "1E10", "true", "0x1F"])
+def test_save_root_alerts_quotes_an_id_that_yaml_reads_as_another_type(project, webhook_id):
+    config.save_root_alerts([{"type": "teams", "webhook": webhook_id, "events": ["all"]}])
+    assert config.load_yaml(project / "pdt.yml")["alerts"][0]["webhook"] == webhook_id
+
+
 def test_setup_with_a_pasted_webhook_writes_pdt_yml_and_env_then_sends_the_test_on_yes(
         project, webhook, monkeypatch):
     url, seen, _answer = webhook
-    monkeypatch.delenv("SLACK_WEBHOOK_IT_ALERTS", raising=False)
-    answers(monkeypatch, "", "1", "", url, "y", "#it-alerts", "y")
+    monkeypatch.delenv("SLACK_WEBHOOK_B1", raising=False)
+    queue = answers(monkeypatch, "", "1", "", url, "y", "y")
     assert alerts_cli.setup() == 0
+    assert queue == []
     assert config.load_yaml(project / "pdt.yml")["alerts"] == [{
-        "type": "slack", "channel": "it-alerts",
+        "type": "slack", "webhook": "B1",
         "events": ["app:deploy-started", "app:deploy-completed", "app:deploy-failed",
                    "job:run-failed"]}]
-    assert (project / ".env").read_text() == f"SLACK_WEBHOOK_IT_ALERTS={url}\n"
+    assert (project / ".env").read_text() == f"SLACK_WEBHOOK_B1={url}\n"
     assert [payload["text"] for payload in seen] == ["Success, you're ready!"]
+    assert seen[0]["attachments"][0]["blocks"][-1]["elements"][0]["text"] == (
+        "Test message to webhook B1, sent by `pdt alerts test`")
     assert config.read_state()["alerts_offered"] is True
 
 
-def test_setup_again_for_the_same_channel_replaces_its_entry(project, webhook, monkeypatch):
+def test_setup_again_for_the_same_webhook_replaces_its_entry(project, webhook, monkeypatch):
     url, _seen, _answer = webhook
-    monkeypatch.delenv("SLACK_WEBHOOK_IT_ALERTS", raising=False)
-    answers(monkeypatch, "", "", url, "y", "it-alerts", "n")
+    monkeypatch.delenv("SLACK_WEBHOOK_B1", raising=False)
+    answers(monkeypatch, "", "", url, "y", "n")
     alerts_cli.setup()
     answers(monkeypatch, "", "4", "", "n", "n")
     alerts_cli.setup()
     assert config.load_yaml(project / "pdt.yml")["alerts"] == [{
-        "type": "slack", "channel": "it-alerts",
+        "type": "slack", "webhook": "B1",
         "events": ["app:deploy-completed", "app:deploy-failed", "job:run-started",
                    "job:run-failed"]}]
+
+
+def test_an_old_channel_entry_stays_as_it_is_on_enter_at_every_question(project, monkeypatch):
+    text = "alerts:\n  - type: slack\n    channel: it-alerts\n    events: [all]\n"
+    (project / "pdt.yml").write_text(text)
+    asked = []
+    queue = answers(monkeypatch, "", "", "", "")
+    monkeypatch.setattr(alerts_cli.console, "confirm",
+                        lambda question, **_k: asked.append(question) or queue.pop(0) == "y")
+    assert alerts_cli.setup() == 0
+    assert queue == []
+    assert asked == ["Replace Slack #it-alerts with a new one?",
+                     "Send a test message to Slack #it-alerts now?"]
+    assert (project / "pdt.yml").read_text() == text
+    assert not (project / ".env").exists()
 
 
 def test_setup_sends_no_test_message_on_the_default_answer_and_names_pdt_alerts_test(
         project, webhook, monkeypatch, capsys):
     url, seen, _answer = webhook
-    monkeypatch.delenv("SLACK_WEBHOOK_IT_ALERTS", raising=False)
-    answers(monkeypatch, "", "", url, "y", "it-alerts", "n")
+    monkeypatch.delenv("SLACK_WEBHOOK_B1", raising=False)
+    answers(monkeypatch, "", "", url, "y", "n")
     assert alerts_cli.setup() == 0
     assert seen == []
     assert "Send one later with pdt alerts test." in capsys.readouterr().out
@@ -305,15 +376,15 @@ def test_every_event_checked_is_written_as_all(project, monkeypatch):
     (["app:*", "job:run-failed"], "app:*, Run failed"),
 ])
 def test_the_ready_message_shows_the_events_in_the_words_of_pdt_yml(events, shown):
-    payload = slack.ready_message("contoso-jobs", "it-alerts", events)
+    payload = slack.ready_message("contoso-jobs", {"webhook": "B1", "events": events})
     assert payload["attachments"][0]["blocks"][1]["text"]["text"] == (
         f"pdt will post here for these events of the project *contoso-jobs*: {shown}.")
 
 
-def test_setup_through_the_slack_app_gets_the_webhook_and_channel_from_connect_url(
+def test_setup_through_the_slack_app_names_the_entry_by_the_channel_from_connect_url(
         project, webhook, monkeypatch):
     url, seen, _answer = webhook
-    monkeypatch.delenv("SLACK_WEBHOOK_OPS", raising=False)
+    monkeypatch.delenv("SLACK_WEBHOOK_B1", raising=False)
     codes = []
 
     class Connect(BaseHTTPRequestHandler):
@@ -351,8 +422,13 @@ def test_setup_through_the_slack_app_gets_the_webhook_and_channel_from_connect_u
     assert opened[0]["scope"] == ["incoming-webhook"]
     assert opened[0]["client_id"] == ["123.456"]
     assert codes == ["slack-code"]
-    assert config.load_yaml(project / "pdt.yml")["alerts"][0]["channel"] == "ops"
+    assert config.load_yaml(project / "pdt.yml")["alerts"] == [{
+        "type": "slack", "webhook": "B1", "name": "#ops",
+        "events": ["app:deploy-completed", "app:deploy-failed", "job:run-failed"]}]
+    assert (project / ".env").read_text() == f"SLACK_WEBHOOK_B1={url}\n"
     assert [payload["text"] for payload in seen] == ["Success, you're ready!"]
+    assert seen[0]["attachments"][0]["blocks"][-1]["elements"][0]["text"] == (
+        "Test message to #ops, sent by `pdt alerts test`")
 
 
 def test_alerts_test_sends_the_ready_message_to_every_slack_entry(project, webhook, monkeypatch):
