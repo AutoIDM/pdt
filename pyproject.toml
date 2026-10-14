@@ -23,6 +23,7 @@ apps = [
     "cryptography",
     "pyjwt",
     "boto3",
+    "boto3[crt]; sys_platform != 'win32' or platform_machine != 'ARM64'",
     "google-cloud-secret-manager",
     "fsspec",
     "s3fs>=2024",
