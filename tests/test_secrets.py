@@ -3,7 +3,7 @@ import json
 
 from dotenv import dotenv_values
 
-from pdt import deploy_azure, deploy_common, deploy_google_cloud
+from pdt import deploy_azure, deploy_common, deploy_google_cloud, lifecycle
 
 SETTINGS = {"vault": "pdt-abc"}
 URI = "https://pdt-abc.vault.azure.net/secrets/pdt-demo-env"
@@ -88,7 +88,7 @@ def test_diff_writes_nothing_and_names_the_save_command(tmp_path, monkeypatch, c
     assert "updated" in out and "pdt secrets demo save" in out
 
 
-def test_save_writes_the_env_values(tmp_path, monkeypatch):
+def test_save_writes_the_env_values(project, tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "gather_secrets", lambda app: {"A": "new"})
     written = []
     code = deploy_common.run_secrets("save", app_dir(tmp_path),
@@ -111,7 +111,7 @@ def test_get_uses_the_file_name_the_user_types(tmp_path, monkeypatch):
     assert (tmp_path / ".env.prod").read_text() == "A=1\n"
 
 
-def test_azure_set_stores_the_value_under_the_env_var_name(monkeypatch):
+def test_azure_set_stores_the_value_under_the_env_var_name(project, monkeypatch):
     from pdt import deploy_azure_container_apps as aca
     written = {}
     monkeypatch.setattr(aca, "preflight", lambda app, settings: {"identity": "id", "resource_group": "rg"})
@@ -124,5 +124,51 @@ def test_azure_set_stores_the_value_under_the_env_var_name(monkeypatch):
     monkeypatch.setattr(aca, "set_job_secret", lambda *args: None)
     monkeypatch.setattr(aca, "disable_old_secret_versions", lambda *args: None)
     monkeypatch.setattr("sys.stdin", io.StringIO("new\n"))
-    assert aca.secrets({"name": "demo"}, "set", True, "TOKEN") == 0
+    assert aca.secrets({"name": "demo", "platform": {"provider": "azure"}}, "set", True,
+                       "TOKEN") == 0
     assert written == {"TOKEN": "new"}
+
+
+def emitted(monkeypatch):
+    seen = []
+    emit = lifecycle.emit
+    monkeypatch.setattr(lifecycle, "emit", lambda name, **params: seen.append(emit(name, **params)))
+    return seen
+
+
+def test_set_emits_secrets_updated_with_no_env_var_name_or_value(project, monkeypatch, capsys):
+    seen = emitted(monkeypatch)
+    monkeypatch.setattr("sys.stdin", io.StringIO("zq-value-7731\n"))
+    written = []
+    code = deploy_common.run_secrets("set", app_dir(project), json.dumps({"OTHER": "1"}),
+                                     written.append, True, "ZQ_PRIVATE_NAME")
+    assert code == 0 and written == [{"OTHER": "1", "ZQ_PRIVATE_NAME": "zq-value-7731"}]
+    assert [(event.name, event.params) for event in seen] == [
+        ("app:secrets-updated", {"project": project.name, "app": "demo", "provider": "aws",
+                                 "action": "set", "count": 1})]
+    lines = [line for line in capsys.readouterr().out.splitlines() if "[event]" in line]
+    assert len(lines) == 1
+    for text in ("ZQ_PRIVATE_NAME", "zq-value-7731"):
+        assert text not in repr(seen[0].params) and text not in lines[0]
+
+
+def test_save_emits_the_count_of_changed_values(project, monkeypatch):
+    seen = emitted(monkeypatch)
+    monkeypatch.setattr(deploy_common, "gather_secrets", lambda app: {"A": "new", "B": "same"})
+    deploy_common.run_secrets("save", app_dir(project),
+                              json.dumps({"A": "old", "B": "same", "C": "gone"}), lambda values: None,
+                              True)
+    assert [(event.params["action"], event.params["count"]) for event in seen] == [("save", 2)]
+
+
+def test_no_event_when_nothing_changes_or_the_prompt_is_declined(project, monkeypatch):
+    seen = emitted(monkeypatch)
+    monkeypatch.setattr(deploy_common, "gather_secrets", lambda app: {"A": "new"})
+    monkeypatch.setattr("pdt.deploy.can_prompt", lambda interactive: False)
+    old = json.dumps({"A": "old"})
+    deploy_common.run_secrets("diff", app_dir(project), old, None, True)
+    deploy_common.run_secrets("save", app_dir(project), old, None, False)
+    deploy_common.run_secrets("save", app_dir(project), json.dumps({"A": "new"}), None, True)
+    monkeypatch.setattr("sys.stdin", io.StringIO("new\n"))
+    deploy_common.run_secrets("set", app_dir(project), json.dumps({"A": "new"}), None, True, "A")
+    assert seen == []

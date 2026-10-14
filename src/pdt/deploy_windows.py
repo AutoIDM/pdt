@@ -60,9 +60,10 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, regions, runs_cli
 from pdt import powershell as ps
-from pdt.deploy import confirm
+from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import CostEstimate, warn_if_locked
 from pdt.pwsh import ensure_pwsh
+from pdt.run_windows_task import MANUAL_START
 
 
 class WindowsDeployError(Exception):
@@ -497,7 +498,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                         "no cloud charges", currency=regions.local_currency())
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
-        return 1
+        return DECLINED
 
     payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     install = ""
@@ -561,7 +562,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         warn_if_locked(_store(app["name"]), app["name"])
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
-        return 1
+        return DECLINED
     console.status(f"Removing Windows scheduled task {console.value(name)}..." if exists
                    else f"Removing {console.value(logs)}...")
     try:
@@ -612,6 +613,8 @@ def start(app: dict, follow: bool = False) -> int:
     before = {run.id for run in list_runs(app["name"])}
     try:
         powershell, name = _managed_task(app)
+        logs_folder(app["name"]).mkdir(parents=True, exist_ok=True)
+        (logs_folder(app["name"]) / MANUAL_START).touch()
         _run(powershell, f"Start-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
              elevate=True)
     except WindowsDeployError as exc:

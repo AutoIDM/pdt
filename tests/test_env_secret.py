@@ -88,7 +88,7 @@ def test_a_failed_deployed_update_fails_the_local_update(tmp_path, monkeypatch):
     assert dotenv_values(tmp_path / ".env") == {"TOKEN": "new"}
 
 
-def test_set_puts_the_stdin_value_into_the_deployed_secret(tmp_path, monkeypatch, capsys):
+def test_set_puts_the_stdin_value_into_the_deployed_secret(project, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("rotated\n"))
     written = []
     app = {"name": "demo", "dir": tmp_path, "platform": {"provider": "aws"}}

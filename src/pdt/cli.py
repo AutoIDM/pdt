@@ -21,7 +21,7 @@ from pathlib import Path
 import rich_argparse
 
 from pdt import (__version__, completion, config, console, deploy, deploy_common, gui_cli,
-                 powershell, pwsh, scaffold, storage_cli)
+                 lifecycle, powershell, pwsh, scaffold, storage_cli)
 from pdt.config import ConfigError
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -251,19 +251,21 @@ def cmd_run(args) -> int:
         except (pwsh.PwshError, powershell.PowerShellError) as e:
             console.error(f"{console.value(name)}: {console.escape(str(e))}")
             return 1
+    provider = app["platform"].get("provider", "")
     if (app["dir"] / "run.py").is_file():
-        proc = subprocess.run(["uv", "run", "--script", "run.py"], cwd=app["dir"])
+        code = lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"])
     else:
         wrapper = Path(__file__).with_name("run_powershell.py")
-        proc = subprocess.run(
+        code = lifecycle.run_job(
+            name, provider,
             ["uv", "run", "--project", str(Path.cwd()), "--script", str(wrapper), str(app["dir"])],
-            cwd=app["dir"], env=dict(os.environ, PDT_PROJECT=str(config.find_project())))
-    if (proc.returncode == 0 and name == scaffold.STARTER
+            app["dir"], dict(os.environ, PDT_PROJECT=str(config.find_project())))
+    if (code == 0 and name == scaffold.STARTER
             and not config.is_deployed(name)):
         console.say()
         console.say("Try deploying this job:")
         console.command(f"pdt deploy {scaffold.STARTER}")
-    return proc.returncode
+    return code
 
 
 def run_lines(app: dict) -> list[str]:
@@ -709,6 +711,8 @@ def main() -> int:
     except KeyboardInterrupt:
         console.say()
         return 130
+    finally:
+        lifecycle.flush()
 
 
 if __name__ == "__main__":

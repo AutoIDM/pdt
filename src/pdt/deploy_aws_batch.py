@@ -43,8 +43,8 @@ from typing import Callable, Iterator
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from pdt import config, console, regions, runs_cli
-from pdt.deploy import confirm
+from pdt import config, console, lifecycle, regions, runs_cli
+from pdt.deploy import DECLINED, confirm
 from pdt.deploy_aws import (
     BUILD_BUCKET_PREFIX, COMMON_ACTIONS, MANAGED_TAGS, RETRIES, SCHEDULE_GROUP,
     aws_schedule_expression,
@@ -869,7 +869,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
             clients["logs"], names, region, cron, schedule_exists, usage,
             regions.local_currency())):
         console.warn("Aborted; nothing was changed.")
-        return 1
+        return DECLINED
 
     console.step(f"reconciling AWS resources in {console.value(account)} "
                  f"({console.value(region)})")
@@ -1056,7 +1056,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         warn_if_locked(store, app["name"])
     if not confirm([line for line, _action in plan], assume_yes):
         console.warn("Aborted; nothing was changed.")
-        return 1
+        return DECLINED
 
     for _line, action in plan:
         action()
@@ -1225,7 +1225,8 @@ def start(app: dict, session, follow: bool = False) -> int:
     request = json.loads(target["Input"])
     response = batch.submit_job(
         jobName=request["JobName"], jobQueue=request["JobQueue"],
-        jobDefinition=request["JobDefinition"], tags=dict(MANAGED_TAGS))
+        jobDefinition=request["JobDefinition"], tags=dict(MANAGED_TAGS),
+        containerOverrides={"environment": [{"name": lifecycle.TRIGGER_ENV, "value": "manual"}]})
     console.done(f"Started {console.value(app['name'])}: Batch job "
                  f"{console.value(response['jobId'])}.")
     if not follow:

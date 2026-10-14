@@ -11,6 +11,7 @@ import pytest
 from pdt import run_windows_task
 
 RUNNER = Path(run_windows_task.__file__)
+LIFECYCLE = str(RUNNER.with_name("lifecycle.py"))
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def test_runner_logs_both_streams_and_exits_with_the_child_code(folders, monkeyp
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 3
 
     (command, kwargs), = calls
-    assert command == ["uv", "run", "--script", "run.py"]
+    assert command == ["uv", "run", "--script", LIFECYCLE, "--", "uv", "run", "--script", "run.py"]
     assert kwargs["cwd"] == str(app_dir)
     assert kwargs["stderr"] is subprocess.STDOUT
     assert only_log(logs).read_text() == "hello\npdt: exit 3\n"
@@ -76,8 +77,8 @@ def test_runner_runs_an_app_without_run_py_through_the_powershell_wrapper(folder
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
 
     (command, kwargs), = calls
-    assert command == ["/tools/uv.exe", "run", "--script",
-                       str(RUNNER.with_name("run_powershell.py")), str(app_dir)]
+    assert command == ["/tools/uv.exe", "run", "--script", LIFECYCLE, "--", "/tools/uv.exe", "run",
+                       "--script", str(RUNNER.with_name("run_powershell.py")), str(app_dir)]
     assert kwargs["cwd"] == str(app_dir)
 
 
@@ -122,4 +123,21 @@ def test_runner_process_exit_code_is_the_child_exit_code(folders, tmp_path):
 
     assert proc.returncode == 5
     assert proc.stdout == b"" and proc.stderr == b""
-    assert only_log(logs).read_text() == "args: run --script run.py\noops\npdt: exit 5\n"
+    assert only_log(logs).read_text() == (f"args: run --script {LIFECYCLE} -- {fake_uv} run --script run.py"
+                                          "\noops\npdt: exit 5\n")
+
+
+@pytest.mark.parametrize(("age", "trigger"), [(0, "manual"), (600, None)])
+def test_runner_marks_a_run_manual_when_pdt_left_a_fresh_marker(folders, monkeypatch, age, trigger):
+    app_dir, logs, url = folders
+    logs.mkdir()
+    marker = logs / run_windows_task.MANUAL_START
+    marker.touch()
+    old = marker.stat().st_mtime - age
+    os.utime(marker, (old, old))
+    calls = []
+    monkeypatch.delenv("PDT_TRIGGER", raising=False)
+    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run(calls, b"", 0))
+    assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
+    assert calls[0][1]["env"].get("PDT_TRIGGER") == trigger
+    assert not marker.exists()

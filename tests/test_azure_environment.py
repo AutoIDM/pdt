@@ -3,6 +3,7 @@ import subprocess
 import pytest
 
 from conftest import plain
+from pdt.deploy import DECLINED
 from pdt import deploy_azure, deploy_azure_container_apps
 
 SUBSCRIPTION = "11111111-1111-1111-1111-111111111111"
@@ -71,7 +72,7 @@ def test_a_user_environment_creates_no_workspace_and_no_shared_group(monkeypatch
     plans, calls = plan_for(monkeypatch, deploy_settings(OWN),
                             lambda args: TAGGED if args[:3] == ("containerapp", "env", "show") else None)
     assert deploy_azure_container_apps.deploy(
-        {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}, "pause": False}, True) == 1
+        {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}, "pause": False}, True) == DECLINED
     plan = "\n".join(plans[0])
     assert "use your own Container Apps environment my-group/my-env" in plan
     assert "workspace" not in plan

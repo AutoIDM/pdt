@@ -55,9 +55,19 @@ def test_a_job_already_in_the_wanted_state_is_left_alone(monkeypatch, state, pau
     assert [call[:3] for call in calls] == [("rest", "--method", "get")]
 
 
-def test_start_runs_the_job_and_names_the_execution(monkeypatch, capsys):
+def test_start_runs_the_job_with_its_own_container_and_a_manual_trigger(monkeypatch, capsys):
     calls = fake_az(monkeypatch, "Ready")
+    container = {"name": JOB, "image": "pdtabc.azurecr.io/pdt-my-app:1",
+                 "resources": {"cpu": 0.5, "memory": "1Gi"},
+                 "env": [{"name": "PDT_ENV_JSON", "secretRef": "pdt-env"},
+                         {"name": "PDT_STORAGE_URL", "value": "https://store/x"}]}
+    monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args: {
+        "name": args[4], "properties": {"template": {"containers": [container]}}})
     assert deploy_azure_container_apps.start({"name": "my-app"}, SETTINGS) == 0
-    assert calls == [("containerapp", "job", "start", "--name", JOB,
-                      "--resource-group", "pdt", "--output", "json")]
+    assert calls == [("containerapp", "job", "start", "--name", JOB, "--resource-group", "pdt",
+                      "--container-name", JOB, "--image", "pdtabc.azurecr.io/pdt-my-app:1",
+                      "--cpu", "0.5", "--memory", "1Gi",
+                      "--env-vars", "PDT_ENV_JSON=secretref:pdt-env",
+                      "PDT_STORAGE_URL=https://store/x", "PDT_TRIGGER=manual",
+                      "--output", "json")]
     assert "pdt-my-app-abc12" in capsys.readouterr().out

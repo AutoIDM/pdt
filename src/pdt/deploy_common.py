@@ -10,7 +10,12 @@ a run-time location the app sets itself and goes through as is.
 PDT_ENV_SECRET_RESOURCE names that secret. The job's identity may update
 it and no other, through `pdt.utils.env_secret`.
 
-A build context holds the app directory and pdt.yml, nothing else. The
+A build context holds the app directory, pdt.yml, and in .pdt-lifecycle
+this pdt's lifecycle.py with the pdt modules it imports (LIFECYCLE_MODULES).
+Every generated image copies that folder to /opt/pdt-lifecycle and starts
+the app through it, so the job prints the lifecycle events of the pdt that
+deployed it, as the Windows task does. The folder is not on the app's
+sys.path, so it never shadows the pdt the app installs. The
 app's run.py declares pdt in its script header, so every deployment
 installs the package from the index the same way a local run does. An app
 made of .ps1 files has no run.py; POWERSHELL_DOCKERFILE installs
@@ -75,7 +80,7 @@ from typing import Callable
 
 import backoff
 
-from pdt import config, console
+from pdt import config, console, lifecycle
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
@@ -83,22 +88,34 @@ from pdt.utils.env_secret import private_file
 # To bump it, read the digest of the tag's index from ghcr.io.
 BASE_IMAGE = ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
               "@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58")
+# sh as PID 1 ignores SIGTERM, so the entrypoint passes a platform's stop on to
+# lifecycle.py, which ends the run with job:run-failed, and the log still ends
+# with `pdt: exit N`.
+ENTRYPOINT = ('ENTRYPOINT ["sh", "-c", "stop() {{ kill -s $1 $pid; wait $pid; finish $?; }}; '
+              'finish() {{ echo \\"pdt: exit $1\\"; exit $1; }}; '
+              'trap \\"stop TERM\\" TERM; trap \\"stop INT\\" INT; '
+              'uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- {start} & pid=$!; '
+              'wait $pid; finish $?"]\n')
 DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
+COPY .pdt-lifecycle /opt/pdt-lifecycle
+RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 COPY . /workspace
 WORKDIR /workspace/{app}
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false PYTHONUNBUFFERED=1
 RUN uv sync --script run.py
-ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
-"""
+""" + ENTRYPOINT.replace("{start}", "uv run --script run.py")
 POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFFERED=1
 RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
 RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh && echo '{{"LogLevel":"Critical"}}' > "$(dirname "$pwsh")/powershell.config.json"
-{modules}COPY . /workspace
+{modules}COPY .pdt-lifecycle /opt/pdt-lifecycle
+RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
+COPY . /workspace
 WORKDIR /workspace/{app}
-{sync}ENTRYPOINT ["sh", "-c", "{start}; code=$?; echo \\"pdt: exit $code\\"; exit $code"]
-"""
+{sync}""" + ENTRYPOINT
+LIFECYCLE_MODULES = ("__init__.py", "config.py", "console.py", "lifecycle.py",
+                     "utils/__init__.py", "utils/storage.py")
 # Secret shapes and local state that never belong in an image. The version-control names are
 # the ones `az acr build` always leaves out, so every build place gets the same context.
 BUILD_EXCLUDES = (
@@ -558,8 +575,17 @@ def run_secrets(action: str, app: dict, current: str | None,
                 name: str | None = None) -> int:
     """`pdt secrets <app> diff|save|get|set`, once the provider has read the deployed secret."""
     from pdt.deploy import proceed
+
+    def update(values: dict[str, str]) -> None:
+        count = sum(kind != "unchanged" for kind, *_rest in secret_changes(current, values))
+        write(values)
+        lifecycle.emit(lifecycle.APP_SECRETS_UPDATED,
+                       **lifecycle.app_params(app["name"], app["platform"]["provider"]),
+                       action=action, count=count)
+        lifecycle.flush()
+
     if action == "set":
-        return set_secret(app, current, write, name)
+        return set_secret(app, current, update, name)
     if current is None:
         command = f"pdt deploy {app['name']}"
         fail(f"{console.value(app['name'])} has no deployed secrets yet. "
@@ -582,7 +608,7 @@ def run_secrets(action: str, app: dict, current: str | None,
     if not proceed(assume_yes):
         console.warn("Aborted; nothing was changed.")
         return 0
-    write(values)
+    update(values)
     console.done(f"Updated the secrets of {console.value(app['name'])}. The next run uses them.")
     return 0
 
@@ -666,6 +692,10 @@ def stage_build_context(app: dict) -> Path:
         project_file = config.find_project() / config.PROJECT_FILE
         if project_file.is_file():
             shutil.copy(project_file, stage / config.PROJECT_FILE)
+        for module in LIFECYCLE_MODULES:
+            target = stage / ".pdt-lifecycle" / "pdt" / module
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(Path(__file__).parent / module, target)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise

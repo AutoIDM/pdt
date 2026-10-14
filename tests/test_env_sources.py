@@ -130,13 +130,13 @@ def test_pdt_run_from_the_project_root_reads_the_app_dot_env(project, monkeypatc
     vendor = add_app(project, "vendor_status_alerts", run_body=RUN_REPORT)
     (vendor / ".env").write_text("PDT_TOKEN=from-vendor\n")
     report = tmp_path / "report.json"
-    real_run = subprocess.run
+    real_popen = subprocess.Popen
 
-    def run_without_uv(args, **kwargs):
+    def popen_without_uv(args, **kwargs):
         assert args == ["uv", "run", "--script", "run.py"]
-        return real_run([sys.executable, "run.py", str(report)], **kwargs)
+        return real_popen([sys.executable, "run.py", str(report)], **kwargs)
 
-    monkeypatch.setattr(cli.subprocess, "run", run_without_uv)
+    monkeypatch.setattr(subprocess, "Popen", popen_without_uv)
     monkeypatch.setattr("sys.argv", ["pdt", "run", "vendor_status_alerts"])
     assert cli.main() == 0
     assert json.loads(report.read_text()) == {"token": "from-vendor"}
@@ -362,7 +362,7 @@ def test_missing_env_names_each_var_where_pdt_looked_and_the_fix(project, monkey
 def test_run_reports_a_missing_env_var_before_the_app_starts(project, monkeypatch, capsys):
     add_app(project, "my-report", APP_YAML)
     clear(monkeypatch)
-    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("the app started"))
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("the app started"))
     monkeypatch.setattr("sys.argv", ["pdt", "run", "my-report"])
     assert cli.main() == 1
     out = capsys.readouterr().out

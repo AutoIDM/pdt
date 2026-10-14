@@ -54,15 +54,18 @@ def test_pause_disables_and_unpause_enables_the_task(monkeypatch, capsys):
     assert "Unpaused my-report" in out
 
 
-def test_start_runs_the_task_now(monkeypatch, capsys):
+def test_start_runs_the_task_now_and_marks_the_run_manual(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("ProgramData", str(tmp_path))
     scripts = fake_task(monkeypatch, "managed")
     assert deploy_windows.start({"name": "my-report"}) == 0
+    assert (deploy_windows.logs_folder("my-report") / "manual-start").is_file()
     assert scripts[0][0].startswith("Start-ScheduledTask -TaskName 'pdt-my-report'")
     assert scripts[0][1] == {"elevate": True}
     assert "Started my-report" in capsys.readouterr().out
 
 
-def test_a_missing_task_says_deploy_first(monkeypatch, capsys):
+def test_a_missing_task_says_deploy_first(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("ProgramData", str(tmp_path))
     scripts = fake_task(monkeypatch, "absent")
     assert deploy_windows.pause({"name": "my-report"}, True) == 1
     assert deploy_windows.start({"name": "my-report"}) == 1
@@ -70,7 +73,8 @@ def test_a_missing_task_says_deploy_first(monkeypatch, capsys):
     assert "run pdt deploy my-report first" in capsys.readouterr().out
 
 
-def test_a_task_pdt_does_not_manage_is_refused(monkeypatch, capsys):
+def test_a_task_pdt_does_not_manage_is_refused(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("ProgramData", str(tmp_path))
     scripts = fake_task(monkeypatch, "unmanaged")
     assert deploy_windows.start({"name": "my-report"}) == 1
     assert scripts == []

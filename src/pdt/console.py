@@ -36,6 +36,8 @@ from rich.text import Text
 # soft_wrap keeps a long path or command on one logical line: the terminal
 # wraps it at the edge, and rich never re-flows it at a word boundary.
 _console = Console(highlight=False, soft_wrap=True, emoji=False)
+# For a line from another thread that must reach stderr while _console prints on.
+_errors = Console(stderr=True, highlight=False, soft_wrap=True, emoji=False)
 
 # The real stdout, for `data`, once `json_output` has moved stdout to stderr.
 _data = None
@@ -168,6 +170,20 @@ def done(message: str) -> None:
 
 def failed(message: str) -> None:
     _console.print(f"[red]{message}[/]")
+
+
+def event(text: str, mark: str = "", mark_style: str = "") -> None:
+    """One lifecycle event (pdt.lifecycle), bold magenta so it stands out in a run's output.
+    `mark` names how it reached the console, such as `unhandled` (no alerts entry names
+    the event) or `not delivered to <type>`, in `mark_style` when one is given."""
+    styled = f"[{mark_style}]{escape(mark)}[/]" if mark_style else escape(mark)
+    prefix = f"{styled} " if mark else ""
+    _console.print(f"[bold magenta]\\[event] {prefix}{escape(text)}[/]")
+
+
+def event_failed(message: str) -> None:
+    """A lifecycle event that an alerts transport could not deliver, on stderr."""
+    _errors.print(f"[yellow]{message}[/]")
 
 
 def heading(message: str) -> None:

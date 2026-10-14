@@ -21,10 +21,11 @@ JSON on stderr; see `pdt.console.json_output`.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 from pathlib import Path
 
-from pdt import __version__, config, console, powershell, pwsh, regions, runs_cli
+from pdt import __version__, config, console, lifecycle, powershell, pwsh, regions, runs_cli
 from pdt.config import ConfigError
 from pdt.deploy_common import CostEstimate
 from pdt.utils.email_auth import can_prompt
@@ -145,14 +146,44 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
         return 1
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
-    code = dispatch(provider, "deploy", app_name, assume_yes)
-    # A declined plan exits nonzero, so 0 means the deploy completed.
+    code = provider_step("deploy", provider, app_name, assume_yes)
     if code != 0:
         return code
-    config.mark_deployed(app_name, True)
     run_code = first_run(app_name, provider, assume_yes, run)
     deployed_next_steps(app_name, started=run_code is not None)
     return run_code or 0
+
+
+# The started, completed, and failed events of each provider_step command.
+STEP_EVENTS = {
+    "deploy": (lifecycle.APP_DEPLOY_STARTED, lifecycle.APP_DEPLOY_COMPLETED,
+               lifecycle.APP_DEPLOY_FAILED),
+    "destroy": (lifecycle.APP_DESTROY_STARTED, lifecycle.APP_DESTROY_COMPLETED,
+                lifecycle.APP_DESTROY_FAILED),
+}
+
+
+def provider_step(command: str, provider: str, app_name: str, assume_yes: bool) -> int:
+    """Run `deploy` or `destroy` through the provider script between its STEP_EVENTS, and
+    on success record whether the app is now deployed."""
+    started, completed, failed = STEP_EVENTS[command]
+    params = lifecycle.app_params(app_name, provider)
+    lifecycle.emit(started, **params)
+    try:
+        code = dispatch(provider, command, app_name, assume_yes)
+    except KeyboardInterrupt:
+        lifecycle.emit(failed, **params, reason="interrupted")
+        raise
+    if code in (DECLINED, 130, -signal.SIGINT):
+        lifecycle.emit(failed, **params, exit_code=code,
+                       reason="declined" if code == DECLINED else "interrupted")
+        return code
+    if code != 0:
+        lifecycle.emit(failed, **params, exit_code=code)
+        return code
+    config.mark_deployed(app_name, command == "deploy")
+    lifecycle.emit(completed, **params)
+    return 0
 
 
 def first_run(app_name: str, provider: str, assume_yes: bool, run: bool | None) -> int | None:
@@ -262,13 +293,19 @@ def pause(app_name: str, paused: bool) -> int:
     setting = f"pause: {'true' if paused else 'false'}"
     console.done(f"{console.value(app_name)}: {console.value(setting)} saved in "
                  f"{console.value(path)}")
-    if not config.is_deployed(app_name):
+    deployed = config.is_deployed(app_name)
+    if deployed:
+        config.load_env(app["dir"])
+        code = dispatch(provider, "pause" if paused else "unpause", app_name, False)
+    else:
         state = "paused" if paused else "running"
         console.say(f"{console.value(app_name)} is not deployed; the next pdt deploy will create "
                     f"it {state}.")
-        return 0
-    config.load_env(app["dir"])
-    return dispatch(provider, "pause" if paused else "unpause", app_name, False)
+        code = 0
+    if code == 0:
+        lifecycle.emit(lifecycle.JOB_PAUSED if paused else lifecycle.JOB_UNPAUSED,
+                       **lifecycle.app_params(app_name, provider), deployed=deployed)
+    return code
 
 
 def start(app_name: str) -> int:
@@ -311,10 +348,12 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
         console.error(console.escape(str(e)))
         return 1
     config.load_env(app["dir"])
-    code = dispatch(provider, "destroy", app_name, assume_yes)
-    if code == 0:
-        config.mark_deployed(app_name, False)
-    return code
+    return provider_step("destroy", provider, app_name, assume_yes)
+
+
+# The exit code of a provider script whose plan the user declined, so provider_step can
+# give a declined deploy or destroy reason=declined.
+DECLINED = 10
 
 
 def confirm(actions: list[str], assume_yes: bool,
