@@ -88,7 +88,6 @@ APP_DESTROY_STARTED = "app:destroy-started"
 APP_DESTROY_COMPLETED = "app:destroy-completed"
 APP_DESTROY_FAILED = "app:destroy-failed"
 APP_SECRETS_UPDATED = "app:secrets-updated"
-# Every event pdt emits, in the order pdt alerts setup shows them.
 EVENTS = (APP_DEPLOY_STARTED, APP_DEPLOY_COMPLETED, APP_DEPLOY_FAILED, JOB_RUN_STARTED,
           JOB_RUN_COMPLETED, JOB_RUN_FAILED, JOB_PAUSED, JOB_UNPAUSED, APP_DESTROY_STARTED,
           APP_DESTROY_COMPLETED, APP_DESTROY_FAILED, APP_SECRETS_UPDATED)
@@ -133,41 +132,41 @@ TRANSPORTS: dict[str, Transport] = {
 
 
 def parse_alerts(alerts: object, where: str) -> list[dict]:
-    """The checked entries, and the implicit unhandled entry at the end when no entry names
-    `unhandled`; none for `alerts: false`."""
-    known = ", ".join(TRANSPORTS)
     if alerts is False:
         return []
     if not isinstance(alerts, list):
         raise config.ConfigError(
             f"{where}: alerts must be a list of entries, each with a type, or false")
-    parsed = []
-    for alert in alerts:
-        if not isinstance(alert, dict) or "type" not in alert:
-            raise config.ConfigError(f"{where}: every alerts entry needs a type, one of: {known}")
-        if alert["type"] not in TRANSPORTS:
-            raise config.ConfigError(
-                f"{where}: alerts type {alert['type']!r} is not known; use one of: {known}")
-        allowed = [*ENTRY_KEYS, *sorted(TRANSPORTS[alert["type"]].keys)]
-        for key in alert:
-            if key not in allowed:
-                raise config.ConfigError(
-                    f"{where}: alerts: unknown key {key!r}; a {alert['type']} entry takes: "
-                    + ", ".join(allowed))
-        missing = sorted(TRANSPORTS[alert["type"]].required - set(alert))
-        if missing:
-            raise config.ConfigError(
-                f"{where}: the {alert['type']} alerts entry needs {', '.join(missing)}; "
-                "run pdt alerts setup to add one")
-        if "events" not in alert and "exclude-events" not in alert:
-            raise config.ConfigError(
-                f"{where}: the {alert['type']} alerts entry needs events, for example "
-                "events: [all]")
-        parsed.append({**alert, "events": event_patterns(alert, "events", where),
-                       "exclude-events": event_patterns(alert, "exclude-events", where)})
+    parsed = [parse_entry(alert, where) for alert in alerts]
     if not any(UNHANDLED in alert["events"] + alert["exclude-events"] for alert in parsed):
         parsed.append({"type": "console", "events": [UNHANDLED], "exclude-events": []})
     return parsed
+
+
+def parse_entry(alert: object, where: str) -> dict:
+    known = ", ".join(TRANSPORTS)
+    if not isinstance(alert, dict) or "type" not in alert:
+        raise config.ConfigError(f"{where}: every alerts entry needs a type, one of: {known}")
+    if alert["type"] not in TRANSPORTS:
+        raise config.ConfigError(
+            f"{where}: alerts type {alert['type']!r} is not known; use one of: {known}")
+    allowed = [*ENTRY_KEYS, *sorted(TRANSPORTS[alert["type"]].keys)]
+    for key in alert:
+        if key not in allowed:
+            raise config.ConfigError(
+                f"{where}: alerts: unknown key {key!r}; a {alert['type']} entry takes: "
+                + ", ".join(allowed))
+    missing = sorted(TRANSPORTS[alert["type"]].required - set(alert))
+    if missing:
+        raise config.ConfigError(
+            f"{where}: the {alert['type']} alerts entry needs {', '.join(missing)}; "
+            "run pdt alerts setup to add one")
+    if "events" not in alert and "exclude-events" not in alert:
+        raise config.ConfigError(
+            f"{where}: the {alert['type']} alerts entry needs events, for example "
+            "events: [all]")
+    return {**alert, "events": event_patterns(alert, "events", where),
+            "exclude-events": event_patterns(alert, "exclude-events", where)}
 
 
 def event_patterns(alert: dict, key: str, where: str) -> list[str]:
