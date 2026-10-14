@@ -60,13 +60,30 @@ def test_a_failed_scheduled_run_is_red_and_lists_every_parameter_in_order():
                 {"type": "mrkdwn", "text": "*Project*\ncontoso-jobs"},
                 {"type": "mrkdwn", "text": "*App*\nsync-users"},
                 {"type": "mrkdwn", "text": "*Provider*\naws"},
-                {"type": "mrkdwn", "text": "*Where*\nDeployed job"},
+                {"type": "mrkdwn", "text": "*Where*\nCloud run on AWS"},
                 {"type": "mrkdwn", "text": "*Trigger*\nSchedule"},
                 {"type": "mrkdwn", "text": "*Exit code*\n1"},
                 {"type": "mrkdwn", "text": "*Run id*\n20261013T140200Z"},
-                {"type": "mrkdwn", "text": "*State*\nruns/*-20261013T140200Z/"}]},
+                {"type": "mrkdwn", "text": "*Logs*\n`pdt logs sync-users --id 20261013T140200Z`"}]},
             {"type": "context", "elements": [{"type": "mrkdwn", "text":
                 "`job:run-failed` at 2026-10-13 14:02 UTC, sent by pdt"}]}]}]}
+
+
+@pytest.mark.parametrize(("deployed", "provider", "where", "logs"), [
+    (False, "aws", "Local run on build-pc", False),
+    (True, "windows", "Deployed run on build-pc", True),
+    (True, "google-cloud", "Cloud run on Google Cloud", True),
+])
+def test_where_names_the_computer_or_cloud_and_logs_is_only_for_a_deployed_run(
+        monkeypatch, deployed, provider, where, logs):
+    monkeypatch.setattr(slack.socket, "gethostname", lambda: "build-pc")
+    event = lifecycle.Event("job:run-completed", AT, {
+        **PARAMS, "provider": provider, "run_id": "c77b2dd0", "deployed": deployed,
+        "trigger": "manual", "exit_code": 0, "state": "runs/*-c77b2dd0/"})
+    texts = [field["text"] for field in slack.message(event)["attachments"][0]["blocks"][1]["fields"]]
+    assert f"*Where*\n{where}" in texts
+    assert ("*Logs*\n`pdt logs sync-users --id c77b2dd0`" in texts) is logs
+    assert not any("runs/" in text for text in texts)
 
 
 @pytest.mark.parametrize(("name", "colour", "emoji"), [

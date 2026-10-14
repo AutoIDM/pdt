@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -45,8 +46,10 @@ UNHANDLED = ("#868686", ":white_circle:")
 READY = ("#2EB67D", ":white_check_mark:")
 # Each parameter's label, in the order the message shows them; any other parameter follows.
 FIELDS = {"project": "Project", "app": "App", "provider": "Provider", "deployed": "Where",
-          "trigger": "Trigger", "exit_code": "Exit code", "run_id": "Run id"}
+          "trigger": "Trigger", "exit_code": "Exit code", "run_id": "Run id", "state": "Logs"}
 HIDDEN = {"url"}
+# The cloud a deployed run ran in; a deployed Windows task runs on this computer.
+CLOUDS = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
 MAX_FIELDS = 10
 
 
@@ -72,13 +75,18 @@ def message(event, unhandled: bool = False) -> dict:
     colour, emoji = UNHANDLED if unhandled else OUTCOMES.get(
         event.name.rsplit("-", 1)[-1], OTHER)
     title = f"{words}: {params['app']}" if "app" in params else words
-    keys = [key for key in FIELDS if key in params]
+    # `pdt logs` reads only a deployed run's log, so a local run shows no Logs field.
+    keys = [key for key in FIELDS if key in params and (key != "state" or params.get("deployed"))]
     keys += [key for key in params if key not in FIELDS and key not in HIDDEN]
     fields = []
     for key in keys[:MAX_FIELDS]:
         shown = str(params[key])
         if key == "deployed":
-            shown = "Deployed job" if params[key] else "This computer"
+            cloud = CLOUDS.get(str(params.get("provider"))) if params[key] else None
+            shown = (f"Cloud run on {cloud}" if cloud else
+                     f"{'Deployed' if params[key] else 'Local'} run on {socket.gethostname()}")
+        elif key == "state":
+            shown = f"`pdt logs {params.get('app')} --id {params.get('run_id')}`"
         elif key == "trigger":
             shown = shown.capitalize()
         fields.append({"type": "mrkdwn", "text": f"*{FIELDS.get(key, event_words(key))}*\n{shown}"})
