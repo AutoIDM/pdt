@@ -108,14 +108,15 @@ def message(event, unhandled: bool = False) -> dict:
 
 
 def ready_message(project: str, channel: str, events: list[str]) -> dict:
-    """The test message: what this channel will get, from which project."""
+    """The test message: what this channel will get, from which project. `events` are the
+    entry's own words: `all`, a glob as written, or an event name."""
     colour, emoji = READY
-    names = ", ".join(event_words(name) for name in events) or "no events yet"
+    names = ", ".join("all events" if name == "all" else name if any(c in name for c in "*?[")
+                      else event_words(name) for name in events) or "no events yet"
     return {"text": "Success, you're ready!", "attachments": [{"color": colour, "blocks": [
         {"type": "header", "text": {"type": "plain_text", "text": f"{emoji} Success, you're ready!"}},
         {"type": "section", "text": {"type": "mrkdwn", "text": (
-            f"pdt will post here when the project *{project}* has one of these events: "
-            f"{names}.")}},
+            f"pdt will post here for these events of the project *{project}*: {names}.")}},
         {"type": "context", "elements": [{"type": "mrkdwn", "text": (
             f"Test message to #{channel.lstrip('#')}, sent by `pdt alerts test`")}]},
     ]}]}

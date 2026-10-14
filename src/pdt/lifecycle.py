@@ -88,6 +88,10 @@ APP_DESTROY_STARTED = "app:destroy-started"
 APP_DESTROY_COMPLETED = "app:destroy-completed"
 APP_DESTROY_FAILED = "app:destroy-failed"
 APP_SECRETS_UPDATED = "app:secrets-updated"
+# Every event pdt emits, in the order pdt alerts setup shows them.
+EVENTS = (APP_DEPLOY_STARTED, APP_DEPLOY_COMPLETED, APP_DEPLOY_FAILED, JOB_RUN_STARTED,
+          JOB_RUN_COMPLETED, JOB_RUN_FAILED, JOB_PAUSED, JOB_UNPAUSED, APP_DESTROY_STARTED,
+          APP_DESTROY_COMPLETED, APP_DESTROY_FAILED, APP_SECRETS_UPDATED)
 # Set to `manual` for one execution by the pdt command that starts a deployed run.
 TRIGGER_ENV = "PDT_TRIGGER"
 
@@ -129,8 +133,8 @@ TRANSPORTS: dict[str, Transport] = {
 
 
 def parse_alerts(alerts: object, where: str) -> list[dict]:
-    """The checked entries, with `all` as `*`, and the implicit unhandled entry at the end
-    when no entry names `unhandled`; none for `alerts: false`."""
+    """The checked entries, and the implicit unhandled entry at the end when no entry names
+    `unhandled`; none for `alerts: false`."""
     known = ", ".join(TRANSPORTS)
     if alerts is False:
         return []
@@ -171,16 +175,20 @@ def event_patterns(alert: dict, key: str, where: str) -> list[str]:
     if not (isinstance(names, list) and all(isinstance(n, str) for n in names)):
         raise config.ConfigError(
             f"{where}: alerts {key} must be a list of event names, for example [all]")
-    return ["*" if name == ALL else name for name in names]
+    return names
+
+
+def matches(pattern: str, name: str) -> bool:
+    return pattern == ALL or fnmatchcase(name, pattern)
 
 
 def excludes(alert: dict, name: str) -> bool:
-    return any(fnmatchcase(name, p) for p in alert["exclude-events"])
+    return any(matches(p, name) for p in alert["exclude-events"])
 
 
 def receives(alert: dict, name: str) -> bool:
     """True when a name in `events` other than `unhandled` matches, and no exclude does."""
-    return (any(fnmatchcase(name, p) for p in alert["events"] if p != UNHANDLED)
+    return (any(matches(p, name) for p in alert["events"] if p != UNHANDLED)
             and not excludes(alert, name))
 
 

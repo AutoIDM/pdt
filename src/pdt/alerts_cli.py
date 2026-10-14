@@ -12,7 +12,8 @@ and keeps every other entry as it is. Those types start checked, with the
 events that their entry receives; with no `alerts:`, only Slack starts checked.
 An entry whose type the user unchecks goes away. An entry whose events and
 connection stay the same stays as written, so Enter at every question changes
-nothing; a changed one gets its events as a list, with no `exclude-events`.
+nothing; a changed one gets its events as a list, `all` for every event in
+lifecycle.EVENTS, with no `exclude-events`.
 
 `deploy` calls `offer` before a deploy of an app with no `alerts:` key in
 pdt.yml or its config.yml, when a person can answer. pdt offers it once per
@@ -48,9 +49,6 @@ from pdt import config, console, lifecycle, slack
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
-EVENTS = (lifecycle.APP_DEPLOY_STARTED, lifecycle.APP_DEPLOY_COMPLETED,
-          lifecycle.APP_DEPLOY_FAILED, lifecycle.JOB_RUN_STARTED, lifecycle.JOB_RUN_COMPLETED,
-          lifecycle.JOB_RUN_FAILED, lifecycle.JOB_PAUSED, lifecycle.JOB_UNPAUSED)
 OFFERED = "alerts_offered"
 # The pdt Slack app. Both stay empty until the app and its CONNECT_URL server exist;
 # until then setup asks for a webhook URL.
@@ -206,14 +204,14 @@ SETUPS = {
                    (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
                     lifecycle.JOB_RUN_FAILED),
                    slack_configure, slack_test, lambda entry: f"Slack #{entry['channel']}"),
-    "console": Setup("Console: a line in the output of pdt and of each run", EVENTS,
+    "console": Setup("Console: a line in the output of pdt and of each run", lifecycle.EVENTS,
                      lambda: ({}, {}), None, lambda entry: "console"),
 }
 
 
 def managed(alerts: list) -> dict[str, tuple[int, list[str]]]:
     """The entry of `alerts` that setup changes for each type in SETUPS, as its index and the
-    EVENTS it receives: the first valid entry of the type that does not name unhandled."""
+    events it receives: the first valid entry of the type that does not name unhandled."""
     found = {}
     for index, alert in enumerate(alerts):
         try:
@@ -222,7 +220,7 @@ def managed(alerts: list) -> dict[str, tuple[int, list[str]]]:
             continue
         if (parsed["type"] in SETUPS and parsed["type"] not in found
                 and lifecycle.UNHANDLED not in parsed["events"] + parsed["exclude-events"]):
-            found[parsed["type"]] = index, [event for event in EVENTS
+            found[parsed["type"]] = index, [event for event in lifecycle.EVENTS
                                             if lifecycle.receives(parsed, event)]
     return found
 
@@ -250,7 +248,8 @@ def setup() -> int:
         existing = None if index is None else alerts[index]
         console.say()
         events = checkboxes(f"Which events should go to {item.label.partition(':')[0]}?",
-                            [(event, f"{slack.event_words(event)} ({event})") for event in EVENTS],
+                            [(event, f"{slack.event_words(event)} ({event})")
+                             for event in lifecycle.EVENTS],
                             checked)
         if not events:
             console.say(f"No events chosen, so {console.escape(item.label.partition(':')[0])} "
@@ -271,7 +270,8 @@ def setup() -> int:
             values.update(new_values)
         same = existing is not None and events == checked and all(
             existing.get(key) == value for key, value in keys.items())
-        chosen[name] = existing if same else {"type": name, **keys, "events": events}
+        chosen[name] = existing if same else {"type": name, **keys, "events": (
+            [lifecycle.ALL] if events == list(lifecycle.EVENTS) else events)}
     owners = {index: name for name, (index, _) in current.items()}
     saved = [chosen.get(owners[index]) if index in owners else alert
              for index, alert in enumerate(alerts)]
