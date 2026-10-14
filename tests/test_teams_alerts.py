@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -32,7 +33,7 @@ def workflow():
 
     server = HTTPServer(("127.0.0.1", 0), Hook)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{server.server_port}/workflows/w1", seen, answer
+    yield f"http://127.0.0.1:{server.server_port}/workflows/0a1b2c3d4e5f/triggers/manual/paths/invoke", seen, answer
     server.shutdown()
 
 
@@ -103,66 +104,91 @@ def test_a_url_parameter_becomes_an_open_link():
                                    "url": "https://example.com/run/1"}]
 
 
-def test_the_ready_card_names_the_project_and_the_events():
-    content = teams.ready_message("contoso-jobs", "it-alerts", ["job:run-failed"])[
-        "attachments"][0]["content"]
+@pytest.mark.parametrize(("entry", "target"), [
+    ({"webhook": "0a1b2c3d4e5f", "events": ["job:run-failed"]}, "workflow 0a1b2c3d4e5f"),
+    ({"webhook": "0a1b2c3d4e5f", "name": "IT alerts", "events": ["job:run-failed"]}, "IT alerts"),
+])
+def test_the_ready_card_names_the_project_the_events_and_the_entry(entry, target):
+    content = teams.ready_message("contoso-jobs", entry)["attachments"][0]["content"]
     assert content["fallbackText"] == "Success, you're ready!"
     assert content["body"][1]["text"] == (
         "pdt will post here for these events of the project **contoso-jobs**: Run failed.")
-    assert content["body"][2]["text"] == "Test message to it-alerts, sent by pdt alerts test"
+    assert content["body"][2]["text"] == f"Test message to {target}, sent by pdt alerts test"
+    assert alerts_cli.SETUPS["teams"].describe(entry) == f"Teams {target}"
 
 
-def test_deliver_posts_the_card_to_the_workflow_of_the_channel(workflow, monkeypatch):
+@pytest.mark.parametrize(("url", "found"), [
+    ("https://default1234.d1.environment.api.powerplatform.com:443/powerautomate/automations/"
+     "direct/cu/08/workflows/8e3b1f0c2a4d4e6f9a7b5c3d1e2f4a6b/triggers/manual/paths/invoke"
+     "?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=abc",
+     "8e3b1f0c2a4d4e6f9a7b5c3d1e2f4a6b"),
+    ("https://prod-12.westus.logic.azure.com:443/workflows/0a1b2c3d/triggers/manual/paths/invoke",
+     "0a1b2c3d"),
+])
+def test_the_webhook_id_is_the_workflow_id_of_the_url(url, found):
+    assert teams.webhook_id(url) == found
+
+
+def test_a_url_with_no_workflow_id_gets_a_stable_hash():
+    found = teams.webhook_id("https://example.com/hook")
+    assert re.fullmatch("[0-9A-F]{8}", found)
+    assert found == teams.webhook_id("https://example.com/hook") == alert_message.url_id(
+        "https://example.com/hook")
+
+
+def test_deliver_posts_the_card_to_the_workflow_of_the_entry(workflow, monkeypatch):
     url, seen, _answer = workflow
-    monkeypatch.setenv("TEAMS_WEBHOOK_IT_ALERTS", url)
+    monkeypatch.setenv("TEAMS_WEBHOOK_0A1B2C3D4E5F", url)
     event = lifecycle.Event("app:deploy-failed", AT, PARAMS)
-    teams.deliver(event, {"type": "teams", "channel": "it-alerts"}, False)
+    teams.deliver(event, {"type": "teams", "webhook": "0a1b2c3d4e5f"}, False)
     assert seen == [teams.message(event)]
 
 
 def test_a_teams_error_raises_with_teams_answer(workflow, monkeypatch):
     url, _seen, answer = workflow
     answer.update(status=400, body="bad card")
-    monkeypatch.setenv("TEAMS_WEBHOOK_IT_ALERTS", url)
+    monkeypatch.setenv("TEAMS_WEBHOOK_0A1B2C3D4E5F", url)
     with pytest.raises(RuntimeError, match="Teams answered HTTP 400: bad card"):
-        teams.deliver(lifecycle.Event("job:paused", AT, PARAMS), {"channel": "it-alerts"}, False)
+        teams.deliver(lifecycle.Event("job:paused", AT, PARAMS), {"webhook": "0a1b2c3d4e5f"},
+                      False)
 
 
 def test_a_missing_workflow_url_names_the_env_var_and_the_fix(project, monkeypatch):
-    monkeypatch.delenv("TEAMS_WEBHOOK_IT_ALERTS", raising=False)
+    monkeypatch.delenv("TEAMS_WEBHOOK_0A1B2C3D4E5F", raising=False)
     monkeypatch.delenv("PDT_ENV_JSON", raising=False)
-    with pytest.raises(RuntimeError, match="TEAMS_WEBHOOK_IT_ALERTS is not set; run pdt alerts "
-                                           "setup to connect Teams it-alerts"):
-        teams.deliver(lifecycle.Event("job:paused", AT, PARAMS), {"channel": "it-alerts"}, False)
+    with pytest.raises(RuntimeError, match="TEAMS_WEBHOOK_0A1B2C3D4E5F is not set; run pdt alerts "
+                                           "setup to connect Teams workflow 0a1b2c3d4e5f"):
+        teams.deliver(lifecycle.Event("job:paused", AT, PARAMS), {"webhook": "0a1b2c3d4e5f"},
+                      False)
 
 
 def test_a_cloud_job_finds_the_workflow_url_in_its_env_secret(monkeypatch):
-    monkeypatch.delenv("TEAMS_WEBHOOK_OPS", raising=False)
-    monkeypatch.setenv("PDT_ENV_JSON", json.dumps({"TEAMS_WEBHOOK_OPS": "https://x.api.powerplatform.com/w"}))
-    assert alert_message.secret_value(teams.secret_name("ops")) == "https://x.api.powerplatform.com/w"
+    monkeypatch.delenv("TEAMS_WEBHOOK_W1", raising=False)
+    monkeypatch.setenv("PDT_ENV_JSON", json.dumps({"TEAMS_WEBHOOK_W1": "https://x.api.powerplatform.com/w"}))
+    assert alert_message.secret_value(teams.secret_name({"webhook": "w1"})) == (
+        "https://x.api.powerplatform.com/w")
 
 
-def test_a_teams_entry_needs_a_channel_and_takes_no_other_key(project):
-    with pytest.raises(config.ConfigError, match="the teams alerts entry needs channel"):
-        lifecycle.parse_alerts([{"type": "teams", "events": ["all"]}], "pdt.yml")
-    with pytest.raises(config.ConfigError, match="a teams entry takes: type, events, "
-                                                 "exclude-events, channel"):
-        lifecycle.parse_alerts([{"type": "teams", "channel": "a", "url": "x", "events": ["all"]}],
-                               "pdt.yml")
+def test_a_teams_entry_takes_no_channel_and_no_other_key(project):
+    for key in ("channel", "url"):
+        with pytest.raises(config.ConfigError, match=f"unknown key '{key}'; a teams entry takes: "
+                                                     "type, events, exclude-events, name, webhook"):
+            lifecycle.parse_alerts([{"type": "teams", "webhook": "w1", key: "x",
+                                     "events": ["all"]}], "pdt.yml")
 
 
 def test_the_workflow_url_of_each_teams_entry_is_a_required_env_var_so_deploy_sends_it(project):
     (project / "pdt.yml").write_text("platform:\n  provider: azure\nalerts:\n"
-                                     "  - type: teams\n    channel: it-alerts\n    events: [all]\n")
+                                     "  - type: teams\n    webhook: 0a1b2c3d4e5f\n    events: [all]\n")
     add_app(project, "report", "env:\n  required: [API_KEY]\n")
     assert config.env_spec(config.merged_app("report"))["required"] == [
-        "API_KEY", "TEAMS_WEBHOOK_IT_ALERTS"]
+        "API_KEY", "TEAMS_WEBHOOK_0A1B2C3D4E5F"]
 
 
 def test_teams_starts_unchecked_and_setup_writes_pdt_yml_and_env_then_sends_the_test_on_yes(
         project, workflow, monkeypatch):
     url, seen, _answer = workflow
-    monkeypatch.delenv("TEAMS_WEBHOOK_IT_ALERTS", raising=False)
+    monkeypatch.delenv("TEAMS_WEBHOOK_0A1B2C3D4E5F", raising=False)
     shown = {}
     questions = []
 
@@ -172,30 +198,35 @@ def test_teams_starts_unchecked_and_setup_writes_pdt_yml_and_env_then_sends_the_
 
     monkeypatch.setattr(alerts_cli.console, "heading", questions.append)
     monkeypatch.setattr(alerts_cli.console, "choice", choice)
-    answers(monkeypatch, "1 2", "", "", url, "y", "#it-alerts", "y")
+    queue = answers(monkeypatch, "1 2", "", "", url, "y", "y")
     assert alerts_cli.setup() == 0
+    assert queue == []
     assert shown["Where should pdt send alerts?"] == ["[x] Slack: a message in a Slack channel"]
     assert config.load_yaml(project / "pdt.yml")["alerts"] == [{
-        "type": "teams", "channel": "it-alerts",
+        "type": "teams", "webhook": "0a1b2c3d4e5f",
         "events": ["app:deploy-completed", "app:deploy-failed", "job:run-failed"]}]
-    assert (project / ".env").read_text() == f"TEAMS_WEBHOOK_IT_ALERTS={url}\n"
+    assert (project / ".env").read_text() == f"TEAMS_WEBHOOK_0A1B2C3D4E5F={url}\n"
     assert [payload["attachments"][0]["content"]["fallbackText"] for payload in seen] == [
         "Success, you're ready!"]
+    assert body(seen[0])[2]["text"] == ("Test message to workflow 0a1b2c3d4e5f, sent by pdt "
+                                        "alerts test")
 
 
 def test_a_host_outside_power_platform_asks_to_use_it_anyway(project, monkeypatch):
     asked = []
-    answers(monkeypatch, "1 2", "", "", "https://example.com/hook", "it-alerts")
+    answers(monkeypatch, "1 2", "", "", "https://example.com/hook")
     monkeypatch.setattr(alerts_cli.console, "confirm", lambda text, **_k: asked.append(text) or "anyway" in text)
     assert alerts_cli.setup() == 0
     assert asked[0] == "https://example.com/hook is not a Teams workflow address. Use it anyway?"
-    assert (project / ".env").read_text() == "TEAMS_WEBHOOK_IT_ALERTS=https://example.com/hook\n"
+    found = alert_message.url_id("https://example.com/hook")
+    assert config.load_yaml(project / "pdt.yml")["alerts"][0]["webhook"] == found
+    assert (project / ".env").read_text() == f"TEAMS_WEBHOOK_{found}=https://example.com/hook\n"
 
 
 def test_enter_at_the_url_prints_the_workflows_steps(project, monkeypatch):
     lines = []
     monkeypatch.setattr(alerts_cli.console, "bullet", lines.append)
-    answers(monkeypatch, "1 2", "", "", "", "https://a.environment.api.powerplatform.com/w", "ops", "n")
+    answers(monkeypatch, "1 2", "", "", "", "https://a.environment.api.powerplatform.com/w", "n")
     assert alerts_cli.setup() == 0
     assert len(lines) == 4
     assert lines[0].startswith("1. In Teams, go to the channel for alerts")
@@ -205,8 +236,7 @@ def test_enter_at_the_url_prints_the_workflows_steps(project, monkeypatch):
 def test_a_url_that_is_not_a_web_address_warns_and_asks_again(project, monkeypatch):
     warned = []
     monkeypatch.setattr(alerts_cli.console, "warn", warned.append)
-    answers(monkeypatch, "1 2", "", "", "teams", "https://a.environment.api.powerplatform.com/w", "ops",
-            "n")
+    answers(monkeypatch, "1 2", "", "", "teams", "https://a.environment.api.powerplatform.com/w", "n")
     assert alerts_cli.setup() == 0
     assert warned == ["A Teams workflow URL starts with https:// and ends in "
                       ".api.powerplatform.com. Press Enter to stop."]
@@ -214,7 +244,7 @@ def test_a_url_that_is_not_a_web_address_warns_and_asks_again(project, monkeypat
 
 def test_the_default_answer_to_the_test_question_sends_nothing(project, workflow, monkeypatch):
     url, seen, _answer = workflow
-    answers(monkeypatch, "1 2", "", "", url, "y", "it-alerts", "n")
+    answers(monkeypatch, "1 2", "", "", url, "y", "n")
     assert alerts_cli.setup() == 0
     assert seen == []
 
@@ -226,9 +256,9 @@ def test_alerts_test_sends_the_ready_card_to_a_teams_entry_and_a_slack_entry(
         (service, payload)) or ("ok" if service == "Slack" else ""))
     (project / "pdt.yml").write_text("platform:\n  provider: azure\nalerts:\n"
                                      "  - type: slack\n    channel: ops\n    events: [all]\n"
-                                     "  - type: teams\n    channel: ops\n    events: [all]\n")
+                                     "  - type: teams\n    webhook: w1\n    events: [all]\n")
     monkeypatch.setenv("SLACK_WEBHOOK_OPS", "https://hooks.slack.com/x")
-    monkeypatch.setenv("TEAMS_WEBHOOK_OPS", "https://a.environment.api.powerplatform.com/w")
+    monkeypatch.setenv("TEAMS_WEBHOOK_W1", "https://a.environment.api.powerplatform.com/w")
     assert alerts_cli.test() == 0
     assert [service for service, _payload in sent] == ["Slack", "Teams"]
     assert sent[0][1]["text"] == sent[1][1]["attachments"][0]["content"]["fallbackText"]

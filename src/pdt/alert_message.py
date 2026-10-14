@@ -8,11 +8,11 @@ shows as written and Teams converts. A Tone (`OUTCOMES`, `OTHER`, `UNHANDLED`,
 `READY`) holds the colour and icon of an outcome for both types. The title also
 says the outcome in words, so the tone is never the only sign of it.
 
-The secret lookup (`secret_value`), the env var name (`env_name`), and the HTTP
-POST (`post`) are shared too. lifecycle.py runs before the app and loads no env,
-so `secret_value` finds a webhook URL itself: the environment, then the job's
-PDT_ENV_JSON secret, then the `.env` files from the working folder and the
-project up.
+The secret lookup (`secret_value`), the env var name (`env_name`), the ID of a
+URL with none of its own (`url_id`), and the HTTP POST (`post`) are shared too.
+lifecycle.py runs before the app and loads no env, so `secret_value` finds a
+webhook URL itself: the environment, then the job's PDT_ENV_JSON secret, then
+the `.env` files from the working folder and the project up.
 
 This module is in deploy_common.LIFECYCLE_MODULES, so it imports only what
 lifecycle.py's script header installs.
@@ -20,6 +20,7 @@ lifecycle.py's script header installs.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -74,9 +75,15 @@ CLOUDS = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
 MAX_FIELDS = 10
 
 
-def env_name(prefix: str, channel: str) -> str:
-    """The env var that holds the webhook of `channel`: `SLACK_WEBHOOK_` and #it-alerts give SLACK_WEBHOOK_IT_ALERTS."""
-    return prefix + re.sub(r"[^A-Z0-9]+", "_", channel.lstrip("#").upper()).strip("_")
+def env_name(prefix: str, key: str) -> str:
+    """The env var named by `prefix` and `key`: `SLACK_WEBHOOK_` and B0123ABC give
+    SLACK_WEBHOOK_B0123ABC, and with #it-alerts, SLACK_WEBHOOK_IT_ALERTS."""
+    return prefix + re.sub(r"[^A-Z0-9]+", "_", key.lstrip("#").upper()).strip("_")
+
+
+def url_id(url: str) -> str:
+    """The ID of a webhook URL that holds none: the first 8 hex digits of its SHA-256, upper case."""
+    return hashlib.sha256(url.encode()).hexdigest()[:8].upper()
 
 
 def event_words(name: str) -> str:
