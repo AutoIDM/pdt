@@ -114,7 +114,7 @@ RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 COPY . /workspace
 WORKDIR /workspace/{app}
 {sync}""" + ENTRYPOINT
-LIFECYCLE_MODULES = ("__init__.py", "config.py", "console.py", "lifecycle.py",
+LIFECYCLE_MODULES = ("__init__.py", "config.py", "console.py", "lifecycle.py", "slack.py",
                      "utils/__init__.py", "utils/storage.py")
 # Secret shapes and local state that never belong in an image. The version-control names are
 # the ones `az acr build` always leaves out, so every build place gets the same context.

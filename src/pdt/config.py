@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -344,6 +345,45 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
                 lines.insert((first if first is not None else start) + 1, f"{indent}{key}: {yaml_quoted(value)}")
         write_text_atomically(path, "\n".join(lines) + "\n")
     return path
+
+
+def save_root_alerts(alerts: list[dict]) -> Path:
+    """Write `alerts` as the top-level alerts: block of pdt.yml.
+
+    Replaces only that block (with the same lock and atomic replace as
+    `save_platform_key`), so comments elsewhere in the file survive.
+    """
+    path = find_project() / PROJECT_FILE
+    block = ["alerts:"]
+    for entry in alerts:
+        for index, (key, value) in enumerate(entry.items()):
+            if isinstance(value, list):
+                text = "[" + ", ".join(_yaml_scalar(item) for item in value) + "]"
+            else:
+                text = _yaml_scalar(value)
+            block.append(f"  {'- ' if index == 0 else '  '}{key}: {text}")
+    with locked(path):
+        lines = path.read_text().splitlines() if path.is_file() else []
+        start = next((i for i, line in enumerate(lines)
+                      if line.split("#")[0].rstrip().startswith("alerts:")), None)
+        if start is None:
+            lines += ([""] if lines and lines[-1].strip() else []) + block
+        else:
+            end = start + 1
+            while end < len(lines) and (lines[end].startswith((" ", "\t", "-"))
+                                        or lines[end].strip() == ""):
+                end += 1
+            while end > start + 1 and lines[end - 1].strip() == "":
+                end -= 1
+            lines[start:end] = block
+        write_text_atomically(path, "\n".join(lines) + "\n")
+    return path
+
+
+def _yaml_scalar(value) -> str:
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][\w:.-]*", value):
+        return value
+    return yaml_quoted(value)
 
 
 def set_app_enabled(name: str, enabled: bool) -> Path:
@@ -708,6 +748,15 @@ def env_spec(app: dict) -> dict:
     list: required, with `read_by` naming the file and line of its first read, or optional
     for a Python read that has a fallback (`os.environ.get`, `os.getenv`)."""
     spec = app["env"]
+    # Each alerts entry's secret (a Slack webhook) is required, so deploy sends it to the job.
+    from pdt import lifecycle
+    required = list(spec.get("required") or [])
+    for entry in app.get("alerts") or []:
+        for name in lifecycle.TRANSPORTS[entry["type"]].secrets(entry):
+            if name not in required:
+                required.append(name)
+    if required != list(spec.get("required") or []):
+        spec = {**spec, "required": required}
     if not powershell_scripts(app["dir"]):
         from pdt import python_env
         read_by, optional = python_env.unlisted_env_reads(app["dir"], spec)

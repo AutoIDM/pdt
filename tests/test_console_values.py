@@ -26,6 +26,7 @@ BUILDERS = {"project_line", "secret_contents", "store_description", "store_kept_
 # time, a state word, a fixed phrase, or a variable that holds markup built with
 # console.value(). Each set holds the interpolated expressions of one file.
 ALLOWED = {
+    "alerts_cli.py": {"question", "len(options)", "names"},
     "cli.py": {"APP_QUESTIONS[command]", "len(apps) - len(shown)", "len(problems)", "index",
                "len(names)", "line", "choices"},
     "deploy.py": {"tool", "line", "state", "action"},
