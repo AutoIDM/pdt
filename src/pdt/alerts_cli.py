@@ -1,20 +1,5 @@
 """`pdt alerts setup` and `pdt alerts test`.
 
-`setup` asks which alert types to use (SETUPS), then for each one which events
-it gets and the least it needs to work. It writes the entries into the top-level
-`alerts:` of pdt.yml and their secrets into the project's `.env`, says what it
-wrote, and asks before it sends each test message. `test` sends the same message
-to every alerts entry of a type with a test.
-
-Setup starts from the top-level `alerts:`. For each type in SETUPS it changes
-the first valid entry of that type that does not name `unhandled` (`managed`),
-and keeps every other entry as it is. Those types start checked, with the
-events that their entry receives; with no `alerts:`, only Slack starts checked.
-An entry whose type the user unchecks goes away. An entry whose events and
-connection stay the same stays as written, so Enter at every question changes
-nothing; a changed one gets its events as a list, `all` for every event in
-lifecycle.EVENTS, with no `exclude-events`.
-
 `deploy` calls `offer` before a deploy of an app with no `alerts:` key in
 pdt.yml or its config.yml, when a person can answer. pdt offers it once per
 computer: `alerts_offered` in .pdt/state records it, and `setup` sets it too.
@@ -70,7 +55,6 @@ class Setup:
     events: tuple[str, ...]
     # The entry's own keys and its .env values, or None when the user gave up.
     configure: Callable[[], tuple[dict, dict[str, str]] | None]
-    # Sends the test message of an entry, and raises when it cannot; None for no test.
     test: Callable[[dict, str], None] | None
     describe: Callable[[dict], str]
 
@@ -209,20 +193,32 @@ SETUPS = {
 }
 
 
-def managed(alerts: list) -> dict[str, tuple[int, list[str]]]:
-    """The entry of `alerts` that setup changes for each type in SETUPS, as its index and the
-    events it receives: the first valid entry of the type that does not name unhandled."""
+@dataclass(frozen=True)
+class Current:
+    index: int
+    events: list[str]
+
+
+def first_valid_not_unhandled(alerts: list) -> dict[str, Current]:
     found = {}
     for index, alert in enumerate(alerts):
         try:
-            parsed = lifecycle.parse_alerts([alert], config.PROJECT_FILE)[0]
+            parsed = lifecycle.parse_entry(alert, config.PROJECT_FILE)
         except config.ConfigError:
             continue
         if (parsed["type"] in SETUPS and parsed["type"] not in found
                 and lifecycle.UNHANDLED not in parsed["events"] + parsed["exclude-events"]):
-            found[parsed["type"]] = index, [event for event in lifecycle.EVENTS
-                                            if lifecycle.receives(parsed, event)]
+            found[parsed["type"]] = Current(index, [event for event in lifecycle.EVENTS
+                                                    if lifecycle.receives(parsed, event)])
     return found
+
+
+def merged(alerts: list, current: dict[str, Current], chosen: dict[str, dict]) -> list:
+    owners = {entry.index: name for name, entry in current.items()}
+    saved = [chosen.get(owners[index]) if index in owners else alert
+             for index, alert in enumerate(alerts)]
+    return [alert for alert in saved if alert is not None] + [
+        entry for name, entry in chosen.items() if name not in current]
 
 
 def setup() -> int:
@@ -234,7 +230,7 @@ def setup() -> int:
     state[OFFERED] = True
     config.write_state(state)
     alerts = config.load_yaml(project / config.PROJECT_FILE).get("alerts")
-    current = managed(alerts) if isinstance(alerts, list) else {}
+    current = first_valid_not_unhandled(alerts) if isinstance(alerts, list) else {}
     types = checkboxes("Where should pdt send alerts?",
                        [(name, item.label) for name, item in SETUPS.items()],
                        list(current) if isinstance(alerts, list) else list(SETUPS)[:1])
@@ -244,8 +240,8 @@ def setup() -> int:
     code = 0
     for name in types:
         item = SETUPS[name]
-        index, checked = current.get(name, (None, list(item.events)))
-        existing = None if index is None else alerts[index]
+        existing = alerts[current[name].index] if name in current else None
+        checked = current[name].events if name in current else list(item.events)
         console.say()
         events = checkboxes(f"Which events should go to {item.label.partition(':')[0]}?",
                             [(event, f"{slack.event_words(event)} ({event})")
@@ -272,24 +268,21 @@ def setup() -> int:
             existing.get(key) == value for key, value in keys.items())
         chosen[name] = existing if same else {"type": name, **keys, "events": (
             [lifecycle.ALL] if events == list(lifecycle.EVENTS) else events)}
-    owners = {index: name for name, (index, _) in current.items()}
-    saved = [chosen.get(owners[index]) if index in owners else alert
-             for index, alert in enumerate(alerts)]
-    saved = [alert for alert in saved if alert is not None] + [
-        entry for name, entry in chosen.items() if name not in current]
+    saved = merged(alerts, current, chosen)
     console.say()
     if saved == alerts:
         console.say(f"{console.value('alerts:')} stays as it is.")
     else:
         path = config.save_root_alerts(saved)
         for name, entry in chosen.items():
-            if name not in current or entry is not alerts[current[name][0]]:
+            if name not in current or entry != alerts[current[name].index]:
                 console.done(f"saved  the {console.value(SETUPS[name].describe(entry))} entry "
                              f"under {console.value('alerts:')} in "
                              f"{console.value(config.shown_path(path))}")
-        for name, (index, _) in current.items():
+        for name, entry in current.items():
             if name not in chosen:
-                console.done(f"removed the {console.value(SETUPS[name].describe(alerts[index]))}"
+                removed = SETUPS[name].describe(alerts[entry.index])
+                console.done(f"removed the {console.value(removed)}"
                              f" entry from {console.value('alerts:')} in "
                              f"{console.value(config.shown_path(path))}")
         for app in own_alerts_apps():

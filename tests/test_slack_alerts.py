@@ -219,8 +219,7 @@ SET_UP = ('platform:\n  provider: azure\nalerts:\n'
           '  - type: console\n    events: [unhandled]  # by hand\n\napps:\n  - name: report\n')
 
 
-def shown_checks(monkeypatch):
-    """The label of each option checked the first time each question shows."""
+def first_checked(monkeypatch):
     shown = {}
     questions = []
 
@@ -235,7 +234,7 @@ def shown_checks(monkeypatch):
 
 def test_setup_starts_from_the_entries_in_pdt_yml(project, monkeypatch):
     (project / "pdt.yml").write_text(SET_UP)
-    shown = shown_checks(monkeypatch)
+    shown = first_checked(monkeypatch)
     answers(monkeypatch, "", "", "n", "n")
     assert alerts_cli.setup() == 0
     assert shown == {
@@ -259,7 +258,7 @@ def test_enter_at_every_question_leaves_pdt_yml_as_it_is(project, monkeypatch):
 def test_the_events_shown_checked_are_the_ones_the_entry_receives(
         project, monkeypatch, events, checked):
     (project / "pdt.yml").write_text(f"alerts:\n  - type: console\n    events: {events}\n")
-    shown = shown_checks(monkeypatch)
+    shown = first_checked(monkeypatch)
     answers(monkeypatch, "", "")
     alerts_cli.setup()
     assert shown["Which events should go to Console?"] == [
@@ -284,7 +283,7 @@ def test_unchecking_the_only_entry_leaves_an_empty_list(project, monkeypatch):
 
 def test_console_starts_unchecked_and_adds_an_entry_with_no_secret_and_no_test(
         project, monkeypatch):
-    shown = shown_checks(monkeypatch)
+    shown = first_checked(monkeypatch)
     answers(monkeypatch, "1 2", "", "3 5", "")
     assert alerts_cli.setup() == 0
     assert shown["Where should pdt send alerts?"] == ["[x] Slack: a message in a Slack channel"]
