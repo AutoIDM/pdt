@@ -173,11 +173,11 @@ def test_save_root_alerts_replaces_only_the_alerts_block(project):
         "    channel: it-alerts\n    events: [\"job:*\"]\n\napps:\n  - name: report\n")
 
 
-def test_setup_with_a_pasted_webhook_writes_pdt_yml_and_env_then_sends_the_test(
+def test_setup_with_a_pasted_webhook_writes_pdt_yml_and_env_then_sends_the_test_on_yes(
         project, webhook, monkeypatch):
     url, seen, _answer = webhook
     monkeypatch.delenv("SLACK_WEBHOOK_IT_ALERTS", raising=False)
-    answers(monkeypatch, "", "1", "", url, "y", "#it-alerts")
+    answers(monkeypatch, "", "1", "", url, "y", "#it-alerts", "y")
     assert alerts_cli.setup() == 0
     assert config.load_yaml(project / "pdt.yml")["alerts"] == [{
         "type": "slack", "channel": "it-alerts",
@@ -191,12 +191,107 @@ def test_setup_with_a_pasted_webhook_writes_pdt_yml_and_env_then_sends_the_test(
 def test_setup_again_for_the_same_channel_replaces_its_entry(project, webhook, monkeypatch):
     url, _seen, _answer = webhook
     monkeypatch.delenv("SLACK_WEBHOOK_IT_ALERTS", raising=False)
-    answers(monkeypatch, "", "", url, "y", "it-alerts")
+    answers(monkeypatch, "", "", url, "y", "it-alerts", "n")
     alerts_cli.setup()
-    answers(monkeypatch, "", "4", "", url, "y", "it-alerts")
+    answers(monkeypatch, "", "4", "", "n", "n")
     alerts_cli.setup()
-    assert [entry["events"] for entry in config.load_yaml(project / "pdt.yml")["alerts"]] == [
-        ["app:deploy-completed", "app:deploy-failed", "job:run-started", "job:run-failed"]]
+    assert config.load_yaml(project / "pdt.yml")["alerts"] == [{
+        "type": "slack", "channel": "it-alerts",
+        "events": ["app:deploy-completed", "app:deploy-failed", "job:run-started",
+                   "job:run-failed"]}]
+
+
+def test_setup_sends_no_test_message_on_the_default_answer_and_names_pdt_alerts_test(
+        project, webhook, monkeypatch, capsys):
+    url, seen, _answer = webhook
+    monkeypatch.delenv("SLACK_WEBHOOK_IT_ALERTS", raising=False)
+    answers(monkeypatch, "", "", url, "y", "it-alerts", "n")
+    assert alerts_cli.setup() == 0
+    assert seen == []
+    assert "Send one later with pdt alerts test." in capsys.readouterr().out
+
+
+SET_UP = ('platform:\n  provider: azure\nalerts:\n'
+          '  - type: slack\n    channel: ops\n    events: ["app:*"]\n'
+          '  - type: slack\n    channel: other\n    events: [all]\n'
+          '  - type: console\n    events: [unhandled]  # by hand\n\napps:\n  - name: report\n')
+
+
+def shown_checks(monkeypatch):
+    """The label of each option checked the first time each question shows."""
+    shown = {}
+    questions = []
+
+    def choice(_number, label):
+        if questions.count(questions[-1]) == 1 and label.startswith("[x]"):
+            shown.setdefault(questions[-1], []).append(label)
+
+    monkeypatch.setattr(alerts_cli.console, "heading", questions.append)
+    monkeypatch.setattr(alerts_cli.console, "choice", choice)
+    return shown
+
+
+def test_setup_starts_from_the_entries_in_pdt_yml(project, monkeypatch):
+    (project / "pdt.yml").write_text(SET_UP)
+    shown = shown_checks(monkeypatch)
+    answers(monkeypatch, "", "", "n", "n")
+    assert alerts_cli.setup() == 0
+    assert shown == {
+        "Where should pdt send alerts?": ["[x] Slack: a message in a Slack channel"],
+        "Which events should go to Slack?": ["[x] Deploy started (app:deploy-started)",
+                                             "[x] Deploy completed (app:deploy-completed)",
+                                             "[x] Deploy failed (app:deploy-failed)"]}
+
+
+def test_enter_at_every_question_leaves_pdt_yml_as_it_is(project, monkeypatch):
+    (project / "pdt.yml").write_text(SET_UP)
+    answers(monkeypatch, "", "", "", "")
+    assert alerts_cli.setup() == 0
+    assert (project / "pdt.yml").read_text() == SET_UP
+
+
+@pytest.mark.parametrize("events, checked", [
+    ("[all]\n    exclude-events: [\"job:*\"]",
+     ["app:deploy-started", "app:deploy-completed", "app:deploy-failed"]),
+    ("[\"job:run-*\", app:deploy-failed]",
+     ["app:deploy-failed", "job:run-started", "job:run-completed", "job:run-failed"]),
+])
+def test_the_events_shown_checked_are_the_ones_the_entry_receives(
+        project, monkeypatch, events, checked):
+    (project / "pdt.yml").write_text(f"alerts:\n  - type: console\n    events: {events}\n")
+    shown = shown_checks(monkeypatch)
+    answers(monkeypatch, "", "")
+    alerts_cli.setup()
+    assert shown["Which events should go to Console?"] == [
+        f"[x] {slack.event_words(event)} ({event})" for event in checked]
+
+
+def test_an_unchecked_type_loses_its_entry_and_every_other_entry_stays(project, monkeypatch):
+    (project / "pdt.yml").write_text(SET_UP)
+    answers(monkeypatch, "1", "")
+    assert alerts_cli.setup() == 0
+    assert config.load_yaml(project / "pdt.yml")["alerts"] == [
+        {"type": "slack", "channel": "other", "events": ["all"]},
+        {"type": "console", "events": ["unhandled"]}]
+
+
+def test_unchecking_the_only_entry_leaves_an_empty_list(project, monkeypatch):
+    (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [all]\n")
+    answers(monkeypatch, "2", "")
+    alerts_cli.setup()
+    assert config.load_yaml(project / "pdt.yml")["alerts"] == []
+
+
+def test_console_starts_unchecked_and_adds_an_entry_with_no_secret_and_no_test(
+        project, monkeypatch):
+    shown = shown_checks(monkeypatch)
+    answers(monkeypatch, "1 2", "", "3 5", "")
+    assert alerts_cli.setup() == 0
+    assert shown["Where should pdt send alerts?"] == ["[x] Slack: a message in a Slack channel"]
+    assert config.load_yaml(project / "pdt.yml")["alerts"] == [{"type": "console", "events": [
+        "app:deploy-started", "app:deploy-completed", "job:run-started", "job:run-failed",
+        "job:paused", "job:unpaused"]}]
+    assert not (project / ".env").exists()
 
 
 def test_setup_through_the_slack_app_gets_the_webhook_and_channel_from_connect_url(
@@ -219,7 +314,7 @@ def test_setup_through_the_slack_app_gets_the_webhook_and_channel_from_connect_u
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setattr(alerts_cli, "CLIENT_ID", "123.456")
     monkeypatch.setattr(alerts_cli, "CONNECT_URL", f"http://127.0.0.1:{server.server_port}/slack")
-    answers(monkeypatch, "", "")
+    answers(monkeypatch, "", "", "y")
     opened = []
 
     def browser(authorize):
