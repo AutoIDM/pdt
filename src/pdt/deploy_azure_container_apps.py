@@ -581,6 +581,17 @@ def stream_json(job: str, *args: str):
                                or f"Azure did not open the log stream of job {job}")
 
 
+def container_started(replica: dict, container: str) -> bool:
+    """Whether the replica's container has started. While the image is pulled, a new
+    replica lists no container, and the log stream answers 404 ContainerNotFound; then
+    it lists the container as Waiting, and the stream answers only once the container
+    starts. A Terminated container's log stays readable while its replica is listed."""
+    for state in (replica.get("properties") or {}).get("containers") or []:
+        if state.get("name") == container:
+            return state.get("runningState") != "Waiting"
+    return False
+
+
 def stream_lines(settings: dict, job: str, run: runs_cli.Run,
                  follow: bool) -> Iterator[runs_cli.Line]:
     """The lines a running execution's container has written, from the job's live log stream.
@@ -600,6 +611,8 @@ def stream_lines(settings: dict, job: str, run: runs_cli.Run,
         current = stream_json(job, "rest", "--method", "get", "--url", job_url(settings, job))
         endpoint = current["properties"]["eventStreamEndpoint"]
         container = current["properties"]["template"]["containers"][0]["name"]
+        if not container_started(replicas["value"][0], container):
+            return
         stream_url = (f"{endpoint[:endpoint.index('/subscriptions/')]}"
                       f"/subscriptions/{settings['subscription']}"
                       f"/resourceGroups/{settings['resource_group']}/jobs/{job}"

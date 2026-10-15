@@ -545,10 +545,13 @@ def follow(list_runs: Callable[[], list[Run]],
     live = stream is not None and run.status == "running"
     try:
         with console.waiting("waiting for the run's next line") as wait:
+            showed = True
             if live:
-                run = follow_stream(list_runs, resolve, run, errors, stream, store, seen,
-                                    last_exit_line(shown), wait)
-            if not live or run.status == "running":
+                run, showed = follow_stream(list_runs, resolve, run, errors, stream, store,
+                                            seen, last_exit_line(shown), wait)
+            # A run whose container starts and ends between two looks at its live log
+            # shows no line there, so its lines come from the store.
+            if not live or run.status == "running" or not showed:
                 run, exit_line = follow_store(list_runs, read_lines, resolve, run, errors, delay,
                                               hold, store, seen, wait)
                 if exit_line is None:
@@ -564,32 +567,45 @@ def follow(list_runs: Callable[[], list[Run]],
 def follow_stream(list_runs: Callable[[], list[Run]],
                   resolve: Callable[[list[Run]], None] | None, run: Run, errors: bool,
                   stream: Callable[[Run, bool], Iterable[Line]], store: str,
-                  seen: Counter, exit_line: Line | None, wait: console.Wait) -> Run:
-    """A run still running after this returns had its stream fail."""
+                  seen: Counter, exit_line: Line | None,
+                  wait: console.Wait) -> tuple[Run, bool]:
+    """The run, and whether the stream or the lines before it showed any line of it.
+    A run still running after this returns had its stream fail."""
+    showed = bool(seen) or exit_line is not None
+
+    def show(lines: Iterable[Line]) -> None:
+        nonlocal showed, exit_line
+        now_seen = Counter()
+        for line in lines:
+            showed = True
+            key = line_key(line)
+            now_seen[key] += 1
+            if now_seen[key] <= seen[key]:
+                continue
+            seen[key] = now_seen[key]
+            if line.message.startswith(EXIT_MARKER):
+                exit_line = line
+            if not errors or line.level not in ("DEBUG", "INFO"):
+                print_line(line)
+
     try:
         while run.status == "running" and exit_line is None:
             wait.now("waiting for the run's next line in its live log")
             opened = time.monotonic()
-            now_seen = Counter()
-            for line in stream(run, True):
-                key = line_key(line)
-                now_seen[key] += 1
-                if now_seen[key] <= seen[key]:
-                    continue
-                seen[key] = now_seen[key]
-                if line.message.startswith(EXIT_MARKER):
-                    exit_line = line
-                if not errors or line.level not in ("DEBUG", "INFO"):
-                    print_line(line)
+            show(stream(run, True))
             run = latest(list_runs, resolve, run)
             if (run.status == "running" and exit_line is None
                     and time.monotonic() - opened < FOLLOW_SECONDS):
                 time.sleep(FOLLOW_SECONDS)
+        if not showed:
+            # A short run can start and end between two looks at its live log. A
+            # provider may keep an ended container's log readable for a while.
+            show(stream(run, False))
     except StreamError as exc:
         console.warn(f"pdt cannot read the run's live log, so it reads {store}: "
                      f"{console.escape(str(exc))}")
-        return run
-    return ended_by(run, exit_line)
+        return run, showed
+    return ended_by(run, exit_line), showed
 
 
 def ended_by(run: Run, exit_line: Line | None) -> Run:

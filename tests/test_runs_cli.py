@@ -709,6 +709,30 @@ def test_follow_with_no_lines_shown_prints_every_line_of_the_live_log(monkeypatc
     assert out.index("INFO    started") < out.index("done")
 
 
+def test_follow_reads_the_store_for_a_run_that_ended_before_its_live_log_showed_a_line(
+        monkeypatch, capsys):
+    ended = dataclasses.replace(RUNNING, ended=T1, status="succeeded", exit_code=0)
+    lines = [Line(T0, "INFO", "started"), Line(T1, "", "pdt: exit 0")]
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.follow(lambda: [ended], lambda run, since: lines, None, RUNNING, False,
+                           timedelta(minutes=5), [], stream=live_stream([], [[]]),
+                           store="Azure Log Analytics") == 0
+    out = capsys.readouterr().out
+    assert [out.count(text) for text in ("INFO    started", "pdt: exit 0")] == [1, 1]
+    assert out.rstrip().endswith("the run succeeded after 12s, exit 0")
+
+
+def test_follow_reads_the_live_log_once_more_for_a_run_that_ended_between_two_looks(
+        monkeypatch, capsys):
+    ended = dataclasses.replace(RUNNING, ended=T1, status="succeeded", exit_code=0)
+    looks = iter([[], [Line(T0, "INFO", "started"), Line(T1, "", "pdt: exit 0")]])
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.follow(lambda: [ended], no_store, None, RUNNING, False,
+                           timedelta(minutes=5), [], stream=lambda run, follow: next(looks)) == 0
+    out = capsys.readouterr().out
+    assert [out.count(text) for text in ("INFO    started", "pdt: exit 0")] == [1, 1]
+
+
 def test_follow_ends_at_an_exit_line_the_live_log_showed_before_it_started(monkeypatch, capsys):
     stream = live_stream([Line(T0, "INFO", "started"), Line(T1, "", "pdt: exit 3")], [])
     sleeps = []
