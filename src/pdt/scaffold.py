@@ -360,9 +360,6 @@ def list_examples() -> int:
     return 0
 
 
-DEFAULT_EXAMPLE = "hello-world"
-
-
 def new_app(name: str, source: str | None) -> int:
     problem = app_name_problem(name)
     if problem != "":
@@ -371,7 +368,7 @@ def new_app(name: str, source: str | None) -> int:
     destination = root / name
     if destination.exists():
         raise ConfigError(f"{destination} already exists.")
-    example = EXAMPLES / (source or DEFAULT_EXAMPLE)
+    example = EXAMPLES / (source or STARTER)
     if example not in examples():
         raise ConfigError(
             f"there is no example named {source!r}. Run `pdt examples` to see them.")
