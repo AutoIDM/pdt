@@ -384,6 +384,8 @@ def save_root_alerts(alerts: list[dict]) -> Path:
 
 
 def _yaml_scalar(value) -> str:
+    import yaml
+    import yaml
     if (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][\w:.-]*", value)
             and yaml.safe_load(value) == value):
         return value
