@@ -39,12 +39,10 @@ def plain(lines):
 
 
 def fake_azure_reads(monkeypatch, read):
-    """Answer each resource manager and Key Vault read of the Azure plan with `read(*command)`,
-    `command` being the az command the read stands for, and price every meter at 1 USD."""
     from pdt import deploy_azure, deploy_azure_container_apps
 
-    def get(token, url, command, missing=(404,)):
-        return read(*command)
+    def get(token, url, az_command, missing=(404,)):
+        return read(*az_command)
 
     for module in (deploy_azure, deploy_azure_container_apps):
         monkeypatch.setattr(module, "arm_get", get)

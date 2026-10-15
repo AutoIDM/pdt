@@ -120,7 +120,6 @@ MANAGEMENT_API = "https://management.azure.com"
 # The CLI has no suspend or resume for a job; the resource manager API does,
 # from this api-version on, and it is what reports properties.runningState.
 JOBS_API_VERSION = "2026-07-01"
-# The api-version of each resource provider the plan reads with one GET.
 API_VERSIONS = {
     "Microsoft.App": JOBS_API_VERSION,
     "Microsoft.Authorization": "2016-09-01",
@@ -205,17 +204,14 @@ def delete_unless_locked(*args: str) -> str:
     fail(f"{console.value(command)} failed; fix the problem above and re-run")
 
 
-# From some networks about one connect in ten to management.azure.com gets no answer for
-# 4 seconds, and a new connect half a second later gets one at once.
-CONNECT_SECONDS = 0.5
+STALLED_CONNECT_SECONDS = 0.5
 CONNECT_TRIES = 4
 
 
-def quick_connection(address, timeout, source_address=None) -> socket.socket:
-    """socket.create_connection, but a connect with no answer in CONNECT_SECONDS starts again."""
+def connect_retrying_stalls(address, timeout, source_address=None) -> socket.socket:
     for _ in range(CONNECT_TRIES - 1):
         try:
-            sock = socket.create_connection(address, CONNECT_SECONDS, source_address)
+            sock = socket.create_connection(address, STALLED_CONNECT_SECONDS, source_address)
         except TimeoutError:
             continue
         sock.settimeout(timeout)
@@ -226,7 +222,7 @@ def quick_connection(address, timeout, source_address=None) -> socket.socket:
 class QuickConnection(http.client.HTTPSConnection):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._create_connection = quick_connection
+        self._create_connection = connect_retrying_stalls
 
 
 class QuickHTTPS(urllib.request.HTTPSHandler):
@@ -238,12 +234,9 @@ READ_OPENER = urllib.request.build_opener(QuickHTTPS)
 
 
 class ReadError(Exception):
-    """Azure refused a read for a reason other than not found. `command` is the az
-    command the read stands for, so `main` names it the way run_quiet does."""
-
-    def __init__(self, command: tuple[str, ...], message: str):
+    def __init__(self, az_command: tuple[str, ...], message: str):
         super().__init__(message)
-        self.command = command
+        self.az_command = az_command
 
 
 def arm_url(path: str) -> str:
@@ -252,29 +245,24 @@ def arm_url(path: str) -> str:
     return f"{MANAGEMENT_API}{path}?api-version={version}"
 
 
-def arm_get(token: str, url: str, command: tuple[str, ...],
+def arm_get(token: str, url: str, az_command: tuple[str, ...],
             missing: tuple[int, ...] = (404,)) -> dict | None:
-    """One GET with `token`, or None when Azure answers with a status in `missing`.
-
-    It runs no az and prints nothing, so the plan makes many at once in threads.
-    """
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
         return fetch_json(request, timeout=30, open_url=READ_OPENER.open)
     except (FatalAPIError, RetriableAPIError) as exc:
         if exc.response.status in missing:
             return None
-        raise ReadError(command, azure_error(exc.response)) from exc
+        raise ReadError(az_command, az_error_line(exc.response)) from exc
     except OSError as exc:
-        raise ReadError(command, f"ERROR: {exc}") from exc
+        raise ReadError(az_command, f"ERROR: {exc}") from exc
 
 
-def arm_list(token: str, url: str, command: tuple[str, ...],
+def arm_list(token: str, url: str, az_command: tuple[str, ...],
              missing: tuple[int, ...] = (404,)) -> list | None:
-    """Every item of a list, through its nextLink pages."""
     items = []
     while url:
-        page = arm_get(token, url, command, missing)
+        page = arm_get(token, url, az_command, missing)
         if page is None:
             return None
         items += page.get("value") or []
@@ -282,8 +270,7 @@ def arm_list(token: str, url: str, command: tuple[str, ...],
     return items
 
 
-def azure_error(response) -> str:
-    """The first line az prints for the same error."""
+def az_error_line(response) -> str:
     try:
         error = json.loads(response.read()).get("error") or {}
     except (OSError, ValueError, AttributeError):
@@ -469,9 +456,6 @@ def object_id_from_token(token: str) -> str:
 
 
 class HeldToken:
-    """A credential that holds one token of this login. An SDK call with it starts no az
-    process, unlike AzureCliCredential, so the plan makes the call in a thread."""
-
     def __init__(self, token: str):
         self.token = token
 
@@ -481,7 +465,6 @@ class HeldToken:
 
 
 def access_token(resource: str = "") -> str:
-    """A token of this login for the resource manager API, or for `resource`."""
     scope = ("--resource", resource) if resource else ()
     return az_tsv("account", "get-access-token", *scope, "--query", "accessToken")
 
@@ -684,9 +667,8 @@ SHARED_TYPES = {
 }
 
 
-def check_shared_names(settings: dict[str, str], resources: list | None) -> None:
-    """`resources` is what the project's resource group holds."""
-    for resource in resources or []:
+def check_shared_names(settings: dict[str, str], group_resources: list | None) -> None:
+    for resource in group_resources or []:
         shared = SHARED_TYPES.get(str(resource.get("type", "")).lower())
         if shared is None or not managed_by_pdt(resource):
             continue
@@ -706,13 +688,11 @@ def check_shared_names(settings: dict[str, str], resources: list | None) -> None
                  f"  {console.value(delete_command)}")
 
 
+SECRET_MISSING_OR_NOT_GRANTED = (403, 404)
+
+
 def secret_reads(settings: dict[str, str], vault_token: str, sid: str,
                  wanted: bool) -> tuple[dict | None, dict | None, list]:
-    """The Key Vault, the app's secret, and the secret's versions, as Azure returns them.
-
-    A vault that refuses this login reads as holding no secret, as `az keyvault secret
-    show` did, because the deploy grants the login its role before it writes the secret.
-    """
     vault = arm_get(settings["token"], arm_url(resource_id(
         settings, "Microsoft.KeyVault", "vaults", settings["vault"])),
         ("keyvault", "show", "--name", settings["vault"]))
@@ -721,12 +701,12 @@ def secret_reads(settings: dict[str, str], vault_token: str, sid: str,
     url = f"https://{settings['vault']}.vault.azure.net/secrets/{sid}"
     current = arm_get(vault_token, f"{url}?api-version={VAULT_API_VERSION}",
                       ("keyvault", "secret", "show", "--vault-name", settings["vault"]),
-                      missing=(403, 404))
+                      missing=SECRET_MISSING_OR_NOT_GRANTED)
     if current is None:
         return vault, None, []
     versions = arm_list(vault_token, f"{url}/versions?api-version={VAULT_API_VERSION}",
                         ("keyvault", "secret", "list-versions", "--vault-name",
-                         settings["vault"]), missing=(403, 404))
+                         settings["vault"]), missing=SECRET_MISSING_OR_NOT_GRANTED)
     return vault, current, versions or []
 
 
@@ -1053,7 +1033,6 @@ def store_description(store: dict[str, str]) -> console.Markup:
 
 
 def store_reads(token: str, store: dict[str, str]) -> tuple[dict | None, dict | None, dict | None]:
-    """The data store's resource group, storage account, and container, as Azure returns them."""
     group = arm_get(token, arm_url(store["group_id"]), ("group", "show", "--name", store["group"]))
     account = arm_get(token, arm_url(store["account_id"]),
                       ("storage", "account", "show", "--name", store["account"]))
@@ -1122,10 +1101,11 @@ def ensure_store(settings: dict[str, str], store: dict[str, str], exists: bool) 
                 settings["deployer_principal_type"])
 
 
-def deployer_store(settings: dict[str, str], app_name: str, token: str = "") -> Store:
-    """With `token`, a store that uses that one storage token of this login."""
-    if token:
-        return Store(store_url(store_settings(settings), app_name), HeldToken(token))
+def held_token_store(settings: dict[str, str], app_name: str, token: str) -> Store:
+    return Store(store_url(store_settings(settings), app_name), HeldToken(token))
+
+
+def cli_credential_store(settings: dict[str, str], app_name: str) -> Store:
     from azure.identity import AzureCliCredential
     os.environ["PATH"] = os.pathsep.join(
         [str(Path(sys.executable).parent), os.environ.get("PATH", "")])
@@ -1137,8 +1117,6 @@ STORE_UNREADABLE = ("this login cannot read the data store yet; the deploy grant
 
 
 def store_usage(deployer: Store) -> tuple[int, int] | None:
-    """None until this login holds the data role, which ensure_store grants. The caller
-    prints STORE_UNREADABLE, so the plan can read the usage in a thread."""
     try:
         return deployer.usage()
     except Exception as exc:  # the SDK raises HttpResponseError; tests have no SDK
@@ -1147,8 +1125,14 @@ def store_usage(deployer: Store) -> tuple[int, int] | None:
         return None
 
 
+def note_if_unreadable(usage: tuple[int, int] | None) -> bool:
+    if usage is None:
+        console.note(STORE_UNREADABLE)
+    return usage is None
+
+
 def storage(app: dict, settings: dict[str, str], rest: list[str], assume_yes: bool) -> int:
-    return storage_cli.run(deployer_store(settings, app["name"]), app, rest, assume_yes)
+    return storage_cli.run(cli_credential_store(settings, app["name"]), app, rest, assume_yes)
 
 
 def run_basis(seconds: float | None) -> tuple[float, str]:
@@ -1188,7 +1172,7 @@ def main() -> int:
         return run_command(app, args)
     except ReadError as exc:
         console.say(console.escape(str(exc)))
-        command = "pdt az " + " ".join(exc.command[:4])
+        command = "pdt az " + " ".join(exc.az_command[:4])
         fail(f"{console.value(command)} failed; fix the problem above and re-run")
 
 

@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from conftest import add_app
@@ -129,7 +131,7 @@ def azure_estimate(monkeypatch, gbp_prices: bool):
     monkeypatch.setattr(deploy_azure_container_apps, "retail_price", retail_price)
     return deploy_azure_container_apps.cost_estimate_for(
         "uksouth", "0 6 * * *", None, 0, None,
-        lambda: deploy_azure_container_apps.price_list("uksouth", "GBP", False, False))
+        ThreadPoolExecutor(1).submit(deploy_azure_container_apps.price_list, "uksouth", "GBP", False, False))
 
 
 def test_azure_takes_prices_in_the_local_currency(monkeypatch):

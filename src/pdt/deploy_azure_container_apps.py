@@ -44,7 +44,7 @@ import shutil
 import sys
 import time
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -52,12 +52,13 @@ from pdt import config, console, lifecycle, regions, runs_cli
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_azure import (
     COMMON_PROVIDERS, ENVIRONMENT_TYPE, JOBS_API_VERSION, MANAGEMENT_API, RECENT_RUNS, SECRET_ROLE,
-    STORAGE_RESOURCE, STORE_ROLE, STORE_UNREADABLE, VAULT_RESOURCE, access_token, arm_get, arm_list, arm_url,
+    STORAGE_RESOURCE, STORE_ROLE, VAULT_RESOURCE, access_token, arm_get, arm_list, arm_url,
     assign_role, az, az_json, az_tsv,
-    azure_settings, check_shared_names, clean_name, cost_estimate, delete_unless_locked, deployer_store,
+    azure_settings, check_shared_names, clean_name, cli_credential_store, cost_estimate,
+    delete_unless_locked,
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
-    ensure_secret, ensure_store, ensure_workspace, group_can_be_deleted, list_remaining,
-    managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
+    ensure_secret, ensure_store, ensure_workspace, group_can_be_deleted, held_token_store, list_remaining,
+    managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, secret_actions, secret_name,
     secret_reads, secret_scope, secret_state, store_condition, store_description,
@@ -178,8 +179,6 @@ def cloud_build(settings: dict, stage: Path, image_name: str) -> None:
 
 
 def acr_arm_auth_enabled(registry: dict | None) -> bool:
-    """What `az acr config authentication-as-arm show` reads, from the registry as the
-    resource manager API returns it."""
     properties = (registry or {}).get("properties") or {}
     policy = (properties.get("policies") or {}).get("azureADAuthenticationAsArmPolicy")
     return str((policy or {}).get("status") or "").lower() == "enabled"
@@ -714,7 +713,6 @@ def logs(app: dict, settings: dict, rest: list[str],
 
 
 def unit_prices(region: str, currency: str, secrets: bool, storage: bool) -> dict[str, float]:
-    """The list price, in `currency`, of each meter the estimate counts."""
     meters = {"vCPU": ("Azure Container Apps", "Standard vCPU Active Usage", "Standard", ""),
               "memory": ("Azure Container Apps", "Standard Memory Active Usage", "Standard", ""),
               "registry": ("Container Registry", "Basic Registry Unit", "Basic", "")}
@@ -728,8 +726,6 @@ def unit_prices(region: str, currency: str, secrets: bool, storage: bool) -> dic
 
 def price_list(region: str, currency: str, secrets: bool,
                storage: bool) -> tuple[dict[str, float], str, str]:
-    """The unit prices, their currency, and the note on where they came from: Azure's price
-    in `currency` when it has one, else the USD price converted by convert_from_usd."""
     try:
         return (unit_prices(region, currency, secrets, storage), currency,
                 f", in {currency} from the Azure Retail Prices API" if currency != "USD" else "")
@@ -744,10 +740,9 @@ def price_list(region: str, currency: str, secrets: bool,
 
 def cost_estimate_for(region: str, cron: str, run_seconds: float | None, num_secrets: int,
                       usage: tuple[int, int] | None,
-                      prices: Callable[[], tuple[dict[str, float], str, str]]) -> CostEstimate:
-    """`prices` returns what price_list read, or raises what stopped it."""
+                      price_read: Future[tuple[dict[str, float], str, str]]) -> CostEstimate:
     try:
-        unit, shown, converted = prices()
+        unit, shown, converted = price_read.result()
         items = priced_items(config.runs_per_month(cron), *run_basis(run_seconds), num_secrets,
                              usage, unit)
     except Exception as exc:
@@ -926,22 +921,26 @@ def find_job(settings: dict[str, str], app_name: str) -> tuple[str, dict | None]
     return job, current
 
 
-def job_reads(settings: dict, job: str, legacy: str) -> tuple[dict | None, dict | None, list]:
-    """The job, its executions, and, when the job does not exist, the job under its legacy
-    name, as the resource manager API returns them."""
+@dataclasses.dataclass(frozen=True)
+class JobReads:
+    current: dict | None
+    legacy: dict | None
+    executions: list
+
+
+def job_reads(settings: dict, job: str, legacy: str) -> JobReads:
     token = settings["token"]
     current = arm_get(token, job_url(settings, job), ("containerapp", "job", "show", "--name", job))
     if current is None:
         old = arm_get(token, job_url(settings, legacy), (
             "containerapp", "job", "show", "--name", legacy)) if legacy != job else None
-        return None, old, []
+        return JobReads(None, old, [])
     executions = arm_get(token, job_url(settings, job, "/executions"),
                          ("containerapp", "job", "execution", "list", "--name", job)) or {}
-    return current, None, executions.get("value") or []
+    return JobReads(current, None, executions.get("value") or [])
 
 
 def store_state(token: str, store: dict, deployer) -> tuple[tuple, tuple[int, int] | None]:
-    """The data store as Azure returns it, and its usage when its container exists."""
     reads = store_reads(token, store)
     return reads, store_usage(deployer) if reads[2] else None
 
@@ -951,12 +950,6 @@ READ_THREADS = 12
 
 def read_state(settings: dict, job: str, legacy: str, sid: str, wanted_secret: bool,
                locks: list[Lock], store: dict | None, deployer, currency: str) -> dict:
-    """Every read the plan makes, and the list prices, at the same time, with a spinner.
-
-    Each read runs in a thread of its own, and a read that needs another read's answer
-    runs after it in the same thread. The threads share nothing and print nothing.
-    "prices" is the price read's result function, so cost_estimate_for reports its failure.
-    """
     token = settings["token"]
     rg = settings["resource_group"]
     environment = settings["environment"]
@@ -966,7 +959,7 @@ def read_state(settings: dict, job: str, legacy: str, sid: str, wanted_secret: b
     vault_token = access_token(VAULT_RESOURCE) if wanted_secret else ""
     with console.waiting("reading resources and prices"), \
             ThreadPoolExecutor(READ_THREADS) as pool:
-        prices = pool.submit(price_list, settings["region"], currency, wanted_secret, bool(store))
+        price_read = pool.submit(price_list, settings["region"], currency, wanted_secret, bool(store))
         reads = {
             "resources": pool.submit(arm_list, token, arm_url(f"{group_id}/resources"),
                                      ("resource", "list", "--resource-group", rg)),
@@ -989,7 +982,7 @@ def read_state(settings: dict, job: str, legacy: str, sid: str, wanted_secret: b
         reads["secret"] = pool.submit(secret_reads, settings, vault_token, sid, wanted_secret)
         if store:
             reads["store"] = pool.submit(store_state, token, store, deployer)
-    return {**{key: read.result() for key, read in reads.items()}, "prices": prices.result}
+    return {**{key: read.result() for key, read in reads.items()}, "price_read": price_read}
 
 
 def retire_job(settings: dict[str, str], job: str, current: dict, store: dict | None,
@@ -1044,7 +1037,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     legacy = legacy_job_name(name)
     store = store_settings(settings) if app["storage"] else None
     state = read_state(settings, job, legacy, sid, bool(values), locks, store,
-                       deployer_store(settings, name, access_token(STORAGE_RESOURCE))
+                       held_token_store(settings, name, access_token(STORAGE_RESOURCE))
                        if store else None, regions.local_currency())
     check_shared_names(settings, state["resources"])
     group = state["group"]
@@ -1070,7 +1063,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
                         f"Log Analytics workspace {console.value(settings['workspace'])}")
         logs_exist = workspace is not None
     arm_auth_enabled = acr_arm_auth_enabled(registry)
-    current_job, legacy_job, executions = state["job"]
+    jobs = state["job"]
+    current_job, legacy_job, executions = jobs.current, jobs.legacy, jobs.executions
     if current_job and not owned_by(current_job, name):
         fail(f"Container Apps Job {console.value(job)} already exists but is not owned by "
              f"PDT app {console.value(name)}; choose another resource group")
@@ -1084,8 +1078,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         store_found, store_used = state["store"]
         store_present = store_exists(store, store_found)
         usage = store_used if store_present else (0, 0)
-        if usage is None:
-            console.note(STORE_UNREADABLE)
+        note_if_unreadable(usage)
 
     image = f"{settings['registry']}.azurecr.io/{name}:latest"
     actions = ["register required Azure resource providers"]
@@ -1129,7 +1122,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                                   + (" (paused)" if app["pause"] else "")))
     if not confirm(actions, assume_yes, cost_estimate_for(
             settings["region"], cron, average_run_seconds(executions), 1 if values else 0, usage,
-            state["prices"])):
+            state["price_read"])):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
 
@@ -1152,15 +1145,15 @@ def deploy(app: dict, assume_yes: bool) -> int:
         lock.create()
     if not identity:
         console.step(f"creating managed identity {console.value(settings['identity'])}")
-        identity = az_json("identity", "create", "--name", settings["identity"],
-                           "--resource-group", rg, "--location", settings["region"],
-                           "--tags", "managed-by=pdt")
+        created = az_json("identity", "create", "--name", settings["identity"],
+                          "--resource-group", rg, "--location", settings["region"],
+                          "--tags", "managed-by=pdt")
+        identity = created and {"id": created["id"],
+                                "properties": {"principalId": created["principalId"]}}
     if not identity:
         fail(f"could not read managed identity {console.value(settings['identity'])}")
     identity_id = identity["id"]
-    # `az identity create` answers with the properties flattened; the plan's read does not.
-    principal_id = (identity["properties"]["principalId"] if "properties" in identity
-                    else identity["principalId"])
+    principal_id = identity["properties"]["principalId"]
 
     acr_id = resource_id(settings, "Microsoft.ContainerRegistry",
                          "registries", settings["registry"])
@@ -1294,8 +1287,7 @@ def release_environment(settings: dict, release: Release) -> None:
 
 def kept_line(store: dict[str, str], deployer, name: str) -> console.Markup:
     usage = store_usage(deployer)
-    if usage is None:
-        console.note(STORE_UNREADABLE)
+    if note_if_unreadable(usage):
         return console.Markup(f"kept: {store_description(store)} "
                               f"(data under {console.value(f'{name}/')})")
     return store_kept_line(store_description(store), usage[0], name)
@@ -1315,7 +1307,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
                      "keeping it")
     store = store_settings(settings) if app["storage"] else None
     store_present = store_exists(store, store_reads(settings["token"], store)) if store else False
-    deployer = deployer_store(settings, name) if store_present else None
+    deployer = cli_credential_store(settings, name) if store_present else None
     principal_id = ((current_job or {}).get("identity") or {}).get("principalId")
     grant = ""
     if deployer and managed_job and principal_id:

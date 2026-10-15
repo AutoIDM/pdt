@@ -73,7 +73,7 @@ EXISTING = {
     ("group", "show"): MANAGED,
     ("acr", "show"): MANAGED,
     ("containerapp", "env"): MANAGED,
-    ("identity", "show"): MANAGED | {"id": "/identity", "principalId": "p"},
+    ("identity", "show"): MANAGED | {"id": "/identity", "properties": {"principalId": "p"}},
 }
 
 

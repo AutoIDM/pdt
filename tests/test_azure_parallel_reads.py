@@ -1,4 +1,3 @@
-"""The Azure plan reads Azure with resource manager and Key Vault GETs, all at once."""
 import base64
 import io
 import json
@@ -25,7 +24,6 @@ LEGACY = azure.legacy_job_name("report")
 STORE = deploy_azure.store_settings(SETTINGS)
 SID = deploy_azure.secret_name("report")
 MANAGED = {"tags": {"managed-by": "pdt", "pdt-app": "report"}}
-# The end of each URL path the plan reads, and what Azure answers when the resource exists.
 FOUND = {
     "/resourceGroups/pdt/resources": {"value": [{"type": "x", "name": "y"}]},
     "/resourceGroups/pdt": MANAGED,
@@ -55,10 +53,6 @@ class Deployer:
 
 
 def opener(monkeypatch, status: dict[str, int] | None = None):
-    """Answer each GET from FOUND, or with the HTTP status `status` names for its path end.
-
-    Returns the requests made, as (path end, Authorization header).
-    """
     requests = []
 
     def open_url(request, timeout):
@@ -90,7 +84,7 @@ def test_every_read_finds_what_exists(monkeypatch):
     for key in ("group", "registry", "environment", "identity", "shared_group", "workspace"):
         assert state[key] == MANAGED
     assert state["resources"] == [{"type": "x", "name": "y"}]
-    assert state["job"] == (MANAGED, None, [])
+    assert state["job"] == azure.JobReads(MANAGED, None, [])
     assert state["missing_locks"] == []
     assert state["secret"] == (MANAGED, {"value": "{}"}, [MANAGED])
     assert state["store"] == ((MANAGED, MANAGED, FOUND[f"/containers/{STORE['container']}"]), (2, 2048))
@@ -105,7 +99,7 @@ def test_every_read_finds_what_exists(monkeypatch):
     ("/userAssignedIdentities/pdt-runner", lambda s: s["identity"] is None),
     ("/resourceGroups/pdt-shared", lambda s: s["shared_group"] is None),
     ("/workspaces/pdt-logs", lambda s: s["workspace"] is None),
-    (f"/jobs/{JOB}", lambda s: s["job"] == (None, MANAGED, [])),
+    (f"/jobs/{JOB}", lambda s: s["job"] == azure.JobReads(None, MANAGED, [])),
     ("/locks/pdt-report", lambda s: [lock.name for lock in s["missing_locks"]] == ["pdt-report"]),
     ("/vaults/pdt-vault", lambda s: s["secret"] == (None, None, [])),
     (f"/secrets/{SID}", lambda s: s["secret"] == (MANAGED, None, [])),
@@ -138,13 +132,12 @@ def test_a_refused_read_stops_the_plan_and_names_its_az_command(monkeypatch, end
     opener(monkeypatch, {end: 403})
     with pytest.raises(deploy_azure.ReadError) as error:
         read()
-    assert error.value.command[:4] == command
+    assert error.value.az_command[:4] == command
     assert str(error.value) == "ERROR: (AuthorizationFailed) The client may not read it."
 
 
 @pytest.mark.parametrize("end", [f"/secrets/{SID}", f"/secrets/{SID}/versions"])
 def test_a_vault_that_refuses_this_login_reads_as_no_secret(monkeypatch, end):
-    """The deploy grants the login its Key Vault role before it writes the secret."""
     opener(monkeypatch, {end: 403})
     vault, current, versions = read()["secret"]
     assert vault == MANAGED
@@ -206,7 +199,7 @@ def test_the_plan_store_holds_one_storage_token_and_starts_no_az(monkeypatch):
     monkeypatch.setitem(sys.modules, "azure.core.credentials", types.SimpleNamespace(
         AccessToken=lambda token, expires_on: (token, expires_on)))
     token = "x." + base64.urlsafe_b64encode(b'{"exp": 1900000000}').decode().rstrip("=") + ".y"
-    store = deploy_azure.deployer_store(SETTINGS, "report", token)
+    store = deploy_azure.held_token_store(SETTINGS, "report", token)
     assert store.credentials.get_token("https://storage.azure.com/.default") == (token, 1900000000)
 
 
@@ -220,5 +213,5 @@ def test_a_connect_with_no_answer_starts_again(monkeypatch):
         return type("Socket", (), {"settimeout": lambda self, value: tries.append(value)})()
 
     monkeypatch.setattr(deploy_azure.socket, "create_connection", connect)
-    deploy_azure.quick_connection(("management.azure.com", 443), 30)
-    assert tries == [deploy_azure.CONNECT_SECONDS, deploy_azure.CONNECT_SECONDS, 30]
+    deploy_azure.connect_retrying_stalls(("management.azure.com", 443), 30)
+    assert tries == [deploy_azure.STALLED_CONNECT_SECONDS, deploy_azure.STALLED_CONNECT_SECONDS, 30]
