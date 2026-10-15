@@ -572,12 +572,12 @@ def preflight(sts, iam, expected_account: str, region: str,
                                     sort_keys=True).encode()).hexdigest()
     passed = config.read_state().get(PREFLIGHT_PASSES, {}).get(key, 0)
     if time.time() - passed < PREFLIGHT_VALID_SECONDS:
-        console.status("Skipping the AWS permission check: it passed at "
+        console.status("Your AWS login has the permissions pdt needs: verified at "
                        f"{console.value(time.strftime('%Y-%m-%d %H:%M', time.localtime(passed)))}, "
                        "less than 24 hours ago.")
         return account, lambda: None
     requests = simulations(policy)
-    console.status(f"Checking your AWS permissions ({console.value(len(requests))} checks)...")
+    console.status("Verifying that your AWS login has the permissions pdt needs to set up the app...")
     result: Future[set[str]] = Future()
 
     def check() -> None:
@@ -591,7 +591,7 @@ def preflight(sts, iam, expected_account: str, region: str,
 
     def checked() -> None:
         if not result.done():
-            with console.waiting("Waiting for the AWS permission check"):
+            with console.waiting("Verifying AWS permissions"):
                 result.exception()
         try:
             denied = result.result()
