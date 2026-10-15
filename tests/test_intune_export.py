@@ -46,10 +46,12 @@ def run_export(tmp_path, settings=None, env=None, forbidden=None):
     (tmp_path / "data/pdt").mkdir(parents=True)
     (tmp_path / "data/pdt" / MODULE.name).symlink_to(MODULE)
     (tmp_path / "output").mkdir()
+    (tmp_path / "state").mkdir(exist_ok=True)
     result = pwsh(["-File", str(TESTS / "harness.ps1"), "-Script", str(SCRIPT), "-Log", str(tmp_path / "log.json"),
                    *(["-Forbidden", forbidden] if forbidden else [])],
                   {"XDG_DATA_HOME": str(tmp_path / "data"), "IM_MOCK_DATA": str(TESTS / "tenant"),
-                   "PDT_OUTPUT_DIR": str(tmp_path / "output"), "PDT_PROJECT": str(tmp_path),
+                   "PDT_OUTPUT_DIR": str(tmp_path / "output"), "PDT_STATE_DIR": str(tmp_path / "state"),
+                   "PDT_PROJECT": str(tmp_path),
                    "PDT_CONFIG_JSON": json.dumps(settings or {}), **ENV, **(env or {})}, tmp_path)
     zips = list((tmp_path / "output").glob("IntuneExport-*.zip"))
     return result, zipfile.ZipFile(zips[0]) if zips else None
@@ -87,6 +89,8 @@ def import_into_new_tenant(tmp_path, archive):
 def test_export_imports_into_another_tenant(tmp_path):
     result, archive = run_export(tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "output/IntuneManagement.log").is_file()
+    assert not (tmp_path / "IntuneManagement.log").exists()
     assert json.loads((tmp_path / "log.json").read_text(encoding="utf-8-sig"))["signIns"] == [
         {"tenant": "tenant-id", "app": "client-id", "secret": "secret", "certificate": None}]
     assert files(archive) == [
@@ -153,6 +157,43 @@ def test_a_type_graph_refuses_fails_the_run_and_keeps_the_zip(tmp_path):
     assert "DeviceConfiguration: list request failed (status 403)" in output(result)
     assert "Contoso/SettingsCatalog/Edge Settings_cp-1.json" in files(archive)
     assert not [name for name in files(archive) if "/DeviceConfiguration/" in name]
+
+
+@needs_pwsh
+@needs_module
+def test_a_refused_type_in_skip_types_does_not_fail_the_run(tmp_path):
+    refused = ["DeviceConfiguration", "iOSiPadOSUpdatePolicies", "macOSUpdatePolicies", "UpdatePolicies"]
+    result, archive = run_export(tmp_path, {"skip_types": refused[1:]},
+                                 forbidden=r"^/?deviceManagement/deviceConfigurations\?")
+    assert result.returncode != 0
+    assert "refused to list 1 object types" in output(result)
+
+    result, archive = run_export(tmp_path / "all", {"skip_types": refused},
+                                 forbidden=r"^/?deviceManagement/deviceConfigurations\?")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Contoso/SettingsCatalog/Edge Settings_cp-1.json" in files(archive)
+
+
+@needs_pwsh
+@needs_module
+def test_each_run_lists_what_changed_since_the_last(tmp_path):
+    result, _ = run_export(tmp_path / "first")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "This is the first export" in output(result)
+    last = json.loads((tmp_path / "first/state/last-export.json").read_text(encoding="utf-8-sig"))
+    assert "Contoso/SettingsCatalog/Edge Settings_cp-1.json" in last["files"]
+
+    del last["files"]["Contoso/SettingsCatalog/Edge Settings_cp-1.json"]
+    last["files"]["Contoso/PowerShellScripts/Set Time Zone_ps-1.json"] = "0" * 64
+    last["files"]["Contoso/DeviceConfiguration/Retired_dc-9.json"] = "0" * 64
+    (tmp_path / "second/state").mkdir(parents=True)
+    (tmp_path / "second/state/last-export.json").write_text(json.dumps(last))
+    result, _ = run_export(tmp_path / "second")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (f"Since {last['name']}: 1 added, 1 changed, 1 removed. "
+            "added Contoso/SettingsCatalog/Edge Settings_cp-1.json "
+            "changed Contoso/PowerShellScripts/Set Time Zone_ps-1.json "
+            "removed Contoso/DeviceConfiguration/Retired_dc-9.json") in output(result)
 
 
 @needs_pwsh

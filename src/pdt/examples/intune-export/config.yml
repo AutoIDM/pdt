@@ -1,7 +1,8 @@
 # Exports the Intune configuration once a week with IntuneManagement's own
 # export (github.com/Micke-K/IntuneManagement, version 4), and keeps an
 # IntuneExport-<date>.zip in the app's data store each run. To import, unzip
-# it and point IntuneManagement's import at the company folder inside.
+# it and point IntuneManagement's import at the company folder inside. The
+# run's log lists the files added, changed, or removed since the last export.
 
 # How often this app runs.
 # Shorthand: hourly, daily, weekly, monthly, yearly.
@@ -14,6 +15,13 @@ config:
   # Both empty exports every type that IntuneManagement's bulk export covers.
   policy_types: []
   policy_groups: []
+
+  # Policy types the tenant has no license for, so Microsoft Graph refuses to
+  # list them even with every permission below. A refusal for one of these
+  # does not fail the run. W365ProvisioningPolicies and W365UserSettings need
+  # Windows 365. InventoryPolicies (the properties catalog) is refused in some
+  # tenants, such as a Microsoft 365 developer tenant.
+  skip_types: [W365ProvisioningPolicies, W365UserSettings, InventoryPolicies]
 
   # Export only objects whose name contains this text. Empty exports all.
   name_filter: ""
@@ -51,8 +59,9 @@ config:
 # admin consent: DeviceManagementConfiguration.Read.All,
 # DeviceManagementApps.Read.All, DeviceManagementServiceConfig.Read.All,
 # DeviceManagementScripts.Read.All, DeviceManagementRBAC.Read.All,
-# Policy.Read.All, Agreement.Read.All, Organization.Read.All,
-# CloudPC.Read.All, Group.Read.All.
+# DeviceManagementManagedDevices.Read.All, Policy.Read.All,
+# Agreement.Read.All, Organization.Read.All, CloudPC.Read.All,
+# Group.Read.All.
 #
 # Sign in with a client secret or a certificate. PDT_AZURE_PRIVATE_KEY_B64 is
 # the base64 of a .pfx file; PDT_AZURE_PRIVATE_KEY_PATH is the path of one.

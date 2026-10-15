@@ -2,6 +2,8 @@
 # bulk export (https://github.com/Micke-K/IntuneManagement, version 4), and
 # writes IntuneExport-<date>.zip to PDT_OUTPUT_DIR. IntuneManagement imports
 # the folder in the zip. PDT_CONFIG_JSON holds the settings (see config.yml).
+# PDT_STATE_DIR keeps a hash of each exported file, so each run lists what
+# changed since the last.
 
 #Requires -Version 7.4
 
@@ -32,6 +34,9 @@ if (-not (Test-Path (Join-Path $moduleFolder 'IntuneManagement.psd1'))) {
 
 $env:IM_UI_BACKEND = 'None'
 $env:IM_SETTINGS_STORE = 'Memory'
+# IntuneManagement writes IntuneManagement.log to the current folder, so it is
+# kept with the run's output instead of growing in the app folder.
+Set-Location $env:PDT_OUTPUT_DIR
 Import-Module "$moduleFolder/IntuneManagement.psd1" 6>$null
 
 foreach ($key in $config.settings.Keys) {
@@ -60,11 +65,34 @@ $export = @{ ExportFolder = $exportFolder; Filter = $config.name_filter }
 if ($config.policy_types) { $export.PolicyType = $config.policy_types }
 if ($config.policy_groups) { $export.PolicyGroup = $config.policy_groups }
 $result = Start-IMGraphBulkExport @export -WarningVariable warnings
-$unlisted = @($warnings -match 'list request failed')
+$unlisted = @($warnings -match 'list request failed' | Where-Object { "$_".Split(':')[0] -notin $config.skip_types })
+
+# The SHA-256 of each exported file, by its path in the zip. PDT_STATE_DIR
+# keeps the last successful run's list, so this run can say what changed.
+$hashes = [ordered]@{}
+foreach ($file in Get-ChildItem $exportFolder -Recurse -File | Sort-Object FullName) {
+    $path = [IO.Path]::GetRelativePath($exportFolder, $file.FullName).Replace('\', '/')
+    $hashes[$path] = (Get-FileHash $file.FullName -Algorithm SHA256).Hash
+}
+$lastExport = Join-Path $env:PDT_STATE_DIR 'last-export.json'
+$changes = if (Test-Path $lastExport) {
+    $last = Get-Content $lastExport -Raw | ConvertFrom-Json -AsHashtable
+    $added = @($hashes.Keys | Where-Object { -not $last.files.ContainsKey($_) })
+    $changed = @($hashes.Keys | Where-Object { $last.files.ContainsKey($_) -and $last.files[$_] -ne $hashes[$_] })
+    $removed = @($last.files.Keys | Where-Object { -not $hashes.Contains($_) } | Sort-Object)
+    "Since $($last.name): $($added.Count) added, $($changed.Count) changed, $($removed.Count) removed."
+    $added | ForEach-Object { "  added    $_" }
+    $changed | ForEach-Object { "  changed  $_" }
+    $removed | ForEach-Object { "  removed  $_" }
+} else {
+    'This is the first export, so there is nothing to compare it with.'
+}
+@{ name = $name; files = $hashes } | ConvertTo-Json | Set-Content $lastExport
 
 Compress-Archive $exportFolder (Join-Path $env:PDT_OUTPUT_DIR "$name.zip") -Force
 Remove-Item $work -Recurse -Force
 Write-Output "Exported $($result.Policies) objects of $($result.Types) types to $name.zip."
+$changes | Write-Output
 if ($result.UnknownSelectors) {
     throw "config.yml names policy types or groups that IntuneManagement does not know: $($result.UnknownSelectors -join ', ')."
 }
