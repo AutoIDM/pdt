@@ -680,7 +680,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_health)
     p = add_parser("alerts", help="choose where pdt posts deploys and runs, such as Slack")
-    actions = p.add_subparsers(dest="action", metavar="<action>", required=True)
+    actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt alerts")
     actions.add_parser(
         "setup", help="choose the alert types and events, connect each one, and send a test "
                       "message", formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
