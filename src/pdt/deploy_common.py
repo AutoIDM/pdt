@@ -72,6 +72,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ElementTree
@@ -196,6 +197,25 @@ def stage_script_header(stage: Path, app_dir: Path) -> None:
     lock = app_dir / "run.py.lock"
     if lock.is_file():
         shutil.copy(lock, folder / lock.name)
+    if header is None:
+        return
+    toml = "".join(line[2:] if line.startswith("# ") else line[1:]
+                   for line in header.group(0).splitlines(keepends=True)[1:-1])
+    sources = tomllib.loads(toml).get("tool", {}).get("uv", {}).get("sources", {})
+    root = app_dir.resolve()
+    for source in sources.values():
+        for entry in source if isinstance(source, list) else [source]:
+            if "path" not in entry:
+                continue
+            path = (root / entry["path"]).resolve()
+            if not path.is_relative_to(root):
+                continue
+            target = folder / path.relative_to(root)
+            if path.is_dir():
+                shutil.copytree(path, target, ignore=shutil.ignore_patterns(*BUILD_EXCLUDES))
+            elif path.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(path, target)
 
 
 def context_ignore_text(text: str, app_name: str) -> str:
