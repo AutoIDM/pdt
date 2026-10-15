@@ -81,8 +81,8 @@ from pdt import lifecycle
 from pdt import regions
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import (
-    BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
-    ensure_image, fail, fetch_json, gather_secrets, image_action, run_build,
+    BUILD_TAG, STORE_TAGS, CostEstimate, FatalAPIError, build_in_cloud, cached_price,
+    convert_from_usd, ensure_image, fail, fetch_json, gather_secrets, image_action, run_build,
     run_secrets, secret_contents, ssh_build_args, store_cost_label, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
@@ -133,6 +133,7 @@ BUILD_SUBMIT_ROLES = (
 )
 
 BILLING_API = "https://cloudbilling.googleapis.com/v1"
+SCHEDULER_API = "https://cloudscheduler.googleapis.com/v1"
 # Cloud Run job defaults; the deploy below does not override them.
 JOB_VCPU = 1.0
 JOB_MEMORY_GIB = 0.5
@@ -140,6 +141,10 @@ ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 # Measured in October 2026: Cloud Logging showed a line 27 s after the write.
 HOLD = datetime.timedelta(seconds=30)
+# A log read scans every entry of the project in its time range, and a newest-first
+# read with no timestamp sees only the last day (the gcloud --freshness default).
+# So each read is bounded by the runs it wants, widened by this margin.
+LOG_MARGIN = datetime.timedelta(minutes=1)
 
 
 # A freshly enabled API reports SERVICE_DISABLED for a few minutes, Cloud
@@ -148,6 +153,10 @@ HOLD = datetime.timedelta(seconds=30)
 # gcloud call waits them out.
 TRANSIENT = re.compile(r"SERVICE_DISABLED|ABORTED|Service account \S+ does not exist")
 RETRY_WAITS = (10, 20, 40, 60, 60, 60)
+# gcloud hands out a token that stays valid for 300 s or more
+# (_CREDENTIALS_EXPIRY_WINDOW in googlecloudsdk/core/credentials/store.py).
+TOKEN_REUSE_SECONDS = 240
+ACCESS_TOKEN = ("", 0.0)
 
 
 def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
@@ -225,9 +234,21 @@ def can_ask() -> bool:
 
 
 def have_credentials() -> bool:
+    global ACCESS_TOKEN
     proc = subprocess.run([GCLOUD, "auth", "print-access-token"],
                           stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    return proc.returncode == 0 and proc.stdout.strip() != ""
+    token = proc.stdout.strip() if proc.returncode == 0 else ""
+    ACCESS_TOKEN = (token, time.monotonic())
+    return token != ""
+
+
+def access_token() -> str:
+    global ACCESS_TOKEN
+    token, read_at = ACCESS_TOKEN
+    if token == "" or time.monotonic() - read_at >= TOKEN_REUSE_SECONDS:
+        token = run_quiet("auth", "print-access-token").strip()
+        ACCESS_TOKEN = (token, time.monotonic())
+    return token
 
 
 def login_with_key_file() -> bool:
@@ -473,22 +494,29 @@ def scheduler_description(app_name: str) -> str:
     return f"Managed by PDT app {app_name}"
 
 
-def scheduler_state(project: str, region: str, job: str) -> str | None:
-    """ENABLED or PAUSED, or None when the Cloud Scheduler job does not exist."""
-    resource = read_json_or_none("scheduler", "jobs", "describe", job,
-                                 "--location", region, "--project", project)
-    return None if resource is None else resource.get("state")
-
-
 def set_scheduler_paused(project: str, region: str, job: str, paused: bool) -> None:
-    state = scheduler_state(project, region, job)
-    if state is None:
-        fail(f"Cloud Scheduler job {console.value(job)} does not exist; run "
-             f"{console.value('pdt deploy ' + job.removeprefix('pdt-'))} first")
-    if (state == "PAUSED") == paused:
-        return
-    run_quiet("scheduler", "jobs", "pause" if paused else "resume", job,
-              "--location", region, "--project", project)
+    """Cloud Scheduler answers 200 to a pause of a paused job and to a resume of an
+    enabled one, so one call sets the state."""
+    verb = "pause" if paused else "resume"
+    url = f"{SCHEDULER_API}/projects/{project}/locations/{region}/jobs/{job}:{verb}"
+    for wait in (*RETRY_WAITS, None):
+        request = urllib.request.Request(
+            url, data=b"", headers={"Authorization": f"Bearer {access_token()}"})
+        try:
+            fetch_json(request)
+            return
+        except FatalAPIError as exc:
+            status = exc.response.code
+            if status == 404:
+                fail(f"Cloud Scheduler job {console.value(job)} does not exist; run "
+                     f"{console.value('pdt deploy ' + job.removeprefix('pdt-'))} first")
+            if status != 409 or wait is None:
+                console.say(console.escape(billing_detail(exc) or str(exc)))
+                fail(f"Cloud Scheduler did not {'pause' if paused else 'resume'} "
+                     f"{console.value(job)}; fix the problem above and run the command again")
+        # 409 is ABORTED: the job changed a moment ago.
+        console.bullet(f"Cloud Scheduler is not ready yet; retrying in {wait}s...", indent=4)
+        time.sleep(wait)
 
 
 def job_logs_url(project: str, region: str, job: str) -> str:
@@ -1277,18 +1305,19 @@ def list_runs(project: str, region: str, job: str) -> list[runs_cli.Run]:
         return []
     found = [execution_run(execution) for execution in executions]
     found.sort(key=lambda run: run.started, reverse=True)
-    codes = exit_codes(project, job, len(found))
+    codes = exit_codes(project, job, found)
     for run in found:
         run.exit_code = codes.get(run.id)
     return found
 
 
-def exit_codes(project: str, job: str, count: int) -> dict[str, int]:
+def exit_codes(project: str, job: str, found: list[runs_cli.Run]) -> dict[str, int]:
+    oldest = min(run.started for run in found) - LOG_MARGIN
     entries = describe_json(
         "logging", "read",
         f'resource.type="cloud_run_job" AND resource.labels.job_name="{job}" AND '
-        f'textPayload:"{runs_cli.EXIT_MARKER}"',
-        "--project", project, "--limit", str(max(count, 1))) or []
+        f'textPayload:"{runs_cli.EXIT_MARKER}" AND timestamp>="{oldest.isoformat()}"',
+        "--project", project, "--limit", str(len(found))) or []
     codes = {}
     for entry in entries:
         execution_id = (entry.get("labels") or {}).get("run.googleapis.com/execution_name")
@@ -1317,16 +1346,21 @@ def entry_line(entry: dict) -> runs_cli.Line:
     return runs_cli.parse_line(entry.get("textPayload") or json.dumps(payload), time)
 
 
-def read_lines(project: str, execution_id: str,
+def read_lines(project: str, run: runs_cli.Run,
                since: datetime.datetime | None = None) -> list[runs_cli.Line]:
-    """Every line the execution's container wrote from `since` on. With no --limit,
+    """Every line the run's container wrote from `since` on. With no --limit,
     gcloud reads every page. A read that fails warns, so it does not look like a log with no lines."""
-    after = "" if since is None else f' AND timestamp>="{since.isoformat()}"'
-    proc = gcloud("logging", "read", execution_filter(execution_id) + after,
+    start = run.started - LOG_MARGIN
+    if since is not None:
+        start = max(start, since)
+    window = f' AND timestamp>="{start.isoformat()}"'
+    if run.ended is not None:
+        window += f' AND timestamp<="{(run.ended + LOG_MARGIN).isoformat()}"'
+    proc = gcloud("logging", "read", execution_filter(run.id) + window,
                   "--project", project, "--order", "asc", "--format=json")
     if proc.returncode != 0:
         console.warn_once("Cloud Logging did not return the lines of "
-                          f"{console.value(execution_id)}: {console.escape(proc.stderr.strip())}")
+                          f"{console.value(run.id)}: {console.escape(proc.stderr.strip())}")
         return []
     entries = json.loads(proc.stdout or "null")
     if not entries:
@@ -1384,12 +1418,12 @@ def tail_entries(project: str, log_filter: str, stop: threading.Event) -> Iterat
 def stream_lines(project: str, run: runs_cli.Run, follow: bool) -> Iterator[runs_cli.Line]:
     """With `follow`, the store's lines and then each line of a live tail."""
     if not follow:
-        yield from read_lines(project, run.id)
+        yield from read_lines(project, run)
         return
     stop = threading.Event()
     tail = tail_entries(project, execution_filter(run.id), stop)
     try:
-        yield from runs_cli.store_and_tail(lambda since: read_lines(project, run.id, since),
+        yield from runs_cli.store_and_tail(lambda since: read_lines(project, run, since),
                                            (entry_line(entry) for entry in tail), HOLD)
     finally:
         stop.set()
@@ -1408,7 +1442,7 @@ def logs(app: dict, rest: list[str], assume_yes: bool,
     project = preflight(app, project, assume_yes)
     job = f"pdt-{app['name']}"
     return runs_cli.logs(lambda: list_runs(project, region, job),
-                         lambda run, since: read_lines(project, run.id, since), app["name"], rest,
+                         lambda run, since: read_lines(project, run, since), app["name"], rest,
                          store="Cloud Logging", delay=runs_cli.LOG_DELAY, hold=HOLD,
                          stream=lambda run, follow: stream_lines(project, run, follow), new=new)
 
