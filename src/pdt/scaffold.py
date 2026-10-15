@@ -385,12 +385,7 @@ def new_app(name: str, source: str | None) -> int:
     destination = root / name
     if destination.exists():
         raise ConfigError(f"{destination} already exists.")
-    if source is None:
-        console.heading("Pick the example to start from:")
-        console.say()
-        print_examples()
-        raise ConfigError(f"say which one, for example `pdt new {name} --from {examples()[0].name}`")
-    example = EXAMPLES / source
+    example = EXAMPLES / (source or STARTER)
     if example not in examples():
         raise ConfigError(
             f"there is no example named {source!r}. Run `pdt examples` to see them.")

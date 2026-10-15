@@ -182,14 +182,6 @@ def test_new_app_refuses_an_existing_folder(project):
         scaffold.new_app("my-report", "impossible-travel-report")
 
 
-def test_new_app_without_from_names_a_real_example(project, capsys):
-    with pytest.raises(ConfigError) as caught:
-        scaffold.new_app("my-report", None)
-    listed = [example.name for example in scaffold.examples()]
-    assert any(name in str(caught.value) for name in listed)
-    assert listed[0] in capsys.readouterr().out
-
-
 @pytest.fixture
 def scripts_app(project, monkeypatch):
     folder = project / "ad-report"

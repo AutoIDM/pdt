@@ -569,7 +569,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("app", help="the app's folder name")
     start = p.add_mutually_exclusive_group()
     source = start.add_argument("--from", dest="source",
-                                help="which example to copy; run `pdt examples` to see them")
+                                help="which example to copy (default: hello-world); run `pdt examples` to see them")
     source.completer = completion.examples
     start.add_argument("--from-scripts", action="store_true",
                        help="write requirements.psd1 and run.py for the .ps1 files already in APP/, "
