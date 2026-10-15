@@ -20,14 +20,15 @@ unhandled, and goes to each entry with `unhandled` in its `events` (its
 `exclude-events` still apply). When no entry names `unhandled` in `events`
 or `exclude-events`, the list ends with the implicit entry
 {type: console, events: [unhandled]}, so with no `alerts:` the console
-prints every event, marked unhandled. `alerts: false` is an empty list with no
+prints every event. `alerts: false` is an empty list with no
 implicit entry, so no entry receives any event.
 
 A Transport is a name, the extra entry keys it allows, and
 `deliver(event, entry, unhandled)`, where `unhandled` says the entry got the
-event through `unhandled`. The console type prints a `[event]` line, the
-slack type (pdt.slack) posts to a Slack channel, and the teams type
-(pdt.teams) posts to a Teams channel.
+event through `unhandled`. The console type prints one `[alert]` line with
+the sentence of pdt.alert_message.event_sentence, the same line for a handled
+and an unhandled event. The slack type (pdt.slack) posts to a Slack channel,
+and the teams type (pdt.teams) posts to a Teams channel.
 `deliver` must not change the event. The console prints at once; every
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the
@@ -73,7 +74,7 @@ from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, slack, teams
+from pdt import alert_message, config, console, slack, teams
 from pdt.utils import storage
 
 JOB_RUN_STARTED = "job:run-started"
@@ -102,13 +103,8 @@ class Event:
     params: dict[str, object]
 
 
-def event_text(event: Event) -> str:
-    fields = " ".join(f"{key}={value}" for key, value in event.params.items())
-    return f"{event.name} at={event.at:%Y-%m-%dT%H:%M:%SZ} {fields}"
-
-
 def print_event(event: Event, entry: dict, unhandled: bool) -> None:
-    console.event(event_text(event), UNHANDLED if unhandled else "", "red")
+    console.event(alert_message.event_sentence(event))
 
 
 @dataclass(frozen=True)
@@ -241,7 +237,7 @@ def _deliver_each(items: queue.Queue) -> None:
 def _fall_back(item: list) -> None:
     event, entry, _unhandled, _state = item
     item[3] = "fallen back"
-    console.event(event_text(event), f"not delivered to {entry['type']}:")
+    console.event(alert_message.event_sentence(event), f"not delivered to {entry['type']}:")
 
 
 def flush() -> None:

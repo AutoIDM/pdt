@@ -4,7 +4,8 @@
 note, body text, labelled fields, an "Open" link, and a footer. pdt.slack turns a
 Message into Block Kit and pdt.teams turns it into an Adaptive Card. The note,
 text, footer, and field values use one markup, `*bold*` and `code`, which Slack
-shows as written and Teams converts. A Tone (`OUTCOMES`, `OTHER`, `UNHANDLED`,
+shows as written and Teams converts. `event_sentence` is the one line the
+console type prints for an event. A Tone (`OUTCOMES`, `OTHER`, `UNHANDLED`,
 `READY`) holds the colour and icon of an outcome for both types. The title also
 says the outcome in words, so the tone is never the only sign of it.
 """
@@ -60,6 +61,22 @@ FIELDS = {"project": "Project", "app": "App", "provider": "Provider", "deployed"
 HIDDEN = {"url"}
 CLOUDS = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
 MAX_FIELDS = 10
+# The console line of each event pdt emits. {to} and {on} name the provider, such as
+# " to Azure"; the surrounding output already shows the time, the exit code, and the run id.
+SENTENCES = {
+    "app:deploy-started": "Deploying {app}{to}",
+    "app:deploy-completed": "Deployed {app}{to}",
+    "app:deploy-failed": "Deploy of {app}{to} failed",
+    "app:destroy-started": "Destroying {app}{on}",
+    "app:destroy-completed": "Destroyed {app}{on}",
+    "app:destroy-failed": "Destroy of {app}{on} failed",
+    "job:run-started": "Run of {app} started",
+    "job:run-completed": "Run of {app} completed",
+    "job:run-failed": "Run of {app} failed",
+    "job:paused": "Paused {app}",
+    "job:unpaused": "Unpaused {app}",
+    "app:secrets-updated": "Updated the secrets of {app}{on}: {count} changed",
+}
 
 
 def env_name(prefix: str, key: str) -> str:
@@ -109,6 +126,20 @@ def event_message(event, unhandled: bool = False) -> Message:
         fields=tuple(fields),
         url=str(params["url"]) if "url" in params else "",
         footer=f"`{event.name}` at {event.at:%Y-%m-%d %H:%M} UTC, sent by pdt")
+
+
+def event_sentence(event) -> str:
+    """One event as the console says it, such as `Run of hello-world failed (interrupted)`.
+    An event that SENTENCES does not name says the title of event_message."""
+    params = event.params
+    if event.name not in SENTENCES or "app" not in params:
+        return event_message(event).title
+    provider = str(params.get("provider"))
+    place = CLOUDS.get(provider) or ("this computer" if provider == "windows" else "")
+    sentence = SENTENCES[event.name].format(
+        app=params["app"], to=f" to {place}" if place else "",
+        on=f" on {place}" if place else "", count=params.get("count"))
+    return f"{sentence} ({params['reason']})" if "reason" in params else sentence
 
 
 def ready_message(project: str, target: str, events: list[str]) -> Message:

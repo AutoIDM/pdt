@@ -148,7 +148,7 @@ def test_set_emits_secrets_updated_with_no_env_var_name_or_value(project, monkey
     assert [(event.name, event.params) for event in seen] == [
         ("app:secrets-updated", {"project": project.name, "app": "demo", "provider": "aws",
                                  "action": "set", "count": 1})]
-    lines = [line for line in capsys.readouterr().out.splitlines() if "[event]" in line]
+    lines = [line for line in capsys.readouterr().out.splitlines() if "[alert]" in line]
     assert len(lines) == 1
     for text in ("ZQ_PRIVATE_NAME", "zq-value-7731"):
         assert text not in repr(seen[0].params) and text not in lines[0]
