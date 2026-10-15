@@ -122,8 +122,6 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
     missing = config.missing_env(app)
     if missing != "":
         problems.append(missing)
-    if app["schedule"] is None:
-        problems.append("schedule is required to deploy")
     if config.uses_email(app):
         problems.extend(email_problems(app["config"], check_oauth=False))
     lines = [f"runs {console.value('run.py')}"]
@@ -141,7 +139,7 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
     console.name(app_name)
     for line in [*lines, *config.found_env_lines(app), *sources]:
         console.detail(line)
-    problem = regions.choose_region(app, provider, assume_yes)
+    problem = choose_schedule(app, assume_yes) or regions.choose_region(app, provider, assume_yes)
     if problem != "":
         console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
@@ -154,6 +152,52 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
     run_code = offer_run(app_name, provider, assume_yes, run)
     deployed_next_steps(app_name, started=run_code is not None)
     return run_code or 0
+
+
+# The schedule a deploy suggests for an app that sets none.
+DEFAULT_SCHEDULE = "daily"
+
+
+def choose_schedule(app: dict, assume_yes: bool) -> str:
+    """When the app has no schedule, ask for one and save it in the app's config.yml.
+
+    Creates config.yml when the app folder has none. Returns a problem for the
+    user, or "". --yes takes DEFAULT_SCHEDULE, the same way it takes every
+    other default; a run with no one to ask and no --yes stops with the line
+    to add.
+    """
+    if app["schedule"] is not None:
+        return ""
+    name = app["name"]
+    where = f"{name}/{config.APP_FILE}"
+    words = config.describe_schedule(DEFAULT_SCHEDULE)
+    schedule = DEFAULT_SCHEDULE
+    if assume_yes:
+        console.say(f"{console.value(name)} has no schedule, so it runs "
+                    f"{console.value(DEFAULT_SCHEDULE)} ({console.escape(words)}).")
+    elif not can_prompt(None):
+        return (f"no schedule is set. Add `schedule: {DEFAULT_SCHEDULE}` to {where}, or run "
+                f"again with --yes to run it {DEFAULT_SCHEDULE} ({words}).")
+    else:
+        console.say()
+        console.say(f"{console.value(name)} has no schedule yet. Answer hourly, daily, weekly, "
+                    f"monthly, or a cron expression such as {console.value('30 6 * * 1-5')}.")
+        while True:
+            try:
+                schedule = console.ask(f"How often should {name} run?",
+                                       DEFAULT_SCHEDULE) or DEFAULT_SCHEDULE
+            except EOFError:
+                return f"no schedule is set. Add `schedule: {DEFAULT_SCHEDULE}` to {where}."
+            try:
+                words = config.describe_schedule(schedule)
+                break
+            except ConfigError as e:
+                console.error(console.escape(str(e)))
+    saved = config.save_app_key(app, "schedule", schedule)
+    app["schedule"] = schedule
+    console.done(f"Saved schedule {console.value(schedule)} ({console.escape(words)}) to "
+                 f"{console.value(saved.relative_to(config.find_project()))}.")
+    return ""
 
 
 # The started, completed, and failed events of each provider_step command.
