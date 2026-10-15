@@ -143,16 +143,39 @@ def test_all_and_unhandled_are_not_event_names(project, name):
         lifecycle.emit(name)
 
 
-def test_the_console_prints_an_event_bold_and_the_unhandled_mark_red(project, monkeypatch):
+def test_the_console_prints_an_event_as_one_bold_alert_sentence_handled_or_not(
+        project, monkeypatch):
     out = colour_output(monkeypatch)
-    lifecycle.emit("job:run-completed", app="report", exit_code=0)
+    lifecycle.emit("job:run-completed", app="report", exit_code=0, run_id="d2142205")
     (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [all]\n")
-    lifecycle.emit("job:run-completed", app="report", exit_code=0)
-    unhandled, handled = out.getvalue().splitlines()
-    assert unhandled.startswith(
-        "\x1b[1;35m[event] \x1b[0m\x1b[1;31munhandled\x1b[0m\x1b[1;35m job:run-completed at=")
-    assert handled.startswith("\x1b[1;35m[event] job:run-completed at=")
-    assert handled.endswith(" app=report exit_code=0\x1b[0m")
+    lifecycle.emit("job:run-completed", app="report", exit_code=0, run_id="d2142205")
+    assert out.getvalue().splitlines() == [
+        "\x1b[1;35m[alert] Run of report completed\x1b[0m"] * 2
+
+
+@pytest.mark.parametrize(("name", "params", "line"), [
+    ("app:deploy-started", {"provider": "azure"}, "Deploying report to Azure"),
+    ("app:deploy-completed", {"provider": "aws"}, "Deployed report to AWS"),
+    ("app:deploy-failed", {"provider": "google-cloud", "exit_code": 1},
+     "Deploy of report to Google Cloud failed"),
+    ("app:deploy-failed", {"provider": "azure", "exit_code": 10, "reason": "declined"},
+     "Deploy of report to Azure failed (declined)"),
+    ("app:destroy-completed", {"provider": "windows"}, "Destroyed report on this computer"),
+    ("job:run-started", {"provider": "aws", "run_id": "d2142205", "deployed": True,
+                         "trigger": "schedule"}, "Run of report started"),
+    ("job:run-failed", {"provider": "azure", "exit_code": 130, "reason": "interrupted",
+                        "signal": "SIGINT", "state": "runs/*-d2142205/"},
+     "Run of report failed (interrupted)"),
+    ("job:paused", {"provider": "azure", "deployed": False}, "Paused report"),
+    ("job:unpaused", {"provider": "", "deployed": True}, "Unpaused report"),
+    ("app:secrets-updated", {"provider": "google-cloud", "action": "set", "count": 1},
+     "Updated the secrets of report on Google Cloud: 1 changed"),
+    ("app:report-ready", {"provider": "azure"}, "Report ready: report"),
+])
+def test_each_event_is_a_sentence_without_its_time_exit_code_or_run_id(
+        project, monkeypatch, capsys, name, params, line):
+    lifecycle.emit(name, project="proj", app="report", **params)
+    assert capsys.readouterr().out == f"[alert] {line}\n"
 
 
 def two_entries(project, kind):
@@ -173,7 +196,7 @@ def test_a_failing_transport_warns_falls_back_to_the_console_and_the_run_goes_on
     assert seen == [("job:run-started", False), ("job:run-failed", False)]
     out, err = capsys.readouterr()
     assert err.count("The boom alert could not send job:run-failed: no [route]") == 1
-    assert out.count("[event] not delivered to boom: job:run-failed at=") == 1
+    assert out.count("[alert] not delivered to boom: Run of report failed\n") == 1
 
 
 def test_a_delivery_past_the_time_limit_falls_back_to_the_console(project, monkeypatch, capsys):
@@ -190,8 +213,8 @@ def test_a_delivery_past_the_time_limit_falls_back_to_the_console(project, monke
     assert code == 0
     assert waited < 3
     out = capsys.readouterr().out
-    assert "[event] not delivered to slow: job:run-started at=" in out
-    assert "[event] not delivered to slow: job:run-completed at=" in out
+    assert "[alert] not delivered to slow: Run of report started\n" in out
+    assert "[alert] not delivered to slow: Run of report completed\n" in out
 
 
 def test_each_entry_gets_its_events_in_order(project, monkeypatch):
