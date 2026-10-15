@@ -232,6 +232,9 @@ def cmd_run(args) -> int:
     sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
     missing = config.missing_env(app)
+    if missing != "" and offer_entra(app, missing):
+        config.load_env(app["dir"])
+        missing = config.missing_env(app)
     if missing != "":
         console.error(f"{console.value(name)}: {console.escape(missing)}")
         return 1
@@ -264,6 +267,31 @@ def cmd_run(args) -> int:
         console.say("Try deploying this job:")
         console.command(f"pdt deploy {scaffold.STARTER}")
     return proc.returncode
+
+
+def offer_entra(app: dict, missing: str) -> bool:
+    """When the app's Entra app registration values are missing, offer to create it with
+    `pdt entra`. True when that saved them."""
+    if not app["entra"] or "pdt entra" not in missing or not can_prompt(None):
+        return False
+    console.warn(f"{console.value(app['name'])}: {console.escape(missing)}")
+    if not console.confirm("Sign in with the Azure CLI and create the Entra app registration now?"):
+        return False
+    return deploy.dispatch("azure", "entra", app["name"], False) == 0
+
+
+def cmd_entra(args) -> int:
+    name = choose_app(args.app, "entra")
+    if name is None:
+        return 1
+    if not config.merged_app(name)["entra"]:
+        console.error(f"{console.value(name)} has no {console.value('entra:')} section. List the "
+                      "Microsoft Graph application permissions it needs in its config.yml:")
+        console.command("entra:")
+        console.command("  graph_permissions: [User.Read.All]")
+        return 1
+    return deploy.dispatch("azure", "entra", name, args.yes,
+                           ["--device-code"] if args.device_code else [])
 
 
 def run_lines(app: dict) -> list[str]:
@@ -510,7 +538,7 @@ rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
 
 COMMAND_GROUPS = {
     "Get started": ["init", "examples", "new", "completion"],
-    "Run and validate": ["list", "validate", "run"],
+    "Run and validate": ["list", "validate", "entra", "run"],
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
     "Check a deployed app": ["health", "runs", "logs", "gui"],
     "Manage app data": ["secrets", "storage"],
@@ -576,6 +604,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="when the app has no successful run yet, start one and follow its log "
                         "without asking")
     p.set_defaults(func=cmd_deploy)
+    p = add_parser("entra", help="create or update the Entra app an app signs in to Graph as")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
+    app.completer = completion.apps
+    p.add_argument("--device-code", action="store_true",
+                   help="sign in with a code on another device instead of this computer's browser")
+    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.set_defaults(func=cmd_entra)
     p = add_parser("login", help="sign in again to an app's platform")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps

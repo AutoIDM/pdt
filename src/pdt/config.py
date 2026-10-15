@@ -45,7 +45,7 @@ SCHEDULE_SHORTHAND = {
 }
 ROOT_KEYS = {"platform", "apps"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
-            "run_scripts", "continue_on_error", "pause"}
+            "run_scripts", "continue_on_error", "pause", "entra"}
 PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
@@ -53,6 +53,7 @@ PLATFORM_KEYS = {
     "timezone",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
+ENTRA_KEYS = {"graph_permissions"}
 # Where each known key belongs, so a key in the wrong section gets told
 # where to move instead of "unknown key".
 APP_LEVEL = f"the top level of the app's {APP_FILE}, or its apps: entry in {PROJECT_FILE}"
@@ -68,9 +69,11 @@ KEY_HOME = {
     "run_scripts": APP_LEVEL,
     "continue_on_error": APP_LEVEL,
     "pause": APP_LEVEL,
+    "entra": APP_LEVEL,
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
+    "graph_permissions": "the entra: section",
 }
 # Keys that belong nowhere any more. The message says what to do instead.
 RETIRED_KEYS = {
@@ -268,6 +271,7 @@ def merged_app(name: str) -> dict:
         "run_scripts": own.get("run_scripts", entry.get("run_scripts")),
         "continue_on_error": own.get("continue_on_error", entry.get("continue_on_error", False)),
         "pause": own.get("pause", entry.get("pause", False)),
+        "entra": mapping(own, "entra", own_where) or mapping(entry, "entra", entry_where),
     }
 
 
@@ -788,6 +792,9 @@ def missing_env(app: dict) -> str:
                       "or a folder above it")
         fix = f"add each one as NAME=value to {target}, then run the command again"
     message = f"{'; '.join(problems)}. pdt looked in {looked}. To fix it, {fix}."
+    if app.get("entra") and secret == "" and any("PDT_AZURE_" in problem for problem in problems):
+        message += (f" To create the Entra app registration and save its values, run "
+                    f"`pdt entra {app['name']}`.")
     if any(not is_set(os.environ, name) for name in spec.get("read_by") or {}):
         message += (f" If a script works without one that it reads, list that one under "
                     f"env: optional: in {app['name']}/{APP_FILE} instead.")
@@ -813,7 +820,8 @@ def key_problems(where: str, section: dict, allowed: set[str] | None) -> list[st
 
 def app_section_problems(where: str, section: dict) -> list[str]:
     problems = key_problems(where, section, APP_KEYS)
-    for key, allowed in (("platform", PLATFORM_KEYS), ("config", None), ("env", ENV_KEYS)):
+    for key, allowed in (("platform", PLATFORM_KEYS), ("config", None), ("env", ENV_KEYS),
+                         ("entra", ENTRA_KEYS)):
         try:
             block = mapping(section, key, where)
         except ConfigError as e:
@@ -822,6 +830,11 @@ def app_section_problems(where: str, section: dict) -> list[str]:
         problems.extend(key_problems(f"{where}: {key}", block, allowed))
         if key == "env":
             problems.extend(env_shape_problems(f"{where}: env", block))
+        names = block.get("graph_permissions") if key == "entra" else None
+        if names is not None and not (
+                isinstance(names, list) and all(isinstance(n, str) for n in names)):
+            problems.append(f"{where}: entra: graph_permissions must be a list of "
+                            "Microsoft Graph application permissions, such as User.Read.All")
     return problems
 
 
