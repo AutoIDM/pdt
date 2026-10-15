@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from conftest import plain
+from conftest import fake_azure_reads, plain
 from pdt.deploy import DECLINED
 from pdt import deploy_azure, deploy_azure_container_apps
 
@@ -41,7 +41,7 @@ def deploy_settings(environment) -> dict:
         "subscription": SUBSCRIPTION, "resource_group": "pdt", "region": "eastus2",
         "registry": "pdtregistry", "environment": environment, "identity": "pdt-runner",
         "workspace": "pdt-logs", "vault": "pdt-vault", "deployer_object_id": "d",
-        "deployer_principal_type": "User", "suffix": "abc1234def",
+        "deployer_principal_type": "User", "suffix": "abc1234def", "token": "t",
     }
 
 
@@ -57,7 +57,9 @@ def plan_for(monkeypatch, settings, resources):
     monkeypatch.setattr(deploy_azure_container_apps, "build_in_cloud", lambda app, builder, image_platform: False)
     monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
     monkeypatch.setattr(deploy_azure_container_apps, "gather_secrets", lambda app: {})
-    monkeypatch.setattr(deploy_azure_container_apps, "check_shared_names", lambda settings: None)
+    monkeypatch.setattr(deploy_azure_container_apps, "check_shared_names",
+                        lambda settings, resources: None)
+    fake_azure_reads(monkeypatch, read)
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
     monkeypatch.setattr(deploy_azure, "az_json", read)
     monkeypatch.setattr(deploy_azure_container_apps, "secret_state", lambda *args: (False, None))
@@ -125,6 +127,7 @@ def release_with(monkeypatch, jobs, other_environments=()):
             return [{"name": name} for name in other_environments]
         return None
 
+    fake_azure_reads(monkeypatch, read)
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
     return deploy_azure_container_apps.environment_release(deploy_settings(SHARED))
 
@@ -144,6 +147,7 @@ def test_destroy_releases_the_shared_group_when_the_environment_is_already_gone(
             return TAGGED
         return None if args[:3] == ("containerapp", "env", "show") else []
 
+    fake_azure_reads(monkeypatch, read)
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
     release = deploy_azure_container_apps.environment_release(deploy_settings(SHARED))
     assert release == deploy_azure_container_apps.Release(group=True)
@@ -166,6 +170,7 @@ def test_destroy_keeps_the_environment_another_project_uses(monkeypatch):
 def test_destroy_never_touches_a_user_environment(monkeypatch):
     monkeypatch.setattr(deploy_azure_container_apps, "az_json",
                         lambda *args: pytest.fail("looked at the environment"))
+    fake_azure_reads(monkeypatch, lambda *args: pytest.fail("looked at the environment"))
     release = deploy_azure_container_apps.environment_release(deploy_settings(OWN))
     assert (release.environment, release.group) == (False, False)
     assert plain([release.note]) == [
@@ -180,6 +185,7 @@ def test_destroy_with_the_project_group_already_gone_still_releases_the_environm
     monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "false")
+    fake_azure_reads(monkeypatch, lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "managed_secret", lambda *args: False)
     monkeypatch.setattr(deploy_azure_container_apps, "environment_release",
                         lambda settings: deploy_azure_container_apps.Release(environment=True, group=True))
@@ -205,6 +211,7 @@ def test_destroy_with_the_project_group_already_gone_purges_its_soft_deleted_vau
         deploy_azure_container_apps, "az_json",
         lambda *args: deleted_vault if args[:2] == ("keyvault", "show-deleted") else None)
     monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "false")
+    fake_azure_reads(monkeypatch, lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "managed_secret", lambda *args: False)
     monkeypatch.setattr(deploy_azure_container_apps, "confirm",
                         lambda actions, *args: plans.append(plain(actions)) or True)
@@ -224,6 +231,7 @@ def test_destroy_leaves_a_soft_deleted_vault_pdt_did_not_make(monkeypatch):
         deploy_azure_container_apps, "az_json",
         lambda *args: {"properties": {"tags": {}}} if args[:2] == ("keyvault", "show-deleted") else None)
     monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "false")
+    fake_azure_reads(monkeypatch, lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "managed_secret", lambda *args: False)
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
                         lambda *args, **kwargs: pytest.fail(f"ran {args}"))

@@ -127,9 +127,9 @@ def azure_estimate(monkeypatch, gbp_prices: bool):
         return (0.5 if currency == "GBP" else 1.0), ""
 
     monkeypatch.setattr(deploy_azure_container_apps, "retail_price", retail_price)
-    monkeypatch.setattr(deploy_azure, "retail_price", retail_price)
     return deploy_azure_container_apps.cost_estimate_for(
-        "uksouth", "GBP", "0 6 * * *", "job", "rg", False, 0, None)
+        "uksouth", "0 6 * * *", None, 0, None,
+        lambda: deploy_azure_container_apps.price_list("uksouth", "GBP", False, False))
 
 
 def test_azure_takes_prices_in_the_local_currency(monkeypatch):

@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from conftest import plain
+from conftest import fake_azure_reads, plain
 from pdt import deploy_azure, deploy_azure_container_apps
 
 SUBSCRIPTION = "11111111-1111-1111-1111-111111111111"
@@ -21,7 +21,7 @@ def settings() -> dict:
         "subscription": SUBSCRIPTION, "resource_group": "pdt", "region": "eastus2",
         "registry": "pdtregistry", "environment": SHARED, "identity": "pdt-runner",
         "workspace": "pdt-logs", "vault": "pdt-vault", "deployer_object_id": "d",
-        "deployer_principal_type": "User", "suffix": "abc1234def",
+        "deployer_principal_type": "User", "suffix": "abc1234def", "token": "t",
     }
 
 
@@ -45,7 +45,8 @@ def fake_deploy(monkeypatch, answers):
     monkeypatch.setattr(module, "build_in_cloud", lambda app, builder, image_platform: False)
     monkeypatch.setattr(module, "azure_settings", lambda app: {})
     monkeypatch.setattr(module, "gather_secrets", lambda app: {})
-    monkeypatch.setattr(module, "check_shared_names", lambda settings: None)
+    monkeypatch.setattr(module, "check_shared_names", lambda settings, resources: None)
+    fake_azure_reads(monkeypatch, read)
     monkeypatch.setattr(module, "az_json", read)
     monkeypatch.setattr(deploy_azure, "az_json", read)
     monkeypatch.setattr(module, "run_quiet", write)
@@ -113,6 +114,7 @@ def fake_destroy(monkeypatch, answers, locked_by):
 
     monkeypatch.setattr(module, "preflight", lambda app, requested: settings())
     monkeypatch.setattr(module, "azure_settings", lambda app: {})
+    fake_azure_reads(monkeypatch, read)
     monkeypatch.setattr(module, "az_json", read)
     monkeypatch.setattr(deploy_azure, "az_json", read)
     monkeypatch.setattr(module, "az_tsv", lambda *args: "true")

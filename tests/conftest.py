@@ -38,6 +38,24 @@ def plain(lines):
     return [Text.from_markup(line).plain for line in lines]
 
 
+def fake_azure_reads(monkeypatch, read):
+    """Answer each resource manager and Key Vault read of the Azure plan with `read(*command)`,
+    `command` being the az command the read stands for, and price every meter at 1 USD."""
+    from pdt import deploy_azure, deploy_azure_container_apps
+
+    def get(token, url, command, missing=(404,)):
+        return read(*command)
+
+    for module in (deploy_azure, deploy_azure_container_apps):
+        monkeypatch.setattr(module, "arm_get", get)
+        monkeypatch.setattr(module, "arm_list", get)
+        monkeypatch.setattr(module, "access_token", lambda resource="": "token")
+    monkeypatch.setattr(deploy_azure_container_apps, "price_list",
+                        lambda region, currency, secrets, storage: (
+                            {"vCPU": 1.0, "memory": 1.0, "registry": 1.0, "Key Vault": 1.0,
+                             "storage": 1.0}, "USD", ""))
+
+
 def add_app(root, name, config_text="", run_body="def main():\n    return 0\n"):
     folder = root / name
     folder.mkdir(parents=True, exist_ok=True)
