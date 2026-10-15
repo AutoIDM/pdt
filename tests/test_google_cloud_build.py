@@ -226,6 +226,22 @@ def test_the_plan_names_the_cloud_build_resources(project, monkeypatch):
     assert "in the cloud with" in plan and "Cloud Build" in plan
 
 
+def test_an_unchanged_secret_lists_and_destroys_no_versions(project, monkeypatch):
+    values = {"TOKEN": "secret"}
+    fake = FakeGcloud(found={
+        ("secrets", "describe"): {"labels": {"managed-by": "pdt"}},
+        ("secrets", "versions", "access"): values,
+        ("secrets", "versions", "list"): [{"name": "projects/1/secrets/s/versions/2"},
+                                          {"name": "projects/1/secrets/s/versions/1"}]})
+    app = deploy_app(project, monkeypatch, fake, cloud=False)
+    monkeypatch.setattr(google, "gather_secrets", lambda app: values)
+    monkeypatch.setattr(google, "build_image", lambda *args: None)
+    assert google.deploy(app, True) == 0
+    assert fake.ran("secrets", "versions", "add") == []
+    assert fake.ran("secrets", "versions", "list") == []
+    assert fake.ran("secrets", "versions", "destroy") == []
+
+
 def test_a_failed_cloud_build_fails_once(project, monkeypatch, capsys):
     fake = FakeGcloud(submit_code=1, submit_stderr="ERROR: build step 0 failed")
     app = deploy_app(project, monkeypatch, fake, cloud=True)

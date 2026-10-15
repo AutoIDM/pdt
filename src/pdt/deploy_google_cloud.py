@@ -992,7 +992,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
             console.step(f"updating secret {console.value(sid)}")
             run_quiet("secrets", "versions", "add", sid, "--project", project,
                       "--data-file", "-", data=payload)
-        destroy_old_secret_versions(project, sid)
+            destroy_old_secret_versions(project, sid)
     if values:
         run_quiet("secrets", "add-iam-policy-binding", sid, "--project", project,
                   "--member", f"serviceAccount:{sa}",
