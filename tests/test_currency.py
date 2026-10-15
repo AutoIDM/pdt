@@ -1,3 +1,5 @@
+import datetime
+
 import pytest
 
 from conftest import add_app
@@ -83,8 +85,9 @@ def test_the_ecb_rate_crosses_through_the_euro(monkeypatch):
 def test_the_cloud_rate_comes_before_the_ecb_rate(monkeypatch):
     monkeypatch.setattr(deploy_common, "ecb_xml", lambda: pytest.fail("fetched"))
     items, currency, note = deploy_common.convert_from_usd(
-        [("job", 2.0)], "GBP", ("Azure's rate", lambda: 0.5))
-    assert (items, currency, note) == ([("job", 1.0)], "GBP", ", converted from USD at Azure's rate")
+        [("job", 2.0)], "GBP", ("Azure's rate", lambda: (0.5, "2026-10-15")))
+    assert (items, currency, note) == ([("job", 1.0)], "GBP",
+                                       ", converted from USD at Azure's rate of 2026-10-15")
 
 
 def test_a_failed_cloud_rate_falls_back_to_the_ecb_rate(monkeypatch):
@@ -111,13 +114,13 @@ def test_azure_takes_its_exchange_rate_from_one_meter_in_both_currencies(monkeyp
         return {"Items": [{"retailPrice": price}]}
 
     monkeypatch.setattr(deploy_azure, "fetch_json", fetch_json)
-    assert deploy_azure.exchange_rate("GBP") == 0.75
+    assert deploy_azure.exchange_rate("GBP")[0] == 0.75
     assert len(urls) == 2 and all(deploy_azure.RATE_METER in url for url in urls)
 
 
 def test_azure_needs_no_rate_for_usd(monkeypatch):
     monkeypatch.setattr(deploy_azure, "fetch_json", lambda *args, **kwargs: pytest.fail("fetched"))
-    assert deploy_azure.exchange_rate("USD") == 1.0
+    assert deploy_azure.exchange_rate("USD")[0] == 1.0
 
 
 def azure_estimate(monkeypatch, gbp_prices: bool):
@@ -139,10 +142,11 @@ def test_azure_takes_prices_in_the_local_currency(monkeypatch):
 
 
 def test_azure_falls_back_to_its_exchange_rate(monkeypatch):
-    monkeypatch.setattr(deploy_azure_container_apps, "exchange_rate", lambda currency: 0.5)
+    monkeypatch.setattr(deploy_azure_container_apps, "exchange_rate",
+                        lambda currency: (0.5, "2026-10-15"))
     estimate = azure_estimate(monkeypatch, gbp_prices=False)
     assert estimate.currency == "GBP"
-    assert "converted from USD at Azure's rate" in estimate.prices
+    assert "converted from USD at Azure's rate of 2026-10-15" in estimate.prices
 
 
 def test_azure_falls_back_to_the_ecb_rate(monkeypatch):
@@ -208,4 +212,5 @@ def test_aws_keeps_usd_and_says_why_with_no_rate(monkeypatch):
 
 def test_aws_says_nothing_extra_for_a_usd_user():
     estimate = deploy_aws.cost_estimate("us-east-1", [("job", 1.0)], "", "USD")
-    assert estimate.prices == "us-east-1 list prices, before free tiers"
+    today = datetime.date.today().isoformat()
+    assert estimate.prices == f"us-east-1 list prices of {today}, before free tiers"

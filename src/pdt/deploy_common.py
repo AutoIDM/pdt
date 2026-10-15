@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import datetime
 import hashlib
 import json
 import os
@@ -71,12 +72,13 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ElementTree
 from http import HTTPStatus
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import backoff
 
@@ -234,7 +236,8 @@ class CostEstimate:
     """What a deploy will cost per month, shown before the user agrees.
 
     `items` pairs a label with an amount in `currency`. `prices` says where
-    the numbers come from, such as "us-east-1 list prices, before free tiers".
+    the numbers come from, such as "us-east-1 list prices of 2026-10-15, before free
+    tiers" (`list_prices`).
     `excludes` names what the estimate leaves out.
     """
     items: list[tuple[str, float]]
@@ -247,6 +250,67 @@ class CostEstimate:
         if self.currency != "USD":
             console.status(f"pdt shows {console.value(self.currency)}, the currency of "
                            "this computer's regional setting.")
+
+
+PRICE_CACHE = config.data_home() / "pdt" / "prices"
+PRICE_MAX_AGE_SECONDS = 24 * 3600
+# The date of each list price this process used; list_prices names the oldest.
+LIST_PRICE_DATES: set[str] = set()
+
+
+def cached_price(provider: str, region: str, currency: str, query: str,
+                 read: Callable[[], Any]) -> tuple[Any, str]:
+    """The JSON value `read` returns for this key, and the date pdt read it.
+
+    Each key has its own file in PRICE_CACHE, replaced through a temporary
+    file, so two deploys at once never write into the same file. An entry
+    is read again once it is older than PRICE_MAX_AGE_SECONDS. When that
+    read fails, the older entry is used and a warning names its date.
+    """
+    key = {"provider": provider, "region": region, "currency": currency, "query": query}
+    name = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
+    path = PRICE_CACHE / f"{name}.json"
+    entry = None
+    try:
+        saved = json.loads(path.read_text())
+        if saved["key"] == key:
+            entry = float(saved["read_at"]), saved["value"]
+    except (OSError, ValueError, LookupError, TypeError):
+        pass
+    if entry is not None and 0 <= time.time() - entry[0] < PRICE_MAX_AGE_SECONDS:
+        return entry[1], price_date(entry[0])
+    try:
+        value = read()
+    except Exception as exc:
+        if entry is None:
+            raise
+        console.warn_once(f"Could not read current prices ({console.escape(str(exc))}); "
+                          f"the estimate uses the prices pdt read on {price_date(entry[0])}.")
+        return entry[1], price_date(entry[0])
+    read_at = time.time()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text_atomically(
+            path, json.dumps({"key": key, "read_at": read_at, "value": value}))
+    except OSError:
+        pass
+    return value, price_date(read_at)
+
+
+def price_date(read_at: float) -> str:
+    return datetime.date.fromtimestamp(read_at).isoformat()
+
+
+def cached_list_price(provider: str, region: str, currency: str, query: str,
+                      read: Callable[[], Any]) -> Any:
+    value, date = cached_price(provider, region, currency, query, read)
+    LIST_PRICE_DATES.add(date)
+    return value
+
+
+def list_prices(region: str) -> str:
+    """The start of a CostEstimate's `prices`: the region, and the date of its oldest price."""
+    return f"{region} list prices of {min(LIST_PRICE_DATES, default=price_date(time.time()))}"
 
 
 ECB_RATES = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
@@ -266,36 +330,41 @@ def ecb_xml() -> bytes:
 
 
 def ecb_rate(currency: str) -> tuple[float, str]:
-    """What one USD costs in `currency` at today's ECB euro reference rates, and their date."""
-    rates = {"EUR": 1.0}
-    date = ""
-    for cube in ElementTree.fromstring(ecb_xml()).iter():
-        if cube.get("time"):
-            date = cube.get("time", "")
-        if cube.get("currency") and cube.get("rate"):
-            rates[cube.get("currency", "")] = float(cube.get("rate", ""))
-    if "USD" not in rates or currency not in rates:
-        raise LookupError(f"the ECB publishes no {currency} rate")
-    return rates[currency] / rates["USD"], date
+    """What one USD costs in `currency` at the ECB euro reference rates, and their date."""
+    def read() -> list:
+        rates = {"EUR": 1.0}
+        date = ""
+        for cube in ElementTree.fromstring(ecb_xml()).iter():
+            if cube.get("time"):
+                date = cube.get("time", "")
+            if cube.get("currency") and cube.get("rate"):
+                rates[cube.get("currency", "")] = float(cube.get("rate", ""))
+        if "USD" not in rates or currency not in rates:
+            raise LookupError(f"the ECB publishes no {currency} rate")
+        return [rates[currency] / rates["USD"], date]
+
+    rate, date = cached_price("ecb", "", currency, ECB_RATES, read)[0]
+    return rate, date
 
 
 def convert_from_usd(items: list[tuple[str, float]], currency: str,
-                     published: tuple[str, Callable[[], float]] | None = None,
+                     published: tuple[str, Callable[[], tuple[float, str]]] | None = None,
                      ) -> tuple[list[tuple[str, float]], str, str]:
     """Convert USD amounts to `currency`: the items, their currency, and a note for `prices`.
 
     `published` names an exchange rate the cloud itself publishes and the
-    function that reads it. That rate comes first, then the ECB rate. When
-    neither can be read, the items stay in USD and the note says why.
+    function that reads it with its date. That rate comes first, then the
+    ECB rate. When neither can be read, the items stay in USD and the note
+    says why.
     """
     if currency == "USD":
         return items, "USD", ""
     if published is not None:
         name, read_rate = published
         try:
-            rate = read_rate()
+            rate, date = read_rate()
             return ([(label, amount * rate) for label, amount in items], currency,
-                    f", converted from USD at {name}")
+                    f", converted from USD at {name} of {date}")
         except Exception:
             pass
     try:

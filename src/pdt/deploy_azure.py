@@ -76,7 +76,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, fail, fetch_json, secret_contents, store_cost_label,
+    STORE_TAGS, CostEstimate, cached_list_price, cached_price, fail, fetch_json, list_prices,
+    price_date, secret_contents, store_cost_label,
     store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
@@ -502,27 +503,37 @@ def retail_price(region: str, service: str, meter: str, sku: str,
     if product:
         query += f" and productName eq '{product}'"
     url = f"{PRICES_API}?currencyCode='{currency}'&$filter={urllib.parse.quote(query)}"
-    items = fetch_json(url, timeout=30).get("Items") or []
-    items = [i for i in items if i.get("retailPrice")
-             and i.get("currencyCode", currency) == currency]
-    if not items:
-        raise LookupError(f"no {meter!r} {currency} price for {service} in region {region}")
-    return float(items[0]["retailPrice"]), items[0].get("unitOfMeasure", "")
+
+    def read() -> list:
+        items = fetch_json(url, timeout=30).get("Items") or []
+        items = [i for i in items if i.get("retailPrice")
+                 and i.get("currencyCode", currency) == currency]
+        if not items:
+            raise LookupError(f"no {meter!r} {currency} price for {service} in region {region}")
+        return [float(items[0]["retailPrice"]), items[0].get("unitOfMeasure", "")]
+
+    price, unit = cached_list_price("azure", region, currency, query, read)
+    return price, unit
 
 
-def exchange_rate(currency: str) -> float:
-    """What one USD costs in `currency`, at the rate Azure prices with today."""
+def exchange_rate(currency: str) -> tuple[float, str]:
+    """What one USD costs in `currency` at the rate Azure prices with, and the date pdt read it."""
     if currency == "USD":
-        return 1.0
-    query = urllib.parse.quote(f"meterId eq '{RATE_METER}' and type eq 'Consumption'")
-    prices = []
-    for code in ("USD", currency):
-        items = fetch_json(f"{PRICES_API}?currencyCode='{code}'&$filter={query}",
-                           timeout=30).get("Items") or []
-        if not items or not items[0].get("retailPrice"):
-            raise LookupError(f"no {code} price for the exchange-rate meter {RATE_METER}")
-        prices.append(float(items[0]["retailPrice"]))
-    return prices[1] / prices[0]
+        return 1.0, price_date(time.time())
+    meter = f"meterId eq '{RATE_METER}' and type eq 'Consumption'"
+    query = urllib.parse.quote(meter)
+
+    def read() -> float:
+        prices = []
+        for code in ("USD", currency):
+            items = fetch_json(f"{PRICES_API}?currencyCode='{code}'&$filter={query}",
+                               timeout=30).get("Items") or []
+            if not items or not items[0].get("retailPrice"):
+                raise LookupError(f"no {code} price for the exchange-rate meter {RATE_METER}")
+            prices.append(float(items[0]["retailPrice"]))
+        return prices[1] / prices[0]
+
+    return cached_price("azure", "", currency, meter, read)
 
 
 def owned_by(resource: dict | None, app_name: str) -> bool:
@@ -1000,7 +1011,7 @@ def key_vault_item(region: str, runs: float, currency: str = "USD") -> tuple[str
 
 def cost_estimate(region: str, items: list[tuple[str, float]],
                   excludes: str, currency: str, converted: str = "") -> CostEstimate:
-    return CostEstimate(items, f"{region} list prices{converted}, before free grants",
+    return CostEstimate(items, f"{list_prices(region)}{converted}, before free grants",
                         excludes, currency)
 
 

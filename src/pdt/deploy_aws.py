@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import functools
 import getpass
 import hashlib
 import json
@@ -55,7 +56,8 @@ from botocore.exceptions import BotoCoreError, ClientError, MissingDependencyExc
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_PREFIX, STORE_TAGS, CostEstimate, convert_from_usd, fail, fetch_json, store_cost_label, store_name)
+    STORE_PREFIX, STORE_TAGS, CostEstimate, cached_list_price, convert_from_usd, fail, fetch_json,
+    list_prices, store_cost_label, store_name)
 from pdt.utils import email_auth
 from pdt.utils.env_secret import private_file
 from pdt.utils.storage import Store
@@ -1040,19 +1042,27 @@ def ensure_secret(secrets, name: str, payload: str) -> str:
     )["ARN"]
 
 
+@functools.cache
+def price_list(offer: str, region: str) -> dict:
+    return fetch_json(PRICE_LIST_URL.format(offer=offer, region=region), timeout=60)
+
+
 def list_price(offer: str, region: str, usagetype_suffix: str, **attributes: str) -> float:
-    url = PRICE_LIST_URL.format(offer=offer, region=region)
-    data = fetch_json(url, timeout=60)
-    for sku, product in data["products"].items():
-        if not product["attributes"].get("usagetype", "").endswith(usagetype_suffix):
-            continue
-        if any(product["attributes"].get(key) != value for key, value in attributes.items()):
-            continue
-        for term in data["terms"]["OnDemand"].get(sku, {}).values():
-            for dimension in term["priceDimensions"].values():
-                if dimension.get("beginRange", "0") == "0":
-                    return float(dimension["pricePerUnit"]["USD"])
-    raise LookupError(f"no {usagetype_suffix!r} price for {offer} in region {region}")
+    def read() -> float:
+        data = price_list(offer, region)
+        for sku, product in data["products"].items():
+            if not product["attributes"].get("usagetype", "").endswith(usagetype_suffix):
+                continue
+            if any(product["attributes"].get(key) != value for key, value in attributes.items()):
+                continue
+            for term in data["terms"]["OnDemand"].get(sku, {}).values():
+                for dimension in term["priceDimensions"].values():
+                    if dimension.get("beginRange", "0") == "0":
+                        return float(dimension["pricePerUnit"]["USD"])
+        raise LookupError(f"no {usagetype_suffix!r} price for {offer} in region {region}")
+
+    query = " ".join([offer, usagetype_suffix, *(f"{k}={v}" for k, v in sorted(attributes.items()))])
+    return cached_list_price("aws", region, "USD", query, read)
 
 
 def recent_stream_seconds(logs, log_group: str) -> float | None:
@@ -1076,7 +1086,7 @@ def cost_estimate(region: str, items: list[tuple[str, float]],
                   excludes: str, local_currency: str) -> CostEstimate:
     # The AWS price list holds USD only and AWS publishes no exchange rate.
     items, currency, converted = convert_from_usd(items, local_currency)
-    return CostEstimate(items, f"{region} list prices{converted}, before free tiers", excludes,
+    return CostEstimate(items, f"{list_prices(region)}{converted}, before free tiers", excludes,
                         currency)
 
 
