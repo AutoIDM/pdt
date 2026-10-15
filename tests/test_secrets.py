@@ -174,7 +174,7 @@ def test_no_event_when_nothing_changes_or_the_prompt_is_declined(project, monkey
     assert seen == []
 
 
-def test_aws_set_stores_the_value_under_the_env_var_name(monkeypatch):
+def test_aws_set_stores_the_value_under_the_env_var_name(project, monkeypatch):
     from pdt import deploy_aws_batch as batch_deploy
 
     class FakeSecretsManager:
@@ -200,5 +200,5 @@ def test_aws_set_stores_the_value_under_the_env_var_name(monkeypatch):
     monkeypatch.setattr(batch_deploy, "batch_clients", lambda session: {
         "sts": None, "iam": None, "secretsmanager": client})
     monkeypatch.setattr("sys.stdin", io.StringIO("new\n"))
-    assert batch_deploy.secrets({"name": "demo"}, "set", True, "TOKEN") == 0
+    assert batch_deploy.secrets(app_dir(project), "set", True, "TOKEN") == 0
     assert json.loads(client.payload) == {"TOKEN": "new"}
