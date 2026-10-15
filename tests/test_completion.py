@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from pdt import cli, completion
+from pdt import cli, completion, config
 
 from conftest import add_app
 
