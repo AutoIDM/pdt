@@ -1,7 +1,7 @@
 {% extends "gui/base.html" %}
 {% block title %}Apps{% endblock %}
 {% block content %}
-{% if running %}<meta http-equiv="refresh" content="30">{% endif %}
+{% if updating %}<meta http-equiv="refresh" content="5">{% elif running %}<meta http-equiv="refresh" content="30">{% endif %}
 <section class="card">
     <div class="card-head">
         <h1>Apps</h1>
@@ -16,6 +16,7 @@
         {% for row in rows %}
             <tr>
                 <td><a class="name" href="{% url 'app_detail' row.app.name %}">{{ row.app.name }}</a>
+                    {% if row.updating %}<span class="badge updating" title="pdt is reading this app's runs; the page refreshes itself">updating</span>{% endif %}
                     {% if row.config.pause %}<span class="badge paused">paused</span>{% endif %}
                     {% if not row.config.deployed %}<span class="badge muted">not deployed</span>{% endif %}
                     {% if row.config.error %}<div class="error">{{ row.config.error }}</div>{% endif %}
