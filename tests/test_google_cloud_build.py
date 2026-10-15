@@ -146,7 +146,8 @@ def test_the_cloud_path_submits_the_staged_context_to_cloud_build_and_runs_no_do
     }
     assert fake.uploaded == sorted([
         ".gcloudignore", "Dockerfile", "cloudbuild.json", "pdt.yml", "report/data.csv",
-        "report/run.py", *(f".pdt-lifecycle/pdt/{module}" for module in LIFECYCLE_MODULES)])
+        ".pdt-script/run.py", "report/run.py",
+        *(f".pdt-lifecycle/pdt/{module}" for module in LIFECYCLE_MODULES)])
     assert fake.ignore == "/.gcloudignore\n/cloudbuild.json\n"
     assert not Path(submit[2]).exists()
 
