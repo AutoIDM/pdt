@@ -24,6 +24,10 @@ import tempfile
 from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import yaml
 
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
@@ -409,6 +413,7 @@ def yaml_quoted(value: str) -> str:
 def yaml_key(text: str, path: tuple) -> tuple[yaml.Node, yaml.Node] | None:
     """The key node and the value node at `path`, a tuple of mapping keys and list
     indexes, or None when the file has no such key."""
+    import yaml
     node = yaml.compose(text, Loader=yaml.SafeLoader)
     key = None
     for part in path:
@@ -437,6 +442,7 @@ def rename_key(text: str, path: tuple, new: str) -> str:
 def remove_key(text: str, path: tuple) -> str | None:
     """`text` without the lines of the key at `path`. None when another key shares
     those lines, as in `{a: 1, b: 2}` or `- b: 2`, so lines cannot remove it alone."""
+    import yaml
     found = yaml_key(text, path)
     if found is None:
         return text
@@ -457,6 +463,7 @@ def remove_key(text: str, path: tuple) -> str | None:
 def set_top_level_key(text: str, key: str, value: str, comment: str = "") -> str:
     """`text` with `key: value` at the top level. A new key goes above the first key
     and the comment lines right above it, after `# comment` when one is given."""
+    import yaml
     found = yaml_key(text, (key,))
     if found is not None:
         node = found[1]

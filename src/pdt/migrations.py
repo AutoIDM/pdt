@@ -52,6 +52,8 @@ SHIPPED = {
         "72f6d05cb2c16c8e01a6a98085639b51cc1d79682ab5bc2dcd30e17ee78fde49": "0.1.4",
         "8befcd4c6e2fb5d31f396416d2662da07df176fa5fcccb7b72374b5e0dd331e4": "0.1.6",
         "2d42cee1a02ef8ddff652cc70f876c6ebc5521609843c59d821aeb32663457e3": "0.1.7",
+        "c197cf055264271547646173f258bfae2949736182f234e39cb39866abdd995a": "0.1.7",
+        "6190ae2c0e4a5aed49fb8554febee8b857072a5de75f69d9143b42c7a779f2e0": "0.1.8",
     },
     "CLAUDE.md": {
         "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49": "0.1.1",
@@ -241,6 +243,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("0.1.4", AGENTS_TITLE, agents_file),
     Migration("0.1.6", AGENTS_TITLE, agents_file),
     Migration("0.1.7", AGENTS_TITLE, agents_file),
+    Migration("0.1.8", AGENTS_TITLE, agents_file),
 )
 
 
@@ -291,7 +294,7 @@ def start(command: str, json_output: bool = False) -> None:
         except Blocked as e:
             if command not in READ_ONLY_COMMANDS:
                 raise
-            console.note(str(e))
+            console.note(console.escape(str(e)))
 
 
 def bring_up_to_date(project: Path) -> None:
@@ -339,7 +342,7 @@ def run(project: Path, todo: list[Migration]) -> None:
                 save_originals(plan.writes)
                 for rel, text in plan.writes.items():
                     if not changes:
-                        console.heading(f"pdt {__version__} updated this project:")
+                        console.heading(f"pdt {console.value(__version__)} updated this project:")
                     path = project / rel
                     if text is None:
                         path.unlink(missing_ok=True)
@@ -347,7 +350,7 @@ def run(project: Path, todo: list[Migration]) -> None:
                         path.parent.mkdir(parents=True, exist_ok=True)
                         config.write_text_atomically(path, text)
                     changes.append(f"{rel} {migration.title}")
-                    console.bullet(changes[-1])
+                    console.bullet(console.escape(changes[-1]))
                 notes.extend(plan.notes)
             if backup is not None:
                 save_originals([PROJECT_FILE])
@@ -367,19 +370,20 @@ def run(project: Path, todo: list[Migration]) -> None:
             (backup / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
             where = backup.relative_to(project).as_posix()
             if any(saved.values()):
-                console.bullet(f"The files as they were are in {where}/.")
+                console.bullet(f"The files as they were are in {console.value(where + '/')}.")
             for rel in dict.fromkeys(edited):
-                console.note(f"{rel} has your own edits, so pdt left it as it is. "
-                             f"The text for pdt {__version__} is in {where}/{rel}.new.")
+                console.note(f"{console.value(rel)} has your own edits, so pdt left it as it is. "
+                             f"The text for pdt {console.value(__version__)} is in "
+                             f"{console.value(f'{where}/{rel}.new')}.")
             if not finished:
                 console.note("pdt stopped before it finished updating this project. Run the "
-                             f"command again to finish, or copy the files in {where}/ back "
+                             f"command again to finish, or copy the files in {console.value(where + '/')} back "
                              "into the project to undo the change.")
             remove_old_backups(project)
         if notes and finished:
             console.heading("Next steps:")
             for note in dict.fromkeys(notes):
-                console.bullet(note)
+                console.bullet(console.escape(note))
         if changes or edited or notes:
             console.say()
 
@@ -406,7 +410,7 @@ def migrate(project: Path, dry_run: bool) -> int:
     """`pdt migrate`: run the migrations, or with `dry_run` print them as a diff."""
     if not dry_run:
         bring_up_to_date(project)
-        console.done(f"This project is up to date for pdt {__version__}.")
+        console.done(f"This project is up to date for pdt {console.value(__version__)}.")
         return 0
     have = migrated_by(project)
     reached = have
@@ -433,11 +437,11 @@ def migrate(project: Path, dry_run: bool) -> int:
         new = final[rel] or ""
         for line in difflib.unified_diff(old.splitlines(keepends=True), new.splitlines(keepends=True),
                                          f"a/{rel}", f"b/{rel}"):
-            console.say(line.rstrip("\n"))
+            console.say(console.escape(line.rstrip("\n")))
             changed = True
     if steps:
         raise blocked(steps)
     if not changed:
-        console.done(f"This project is up to date for pdt {__version__}.")
+        console.done(f"This project is up to date for pdt {console.value(__version__)}.")
         return 0
     return 1
