@@ -105,7 +105,7 @@ def dispatch_output(provider: str, command: str, app_name: str,
 
 
 def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> int:
-    """Deploy one app; then, when it has no successful run yet, offer to start one.
+    """Deploy one app; then offer to start a run of it.
 
     `run` None asks a person at a terminal and starts nothing with `--yes` or
     with no terminal, True starts the run with no question (`--run`), and
@@ -151,7 +151,7 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
     code = provider_step("deploy", provider, app_name, assume_yes)
     if code != 0:
         return code
-    run_code = first_run(app_name, provider, assume_yes, run)
+    run_code = offer_run(app_name, provider, assume_yes, run)
     deployed_next_steps(app_name, started=run_code is not None)
     return run_code or 0
 
@@ -188,19 +188,13 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool) 
     return 0
 
 
-def first_run(app_name: str, provider: str, assume_yes: bool, run: bool | None) -> int | None:
-    """Start a run of an app with no successful run yet and follow its log.
+def offer_run(app_name: str, provider: str, assume_yes: bool, run: bool | None) -> int | None:
+    """Offer to start a run of the app just deployed and follow its log.
 
     Returns the run's result, or None when pdt started no run."""
     if run is False or (run is None and (assume_yes or not can_prompt(None))):
         return None
     console.say()
-    console.status(f"Reading the runs of {console.value(app_name)}...")
-    history = run_history(provider, app_name)
-    if history is None or any(item.status == "succeeded" for item in history):
-        return None
-    console.say(f"{console.value(app_name)} has "
-                f"{'no successful run' if history else 'not run'} yet.")
     if not run:
         try:
             if not console.confirm("Start a run now and show its log?"):

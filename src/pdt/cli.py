@@ -287,7 +287,7 @@ def cmd_deploy(args) -> int:
             console.error("pick an app or --all, not both")
             return 1
         if args.run:
-            console.error("--run starts the first run of one app; drop --all")
+            console.error("--run starts a run of one app; drop --all")
             return 1
         return deploy_all(args.yes, args.skip_failures)
     name = choose_app(args.app, "deploy")
@@ -580,8 +580,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-failures", action="store_true",
                    help="with --all, go on past an app that fails to deploy instead of asking")
     p.add_argument("--run", action="store_true",
-                   help="when the app has no successful run yet, start one and follow its log "
-                        "without asking")
+                   help="after the deploy, start a run and follow its log without asking")
     p.set_defaults(func=cmd_deploy)
     p = add_parser("login", help="sign in again to an app's platform")
     app = p.add_argument("app", nargs="?", help=APP_HELP)

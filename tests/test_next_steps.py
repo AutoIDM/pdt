@@ -88,7 +88,7 @@ def test_no_provider_prints_its_own_next_steps(module):
 
 @pytest.mark.parametrize("module", [deploy_aws_batch, deploy_azure_container_apps,
                                     deploy_google_cloud, deploy_windows])
-def test_no_provider_start_prints_the_hint_that_first_run_must_not_show(module):
+def test_no_provider_start_prints_the_hint_that_offer_run_must_not_show(module):
     assert "see the run" not in inspect.getsource(module.start)
 
 

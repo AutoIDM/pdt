@@ -1,42 +1,31 @@
-"""After a deploy, pdt offers to start the first run of an app with no successful run yet."""
-
-import json
-from datetime import UTC, datetime
+"""After an interactive deploy, pdt offers to start a run of the app and follow its log."""
 
 import pytest
 
-from pdt import cli, config, console, deploy, runs_cli, scaffold
+from pdt import cli, config, console, deploy, scaffold
 
 APP = scaffold.STARTER
+REGIONS = {"aws": "us-east-1", "azure": "eastus", "google-cloud": "us-central1", "windows": None}
 
 
-@pytest.fixture
-def project(tmp_path, monkeypatch):
+@pytest.fixture(params=list(REGIONS))
+def project(request, tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     monkeypatch.chdir(tmp_path)
     assert scaffold.init(None, assume_yes=True) == 0
-    (tmp_path / "pdt.yml").write_text("platform:\n  provider: aws\n  region: us-east-1\n")
+    region = REGIONS[request.param]
+    (tmp_path / "pdt.yml").write_text(f"platform:\n  provider: {request.param}\n"
+                                      + (f"  region: {region}\n" if region else ""))
     return tmp_path
 
 
-def run(run_id, status):
-    return runs_cli.Run(run_id, datetime(2026, 10, 9, tzinfo=UTC), None, status)
-
-
-def runs_json(found):
-    return json.dumps([runs_cli.run_json(item) for item in found])
-
-
 class Cloud:
-    """A provider that records each command and lists `history`."""
+    """A provider that records each command and never lists runs."""
 
-    def __init__(self, monkeypatch, history, terminal=True, answer="y",
-                 deploy_code=0, start_code=0, runs_code=0):
+    def __init__(self, monkeypatch, terminal=True, answer="y", deploy_code=0, start_code=0):
         self.calls = []
-        self.history = history
         self.asked = []
         self.codes = {"deploy": deploy_code, "start": start_code}
-        self.runs_code = runs_code
         monkeypatch.setattr(deploy, "dispatch", self.dispatch)
         monkeypatch.setattr(deploy, "dispatch_output", self.dispatch_output)
         monkeypatch.setattr(deploy, "can_prompt", lambda interactive: terminal)
@@ -48,9 +37,7 @@ class Cloud:
         return self.codes.get(command, 0)
 
     def dispatch_output(self, provider, command, app_name, extra):
-        assert (command, extra) == ("runs", ["--", "--json"])
-        self.calls.append(("runs",))
-        return self.runs_code, runs_json(self.history)
+        pytest.fail(f"the deploy read {command}")
 
     def confirm(self, question="Proceed?"):
         self.asked.append(question)
@@ -66,41 +53,43 @@ FOLLOW = ("start", "--", "--follow")
 QUESTION = "Start a run now and show its log?"
 
 
-@pytest.mark.parametrize("history, said", [
-    ([], "hello-world has not run yet."),
-    ([run("old-2", "failed"), run("old-1", "failed")], "hello-world has no successful run yet."),
-])
-def test_a_yes_at_the_terminal_starts_the_run_and_follows_it(project, monkeypatch, capsys,
-                                                              history, said):
-    cloud = Cloud(monkeypatch, history)
+def test_a_yes_at_the_terminal_starts_the_run_and_follows_it(project, monkeypatch, capsys):
+    cloud = Cloud(monkeypatch)
     assert deploy.deploy(APP) == 0
     assert cloud.asked == [QUESTION]
-    assert cloud.calls == [("deploy",), ("runs",), FOLLOW]
+    assert cloud.calls == [("deploy",), FOLLOW]
     out = capsys.readouterr().out
-    assert said in out
+    assert "Reading the runs" not in out
     assert f"pdt run {APP} --deployed" not in out
     assert f"pdt logs {APP}" in out
     assert "see the run" not in out
 
 
+def test_every_deploy_asks_again(project, monkeypatch):
+    cloud = Cloud(monkeypatch)
+    assert deploy.deploy(APP) == 0
+    assert deploy.deploy(APP) == 0
+    assert cloud.asked == [QUESTION, QUESTION]
+    assert cloud.calls == [("deploy",), FOLLOW, ("deploy",), FOLLOW]
+
+
 def test_a_no_at_the_terminal_starts_nothing(project, monkeypatch, capsys):
-    cloud = Cloud(monkeypatch, [], answer="n")
+    cloud = Cloud(monkeypatch, answer="n")
     assert deploy.deploy(APP) == 0
     assert cloud.asked == [QUESTION]
-    assert cloud.commands() == ["deploy", "runs"]
+    assert cloud.commands() == ["deploy"]
     assert f"pdt run {APP} --deployed" in capsys.readouterr().out
 
 
 def test_no_answer_at_the_terminal_starts_nothing(project, monkeypatch):
-    cloud = Cloud(monkeypatch, [], answer=None)
+    cloud = Cloud(monkeypatch, answer=None)
     assert deploy.deploy(APP) == 0
-    assert cloud.commands() == ["deploy", "runs"]
+    assert cloud.commands() == ["deploy"]
 
 
 @pytest.mark.parametrize("assume_yes, terminal", [(True, True), (True, False), (False, False)])
-def test_yes_or_no_terminal_starts_nothing_and_reads_no_runs(project, monkeypatch, capsys,
-                                                             assume_yes, terminal):
-    cloud = Cloud(monkeypatch, [], terminal=terminal)
+def test_yes_or_no_terminal_starts_nothing(project, monkeypatch, capsys, assume_yes, terminal):
+    cloud = Cloud(monkeypatch, terminal=terminal)
     assert deploy.deploy(APP, assume_yes=assume_yes) == 0
     assert cloud.asked == []
     assert cloud.commands() == ["deploy"]
@@ -109,41 +98,26 @@ def test_yes_or_no_terminal_starts_nothing_and_reads_no_runs(project, monkeypatc
 
 @pytest.mark.parametrize("assume_yes, terminal", [(False, True), (True, True), (True, False)])
 def test_run_starts_the_run_with_no_question(project, monkeypatch, assume_yes, terminal):
-    cloud = Cloud(monkeypatch, [run("old", "failed")], terminal=terminal)
+    cloud = Cloud(monkeypatch, terminal=terminal)
     assert deploy.deploy(APP, assume_yes=assume_yes, run=True) == 0
     assert cloud.asked == []
-    assert cloud.calls == [("deploy",), ("runs",), FOLLOW]
-
-
-@pytest.mark.parametrize("run_option", [None, True])
-def test_an_app_with_a_successful_run_gets_no_offer(project, monkeypatch, capsys, run_option):
-    cloud = Cloud(monkeypatch, [run("old-2", "failed"), run("old-1", "succeeded")])
-    assert deploy.deploy(APP, run=run_option) == 0
-    assert cloud.asked == []
-    assert cloud.commands() == ["deploy", "runs"]
-    assert f"pdt run {APP} --deployed" in capsys.readouterr().out
-
-
-def test_runs_that_cannot_be_read_get_no_offer(project, monkeypatch):
-    cloud = Cloud(monkeypatch, [], runs_code=1)
-    assert deploy.deploy(APP, run=True) == 0
-    assert cloud.commands() == ["deploy", "runs"]
+    assert cloud.calls == [("deploy",), FOLLOW]
 
 
 def test_deploy_all_never_offers(project, monkeypatch):
-    cloud = Cloud(monkeypatch, [])
+    cloud = Cloud(monkeypatch)
     assert deploy.deploy(APP, run=False) == 0
     assert cloud.commands() == ["deploy"]
 
 
 def test_a_failed_deploy_offers_nothing(project, monkeypatch):
-    cloud = Cloud(monkeypatch, [], deploy_code=1)
+    cloud = Cloud(monkeypatch, deploy_code=1)
     assert deploy.deploy(APP, run=True) == 1
     assert cloud.commands() == ["deploy"]
 
 
 def test_the_exit_code_is_the_runs(project, monkeypatch, capsys):
-    cloud = Cloud(monkeypatch, [], start_code=1)
+    cloud = Cloud(monkeypatch, start_code=1)
     assert deploy.deploy(APP) == 1
     assert cloud.calls[-1] == FOLLOW
 
@@ -151,7 +125,7 @@ def test_the_exit_code_is_the_runs(project, monkeypatch, capsys):
 @pytest.mark.parametrize("start_code, hint", [(0, True), (1, False)])
 def test_pdt_run_deployed_ends_with_the_command_to_see_the_run(project, monkeypatch, capsys,
                                                                start_code, hint):
-    cloud = Cloud(monkeypatch, [])
+    cloud = Cloud(monkeypatch)
     cloud.codes["start"] = start_code
     config.mark_deployed(APP, True)
     assert deploy.start(APP) == start_code
@@ -176,4 +150,13 @@ def test_the_run_option_reaches_the_deploy(project, monkeypatch, argv, run_optio
 def test_run_with_all_is_refused(project, monkeypatch, capsys):
     monkeypatch.setattr(deploy, "deploy", lambda *a, **k: pytest.fail("deployed"))
     assert run_cli(monkeypatch, "deploy", "--all", "--run") == 1
-    assert "--run starts the first run of one app; drop --all" in capsys.readouterr().out
+    assert "--run starts a run of one app; drop --all" in capsys.readouterr().out
+
+
+def test_deploy_all_at_a_terminal_asks_nothing_and_starts_no_run(project, monkeypatch, capsys):
+    cloud = Cloud(monkeypatch)
+    monkeypatch.setattr(cli, "can_prompt", lambda interactive: True)
+    assert run_cli(monkeypatch, "deploy", "--all") == 0
+    assert cloud.asked == []
+    assert cloud.commands() == ["deploy"]
+    assert f"pdt run {APP} --deployed" in capsys.readouterr().out
