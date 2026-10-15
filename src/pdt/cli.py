@@ -286,23 +286,22 @@ def cmd_deploy(args) -> int:
         if args.app is not None:
             console.error("pick an app or --all, not both")
             return 1
-        if args.run:
-            console.error("--run starts the first run of one app; drop --all")
-            return 1
-        return deploy_all(args.yes, args.skip_failures)
+        return deploy_all(args.yes, args.skip_failures, args.run)
     name = choose_app(args.app, "deploy")
     if name is None:
         return 1
     return deploy.deploy(name, assume_yes=args.yes, run=args.run or None)
 
 
-def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
+def deploy_all(assume_yes: bool, skip_failures: bool, run: bool = False) -> int:
     names = config.find_apps()
     if not names:
         say_no_apps()
         return 1
     ask = not skip_failures and can_prompt(None)
     failed: list[str] = []
+    deployed: list[str] = []
+    failed_runs: list[str] = []
     original_env = os.environ.copy()
     try:
         for index, name in enumerate(names, 1):
@@ -311,6 +310,7 @@ def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
             console.heading(f"Deploying {console.value(name)} ({index} of {len(names)})")
             code = deploy.deploy(name, assume_yes=assume_yes, run=False)
             if code == 0:
+                deployed.append(name)
                 continue
             failed.append(name)
             console.error(f"{console.value(name)} did not deploy.")
@@ -326,13 +326,20 @@ def deploy_all(assume_yes: bool, skip_failures: bool) -> int:
                 console.done(f"Disabled {console.value(name)} in "
                              f"{console.value(path.relative_to(config.find_project()))}. "
                              "Set enabled: true there to bring it back.")
+        for index, name in enumerate(deployed if run else [], 1):
+            os.environ.clear()
+            os.environ.update(original_env)
+            console.heading(f"Running {console.value(name)} ({index} of {len(deployed)})")
+            if deploy.start_run(name) != 0:
+                failed_runs.append(name)
     finally:
         os.environ.clear()
         os.environ.update(original_env)
     if failed:
         console.warn(f"Not deployed: {', '.join(console.value(name) for name in failed)}")
-        return 1
-    return 0
+    if failed_runs:
+        console.warn(f"Runs that failed: {', '.join(console.value(name) for name in failed_runs)}")
+    return 1 if failed or failed_runs else 0
 
 
 def cmd_login(args) -> int:
@@ -580,8 +587,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-failures", action="store_true",
                    help="with --all, go on past an app that fails to deploy instead of asking")
     p.add_argument("--run", action="store_true",
-                   help="when the app has no successful run yet, start one and follow its log "
-                        "without asking")
+                   help="after the deploy, start a run and follow its log without asking; "
+                        "with --all, run each app that deployed")
     p.set_defaults(func=cmd_deploy)
     p = add_parser("login", help="sign in again to an app's platform")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
