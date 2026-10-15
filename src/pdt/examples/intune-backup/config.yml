@@ -1,0 +1,33 @@
+# Backs up every Intune policy with IntuneManagement (github.com/Micke-K/IntuneManagement), documents each one, and reports what changed since the last backup, which policies are assigned to nobody, and which policy types the app cannot read.
+
+# How often this app runs.
+# Shorthand: hourly, daily, weekly, monthly, yearly.
+# Or a 5-field cron expression, for example "0 * * * *".
+schedule: "daily"
+
+# The Entra app needs these Microsoft Graph application permissions, with
+# admin consent. All of them only read; the app never changes the tenant.
+#   DeviceManagementConfiguration.Read.All  DeviceManagementApps.Read.All
+#   DeviceManagementServiceConfig.Read.All  DeviceManagementScripts.Read.All
+#   DeviceManagementRBAC.Read.All           DeviceManagementManagedDevices.Read.All
+#   Policy.Read.All                         Agreement.Read.All
+#   CloudPC.Read.All                        Organization.Read.All
+#   Group.Read.All                          User.Read.All
+#
+# Sign in with a client secret or a certificate. With a certificate,
+# PDT_AZURE_PRIVATE_KEY_PATH names the .pfx file (relative to the project
+# folder), and `pdt deploy` sends it to the cloud as PDT_AZURE_PRIVATE_KEY_B64.
+#
+# IM_MOCK_DATA names a folder of IntuneManagement's offline demo tenant. When
+# it is set, the app reads that folder instead of signing in to your tenant.
+env:
+  required:
+    - PDT_AZURE_TENANT_ID
+    - PDT_AZURE_CLIENT_ID
+  one_of:
+    - [PDT_AZURE_CLIENT_SECRET]
+    - [PDT_AZURE_PRIVATE_KEY_B64]
+    - [PDT_AZURE_PRIVATE_KEY_PATH]
+  optional:
+    - PDT_AZURE_PRIVATE_KEY_PASSWORD
+    - IM_MOCK_DATA

@@ -327,6 +327,71 @@ Looks at recent Entra ID sign-ins. Sends an email when one person signs in from 
 
 Settings for the lookback window, the minimum distance, and the email addresses live in the app's `config.yml`. The env vars it needs are listed there too, and in its `env.template`.
 
+### intune-backup
+
+Backs up every Intune policy in your tenant with [IntuneManagement](https://github.com/Micke-K/IntuneManagement), the open-source Intune backup tool many IT teams already use, and audits each backup. It runs every day. It only reads: it never changes your tenant.
+
+You do not install IntuneManagement or copy it into your project. The app names the IntuneManagement release it uses, downloads it from GitHub on its first run (about 40 MB, into `intune-backup/.pdt/intune-management/`), and a deployed job downloads it at the start of each run. The release is IntuneManagement 4.0, the first version that runs on Linux, where pdt's cloud jobs run. 4.0 is still marked beta by its author; the app uses only its read commands.
+
+Each run keeps these files in the app's data store:
+
+| File | What it holds |
+| --- | --- |
+| `Summary.md` | what the run found, in a few lines; open it first |
+| `backup/` and `backup.zip` | every policy as IntuneManagement exports it, with its assignments; IntuneManagement imports it back from here |
+| `Changes.csv` | every setting that differs from the last backup, and every policy added or removed since then |
+| `Inventory.csv` | one row per policy, with its type, last change, and how many assignments it has; a policy assigned to nobody is marked |
+| `Permissions.csv` | each policy type, and whether the app can read it; a type it cannot read names the permission to add |
+| `Documentation/Intune.html` | every policy's settings, as a page you can read or print |
+| `Documentation/csv/` | the same settings, one CSV file per policy |
+| `IntuneManagement.log` | IntuneManagement's own log of the run |
+
+The last good backup also stays in the app's `state/backup/` folder, so the next run can say what changed. A run that fails keeps its files but does not replace that backup. The first run has nothing to compare with, so `Changes.csv` starts with the second run.
+
+#### Set it up
+
+1. Register an app in Entra. In the [Microsoft Entra admin center](https://entra.microsoft.com), open **Applications** > **App registrations** > **New registration**. Name it, for example, `Intune backup`, leave the other choices as they are, and select **Register**. From its **Overview** page, copy the **Application (client) ID** and the **Directory (tenant) ID**.
+2. Let it read Intune. Open **API permissions** > **Add a permission** > **Microsoft Graph** > **Application permissions**, and add each of these: `DeviceManagementConfiguration.Read.All`, `DeviceManagementApps.Read.All`, `DeviceManagementServiceConfig.Read.All`, `DeviceManagementScripts.Read.All`, `DeviceManagementRBAC.Read.All`, `DeviceManagementManagedDevices.Read.All`, `Policy.Read.All`, `Agreement.Read.All`, `CloudPC.Read.All`, `Organization.Read.All`, `Group.Read.All`, `User.Read.All`. Then select **Grant admin consent for** your organization. Granting consent needs a Global Administrator or a Privileged Role Administrator.
+3. Give it a secret. Open **Certificates & secrets** > **Client secrets** > **New client secret**, and copy its **Value**. Entra shows the value only once.
+4. Add the app to your pdt project:
+
+   ```
+   pdt new intune-backup --from intune-backup
+   ```
+
+5. Put the three values in the `.env` file at the top of your project:
+
+   ```
+   PDT_AZURE_TENANT_ID=<the Directory (tenant) ID>
+   PDT_AZURE_CLIENT_ID=<the Application (client) ID>
+   PDT_AZURE_CLIENT_SECRET=<the secret's Value>
+   ```
+
+6. Check the setup and run one backup on your computer:
+
+   ```
+   pdt validate
+   pdt run intune-backup
+   ```
+
+   The run prints one line per step. Its files are in `.pdt/storage/intune-backup/runs/` in your project, in a folder named for the run's start time; open `Summary.md` there. When `Summary.md` lists policy types the app cannot read, add the permission it names in step 2 and run again.
+
+7. Deploy it, so it runs every day in your cloud:
+
+   ```
+   pdt deploy intune-backup
+   ```
+
+   `pdt gui` shows each run with its files and a Download link for each, and `pdt health` says whether the last run worked. `pdt storage intune-backup ls runs/` lists the runs' folders in the data store, and `pdt storage intune-backup get PATH` copies one file, such as `runs/<run>/backup.zip`, to your computer.
+
+To change how often it runs, change `schedule:` in `intune-backup/config.yml` and deploy again.
+
+A certificate works instead of a secret. Upload the certificate (the `.cer` file) under **Certificates & secrets** > **Certificates**, put the `.pfx` file in your project folder, and set `PDT_AZURE_PRIVATE_KEY_PATH=intune-backup.pfx` in `.env` instead of `PDT_AZURE_CLIENT_SECRET`, with `PDT_AZURE_PRIVATE_KEY_PASSWORD` when the file has a password. `pdt deploy` sends the file to the cloud with the other secrets.
+
+To restore a policy, or to copy policies into another tenant, unzip a `backup.zip` and import it with IntuneManagement on your own computer (its **Bulk** > **Import**). The backup is IntuneManagement's own export format.
+
+To move to a newer IntuneManagement release, set `VERSION` and `COMMIT` near the top of `intune-backup/run.py` from that release on the [IntuneManagement releases page](https://github.com/Micke-K/IntuneManagement/releases). The next run downloads it.
+
 ### monday-orphaned-account-report
 
 Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user.
@@ -346,6 +411,7 @@ A PowerShell app with no `run.py`. Its script writes a small CSV report with `Ex
 | the Google Cloud CLI pdt downloads | `~/.local/share/pdt/gcloud`, or `%LOCALAPPDATA%\pdt\gcloud` |
 | the PowerShell 7 pdt downloads | `~/.local/share/pdt/pwsh`, or `%ProgramData%\pdt\pwsh` |
 | the DuckDB files of the `pdt gui` SQL workbench | `~/.local/share/pdt/duckdb-wasm`, or `%LOCALAPPDATA%\pdt\duckdb-wasm` |
+| the IntuneManagement release the `intune-backup` example downloads | `.pdt/intune-management/` in the app's folder |
 | what `pdt gui` fetched | `.pdt/gui.sqlite3` in your project folder |
 | a Windows scheduled task's run logs and files | `%ProgramData%\pdt\<app>\logs` and `%ProgramData%\pdt\<app>\storage` |
 | cloud sign-in state | `~/.aws`, `~/.azure`, and `~/.config/gcloud`, as usual |
