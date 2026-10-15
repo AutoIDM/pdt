@@ -3,6 +3,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -303,7 +305,7 @@ def test_health_checks_every_enabled_app(project, monkeypatch, capsys):
     add_app(project, "daily-report", "schedule: daily\n")
     calls = []
 
-    def fake_output(provider, command, app_name, extra):
+    def fake_output(provider, command, app_name, extra, stderr=None):
         calls.append((provider, command, app_name, extra))
         if app_name == "daily-report":
             return 0, 'status line\n[{"id": "e1", "started": "2026-09-23T10:00:00+00:00", ' \
@@ -313,8 +315,8 @@ def test_health_checks_every_enabled_app(project, monkeypatch, capsys):
 
     monkeypatch.setattr(deploy, "dispatch_output", fake_output)
     assert run_cli(monkeypatch, "health") == 1
-    assert calls == [("azure", "runs", name, ["--", "--json"])
-                     for name in ("daily-report", "hello-world")]
+    assert sorted(calls) == [("azure", "runs", name, ["--", "--json"])
+                             for name in ("daily-report", "hello-world")]
     out = capsys.readouterr().out
     assert "not-ready" not in out
     assert "not yet run" in out
@@ -519,6 +521,119 @@ def test_health_of_one_app_shows_a_provider_failure_as_unknown(project, monkeypa
     monkeypatch.setattr(deploy, "dispatch_output", lambda *a: (1, ""))
     assert run_cli(monkeypatch, "health", "hello-world") == 1
     assert "unknown" in capsys.readouterr().out
+
+
+def one_run(status):
+    return json.dumps([{"id": "e1", "started": "2026-09-23T10:00:00+00:00",
+                        "ended": "2026-09-23T10:00:12+00:00", "status": status,
+                        "exit_code": 0, "number": 1}]) + "\n"
+
+
+def test_health_keeps_the_app_order_when_apps_finish_in_another_order(project, monkeypatch,
+                                                                      capsys):
+    names = ["app-a", "app-b", "app-c", "app-d"]
+    for name in names:
+        add_app(project, name)
+    finished = []
+
+    def fake_output(provider, command, app_name, extra, stderr=None):
+        time.sleep(0.05 * (len(names) - names.index(app_name)))
+        stderr.write(f"line from {app_name}\n")
+        finished.append(app_name)
+        return 0, one_run("succeeded")
+
+    monkeypatch.setattr(deploy, "dispatch_output", fake_output)
+    assert run_cli(monkeypatch, "health", "--all") == 0
+    assert finished == names[::-1]
+    captured = capsys.readouterr()
+    assert [line.split()[0] for line in captured.out.splitlines() if "app-" in line] == names
+    assert captured.err == "".join(f"line from {name}\n" for name in names)
+
+
+def test_health_runs_at_most_health_parallel_apps_at_once(project, monkeypatch, capsys):
+    for i in range(7):
+        add_app(project, f"app-{i}")
+    monkeypatch.setattr(deploy, "HEALTH_PARALLEL", 3)
+    lock = threading.Lock()
+    running, most = 0, 0
+
+    def fake_output(provider, command, app_name, extra, stderr=None):
+        nonlocal running, most
+        with lock:
+            running += 1
+            most = max(most, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+        return 0, "[]\n"
+
+    monkeypatch.setattr(deploy, "dispatch_output", fake_output)
+    assert run_cli(monkeypatch, "health", "--all") == 0
+    assert most == 3
+
+
+def test_health_shows_every_app_when_one_fails(project, monkeypatch, capsys):
+    for name in ("app-a", "app-b", "app-c"):
+        add_app(project, name)
+    monkeypatch.setattr(deploy, "child_can_ask", lambda: False)
+
+    def fake_output(provider, command, app_name, extra, stderr=None):
+        if app_name == "app-b":
+            stderr.write("error: not signed in\n")
+            return 1, ""
+        return 0, one_run("succeeded")
+
+    monkeypatch.setattr(deploy, "dispatch_output", fake_output)
+    assert run_cli(monkeypatch, "health", "--all") == 1
+    captured = capsys.readouterr()
+    rows = [line.split()[:2] for line in captured.out.splitlines() if "app-" in line]
+    assert rows == [["app-a", "ok"], ["app-b", "unknown"], ["app-c", "ok"]]
+    assert captured.err == "error: not signed in\n"
+
+
+def test_health_runs_a_failed_app_again_alone_when_it_can_ask_for_a_login(project, monkeypatch,
+                                                                          capsys):
+    for name in ("app-a", "app-b", "app-c"):
+        add_app(project, name)
+    monkeypatch.setattr(deploy, "child_can_ask", lambda: True)
+    calls = []
+
+    def fake_output(provider, command, app_name, extra, stderr=None):
+        calls.append((app_name, stderr is None))
+        if stderr is not None and app_name != "app-a":
+            stderr.write("Log in first\n")
+            return 1, ""
+        return 0, one_run("succeeded")
+
+    monkeypatch.setattr(deploy, "dispatch_output", fake_output)
+    assert run_cli(monkeypatch, "health", "--all") == 0
+    assert sorted(calls[:3]) == [("app-a", False), ("app-b", False), ("app-c", False)]
+    assert calls[3:] == [("app-b", True), ("app-c", True)]
+    assert "Log in first" not in capsys.readouterr().err
+
+
+def test_health_json_lists_the_apps_in_order(project, monkeypatch, capsys):
+    for name in ("app-a", "app-b"):
+        add_app(project, name)
+    add_app(project, "app-c", "platform:\n  provider: nowhere\n")
+    monkeypatch.setattr(deploy, "child_can_ask", lambda: False)
+
+    def fake_output(provider, command, app_name, extra, stderr=None):
+        time.sleep(0.1 if app_name == "app-a" else 0)
+        stderr.write(f"line from {app_name}\n")
+        return (0, one_run("failed")) if app_name == "app-a" else (0, "[]\n")
+
+    monkeypatch.setattr(deploy, "dispatch_output", fake_output)
+    assert run_cli(monkeypatch, "health", "--all", "--json") == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == [
+        {"app": "app-a", "status": "failed", "last_run": "2026-09-23T10:00:00+00:00",
+         "succeeded": 0, "runs": 1},
+        {"app": "app-b", "status": "not yet run", "last_run": None, "succeeded": 0, "runs": 0},
+        {"app": "app-c", "status": "unknown", "last_run": None, "succeeded": 0, "runs": 0}]
+    lines = captured.err.splitlines()
+    assert lines[:2] == ["line from app-a", "line from app-b"]
+    assert "platform.provider must be one of" in lines[2]
 
 
 PARSER_COMMANDS = cli.build_parser().commands

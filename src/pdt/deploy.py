@@ -23,6 +23,10 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from pathlib import Path
 
 from pdt import (__version__, alerts_cli, config, console, lifecycle, powershell, pwsh, regions,
@@ -96,11 +100,12 @@ def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
 
 
 def dispatch_output(provider: str, command: str, app_name: str,
-                    extra: list[str]) -> tuple[int, str]:
-    """Like dispatch, but return what the provider script prints on stdout."""
+                    extra: list[str], stderr=None) -> tuple[int, str]:
+    """Like dispatch, but return what the provider script prints on stdout. `stderr` is a file
+    for the script's other lines, or None for this process's stderr."""
     proc = subprocess.run(provider_command(provider, command, app_name, False, extra),
                           check=False, env=provider_env(extra), stdout=subprocess.PIPE,
-                          text=True)
+                          stderr=stderr, text=True)
     return proc.returncode, proc.stdout
 
 
@@ -259,9 +264,9 @@ def start_run(app_name: str) -> int:
     return offer_run(app_name, provider, False, True) or 0
 
 
-def run_history(provider: str, app_name: str) -> list[runs_cli.Run] | None:
+def run_history(provider: str, app_name: str, stderr=None) -> list[runs_cli.Run] | None:
     """The app's runs from `pdt runs --json`, or None when they could not be read."""
-    code, output = dispatch_output(provider, "runs", app_name, ["--", "--json"])
+    code, output = dispatch_output(provider, "runs", app_name, ["--", "--json"], stderr)
     return runs_cli.parse_runs(output) if code == 0 else None
 
 
@@ -376,18 +381,58 @@ def start(app_name: str) -> int:
     return code
 
 
+# At most this many provider scripts read run histories at once in `pdt health`. With 16 apps,
+# 8 took 7.1 s (median of 3), 16 took 6.1 s, and 4 took 11.9 s; each script holds about
+# 110 MB, so 8 keeps the total under 1 GB.
+HEALTH_PARALLEL = 8
+
+
+def child_can_ask() -> bool:
+    """Whether a provider script started for --json output could ask a question here: it asks
+    on this process's stderr (see console.json_output), not on stdout as can_prompt checks."""
+    return os.environ.get("CI", "").strip() == "" and sys.stdin.isatty() and sys.stderr.isatty()
+
+
 def health(app_names: list[str], as_json: bool) -> int:
-    app_runs = {}
+    """Read the runs of every app, HEALTH_PARALLEL provider scripts at once, then print the table.
+
+    A script that runs beside others writes its lines to a file, which prints afterwards in app
+    order. It has no terminal, so it cannot ask for a login. When a person could answer, each app
+    whose read failed runs again alone, as it did before, so its provider can ask."""
+    providers, errors = {}, {}
     for app_name in app_names:
         try:
-            _app, provider = _load(app_name)
+            providers[app_name] = _load(app_name)[1]
         except ConfigError as e:
-            console.error(console.escape(str(e)))
-            app_runs[app_name] = None
-            continue
+            errors[app_name] = str(e)
+    found, lines = {}, {}
+
+    def read(app_name: str) -> None:
         # The provider script loads the app's .env itself, so one app's env
         # never leaks into the next app's run.
-        app_runs[app_name] = run_history(provider, app_name)
+        with tempfile.TemporaryFile("w+") as stderr:
+            found[app_name] = run_history(providers[app_name], app_name, stderr)
+            stderr.seek(0)
+            lines[app_name] = stderr.read()
+
+    message = f"checking {len(providers)} apps"
+    with nullcontext(console.Wait(message)) if as_json else console.waiting(message) as wait:
+        with ThreadPoolExecutor(HEALTH_PARALLEL) as pool:
+            futures = [pool.submit(read, app_name) for app_name in providers]
+            for done, future in enumerate(as_completed(futures), 1):
+                future.result()
+                wait.now(f"{message}: {done} done")
+    can_ask = child_can_ask()
+    app_runs = {}
+    for app_name in app_names:
+        if app_name in errors:
+            console.error(console.escape(errors[app_name]))
+            app_runs[app_name] = None
+        elif found[app_name] is None and can_ask:
+            app_runs[app_name] = run_history(providers[app_name], app_name)
+        else:
+            sys.stderr.write(lines[app_name])
+            app_runs[app_name] = found[app_name]
     return runs_cli.health(app_runs, as_json)
 
 
