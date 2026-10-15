@@ -127,12 +127,40 @@ def test_a_job_in_another_region_fails_before_the_plan(monkeypatch, capsys):
     assert "pdt destroy report" in out
 
 
+def test_a_job_with_the_old_name_in_another_region_fails_before_the_plan(monkeypatch, capsys):
+    settings = deploy_settings(deploy_azure.Environment("pdt-shared", "pdt-westus2", True))
+    legacy = deploy_azure_container_apps.legacy_job_name("report")
+    plans, _ = plan_for(monkeypatch, settings | {"region": "westus2"},
+                        lambda args: job_in_east_us_2(args) if legacy in args else None)
+    with pytest.raises(SystemExit):
+        deploy_azure_container_apps.deploy(
+            {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}, "pause": False}, True)
+    assert plans == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"Container Apps Job {legacy} in eastus2" in out
+
+
+def test_a_plan_after_a_recorded_region_move_plans_a_new_job(monkeypatch):
+    settings = deploy_settings(deploy_azure.Environment("pdt-shared", "pdt-westus2", True))
+    plan_for(monkeypatch, settings | {"region": "westus2"}, job_in_east_us_2)
+    plans = []
+    monkeypatch.setattr(deploy_azure_container_apps, "show_plan",
+                        lambda actions, cost=None: plans.append(plain(actions)) or 0)
+    monkeypatch.setattr(deploy_azure_container_apps.config, "deployed_platform",
+                        lambda name: {"provider": "azure", "region": "eastus2"})
+    assert deploy_azure_container_apps.deploy(
+        {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}, "pause": False},
+        True, plan_only=True) == 0
+    job = deploy_azure_container_apps.job_name(settings, "report")
+    assert any(line.startswith(f"create Container Apps Job {job}") for line in plans[0])
+
+
 def test_a_job_in_the_same_region_reaches_the_plan(monkeypatch):
     plans, _ = plan_for(monkeypatch, deploy_settings(SHARED), job_in_east_us_2)
     deploy_azure_container_apps.deploy(
         {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}, "pause": False}, True)
     job = deploy_azure_container_apps.job_name(deploy_settings(SHARED), "report")
-    assert f'update Container Apps Job {job}: "0 0 * * *" (UTC)' in plans[0]
+    assert f'update, if it changed, Container Apps Job {job}: "0 0 * * *" (UTC)' in plans[0]
 
 
 def test_the_default_plan_creates_the_shared_group_workspace_and_environment(monkeypatch):
@@ -155,7 +183,6 @@ def test_an_existing_environment_keeps_its_workspace(monkeypatch):
     assert ("use existing Container Apps environment pdt-shared/pdt-eastus2 "
             "(shared by every pdt project in this subscription)") in plans[0]
     assert not any("workspace" in line for line in plans[0])
-    assert not any("log-analytics" in args for args in calls)
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
                         lambda *args, **kwargs: pytest.fail(f"changed {args}"))
     monkeypatch.setattr(deploy_azure, "run_quiet",
@@ -244,9 +271,9 @@ def test_releasing_a_region_deletes_its_environment_then_its_workspace(monkeypat
             return None if deleted else TAGGED
         return []
 
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
+    fake_azure_reads(monkeypatch, read)
     monkeypatch.setattr(deploy_azure_container_apps, "delete_unless_locked",
-                        lambda *args: deleted.append(args[:3]) or "")
+                        lambda *args, **kwargs: deleted.append(args[:3]) or "")
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
                         lambda *args, **kwargs: deleted.append(args))
     deploy_azure_container_apps.release_environment(

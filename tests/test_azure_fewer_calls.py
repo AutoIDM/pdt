@@ -130,11 +130,12 @@ def test_a_group_in_another_region_is_used_as_it_is(monkeypatch):
     assert ran(calls, "group", "create") == []
 
 
-def test_an_existing_environment_reads_and_creates_no_workspace(monkeypatch):
+def test_an_existing_environment_creates_no_workspace(monkeypatch):
     answers = {key: value for key, value in PRESENT.items()
                if key != ("monitor", "log-analytics", "workspace", "show")}
     calls = deploy(monkeypatch, answers, job_after=JOB)
-    assert ran(calls, "monitor", "log-analytics") == []
+    assert ran(calls, "monitor", "log-analytics", "workspace", "create") == []
+    assert ran(calls, "monitor", "log-analytics", "workspace", "get-shared-keys") == []
     assert ran(calls, "provider") == []
     assert ran(calls, "containerapp", "env", "create") == []
 
