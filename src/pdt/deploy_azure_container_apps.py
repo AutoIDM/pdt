@@ -50,15 +50,15 @@ from typing import Callable, Iterator
 from pdt import config, console, lifecycle, regions, runs_cli
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_azure import (
-    ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az, az_json, az_tsv,
+    COMMON_PROVIDERS, ENVIRONMENT_TYPE, RECENT_RUNS, SECRET_ROLE, STORE_ROLE, assign_role, az, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cost_estimate, delete_unless_locked, deployer_store,
-    destroy_group, disable_old_secret_versions, exchange_rate, ensure_group_and_vault, ensure_secret, ensure_shared_group,
-    ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item, list_remaining,
+    destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
+    ensure_secret, ensure_store, ensure_workspace, group_can_be_deleted, key_vault_item, list_remaining,
     managed_by_pdt, managed_secret, other_pdt_apps, owned_by, preflight,
     purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, secret_actions, secret_name,
     secret_scope, secret_state, store_condition, store_cost, store_description, store_exists,
-    store_plan, store_settings, store_url, store_usage, workspace_resource,
+    store_plan, store_settings, store_url, store_usage, workspace_keys, workspace_resource,
 )
 from pdt.deploy_common import (
     CostEstimate, build_in_cloud, convert_from_usd, fail, gather_secrets,
@@ -172,12 +172,10 @@ def cloud_build(settings: dict, stage: Path, image_name: str) -> None:
     fail(f"{console.value('pdt az acr build')} failed; the build log and the error above say why")
 
 
-def acr_arm_auth_enabled(registry: str) -> bool:
-    data = az_json("acr", "config", "authentication-as-arm", "show",
-                   "--registry", registry)
-    if not isinstance(data, dict):
-        return False
-    return str(data.get("status") or "").lower() == "enabled"
+def acr_arm_auth_enabled(registry: dict | None) -> bool:
+    """What `az acr config authentication-as-arm show` reads, from the `az acr show` answer."""
+    policy = ((registry or {}).get("policies") or {}).get("azureAdAuthenticationAsArmPolicy")
+    return str((policy or {}).get("status") or "").lower() == "enabled"
 
 
 def enable_acr_arm_auth(registry: str) -> None:
@@ -361,7 +359,8 @@ def normalized_job(resource: dict) -> dict:
 
 def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                   identity_id: str, secret_uri: str | None, storage_url: str | None,
-                  current: dict | None, app_name: str) -> None:
+                  current: dict | None, app_name: str) -> dict | None:
+    """Create or update the job. Return it as Azure now holds it, or None after a create."""
     rg = settings["resource_group"]
     body = job_body(settings["registry"], job, image, cron, identity_id, secret_uri,
                     storage_url, app_name)
@@ -390,12 +389,12 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                                      if "secretRef" in var else f"{var['name']}={var['value']}"
                                      for var in env)]
         run_quiet(*args, retry_access=True, retry_internal=True)
-        return
+        return None
 
     desired = normalized_job(body)
     if normalized_job(current) == desired:
         console.done(f"Container Apps Job {console.value(job)} is unchanged; skipped the update.")
-        return
+        return current
     run_quiet("rest", "--method", "patch", "--url", job_url(settings, job),
               "--body", json.dumps(body), retry_access=True)
     for _ in range(JOB_UPDATE_POLLS):
@@ -405,7 +404,7 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             fail(f"Azure could not update Container Apps Job {console.value(job)} "
                  f"(provisioning state {console.value(state)})")
         if state == "Succeeded" and normalized_job(resource) == desired:
-            return
+            return resource
         time.sleep(JOB_UPDATE_POLL_SECONDS)
     differ = [key for key, value in normalized_job(resource).items() if value != desired[key]]
     fail(f"Container Apps Job {console.value(job)} did not show the update after "
@@ -649,8 +648,11 @@ def job_running_state(settings: dict, job: str) -> str:
     return str((job_resource(settings, job).get("properties") or {}).get("runningState") or "")
 
 
-def set_job_paused(settings: dict, job: str, paused: bool) -> None:
-    if (job_running_state(settings, job) == "Suspended") == paused:
+def set_job_paused(settings: dict, job: str, paused: bool, resource: dict | None = None) -> None:
+    """`resource` is the job as the resource manager API just returned it, if deploy has it."""
+    state = (str((resource.get("properties") or {}).get("runningState") or "") if resource
+             else job_running_state(settings, job))
+    if (state == "Suspended") == paused:
         return
     run_quiet("rest", "--method", "post",
               "--url", job_url(settings, job, "/suspend" if paused else "/resume"))
@@ -849,14 +851,16 @@ def shared_locks(settings: dict, owner: str) -> list[Lock]:
     return locks
 
 
-def ensure_environment(settings: dict, exists: bool, logs_exist: bool) -> None:
+def ensure_environment(settings: dict, exists: bool, logs_exist: bool,
+                       shared_group: dict | None) -> None:
     environment = settings["environment"]
     if not environment.managed:
         return
-    ensure_shared_group(settings)
-    logs_id, logs_key = ensure_workspace(settings, logs_exist)
+    ensure_group(settings, environment.resource_group, shared_group)
+    ensure_workspace(settings, logs_exist)
     if exists:
         return
+    logs_id, logs_key = workspace_keys(settings)
     console.step(f"creating Container Apps environment {console.value(environment)}")
     run_quiet("containerapp", "env", "create", "--name", environment.name,
               "--resource-group", environment.resource_group,
@@ -964,6 +968,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                        "--resource-group", rg)
     require_managed(identity, f"managed identity {console.value(settings['identity'])}")
     logs_exist = shared_group_exists = False
+    shared_group = None
     if settings["environment"].managed:
         shared_group = az_json("group", "show", "--name", settings["environment"].resource_group)
         require_managed(shared_group,
@@ -973,10 +978,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
         require_managed(workspace,
                         f"Log Analytics workspace {console.value(settings['workspace'])}")
         logs_exist = workspace is not None
-    arm_auth_enabled = (
-        acr_arm_auth_enabled(settings["registry"]) if registry_exists else False)
-    current_job = az_json("containerapp", "job", "show", "--name", job,
-                          "--resource-group", rg)
+    arm_auth_enabled = acr_arm_auth_enabled(registry)
+    # The resource manager API, unlike `az containerapp job show`, reports runningState.
+    current_job = az_json("rest", "--method", "get", "--url", job_url(settings, job))
     if current_job and not owned_by(current_job, name):
         fail(f"Container Apps Job {console.value(job)} already exists but is not owned by "
              f"PDT app {console.value(name)}; choose another resource group")
@@ -1042,8 +1046,15 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.warn("Aborted; nothing was changed.")
         return DECLINED
 
-    ensure_environment(settings, environment_exists, logs_exist)
-    vault_id = ensure_group_and_vault(settings, PROVIDERS, vault_exists)
+    found = {"Microsoft.App": environment_exists or current_job is not None,
+             "Microsoft.ContainerRegistry": registry_exists,
+             "Microsoft.OperationalInsights": logs_exist,
+             "Microsoft.KeyVault": vault_exists,
+             "Microsoft.ManagedIdentity": identity is not None}
+    ensure_environment(settings, environment_exists, logs_exist, shared_group)
+    vault_id = ensure_group_and_vault(
+        settings, tuple(name for name in (*COMMON_PROVIDERS, *PROVIDERS) if not found[name]),
+        vault_exists, group)
     if not registry_exists:
         console.step(f"creating ACR {console.value(settings['registry'])}")
         run_quiet("acr", "create", "--name", settings["registry"],
@@ -1068,8 +1079,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
     assign_role(vault_id, principal_id, "Key Vault Secrets User")
     if store:
         ensure_store(settings, store, store_present)
-    console.step(f"enabling ACR authentication-as-arm on {console.value(settings['registry'])}")
-    enable_acr_arm_auth(settings["registry"])
+    if not arm_auth_enabled:
+        console.step(f"enabling ACR authentication-as-arm on {console.value(settings['registry'])}")
+        enable_acr_arm_auth(settings["registry"])
 
     console.step(f"building image {console.value(image)} with "
                  f"{console.value('ACR Tasks') if cloud else 'Docker on this computer'}")
@@ -1080,13 +1092,14 @@ def deploy(app: dict, assume_yes: bool) -> int:
         retire_job(settings, legacy, legacy_job, store, sid)
     console.step(f"reconciling Container Apps Job {console.value(job)}")
     try:
-        reconcile_job(settings, job, pinned, cron, identity_id, secret_uri,
-                      store_url(store, name) if store else None, current_job, name)
+        resource = reconcile_job(settings, job, pinned, cron, identity_id, secret_uri,
+                                 store_url(store, name) if store else None, current_job, name)
     except SystemExit:
         report_job_failure(settings, job)
         raise
-    set_job_paused(settings, job, app["pause"])
-    principal = job_principal_id(job, rg)
+    set_job_paused(settings, job, app["pause"], resource)
+    principal = ((resource or {}).get("identity") or {}).get("principalId") or job_principal_id(
+        job, rg)
     if secret_uri:
         if current_secret != payload:
             disable_old_secret_versions(settings, sid)
