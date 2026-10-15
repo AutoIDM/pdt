@@ -110,7 +110,7 @@ def destroy(monkeypatch):
     monkeypatch.setattr(batch_deploy, "ensure_session", lambda app: None)
     monkeypatch.setattr(batch_deploy, "aws_settings",
                         lambda app, session: ("123456789012", "us-east-1"))
-    monkeypatch.setattr(batch_deploy, "preflight", lambda *args: ("123456789012", {}))
+    monkeypatch.setattr(batch_deploy, "preflight", lambda *args: ("123456789012", lambda: None))
     monkeypatch.setattr(batch_deploy, "confirm", lambda actions, assume_yes: True)
 
     def run(clients):

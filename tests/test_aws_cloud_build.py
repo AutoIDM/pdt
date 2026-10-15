@@ -182,7 +182,7 @@ def deploy(project, monkeypatch):
     for name, value in {
         "ensure_session": lambda app: None,
         "aws_settings": lambda app, session: (ACCOUNT, REGION),
-        "preflight": lambda *args: (ACCOUNT, {}),
+        "preflight": lambda *args: (ACCOUNT, lambda: None),
         "gather_secrets": lambda app: {},
         "cost_estimate_for": lambda *args: None,
         "confirm": lambda actions, assume_yes, estimate: True,
@@ -332,7 +332,7 @@ def test_the_plan_names_where_the_image_builds_and_each_build_resource(deploy, m
 def destroy(monkeypatch):
     monkeypatch.setattr(batch_deploy, "ensure_session", lambda app: None)
     monkeypatch.setattr(batch_deploy, "aws_settings", lambda app, session: (ACCOUNT, REGION))
-    monkeypatch.setattr(batch_deploy, "preflight", lambda *args: (ACCOUNT, {}))
+    monkeypatch.setattr(batch_deploy, "preflight", lambda *args: (ACCOUNT, lambda: None))
     monkeypatch.setattr(batch_deploy, "confirm", lambda actions, assume_yes: True)
     monkeypatch.setattr(batch_deploy, "legacy_fargate_cleanup", lambda *args: [])
     monkeypatch.setattr(batch_deploy, "other_schedules", lambda scheduler, name: ["pdt-other"])

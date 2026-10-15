@@ -765,7 +765,9 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
     clients = batch_clients(session)
-    preflight(clients["sts"], clients["iam"], expected_account, region, DEPLOYER_ACTIONS)
+    _account, checked = preflight(
+        clients["sts"], clients["iam"], expected_account, region, DEPLOYER_ACTIONS)
+    checked()
     client = clients["secretsmanager"]
     name = resource_names(app["name"])["secret"]
     current = None
@@ -785,7 +787,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
     clients = batch_clients(session)
-    account, _identity = preflight(
+    account, checked = preflight(
         clients["sts"], clients["iam"], expected_account, region, DEPLOYER_ACTIONS)
     names = resource_names(app["name"])
     cron = config.cron_expression(app["schedule"])
@@ -865,9 +867,10 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if store:
         actions += store_plan_lines(f"bucket {console.value(bucket)}", store_present,
                                     names["job_role"], app["name"])
-    if not confirm(actions, assume_yes, cost_estimate_for(
-            clients["logs"], names, region, cron, schedule_exists, usage,
-            regions.local_currency())):
+    estimate = cost_estimate_for(clients["logs"], names, region, cron, schedule_exists, usage,
+                                 regions.local_currency())
+    checked()
+    if not confirm(actions, assume_yes, estimate):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
 
@@ -982,7 +985,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
     clients = batch_clients(session)
-    account, _identity = preflight(
+    account, checked = preflight(
         clients["sts"], clients["iam"], expected_account, region, DEPLOYER_ACTIONS)
     names = resource_names(app["name"])
     batch, scheduler, iam = clients["batch"], clients["scheduler"], clients["iam"]
@@ -1054,6 +1057,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     store_present = store_exists(clients["s3"], bucket) if store else False
     if store_present:
         warn_if_locked(store, app["name"])
+    checked()
     if not confirm([line for line, _action in plan], assume_yes):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
