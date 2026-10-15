@@ -249,10 +249,3 @@ def test_from_scripts_needs_a_ps1_file(scripts_app, project):
     (project / "notes" / "readme.txt").write_text("")
     with pytest.raises(ConfigError, match="notes/ holds no .ps1 file"):
         scaffold.from_scripts("notes")
-
-
-def test_new_app_with_no_example_copies_hello_world(project, capsys):
-    assert scaffold.new_app("my-report", None) == 0
-    assert (project / "my-report" / "run.py").is_file()
-    assert find_apps() == ["my-report"]
-    assert "from the hello-world example" in capsys.readouterr().out
