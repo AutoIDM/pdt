@@ -17,9 +17,7 @@ the app through it, so the job prints the lifecycle events of the pdt that
 deployed it, as the Windows task does. The folder is not on the app's
 sys.path, so it never shadows the pdt the app installs. The
 app's run.py declares pdt in its script header, so every deployment
-installs the package from the index the same way a local run does. A generated Dockerfile installs
-that header first, from .pdt-script in the context, and copies the rest after, so a change
-below the header or in a config file reuses the installed dependencies. An app
+installs the package from the index the same way a local run does. An app
 made of .ps1 files has no run.py; POWERSHELL_DOCKERFILE installs
 pdt-cli[apps] at this pdt's version, then pwsh through that pdt's own
 `pdt.pwsh` (the pinned, checksum-verified archive; its powershell.config.json
@@ -186,9 +184,7 @@ def write_dockerfile(stage: Path, app: dict) -> None:
 
 
 def stage_script_header(stage: Path, app_dir: Path) -> None:
-    """Put the script header of run.py, and run.py.lock when there is one, in .pdt-script.
-
-    uv keeps a script's environment per script path, so the Dockerfile copies the
+    """uv keeps a script's environment per script path, so the Dockerfile copies the
     folder to the app's own path, and `uv run --script run.py` finds that environment.
     """
     folder = stage / ".pdt-script"
