@@ -145,22 +145,26 @@ class PolicyIam:
             for action in ActionNames]}
 
 
-def test_a_login_holding_exactly_the_printed_policy_passes_preflight():
-    assert preflight(Sts(), PolicyIam(policy()), ACCOUNT, REGION, DEPLOYER_ACTIONS) == (
-        ACCOUNT, CALLER)
+def checked(iam) -> str:
+    account, wait = preflight(Sts(), iam, ACCOUNT, REGION, DEPLOYER_ACTIONS)
+    wait()
+    return account
 
 
-def test_a_login_holding_the_old_broad_policy_still_passes_preflight():
-    assert preflight(Sts(), PolicyIam(BROAD_POLICY), ACCOUNT, REGION, DEPLOYER_ACTIONS) == (
-        ACCOUNT, CALLER)
+def test_a_login_holding_exactly_the_printed_policy_passes_preflight(project):
+    assert checked(PolicyIam(policy())) == ACCOUNT
 
 
-def test_a_login_missing_a_scoped_grant_is_shown_the_policy(capsys):
+def test_a_login_holding_the_old_broad_policy_still_passes_preflight(project):
+    assert checked(PolicyIam(BROAD_POLICY)) == ACCOUNT
+
+
+def test_a_login_missing_a_scoped_grant_is_shown_the_policy(project, capsys):
     granted = policy()
     granted["Statement"] = [s for s in granted["Statement"]
                             if "secretsmanager:CreateSecret" not in listed(s["Action"])]
     with pytest.raises(SystemExit):
-        preflight(Sts(), PolicyIam(granted), ACCOUNT, REGION, DEPLOYER_ACTIONS)
+        checked(PolicyIam(granted))
     out = capsys.readouterr().out
     assert "secretsmanager:CreateSecret" in out
     assert f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:pdt-*" in out

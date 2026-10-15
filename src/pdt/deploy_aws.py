@@ -26,11 +26,15 @@ run AWS CLI v2 through `uvx`. Credentials live in ~/.aws.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
+from collections.abc import Callable
+from concurrent.futures import Future
 from pathlib import Path
 
 import boto3
@@ -54,6 +58,8 @@ ROLE_PROPAGATION_DELAYS = (1, 2, 4, 8)
 # preflight alone sends one SimulatePrincipalPolicy per policy statement, and IAM
 # throttles that burst. The default legacy mode waits at most 15 seconds in all.
 RETRIES = Config(retries={"mode": "standard", "total_max_attempts": 8})
+PREFLIGHT_PASSES = "aws_preflight_passes"
+PREFLIGHT_VALID_SECONDS = 24 * 3600
 COMMON_ACTIONS = [
     "iam:CreateRole",
     "iam:DeleteRole",
@@ -523,8 +529,25 @@ def ensure_session(app: dict):
     return session
 
 
+def denied_actions(iam, source_arn: str, requests: list[dict]) -> set[str]:
+    denied = set()
+    for request in requests:
+        result = iam.simulate_principal_policy(PolicySourceArn=source_arn, **request)
+        denied |= {item["EvalActionName"] for item in result["EvaluationResults"]
+                   if item["EvalDecision"] != "allowed"
+                   or any(resource["EvalResourceDecision"] != "allowed"
+                          for resource in item.get("ResourceSpecificResults", []))}
+    return denied
+
+
+def forget_preflight_passes() -> None:
+    state = config.read_state()
+    if state.pop(PREFLIGHT_PASSES, None) is not None:
+        config.write_state(state)
+
+
 def preflight(sts, iam, expected_account: str, region: str,
-              actions: list[str]) -> tuple[str, str]:
+              actions: list[str]) -> tuple[str, Callable[[], None]]:
     try:
         identity = sts.get_caller_identity()
     except Exception as exc:  # noqa: BLE001 - credential providers raise several types
@@ -536,25 +559,50 @@ def preflight(sts, iam, expected_account: str, region: str,
              f"credentials ({console.value(account)})")
     source_arn = principal_arn(identity_arn, account)
     if source_arn.endswith(":root"):
-        return account, identity_arn
-    denied = set()
-    try:
-        for request in simulations(deployer_policy(actions, account, region)):
-            result = iam.simulate_principal_policy(PolicySourceArn=source_arn, **request)
-            denied |= {item["EvalActionName"] for item in result["EvaluationResults"]
-                       if item["EvalDecision"] != "allowed"
-                       or any(resource["EvalResourceDecision"] != "allowed"
-                              for resource in item.get("ResourceSpecificResults", []))}
-    except ClientError as exc:
-        if error_code(exc) in {"AccessDenied", "AccessDeniedException"}:
-            print_permission_help(identity_arn, str(exc), actions, account, region)
-            raise SystemExit(1) from exc
-        raise
-    if denied:
-        print_permission_help(identity_arn, "These required actions are not allowed: "
-                              + ", ".join(sorted(denied)), actions, account, region)
-        raise SystemExit(1)
-    return account, identity_arn
+        return account, lambda: None
+    policy = deployer_policy(actions, account, region)
+    key = hashlib.sha256(json.dumps([source_arn, account, region, policy],
+                                    sort_keys=True).encode()).hexdigest()
+    passed = config.read_state().get(PREFLIGHT_PASSES, {}).get(key, 0)
+    if time.time() - passed < PREFLIGHT_VALID_SECONDS:
+        console.status("AWS permissions verified.")
+        return account, lambda: None
+    requests = simulations(policy)
+    console.status("Verifying AWS permissions...")
+    result: Future[set[str]] = Future()
+
+    def check() -> None:
+        try:
+            result.set_result(denied_actions(iam, source_arn, requests))
+        except Exception as exc:
+            result.set_exception(exc)
+
+    threading.Thread(target=check, daemon=True).start()
+
+    def wait_for_permissions() -> None:
+        if not result.done():
+            with console.waiting("Verifying AWS permissions"):
+                result.exception()
+        try:
+            denied = result.result()
+        except ClientError as exc:
+            if error_code(exc) in {"AccessDenied", "AccessDeniedException"}:
+                print_permission_help(identity_arn, str(exc), actions, account, region)
+                raise SystemExit(1) from exc
+            raise
+        if denied:
+            print_permission_help(identity_arn, "These required actions are not allowed: "
+                                  + ", ".join(sorted(denied)), actions, account, region)
+            raise SystemExit(1)
+        state = config.read_state()
+        now = time.time()
+        state[PREFLIGHT_PASSES] = {
+            **{other: at for other, at in state.get(PREFLIGHT_PASSES, {}).items()
+               if now - at < PREFLIGHT_VALID_SECONDS},
+            key: now}
+        config.write_state(state)
+
+    return account, wait_for_permissions
 
 
 def trust_policy(service: str) -> str:
@@ -933,6 +981,7 @@ def main() -> int:
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",
                                "UnauthorizedOperation"}:
+            forget_preflight_passes()
             session = boto3.Session(profile_name=app["platform"].get("profile") or None)
             account, region = aws_settings(app, session)
             identity = "the current AWS login"

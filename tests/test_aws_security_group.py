@@ -110,7 +110,7 @@ def plan(monkeypatch):
         "build_in_cloud": lambda app, builder, image_platform: False,
         "ensure_session": lambda app: None,
         "aws_settings": lambda app, session: ("123456789012", "us-east-1"),
-        "preflight": lambda *args: ("123456789012", {}),
+        "preflight": lambda *args: ("123456789012", lambda: None),
         "gather_secrets": lambda app: {},
         "cost_estimate_for": lambda *args: None,
         "resource_exists": lambda *args, **kwargs: False,
