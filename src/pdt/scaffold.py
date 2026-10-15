@@ -100,7 +100,9 @@ RUN_PY_TEXT = '''\
 folder the way pdt runs an app with no run.py: each entry script in order
 through pwsh with the app's `config:` section as JSON in PDT_CONFIG_JSON,
 stopping at the first that fails, then it stores the files the scripts leave
-in PDT_OUTPUT_DIR. Edit it to change how they run.
+in PDT_OUTPUT_DIR. When a script reads PDT_STATE_DIR, that folder holds the
+app's state/ files and goes back to state/ when every script succeeds. Edit
+it to change how they run.
 """
 
 from __future__ import annotations
@@ -114,7 +116,7 @@ from pathlib import Path
 
 from pdt import config, powershell
 from pdt.pwsh import ensure_pwsh
-from pdt.run_powershell import pwsh_command
+from pdt.run_powershell import pwsh_command, reads_state
 from pdt.utils import storage
 from pdt.utils.log import die, log
 
@@ -127,30 +129,41 @@ def main() -> int:
     if missing != "":
         die(1, f"env vars missing: {missing}")
     pwsh = ensure_pwsh()
-    entries = powershell.split_files(
-        powershell.extract(app_dir)["files"], app["run_scripts"])[0]
+    files = powershell.extract(app_dir)["files"]
+    entries = powershell.split_files(files, app["run_scripts"])[0]
+    store = storage.store() if app["storage"] else None
     code = 0
-    with tempfile.TemporaryDirectory(prefix="pdt-output-") as output:
-        env = {**os.environ, "PDT_OUTPUT_DIR": output,
+    with tempfile.TemporaryDirectory(prefix="pdt-run-") as local:
+        output, state = Path(local) / "output", Path(local) / "state"
+        output.mkdir()
+        state.mkdir()
+        lease = store.pull("state/", state) if store is not None and reads_state(files) else None
+        env = {**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
                "PDT_CONFIG_JSON": json.dumps(app["config"], default=str)}
-        for script in entries:
-            log("info", f"starting {script}")
-            result = subprocess.run(
-                [pwsh, "-NoProfile", "-NonInteractive", "-Command", pwsh_command(app_dir / script)],
-                cwd=app_dir, env=env, stdin=subprocess.DEVNULL).returncode
-            log("info", f"{script} ended", exit_code=result)
-            if result != 0:
-                log("error", f"{script} failed", exit_code=result)
-                if code == 0:
-                    code = result
-            if result != 0 and not app["continue_on_error"]:
-                break
-        files = [file for file in Path(output).rglob("*") if file.is_file()]
-        if app["storage"] and files:
-            store = storage.store()
-            folder = store.run_folder() + "output/"
-            store.push(Path(output), folder)
-            log("info", f"uploaded {len(files)} output file(s) to {store.url}{folder}")
+        try:
+            for script in entries:
+                log("info", f"starting {script}")
+                result = subprocess.run(
+                    [pwsh, "-NoProfile", "-NonInteractive", "-Command", pwsh_command(app_dir / script)],
+                    cwd=app_dir, env=env, stdin=subprocess.DEVNULL).returncode
+                log("info", f"{script} ended", exit_code=result)
+                if result != 0:
+                    log("error", f"{script} failed", exit_code=result)
+                    if code == 0:
+                        code = result
+                if result != 0 and not app["continue_on_error"]:
+                    break
+            kept = [file for file in output.rglob("*") if file.is_file()]
+            if store is not None and kept:
+                folder = store.run_folder() + "output/"
+                store.push(output, folder)
+                log("info", f"uploaded {len(kept)} output file(s) to {store.url}{folder}")
+            if lease is not None and code == 0:
+                store.push(state, "state/", lease)
+                lease = None
+        finally:
+            if lease is not None:
+                store.abort(lease)
     return code
 
 

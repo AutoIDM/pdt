@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -15,7 +16,8 @@ from pdt import run_powershell
 def wrapper(monkeypatch):
     monkeypatch.setattr(run_powershell, "ensure_pwsh", lambda: "/fake/pwsh")
     monkeypatch.setattr(run_powershell.powershell, "extract", lambda folder: {"files": [
-        {"file": path.name, "localInvocations": [], "envReads": []}
+        {"file": path.name, "localInvocations": [],
+         "envReads": [{"name": "PDT_STATE_DIR", "line": 1, "set": False}] if "PDT_STATE_DIR" in path.read_text() else []}
         for path in sorted(folder.iterdir()) if path.suffix == ".ps1"]})
     return run_powershell
 
@@ -38,6 +40,21 @@ def fake_pwsh(calls, codes):
         (output / f"{Path(script).stem}.csv").write_text("a,b\n")
         return subprocess.CompletedProcess(command, codes[Path(script).name])
     return run
+
+
+def stateful_pwsh(calls, codes):
+    """A script appends its name to state's seen.txt; the call records what the file held."""
+    def run(command, **kwargs):
+        script = Path(command[-1].split("& '", 1)[1].split("'", 1)[0])
+        seen = Path(kwargs["env"]["PDT_STATE_DIR"]) / "seen.txt"
+        calls.append(seen.read_text() if seen.exists() else "")
+        seen.write_text(calls[-1] + script.stem + "\n")
+        return subprocess.CompletedProcess(command, codes[script.name])
+    return run
+
+
+def stored_state(app_dir):
+    return app_dir.parent / ".pdt" / "storage" / "my-report" / "state"
 
 
 def test_the_pwsh_command_quotes_the_path_and_keeps_the_exit_code(wrapper):
@@ -208,3 +225,59 @@ def test_a_missing_required_env_var_stops_the_run_before_any_script(
     out = capsys.readouterr().out
     assert "env vars missing: missing required env var PDT_TEST_TENANT." in out
     assert f"add each one as NAME=value to {app_dir.parent / '.env'}" in out
+
+
+def test_a_script_that_reads_pdt_state_dir_starts_from_the_last_runs_state(app_dir, wrapper, monkeypatch, capsys):
+    (app_dir / "a.ps1").write_text("$env:PDT_STATE_DIR")
+    calls = []
+    monkeypatch.setattr(wrapper.subprocess, "run", stateful_pwsh(calls, {"a.ps1": 0}))
+
+    assert wrapper.main([str(app_dir)]) == 0
+    assert wrapper.main([str(app_dir)]) == 0
+
+    assert calls == ["", "a\n"]
+    assert sorted(path.name for path in stored_state(app_dir).iterdir()) == ["seen.txt"]
+    assert (stored_state(app_dir) / "seen.txt").read_text() == "a\na\n"
+    assert "saved state to " in capsys.readouterr().out
+
+
+def test_a_failed_script_leaves_state_as_the_last_good_run_left_it(app_dir, wrapper, monkeypatch, capsys):
+    (app_dir / "a.ps1").write_text("$env:PDT_STATE_DIR")
+    (app_dir / "b.ps1").write_text("")
+    stored_state(app_dir).mkdir(parents=True)
+    (stored_state(app_dir) / "seen.txt").write_text("before\n")
+    calls = []
+    monkeypatch.setattr(wrapper.subprocess, "run", stateful_pwsh(calls, {"a.ps1": 0, "b.ps1": 5}))
+
+    assert wrapper.main([str(app_dir)]) == 5
+
+    assert calls == ["before\n", "before\na\n"]
+    assert sorted(path.name for path in stored_state(app_dir).iterdir()) == ["seen.txt"]
+    assert (stored_state(app_dir) / "seen.txt").read_text() == "before\n"
+    assert "state/ keeps the last good run's files" in capsys.readouterr().out
+
+
+def test_a_run_that_another_run_holds_the_state_of_stops_before_any_script(
+        app_dir, wrapper, monkeypatch, capsys):
+    (app_dir / "a.ps1").write_text("$env:PDT_STATE_DIR")
+    stored_state(app_dir).mkdir(parents=True)
+    (stored_state(app_dir) / "lock").write_text(json.dumps(
+        {"run": "other", "host": "elsewhere", "started": datetime.now(timezone.utc).isoformat()}))
+    monkeypatch.setattr(wrapper.subprocess, "run", lambda *a, **k: pytest.fail("a script ran"))
+
+    with pytest.raises(SystemExit) as stop:
+        wrapper.main([str(app_dir)])
+
+    assert stop.value.code == 1
+    assert "another run of my-report started at" in capsys.readouterr().out
+
+
+def test_scripts_that_do_not_read_pdt_state_dir_leave_state_alone(app_dir, wrapper, monkeypatch):
+    (app_dir / "a.ps1").write_text("")
+    calls = []
+    monkeypatch.setattr(wrapper.subprocess, "run", stateful_pwsh(calls, {"a.ps1": 0}))
+
+    assert wrapper.main([str(app_dir)]) == 0
+
+    assert calls == [""]
+    assert not stored_state(app_dir).exists()
