@@ -5,9 +5,9 @@
 # ///
 """Sample hello world app. Use as a template to create your own app.
 
-Run it with `pdt run hello-world`. Edit `main` to do the real work, add
-what you need to the dependencies above, and list any env vars in
-config.yml so `pdt validate` checks them before a deploy.
+Edit `main` to do the real work, add what you need to the dependencies
+above, and list any env vars in config.yml so `pdt validate` checks them
+before a deploy.
 """
 
 from __future__ import annotations
