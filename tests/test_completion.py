@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -21,6 +22,85 @@ def test_app_completer_outside_project_returns_no_candidates(tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
 
     assert completion.apps("") == []
+
+
+def _later(path):
+    """Move a path's modification time a second on, past the filesystem's time resolution."""
+    stamp = path.stat().st_mtime_ns + 1_000_000_000
+    os.utime(path, ns=(stamp, stamp))
+
+
+def _no_scan():
+    raise AssertionError("find_apps ran")
+
+
+def test_app_completer_reads_the_cache_while_nothing_changed(project, monkeypatch):
+    add_app(project, "daily-report", "enabled: true\n")
+    assert completion.apps("") == ["daily-report"]
+
+    monkeypatch.setattr(config, "find_apps", _no_scan)
+
+    assert completion.apps("") == ["daily-report"]
+
+
+def test_a_changed_config_yml_rescans_the_apps(project):
+    folder = add_app(project, "daily-report", "enabled: true\n")
+    completion.apps("")
+
+    (folder / "config.yml").write_text("enabled: false\n")
+    _later(folder / "config.yml")
+
+    assert completion.apps("") == []
+
+
+def test_a_new_app_folder_rescans_the_apps(project):
+    add_app(project, "daily-report")
+    completion.apps("")
+
+    add_app(project, "weekly-report")
+    _later(project)
+
+    assert completion.apps("") == ["daily-report", "weekly-report"]
+
+
+def test_a_removed_app_folder_rescans_the_apps(project):
+    add_app(project, "daily-report")
+    add_app(project, "weekly-report")
+    completion.apps("")
+
+    shutil.rmtree(project / "weekly-report")
+    _later(project)
+
+    assert completion.apps("") == ["daily-report"]
+
+
+def test_a_new_pdt_rescans_the_apps(project, tmp_path_factory, monkeypatch):
+    code = tmp_path_factory.mktemp("pdt") / "config.py"
+    code.write_text("")
+    monkeypatch.setattr(config, "__file__", str(code))
+    add_app(project, "daily-report")
+    completion.apps("")
+
+    monkeypatch.setattr(config, "find_apps", lambda: ["from-the-new-pdt"])
+    _later(code)
+
+    assert completion.apps("") == ["from-the-new-pdt"]
+
+
+def test_a_corrupt_cache_is_rewritten(project):
+    add_app(project, "daily-report")
+    (project / ".pdt").mkdir()
+    (project / ".pdt" / "apps").write_text('{"stamps": [')
+
+    assert completion.apps("") == ["daily-report"]
+    assert json.loads((project / ".pdt" / "apps").read_text())["apps"] == ["daily-report"]
+
+
+def test_a_cache_that_cannot_be_written_still_completes(project):
+    add_app(project, "daily-report")
+    (project / ".pdt").write_text("not a folder")
+
+    assert completion.apps("") == ["daily-report"]
 
 
 def test_example_completer_lists_matching_examples():
@@ -84,6 +164,26 @@ def test_typed_dash_offers_options(project, tmp_path):
     add_app(project, "daily-report")
 
     assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "--yes", "--all", "--skip-failures", "--run"]
+
+
+@pytest.mark.parametrize("line", ["pdt ", "pdt deploy ", "pdt logs --"])
+def test_tab_completion_skips_the_slow_imports(project, tmp_path, line):
+    """Each TAB starts pdt, so a completion must not wait for what only a command needs."""
+    add_app(project, "daily-report")
+    imported = tmp_path / "imported"
+    script = (f"import sys; log = open({str(imported)!r}, 'w', buffering=1); "
+              "sys.addaudithook(lambda event, args: event == 'import' and log.write(args[0] + '\\n')); "
+              "from pdt import cli; cli.main()")
+    environment = {**os.environ, "_ARGCOMPLETE": "1", "_ARGCOMPLETE_IFS": "\n",
+                   "_ARGCOMPLETE_STDOUT_FILENAME": str(tmp_path / "completions"),
+                   "COMP_LINE": line, "COMP_POINT": str(len(line))}
+    subprocess.run([sys.executable, "-c", script], env=environment, stdin=subprocess.DEVNULL,
+                   capture_output=True)
+
+    modules = set(imported.read_text().split())
+    assert "pdt.cli" in modules
+    assert modules.isdisjoint({"rich", "importlib.metadata", "backoff", "pdt.console",
+                               "pdt.deploy", "pdt.scaffold"})
 
 
 def test_install_preserves_content_and_replaces_owned_block(tmp_path):

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from pdt import cli, deploy_common, storage_cli
+from pdt import cli, config, storage_cli
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" / "pdt"
@@ -27,7 +27,7 @@ SPAN = re.compile(r"`(pdt [^`]+)`")
 SAID = re.compile(r"(?i:\brun|\bwith:?|\bexample:?)\s+(pdt [^`;,)\n]+)")
 TEMPLATE = re.compile(r'data-copy="(pdt [^"]+)"|data-copy>(pdt [^<]+)<|<code>(pdt [^<]+)</code>')
 MARKUP = re.compile(r"\[/?[a-z ]*\]")
-ACTIONS = {"storage": storage_cli.COMMANDS, "secrets": deploy_common.SECRET_ACTIONS}
+ACTIONS = {"storage": config.STORAGE_COMMANDS, "secrets": config.SECRET_ACTIONS}
 
 
 def markdown_mentions(text: str) -> list[str]:

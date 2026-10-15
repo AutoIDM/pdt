@@ -24,15 +24,16 @@ from contextlib import contextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
-import yaml
-from dotenv import dotenv_values, load_dotenv
-
-from pdt import console
-
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
 
 PROVIDERS = ("google-cloud", "azure", "aws", "windows")
+# The words after `pdt secrets <app>` and `pdt storage <app>`. They live here, so tab
+# completion offers them without importing the code that runs them.
+SECRET_ACTIONS = ("diff", "save", "get", "set")
+STORAGE_COMMANDS = ("ls", "get", "query", "unlock", "destroy")
+# The local port `pdt gui` serves on unless --port names another.
+GUI_PORT = 8765
 # Every cloud provider runs a job as a container image built from the app
 # folder: AWS on Fargate, Azure on Container Apps Jobs, Google Cloud on
 # Cloud Run Jobs. The windows provider runs the app directly.
@@ -100,6 +101,7 @@ class ConfigError(Exception):
 
 
 def load_yaml(path: Path) -> dict:
+    import yaml
     if not path.is_file():
         return {}
     text = path.read_text()
@@ -153,6 +155,7 @@ def find_project(start: Path | None = None) -> Path:
 
 def project_line() -> str:
     """Which project folder pdt works on, and how it found it."""
+    from pdt import console
     project = console.value(str(find_project()))
     if os.environ.get("PDT_PROJECT", "").strip() != "":
         return f"Project folder: {project}  [dim](from {console.value('PDT_PROJECT')})[/]"
@@ -439,11 +442,12 @@ def locked(path: Path):
 STATE_DIR = ".pdt"
 
 
-def _state_path() -> Path:
-    return find_project() / STATE_DIR / "state"
+def _state_path(name: str = "state") -> Path:
+    return find_project() / STATE_DIR / name
 
 
 def read_state() -> dict:
+    from pdt import console
     path = _state_path()
     if not path.is_file():
         return {}
@@ -458,8 +462,8 @@ def read_state() -> dict:
     return state
 
 
-def write_state(state: dict) -> None:
-    path = _state_path()
+def write_state(state: dict, name: str = "state") -> None:
+    path = _state_path(name)
     path.parent.mkdir(exist_ok=True)
     # Self-ignoring, so projects created before this dir existed stay clean.
     (path.parent / ".gitignore").write_text("*\n")
@@ -479,6 +483,40 @@ def mark_deployed(name: str, deployed: bool) -> None:
 
 def is_deployed(name: str) -> bool:
     return name in (read_state().get("deployed") or [])
+
+
+def _stamps(paths) -> list:
+    return [[str(path), path.stat().st_mtime_ns if path.exists() else None] for path in paths]
+
+
+def cached_apps() -> list[str]:
+    """find_apps for tab completion, which runs pdt on every TAB. .pdt/apps keeps the names
+    with the modification time of each path find_apps reads and of this file, whose code
+    decides the names, so a TAB reads no yaml until one of them changes."""
+    project = find_project()
+    try:
+        cache = json.loads((project / STATE_DIR / "apps").read_text())
+        if cache["stamps"] == _stamps(Path(name) for name, _ in cache["stamps"]):
+            return cache["apps"]
+    except Exception:
+        pass
+    # Making .pdt changes the project folder's time, so it comes before the stamps.
+    try:
+        (project / STATE_DIR).mkdir(exist_ok=True)
+    except OSError:
+        return find_apps()
+    # A new app folder changes the project folder's time; a new run.py, .ps1, or config.yml
+    # changes the time of the folder that holds it.
+    folders = [child for child in sorted(project.iterdir())
+               if not child.name.startswith(".") and child.is_dir()]
+    stamps = _stamps([Path(__file__), project, project / PROJECT_FILE,
+                      *folders, *(folder / APP_FILE for folder in folders)])
+    apps = find_apps()
+    try:
+        write_state({"stamps": stamps, "apps": apps}, "apps")
+    except OSError:
+        pass
+    return apps
 
 
 def aws_account_problem(account: str) -> str:
@@ -691,6 +729,9 @@ def env_file_lines(start: Path) -> list[str]:
     """What load_env(start) reads, for the user: the .env files, and each name this
     terminal already sets with another value, which the .env value does not replace.
     Call it before load_env, which adds the .env values to the environment."""
+    from dotenv import dotenv_values
+
+    from pdt import console
     files = find_env_files(start)
     env = console.value(".env")
     if not files:
@@ -710,6 +751,7 @@ def env_file_lines(start: Path) -> list[str]:
 
 
 def load_env(start: Path) -> list[Path]:
+    from dotenv import load_dotenv
     # Closest .env wins; parents only fill keys still empty.
     # Existing process env wins (override=False).
     files = find_env_files(start)
@@ -775,6 +817,7 @@ def env_spec(app: dict) -> dict:
 def found_env_lines(app: dict) -> list[str]:
     """The env vars the app's code reads that config.yml does not list, as lines for
     the user, or none. Raises ConfigError, like env_spec."""
+    from pdt import console
     spec = env_spec(app)
     found = [(name, f"required, {_code_line(where)}")
              for name, where in (spec.get("read_by") or {}).items()]
@@ -794,6 +837,7 @@ def found_env_lines(app: dict) -> list[str]:
 
 def _code_line(where: str) -> str:
     """`report.ps1:4` as `report.ps1 line 4`, the file name bold."""
+    from pdt import console
     file, _, line = where.rpartition(":")
     return f"{console.value(file)} line {line}"
 

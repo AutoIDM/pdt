@@ -12,9 +12,16 @@ import argcomplete
 import shellingham
 from argcomplete.completers import ChoicesCompleter, DirectoriesCompleter, SuppressCompleter
 
-from pdt import config, console, scaffold, storage_cli
-from pdt.deploy_common import SECRET_ACTIONS
-from pdt.utils.email_auth import can_prompt
+from pdt import config
+
+# The shell sets _ARGCOMPLETE when it asks pdt for completions. argcomplete then
+# prints them and ends the process before any command runs, so a completion skips
+# the modules only a command needs: they take most of pdt's start time.
+COMPLETING = "_ARGCOMPLETE" in os.environ
+
+if not COMPLETING:
+    from pdt import console
+    from pdt.utils.email_auth import can_prompt
 
 SHELLS = ("bash", "zsh", "fish", "powershell")
 
@@ -29,12 +36,13 @@ ALLOW_PROFILE = "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
 
 def apps(prefix: str, **_kwargs) -> list[str]:
     try:
-        return [name for name in config.find_apps() if name.startswith(prefix)]
+        return [name for name in config.cached_apps() if name.startswith(prefix)]
     except (config.ConfigError, OSError):
         return []
 
 
 def examples(prefix: str, **_kwargs) -> list[str]:
+    from pdt import scaffold
     return [example.name for example in scaffold.examples()
             if example.name.startswith(prefix)]
 
@@ -49,12 +57,12 @@ def storage_args(prefix: str, parsed_args, **_kwargs) -> list[str]:
     """`pdt storage APP get KEY [PATH]` takes a local path; the other words are not paths."""
     rest = parsed_args.rest or []
     if not rest:
-        return [name for name in storage_cli.COMMANDS if name.startswith(prefix)]
+        return [name for name in config.STORAGE_COMMANDS if name.startswith(prefix)]
     return files(prefix) if rest[0] == "get" and len(rest) == 2 else []
 
 
 directories = DirectoriesCompleter()
-secret_actions = ChoicesCompleter(SECRET_ACTIONS)
+secret_actions = ChoicesCompleter(config.SECRET_ACTIONS)
 
 
 def _shell() -> str | None:

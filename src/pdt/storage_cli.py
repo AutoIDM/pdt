@@ -12,7 +12,6 @@ from pathlib import Path
 
 from pdt import console
 
-COMMANDS = ("ls", "get", "query", "unlock", "destroy")
 USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] | get <path> [dest] "
          "| query <sql> | unlock [--yes] | destroy [--yes]")
 

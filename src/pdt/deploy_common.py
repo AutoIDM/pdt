@@ -567,9 +567,6 @@ def secret_changes(current: str | None, values: dict[str, str]) -> list[tuple[st
     return sorted(changes, key=lambda change: (kinds.index(change[0]), change[1]))
 
 
-SECRET_ACTIONS = ("diff", "save", "get", "set")
-
-
 def run_secrets(action: str, app: dict, current: str | None,
                 write: Callable[[dict[str, str]], None], assume_yes: bool,
                 name: str | None = None) -> int:
