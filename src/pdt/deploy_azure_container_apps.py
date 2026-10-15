@@ -42,6 +42,7 @@ import json
 import re
 import shutil
 import sys
+import time
 import urllib.request
 from pathlib import Path
 from typing import Callable, Iterator
@@ -68,6 +69,9 @@ PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
 CPU = "0.5"
 MEMORY = "1.0Gi"
+# A job update takes a few seconds; `az containerapp job update` waits a fixed 15.
+JOB_UPDATE_POLLS = 150
+JOB_UPDATE_POLL_SECONDS = 2
 QUOTA_HINT = (
     "This subscription's quota of Container Apps environments is used up. pdt "
     "shares one environment between every pdt project in a subscription and "
@@ -95,6 +99,24 @@ def build_image(app: dict, settings: dict, image_name: str, cloud: bool) -> None
         run_build(["docker", "push", image])
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+
+
+def pushed_image(settings: dict, image_name: str) -> str:
+    """The image the job runs, by the digest of its linux/amd64 manifest.
+
+    A Docker build pushes an index whose attestation changes on every build, so the
+    digest of `:latest` changes with no change to the image; the platform manifest's
+    digest changes only with the image. A build that pushes no index has its tag's digest.
+    """
+    registry = settings["registry"]
+    manifest = json.loads(run_quiet("acr", "manifest", "show", "--registry", registry,
+                                    "--name", f"{image_name}:latest", "--output", "json"))
+    digests = [entry["digest"] for entry in manifest.get("manifests") or []
+               if (entry.get("platform") or {}).get("architecture") == "amd64"]
+    digest = digests[0] if digests else az_tsv(
+        "acr", "repository", "show", "--name", registry, "--image", f"{image_name}:latest",
+        "--query", "digest")
+    return f"{registry}.azurecr.io/{image_name}@{digest}"
 
 
 ACR_TASKS_ROLE = "Container Registry Tasks Contributor"
@@ -265,26 +287,93 @@ def set_job_secret(job: str, rg: str, secret_uri: str, identity_id: str) -> None
         retry_access=True)
 
 
+def job_body(registry: str, job: str, image: str, cron: str, identity_id: str,
+             secret_uri: str | None, storage_url: str | None, app_name: str) -> dict:
+    """The parts of the job resource that deploy sets, as the resource manager API takes them."""
+    env = []
+    if secret_uri:
+        env.append({"name": "PDT_ENV_JSON", "secretRef": "pdt-env"})
+        env.append({"name": "PDT_ENV_SECRET_RESOURCE", "value": secret_uri})
+    if storage_url:
+        env.append({"name": "PDT_STORAGE_URL", "value": storage_url})
+    secrets = [{"name": "pdt-env", "keyVaultUrl": secret_uri, "identity": identity_id}]
+    return {
+        "identity": {"type": "SystemAssigned,UserAssigned",
+                     "userAssignedIdentities": {identity_id: {}}},
+        "tags": {"managed-by": "pdt", "pdt-app": app_name},
+        "properties": {
+            "configuration": {
+                "triggerType": "Schedule", "replicaTimeout": 1800, "replicaRetryLimit": 0,
+                "scheduleTriggerConfig": {"cronExpression": cron, "parallelism": 1,
+                                          "replicaCompletionCount": 1},
+                "registries": [{"server": f"{registry}.azurecr.io", "identity": identity_id}],
+                "secrets": secrets if secret_uri else [],
+            },
+            "template": {"containers": [{
+                "name": job, "image": image, "env": env,
+                "resources": {"cpu": float(CPU), "memory": MEMORY},
+            }]},
+        },
+    }
+
+
+def quantity(value, unit: str = ""):
+    """0.5 for "0.5", 1.0 for "1Gi" or "1.0Gi"; any other value as it is."""
+    match = re.fullmatch(rf"(\d+(?:\.\d+)?){unit}", str(value))
+    return float(match.group(1)) if match else value
+
+
+def normalized_job(resource: dict) -> dict:
+    """What `job_body` sets, read from a job or a body in one form, so equal settings compare equal.
+
+    Azure returns a resource id in another case, "1Gi" for "1.0Gi", 0.5 for "0.5", and
+    "SystemAssigned, UserAssigned" for "SystemAssigned,UserAssigned". Any other difference
+    compares unequal, so deploy writes the job.
+    """
+    identity = resource.get("identity") or {}
+    properties = resource.get("properties") or {}
+    configuration = properties.get("configuration") or {}
+    schedule = configuration.get("scheduleTriggerConfig") or {}
+    return {
+        "identity": sorted(part.strip() for part in (identity.get("type") or "").split(",")),
+        "user_identities": sorted(key.lower() for key in identity.get("userAssignedIdentities") or {}),
+        "tags": resource.get("tags") or {},
+        "trigger": configuration.get("triggerType"),
+        "replica_timeout": configuration.get("replicaTimeout"),
+        "retry_limit": configuration.get("replicaRetryLimit"),
+        "schedule": [schedule.get("cronExpression"), schedule.get("parallelism"),
+                     schedule.get("replicaCompletionCount")],
+        "registries": [[registry.get("server"), (registry.get("identity") or "").lower()]
+                       for registry in configuration.get("registries") or []],
+        "secrets": [[secret.get("name"), secret.get("keyVaultUrl"),
+                     (secret.get("identity") or "").lower()]
+                    for secret in configuration.get("secrets") or []],
+        "containers": [{
+            "name": container.get("name"),
+            "image": container.get("image"),
+            "env": [[var.get("name"), var.get("value") or None, var.get("secretRef") or None]
+                    for var in container.get("env") or []],
+            "cpu": quantity((container.get("resources") or {}).get("cpu")),
+            "memory": quantity((container.get("resources") or {}).get("memory"), "Gi"),
+        } for container in (properties.get("template") or {}).get("containers") or []],
+    }
+
+
 def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                   identity_id: str, secret_uri: str | None, storage_url: str | None,
-                  exists: bool, app_name: str) -> None:
+                  current: dict | None, app_name: str) -> None:
     rg = settings["resource_group"]
-    common = [
-        "--name", job, "--resource-group", rg, "--image", image,
-        "--cron-expression", cron, "--cpu", CPU, "--memory", MEMORY,
-        "--replica-timeout", "1800", "--replica-retry-limit", "0",
-        "--parallelism", "1", "--replica-completion-count", "1",
-        "--tags", "managed-by=pdt", f"pdt-app={app_name}",
-    ]
-    env_vars = []
-    if secret_uri:
-        env_vars.append("PDT_ENV_JSON=secretref:pdt-env")
-        env_vars.append(f"PDT_ENV_SECRET_RESOURCE={secret_uri}")
-    if storage_url:
-        env_vars.append(f"PDT_STORAGE_URL={storage_url}")
-    if not exists:
+    body = job_body(settings["registry"], job, image, cron, identity_id, secret_uri,
+                    storage_url, app_name)
+    if current is None:
+        env = body["properties"]["template"]["containers"][0]["env"]
         args = [
-            "containerapp", "job", "create", *common,
+            "containerapp", "job", "create",
+            "--name", job, "--resource-group", rg, "--image", image,
+            "--cron-expression", cron, "--cpu", CPU, "--memory", MEMORY,
+            "--replica-timeout", "1800", "--replica-retry-limit", "0",
+            "--parallelism", "1", "--replica-completion-count", "1",
+            "--tags", "managed-by=pdt", f"pdt-app={app_name}",
             "--environment", settings["environment"].resource_id(settings["subscription"]),
             "--trigger-type", "Schedule",
             "--mi-system-assigned", "--mi-user-assigned", identity_id,
@@ -296,28 +385,32 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                 "--secrets",
                 f"pdt-env=keyvaultref:{secret_uri},identityref:{identity_id}",
             ]
-        if env_vars:
-            args += ["--env-vars", *env_vars]
+        if env:
+            args += ["--env-vars", *(f"{var['name']}=secretref:{var['secretRef']}"
+                                     if "secretRef" in var else f"{var['name']}={var['value']}"
+                                     for var in env)]
         run_quiet(*args, retry_access=True, retry_internal=True)
         return
 
-    run_quiet("containerapp", "job", "identity", "assign", "--name", job,
-              "--resource-group", rg, "--system-assigned", "--user-assigned", identity_id)
-    run_quiet("containerapp", "job", "registry", "set", "--name", job,
-              "--resource-group", rg,
-              "--server", f"{settings['registry']}.azurecr.io",
-              "--identity", identity_id)
-    if secret_uri:
-        set_job_secret(job, rg, secret_uri, identity_id)
-    if env_vars:
-        common += ["--replace-env-vars", *env_vars]
-    else:
-        common += ["--remove-env-vars", "PDT_ENV_JSON", "PDT_ENV_SECRET_RESOURCE", "PDT_STORAGE_URL"]
-    run_quiet("containerapp", "job", "update", *common, retry_access=True)
-    if not secret_uri:
-        # Ignore absence: Azure returns nonzero when there is nothing to remove.
-        az("containerapp", "job", "secret", "remove", "--name", job,
-           "--resource-group", rg, "--secret-names", "pdt-env")
+    desired = normalized_job(body)
+    if normalized_job(current) == desired:
+        console.note(f"Container Apps Job {console.value(job)} already matches; nothing to update.")
+        return
+    run_quiet("rest", "--method", "patch", "--url", job_url(settings, job),
+              "--body", json.dumps(body), retry_access=True)
+    for _ in range(JOB_UPDATE_POLLS):
+        resource = job_resource(settings, job)
+        state = (resource.get("properties") or {}).get("provisioningState")
+        if state in ("Failed", "Canceled"):
+            fail(f"Azure could not update Container Apps Job {console.value(job)} "
+                 f"(provisioning state {console.value(state)})")
+        if state == "Succeeded" and normalized_job(resource) == desired:
+            return
+        time.sleep(JOB_UPDATE_POLL_SECONDS)
+    differ = [key for key, value in normalized_job(resource).items() if value != desired[key]]
+    fail(f"Container Apps Job {console.value(job)} did not show the update after "
+         f"{console.value(JOB_UPDATE_POLLS * JOB_UPDATE_POLL_SECONDS)} seconds: provisioning state "
+         f"{console.value(state)}, settings that differ: {console.value(', '.join(differ))}")
 
 
 def job_principal_id(job: str, rg: str) -> str:
@@ -546,11 +639,14 @@ def job_url(settings: dict, job: str, action: str = "") -> str:
     return f"{MANAGEMENT_API}{path}{action}?api-version={JOBS_API_VERSION}"
 
 
+def job_resource(settings: dict, job: str) -> dict:
+    return json.loads(run_quiet("rest", "--method", "get", "--url", job_url(settings, job))
+                      or "{}")
+
+
 def job_running_state(settings: dict, job: str) -> str:
     """Ready, Progressing, or Suspended."""
-    result = json.loads(run_quiet("rest", "--method", "get", "--url", job_url(settings, job))
-                        or "{}")
-    return str((result.get("properties") or {}).get("runningState") or "")
+    return str((job_resource(settings, job).get("properties") or {}).get("runningState") or "")
 
 
 def set_job_paused(settings: dict, job: str, paused: bool) -> None:
@@ -978,14 +1074,14 @@ def deploy(app: dict, assume_yes: bool) -> int:
     console.step(f"building image {console.value(image)} with "
                  f"{console.value('ACR Tasks') if cloud else 'Docker on this computer'}")
     build_image(app, settings, name, cloud)
+    pinned = pushed_image(settings, name)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
     if legacy_job:
         retire_job(settings, legacy, legacy_job, store, sid)
     console.step(f"reconciling Container Apps Job {console.value(job)}")
     try:
-        reconcile_job(settings, job, image, cron, identity_id, secret_uri,
-                      store_url(store, name) if store else None,
-                      current_job is not None, name)
+        reconcile_job(settings, job, pinned, cron, identity_id, secret_uri,
+                      store_url(store, name) if store else None, current_job, name)
     except SystemExit:
         report_job_failure(settings, job)
         raise
