@@ -9,7 +9,7 @@ uv tool install pdt-cli
 uv tool update-shell
 ```
 
-`uv tool install` puts the `pdt` command in uv's tool folder. `uv tool update-shell` adds that folder to your PATH if it is not there yet. A terminal window that was already open does not see a PATH change, so open a new window before you type `pdt`. To update pdt later, run `uv tool upgrade pdt-cli`.
+`uv tool install` puts the `pdt` command in uv's tool folder. `uv tool update-shell` adds that folder to your PATH if it is not there yet. A terminal window that was already open does not see a PATH change, so open a new window before you type `pdt`. To update pdt later, run `pdt upgrade`.
 
 ## Windows, from PowerShell
 
