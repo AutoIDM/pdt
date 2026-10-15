@@ -107,7 +107,7 @@ def test_a_user_environment_in_another_region_fails_before_the_plan(monkeypatch,
 
 
 def job_in_east_us_2(args):
-    if args[:3] == ("containerapp", "job", "show"):
+    if args[:3] == ("rest", "--method", "get"):
         return {"tags": {"managed-by": "pdt", "pdt-app": "report"}, "location": "East US 2"}
     return None
 
@@ -130,7 +130,7 @@ def test_a_job_in_the_same_region_reaches_the_plan(monkeypatch):
     deploy_azure_container_apps.deploy(
         {"name": "report", "schedule": "0 0 * * *", "storage": False, "platform": {}, "pause": False}, True)
     job = deploy_azure_container_apps.job_name(deploy_settings(SHARED), "report")
-    assert f'update Container Apps Job {job}: "0 0 * * *" (UTC)' in plans[0]
+    assert f'update, if it changed, Container Apps Job {job}: "0 0 * * *" (UTC)' in plans[0]
 
 
 def test_the_default_plan_creates_the_shared_group_workspace_and_environment(monkeypatch):
