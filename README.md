@@ -115,6 +115,7 @@ pdt login my-report
 | `pdt new APP --from EXAMPLE` | add an app to the project |
 | `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
 | `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
+| `pdt entra APP` | create or update the Entra app registration an app signs in to Microsoft Graph as, with the permissions its `entra:` section lists; see [Signing in to Microsoft Graph](#signing-in-to-microsoft-graph) |
 | `pdt run APP` | run an app on this machine |
 | `pdt run APP --deployed` | start one run of the deployed job now, on its platform |
 | `pdt deploy APP` | deploy an app to its configured platform; when the app has no successful run yet, asks whether to start one and follow its log |
@@ -181,6 +182,22 @@ A run that dies without reaching either call leaves the lock behind. The next ru
 From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
 
 An app that is not ready sets `enabled: false` in its `config.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it. `enabled: false` does not stop a schedule that is already deployed, so run `pdt pause APP` or `pdt destroy APP` before you set it.
+
+## Signing in to Microsoft Graph
+
+An app that reads Microsoft 365 or Intune data signs in as an Entra app registration with `PDT_AZURE_TENANT_ID`, `PDT_AZURE_CLIENT_ID`, and `PDT_AZURE_CLIENT_SECRET` (or a certificate). List the Microsoft Graph application permissions it needs in its `config.yml`:
+
+```yaml
+entra:
+  graph_permissions: [User.Read.All, AuditLog.Read.All]
+```
+
+Then `pdt entra APP` sets up the app registration with the Azure CLI. It opens your browser to sign in; add `--device-code` to sign in on another device. Sign in as someone who may grant Graph application permissions, such as a Global Administrator or Privileged Role Administrator of the tenant whose data the app reads. That login lives in a temporary folder, apart from the login `pdt deploy` uses, and is gone when the command ends.
+
+- With `PDT_AZURE_CLIENT_ID` set, pdt signs in to the tenant in `PDT_AZURE_TENANT_ID` and gives that app registration the permissions it lacks.
+- Without it, pdt creates an app registration named `pdt-APP` in the tenant you sign in to, or reuses one of that name, adds a client secret valid for a year, and saves the three values in `APP/.env`.
+
+pdt lists what it will change and asks first; `--yes` skips the question. It adds each permission to the app's API permissions and grants it (admin consent), then signs in as the app until the app's token carries every permission, which can take Entra a few minutes. Run it again whenever `graph_permissions` changes; an app that already has every permission is left as it is and only checked. When `pdt run` finds these values missing for an app with an `entra:` section, it offers to run `pdt entra` first.
 
 ## The dashboard
 
@@ -306,7 +323,7 @@ Small app that logs "Hello world." Shows how to write a config.yml and useful as
 
 A PowerShell app. Finds the Microsoft 365 licenses a tenant pays for that nobody uses: paid licenses on disabled accounts, on accounts that have not signed in for 90 days (or never did), and seats bought but assigned to nobody. Each run keeps a `LicenseWaste-<date>.xlsx` workbook in the app's data store, with a Summary sheet of monthly and annual cost and one sheet per finding.
 
-Monthly prices come from the app's `license-prices.csv`; edit it to match what your tenant pays. A license missing from it is listed on an Unpriced Licenses sheet so you can add it. The Graph permissions and env vars it needs are listed in its `config.yml` and `env.template`.
+Monthly prices come from the app's `license-prices.csv`; edit it to match what your tenant pays. A license missing from it is listed on an Unpriced Licenses sheet so you can add it. The Graph permissions it needs are under `entra:` in its `config.yml`, so `pdt entra azure-license-waste` can set up its Entra app; the env vars are listed there and in its `env.template`.
 
 ### impossible-travel-report
 
@@ -316,7 +333,7 @@ Settings for the lookback window, the minimum distance, and the email addresses 
 
 ### intune-export
 
-A PowerShell app. Once a week it exports the Intune configuration of a tenant with the bulk export of [IntuneManagement](https://github.com/Micke-K/IntuneManagement) version 4, and keeps an `IntuneExport-<date>.zip` in the app's data store. To import, unzip it and point IntuneManagement's import at the company folder inside. Each run uses a pinned commit of IntuneManagement, which the script downloads once to pdt's data folder and checks against its SHA-256. Which object types to export and IntuneManagement's own export settings live in its `config.yml`; the Graph permissions and env vars it needs are listed there and in its `env.template`. A run fails when Microsoft Graph refuses to list an object type, so a missing permission does not leave a silent gap in the zip. The zip can hold scripts and other sensitive settings, so treat the data store as sensitive.
+A PowerShell app. Once a week it exports the Intune configuration of a tenant with the bulk export of [IntuneManagement](https://github.com/Micke-K/IntuneManagement) version 4, and keeps an `IntuneExport-<date>.zip` in the app's data store. To import, unzip it and point IntuneManagement's import at the company folder inside. Each run uses a pinned commit of IntuneManagement, which the script downloads once to pdt's data folder and checks against its SHA-256. Which object types to export and IntuneManagement's own export settings live in its `config.yml`; the Graph permissions it needs are under `entra:` there, so `pdt entra intune-export` can set up its Entra app, and the env vars are listed there and in its `env.template`. A run fails when Microsoft Graph refuses to list an object type, so a missing permission does not leave a silent gap in the zip; `skip_types` lists the types a tenant has no license for, such as the Windows 365 ones. Each run's log lists the files added, changed, or removed since the last export. The zip can hold scripts and other sensitive settings, so treat the data store as sensitive.
 
 ### monday-orphaned-account-report
 

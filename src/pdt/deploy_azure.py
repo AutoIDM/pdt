@@ -1003,12 +1003,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-                                 "pause", "unpause", "start"))
+                                 "pause", "unpause", "start", "entra"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--device-code", action="store_true")
     args = parser.parse_intermixed_args()
     app = load_app(args.app)
+    if args.command == "entra":
+        from pdt import entra_app
+        return entra_app.setup(app, args.yes, args.device_code)
     if args.command == "login":
         requested = azure_settings(app)["subscription"]
         return relogin("" if requested == PLACEHOLDER_SUBSCRIPTION else requested)

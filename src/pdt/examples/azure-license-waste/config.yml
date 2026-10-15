@@ -6,10 +6,13 @@
 # Or a 5-field cron expression, for example "0 * * * *".
 schedule: "weekly"
 
-# The Entra app needs these Microsoft Graph application permissions, with
-# admin consent: User.Read.All, AuditLog.Read.All, Organization.Read.All.
+# The Microsoft Graph application permissions the Entra app needs, with admin
+# consent. `pdt entra azure-license-waste` creates the app with them, or adds
+# the ones it lacks, and saves its values in azure-license-waste/.env.
 # Sign-in dates also need an Entra ID P1 license.
-#
+entra:
+  graph_permissions: [User.Read.All, AuditLog.Read.All, Organization.Read.All]
+
 # LICENSE_WASTE_INACTIVE_DAYS is how long an account can go without signing
 # in before its licenses count as waste (90 when unset).
 env:

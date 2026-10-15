@@ -29,6 +29,8 @@ ALLOWED = {
     "cli.py": {"APP_QUESTIONS[command]", "len(apps) - len(shown)", "len(problems)", "index",
                "len(names)", "line", "choices"},
     "deploy.py": {"tool", "line", "state", "action"},
+    "entra_app.py": {"SECRET_DAYS", "len(plan.to_list)", "len(plan.to_grant)", "what", "wait",
+                     "names", "who", "VERIFY_SECONDS // 60", "lacking", "again"},
     "deploy_common.py": {"what", "message", "description", "count", "provider", "len(values)",
                          "problem",
                          "details['tries']", "BACKOFF_MAX_TRIES", "details['wait']"},
