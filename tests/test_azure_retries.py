@@ -107,7 +107,7 @@ def test_job_create_retries_an_internal_error(monkeypatch):
          "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True)},
         "pdt-report", "pdtregistry.azurecr.io/report:latest", "0 0 * * *",
         "/identity/pdt-runner", "https://vault.vault.azure.net/secrets/env", None,
-        False, "report")
+        None, "report")
 
     assert len(calls) == 2
     assert calls[0] == calls[1]

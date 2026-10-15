@@ -124,6 +124,7 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
     monkeypatch.setattr(deploy_azure_container_apps, "assign_role", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "enable_acr_arm_auth", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "build_image", lambda *args: None)
+    monkeypatch.setattr(deploy_azure_container_apps, "pushed_image", lambda *args: "report@sha256:1")
     monkeypatch.setattr(deploy_azure_container_apps, "ensure_secret", lambda *args: None)
 
     with pytest.raises(SystemExit) as error:
