@@ -33,11 +33,32 @@ def test_an_app_without_a_dockerfile_gets_the_generated_one(tmp_path):
         "build image x in the cloud with Cloud Build"]
 
 
+def test_the_generated_dockerfile_installs_from_the_script_header_before_the_rest(tmp_path):
+    app, stage = staged(tmp_path, "my-report")
+    header = '# /// script\n# dependencies = ["pdt-cli==0.1.9"]\n# ///\n'
+    (app["dir"] / "run.py").write_text(header + "def main():\n    return 0\n")
+    (app["dir"] / "run.py.lock").write_text("lock\n")
+    write_dockerfile(stage, app)
+    assert (stage / ".pdt-script" / "run.py").read_text() == header
+    assert (stage / ".pdt-script" / "run.py.lock").read_text() == "lock\n"
+    text = (stage / "Dockerfile").read_text()
+    assert (text.index("WORKDIR /workspace/my-report\n") < text.index("COPY .pdt-script .\n")
+            < text.index("RUN uv sync --script run.py\n") < text.index("COPY . /workspace\n"))
+
+
+def test_a_run_py_without_a_script_header_is_staged_whole(tmp_path):
+    app, stage = staged(tmp_path, "my-report")
+    write_dockerfile(stage, app)
+    assert sorted(path.name for path in (stage / ".pdt-script").iterdir()) == ["run.py"]
+    assert (stage / ".pdt-script" / "run.py").read_text() == "def main():\n    return 0\n"
+
+
 def test_an_app_dockerfile_is_used_as_is_at_the_context_root(tmp_path):
     own = "FROM python:3.12-slim\nCOPY . /workspace\n"
     app, stage = staged(tmp_path, "my-report", own)
     write_dockerfile(stage, app)
     assert (stage / "Dockerfile").read_text() == own
+    assert not (stage / ".pdt-script").exists()
     assert plain([image_action(app, "build image x")]) == [
         "build image x with Docker on this computer (from my-report/Dockerfile)"]
 
@@ -171,8 +192,8 @@ def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modul
     (app["dir"] / "requirements.psd1").write_text("@{ 'ImportExcel' = '7.8.6' }\n")
     write_dockerfile(stage, app)
     text = (stage / "Dockerfile").read_text()
-    tail = ("WORKDIR /workspace/my-report\nRUN uv sync --script run.py\n"
-            + ENTRYPOINT.replace("{start}", "uv run --script run.py").format())
+    tail = ("WORKDIR /workspace/my-report\nCOPY .pdt-script .\nRUN uv sync --script run.py\n"
+            "COPY . /workspace\n" + ENTRYPOINT.replace("{start}", "uv run --script run.py").format())
     assert text.endswith(tail)
     assert text.index("Install-PSResource") < text.index("RUN uv sync")
     assert "pdt.run_powershell" not in text

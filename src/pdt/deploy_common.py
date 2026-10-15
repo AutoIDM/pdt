@@ -17,7 +17,9 @@ the app through it, so the job prints the lifecycle events of the pdt that
 deployed it, as the Windows task does. The folder is not on the app's
 sys.path, so it never shadows the pdt the app installs. The
 app's run.py declares pdt in its script header, so every deployment
-installs the package from the index the same way a local run does. An app
+installs the package from the index the same way a local run does. A generated Dockerfile installs
+that header first, from .pdt-script in the context, and copies the rest after, so a change
+below the header or in a config file reuses the installed dependencies. An app
 made of .ps1 files has no run.py; POWERSHELL_DOCKERFILE installs
 pdt-cli[apps] at this pdt's version, then pwsh through that pdt's own
 `pdt.pwsh` (the pinned, checksum-verified archive; its powershell.config.json
@@ -99,10 +101,11 @@ ENTRYPOINT = ('ENTRYPOINT ["sh", "-c", "stop() {{ kill -s $1 $pid; wait $pid; fi
 DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
 COPY .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
-COPY . /workspace
 WORKDIR /workspace/{app}
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false PYTHONUNBUFFERED=1
+COPY .pdt-script .
 RUN uv sync --script run.py
+COPY . /workspace
 """ + ENTRYPOINT.replace("{start}", "uv run --script run.py")
 POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
@@ -111,9 +114,11 @@ RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={versio
 RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh && echo '{{"LogLevel":"Critical"}}' > "$(dirname "$pwsh")/powershell.config.json"
 {modules}COPY .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
-COPY . /workspace
 WORKDIR /workspace/{app}
-{sync}""" + ENTRYPOINT
+{sync}COPY . /workspace
+""" + ENTRYPOINT
+# The PEP 723 script block, with the reference regex of the PEP.
+SCRIPT_HEADER = re.compile(r"(?m)^# /// script$\s(?:^#(?:| .*)$\s)+^# ///$")
 LIFECYCLE_MODULES = ("__init__.py", "config.py", "console.py", "lifecycle.py", "slack.py",
                      "utils/__init__.py", "utils/storage.py")
 # Secret shapes and local state that never belong in an image. The version-control names are
@@ -151,7 +156,7 @@ def powershell_dockerfile(app: dict) -> str:
     command = json.dumps(["pwsh", "-NoProfile", "-Command", powershell.install_command(modules)])
     sync, start = "", "/opt/pdt/bin/python -m pdt.run_powershell ."
     if (Path(app["dir"]) / "run.py").is_file():
-        sync, start = "RUN uv sync --script run.py\n", "uv run --script run.py"
+        sync, start = "COPY .pdt-script .\nRUN uv sync --script run.py\n", "uv run --script run.py"
     return POWERSHELL_DOCKERFILE.format(
         app=app["name"], version=__version__, modules=f"RUN {command}\n" if modules else "",
         sync=sync, start=start)
@@ -172,10 +177,28 @@ def write_dockerfile(stage: Path, app: dict) -> None:
         (stage / "Dockerfile").write_text(powershell_dockerfile(app))
     else:
         (stage / "Dockerfile").write_text(DOCKERFILE.format(app=app["name"]))
+    if own is None and (Path(app["dir"]) / "run.py").is_file():
+        stage_script_header(stage, Path(app["dir"]))
     ignore = Path(app["dir"]) / ".dockerignore"
     if ignore.is_file():
         text = context_ignore_text(ignore.read_text(), app["name"])
         (stage / ".dockerignore").write_text(text)
+
+
+def stage_script_header(stage: Path, app_dir: Path) -> None:
+    """Put the script header of run.py, and run.py.lock when there is one, in .pdt-script.
+
+    uv keeps a script's environment per script path, so the Dockerfile copies the
+    folder to the app's own path, and `uv run --script run.py` finds that environment.
+    """
+    folder = stage / ".pdt-script"
+    folder.mkdir()
+    text = (app_dir / "run.py").read_text()
+    header = SCRIPT_HEADER.search(text)
+    (folder / "run.py").write_text(header.group(0) + "\n" if header else text)
+    lock = app_dir / "run.py.lock"
+    if lock.is_file():
+        shutil.copy(lock, folder / lock.name)
 
 
 def context_ignore_text(text: str, app_name: str) -> str:
