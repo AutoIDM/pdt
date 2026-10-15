@@ -992,7 +992,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     set_job_paused(settings, job, app["pause"])
     principal = job_principal_id(job, rg)
     if secret_uri:
-        disable_old_secret_versions(settings, sid)
+        if current_secret != payload:
+            disable_old_secret_versions(settings, sid)
         assign_role(secret_scope(settings, sid), principal, SECRET_ROLE)
     if store:
         assign_role(store["container_id"], principal, STORE_ROLE,

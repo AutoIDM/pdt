@@ -188,3 +188,17 @@ def test_any_other_delete_error_still_fails(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         deploy_azure.delete_unless_locked("group", "delete", "--name", "pdt", "--yes")
     assert "boom" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("current, disabled", [('{"TOKEN": "a"}', []), ('{"TOKEN": "old"}', ["pdt-report-env"])])
+def test_deploy_disables_old_secret_versions_only_after_it_writes_the_secret(
+        monkeypatch, current, disabled):
+    module = deploy_azure_container_apps
+    fake_deploy(monkeypatch, EXISTING)
+    seen = []
+    monkeypatch.setattr(module, "gather_secrets", lambda app: {"TOKEN": "a"})
+    monkeypatch.setattr(module, "secret_state", lambda *args: (True, current))
+    monkeypatch.setattr(module, "ensure_secret", lambda *args: "https://pdt-vault/secrets/report-env")
+    monkeypatch.setattr(module, "disable_old_secret_versions", lambda settings, sid: seen.append(sid))
+    assert module.deploy(APP, True) == 0
+    assert seen == disabled
