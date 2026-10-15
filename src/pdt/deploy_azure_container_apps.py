@@ -394,7 +394,7 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
 
     desired = normalized_job(body)
     if normalized_job(current) == desired:
-        console.note(f"Container Apps Job {console.value(job)} already matches; nothing to update.")
+        console.done(f"Container Apps Job {console.value(job)} is unchanged; skipped the update.")
         return
     run_quiet("rest", "--method", "patch", "--url", job_url(settings, job),
               "--body", json.dumps(body), retry_access=True)
@@ -1031,7 +1031,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     if values:
         actions.append(console.Markup(f"allow {console.value(job)} to update its own Key Vault "
                                       f"secret {console.value(sid)}"))
-    actions.append(console.Markup(("update" if current_job else "create")
+    actions.append(console.Markup(("update, if it changed," if current_job else "create")
                                   + f' Container Apps Job {console.value(job)}: '
                                   f'"{console.value(cron)}" (UTC)'
                                   + (" (paused)" if app["pause"] else "")))

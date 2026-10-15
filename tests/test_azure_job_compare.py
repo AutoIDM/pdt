@@ -104,7 +104,7 @@ def reconcile(monkeypatch, current, fake=None, **changes):
 def test_an_unchanged_job_is_not_written(monkeypatch, capsys):
     fake = reconcile(monkeypatch, CURRENT)
     assert fake.calls == []
-    assert f"Container Apps Job {JOB} already matches; nothing to update." in capsys.readouterr().out
+    assert f"Container Apps Job {JOB} is unchanged; skipped the update." in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("path, value", [
