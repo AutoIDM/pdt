@@ -58,8 +58,6 @@ ROLE_PROPAGATION_DELAYS = (1, 2, 4, 8)
 # preflight alone sends one SimulatePrincipalPolicy per policy statement, and IAM
 # throttles that burst. The default legacy mode waits at most 15 seconds in all.
 RETRIES = Config(retries={"mode": "standard", "total_max_attempts": 8})
-# A passed preflight, keyed on what it checked, in .pdt/state. A deploy within a day
-# of a pass skips the check; an AccessDenied later drops every pass.
 PREFLIGHT_PASSES = "aws_preflight_passes"
 PREFLIGHT_VALID_SECONDS = 24 * 3600
 COMMON_ACTIONS = [
@@ -550,11 +548,6 @@ def forget_preflight_passes() -> None:
 
 def preflight(sts, iam, expected_account: str, region: str,
               actions: list[str]) -> tuple[str, Callable[[], None]]:
-    """Check the login, then start the permission check on a thread.
-
-    Returns the account and a function that waits for the check. Call it before the
-    first question or change; it prints the missing policy and exits when the check fails.
-    """
     try:
         identity = sts.get_caller_identity()
     except Exception as exc:  # noqa: BLE001 - credential providers raise several types
@@ -572,24 +565,21 @@ def preflight(sts, iam, expected_account: str, region: str,
                                     sort_keys=True).encode()).hexdigest()
     passed = config.read_state().get(PREFLIGHT_PASSES, {}).get(key, 0)
     if time.time() - passed < PREFLIGHT_VALID_SECONDS:
-        console.status("Your AWS login has the permissions pdt needs: verified at "
-                       f"{console.value(time.strftime('%Y-%m-%d %H:%M', time.localtime(passed)))}, "
-                       "less than 24 hours ago.")
+        console.status("AWS permissions verified.")
         return account, lambda: None
     requests = simulations(policy)
-    console.status("Verifying that your AWS login has the permissions pdt needs to set up the app...")
+    console.status("Verifying AWS permissions...")
     result: Future[set[str]] = Future()
 
     def check() -> None:
         try:
             result.set_result(denied_actions(iam, source_arn, requests))
-        except Exception as exc:  # noqa: BLE001 - re-raised by checked()
+        except Exception as exc:
             result.set_exception(exc)
 
-    # A daemon thread, so a deploy that stops early does not wait for the check.
     threading.Thread(target=check, daemon=True).start()
 
-    def checked() -> None:
+    def wait_for_permissions() -> None:
         if not result.done():
             with console.waiting("Verifying AWS permissions"):
                 result.exception()
@@ -612,7 +602,7 @@ def preflight(sts, iam, expected_account: str, region: str,
             key: now}
         config.write_state(state)
 
-    return account, checked
+    return account, wait_for_permissions
 
 
 def trust_policy(service: str) -> str:

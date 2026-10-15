@@ -32,8 +32,8 @@ class CountingIam(PolicyIam):
 
 
 def check(iam, sts=None, account=ACCOUNT, region=REGION, actions=DEPLOYER_ACTIONS):
-    _account, checked = preflight(sts or Sts(account), iam, account, region, actions)
-    checked()
+    _account, wait_for_permissions = preflight(sts or Sts(account), iam, account, region, actions)
+    wait_for_permissions()
 
 
 def test_a_passed_check_is_not_repeated(project):
@@ -113,10 +113,10 @@ def test_the_check_runs_on_a_thread_until_the_deploy_waits_for_it(project):
             return super().simulate_principal_policy(**kwargs)
 
     iam = SlowIam()
-    _account, checked = preflight(Sts(), iam, ACCOUNT, REGION, DEPLOYER_ACTIONS)
+    _account, wait_for_permissions = preflight(Sts(), iam, ACCOUNT, REGION, DEPLOYER_ACTIONS)
     assert iam.calls == 0
     release.set()
-    checked()
+    wait_for_permissions()
     assert iam.calls > 0
     assert json.loads((project / ".pdt" / "state").read_text())[PREFLIGHT_PASSES]
 
@@ -125,14 +125,14 @@ def test_the_check_runs_on_a_thread_until_the_deploy_waits_for_it(project):
 def deploy_events(monkeypatch):
     events = []
 
-    def checked():
+    def wait_for_permissions():
         events.append("permissions checked")
 
     for name, value in {
         "build_in_cloud": lambda app, builder, image_platform: False,
         "ensure_session": lambda app: None,
         "aws_settings": lambda app, session: (ACCOUNT, REGION),
-        "preflight": lambda *args: (ACCOUNT, checked),
+        "preflight": lambda *args: (ACCOUNT, wait_for_permissions),
         "gather_secrets": lambda app: {},
         "resource_exists": lambda *args, **kwargs: events.append("state read") or False,
         "cost_estimate_for": lambda *args: events.append("prices fetched"),
