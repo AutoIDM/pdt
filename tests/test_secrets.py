@@ -196,7 +196,7 @@ def test_aws_set_stores_the_value_under_the_env_var_name(project, monkeypatch):
     client = FakeSecretsManager()
     monkeypatch.setattr(batch_deploy, "ensure_session", lambda app: None)
     monkeypatch.setattr(batch_deploy, "aws_settings", lambda app, session: ("123456789012", "us-east-1"))
-    monkeypatch.setattr(batch_deploy, "preflight", lambda *args: ("123456789012", {}))
+    monkeypatch.setattr(batch_deploy, "preflight", lambda *args: ("123456789012", lambda: None))
     monkeypatch.setattr(batch_deploy, "batch_clients", lambda session: {
         "sts": None, "iam": None, "secretsmanager": client})
     monkeypatch.setattr("sys.stdin", io.StringIO("new\n"))
