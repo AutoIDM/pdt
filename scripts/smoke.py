@@ -134,9 +134,10 @@ def main() -> int:
         check("PDT_VERSION" not in pinned and "pdt-cli[apps]==" in pinned,
               "the copied run.py pins the installed version")
 
-        guided = run([str(pdt), "new", "another"], project)
-        check(guided.returncode != 0 and "impossible-travel-report" in guided.stdout,
-              "pdt new without --from lists the choices")
+        default = run([str(pdt), "new", "another"], project)
+        check(default.returncode == 0 and "hello-world" in default.stdout
+              and (project / "another" / "run.py").is_file(),
+              "pdt new without --from copies hello-world")
 
         nested = project / "my-report"
         listed = run([str(pdt), "list"], nested)
