@@ -100,6 +100,15 @@ RECENT_RUNS = 3
 STORE_GROUP = "pdt-data"
 STORE_ROLE = "Storage Blob Data Contributor"
 SECRET_ROLE = "Key Vault Secrets Officer"
+# Built-in role ids, the same in every subscription. A role name makes `az role
+# assignment list` look the role up, and an assignee makes it ask Microsoft Graph who
+# that is, about 2 seconds a check; an id and an object id make it one ARM request.
+ROLE_IDS = {
+    "AcrPull": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
+    "Key Vault Secrets Officer": "b86a8fe4-44ce-4948-aee5-eccb2c155cd7",
+    "Key Vault Secrets User": "4633458b-17de-408a-b874-0445c86b69e6",
+    "Storage Blob Data Contributor": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+}
 STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
 STORE_METADATA_ARGS = tuple(
     f"{key.replace('-', '_')}={value}" for key, value in STORE_TAGS.items())
@@ -456,18 +465,22 @@ def set_key_vault_secret(vault: str, name: str, payload: str, app_name: str) -> 
         Path(filename).unlink(missing_ok=True)
 
 
+def role_assignments(scope: str, principal_id: str, role: str) -> list[dict]:
+    return az_json(
+        "role", "assignment", "list", "--assignee-object-id", principal_id,
+        "--role", ROLE_IDS[role], "--scope", scope,
+        "--fill-role-definition-name", "false", "--fill-principal-name", "false") or []
+
+
 def assign_role(scope: str, principal_id: str, role: str,
                 principal_type: str = "ServicePrincipal", condition: str = "") -> None:
-    existing = az_json(
-        "role", "assignment", "list", "--assignee", principal_id,
-        "--role", role, "--scope", scope) or []
+    existing = role_assignments(scope, principal_id, role)
     if existing and (existing[0].get("condition") or "") == condition:
         return
     if existing:
-        run_quiet("role", "assignment", "delete", "--assignee", principal_id,
-                  "--role", role, "--scope", scope)
+        run_quiet("role", "assignment", "delete", "--ids", existing[0]["id"])
     args = ["role", "assignment", "create", "--assignee-object-id", principal_id,
-            "--assignee-principal-type", principal_type, "--role", role,
+            "--assignee-principal-type", principal_type, "--role", ROLE_IDS[role],
             "--scope", scope]
     if condition:
         args += ["--condition", condition, "--condition-version", "2.0"]
@@ -475,13 +488,10 @@ def assign_role(scope: str, principal_id: str, role: str,
 
 
 def revoke_role(scope: str, principal_id: str, role: str) -> None:
-    existing = az_json(
-        "role", "assignment", "list", "--assignee", principal_id,
-        "--role", role, "--scope", scope)
+    existing = role_assignments(scope, principal_id, role)
     if not existing:
         return
-    run_quiet("role", "assignment", "delete", "--assignee", principal_id,
-              "--role", role, "--scope", scope)
+    run_quiet("role", "assignment", "delete", "--ids", existing[0]["id"])
 
 
 def retail_price(region: str, service: str, meter: str, sku: str,
@@ -607,15 +617,26 @@ def register_providers(names: tuple[str, ...]) -> None:
                            f"{', '.join(console.value(name) for name in pending)}", indent=4)
 
 
+def ensure_group(settings: dict, name: str, group: dict | None) -> None:
+    """Create the group, or fail on one in another region as `az group create` does.
+
+    The plan read the group and stopped on one without the pdt tag, so a group in the
+    region needs no write; writing it again would also replace any tag a user added.
+    """
+    console.step(f"reconciling resource group {console.value(name)}")
+    location = str((group or {}).get("location") or "").lower().replace(" ", "")
+    if location != settings["region"]:
+        run_quiet("group", "create", "--name", name, "--location", settings["region"],
+                  "--tags", "managed-by=pdt")
+
+
 def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
-                           vault_exists: bool) -> str:
+                           vault_exists: bool, group: dict | None) -> str:
+    """`providers` are the ones the plan found no resource of; Azure refuses to
+    unregister a provider while a resource of it exists."""
     rg = settings["resource_group"]
-    group = az_json("group", "show", "--name", rg)
-    require_managed(group, f"resource group {console.value(rg)}")
-    register_providers((*COMMON_PROVIDERS, *providers))
-    console.step(f"reconciling resource group {console.value(rg)}")
-    run_quiet("group", "create", "--name", rg, "--location", settings["region"],
-              "--tags", "managed-by=pdt")
+    register_providers(providers)
+    ensure_group(settings, rg, group)
     if not vault_exists:
         purge_deleted_vault(settings)
         console.step(f"creating Key Vault {console.value(settings['vault'])}")
@@ -648,13 +669,17 @@ def workspace_resource(settings: dict) -> dict | None:
                    "--workspace-name", settings["workspace"])
 
 
-def ensure_workspace(settings: dict, exists: bool) -> tuple[str, str]:
-    group = settings["environment"].resource_group
+def ensure_workspace(settings: dict, exists: bool) -> None:
     if not exists:
         console.step(f"creating Log Analytics workspace {console.value(settings['workspace'])}")
         run_quiet("monitor", "log-analytics", "workspace", "create",
-                  "--resource-group", group, "--workspace-name", settings["workspace"],
+                  "--resource-group", settings["environment"].resource_group,
+                  "--workspace-name", settings["workspace"],
                   "--location", settings["region"], "--tags", "managed-by=pdt")
+
+
+def workspace_keys(settings: dict) -> tuple[str, str]:
+    group = settings["environment"].resource_group
     logs_id = az_tsv("monitor", "log-analytics", "workspace", "show",
                      "--resource-group", group, "--workspace-name",
                      settings["workspace"], "--query", "customerId")
@@ -662,15 +687,6 @@ def ensure_workspace(settings: dict, exists: bool) -> tuple[str, str]:
                       "--resource-group", group, "--workspace-name",
                       settings["workspace"], "--query", "primarySharedKey")
     return logs_id, logs_key
-
-
-def ensure_shared_group(settings: dict) -> None:
-    group = settings["environment"].resource_group
-    require_managed(az_json("group", "show", "--name", group),
-                    f"resource group {console.value(group)}")
-    console.step(f"reconciling resource group {console.value(group)}")
-    run_quiet("group", "create", "--name", group, "--location", settings["region"],
-              "--tags", "managed-by=pdt")
 
 
 def ensure_secret(settings: dict[str, str], sid: str, values: dict,
