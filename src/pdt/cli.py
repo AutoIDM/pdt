@@ -3,7 +3,7 @@
 Inside an app folder, leave <app> off any command that takes one and pdt uses that app.
 Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
-Every command except init, examples, completion, aws, az, and gcloud needs a project.
+Every command except init, examples, upgrade, completion, aws, az, and gcloud needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
 """
 
@@ -24,7 +24,8 @@ from pdt import completion, config
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold
+    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold,
+                     upgrade)
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -485,6 +486,10 @@ def cmd_gui(args) -> int:
     return gui_cli.main(args.port, args.background, args.no_browser, args.stop)
 
 
+def cmd_upgrade(_args) -> int:
+    return upgrade.main()
+
+
 def cmd_completion(args) -> int:
     return completion.install(args.shell, print_only=args.script)
 
@@ -534,7 +539,7 @@ rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
     lambda title: title[:1].upper() + title[1:])
 
 COMMAND_GROUPS = {
-    "Get started": ["init", "examples", "new", "completion"],
+    "Get started": ["init", "examples", "new", "upgrade", "completion"],
     "Run and validate": ["list", "validate", "run"],
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
     "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
@@ -699,6 +704,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stop", action="store_true",
                    help="stop a server started with --background")
     p.set_defaults(func=cmd_gui)
+    add_parser("upgrade", help="move pdt, and the pdt version each app pins, to the newest "
+                               "release").set_defaults(func=cmd_upgrade)
     p = add_parser("completion", help="turn on tab completion in your shell")
     p.add_argument("shell", nargs="?", choices=completion.SHELLS,
                    help="which shell; pdt works it out when left off")

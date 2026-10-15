@@ -9,7 +9,7 @@ uv tool install pdt-cli
 uv tool update-shell
 ```
 
-`uv tool install` puts the `pdt` command in uv's tool folder. `uv tool update-shell` adds that folder to your PATH if it is not there yet. A terminal window that was already open does not see a PATH change, so open a new window before you type `pdt`. To update pdt later, run `uv tool upgrade pdt-cli`.
+`uv tool install` puts the `pdt` command in uv's tool folder. `uv tool update-shell` adds that folder to your PATH if it is not there yet. A terminal window that was already open does not see a PATH change, so open a new window before you type `pdt`. To update pdt later, run `pdt upgrade`.
 
 On Windows, paste these lines into PowerShell. They install `uv` and pdt, and they work in the window you type them in:
 
@@ -24,7 +24,7 @@ pdt --version
 
 `winget` and `uv tool update-shell` change the PATH for new windows only. Each `$env:Path = ...` line reads the new PATH into the current window. Another PowerShell window that was open before the install does not find `uv` or `pdt` until you paste the same line into it or open a new window.
 
-On Windows you can run `winget install AutoIDM.pdt` instead, which also installs `uv` if you do not have it and puts the same `pdt` command on your PATH. Open a new PowerShell window after it finishes. `winget upgrade AutoIDM.pdt` moves pdt to the latest release, and the first `pdt` command after an install or upgrade finishes setting up that version.
+On Windows you can run `winget install AutoIDM.pdt` instead, which also installs `uv` if you do not have it and puts the same `pdt` command on your PATH. Open a new PowerShell window after it finishes. `pdt upgrade` (or `winget upgrade AutoIDM.pdt`) moves pdt to the latest release, and the first `pdt` command after an install or upgrade finishes setting up that version.
 
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
 
@@ -136,6 +136,7 @@ pdt login my-report
 | `pdt aws ...` | run the AWS CLI that pdt installs |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
+| `pdt upgrade` | move pdt to the newest release, the way you installed it (`uv tool install`, winget, or a clone on `main`), and raise the `pdt-cli` version each app's `run.py` pins to it; on Windows the upgrade finishes in a new window once the command ends; a deployed app gets the new pdt at its next `pdt deploy` |
 | `pdt completion [SHELL]` | turn on tab completion for a shell |
 
 Inside an app folder, or any folder below it, leave `APP` off any command that takes one and pdt uses that app. For example, `pdt logs 3` in the `hello-world` folder reads run 3 of `hello-world`. Anywhere else, leave `APP` off or mistype it and pdt lists the apps in the project so you can pick one; a mistyped name also gets the closest app name. A mistyped command or option gets the closest one too, for example `pdt lgos` asks "Did you mean `pdt logs`?".
