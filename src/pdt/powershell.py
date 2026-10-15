@@ -130,6 +130,7 @@ SYSTEM_ENV_VARS = lower({
     "APPDATA", "COMPUTERNAME", "HOME", "HOSTNAME", "LOCALAPPDATA", "OS", "PATH", "ProgramData",
     "ProgramFiles", "ProgramFiles(x86)", "PSModulePath", "PUBLIC", "PWD", "SystemDrive",
     "SystemRoot", "TEMP", "TMP", "TMPDIR", "USER", "USERDOMAIN", "USERNAME", "USERPROFILE", "windir",
+    "XDG_DATA_HOME",
 })
 # Login command -> the parameter a message names, and every parameter that signs in
 # without a person.

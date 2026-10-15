@@ -83,6 +83,7 @@ This folder is a pdt project: a set of small scheduled jobs. Every folder holdin
 - Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (`--id ID` picks a run by the id `pdt runs` shows; the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all, `--follow` to wait for a running run's lines); add `--json` to any of them for machine-readable output. Stop a deployed app's schedule with `pdt pause <name>` (it writes `pause: true` into the app's `config.yml`), start it again with `pdt unpause <name>`, and start one run now with `pdt run <name> --deployed`. `pdt gui` shows the same in a browser.
 - Read the files an app keeps in its data store with `pdt storage <name> ls [PATH] [--recursive] [--json]`, `pdt storage <name> get PATH`, and `pdt storage <name> query SQL`. When a run stopped but still holds the state lock, `pdt storage <name> unlock` releases it.
 - Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
+- A PowerShell app reads its `config:` section from `$env:PDT_CONFIG_JSON | ConvertFrom-Json`, and pdt keeps each file it writes to `$env:PDT_OUTPUT_DIR` in the app's data store.
 - A `run.ps1` file is the only entry script. Otherwise, `run_scripts` lists the entry scripts in order, or pdt runs each `.ps1` file that no other `.ps1` file loads in name order. Do not use `run.ps1` and `run_scripts` together.
 - `pdt new <name> --from-scripts` writes `requirements.psd1` (the modules to install) and `run.py` (how the scripts run) into a PowerShell app's folder; once there, `requirements.psd1` replaces the modules pdt finds in the scripts, and `run.py` replaces how pdt runs them.
 - An app folder holding a `Dockerfile` is built from that file instead of the generated one when it deploys to a cloud provider. The build context is the app folder under its own name next to `pdt.yml`; a `.dockerignore` in the app folder, with patterns relative to it, keeps files out of the image.
@@ -97,12 +98,16 @@ RUN_PY_TEXT = '''\
 # ///
 """`pdt new --from-scripts` wrote this file. It runs the .ps1 scripts in this
 folder the way pdt runs an app with no run.py: each entry script in order
-through pwsh, stopping at the first that fails, then it stores the files the
-scripts leave in PDT_OUTPUT_DIR. Edit it to change how they run.
+through pwsh with the app's `config:` section as JSON in PDT_CONFIG_JSON,
+stopping at the first that fails, then it stores the files the scripts leave
+in PDT_OUTPUT_DIR. When a script reads PDT_STATE_DIR, that folder holds the
+app's state/ files and goes back to state/ when every script succeeds. Edit
+it to change how they run.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -111,7 +116,7 @@ from pathlib import Path
 
 from pdt import config, powershell
 from pdt.pwsh import ensure_pwsh
-from pdt.run_powershell import pwsh_command
+from pdt.run_powershell import pwsh_command, reads_state
 from pdt.utils import storage
 from pdt.utils.log import die, log
 
@@ -124,29 +129,41 @@ def main() -> int:
     if missing != "":
         die(1, f"env vars missing: {missing}")
     pwsh = ensure_pwsh()
-    entries = powershell.split_files(
-        powershell.extract(app_dir)["files"], app["run_scripts"])[0]
+    files = powershell.extract(app_dir)["files"]
+    entries = powershell.split_files(files, app["run_scripts"])[0]
+    store = storage.store() if app["storage"] else None
     code = 0
-    with tempfile.TemporaryDirectory(prefix="pdt-output-") as output:
-        env = {**os.environ, "PDT_OUTPUT_DIR": output}
-        for script in entries:
-            log("info", f"starting {script}")
-            result = subprocess.run(
-                [pwsh, "-NoProfile", "-NonInteractive", "-Command", pwsh_command(app_dir / script)],
-                cwd=app_dir, env=env, stdin=subprocess.DEVNULL).returncode
-            log("info", f"{script} ended", exit_code=result)
-            if result != 0:
-                log("error", f"{script} failed", exit_code=result)
-                if code == 0:
-                    code = result
-            if result != 0 and not app["continue_on_error"]:
-                break
-        files = [file for file in Path(output).rglob("*") if file.is_file()]
-        if app["storage"] and files:
-            store = storage.store()
-            folder = store.run_folder() + "output/"
-            store.push(Path(output), folder)
-            log("info", f"uploaded {len(files)} output file(s) to {store.url}{folder}")
+    with tempfile.TemporaryDirectory(prefix="pdt-run-") as local:
+        output, state = Path(local) / "output", Path(local) / "state"
+        output.mkdir()
+        state.mkdir()
+        lease = store.pull("state/", state) if store is not None and reads_state(files) else None
+        env = {**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
+               "PDT_CONFIG_JSON": json.dumps(app["config"], default=str)}
+        try:
+            for script in entries:
+                log("info", f"starting {script}")
+                result = subprocess.run(
+                    [pwsh, "-NoProfile", "-NonInteractive", "-Command", pwsh_command(app_dir / script)],
+                    cwd=app_dir, env=env, stdin=subprocess.DEVNULL).returncode
+                log("info", f"{script} ended", exit_code=result)
+                if result != 0:
+                    log("error", f"{script} failed", exit_code=result)
+                    if code == 0:
+                        code = result
+                if result != 0 and not app["continue_on_error"]:
+                    break
+            kept = [file for file in output.rglob("*") if file.is_file()]
+            if store is not None and kept:
+                folder = store.run_folder() + "output/"
+                store.push(output, folder)
+                log("info", f"uploaded {len(kept)} output file(s) to {store.url}{folder}")
+            if lease is not None and code == 0:
+                store.push(state, "state/", lease)
+                lease = None
+        finally:
+            if lease is not None:
+                store.abort(lease)
     return code
 
 
