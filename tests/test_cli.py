@@ -789,3 +789,24 @@ def test_validate_says_it_scans_a_powershell_app(monkeypatch, capsys):
     monkeypatch.setattr(powershell, "scan", scan)
     assert cli.powershell_problems("report", {"platform": {}}) == ["report: pwsh failed"]
     assert "Scanning the PowerShell scripts in report..." in capsys.readouterr().out
+
+
+def test_deploy_all_with_run_deploys_every_app_then_runs_each_one(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": 1})
+    started = []
+    monkeypatch.setattr(deploy, "start_run", lambda name: started.append(name) or (2 if name == "charlie" else 0))
+    assert run_cli(monkeypatch, "deploy", "--all", "--yes", "--skip-failures", "--run") == 1
+    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
+    assert started == ["alpha", "charlie", "delta"]
+    out = capsys.readouterr().out
+    assert "Running alpha (1 of 3)" in out
+    assert "Not deployed: bravo" in out
+    assert "Runs that failed: charlie" in out
+
+
+def test_deploy_all_without_run_starts_no_run(project, monkeypatch):
+    four_apps(project)
+    fake_deploys(monkeypatch, {})
+    monkeypatch.setattr(deploy, "start_run", lambda name: pytest.fail("started a run"))
+    assert run_cli(monkeypatch, "deploy", "--all", "--yes") == 0

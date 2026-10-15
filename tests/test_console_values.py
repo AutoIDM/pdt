@@ -28,7 +28,7 @@ BUILDERS = {"project_line", "secret_contents", "store_description", "store_kept_
 ALLOWED = {
     "alerts_cli.py": {"question", "len(options)", "names"},
     "cli.py": {"APP_QUESTIONS[command]", "len(apps) - len(shown)", "len(problems)", "index",
-               "len(names)", "line", "choices"},
+               "len(names)", "len(deployed)", "line", "choices"},
     "deploy.py": {"tool", "line", "state", "action"},
     "deploy_common.py": {"what", "where", "key", "message", "description", "count", "provider", "len(values)",
                          "problem",

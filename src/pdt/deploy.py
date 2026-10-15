@@ -205,6 +205,16 @@ def offer_run(app_name: str, provider: str, assume_yes: bool, run: bool | None) 
     return dispatch(provider, "start", app_name, False, ["--", "--follow"])
 
 
+def start_run(app_name: str) -> int:
+    """Start a run of a deployed app and follow its log; the run's exit code."""
+    try:
+        _app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    return offer_run(app_name, provider, False, True) or 0
+
+
 def run_history(provider: str, app_name: str) -> list[runs_cli.Run] | None:
     """The app's runs from `pdt runs --json`, or None when they could not be read."""
     code, output = dispatch_output(provider, "runs", app_name, ["--", "--json"])

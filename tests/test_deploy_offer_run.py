@@ -147,10 +147,12 @@ def test_the_run_option_reaches_the_deploy(project, monkeypatch, argv, run_optio
     assert calls == [run_option]
 
 
-def test_run_with_all_is_refused(project, monkeypatch, capsys):
-    monkeypatch.setattr(deploy, "deploy", lambda *a, **k: pytest.fail("deployed"))
-    assert run_cli(monkeypatch, "deploy", "--all", "--run") == 1
-    assert "--run starts a run of one app; drop --all" in capsys.readouterr().out
+def test_run_with_all_deploys_then_starts_a_run_with_no_question(project, monkeypatch):
+    cloud = Cloud(monkeypatch)
+    monkeypatch.setattr(cli, "can_prompt", lambda interactive: True)
+    assert run_cli(monkeypatch, "deploy", "--all", "--run") == 0
+    assert cloud.asked == []
+    assert cloud.commands() == ["deploy", "start"]
 
 
 def test_deploy_all_at_a_terminal_asks_nothing_and_starts_no_run(project, monkeypatch, capsys):
