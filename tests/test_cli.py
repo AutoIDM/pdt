@@ -656,10 +656,19 @@ def test_a_provider_script_for_json_prints_only_the_data_on_stdout(project):
     code = (f"import subprocess, sys; sys.path.insert(0, {str(src)!r}); "
             "from pdt import console; console.json_output(); console.say('Signing in...'); "
             "subprocess.run([sys.executable, '-c', 'print(1)']); console.data('[]')")
-    proc = subprocess.run([sys.executable, "-c", code], env=deploy.provider_env(["--", "--json"]),
+    # Meltano sets PYTHONWARNINGS=once for each plugin it invokes.
+    env = {**deploy.provider_env(["--", "--json"]), "PYTHONWARNINGS": "once"}
+    proc = subprocess.run([sys.executable, "-c", code], env=env,
                           check=True, capture_output=True, text=True)
     assert proc.stdout == "[]\n"
     assert proc.stderr == "Signing in...\n1\n"
+
+
+def test_the_shared_deploy_code_imports_with_no_warning():
+    proc = subprocess.run([sys.executable, "-c", "import pdt.deploy_common"],
+                          env={**os.environ, "PYTHONWARNINGS": "once"},
+                          check=True, capture_output=True, text=True)
+    assert proc.stderr == ""
 
 
 @pytest.mark.parametrize("script", deploy.PROVIDERS.values())

@@ -79,8 +79,6 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable
 
-import backoff
-
 from pdt import config, console, lifecycle
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
@@ -380,7 +378,7 @@ def warn_if_locked(store, app_name: str) -> None:
 
 # HTTP fetching follows the Meltano SDK's RESTStream pattern:
 # validate_response splits responses into retriable (429 and every 5xx)
-# and fatal (any other 4xx), and backoff retries the retriable ones plus
+# and fatal (any other 4xx), and fetch_json retries the retriable ones plus
 # connection errors and timeouts with an exponential wait.
 EXTRA_RETRY_STATUSES = (HTTPStatus.TOO_MANY_REQUESTS,)
 BACKOFF_MAX_TRIES = 5
@@ -417,26 +415,27 @@ def validate_response(response) -> None:
         raise FatalAPIError(response_error_message(response), response)
 
 
-def backoff_handler(details) -> None:
-    console.bullet(f"the server did not answer (try {details['tries']} of "
-                   f"{BACKOFF_MAX_TRIES}); backing off {details['wait']:.1f}s...", indent=4)
-
-
-@backoff.on_exception(
-    backoff.expo,
-    (RetriableAPIError, ConnectionError, TimeoutError, urllib.error.URLError),
-    max_tries=BACKOFF_MAX_TRIES,
-    factor=2,
-    on_backoff=backoff_handler,
-)
-def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
-    """GET a JSON document, backing off and retrying whatever can pass."""
+def get_json(request: str | urllib.request.Request, timeout: int):
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
         validate_response(error)
         raise
+
+
+def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
+    """GET a JSON document, backing off and retrying whatever can pass."""
+    for tries in range(1, BACKOFF_MAX_TRIES + 1):
+        try:
+            return get_json(request, timeout)
+        except (RetriableAPIError, ConnectionError, TimeoutError, urllib.error.URLError):
+            if tries == BACKOFF_MAX_TRIES:
+                raise
+            wait = 2 ** tries
+            console.bullet(f"the server did not answer (try {tries} of "
+                           f"{BACKOFF_MAX_TRIES}); backing off {wait}s...", indent=4)
+            time.sleep(wait)
 
 
 PIPES = "\\\\.\\pipe\\"
