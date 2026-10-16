@@ -27,9 +27,9 @@ A Transport is a name, the extra entry keys it allows, and
 `deliver(event, entry, unhandled)`, where `unhandled` says the entry got the
 event through `unhandled`. The console type prints a `[event]` line, and the
 slack type (pdt.slack) posts to a Slack channel, and the teams type
-(pdt.teams) posts to a Teams channel; both build their message from
-pdt.alert_message. A later transport (email, the GUI history) adds its own
-Transport.
+(pdt.teams) posts to a Teams channel, each through the webhook its entry
+names; both build their message from pdt.alert_message. A later transport
+(email, the GUI history) adds its own Transport.
 `deliver` must not change the event. The console prints at once; every
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the
@@ -118,9 +118,9 @@ class Transport:
     name: str
     keys: frozenset[str]
     deliver: Callable[[Event, dict, bool], None]
-    # The keys an entry must set, and the env vars that hold its secrets, which
-    # config.env_spec adds to every app's env spec so deploy sends them.
-    required: frozenset[str] = frozenset()
+    # The keys of which an entry must set exactly one, and the env vars that hold its
+    # secrets, which config.env_spec adds to every app's env spec so deploy sends them.
+    one_of: tuple[str, ...] = ()
     secrets: Callable[[dict], list[str]] = lambda entry: []
 
 
@@ -129,8 +129,8 @@ ALL = "all"
 UNHANDLED = "unhandled"
 TRANSPORTS: dict[str, Transport] = {
     "console": Transport("console", frozenset(), print_event),
-    "slack": Transport("slack", slack.KEYS, slack.deliver, slack.KEYS, slack.secrets),
-    "teams": Transport("teams", teams.KEYS, teams.deliver, teams.KEYS, teams.secrets),
+    "slack": Transport("slack", slack.KEYS, slack.deliver, slack.ONE_OF, slack.secrets),
+    "teams": Transport("teams", teams.KEYS, teams.deliver, teams.ONE_OF, teams.secrets),
 }
 
 
@@ -159,11 +159,16 @@ def parse_entry(alert: object, where: str) -> dict:
             raise config.ConfigError(
                 f"{where}: alerts: unknown key {key!r}; a {alert['type']} entry takes: "
                 + ", ".join(allowed))
-    missing = sorted(TRANSPORTS[alert["type"]].required - set(alert))
-    if missing:
+    one_of = TRANSPORTS[alert["type"]].one_of
+    present = [key for key in one_of if key in alert]
+    if one_of and not present:
         raise config.ConfigError(
-            f"{where}: the {alert['type']} alerts entry needs {', '.join(missing)}; "
+            f"{where}: the {alert['type']} alerts entry needs {' or '.join(one_of)}; "
             "run pdt alerts setup to add one")
+    if len(present) > 1:
+        raise config.ConfigError(
+            f"{where}: the {alert['type']} alerts entry sets both {' and '.join(present)}; "
+            "keep only one")
     if "events" not in alert and "exclude-events" not in alert:
         raise config.ConfigError(
             f"{where}: the {alert['type']} alerts entry needs events, for example "
