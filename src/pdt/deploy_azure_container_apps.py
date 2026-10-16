@@ -61,9 +61,9 @@ from pdt.deploy_azure import (
     store_plan, store_settings, store_url, store_usage, workspace_keys, workspace_resource,
 )
 from pdt.deploy_common import (
-    CostEstimate, build_in_cloud, convert_from_usd, fail, gather_secrets,
-    image_action, run_build, run_secrets, ssh_build_args, stage_build_context, store_kept_line,
-    warn_if_locked, write_dockerfile)
+    BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, gather_secrets,
+    image_action, may_skip_build, run_build, run_secrets, ssh_build_args, store_kept_line,
+    warn_if_locked)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -81,24 +81,19 @@ QUOTA_HINT = (
     "Apps environments in the Azure portal (Subscriptions > Usage + quotas).")
 
 
-def build_image(app: dict, settings: dict, image_name: str, cloud: bool) -> None:
+def build_image(stage: Path, settings: dict, image_name: str, cloud: bool) -> None:
     registry = settings["registry"]
-    stage = stage_build_context(app)
-    try:
-        write_dockerfile(stage, app)
-        if cloud:
-            cloud_build(settings, stage, image_name)
-            return
-        image = f"{registry}.azurecr.io/{image_name}:latest"
-        login = json.loads(run_quiet("acr", "login", "--name", registry, "--expose-token"))
-        run_build(["docker", "login", "--username", "00000000-0000-0000-0000-000000000000",
-                   "--password-stdin", login["loginServer"]], data=login["accessToken"],
-                  quiet=True)
-        run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
-                   "-t", image, str(stage)])
-        run_build(["docker", "push", image])
-    finally:
-        shutil.rmtree(stage, ignore_errors=True)
+    if cloud:
+        cloud_build(settings, stage, image_name)
+        return
+    image = f"{registry}.azurecr.io/{image_name}:latest"
+    login = json.loads(run_quiet("acr", "login", "--name", registry, "--expose-token"))
+    run_build(["docker", "login", "--username", "00000000-0000-0000-0000-000000000000",
+               "--password-stdin", login["loginServer"]], data=login["accessToken"],
+              quiet=True)
+    run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
+               "-t", image, str(stage)])
+    run_build(["docker", "push", image])
 
 
 def pushed_image(settings: dict, image_name: str) -> str:
@@ -286,7 +281,8 @@ def set_job_secret(job: str, rg: str, secret_uri: str, identity_id: str) -> None
 
 
 def job_body(registry: str, job: str, image: str, cron: str, identity_id: str,
-             secret_uri: str | None, storage_url: str | None, app_name: str) -> dict:
+             secret_uri: str | None, storage_url: str | None, app_name: str,
+             fingerprint: str) -> dict:
     """The parts of the job resource that deploy sets, as the resource manager API takes them."""
     env = []
     if secret_uri:
@@ -298,7 +294,7 @@ def job_body(registry: str, job: str, image: str, cron: str, identity_id: str,
     return {
         "identity": {"type": "SystemAssigned,UserAssigned",
                      "userAssignedIdentities": {identity_id: {}}},
-        "tags": {"managed-by": "pdt", "pdt-app": app_name},
+        "tags": {"managed-by": "pdt", "pdt-app": app_name, BUILD_TAG: fingerprint},
         "properties": {
             "configuration": {
                 "triggerType": "Schedule", "replicaTimeout": 1800, "replicaRetryLimit": 0,
@@ -359,11 +355,11 @@ def normalized_job(resource: dict) -> dict:
 
 def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                   identity_id: str, secret_uri: str | None, storage_url: str | None,
-                  current: dict | None, app_name: str) -> dict | None:
+                  current: dict | None, app_name: str, fingerprint: str) -> dict | None:
     """Create or update the job. Return it as Azure now holds it, or None after a create."""
     rg = settings["resource_group"]
     body = job_body(settings["registry"], job, image, cron, identity_id, secret_uri,
-                    storage_url, app_name)
+                    storage_url, app_name, fingerprint)
     if current is None:
         env = body["properties"]["template"]["containers"][0]["env"]
         args = [
@@ -372,7 +368,7 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             "--cron-expression", cron, "--cpu", CPU, "--memory", MEMORY,
             "--replica-timeout", "1800", "--replica-retry-limit", "0",
             "--parallelism", "1", "--replica-completion-count", "1",
-            "--tags", "managed-by=pdt", f"pdt-app={app_name}",
+            "--tags", "managed-by=pdt", f"pdt-app={app_name}", f"{BUILD_TAG}={fingerprint}",
             "--environment", settings["environment"].resource_id(settings["subscription"]),
             "--trigger-type", "Schedule",
             "--mi-system-assigned", "--mi-user-assigned", identity_id,
@@ -999,6 +995,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
     usage = (store_usage(deployer) if deployer else (0, 0)) if store else None
 
     image = f"{settings['registry']}.azurecr.io/{name}:latest"
+    deployed = ((current_job or {}).get("tags") or {}).get(BUILD_TAG)
     actions = ["register required Azure resource providers"]
     actions += environment_actions(settings, environment_exists, logs_exist,
                                    shared_group_exists)
@@ -1026,7 +1023,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         actions += store_plan(store, store_present, name, job)
     actions.append(image_action(
         app, console.Markup(f"build and push image {console.value(image)}"),
-        "ACR Tasks" if cloud else ""))
+        "ACR Tasks" if cloud else "", may_skip_build(deployed)))
     actions += secret_actions(sid, values, current_secret, payload)
     if legacy_job:
         actions.append(console.Markup(f"delete Container Apps Job {console.value(legacy)} "
@@ -1082,17 +1079,29 @@ def deploy(app: dict, assume_yes: bool) -> int:
         console.step(f"enabling ACR authentication-as-arm on {console.value(settings['registry'])}")
         enable_acr_arm_auth(settings["registry"])
 
-    console.step(f"building image {console.value(image)} with "
-                 f"{console.value('ACR Tasks') if cloud else 'Docker on this computer'}")
-    build_image(app, settings, name, cloud)
-    pinned = pushed_image(settings, name)
+    containers = (((current_job or {}).get("properties") or {}).get("template") or {}).get(
+        "containers") or [{}]
+    pinned = containers[0].get("image") or ""
+
+    def current() -> bool:
+        return az_json("acr", "manifest", "show", "--registry", settings["registry"],
+                       "--name", pinned.rpartition("/")[2]) is not None
+
+    def build(stage: Path) -> None:
+        nonlocal pinned
+        build_image(stage, settings, name, cloud)
+        pinned = pushed_image(settings, name)
+
+    fingerprint = ensure_image(app, image, "linux/amd64", "ACR Tasks" if cloud else "",
+                               deployed, current, build)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
     if legacy_job:
         retire_job(settings, legacy, legacy_job, store, sid)
     console.step(f"reconciling Container Apps Job {console.value(job)}")
     try:
         resource = reconcile_job(settings, job, pinned, cron, identity_id, secret_uri,
-                                 store_url(store, name) if store else None, current_job, name)
+                                 store_url(store, name) if store else None, current_job, name,
+                                 fingerprint)
     except SystemExit:
         report_job_failure(settings, job)
         raise

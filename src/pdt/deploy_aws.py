@@ -256,7 +256,8 @@ def error_code(exc: Exception) -> str:
 def not_found(exc: Exception) -> bool:
     if error_code(exc) in {
         "NoSuchEntity", "ResourceNotFoundException", "ResourceNotFound",
-        "ClusterNotFoundException", "RepositoryNotFoundException", "InvalidGroup.NotFound",
+        "ClusterNotFoundException", "RepositoryNotFoundException", "ImageNotFoundException",
+        "InvalidGroup.NotFound",
     }:
         return True
     # ECS and Batch report a missing task definition family or job queue as a

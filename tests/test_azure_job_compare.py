@@ -13,6 +13,7 @@ IDENTITY = "/subscriptions/sub-1/resourceGroups/pdt/providers/Microsoft.ManagedI
 IMAGE = "pdtregistry.azurecr.io/report@sha256:aaa"
 SECRET = "https://pdt-vault.vault.azure.net/secrets/pdt-report"
 STORAGE = "abfs://pdt-data@pdtdata.dfs.core.windows.net/report/"
+FINGERPRINT = "f" * 32
 
 # A job as `az containerapp job show` returns it after a deploy: Azure's own forms of the
 # values deploy sent (ids in lower case, "1Gi", 0.5, a space in the identity type).
@@ -24,7 +25,7 @@ CURRENT = {
             "clientId": "client", "principalId": "runner-principal"}},
     },
     "name": JOB,
-    "tags": {"managed-by": "pdt", "pdt-app": "report"},
+    "tags": {"managed-by": "pdt", "pdt-app": "report", "pdt-build": FINGERPRINT},
     "properties": {
         "provisioningState": "Succeeded",
         "configuration": {
@@ -52,7 +53,7 @@ CURRENT = {
 def body(**changes):
     args = {"registry": "pdtregistry", "job": JOB, "image": IMAGE, "cron": "0 0 * * *",
             "identity_id": IDENTITY, "secret_uri": SECRET, "storage_url": STORAGE,
-            "app_name": "report"} | changes
+            "app_name": "report", "fingerprint": FINGERPRINT} | changes
     return azure.job_body(**args)
 
 
@@ -95,9 +96,10 @@ def reconcile(monkeypatch, current, fake=None, **changes):
     monkeypatch.setattr(azure, "run_quiet", fake.run_quiet)
     monkeypatch.setattr(azure.time, "sleep", lambda seconds: None)
     args = {"image": IMAGE, "cron": "0 0 * * *", "identity_id": IDENTITY, "secret_uri": SECRET,
-            "storage_url": STORAGE} | changes
+            "storage_url": STORAGE, "fingerprint": FINGERPRINT} | changes
     azure.reconcile_job(SETTINGS, JOB, args["image"], args["cron"], args["identity_id"],
-                        args["secret_uri"], args["storage_url"], current, "report")
+                        args["secret_uri"], args["storage_url"], current, "report",
+                        args["fingerprint"])
     return fake
 
 
@@ -128,6 +130,7 @@ def test_an_unchanged_job_is_not_written(monkeypatch, capsys):
     (("identity", "type"), "SystemAssigned"),
     (("identity", "userAssignedIdentities"), {OTHER_ID: {}}),
     (("tags",), {"managed-by": "pdt"}),
+    (("tags", "pdt-build"), "0" * 32),
 ])
 def test_a_changed_field_is_written_in_one_patch(monkeypatch, path, value):
     fake = reconcile(monkeypatch, changed(path, value))
@@ -192,6 +195,8 @@ def test_a_new_job_is_created_with_the_cli(monkeypatch):
     assert create[create.index("--env-vars") + 1:] == (
         "PDT_ENV_JSON=secretref:pdt-env", f"PDT_ENV_SECRET_RESOURCE={SECRET}",
         f"PDT_STORAGE_URL={STORAGE}")
+    tags = create[create.index("--tags") + 1:create.index("--environment")]
+    assert tags == ("managed-by=pdt", "pdt-app=report", f"pdt-build={FINGERPRINT}")
 
 
 def test_the_job_runs_the_amd64_manifest_of_a_pushed_index(monkeypatch):
@@ -212,13 +217,13 @@ def test_the_job_runs_the_tag_digest_of_a_pushed_manifest(monkeypatch):
 
 def test_reconcile_returns_the_job_as_azure_holds_it_so_deploy_reads_it_no_more(monkeypatch):
     assert azure.reconcile_job(SETTINGS, JOB, IMAGE, "0 0 * * *", IDENTITY, SECRET, STORAGE,
-                               CURRENT, "report") is CURRENT
+                               CURRENT, "report", FINGERPRINT) is CURRENT
     fake = FakeAzure(resource=body(cron="0 7 * * *"))
     monkeypatch.setattr(azure, "run_quiet", fake.run_quiet)
     monkeypatch.setattr(azure.time, "sleep", lambda seconds: None)
     updated = azure.reconcile_job(SETTINGS, JOB, IMAGE, "0 7 * * *", IDENTITY, SECRET, STORAGE,
-                                  CURRENT, "report")
+                                  CURRENT, "report", FINGERPRINT)
     assert updated["properties"]["provisioningState"] == "Succeeded"
     assert azure.normalized_job(updated) == azure.normalized_job(fake.resource)
     assert azure.reconcile_job(SETTINGS, JOB, IMAGE, "0 0 * * *", IDENTITY, SECRET, STORAGE,
-                               None, "report") is None
+                               None, "report", FINGERPRINT) is None

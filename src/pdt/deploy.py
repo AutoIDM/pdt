@@ -32,7 +32,7 @@ from pathlib import Path
 from pdt import (__version__, alerts_cli, config, console, lifecycle, powershell, pwsh, regions,
                  runs_cli)
 from pdt.config import ConfigError
-from pdt.deploy_common import CostEstimate
+from pdt.deploy_common import REBUILD_ENV, CostEstimate
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -86,17 +86,19 @@ def provider_command(provider: str, command: str, app_name: str, assume_yes: boo
     return args + (extra or [])
 
 
-def provider_env(extra: list[str] | None = None) -> dict[str, str]:
+def provider_env(extra: list[str] | None = None, rebuild: bool = False) -> dict[str, str]:
     env = dict(os.environ, PDT_PROJECT=str(config.find_project()), PDT_CLI_VERSION=__version__)
     if "--json" in (extra or []):
         env["PDT_JSON_OUTPUT"] = "1"
+    if rebuild:
+        env[REBUILD_ENV] = "1"
     return env
 
 
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
-             extra: list[str] | None = None) -> int:
+             extra: list[str] | None = None, rebuild: bool = False) -> int:
     args = provider_command(provider, command, app_name, assume_yes, extra)
-    return subprocess.run(args, check=False, env=provider_env(extra)).returncode
+    return subprocess.run(args, check=False, env=provider_env(extra, rebuild)).returncode
 
 
 def dispatch_output(provider: str, command: str, app_name: str,
@@ -109,7 +111,8 @@ def dispatch_output(provider: str, command: str, app_name: str,
     return proc.returncode, proc.stdout
 
 
-def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> int:
+def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
+           rebuild: bool = False) -> int:
     """Deploy one app; then offer to start a run of it.
 
     `run` None asks a person at a terminal and starts nothing with `--yes` or
@@ -151,7 +154,7 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None) -> 
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
     alerts_cli.offer(app_name, assume_yes)
-    code = provider_step("deploy", provider, app_name, assume_yes)
+    code = provider_step("deploy", provider, app_name, assume_yes, rebuild)
     if code != 0:
         return code
     run_code = offer_run(app_name, provider, assume_yes, run)
@@ -214,14 +217,15 @@ STEP_EVENTS = {
 }
 
 
-def provider_step(command: str, provider: str, app_name: str, assume_yes: bool) -> int:
+def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
+                  rebuild: bool = False) -> int:
     """Run `deploy` or `destroy` through the provider script between its STEP_EVENTS, and
     on success record whether the app is now deployed."""
     started, completed, failed = STEP_EVENTS[command]
     params = lifecycle.app_params(app_name, provider)
     lifecycle.emit(started, **params)
     try:
-        code = dispatch(provider, command, app_name, assume_yes)
+        code = dispatch(provider, command, app_name, assume_yes, rebuild=rebuild)
     except KeyboardInterrupt:
         lifecycle.emit(failed, **params, reason="interrupted")
         raise
