@@ -220,11 +220,20 @@ class Response:
         return iter(self.rows)
 
 
+def replica(name: str = "r", state: str | None = "Running", details: str = "") -> dict:
+    containers = [] if state is None else [
+        {"name": "pdt-report", "runningState": state, "runningStateDetails": details}]
+    return {"value": [{"name": name, "properties": {"containers": containers}}]}
+
+
 def fake_stream_api(monkeypatch, replicas, body=b"", calls=None, job=JOB):
+    """`replicas` is one answer, or a list of answers that each replica read takes in turn."""
+    answers = replicas if isinstance(replicas, list) else [replicas]
+
     def az(*args):
         url = args[args.index("--url") + 1]
         if "/replicas?" in url:
-            answer = replicas
+            answer = answers.pop(0) if len(answers) > 1 else answers[0]
         elif "/getAuthToken?" in url:
             answer = {"properties": {"token": "stream-token"}}
         else:
@@ -250,7 +259,7 @@ def test_stream_lines_reads_the_container_log_with_its_own_times(monkeypatch):
             b"2026-10-09T21:15:44.4795058Z stdout F line 1\n"
             b"2026-10-09T21:15:44.4795506Z stderr F {\"severity\": \"WARNING\", \"message\": \"slow\"}\n"
             b"2026-10-09T21:15:45.0000000Z stdout F \n")
-    fake_stream_api(monkeypatch, {"value": [{"name": "pdt-report-x1-abc"}]}, body, calls)
+    fake_stream_api(monkeypatch, replica("pdt-report-x1-abc"), body, calls)
     lines = list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
                                                           RUNNING_RUN, True))
     assert [(line.level, line.message) for line in lines] == [
@@ -271,8 +280,37 @@ def test_stream_lines_of_an_execution_with_no_container_yet_is_empty(monkeypatch
     assert calls == []
 
 
+@pytest.mark.parametrize("state", [None, "Waiting"])
+def test_a_container_that_has_not_started_opens_no_stream(monkeypatch, state):
+    calls = []
+    fake_stream_api(monkeypatch, replica(state=state), calls=calls)
+    assert list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                         RUNNING_RUN, False)) == []
+    assert calls == []
+
+
+def test_follow_waits_for_the_container_to_start_and_says_why(monkeypatch):
+    calls, sleeps, said = [], [], []
+    body = b"2026-10-09T21:15:44.4795058Z stdout F line 1\n"
+    fake_stream_api(monkeypatch, [
+        replica(state=None),
+        replica(state="Waiting", details="Container is waiting with reason: PullingImage on n1."),
+        replica(state="Waiting", details="Container is waiting with reason: PullingImage on n1."),
+        replica()], body, calls)
+    monkeypatch.setattr(deploy_azure_container_apps.time, "sleep", sleeps.append)
+    monkeypatch.setattr(deploy_azure_container_apps.console, "status", said.append)
+    lines = list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                          RUNNING_RUN, True))
+    assert [line.message for line in lines] == ["line 1"]
+    assert len(calls) == 1
+    assert sleeps == [deploy_azure_container_apps.CONTAINER_POLL_SECONDS] * 3
+    assert said == ["Azure is creating the run's container",
+                    "Azure is starting the run's container: "
+                    f"{deploy_azure_container_apps.console.value('PullingImage')}"]
+
+
 def test_a_quiet_stream_ends_so_follow_opens_it_again(monkeypatch):
-    fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, TimeoutError("timed out"))
+    fake_stream_api(monkeypatch, replica(), TimeoutError("timed out"))
     assert list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
                                                          RUNNING_RUN, True)) == []
 
@@ -282,7 +320,7 @@ def test_a_stream_that_azure_refuses_is_a_stream_error(monkeypatch):
     with pytest.raises(runs_cli.StreamError, match="ResourceNotFound"):
         list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
                                                       RUNNING_RUN, True))
-    fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, ConnectionResetError("reset"))
+    fake_stream_api(monkeypatch, replica(), ConnectionResetError("reset"))
     with pytest.raises(runs_cli.StreamError, match="reset"):
         list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
                                                       RUNNING_RUN, True))
@@ -294,7 +332,7 @@ def test_a_stream_that_azure_refuses_is_a_stream_error(monkeypatch):
     (b"", {"properties": {"template": {"containers": [{"name": "pdt-report"}]}}}),
 ])
 def test_a_stream_azure_breaks_off_or_sends_malformed_is_a_stream_error(monkeypatch, body, job):
-    fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, body, job=job)
+    fake_stream_api(monkeypatch, replica(), body, job=job)
     with pytest.raises(runs_cli.StreamError):
         list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
                                                       RUNNING_RUN, True))
@@ -327,7 +365,7 @@ def test_stream_lines_joins_the_parts_of_a_long_line(monkeypatch):
             b"2026-10-09T21:15:44.1500000Z stderr F an error\n"
             b"2026-10-09T21:15:44.2000000Z stdout F second half\n"
             b"2026-10-09T21:15:45.0000000Z stdout F next\n")
-    fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, body)
+    fake_stream_api(monkeypatch, replica(), body)
     lines = list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
                                                           RUNNING_RUN, True))
     assert [line.message for line in lines] == ["an error", "first half, second half", "next"]
@@ -343,7 +381,7 @@ def test_the_log_stream_follows_no_redirect():
 
 def test_a_recorded_stream_line_and_its_log_analytics_row_are_the_same_line(monkeypatch):
     body = b"2026-10-09T21:15:44.4795058Z stdout F line 0001 burst 0\n"
-    fake_stream_api(monkeypatch, {"value": [{"name": "r"}]}, body)
+    fake_stream_api(monkeypatch, replica(), body)
     [streamed] = deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
                                                           RUNNING_RUN, False)
     monkeypatch.setattr(deploy_azure_container_apps, "log_query", lambda settings, query: [
