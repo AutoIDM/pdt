@@ -23,10 +23,9 @@ def fake_gcloud(monkeypatch):
     return calls
 
 
-def fake_scheduler(monkeypatch, *answers):
-    """Each answer is an HTTP error status, or None for a 200."""
+def fake_scheduler(monkeypatch, *error_statuses):
     requests = []
-    replies = iter(answers)
+    replies = iter(error_statuses)
 
     def fetch_json(request, timeout=60):
         requests.append(request)
@@ -80,10 +79,13 @@ def test_a_missing_scheduler_job_says_deploy_first(monkeypatch, capsys):
     assert "run pdt deploy my-app first" in capsys.readouterr().out
 
 
-def test_an_aborted_call_retries(monkeypatch):
+def test_an_aborted_call_retries(monkeypatch, capsys):
     requests = fake_scheduler(monkeypatch, 409, 409)
     deploy_google_cloud.set_scheduler_paused("p", "us-central1", "pdt-my-app", True)
     assert len(requests) == 3
+    captured = capsys.readouterr()
+    assert "Cloud Scheduler is not ready yet: Cloud Scheduler job pdt-my-app" in captured.err
+    assert captured.out == ""
 
 
 def test_a_refused_call_names_the_reason(monkeypatch, capsys):

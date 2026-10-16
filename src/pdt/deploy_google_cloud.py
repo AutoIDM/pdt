@@ -135,6 +135,7 @@ BUILD_SUBMIT_ROLES = (
 
 BILLING_API = "https://cloudbilling.googleapis.com/v1"
 SCHEDULER_API = "https://cloudscheduler.googleapis.com/v1"
+ABORTED = 409
 # Cloud Run job defaults; the deploy below does not override them.
 JOB_VCPU = 1.0
 JOB_MEMORY_GIB = 0.5
@@ -144,9 +145,7 @@ RECENT_RUNS = 3
 HOLD = datetime.timedelta(seconds=30)
 # The live tail sorts what it holds this long; with its 2 s default, a line came 9 s late.
 TAIL_BUFFER = datetime.timedelta(seconds=10)
-# A log read scans every entry of the project in its time range, and a newest-first
-# read with no timestamp sees only the last day (the gcloud --freshness default).
-# So each read is bounded by the runs it wants, widened by this margin.
+# A newest-first read with no timestamp sees only the last day (the gcloud --freshness default).
 LOG_MARGIN = datetime.timedelta(minutes=1)
 
 
@@ -506,28 +505,29 @@ def scheduler_description(app_name: str) -> str:
 
 
 def set_scheduler_paused(project: str, region: str, job: str, paused: bool) -> None:
-    """Cloud Scheduler answers 200 to a pause of a paused job and to a resume of an
-    enabled one, so one call sets the state."""
+    """Measured in October 2026: Cloud Scheduler answers 200 to a pause of a paused job and to
+    a resume of an enabled one, so one call sets the state."""
     verb = "pause" if paused else "resume"
     url = f"{SCHEDULER_API}/projects/{project}/locations/{region}/jobs/{job}:{verb}"
-    for wait in (*RETRY_WAITS, None):
-        request = urllib.request.Request(
-            url, data=b"", headers={"Authorization": f"Bearer {access_token()}"})
-        try:
-            fetch_json(request)
-            return
-        except FatalAPIError as exc:
-            status = exc.response.code
-            if status == 404:
-                fail(f"Cloud Scheduler job {console.value(job)} does not exist; run "
-                     f"{console.value('pdt deploy ' + job.removeprefix('pdt-'))} first")
-            if status != 409 or wait is None:
-                console.say(console.escape(billing_detail(exc) or str(exc)))
-                fail(f"Cloud Scheduler did not {'pause' if paused else 'resume'} "
-                     f"{console.value(job)}; fix the problem above and run the command again")
-        # 409 is ABORTED: the job changed a moment ago.
-        console.bullet(f"Cloud Scheduler is not ready yet; retrying in {wait}s...", indent=4)
-        time.sleep(wait)
+    with console.wait_on(f"Cloud Scheduler job {console.value(job)}", "done",
+                         result=False) as wait:
+        for seconds in (*RETRY_WAITS, None):
+            request = urllib.request.Request(
+                url, data=b"", headers={"Authorization": f"Bearer {access_token()}"})
+            try:
+                fetch_json(request)
+                return
+            except FatalAPIError as exc:
+                status = exc.response.code
+                if status == 404:
+                    fail(f"Cloud Scheduler job {console.value(job)} does not exist; run "
+                         f"{console.value('pdt deploy ' + job.removeprefix('pdt-'))} first")
+                if status != ABORTED or seconds is None:
+                    console.say(console.escape(billing_detail(exc) or str(exc)))
+                    fail(f"Cloud Scheduler did not {'pause' if paused else 'resume'} "
+                         f"{console.value(job)}; fix the problem above and run the command again")
+            wait.now("Cloud Scheduler is not ready yet")
+            time.sleep(seconds)
 
 
 def job_logs_url(project: str, region: str, job: str) -> str:
