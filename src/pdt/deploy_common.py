@@ -118,7 +118,7 @@ WORKDIR /workspace/{app}
 # The PEP 723 script block, with the reference regex of the PEP.
 SCRIPT_HEADER = re.compile(r"(?m)^# /// script$\s(?:^#(?:| .*)$\s)+^# ///$")
 LIFECYCLE_MODULES = ("__init__.py", "config.py", "console.py", "lifecycle.py", "slack.py",
-                     "utils/__init__.py", "utils/storage.py")
+                     "utils/__init__.py", "utils/log.py", "utils/storage.py", "utils/web.py")
 # Secret shapes and local state that never belong in an image. The version-control names are
 # the ones `az acr build` always leaves out, so every build place gets the same context.
 BUILD_EXCLUDES = (

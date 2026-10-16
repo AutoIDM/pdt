@@ -720,9 +720,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    web.trust_os_certificates()
-    # uv's own downloads (a script's packages) then pass a company TLS proxy too.
-    os.environ.setdefault("UV_SYSTEM_CERTS", "1")
+    if not completion.COMPLETING:
+        web.trust_os_certificates()
+        # uv's own downloads (a script's packages) then pass a company TLS proxy too.
+        os.environ.setdefault("UV_SYSTEM_CERTS", "1")
     parser = build_parser()
     completion.configure(parser)
     if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
