@@ -26,6 +26,8 @@ pdt --version
 
 On Windows you can run `winget install AutoIDM.pdt` instead, which also installs `uv` if you do not have it and puts the same `pdt` command on your PATH. Open a new PowerShell window after it finishes. `winget upgrade AutoIDM.pdt` moves pdt to the latest release, and the first `pdt` command after an install or upgrade finishes setting up that version.
 
+After an upgrade, the first `pdt` command in a project that an older pdt made updates the project. It prints each file that it changed. It copies each file into `.pdt/backups/` before it changes it, and it keeps the copies of the last 5 updates. The line `migrated_by` in `pdt.yml` records the update, so a colleague with an older pdt gets a message to upgrade. To see the changes before pdt makes them, run `pdt migrate --dry-run`.
+
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
 
 ## Set up a project
@@ -115,6 +117,7 @@ pdt login my-report
 | `pdt new APP` | add an empty app to the project |
 | `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
 | `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
+| `pdt migrate` | update a project that an older pdt made; every other command that needs a project does this first; `--dry-run` prints the changes as a diff, changes nothing, and exits 1 when there are changes |
 | `pdt run APP` | run an app on this machine |
 | `pdt run APP --deployed` | start one run of the deployed job now, on its platform |
 | `pdt deploy APP` | deploy an app to its configured platform, then ask whether to start a run and follow its log |
