@@ -136,7 +136,7 @@ pdt login my-report
 | `pdt aws ...` | run the AWS CLI that pdt installs |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
-| `pdt upgrade` | move pdt to the newest release, the way you installed it (`uv tool install`, winget, or a clone on `main`), and raise the `pdt-cli` version each app's `run.py` pins to it; on Windows the upgrade finishes in a new window once the command ends; a deployed app gets the new pdt at its next `pdt deploy` |
+| `pdt upgrade` | move pdt to the newest release, and raise the `pdt-cli` version each app's `run.py` pins to it; on Windows the upgrade finishes in a new window once the command ends; a deployed app gets the new pdt at its next `pdt deploy` |
 | `pdt completion [SHELL]` | turn on tab completion for a shell |
 
 Inside an app folder, or any folder below it, leave `APP` off any command that takes one and pdt uses that app. For example, `pdt logs 3` in the `hello-world` folder reads run 3 of `hello-world`. Anywhere else, leave `APP` off or mistype it and pdt lists the apps in the project so you can pick one; a mistyped name also gets the closest app name. A mistyped command or option gets the closest one too, for example `pdt lgos` asks "Did you mean `pdt logs`?".

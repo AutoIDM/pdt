@@ -1,7 +1,8 @@
 """The pdt.exe that winget installs.
 
-It installs pdt-cli at VERSION as a uv tool, which returns at once when that
-version is already there, then runs the real pdt with the same arguments.
+It installs pdt-cli at VERSION or newer as a uv tool, which returns at once when
+such a version is already there, then runs the real pdt with the same arguments.
+"or newer" keeps a `pdt upgrade` past VERSION from being undone at the next start.
 The tool and its pdt.exe go under %LOCALAPPDATA%\\AutoIDM\\pdt, a folder that
 is not on the PATH, so this launcher is the pdt that runs and a winget upgrade
 takes effect. A `uv tool install pdt-cli` keeps its own copy in uv's folders.
@@ -34,7 +35,7 @@ def main(args: list[str]) -> int:
         "UV_TOOL_BIN_DIR": str(home / "bin"),
     }
     done = subprocess.run(
-        [uv, "tool", "install", f"pdt-cli=={VERSION}"],
+        [uv, "tool", "install", f"pdt-cli>={VERSION}"],
         capture_output=True,
         text=True,
         env=env,

@@ -10,7 +10,7 @@ launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
 
 HOME = Path("C:/Users/me/AppData/Local/AutoIDM/pdt")
-INSTALL = ["uv", "tool", "install", f"pdt-cli=={launcher.VERSION}"]
+INSTALL = ["uv", "tool", "install", f"pdt-cli>={launcher.VERSION}"]
 
 
 class FakeRun:
