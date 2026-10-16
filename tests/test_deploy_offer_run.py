@@ -32,7 +32,7 @@ class Cloud:
         monkeypatch.setattr(console, "confirm", self.confirm)
         self.answer = answer
 
-    def dispatch(self, provider, command, app_name, assume_yes, extra=None):
+    def dispatch(self, provider, command, app_name, assume_yes, extra=None, rebuild=False):
         self.calls.append((command, *(extra or [])))
         return self.codes.get(command, 0)
 
@@ -142,7 +142,7 @@ def run_cli(monkeypatch, *argv):
 def test_the_run_option_reaches_the_deploy(project, monkeypatch, argv, run_option):
     calls = []
     monkeypatch.setattr(deploy, "deploy",
-                        lambda name, assume_yes=False, run=None: calls.append(run) or 0)
+                        lambda name, assume_yes=False, run=None, rebuild=False: calls.append(run) or 0)
     assert run_cli(monkeypatch, "deploy", APP, *argv) == 0
     assert calls == [run_option]
 

@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from conftest import plain
+from conftest import built_image, plain
 from pdt import deploy_azure, deploy_azure_container_apps
 
 SUBSCRIPTION = "11111111-1111-1111-1111-111111111111"
@@ -53,7 +53,7 @@ def fake_deploy(monkeypatch, answers):
     monkeypatch.setattr(module, "workspace_resource", lambda settings: MANAGED)
     monkeypatch.setattr(module, "acr_arm_auth_enabled", lambda registry: True)
     monkeypatch.setattr(module, "secret_state", lambda *args: (False, None))
-    monkeypatch.setattr(module, "image_action", lambda app, text, cloud_builder="": text)
+    monkeypatch.setattr(module, "image_action", lambda app, text, cloud_builder="", if_changed=False: text)
     monkeypatch.setattr(module, "cost_estimate_for", lambda *args: None)
     monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(plain(actions)) or True)
     monkeypatch.setattr(module, "ensure_environment", lambda *args: None)
@@ -61,6 +61,7 @@ def fake_deploy(monkeypatch, answers):
     monkeypatch.setattr(module, "assign_role", lambda *args: None)
     monkeypatch.setattr(module, "enable_acr_arm_auth", lambda registry: None)
     monkeypatch.setattr(module, "build_image", lambda *args: events.append(("build",)))
+    monkeypatch.setattr(module, "ensure_image", built_image)
     monkeypatch.setattr(module, "pushed_image", lambda settings, name: f"{name}@sha256:1")
     monkeypatch.setattr(module, "ensure_secret", lambda *args: None)
     monkeypatch.setattr(module, "reconcile_job", lambda *args: None)

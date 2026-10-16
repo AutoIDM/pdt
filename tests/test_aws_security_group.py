@@ -45,6 +45,9 @@ class FakeBatch:
     def describe_compute_environments(self, computeEnvironments):
         return {"computeEnvironments": [self.environment] if self.environment else []}
 
+    def describe_job_definitions(self, **kwargs):
+        return {"jobDefinitions": []}
+
     def create_compute_environment(self, **kwargs):
         self.calls.append(("create", kwargs["computeResources"]["securityGroupIds"]))
         self.environment = self.item(kwargs["computeResources"]["securityGroupIds"])
