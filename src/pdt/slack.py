@@ -86,7 +86,7 @@ def message(event, unhandled: bool = False) -> dict:
             shown = (f"Cloud run on {cloud}" if cloud else
                      f"{'Deployed' if params[key] else 'Local'} run on {socket.gethostname()}")
         elif key == "state":
-            shown = f"`pdt logs {params.get('app')} --id {params.get('run_id')}`"
+            shown = f"`pdt runs {params.get('app')}`"
         elif key == "trigger":
             shown = shown.capitalize()
         fields.append({"type": "mrkdwn", "text": f"*{FIELDS.get(key, event_words(key))}*\n{shown}"})

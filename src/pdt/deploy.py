@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
 from pdt import (__version__, alerts_cli, config, console, lifecycle, powershell, pwsh, regions,
@@ -428,3 +429,11 @@ def proceed(assume_yes: bool) -> bool:
         return console.confirm()
     except EOFError:
         return False
+
+
+if __name__ == "__main__":
+    # `python -m pdt.deploy logs APP --id ID [--id ID ...] [ARGS]` reads runs by id for
+    # `pdt gui`; `pdt logs` takes only a run number, and the numbers shift when a run starts.
+    if "--json" in sys.argv:
+        console.to_stderr()
+    sys.exit(logs(sys.argv[2], sys.argv[3:]))
