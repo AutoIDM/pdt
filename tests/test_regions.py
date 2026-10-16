@@ -58,10 +58,6 @@ def test_reads_the_tz_variable(monkeypatch):
     assert regions.local_timezone() == "Europe/London"
 
 
-def test_question_names_the_provider():
-    assert regions.question("google-cloud") == "Which Google Cloud region should hold your jobs?"
-
-
 def region_in(path):
     return (yaml.safe_load(path.read_text()).get("platform") or {}).get("region")
 

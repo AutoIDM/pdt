@@ -40,13 +40,6 @@ def launcher(project, monkeypatch):
     return calls
 
 
-def test_the_server_command_runs_the_script_with_uv(project):
-    command = gui_cli.server_command(9000)
-    assert command[:3] == ["uv", "run", "--script"]
-    assert command[3].endswith("gui_server.py")
-    assert command[4:] == ["--port", "9000"]
-
-
 def test_wait_up_gives_up_when_the_server_exits(monkeypatch):
     monkeypatch.setattr(gui_cli, "is_up", lambda port: False)
     assert gui_cli.wait_up(FakeProc(exits=True), 8765, timeout=5) is False

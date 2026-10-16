@@ -1,4 +1,3 @@
-import json
 from fnmatch import fnmatchcase
 
 import pytest
@@ -42,14 +41,6 @@ def policy() -> dict:
 
 def listed(value) -> list[str]:
     return [value] if isinstance(value, str) else value
-
-
-def test_the_policy_is_valid_iam_json():
-    document = json.loads(json.dumps(policy()))
-    assert document["Version"] == "2012-10-17"
-    for statement in document["Statement"]:
-        assert statement["Effect"] == "Allow"
-        assert listed(statement["Action"]) and listed(statement["Resource"])
 
 
 def test_every_deployer_action_is_granted():

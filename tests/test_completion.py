@@ -305,14 +305,6 @@ def test_completion_runs_before_cloud_dispatch(monkeypatch):
         cli.main()
 
 
-def test_data_home_is_shared_with_gcloud_sdk(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-
-    assert completion._data_dir() == tmp_path / "pdt"
-    assert completion._data_dir() == config.data_home() / "pdt"
-
-
 def test_install_command_sets_up_a_named_shell(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))

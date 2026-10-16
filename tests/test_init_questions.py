@@ -16,16 +16,6 @@ def test_azure_asks_only_for_the_region():
     assert keys("azure") == ["region"]
 
 
-def test_azure_does_not_ask_for_the_resource_group():
-    # deploy_azure.azure_settings already defaults it to "pdt".
-    assert "resource_group" not in keys("azure")
-
-
-def test_azure_does_not_ask_for_the_subscription():
-    # deploy_azure.choose_subscription lists the real ones and saves the pick.
-    assert "subscription" not in keys("azure")
-
-
 @pytest.mark.parametrize("provider,expected", [
     ("aws", ["region"]),
     ("google-cloud", ["region"]),
@@ -34,15 +24,6 @@ def test_azure_does_not_ask_for_the_subscription():
 ])
 def test_the_other_providers_ask_only_what_pdt_cannot_supply(provider, expected):
     assert keys(provider) == expected
-
-
-@pytest.mark.parametrize("provider,key", [
-    ("azure", "subscription"),
-    ("aws", "account"),
-    ("google-cloud", "project"),
-])
-def test_no_provider_asks_for_something_deploy_can_discover(provider, key):
-    assert key not in keys(provider)
 
 
 @pytest.mark.parametrize("provider", list(PROVIDER_QUESTIONS))

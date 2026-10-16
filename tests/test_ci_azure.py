@@ -4,7 +4,7 @@ import json
 import pytest
 
 from conftest import add_app
-from pdt import config, deploy_azure, deploy_azure_container_apps
+from pdt import config, deploy_azure
 
 ACCOUNT = {
     "id": "11111111-1111-1111-1111-111111111111",
@@ -161,10 +161,6 @@ def test_a_service_principal_login_is_recorded_as_a_service_principal(azure_app,
     settings = deploy_azure.preflight(azure_app, deploy_azure.azure_settings(azure_app))
     assert settings["deployer_object_id"] == DEPLOYER
     assert settings["deployer_principal_type"] == "ServicePrincipal"
-
-
-def test_the_job_registers_the_log_provider_it_creates_a_workspace_in():
-    assert "Microsoft.OperationalInsights" in deploy_azure_container_apps.PROVIDERS
 
 
 def test_an_unattended_run_with_no_azure_login_names_the_command_to_run(

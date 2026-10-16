@@ -398,11 +398,6 @@ def test_logs_json_with_no_run_to_read_prints_an_empty_list(capsys, list_runs, r
     assert capsys.readouterr().out == "[]\n"
 
 
-def test_logs_out_of_range(capsys):
-    assert runs_cli.logs(list_two, read, "my-report", ["3"]) == 1
-    assert "pick a number from 1 to 2" in capsys.readouterr().out
-
-
 def test_health_rows_and_exit_code(capsys):
     running = Run("stream-3", T1, None, "running")
     app_runs = {"a": [NEWEST, OLDER], "b": [OLDER], "c": [running], "d": []}

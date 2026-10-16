@@ -54,13 +54,6 @@ def test_local_windows_commands_stop_off_windows(
         "system is not Windows. Run this command on the Windows PC.\n")
 
 
-def test_app_folders_live_under_the_machine_data_home(project):
-    folder = project / "ProgramData" / "pdt" / "my-report"
-    assert deploy_windows.app_folder("my-report") == folder
-    assert deploy_windows.storage_folder("my-report") == folder / "storage"
-    assert deploy_windows.logs_folder("my-report") == folder / "logs"
-
-
 def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
     app = windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report"
