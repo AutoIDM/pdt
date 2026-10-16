@@ -49,7 +49,8 @@ def gui(project, monkeypatch):
     add_app(project, "my-report", "schedule: daily\n")
     state = SimpleNamespace(client=Client(), calls=[], answers={}, project=project)
 
-    def fake_run_pdt(*args, timeout=900):
+    def fake_run_pdt(*args, timeout=900, module="pdt.cli"):
+        assert module == ("pdt.deploy" if args[0] == "logs" else "pdt.cli")
         state.calls.append(args)
         ids = [args[i + 1] for i, arg in enumerate(args) if arg == "--id"]
         for key, answer in state.answers.items():
@@ -522,4 +523,4 @@ def test_every_shown_command_is_a_copy_button(gui):
     assert '<button type="button" class="chip" data-copy>pdt runs my-report</button>' in html
     run = Run.objects.get(run_id="ecs/my-report/task2")
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
-    assert '<button type="button" class="chip" data-copy>pdt logs my-report --id ecs/my-report/task2 --full</button>' in html
+    assert '<button type="button" class="chip" data-copy>pdt logs my-report 1 --full</button>' in html
