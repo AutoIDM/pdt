@@ -742,8 +742,10 @@ def sso_login(app: dict, profile: str) -> bool:
     if not can_ask():
         console.say(f"Sign in first: {console.value('pdt login ' + app['name'])}")
         return False
-    answer = ask("Sign in to AWS now (opens a browser)? [y/N] ")
-    if answer.lower() not in ("y", "yes"):
+    try:
+        if not console.confirm("Sign in to AWS now (opens a browser)?"):
+            return False
+    except EOFError:
         return False
     sso_sign_in(*target)
     return True

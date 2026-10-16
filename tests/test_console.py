@@ -1,8 +1,10 @@
 import io
 
+import pytest
 from rich.console import Console
 
 from pdt import console
+from pdt.utils import email_auth
 
 
 def test_labelled_lines_keep_escaped_brackets_literal(capsys):
@@ -72,3 +74,50 @@ def test_choice_and_field_keep_text_literal(capsys):
     out = capsys.readouterr().out
     assert "  1) proj [x]  detail [y]" in out
     assert "Run logs: https://a/b?c=[1]" in out
+
+
+def answering(monkeypatch, *answers):
+    queue = list(answers)
+
+    def fake_input(prompt=""):
+        if not queue:
+            raise EOFError
+        return queue.pop(0)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    return queue
+
+
+@pytest.mark.parametrize("answers, default, expected", [
+    (["maybe", "y"], False, True),
+    (["maybe", "n"], True, False),
+    ([""], False, False),
+    ([""], True, True),
+    ([" YES "], False, True),
+    (["No"], True, False),
+])
+def test_confirm_asks_again_until_the_answer_is_yes_or_no(monkeypatch, capsys, answers, default,
+                                                          expected):
+    answering(monkeypatch, *answers)
+    assert console.confirm("Go?", default=default) is expected
+    out = capsys.readouterr().out
+    assert out.count("Go? [Y/n]" if default else "Go? [y/N]") == len(answers)
+    assert out.count("Please answer y or n.") == len(answers) - 1
+
+
+def test_confirm_raises_eof_after_a_wrong_answer(monkeypatch):
+    answering(monkeypatch, "maybe")
+    with pytest.raises(EOFError):
+        console.confirm()
+
+
+def test_a_sign_in_prompt_asks_again_then_takes_its_yes_default(monkeypatch, capsys):
+    answering(monkeypatch, "ok", "")
+    email_auth._confirm("google", "a@example.com")
+    assert capsys.readouterr().out.count("Open Google Gmail sign-in now? [Y/n]") == 2
+
+
+def test_a_sign_in_prompt_treats_end_of_input_as_no(monkeypatch):
+    answering(monkeypatch)
+    with pytest.raises(email_auth.OAuthError):
+        email_auth._confirm("google", "a@example.com")
