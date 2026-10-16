@@ -46,6 +46,25 @@ def test_the_generated_dockerfile_installs_from_the_script_header_before_the_res
             < text.index("RUN uv sync --script run.py\n") < text.index("COPY . /workspace\n"))
 
 
+def test_the_staged_script_header_brings_its_local_path_sources(tmp_path):
+    app, stage = staged(tmp_path, "my-report")
+    header = ('# /// script\n# dependencies = ["pdt-cli", "helpers"]\n#\n# [tool.uv.sources]\n'
+              '# pdt-cli = { path = "pdt_cli-0.1.9-py3-none-any.whl" }\n'
+              '# helpers = [{ path = "lib/helpers", editable = true }]\n'
+              '# shared = { path = "../shared" }\n# ///\n')
+    (app["dir"] / "run.py").write_text(header + "def main():\n    return 0\n")
+    (app["dir"] / "pdt_cli-0.1.9-py3-none-any.whl").write_text("wheel\n")
+    (app["dir"] / "lib" / "helpers").mkdir(parents=True)
+    (app["dir"] / "lib" / "helpers" / "pyproject.toml").write_text("[project]\n")
+    (app["dir"] / "lib" / "helpers" / ".env").write_text("SECRET=1\n")
+    write_dockerfile(stage, app)
+    script = stage / ".pdt-script"
+    assert (script / "pdt_cli-0.1.9-py3-none-any.whl").read_text() == "wheel\n"
+    assert (script / "lib" / "helpers" / "pyproject.toml").read_text() == "[project]\n"
+    assert not (script / "lib" / "helpers" / ".env").exists()
+    assert not (stage / "shared").exists()
+
+
 def test_a_run_py_without_a_script_header_is_staged_whole(tmp_path):
     app, stage = staged(tmp_path, "my-report")
     write_dockerfile(stage, app)
