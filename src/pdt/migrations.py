@@ -54,6 +54,7 @@ SHIPPED = {
         "2d42cee1a02ef8ddff652cc70f876c6ebc5521609843c59d821aeb32663457e3": "0.1.7",
         "c197cf055264271547646173f258bfae2949736182f234e39cb39866abdd995a": "0.1.7",
         "6190ae2c0e4a5aed49fb8554febee8b857072a5de75f69d9143b42c7a779f2e0": "0.1.8",
+        "741f81cf3fddcd108345dbc81fb89184382070f158679f6408fe65f8e430ac36": "0.1.10",
     },
     "CLAUDE.md": {
         "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49": "0.1.1",
@@ -244,6 +245,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("0.1.6", AGENTS_TITLE, agents_file),
     Migration("0.1.7", AGENTS_TITLE, agents_file),
     Migration("0.1.8", AGENTS_TITLE, agents_file),
+    Migration("0.1.10", AGENTS_TITLE, agents_file),
 )
 
 
