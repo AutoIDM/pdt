@@ -93,19 +93,72 @@ def provider_env(extra: list[str] | None = None) -> dict[str, str]:
     return env
 
 
+def run_child(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """subprocess.run, but Ctrl+C waits for the child to stop before it raises KeyboardInterrupt,
+    and a second Ctrl+C stops the child and everything it started at once.
+
+    A terminal sends Ctrl+C to every process in the job. subprocess.run kills its
+    child 0.25 s later, and when that child is uv, the provider script uv started
+    goes on alone: it can reach the plan and change the cloud after pdt has exited.
+    The wait has a timeout because on Windows a wait with none ignores Ctrl+C."""
+    interrupted = False
+    with subprocess.Popen(args, **kwargs) as proc:
+        while True:
+            try:
+                stdout, _ = proc.communicate(timeout=0.5)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            except KeyboardInterrupt:
+                if interrupted:
+                    stop_tree(proc)
+                    console.say()
+                    console.failed("Stopped the script at once. Its cleanup did not run, so files "
+                                   f"named pdt-* can be left in {console.value(tempfile.gettempdir())}.")
+                    raise
+                interrupted = True
+                console.say()
+                console.warn("Waiting for the script to stop and clean up. "
+                             "Press Ctrl+C again to stop it at once.")
+    if interrupted:
+        raise KeyboardInterrupt
+    return subprocess.CompletedProcess(args, proc.returncode, stdout)
+
+
+def stop_tree(proc: subprocess.Popen) -> None:
+    """Kill proc and every process under it. On POSIX the grandchildren are not pdt's
+    children, so read their ids from ps before uv dies and they move to another parent."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       capture_output=True, check=False)
+        return
+    children: dict[int, list[int]] = {}
+    for line in subprocess.run(["ps", "-A", "-o", "pid=,ppid="],
+                               capture_output=True, text=True).stdout.splitlines():
+        pid, ppid = map(int, line.split())
+        children.setdefault(ppid, []).append(pid)
+    tree = [proc.pid]
+    for pid in tree:
+        tree.extend(children.get(pid, []))
+    for pid in tree:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
              extra: list[str] | None = None) -> int:
     args = provider_command(provider, command, app_name, assume_yes, extra)
-    return subprocess.run(args, check=False, env=provider_env(extra)).returncode
+    return run_child(args, env=provider_env(extra)).returncode
 
 
 def dispatch_output(provider: str, command: str, app_name: str,
                     extra: list[str], stderr=None) -> tuple[int, str]:
     """Like dispatch, but return what the provider script prints on stdout. `stderr` is a file
     for the script's other lines, or None for this process's stderr."""
-    proc = subprocess.run(provider_command(provider, command, app_name, False, extra),
-                          check=False, env=provider_env(extra), stdout=subprocess.PIPE,
-                          stderr=stderr, text=True)
+    proc = run_child(provider_command(provider, command, app_name, False, extra),
+                     env=provider_env(extra), stdout=subprocess.PIPE, stderr=stderr, text=True)
     return proc.returncode, proc.stdout
 
 

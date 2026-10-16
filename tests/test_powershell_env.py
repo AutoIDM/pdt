@@ -76,7 +76,7 @@ def test_the_message_names_the_var_the_script_line_where_pdt_looked_and_the_fix(
 
 
 def test_pdt_run_stops_before_the_app_starts(ps_app, project, monkeypatch, capsys):
-    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("the app started"))
+    monkeypatch.setattr(deploy, "run_child", lambda *a, **k: pytest.fail("the app started"))
     assert run_cli(monkeypatch, "run", "ps-report") == 1
     assert expected(project) in " ".join(capsys.readouterr().out.split())
 
