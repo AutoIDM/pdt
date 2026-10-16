@@ -97,6 +97,21 @@ def test_the_colour_and_the_title_say_the_outcome(name, colour, emoji):
     assert attachment["blocks"][0]["text"]["text"].startswith(f"{emoji} ")
 
 
+@pytest.mark.parametrize(("name", "reason", "title"), [
+    ("app:deploy-failed", "interrupted", "Deploy stopped: sync-users"),
+    ("app:deploy-failed", "declined", "Deploy declined: sync-users"),
+    ("app:destroy-failed", "declined", "Destroy declined: sync-users"),
+    ("job:run-failed", "interrupted", "Run stopped: sync-users"),
+])
+def test_a_failed_event_that_a_person_ended_is_yellow_and_says_so(name, reason, title):
+    payload = slack.message(lifecycle.Event(name, AT, {**PARAMS, "reason": reason}))
+    attachment = payload["attachments"][0]
+    assert attachment["color"] == "#ECB22E"
+    assert attachment["blocks"][0]["text"]["text"] == f":large_yellow_circle: {title}"
+    assert f"*Reason*\n{reason}" in [field["text"] for field in attachment["blocks"][1]["fields"]]
+    assert attachment["blocks"][-1]["elements"][0]["text"].startswith(f"`{name}` at ")
+
+
 def test_an_unhandled_event_is_grey_and_says_why_it_came():
     blocks = slack.message(lifecycle.Event("job:run-started", AT, PARAMS), unhandled=True)
     assert blocks["attachments"][0]["color"] == "#868686"

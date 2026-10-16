@@ -40,7 +40,11 @@ WEBHOOK_HOSTS = ("hooks.slack.com", "hooks.slack-gov.com")
 OUTCOMES = {
     "completed": ("#2EB67D", ":large_green_circle:"),
     "failed": ("#E01E5A", ":red_circle:"),
+    "stopped": ("#ECB22E", ":large_yellow_circle:"),
+    "declined": ("#ECB22E", ":large_yellow_circle:"),
 }
+# The outcome word of a failed event whose `reason` says a person ended it.
+STOPPED = {"interrupted": "stopped", "declined": "declined"}
 OTHER = ("#1D9BD1", ":large_blue_circle:")
 UNHANDLED = ("#868686", ":white_circle:")
 READY = ("#2EB67D", ":white_check_mark:")
@@ -71,9 +75,11 @@ def event_words(name: str) -> str:
 def message(event, unhandled: bool = False) -> dict:
     """The Block Kit payload of one lifecycle event: the same layout for every event."""
     params = event.params
-    words = event_words(event.name)
-    colour, emoji = UNHANDLED if unhandled else OUTCOMES.get(
-        event.name.rsplit("-", 1)[-1], OTHER)
+    name = event.name
+    if name.endswith("-failed") and params.get("reason") in STOPPED:
+        name = name.removesuffix("failed") + STOPPED[params["reason"]]
+    words = event_words(name)
+    colour, emoji = UNHANDLED if unhandled else OUTCOMES.get(name.rsplit("-", 1)[-1], OTHER)
     title = f"{words}: {params['app']}" if "app" in params else words
     # `pdt logs` reads only a deployed run's log, so a local run shows no Logs field.
     keys = [key for key in FIELDS if key in params and (key != "state" or params.get("deployed"))]
