@@ -563,6 +563,9 @@ def follow_stream(list_runs: Callable[[], list[Run]],
     """Prints the run's live log until the run ends; the ended run, or None when the live
     log failed or showed no line of it. The live log is read once more after the run is
     seen to end, so a short run that starts and ends between two reads still shows."""
+    # `seen` already holds the snapshot `logs` printed; only a live follow, or an exit
+    # line from the post-end read, means this call captured the ended run.
+    showed = False
     try:
         while exit_line is None:
             ended = run.status != "running"
@@ -570,6 +573,8 @@ def follow_stream(list_runs: Callable[[], list[Run]],
             opened = time.monotonic()
             now_seen = Counter()
             for line in stream(run, not ended):
+                if not ended:
+                    showed = True
                 key = line_key(line)
                 now_seen[key] += 1
                 if now_seen[key] <= seen[key]:
@@ -589,7 +594,7 @@ def follow_stream(list_runs: Callable[[], list[Run]],
         console.warn(f"pdt cannot read the run's live log, so it reads {store}: "
                      f"{console.escape(str(exc))}")
         return None
-    return ended_by(run, exit_line) if seen else None
+    return ended_by(run, exit_line) if exit_line is not None or showed else None
 
 
 def ended_by(run: Run, exit_line: Line | None) -> Run:

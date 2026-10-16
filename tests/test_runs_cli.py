@@ -722,6 +722,21 @@ def test_follow_reads_the_store_for_a_run_that_ended_before_its_live_log_showed_
     assert out.rstrip().endswith("the run succeeded after 12s, exit 0")
 
 
+def test_follow_reads_the_store_when_a_snapshot_is_not_the_live_log(monkeypatch, capsys):
+    # `shown` and a post-end follow=False store snapshot must not skip follow_store:
+    # CloudWatch / Cloud Logging can return early lines without the exit marker.
+    ended = dataclasses.replace(RUNNING, ended=T1, status="succeeded", exit_code=0)
+    shown = [Line(T0, "INFO", "started")]
+    store = [Line(T0, "INFO", "started"), Line(T1, "INFO", "done"), Line(T1, "", "pdt: exit 0")]
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+    assert runs_cli.follow(lambda: [ended], lambda run, since: store, None, RUNNING, False,
+                           timedelta(minutes=5), shown,
+                           stream=live_stream(shown, [[]]), store="CloudWatch Logs") == 0
+    out = capsys.readouterr().out
+    assert "INFO    done" in out and out.count("pdt: exit 0") == 1
+    assert out.rstrip().endswith("the run succeeded after 12s, exit 0")
+
+
 def test_follow_reads_the_live_log_once_more_for_a_run_that_ended_between_two_looks(
         monkeypatch, capsys):
     ended = dataclasses.replace(RUNNING, ended=T1, status="succeeded", exit_code=0)
