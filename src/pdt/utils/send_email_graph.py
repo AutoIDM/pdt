@@ -126,10 +126,10 @@ def _confirm(user: str) -> None:
     console.say("PDT will not request permission to read email.")
     console.say()
     try:
-        answer = input("Open Microsoft sign-in now? [Y/n] ").strip().lower()
+        answer = console.confirm("Open Microsoft sign-in now?", default=True)
     except EOFError:
-        answer = "n"
-    if answer not in ("", "y", "yes"):
+        answer = False
+    if not answer:
         raise email_auth.OAuthError("OAuth authorization was not completed")
 
 
