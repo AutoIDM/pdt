@@ -44,6 +44,7 @@ MANIFEST = {
     "display_information": {"name": "pdt alerts",
                             "description": "Posts the deploys and runs of pdt jobs.",
                             "background_color": "#1D9BD1"},
+    "features": {"bot_user": {"display_name": "pdt-alerts"}},
     "oauth_config": {"scopes": {"bot": ["incoming-webhook"]}},
     "settings": {"incoming_webhooks": {"incoming_webhooks_enabled": True}},
 }
