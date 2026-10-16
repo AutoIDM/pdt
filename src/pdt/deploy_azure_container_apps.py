@@ -655,7 +655,26 @@ def set_job_paused(settings: dict, job: str, paused: bool, resource: dict | None
     if (state == "Suspended") == paused:
         return
     run_quiet("rest", "--method", "post",
-              "--url", job_url(settings, job, "/suspend" if paused else "/resume"))
+              "--url", job_url(settings, job, "/suspend" if paused else "/resume"), retry_busy=True)
+    settled_job(settings, job)
+
+
+def settled_job(settings: dict, job: str) -> dict:
+    """The job once Azure has finished the change in progress on it.
+
+    A suspend or resume changes `runningState` at once and keeps `provisioningState`
+    InProgress for a few seconds; Azure refuses the next change to the job until then."""
+    for _ in range(JOB_UPDATE_POLLS):
+        resource = job_resource(settings, job)
+        state = (resource.get("properties") or {}).get("provisioningState")
+        if state in ("Failed", "Canceled"):
+            fail(f"Azure could not change Container Apps Job {console.value(job)} "
+                 f"(provisioning state {console.value(state)})")
+        if state != "InProgress":
+            return resource
+        time.sleep(JOB_UPDATE_POLL_SECONDS)
+    fail(f"Azure was still changing Container Apps Job {console.value(job)} after "
+         f"{console.value(JOB_UPDATE_POLLS * JOB_UPDATE_POLL_SECONDS)} seconds")
 
 
 def pause(app: dict, settings: dict, paused: bool) -> int:
@@ -914,8 +933,23 @@ def retire_job(settings: dict[str, str], job: str, current: dict, store: dict | 
             revoke_role(store["container_id"], principal, STORE_ROLE)
         revoke_role(secret_scope(settings, sid), principal, SECRET_ROLE)
     console.step(f"deleting Container Apps Job {console.value(job)}")
+    delete_job(settings, job)
+
+
+def delete_job(settings: dict, job: str) -> None:
+    """Delete the job and return once Azure no longer finds it.
+
+    `az containerapp job delete` without `--no-wait` sleeps the 15 s Retry-After of the
+    delete operation; a GET every 2 s sees the job gone sooner."""
     run_quiet("containerapp", "job", "delete", "--name", job,
-              "--resource-group", settings["resource_group"], "--yes")
+              "--resource-group", settings["resource_group"], "--yes", "--no-wait")
+    for _ in range(JOB_UPDATE_POLLS):
+        proc = az("rest", "--method", "get", "--url", job_url(settings, job))
+        if proc.returncode != 0 and "Not Found(" in proc.stderr:
+            return
+        time.sleep(JOB_UPDATE_POLL_SECONDS)
+    fail(f"Azure was still deleting Container Apps Job {console.value(job)} after "
+         f"{console.value(JOB_UPDATE_POLLS * JOB_UPDATE_POLL_SECONDS)} seconds")
 
 
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
@@ -1332,8 +1366,7 @@ def remove_app(settings: dict, name: str, job: str, sid: str, managed_job: bool,
     if secret_owned and managed_job and principal_id:
         revoke_role(secret_scope(settings, sid), principal_id, SECRET_ROLE)
     if managed_job:
-        run_quiet("containerapp", "job", "delete", "--name", job,
-                  "--resource-group", rg, "--yes")
+        delete_job(settings, job)
     if image_exists:
         run_quiet("acr", "repository", "delete", "--name", settings["registry"],
                   "--repository", name, "--yes")

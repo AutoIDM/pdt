@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import pytest
 
@@ -37,6 +38,7 @@ def test_pause_suspends_a_ready_job_through_the_resource_manager_api(monkeypatch
     assert calls == [
         ("rest", "--method", "get", "--url", f"{JOB_URL}?api-version={version}"),
         ("rest", "--method", "post", "--url", f"{JOB_URL}/suspend?api-version={version}"),
+        ("rest", "--method", "get", "--url", f"{JOB_URL}?api-version={version}"),
     ]
     assert "Paused my-app" in capsys.readouterr().out
 
@@ -71,3 +73,66 @@ def test_start_runs_the_job_with_its_own_container_and_a_manual_trigger(monkeypa
                       "PDT_STORAGE_URL=https://store/x", "PDT_TRIGGER=manual",
                       "--output", "json")]
     assert "pdt-my-app-abc12" in capsys.readouterr().out
+
+
+def fake_operation(monkeypatch, running_state: str, provisioning_states: list[str]):
+    """A job in `running_state`; each GET after the suspend or resume shows the next state."""
+    calls, sleeps = [], []
+    states = iter(provisioning_states)
+
+    def run_quiet(*args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:3] == ("rest", "--method", "get"):
+            posted = any(call[0][:3] == ("rest", "--method", "post") for call in calls)
+            state = next(states) if posted else "Succeeded"
+            return json.dumps({"properties": {"runningState": running_state,
+                                              "provisioningState": state}})
+        return ""
+
+    monkeypatch.setattr(deploy_azure_container_apps, "run_quiet", run_quiet)
+    monkeypatch.setattr(deploy_azure_container_apps.time, "sleep", sleeps.append)
+    return calls, sleeps
+
+
+def test_pause_returns_only_after_azure_finishes_the_suspend(monkeypatch):
+    calls, sleeps = fake_operation(monkeypatch, "Ready", ["InProgress", "InProgress", "Succeeded"])
+    deploy_azure_container_apps.set_job_paused(SETTINGS, JOB, True)
+    assert [call[0][2] for call in calls] == ["get", "post", "get", "get", "get"]
+    assert sleeps == [deploy_azure_container_apps.JOB_UPDATE_POLL_SECONDS] * 2
+
+
+def test_a_suspend_that_azure_could_not_finish_fails(monkeypatch):
+    fake_operation(monkeypatch, "Ready", ["InProgress", "Failed"])
+    with pytest.raises(SystemExit):
+        deploy_azure_container_apps.set_job_paused(SETTINGS, JOB, True)
+
+
+def test_the_suspend_retries_while_another_change_to_the_job_runs(monkeypatch):
+    calls, _sleeps = fake_operation(monkeypatch, "Ready", ["Succeeded"])
+    deploy_azure_container_apps.set_job_paused(SETTINGS, JOB, True)
+    post = next(call for call in calls if call[0][2] == "post")
+    assert post[1] == {"retry_busy": True}
+
+
+def test_destroy_deletes_the_job_without_waiting_out_retry_after_and_polls_every_2s(monkeypatch):
+    calls, sleeps = [], []
+    gets = iter([subprocess.CompletedProcess([], 0, "{}", ""), subprocess.CompletedProcess([], 0, "{}", ""),
+                 subprocess.CompletedProcess([], 1, "", 'ERROR: Not Found({"error":{"code":"ContainerAppsJobNotFound"}})')])
+    monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
+                        lambda *args, **kwargs: calls.append(args) or "")
+    monkeypatch.setattr(deploy_azure_container_apps, "az", lambda *args: calls.append(args) or next(gets))
+    monkeypatch.setattr(deploy_azure_container_apps.time, "sleep", sleeps.append)
+    deploy_azure_container_apps.delete_job(SETTINGS, JOB)
+    assert calls[0] == ("containerapp", "job", "delete", "--name", JOB, "--resource-group", "pdt",
+                        "--yes", "--no-wait")
+    assert [call[:3] for call in calls[1:]] == [("rest", "--method", "get")] * 3
+    assert sleeps == [2, 2]
+
+
+def test_a_job_azure_never_finishes_deleting_fails(monkeypatch):
+    monkeypatch.setattr(deploy_azure_container_apps, "run_quiet", lambda *args, **kwargs: "")
+    monkeypatch.setattr(deploy_azure_container_apps, "az",
+                        lambda *args: subprocess.CompletedProcess([], 0, "{}", ""))
+    monkeypatch.setattr(deploy_azure_container_apps.time, "sleep", lambda seconds: None)
+    with pytest.raises(SystemExit):
+        deploy_azure_container_apps.delete_job(SETTINGS, JOB)

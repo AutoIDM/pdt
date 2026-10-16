@@ -113,6 +113,8 @@ STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
 STORE_METADATA_ARGS = tuple(
     f"{key.replace('-', '_')}={value}" for key, value in STORE_TAGS.items())
 BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
+BUSY_POLL_SECONDS = 2
+BUSY_RETRY_SECONDS = 120
 
 
 def az(*args: str) -> subprocess.CompletedProcess:
@@ -140,14 +142,26 @@ def az(*args: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args, code, out.getvalue(), err.getvalue())
 
 
-def run_quiet(*args: str, retry_access: bool = False,
-              retry_internal: bool = False, hints: dict[str, str] | None = None) -> str:
+def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = False,
+              retry_busy: bool = False, hints: dict[str, str] | None = None) -> str:
+    """`retry_busy` retries a change that Azure refuses while another change to the same
+    Container Apps resource is in progress (ContainerAppOperationInProgress)."""
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
+    if retry_busy:
+        waits = (BUSY_POLL_SECONDS,) * (BUSY_RETRY_SECONDS // BUSY_POLL_SECONDS) + (0,)
+    busy = False
     for wait in waits:
         proc = az(*args)
         if proc.returncode == 0:
             return proc.stdout
         output = proc.stderr.lower()
+        if retry_busy and wait and "containerappoperationinprogress" in output:
+            if not busy:
+                console.bullet("Azure is still finishing another change to this job; "
+                               "waiting for it...", indent=4)
+            busy = True
+            time.sleep(wait)
+            continue
         access_error = retry_access and any(text in output for text in (
             "unable to fetch secret", "forbidden", "authorizationfailed",
             "does not have authorization",
