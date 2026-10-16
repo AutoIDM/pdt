@@ -37,7 +37,7 @@ ALLOWED = {
     "deploy_aws_batch.py": {"what", "resource.label", "label", "DOCKER_PLATFORM",
                             "float(JOB_VCPU)", "JOB_MEMORY", "groups", "len(arns)",
                             "len(revisions)", "state"},
-    "deploy_azure.py": {"reason", "wait", "label", "state", "waited"},
+    "deploy_azure.py": {"reason", "wait", "label", "state", "waited", "STORE_UNREADABLE"},
     "deploy_azure_container_apps.py": {"timestamp", "shared", "self.label", "lock.label",
                                        "release.note"},
     "deploy_google_cloud.py": {"wait", "label", "secret_state", "resource"},

@@ -60,24 +60,27 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import http.client
 import io
 import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, cached_price, fail, fetch_json, secret_contents, store_cost_label,
-    store_plan_lines, store_suffix)
+    STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,
+    secret_contents, store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
@@ -113,6 +116,23 @@ STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
 STORE_METADATA_ARGS = tuple(
     f"{key.replace('-', '_')}={value}" for key, value in STORE_TAGS.items())
 BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
+MANAGEMENT_API = "https://management.azure.com"
+# The CLI has no suspend or resume for a job; the resource manager API does,
+# from this api-version on, and it is what reports properties.runningState.
+JOBS_API_VERSION = "2026-07-01"
+API_VERSIONS = {
+    "Microsoft.App": JOBS_API_VERSION,
+    "Microsoft.Authorization": "2016-09-01",
+    "Microsoft.ContainerRegistry": "2025-04-01",
+    "Microsoft.KeyVault": "2025-05-01",
+    "Microsoft.ManagedIdentity": "2023-01-31",
+    "Microsoft.OperationalInsights": "2025-02-01",
+    "Microsoft.Resources": "2024-11-01",
+    "Microsoft.Storage": "2025-08-01",
+}
+VAULT_RESOURCE = "https://vault.azure.net"
+STORAGE_RESOURCE = "https://storage.azure.com"
+VAULT_API_VERSION = "7.4"
 
 
 def az(*args: str) -> subprocess.CompletedProcess:
@@ -182,6 +202,82 @@ def delete_unless_locked(*args: str) -> str:
         console.say(console.escape(proc.stderr.strip()))
     command = "pdt az " + " ".join(args[:4])
     fail(f"{console.value(command)} failed; fix the problem above and re-run")
+
+
+STALLED_CONNECT_SECONDS = 0.5
+CONNECT_TRIES = 4
+
+
+def connect_retrying_stalls(address, timeout, source_address=None) -> socket.socket:
+    for _ in range(CONNECT_TRIES - 1):
+        try:
+            sock = socket.create_connection(address, STALLED_CONNECT_SECONDS, source_address)
+        except TimeoutError:
+            continue
+        sock.settimeout(timeout)
+        return sock
+    return socket.create_connection(address, timeout, source_address)
+
+
+class QuickConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = connect_retrying_stalls
+
+
+class QuickHTTPS(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(QuickConnection, req, context=self._context)
+
+
+READ_OPENER = urllib.request.build_opener(QuickHTTPS)
+
+
+class ReadError(Exception):
+    def __init__(self, az_command: tuple[str, ...], message: str):
+        super().__init__(message)
+        self.az_command = az_command
+
+
+def arm_url(path: str) -> str:
+    providers = re.findall(r"/providers/([^/]+)", path)
+    version = API_VERSIONS[providers[-1] if providers else "Microsoft.Resources"]
+    return f"{MANAGEMENT_API}{path}?api-version={version}"
+
+
+def arm_get(token: str, url: str, az_command: tuple[str, ...],
+            missing: tuple[int, ...] = (404,)) -> dict | None:
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        return fetch_json(request, timeout=30, open_url=READ_OPENER.open)
+    except (FatalAPIError, RetriableAPIError) as exc:
+        if exc.response.status in missing:
+            return None
+        raise ReadError(az_command, az_error_line(exc.response)) from exc
+    except OSError as exc:
+        raise ReadError(az_command, f"ERROR: {exc}") from exc
+
+
+def arm_list(token: str, url: str, az_command: tuple[str, ...],
+             missing: tuple[int, ...] = (404,)) -> list | None:
+    items = []
+    while url:
+        page = arm_get(token, url, az_command, missing)
+        if page is None:
+            return None
+        items += page.get("value") or []
+        url = page.get("nextLink")
+    return items
+
+
+def az_error_line(response) -> str:
+    try:
+        error = json.loads(response.read()).get("error") or {}
+    except (OSError, ValueError, AttributeError):
+        error = {}
+    if not error.get("message"):
+        return f"ERROR: {response.status} {response.reason}"
+    return f"ERROR: ({error.get('code')}) {error['message']}"
 
 
 def az_json(*args: str):
@@ -316,9 +412,9 @@ def preflight(app: dict, settings: dict) -> dict:
     settings.update(shared_names(settings["subscription"], settings["resource_group"]))
     user = account.get("user") or {}
     is_user = str(user.get("type", "")).lower() == "user"
-    deployer_id = os.environ.get("PDT_AZURE_DEPLOYER_OBJECT_ID", "").strip()
-    if not deployer_id:
-        deployer_id = object_id_from_token(access_token())
+    settings["token"] = access_token()
+    deployer_id = (os.environ.get("PDT_AZURE_DEPLOYER_OBJECT_ID", "").strip()
+                   or object_id_from_token(settings["token"]))
     if not deployer_id:
         fail("cannot determine the signed-in Azure principal; set "
              f"{console.value('PDT_AZURE_DEPLOYER_OBJECT_ID')}")
@@ -344,20 +440,33 @@ def subscription_problem(account: dict) -> str:
             f"{config.PROJECT_FILE} to another subscription id.")
 
 
-def object_id_from_token(token: str) -> str:
+def token_claims(token: str) -> dict:
     parts = token.split(".")
     if len(parts) != 3:
-        return ""
+        return {}
     payload = parts[1] + "=" * (-len(parts[1]) % 4)
     try:
-        claims = json.loads(base64.urlsafe_b64decode(payload))
+        return json.loads(base64.urlsafe_b64decode(payload))
     except ValueError:
-        return ""
-    return str(claims.get("oid") or "")
+        return {}
 
 
-def access_token() -> str:
-    return az_tsv("account", "get-access-token", "--query", "accessToken")
+def object_id_from_token(token: str) -> str:
+    return str(token_claims(token).get("oid") or "")
+
+
+class HeldToken:
+    def __init__(self, token: str):
+        self.token = token
+
+    def get_token(self, *scopes, **kwargs):
+        from azure.core.credentials import AccessToken
+        return AccessToken(self.token, int(token_claims(self.token).get("exp") or 0))
+
+
+def access_token(resource: str = "") -> str:
+    scope = ("--resource", resource) if resource else ()
+    return az_tsv("account", "get-access-token", *scope, "--query", "accessToken")
 
 
 def save_subscription(app: dict, sub: dict) -> None:
@@ -558,9 +667,8 @@ SHARED_TYPES = {
 }
 
 
-def check_shared_names(settings: dict[str, str]) -> None:
-    rg = settings["resource_group"]
-    for resource in az_json("resource", "list", "--resource-group", rg) or []:
+def check_shared_names(settings: dict[str, str], group_resources: list | None) -> None:
+    for resource in group_resources or []:
         shared = SHARED_TYPES.get(str(resource.get("type", "")).lower())
         if shared is None or not managed_by_pdt(resource):
             continue
@@ -580,20 +688,37 @@ def check_shared_names(settings: dict[str, str]) -> None:
                  f"  {console.value(delete_command)}")
 
 
+SECRET_MISSING_OR_NOT_GRANTED = (403, 404)
+
+
+def secret_reads(settings: dict[str, str], vault_token: str, sid: str,
+                 wanted: bool) -> tuple[dict | None, dict | None, list]:
+    vault = arm_get(settings["token"], arm_url(resource_id(
+        settings, "Microsoft.KeyVault", "vaults", settings["vault"])),
+        ("keyvault", "show", "--name", settings["vault"]))
+    if vault is None or not wanted:
+        return vault, None, []
+    url = f"https://{settings['vault']}.vault.azure.net/secrets/{sid}"
+    current = arm_get(vault_token, f"{url}?api-version={VAULT_API_VERSION}",
+                      ("keyvault", "secret", "show", "--vault-name", settings["vault"]),
+                      missing=SECRET_MISSING_OR_NOT_GRANTED)
+    if current is None:
+        return vault, None, []
+    versions = arm_list(vault_token, f"{url}/versions?api-version={VAULT_API_VERSION}",
+                        ("keyvault", "secret", "list-versions", "--vault-name",
+                         settings["vault"]), missing=SECRET_MISSING_OR_NOT_GRANTED)
+    return vault, current, versions or []
+
+
 def secret_state(settings: dict[str, str], sid: str, app_name: str,
-                 wanted: bool) -> tuple[bool, str | None]:
-    vault = az_json("keyvault", "show", "--name", settings["vault"],
-                    "--resource-group", settings["resource_group"])
+                 reads: tuple[dict | None, dict | None, list]) -> tuple[bool, str | None]:
+    vault, current, versions = reads
     require_managed(vault, f"Key Vault {console.value(settings['vault'])}")
-    vault_exists = vault is not None
-    current = None
-    if vault_exists and wanted:
-        current = az_json("keyvault", "secret", "show", "--vault-name",
-                          settings["vault"], "--name", sid)
-        if current and not managed_secret(settings, sid, app_name):
-            fail(f"Key Vault secret {console.value(sid)} already exists but is not owned "
-                 f"by PDT app {console.value(app_name)}; choose another Key Vault")
-    return vault_exists, current.get("value") if current else None
+    # Tags belong to a version, and a version added in the portal has none.
+    if current and not any(owned_by(version, app_name) for version in versions):
+        fail(f"Key Vault secret {console.value(sid)} already exists but is not owned "
+             f"by PDT app {console.value(app_name)}; choose another Key Vault")
+    return vault is not None, current.get("value") if current else None
 
 
 def secret_actions(sid: str, values: dict, current: str | None,
@@ -676,9 +801,11 @@ def purge_deleted_vault(settings: dict[str, str]) -> None:
 
 
 def workspace_resource(settings: dict) -> dict | None:
-    return az_json("monitor", "log-analytics", "workspace", "show",
-                   "--resource-group", settings["environment"].resource_group,
-                   "--workspace-name", settings["workspace"])
+    group = settings["environment"].resource_group
+    return arm_get(settings["token"], arm_url(
+        f"/subscriptions/{settings['subscription']}/resourceGroups/{group}"
+        f"/providers/Microsoft.OperationalInsights/workspaces/{settings['workspace']}"),
+        ("monitor", "log-analytics", "workspace", "show"))
 
 
 def ensure_workspace(settings: dict, exists: bool) -> None:
@@ -883,14 +1010,15 @@ def store_settings(settings: dict[str, str]) -> dict[str, str]:
     suffix = store_suffix(settings["subscription"])
     account = f"pdtdata{suffix}"
     container = f"pdt-data-{suffix}"
+    group_id = f"/subscriptions/{settings['subscription']}/resourceGroups/{STORE_GROUP}"
+    account_id = f"{group_id}/providers/Microsoft.Storage/storageAccounts/{account}"
     return {
         "group": STORE_GROUP,
         "account": account,
         "container": container,
-        "container_id": (
-            f"/subscriptions/{settings['subscription']}/resourceGroups/{STORE_GROUP}"
-            f"/providers/Microsoft.Storage/storageAccounts/{account}"
-            f"/blobServices/default/containers/{container}"),
+        "group_id": group_id,
+        "account_id": account_id,
+        "container_id": f"{account_id}/blobServices/default/containers/{container}",
     }
 
 
@@ -904,20 +1032,24 @@ def store_description(store: dict[str, str]) -> console.Markup:
                           f"container {console.value(store['container'])}")
 
 
-def store_exists(store: dict[str, str]) -> bool:
-    group = az_json("group", "show", "--name", store["group"])
+def store_reads(token: str, store: dict[str, str]) -> tuple[dict | None, dict | None, dict | None]:
+    group = arm_get(token, arm_url(store["group_id"]), ("group", "show", "--name", store["group"]))
+    account = arm_get(token, arm_url(store["account_id"]),
+                      ("storage", "account", "show", "--name", store["account"]))
+    container = arm_get(token, arm_url(store["container_id"]), (
+        "storage", "container-rm", "show", "--storage-account", store["account"])
+    ) if account else None
+    return group, account, container
+
+
+def store_exists(store: dict[str, str],
+                 reads: tuple[dict | None, dict | None, dict | None]) -> bool:
+    group, account, container = reads
     require_managed(group, f"resource group {console.value(store['group'])}")
-    account = az_json("storage", "account", "show", "--name", store["account"],
-                      "--resource-group", store["group"])
     require_managed(account, f"Storage account {console.value(store['account'])}")
-    if account is None:
+    if account is None or container is None:
         return False
-    container = az_json("storage", "container-rm", "show",
-                        "--storage-account", store["account"],
-                        "--resource-group", store["group"], "--name", store["container"])
-    if container is None:
-        return False
-    metadata = container.get("metadata") or {}
+    metadata = (container.get("properties") or {}).get("metadata") or {}
     if metadata and metadata.get("managed_by") != "pdt":
         fail(f"container {console.value(store['container'])} exists but is not managed by PDT")
     return bool(metadata)
@@ -969,45 +1101,44 @@ def ensure_store(settings: dict[str, str], store: dict[str, str], exists: bool) 
                 settings["deployer_principal_type"])
 
 
-def store_cost(usage: tuple[int, int], region: str, currency: str = "USD") -> tuple[str, float]:
-    count, size = usage
-    price, _ = retail_price(region, "Storage", "Hot LRS Data Stored", "Hot LRS",
-                            "General Block Blob v2", currency)
-    return store_cost_label(count, size), size / 1024 ** 3 * price
+def held_token_store(settings: dict[str, str], app_name: str, token: str) -> Store:
+    return Store(store_url(store_settings(settings), app_name), HeldToken(token))
 
 
-def deployer_store(settings: dict[str, str], app_name: str) -> Store:
+def cli_credential_store(settings: dict[str, str], app_name: str) -> Store:
     from azure.identity import AzureCliCredential
     os.environ["PATH"] = os.pathsep.join(
         [str(Path(sys.executable).parent), os.environ.get("PATH", "")])
     return Store(store_url(store_settings(settings), app_name), AzureCliCredential())
 
 
+STORE_UNREADABLE = ("this login cannot read the data store yet; the deploy grants it "
+                    "the role, and the next plan shows the stored data")
+
+
 def store_usage(deployer: Store) -> tuple[int, int] | None:
-    """None until this login holds the data role, which ensure_store grants."""
     try:
         return deployer.usage()
     except Exception as exc:  # the SDK raises HttpResponseError; tests have no SDK
         if "AuthorizationPermissionMismatch" not in str(exc):
             raise
-        console.note("this login cannot read the data store yet; the deploy grants it "
-                     "the role, and the next plan shows the stored data")
         return None
 
 
+def note_if_unreadable(usage: tuple[int, int] | None) -> bool:
+    if usage is None:
+        console.note(STORE_UNREADABLE)
+    return usage is None
+
+
 def storage(app: dict, settings: dict[str, str], rest: list[str], assume_yes: bool) -> int:
-    return storage_cli.run(deployer_store(settings, app["name"]), app, rest, assume_yes)
+    return storage_cli.run(cli_credential_store(settings, app["name"]), app, rest, assume_yes)
 
 
 def run_basis(seconds: float | None) -> tuple[float, str]:
     if seconds is None:
         return ASSUMED_RUN_MINUTES * 60, f"{ASSUMED_RUN_MINUTES:g} min assumed"
     return seconds, f"{seconds / 60:.1f} min avg of recent runs"
-
-
-def key_vault_item(region: str, runs: float, currency: str = "USD") -> tuple[str, float]:
-    kv_price, _ = retail_price(region, "Key Vault", "Operations", "Standard", currency=currency)
-    return f"Key Vault: 1 secret, ~{runs:.0f} reads", runs * kv_price / 10000
 
 
 def cost_estimate(region: str, items: list[tuple[str, float]],
@@ -1037,6 +1168,15 @@ def main() -> int:
     parser.add_argument("--yes", action="store_true")
     args = parser.parse_intermixed_args()
     app = load_app(args.app)
+    try:
+        return run_command(app, args)
+    except ReadError as exc:
+        console.say(console.escape(str(exc)))
+        command = "pdt az " + " ".join(exc.az_command[:4])
+        fail(f"{console.value(command)} failed; fix the problem above and re-run")
+
+
+def run_command(app: dict, args: argparse.Namespace) -> int:
     if args.command == "login":
         requested = azure_settings(app)["subscription"]
         return relogin("" if requested == PLACEHOLDER_SUBSCRIPTION else requested)

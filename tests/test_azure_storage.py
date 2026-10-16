@@ -69,7 +69,8 @@ def test_usage_is_unknown_until_the_data_role_lands(capsys):
             raise RuntimeError("ErrorCode:AuthorizationPermissionMismatch")
 
     assert deploy_azure.store_usage(Deployer()) is None
-    assert "cannot read the data store yet" in capsys.readouterr().out
+    assert capsys.readouterr().out == ""
+    assert "cannot read the data store yet" in deploy_azure.STORE_UNREADABLE
 
 
 def test_another_storage_error_is_raised():
