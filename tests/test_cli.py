@@ -516,6 +516,153 @@ def test_deploy_all_with_an_app_name_is_refused(project, monkeypatch, capsys):
     assert "pick an app or --all, not both" in capsys.readouterr().out
 
 
+def test_deploy_all_goes_on_past_a_declined_app(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_deploys(monkeypatch, {"bravo": deploy.DECLINED})
+    questions = answer(monkeypatch)
+    assert run_cli(monkeypatch, "deploy", "--all") == 1
+    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
+    assert questions == []
+    assert config.is_enabled("bravo")
+    out = capsys.readouterr().out
+    assert "bravo did not deploy." not in out
+    assert "Not deployed: bravo" in out
+
+
+def fake_destroys(monkeypatch, codes, raises=None):
+    calls = []
+
+    def fake_destroy(name, assume_yes=False):
+        calls.append((name, assume_yes))
+        if name == raises:
+            raise KeyboardInterrupt
+        return codes.get(name, 0)
+
+    monkeypatch.setattr(deploy, "destroy", fake_destroy)
+    return calls
+
+
+def four_deployed(project):
+    four_apps(project)
+    for name in ("alpha", "bravo", "charlie", "delta"):
+        config.mark_deployed(name, True)
+
+
+DESTROY_STOP_HINT = ("Fix the problem above and run pdt destroy --all again, "
+                     "or add --skip-failures to go on past it.")
+
+
+def test_destroy_all_destroys_every_deployed_app_in_order(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    add_app(project, "idle")
+    add_app(project, "not-ready", "enabled: false\n")
+    add_app(project, "daily-report")
+    config.mark_deployed("hello-world", True)
+    config.mark_deployed("daily-report", True)
+    calls = fake_destroys(monkeypatch, {})
+    assert run_cli(monkeypatch, "destroy", "--all", "--yes") == 0
+    assert calls == [("daily-report", True), ("hello-world", True)]
+    out = capsys.readouterr().out
+    assert "Destroying daily-report (1 of 2)" in out
+    assert "Destroying hello-world (2 of 2)" in out
+    assert out.count("Not deployed, so nothing to destroy: idle") == 1
+    assert "not-ready" not in out
+
+
+def test_destroy_all_lists_the_apps_unless_yes(project, monkeypatch, capsys):
+    four_deployed(project)
+    fake_destroys(monkeypatch, {})
+    answer(monkeypatch)
+    assert run_cli(monkeypatch, "destroy", "--all") == 0
+    out = capsys.readouterr().out
+    assert out.index("pdt destroy --all will destroy these apps") < out.index("Destroying alpha")
+    assert run_cli(monkeypatch, "destroy", "--all", "--yes") == 0
+    assert "will destroy these apps" not in capsys.readouterr().out
+
+
+def test_destroy_all_goes_on_past_a_declined_app(project, monkeypatch, capsys):
+    four_deployed(project)
+    calls = fake_destroys(monkeypatch, {"bravo": deploy.DECLINED})
+    questions = answer(monkeypatch)
+    assert run_cli(monkeypatch, "destroy", "--all") == 1
+    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
+    assert questions == []
+    out = capsys.readouterr().out
+    assert "bravo did not destroy." not in out
+    assert "Not destroyed: bravo" in out
+
+
+def test_destroy_all_stops_when_the_person_will_not_skip(project, monkeypatch, capsys):
+    four_deployed(project)
+    calls = fake_destroys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch, False)
+    assert run_cli(monkeypatch, "destroy", "--all") == 3
+    assert calls == [("alpha", False), ("bravo", False)]
+    assert questions == ["Skip the failing app bravo and destroy the rest?"]
+    out = capsys.readouterr().out
+    assert "bravo did not destroy." in out
+    assert DESTROY_STOP_HINT in out
+
+
+def test_destroy_all_with_yes_and_no_terminal_stops_at_the_failure(project, monkeypatch, capsys):
+    four_deployed(project)
+    calls = fake_destroys(monkeypatch, {"bravo": 3})
+    monkeypatch.setattr(cli, "can_prompt", lambda interactive: False)
+    assert run_cli(monkeypatch, "destroy", "--all", "--yes") == 3
+    assert calls == [("alpha", True), ("bravo", True)]
+    assert DESTROY_STOP_HINT in capsys.readouterr().out
+
+
+def test_destroy_all_with_skip_failures_runs_unattended(project, monkeypatch, capsys):
+    four_deployed(project)
+    calls = fake_destroys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch)
+    assert run_cli(monkeypatch, "destroy", "--all", "--yes", "--skip-failures") == 1
+    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
+    assert questions == []
+    assert "Not destroyed: bravo" in capsys.readouterr().out
+
+
+def test_destroy_all_never_offers_to_disable_an_app(project, monkeypatch, capsys):
+    four_deployed(project)
+    fake_destroys(monkeypatch, {"bravo": 3})
+    questions = answer(monkeypatch, True)
+    assert run_cli(monkeypatch, "destroy", "--all", "--yes") == 1
+    assert questions == ["Skip the failing app bravo and destroy the rest?"]
+    assert config.is_enabled("bravo")
+
+
+def test_destroy_all_stops_on_ctrl_c(project, monkeypatch, capsys):
+    four_deployed(project)
+    calls = fake_destroys(monkeypatch, {}, raises="bravo")
+    assert run_cli(monkeypatch, "destroy", "--all", "--yes") == 130
+    assert [name for name, _ in calls] == ["alpha", "bravo"]
+
+
+def test_destroy_all_with_no_deployed_app_does_nothing(project, monkeypatch, capsys):
+    four_apps(project)
+    calls = fake_destroys(monkeypatch, {})
+    assert run_cli(monkeypatch, "destroy", "--all", "--yes") == 0
+    assert calls == []
+    assert "No app is deployed, so there is nothing to destroy." in capsys.readouterr().out
+
+
+def test_destroy_all_with_an_app_name_is_refused(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    calls = fake_destroys(monkeypatch, {})
+    assert run_cli(monkeypatch, "destroy", "hello-world", "--all") == 1
+    assert calls == []
+    assert "pick an app or --all, not both" in capsys.readouterr().out
+
+
+def test_destroy_skip_failures_without_all_is_refused(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    calls = fake_destroys(monkeypatch, {})
+    assert run_cli(monkeypatch, "destroy", "hello-world", "--skip-failures") == 1
+    assert calls == []
+    assert "--skip-failures only works with --all" in capsys.readouterr().out
+
+
 def test_health_of_one_app_shows_a_provider_failure_as_unknown(project, monkeypatch, capsys):
     add_app(project, "hello-world", "schedule: daily\n")
     monkeypatch.setattr(deploy, "dispatch_output", lambda *a: (1, ""))

@@ -451,6 +451,11 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
 DECLINED = 10
 
 
+# The exit code of a provider script whose plan the user declined, so `pdt deploy --all`
+# and `pdt destroy --all` can tell a cancelled app from a failed one.
+DECLINED = 10
+
+
 def confirm(actions: list[str], assume_yes: bool,
             cost: CostEstimate | None = None) -> bool:
     console.heading("Plan:")
