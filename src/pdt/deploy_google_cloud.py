@@ -81,7 +81,7 @@ from pdt import lifecycle
 from pdt import regions
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, build_in_cloud, convert_from_usd, fail,
+    STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd, fail,
     fetch_json, gather_secrets, image_action, run_build, run_secrets, secret_contents,
     ssh_build_args, stage_build_context, store_cost_label, store_kept_line, store_name,
     store_plan_lines, store_suffix, warn_if_locked, write_dockerfile)
@@ -741,7 +741,6 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                         assume_yes: bool, billing_confirmed: bool = False,
                         attempt: int = 0, store_usage: tuple[int, int] | None = None,
                         currency: str = "USD") -> CostEstimate:
-    console.status("Fetching list prices from the Cloud Billing catalog...")
     try:
         runs = config.runs_per_month(cron)
         seconds = average_run_seconds(job, region, project) if job_exists else None
@@ -750,17 +749,28 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
             basis = f"{ASSUMED_RUN_MINUTES:g} min assumed"
         else:
             basis = f"{seconds / 60:.1f} min avg of recent runs"
-        services = billing_list("services", "services", project)
-        ids = {s.get("displayName"): s.get("serviceId") for s in services}
-        run_skus = billing_list(f"services/{ids['Cloud Run']}/skus", "skus", project, currency)
-        sched_skus = billing_list(f"services/{ids['Cloud Scheduler']}/skus", "skus", project,
-                                  currency)
-        secret_skus = billing_list(f"services/{ids['Secret Manager']}/skus", "skus", project,
-                                   currency)
-        cpu_price, _ = sku_price(run_skus, region, "Jobs CPU")
-        mem_price, _ = sku_price(run_skus, region, "Jobs Memory")
+        ids = {}
+        skus = {}
+
+        def price(service: str, description: str, prefer: str = "") -> tuple[float, str]:
+            def read() -> list:
+                if not ids:
+                    ids.update((s.get("displayName"), s.get("serviceId"))
+                               for s in billing_list("services", "services", project))
+                if service not in skus:
+                    skus[service] = billing_list(f"services/{ids[service]}/skus", "skus", project,
+                                                 currency)
+                return list(sku_price(skus[service], region, description, prefer))
+
+            amount, unit = cached_price("google-cloud", region, currency,
+                                        f"{service}: {description} ({prefer})", read,
+                                        "Fetching list prices from the Cloud Billing catalog...")
+            return amount, unit
+
+        cpu_price, _ = price("Cloud Run", "Jobs CPU")
+        mem_price, _ = price("Cloud Run", "Jobs Memory")
         run_cost = runs * seconds * (JOB_VCPU * cpu_price + JOB_MEMORY_GIB * mem_price)
-        sched_price, sched_unit = sku_price(sched_skus, region, "Job")
+        sched_price, sched_unit = price("Cloud Scheduler", "Job")
         sched_cost = sched_price * per_month(sched_unit)
         items = [
             (f"Cloud Run job: ~{runs:.0f} runs x {basis} "
@@ -768,14 +778,11 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
             ("Cloud Scheduler job", sched_cost),
         ]
         if num_secrets:
-            secret_price, secret_unit = sku_price(secret_skus, region,
-                                                  "Secret version", prefer="storage")
+            secret_price, secret_unit = price("Secret Manager", "Secret version", prefer="storage")
             secret_cost = num_secrets * secret_price * per_month(secret_unit)
             items.append((f"Secret Manager: {num_secrets} secret version", secret_cost))
         if store_usage is not None:
-            storage_skus = billing_list(f"services/{ids['Cloud Storage']}/skus", "skus", project,
-                                        currency)
-            storage_price, _ = sku_price(storage_skus, region, "Standard Storage")
+            storage_price, _ = price("Cloud Storage", "Standard Storage")
             count, size = store_usage
             items.append((store_cost_label(count, size), size / 1024 ** 3 * storage_price))
     except Exception as exc:

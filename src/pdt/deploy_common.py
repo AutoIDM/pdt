@@ -71,12 +71,13 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ElementTree
 from http import HTTPStatus
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import backoff
 
@@ -249,6 +250,48 @@ class CostEstimate:
                            "this computer's regional setting.")
 
 
+PRICE_CACHE = config.data_home() / "pdt" / "prices"
+PRICE_MAX_AGE_SECONDS = 72 * 3600
+
+
+def cached_price(provider: str, region: str, currency: str, query: str,
+                 read: Callable[[], Any], fetching: str = "") -> Any:
+    key = {"provider": provider, "region": region, "currency": currency, "query": query}
+    name = hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
+    path = PRICE_CACHE / f"{name}.json"
+    entry = None
+    try:
+        saved = json.loads(path.read_text())
+        if saved["key"] == key:
+            entry = float(saved["read_at"]), saved["value"], saved["missing"]
+    except (OSError, ValueError, LookupError, TypeError):
+        pass
+    if entry is None or not 0 <= time.time() - entry[0] < PRICE_MAX_AGE_SECONDS:
+        if fetching:
+            console.status_once(fetching)
+        try:
+            fresh = time.time(), read(), None
+        except LookupError as exc:
+            fresh = time.time(), None, str(exc)
+        except Exception as exc:
+            if entry is None:
+                raise
+            console.warn_once(f"Could not read current prices ({console.escape(str(exc))}); "
+                              "the estimate uses saved prices.")
+            fresh = None
+        if fresh is not None:
+            entry = fresh
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                config.write_text_atomically(path, json.dumps(
+                    {"key": key, "read_at": entry[0], "value": entry[1], "missing": entry[2]}))
+            except OSError:
+                pass
+    if entry[2] is not None:
+        raise LookupError(entry[2])
+    return entry[1]
+
+
 ECB_RATES = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
 
 
@@ -266,17 +309,21 @@ def ecb_xml() -> bytes:
 
 
 def ecb_rate(currency: str) -> tuple[float, str]:
-    """What one USD costs in `currency` at today's ECB euro reference rates, and their date."""
-    rates = {"EUR": 1.0}
-    date = ""
-    for cube in ElementTree.fromstring(ecb_xml()).iter():
-        if cube.get("time"):
-            date = cube.get("time", "")
-        if cube.get("currency") and cube.get("rate"):
-            rates[cube.get("currency", "")] = float(cube.get("rate", ""))
-    if "USD" not in rates or currency not in rates:
-        raise LookupError(f"the ECB publishes no {currency} rate")
-    return rates[currency] / rates["USD"], date
+    """What one USD costs in `currency` at the ECB euro reference rates, and their date."""
+    def read() -> list:
+        rates = {"EUR": 1.0}
+        date = ""
+        for cube in ElementTree.fromstring(ecb_xml()).iter():
+            if cube.get("time"):
+                date = cube.get("time", "")
+            if cube.get("currency") and cube.get("rate"):
+                rates[cube.get("currency", "")] = float(cube.get("rate", ""))
+        if "USD" not in rates or currency not in rates:
+            raise LookupError(f"the ECB publishes no {currency} rate")
+        return [rates[currency] / rates["USD"], date]
+
+    rate, date = cached_price("ecb", "", currency, ECB_RATES, read)
+    return rate, date
 
 
 def convert_from_usd(items: list[tuple[str, float]], currency: str,

@@ -728,7 +728,6 @@ def delete_build_bucket(s3, name: str) -> None:
 def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
                       schedule_exists: bool, usage: tuple[int, int] | None,
                       local_currency: str) -> CostEstimate:
-    console.status("Fetching list prices from the AWS price list...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(
