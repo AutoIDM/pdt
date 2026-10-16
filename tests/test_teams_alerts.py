@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
-from conftest import add_app
+from conftest import add_app, plain
 
 from pdt import alert_message, alerts_cli, config, lifecycle, teams
 
@@ -247,6 +247,99 @@ def test_the_default_answer_to_the_test_question_sends_nothing(project, workflow
     answers(monkeypatch, "1 2", "", "", url, "y", "n")
     assert alerts_cli.setup() == 0
     assert seen == []
+
+
+SLACK_URL = "https://hooks.slack.com/services/T1/B1/x"
+TEAMS_URL = "https://a.environment.api.powerplatform.com/w"
+TEAMS_ID = teams.webhook_id(TEAMS_URL)
+
+
+def asked_in_order(monkeypatch, *replies):
+    """Scripted answers; returns each heading, question, and done line in the order setup
+    shows them. A KeyboardInterrupt in `replies` is raised in the place of an answer."""
+    shown = []
+    queue = list(replies)
+
+    def reply(question, *_a, **_k):
+        shown.append(question)
+        answer = queue.pop(0)
+        if answer is KeyboardInterrupt:
+            raise KeyboardInterrupt
+        return answer
+
+    monkeypatch.setattr(alerts_cli.console, "heading", shown.append)
+    monkeypatch.setattr(alerts_cli.console, "done", lambda line: shown.extend(plain([line])))
+    monkeypatch.setattr(alerts_cli.console, "ask", reply)
+    monkeypatch.setattr(alerts_cli.console, "confirm", lambda question: reply(question) == "y")
+    monkeypatch.setattr(alerts_cli, "can_prompt", lambda _interactive: True)
+    return shown
+
+
+def test_setup_finishes_each_type_from_events_to_test_before_the_next_starts(
+        project, monkeypatch):
+    monkeypatch.delenv("SLACK_WEBHOOK_B1", raising=False)
+    monkeypatch.delenv(f"TEAMS_WEBHOOK_{TEAMS_ID.upper()}", raising=False)
+    shown = asked_in_order(monkeypatch, "2", "", "", SLACK_URL, "n", "", TEAMS_URL, "n")
+    assert alerts_cli.setup() == 0
+    boxes = "Type numbers to turn them on or off, or press Enter to go on"
+    assert shown == [
+        "Where should pdt send alerts?", boxes, "Where should pdt send alerts?", boxes,
+        "Slack (1 of 2)", "Which events should go to Slack?", boxes,
+        "Paste a webhook URL, or press Enter to make one in your browser",
+        "saved  SLACK_WEBHOOK_B1 in .env",
+        "saved  the Slack webhook B1 entry under alerts: in pdt.yml",
+        "Send a test message to Slack webhook B1 now?",
+        "Microsoft Teams (2 of 2)", "Which events should go to Microsoft Teams?", boxes,
+        "Paste the workflow URL, or press Enter to see how to make one",
+        f"saved  TEAMS_WEBHOOK_{TEAMS_ID.upper()} in .env",
+        f"saved  the Teams workflow {TEAMS_ID} entry under alerts: in pdt.yml",
+        f"Send a test message to Teams workflow {TEAMS_ID} now?", "Next steps:"]
+
+
+def test_the_first_type_is_in_pdt_yml_and_env_before_the_next_type_asks_anything(
+        project, monkeypatch):
+    monkeypatch.delenv("SLACK_WEBHOOK_B1", raising=False)
+    asked_in_order(monkeypatch, "2", "", "", SLACK_URL, "n", "", TEAMS_URL, "n")
+    on_disk = {}
+
+    def heading(text):
+        if text == "Microsoft Teams (2 of 2)":
+            on_disk["alerts"] = config.load_yaml(project / "pdt.yml")["alerts"]
+            on_disk["env"] = (project / ".env").read_text()
+
+    monkeypatch.setattr(alerts_cli.console, "heading", heading)
+    assert alerts_cli.setup() == 0
+    assert on_disk == {"alerts": [{"type": "slack", "webhook": "B1", "events": [
+        "app:deploy-completed", "app:deploy-failed", "job:run-failed"]}],
+        "env": f"SLACK_WEBHOOK_B1={SLACK_URL}\n"}
+
+
+def test_a_stop_in_the_second_type_keeps_the_first_saved_and_the_second_as_written(
+        project, monkeypatch):
+    monkeypatch.delenv("SLACK_WEBHOOK_B1", raising=False)
+    (project / "pdt.yml").write_text("platform:\n  provider: azure\nalerts:\n"
+                                     "  - type: teams\n    webhook: w1\n    events: [all]\n")
+    asked_in_order(monkeypatch, "1", "", "", SLACK_URL, "n", "", "y", KeyboardInterrupt)
+    with pytest.raises(KeyboardInterrupt):
+        alerts_cli.setup()
+    assert config.load_yaml(project / "pdt.yml")["alerts"] == [
+        {"type": "teams", "webhook": "w1", "events": ["all"]},
+        {"type": "slack", "webhook": "B1", "events": [
+            "app:deploy-completed", "app:deploy-failed", "job:run-failed"]}]
+    assert (project / ".env").read_text() == f"SLACK_WEBHOOK_B1={SLACK_URL}\n"
+
+
+def test_enter_at_every_question_of_two_types_writes_nothing(project, monkeypatch):
+    text = ("platform:\n  provider: azure\nalerts:\n"
+            "  - type: slack\n    webhook: B1\n    events: [all]  # mine\n"
+            "  - type: teams\n    webhook: w1\n    events: [job:run-failed]\n")
+    (project / "pdt.yml").write_text(text)
+    monkeypatch.setattr(config, "save_root_alerts", lambda _alerts: pytest.fail("saved"))
+    shown = asked_in_order(monkeypatch, "", "", "", "", "", "", "")
+    assert alerts_cli.setup() == 0
+    assert "Replace Teams workflow w1 with a new one?" in shown
+    assert (project / "pdt.yml").read_text() == text
+    assert not (project / ".env").exists()
 
 
 def test_alerts_test_sends_the_ready_card_to_a_teams_entry_and_a_slack_entry(

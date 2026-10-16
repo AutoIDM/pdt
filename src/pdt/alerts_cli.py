@@ -253,15 +253,45 @@ def first_valid_not_unhandled(alerts: list) -> dict[str, Current]:
     return found
 
 
-def merged(alerts: list, current: dict[str, Current], chosen: dict[str, dict]) -> list:
-    owners = {entry.index: name for name, entry in current.items()}
-    saved = [chosen.get(owners[index]) if index in owners else alert
-             for index, alert in enumerate(alerts)]
-    return [alert for alert in saved if alert is not None] + [
-        entry for name, entry in chosen.items() if name not in current]
+def save(project, alerts: list, old: dict | None, new: dict | None,
+         values: dict[str, str]) -> list:
+    """Write one type's .env values, then put `new` in the place of `old` in pdt.yml (no
+    `old` adds `new`, no `new` removes `old`), and say what changed. The .env values go
+    first, so a stop between the two writes never leaves an entry without its webhook."""
+    if values:
+        env_file = project / ".env"
+        private_file(env_file)
+        for key, value in values.items():
+            set_key(env_file, key, value, quote_mode="never")
+            os.environ[key] = value
+        names = ", ".join(map(console.value, values))
+        console.done(f"saved  {names} in {console.value(config.shown_path(env_file))}")
+    if new is old:
+        if new is not None:
+            console.say(f"The {console.value(SETUPS[new['type']].describe(new))} entry stays "
+                        "as it is.")
+        return alerts
+    if old is None:
+        alerts = alerts + [new]
+    elif new is None:
+        alerts = [alert for alert in alerts if alert is not old]
+    else:
+        alerts = [new if alert is old else alert for alert in alerts]
+    path = config.save_root_alerts(alerts)
+    if new is None:
+        console.done(f"removed the {console.value(SETUPS[old['type']].describe(old))}"
+                     f" entry from {console.value('alerts:')} in "
+                     f"{console.value(config.shown_path(path))}")
+    else:
+        console.done(f"saved  the {console.value(SETUPS[new['type']].describe(new))} entry "
+                     f"under {console.value('alerts:')} in "
+                     f"{console.value(config.shown_path(path))}")
+    return alerts
 
 
 def setup() -> int:
+    """Take each chosen type in turn through events, connect, save, and test. The entries
+    of types the user unchecks go last, so a stop part way removes nothing."""
     project = config.find_project()
     if not can_prompt(None):
         console.error("pdt alerts setup asks questions; run it in a terminal")
@@ -275,69 +305,40 @@ def setup() -> int:
                        [(name, item.label) for name, item in SETUPS.items()],
                        list(current) if isinstance(alerts, list) else list(SETUPS)[:1])
     alerts = alerts if isinstance(alerts, list) else []
-    chosen: dict[str, dict] = {}
-    values: dict[str, str] = {}
+    existing = {name: alerts[entry.index] for name, entry in current.items()}
+    start = alerts
     code = 0
-    for name in types:
+    for number, name in enumerate(types, 1):
         item = SETUPS[name]
-        existing = alerts[current[name].index] if name in current else None
+        title = item.label.partition(":")[0]
+        old = existing.get(name)
         checked = current[name].events if name in current else list(item.events)
         console.say()
-        events = checkboxes(f"Which events should go to {item.label.partition(':')[0]}?",
+        console.heading(console.escape(f"{title} ({number} of {len(types)})"))
+        events = checkboxes(f"Which events should go to {title}?",
                             [(event, f"{alert_message.event_words(event)} ({event})")
                              for event in lifecycle.EVENTS],
                             checked)
         if not events:
-            console.say(f"No events chosen, so {console.escape(item.label.partition(':')[0])} "
-                        "gets no alerts.")
+            console.say(f"No events chosen, so {console.escape(title)} gets no alerts.")
+            alerts = save(project, alerts, old, None, {})
             continue
-        keys = {key: existing[key] for key in sorted(lifecycle.TRANSPORTS[name].keys)
-                if key in (existing or {})}
-        if not keys or console.confirm(f"Replace {item.describe(existing)} with a new one?"):
+        keys = {key: old[key] for key in sorted(lifecycle.TRANSPORTS[name].keys)
+                if key in (old or {})}
+        values: dict[str, str] = {}
+        if not keys or console.confirm(f"Replace {item.describe(old)} with a new one?"):
             found = item.configure()
             if found is None:
                 console.note(f"{console.value(name)} is not set up. Run "
                              f"{console.value('pdt alerts setup')} to try again.")
                 code = 1
-                if existing is not None:
-                    chosen[name] = existing
                 continue
-            keys, new_values = found
-            values.update(new_values)
-        same = existing is not None and events == checked and all(
-            existing.get(key) == value for key, value in keys.items())
-        chosen[name] = existing if same else {"type": name, **keys, "events": (
+            keys, values = found
+        same = old is not None and events == checked and all(
+            old.get(key) == value for key, value in keys.items())
+        entry = old if same else {"type": name, **keys, "events": (
             [lifecycle.ALL] if events == list(lifecycle.EVENTS) else events)}
-    saved = merged(alerts, current, chosen)
-    console.say()
-    if saved == alerts:
-        console.say(f"{console.value('alerts:')} stays as it is.")
-    else:
-        path = config.save_root_alerts(saved)
-        for name, entry in chosen.items():
-            if name not in current or entry != alerts[current[name].index]:
-                console.done(f"saved  the {console.value(SETUPS[name].describe(entry))} entry "
-                             f"under {console.value('alerts:')} in "
-                             f"{console.value(config.shown_path(path))}")
-        for name, entry in current.items():
-            if name not in chosen:
-                removed = SETUPS[name].describe(alerts[entry.index])
-                console.done(f"removed the {console.value(removed)}"
-                             f" entry from {console.value('alerts:')} in "
-                             f"{console.value(config.shown_path(path))}")
-        for app in own_alerts_apps():
-            console.note(f"{console.value(app)} sets its own {console.value('alerts:')}, so it "
-                         "does not use these entries.")
-    if values:
-        env_file = project / ".env"
-        private_file(env_file)
-        for key, value in values.items():
-            set_key(env_file, key, value, quote_mode="never")
-            os.environ[key] = value
-        names = ", ".join(map(console.value, values))
-        console.done(f"saved  {names} in {console.value(config.shown_path(env_file))}")
-    for name, entry in chosen.items():
-        item = SETUPS[name]
+        alerts = save(project, alerts, old, entry, values)
         if item.test is None:
             continue
         if not console.confirm(f"Send a test message to {item.describe(entry)} now?"):
@@ -350,7 +351,18 @@ def setup() -> int:
         except Exception as e:
             console.failed(f"not sent: {console.escape(str(e))}")
             code = 1
+    gone = [name for name in current if name not in types]
+    if gone:
+        console.say()
+    for name in gone:
+        alerts = save(project, alerts, existing[name], None, {})
     console.say()
+    if not types and not gone:
+        console.say(f"{console.value('alerts:')} stays as it is.")
+    if alerts is not start:
+        for app in own_alerts_apps():
+            console.note(f"{console.value(app)} sets its own {console.value('alerts:')}, so it "
+                         "does not use these entries.")
     console.next_steps([
         ("pdt alerts test", "send a test message"),
         ("pdt deploy <app>", "send the new alerts settings to a deployed app"),
