@@ -251,10 +251,10 @@ def ensure_credentials() -> None:
              f"or run {console.value(f'{GCLOUD} auth login')}")
     console.warn("gcloud has no active Google account yet.")
     try:
-        answer = input("Log in now (opens a browser)? [y/N] ").strip().lower()
+        answer = console.confirm("Log in now (opens a browser)?")
     except EOFError:
-        answer = ""
-    if answer not in ("y", "yes"):
+        answer = False
+    if not answer:
         fail(f"log in first: {console.value(f'{GCLOUD} auth login')}")
     login = subprocess.run([GCLOUD, "auth", "login"])
     if login.returncode != 0:
