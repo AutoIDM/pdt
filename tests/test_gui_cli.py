@@ -28,6 +28,7 @@ class FakeProc:
 
 
 REAL_IS_UP = gui_cli.is_up
+REAL_PORT_FREE = gui_cli.port_free
 
 
 @pytest.fixture
@@ -40,6 +41,7 @@ def launcher(project, monkeypatch):
 
     monkeypatch.setattr(gui_cli.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(gui_cli, "is_up", lambda port, project: calls.up)
+    monkeypatch.setattr(gui_cli, "port_free", lambda port: True)
     monkeypatch.setattr(gui_cli.webbrowser, "open", lambda url: calls.opened.append(url) or True)
     monkeypatch.setattr(gui_cli.os, "kill", lambda pid, sig: calls.killed.append(pid))
     monkeypatch.setattr(gui_cli.subprocess, "run", lambda command, **kwargs: calls.killed.append(int(command[2])))
@@ -121,7 +123,9 @@ def test_a_start_trims_a_long_log_to_its_newest_half(project, launcher, monkeypa
     assert (project / ".pdt" / "gui.log").read_bytes() == b"bcdef"
 
 
-def test_a_busy_port_prints_one_plain_line_and_starts_nothing(project, launcher, capsys):
+def test_a_busy_port_prints_one_plain_line_and_starts_nothing(project, launcher, capsys,
+                                                               monkeypatch):
+    monkeypatch.setattr(gui_cli, "port_free", REAL_PORT_FREE)
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen()
@@ -147,6 +151,7 @@ def other_server():
 def test_a_stale_pid_file_and_another_program_on_its_port_open_nothing(
         project, launcher, capsys, monkeypatch, other_server):
     monkeypatch.setattr(gui_cli, "is_up", REAL_IS_UP)
+    monkeypatch.setattr(gui_cli, "port_free", REAL_PORT_FREE)
     (project / ".pdt").mkdir()
     (project / ".pdt" / "gui.pid").write_text(json.dumps({"pid": 1, "port": other_server}))
     assert gui_cli.main(other_server, False, False, False) == 1
