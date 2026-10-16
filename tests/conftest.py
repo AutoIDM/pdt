@@ -22,7 +22,6 @@ def console_on_stdout(monkeypatch):
 @pytest.fixture(autouse=True)
 def price_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "PRICE_CACHE", tmp_path / "prices")
-    monkeypatch.setattr(deploy_common, "LIST_PRICE_DATES", set())
     return tmp_path / "prices"
 
 

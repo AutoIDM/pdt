@@ -76,8 +76,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, cached_list_price, cached_price, fail, fetch_json, list_prices,
-    price_date, secret_contents, store_cost_label,
+    STORE_TAGS, CostEstimate, cached_price, fail, fetch_json, secret_contents, store_cost_label,
     store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
@@ -512,14 +511,15 @@ def retail_price(region: str, service: str, meter: str, sku: str,
             raise LookupError(f"no {meter!r} {currency} price for {service} in region {region}")
         return [float(items[0]["retailPrice"]), items[0].get("unitOfMeasure", "")]
 
-    price, unit = cached_list_price("azure", region, currency, query, read)
+    price, unit = cached_price("azure", region, currency, query, read,
+                               "Fetching list prices from the Azure Retail Prices API...")
     return price, unit
 
 
-def exchange_rate(currency: str) -> tuple[float, str]:
-    """What one USD costs in `currency` at the rate Azure prices with, and the date pdt read it."""
+def exchange_rate(currency: str) -> float:
+    """What one USD costs in `currency`, at the rate Azure prices with."""
     if currency == "USD":
-        return 1.0, price_date(time.time())
+        return 1.0
     meter = f"meterId eq '{RATE_METER}' and type eq 'Consumption'"
     query = urllib.parse.quote(meter)
 
@@ -533,7 +533,8 @@ def exchange_rate(currency: str) -> tuple[float, str]:
             prices.append(float(items[0]["retailPrice"]))
         return prices[1] / prices[0]
 
-    return cached_price("azure", "", currency, meter, read)
+    return cached_price("azure", "", currency, meter, read,
+                        "Fetching list prices from the Azure Retail Prices API...")
 
 
 def owned_by(resource: dict | None, app_name: str) -> bool:
@@ -1011,7 +1012,7 @@ def key_vault_item(region: str, runs: float, currency: str = "USD") -> tuple[str
 
 def cost_estimate(region: str, items: list[tuple[str, float]],
                   excludes: str, currency: str, converted: str = "") -> CostEstimate:
-    return CostEstimate(items, f"{list_prices(region)}{converted}, before free grants",
+    return CostEstimate(items, f"{region} list prices{converted}, before free grants",
                         excludes, currency)
 
 

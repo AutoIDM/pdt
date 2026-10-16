@@ -1,12 +1,11 @@
-import datetime
 import json
 import threading
 
 import pytest
 
-from pdt import deploy_aws, deploy_azure, deploy_common, deploy_google_cloud
+from pdt import console, deploy_aws, deploy_azure, deploy_common, deploy_google_cloud
 
-DAY = deploy_common.PRICE_MAX_AGE_SECONDS
+MAX_AGE = deploy_common.PRICE_MAX_AGE_SECONDS
 
 
 def reader(value, calls):
@@ -29,20 +28,20 @@ def at(monkeypatch, seconds):
 
 def test_a_miss_reads_and_a_hit_does_not(price_cache):
     calls = []
-    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.5, calls))[0] == 1.5
-    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(9.0, calls))[0] == 1.5
+    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.5, calls)) == 1.5
+    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(9.0, calls)) == 1.5
     assert calls == [1.5]
     assert len(list(price_cache.glob("*.json"))) == 1
 
 
-def test_an_entry_older_than_one_day_is_read_again(monkeypatch):
+def test_an_entry_older_than_72_hours_is_read_again(monkeypatch):
     calls = []
     at(monkeypatch, 1_000_000)
     deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, calls))
-    at(monkeypatch, 1_000_000 + DAY - 1)
-    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(2.0, calls))[0] == 1.0
-    at(monkeypatch, 1_000_000 + DAY + 1)
-    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(2.0, calls))[0] == 2.0
+    at(monkeypatch, 1_000_000 + MAX_AGE - 1)
+    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(2.0, calls)) == 1.0
+    at(monkeypatch, 1_000_000 + MAX_AGE + 1)
+    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(2.0, calls)) == 2.0
     assert calls == [1.0, 2.0]
 
 
@@ -51,7 +50,7 @@ def test_an_entry_from_the_future_is_read_again(monkeypatch):
     at(monkeypatch, 2_000_000)
     deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, calls))
     at(monkeypatch, 1_000_000)
-    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(2.0, calls))[0] == 2.0
+    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(2.0, calls)) == 2.0
 
 
 @pytest.mark.parametrize("other", [
@@ -63,8 +62,8 @@ def test_an_entry_from_the_future_is_read_again(monkeypatch):
 def test_each_key_has_its_own_entry(other):
     calls = []
     deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, calls))
-    assert deploy_common.cached_price(*other, reader(2.0, calls))[0] == 2.0
-    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(3.0, calls))[0] == 1.0
+    assert deploy_common.cached_price(*other, reader(2.0, calls)) == 2.0
+    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(3.0, calls)) == 1.0
     assert calls == [1.0, 2.0]
 
 
@@ -74,7 +73,7 @@ def test_a_corrupt_file_is_read_again_and_replaced(price_cache, text):
     deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, calls))
     path = next(price_cache.glob("*.json"))
     path.write_text(text)
-    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(2.0, calls))[0] == 2.0
+    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(2.0, calls)) == 2.0
     assert json.loads(path.read_text())["value"] == 2.0
 
 
@@ -85,20 +84,54 @@ def test_an_entry_for_another_key_in_the_same_file_is_not_used(price_cache):
     saved = json.loads(path.read_text())
     saved["key"]["query"] = "other"
     path.write_text(json.dumps(saved))
-    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(2.0, calls))[0] == 2.0
+    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(2.0, calls)) == 2.0
 
 
-def test_a_failed_read_of_an_old_entry_uses_it_and_names_its_date(monkeypatch, capsys):
+def test_a_failed_read_of_an_old_entry_uses_it_and_warns(monkeypatch, capsys):
     calls = []
-    first = datetime.datetime(2026, 10, 13, 12).timestamp()
-    at(monkeypatch, first)
+    at(monkeypatch, 1_000_000)
     deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, calls))
-    at(monkeypatch, first + 2 * DAY)
-    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", failing(calls)) == (
-        1.0, "2026-10-13")
-    out = capsys.readouterr().out
-    assert "Could not read current prices (offline)" in out
-    assert "the prices pdt read on 2026-10-13" in out
+    at(monkeypatch, 1_000_000 + 2 * MAX_AGE)
+    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", failing(calls)) == 1.0
+    assert calls == [1.0, "failed"]
+    assert ("Could not read current prices (offline); the estimate uses saved prices."
+            in capsys.readouterr().out)
+
+
+def no_price(calls):
+    def read():
+        calls.append("no price")
+        raise LookupError("no 'Jobs CPU' SKU priced for region mars-1")
+    return read
+
+
+def test_a_no_price_answer_is_kept_for_72_hours(monkeypatch):
+    calls = []
+    at(monkeypatch, 1_000_000)
+    for _ in range(2):
+        with pytest.raises(LookupError, match="no 'Jobs CPU' SKU priced for region mars-1"):
+            deploy_common.cached_price("google-cloud", "mars-1", "GBP", "q", no_price(calls))
+    assert calls == ["no price"]
+    at(monkeypatch, 1_000_000 + MAX_AGE + 1)
+    assert deploy_common.cached_price("google-cloud", "mars-1", "GBP", "q", reader(2.0, calls)) == 2.0
+
+
+def test_a_failed_read_of_an_old_no_price_answer_raises_it(monkeypatch):
+    at(monkeypatch, 1_000_000)
+    with pytest.raises(LookupError):
+        deploy_common.cached_price("aws", "us-east-1", "USD", "q", no_price([]))
+    at(monkeypatch, 1_000_000 + 2 * MAX_AGE)
+    with pytest.raises(LookupError, match="mars-1"):
+        deploy_common.cached_price("aws", "us-east-1", "USD", "q", failing([]))
+
+
+def test_the_fetching_line_prints_only_when_pdt_reads_from_the_network(monkeypatch, capsys):
+    fetching = "Fetching list prices from the AWS price list..."
+    deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, []), fetching)
+    assert fetching in capsys.readouterr().out
+    monkeypatch.setattr(console, "_warned", set())
+    deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, []), fetching)
+    assert fetching not in capsys.readouterr().out
 
 
 def test_a_failed_read_with_no_entry_raises():
@@ -110,7 +143,7 @@ def test_a_folder_pdt_cannot_write_still_gives_the_price(monkeypatch, tmp_path):
     blocker = tmp_path / "file"
     blocker.write_text("")
     monkeypatch.setattr(deploy_common, "PRICE_CACHE", blocker / "prices")
-    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, []))[0] == 1.0
+    assert deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, [])) == 1.0
 
 
 def test_concurrent_writes_never_leave_a_partial_file(price_cache):
@@ -149,23 +182,13 @@ def test_concurrent_writes_never_leave_a_partial_file(price_cache):
     assert [p.name for p in price_cache.iterdir()] == [path.name]
 
 
-def test_the_estimate_names_the_date_of_its_oldest_price(monkeypatch):
-    at(monkeypatch, datetime.datetime(2026, 10, 14, 12).timestamp())
-    deploy_common.cached_list_price("aws", "us-east-1", "USD", "a", reader(1.0, []))
-    at(monkeypatch, datetime.datetime(2026, 10, 15, 12).timestamp())
-    deploy_common.cached_list_price("aws", "us-east-1", "USD", "b", reader(1.0, []))
-    estimate = deploy_aws.cost_estimate("us-east-1", [("job", 1.0)], "", "USD")
-    assert estimate.prices == "us-east-1 list prices of 2026-10-14, before free tiers"
-
-
-def test_the_ecb_rate_is_cached_with_its_own_date(monkeypatch):
+def test_the_ecb_rate_is_cached_with_its_date(monkeypatch):
     from test_currency import ECB
     calls = []
     monkeypatch.setattr(deploy_common, "ecb_xml", lambda: calls.append(1) or ECB)
     assert deploy_common.ecb_rate("GBP") == (0.6, "2026-10-08")
     assert deploy_common.ecb_rate("GBP") == (0.6, "2026-10-08")
     assert calls == [1]
-    assert deploy_common.LIST_PRICE_DATES == set()
 
 
 def test_aws_reads_each_price_file_once(monkeypatch):
@@ -201,7 +224,7 @@ def test_azure_reads_a_retail_price_once(monkeypatch):
     for _ in range(2):
         assert deploy_azure.retail_price("uksouth", "Container Registry", "Basic Registry Unit",
                                          "Basic", currency="GBP") == (0.5, "1 Hour")
-        assert deploy_azure.exchange_rate("GBP")[0] == 1.0
+        assert deploy_azure.exchange_rate("GBP") == 1.0
     assert len(urls) == 3
 
 
@@ -221,4 +244,4 @@ def test_google_cloud_reads_the_catalog_once(monkeypatch):
         estimate = deploy_google_cloud.cost_estimate(
             "my-project", "europe-west2", "0 6 * * *", "job", False, 0, True)
     assert paths == ["services", "services/Cloud Run/skus", "services/Cloud Scheduler/skus"]
-    assert estimate.prices.startswith(f"europe-west2 list prices of {datetime.date.today()}")
+    assert estimate.prices == "europe-west2 list prices, before free tiers"

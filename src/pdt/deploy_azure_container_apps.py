@@ -715,7 +715,6 @@ def logs(app: dict, settings: dict, rest: list[str],
 def cost_estimate_for(region: str, currency: str, cron: str, job: str, rg: str,
                job_exists: bool, num_secrets: int,
                usage: tuple[int, int] | None) -> CostEstimate:
-    console.status("Fetching list prices from the Azure Retail Prices API...")
     try:
         runs = config.runs_per_month(cron)
         seconds, basis = run_basis(average_run_seconds(job, rg) if job_exists else None)

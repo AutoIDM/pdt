@@ -81,8 +81,8 @@ from pdt import lifecycle
 from pdt import regions
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, build_in_cloud, cached_list_price, convert_from_usd, fail,
-    fetch_json, gather_secrets, image_action, list_prices, run_build, run_secrets, secret_contents,
+    STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd, fail,
+    fetch_json, gather_secrets, image_action, run_build, run_secrets, secret_contents,
     ssh_build_args, stage_build_context, store_cost_label, store_kept_line, store_name,
     store_plan_lines, store_suffix, warn_if_locked, write_dockerfile)
 from pdt import runs_cli
@@ -741,7 +741,6 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                         assume_yes: bool, billing_confirmed: bool = False,
                         attempt: int = 0, store_usage: tuple[int, int] | None = None,
                         currency: str = "USD") -> CostEstimate:
-    console.status("Fetching list prices from the Cloud Billing catalog...")
     try:
         runs = config.runs_per_month(cron)
         seconds = average_run_seconds(job, region, project) if job_exists else None
@@ -763,8 +762,9 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                                                  currency)
                 return list(sku_price(skus[service], region, description, prefer))
 
-            amount, unit = cached_list_price("google-cloud", region, currency,
-                                             f"{service}: {description} ({prefer})", read)
+            amount, unit = cached_price("google-cloud", region, currency,
+                                        f"{service}: {description} ({prefer})", read,
+                                        "Fetching list prices from the Cloud Billing catalog...")
             return amount, unit
 
         cpu_price, _ = price("Cloud Run", "Jobs CPU")
@@ -792,7 +792,7 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
             in_usd = cost_estimate(project, region, cron, job, job_exists, num_secrets,
                                    assume_yes, billing_confirmed, attempt, store_usage, "USD")
             items, shown, converted = convert_from_usd(in_usd.items, currency)
-            return CostEstimate(items, f"{list_prices(region)}{converted}, before free tiers",
+            return CostEstimate(items, f"{region} list prices{converted}, before free tiers",
                                 in_usd.excludes, shown)
         if disabled and not billing_confirmed:
             actions = [console.Markup(f"enable the Cloud Billing API in project "
@@ -817,7 +817,7 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
         fail(f"could not calculate the required monthly cost estimate: "
              f"{console.escape(detail or str(exc))}")
     converted = "" if currency == "USD" else ", converted from USD by Google Cloud"
-    return CostEstimate(items, f"{list_prices(region)}{converted}, before free tiers",
+    return CostEstimate(items, f"{region} list prices{converted}, before free tiers",
                         "excludes Artifact Registry storage", currency)
 
 

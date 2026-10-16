@@ -42,7 +42,7 @@ _errors = Console(stderr=True, highlight=False, soft_wrap=True, emoji=False)
 # The real stdout, for `data`, once `json_output` has moved stdout to stderr.
 _data = None
 
-# Each message `warn_once` has printed in this process.
+# Each message `warn_once` or `status_once` has printed in this process.
 _warned: set[str] = set()
 
 INDENT = 6
@@ -96,6 +96,14 @@ def styled(message: str) -> None:
 def status(message: str) -> None:
     """A line about work in progress, such as a fetch or a login."""
     _console.print(f"[dim]{message}[/]")
+
+
+def status_once(message: str) -> None:
+    """A status line that several reads may each start, such as a price fetch: only its
+    first time prints."""
+    if message not in _warned:
+        _warned.add(message)
+        status(message)
 
 
 class Wait:
