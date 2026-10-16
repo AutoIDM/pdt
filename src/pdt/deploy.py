@@ -372,7 +372,12 @@ def start(app_name: str) -> int:
     config.load_env(app["dir"])
     code = dispatch(provider, "start", app_name, False)
     if code == 0:
-        console.command(f"pdt runs {app_name}", "see the run")
+        console.say()
+        console.next_steps([
+            (f"pdt logs {app_name} --follow", "print the log lines as they arrive"),
+            (f"pdt runs {app_name}", "list the recent runs"),
+            (f"pdt health {app_name}", "show whether the last run succeeded"),
+        ])
     return code
 
 
