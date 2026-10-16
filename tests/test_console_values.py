@@ -31,7 +31,7 @@ ALLOWED = {
                "len(names)", "len(deployed)", "line", "choices", "gerund", "command", "past"},
     "deploy.py": {"tool", "line", "state", "action"},
     "deploy_common.py": {"what", "where", "key", "message", "description", "count", "provider", "len(values)",
-                         "problem",
+                         "problem", "suffix",
                          "details['tries']", "BACKOFF_MAX_TRIES", "details['wait']"},
     "deploy_aws.py": {"delay", "len(options)"},
     "deploy_aws_batch.py": {"what", "resource.label", "label", "DOCKER_PLATFORM",

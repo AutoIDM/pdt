@@ -63,7 +63,7 @@ def plan_for(monkeypatch, settings, resources):
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
     monkeypatch.setattr(deploy_azure, "az_json", read)
     monkeypatch.setattr(deploy_azure_container_apps, "secret_state", lambda *args: (False, None))
-    monkeypatch.setattr(deploy_azure_container_apps, "image_action", lambda app, text, cloud_builder="": text)
+    monkeypatch.setattr(deploy_azure_container_apps, "image_action", lambda app, text, cloud_builder="", if_changed=False: text)
     monkeypatch.setattr(deploy_azure_container_apps, "cost_estimate_for", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "confirm",
                         lambda actions, *args: plans.append(plain(actions)) and False)

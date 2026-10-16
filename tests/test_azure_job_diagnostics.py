@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from conftest import fake_azure_reads
+from conftest import built_image, fake_azure_reads
 from pdt import deploy_azure, deploy_azure_container_apps
 
 
@@ -120,7 +120,7 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
     monkeypatch.setattr(deploy_azure_container_apps, "workspace_resource", lambda settings: None)
     monkeypatch.setattr(deploy_azure_container_apps, "secret_state", lambda *args: (False, None))
     monkeypatch.setattr(deploy_azure_container_apps, "confirm", lambda *args: True)
-    monkeypatch.setattr(deploy_azure_container_apps, "image_action", lambda app, text, cloud_builder="": text)
+    monkeypatch.setattr(deploy_azure_container_apps, "image_action", lambda app, text, cloud_builder="", if_changed=False: text)
     monkeypatch.setattr(deploy_azure_container_apps, "cost_estimate_for", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "ensure_group_and_vault", lambda *args: "/vault")
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet", lambda *args, **kwargs: "")
@@ -128,6 +128,7 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
     monkeypatch.setattr(deploy_azure_container_apps, "assign_role", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "enable_acr_arm_auth", lambda *args: None)
     monkeypatch.setattr(deploy_azure_container_apps, "build_image", lambda *args: None)
+    monkeypatch.setattr(deploy_azure_container_apps, "ensure_image", built_image)
     monkeypatch.setattr(deploy_azure_container_apps, "pushed_image", lambda *args: "report@sha256:1")
     monkeypatch.setattr(deploy_azure_container_apps, "ensure_secret", lambda *args: None)
 

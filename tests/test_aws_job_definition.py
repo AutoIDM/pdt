@@ -1,6 +1,7 @@
 import copy
 import json
 
+from pdt.deploy_common import BUILD_TAG
 from pdt.deploy_aws_batch import (
     desired_job_definition, ensure_job_definition, normalized_job_definition, resource_names,
     same_job_definition, submit_job_resources, submit_job_target,
@@ -8,6 +9,7 @@ from pdt.deploy_aws_batch import (
 
 NAMES = resource_names("my-app")
 DIGEST = "sha256:abc"
+FINGERPRINT = "f" * 32
 
 
 def desired(environment=None):
@@ -17,7 +19,7 @@ def desired(environment=None):
         environment or {"PDT_ENV_SECRET_RESOURCE": "arn:secret"})
 
 
-def described(definition, revision=1, digest=DIGEST, tags=None):
+def described(definition, revision=1, digest=DIGEST, tags=None, fingerprint=FINGERPRINT):
     """The shape describe_job_definitions returns for a registered definition."""
     current = copy.deepcopy(definition)
     current["containerProperties"]["command"] = []
@@ -28,7 +30,8 @@ def described(definition, revision=1, digest=DIGEST, tags=None):
     current.update({
         "jobDefinitionArn": f"arn:aws:batch:us-east-1:1:job-definition/pdt-my-app:{revision}",
         "revision": revision, "status": "ACTIVE",
-        "tags": {"managed-by": "pdt", "image-digest": digest} if tags is None else tags,
+        "tags": ({"managed-by": "pdt", "image-digest": digest, BUILD_TAG: fingerprint}
+                 if tags is None else tags),
     })
     return current
 
@@ -81,22 +84,27 @@ def test_the_described_shape_normalizes_to_the_desired_shape():
 
 
 def test_a_same_image_and_same_properties_needs_no_new_revision():
-    assert same_job_definition(described(desired()), desired(), DIGEST)
+    assert same_job_definition(described(desired()), desired(), DIGEST, FINGERPRINT)
 
 
 def test_a_new_image_digest_needs_a_new_revision():
-    assert not same_job_definition(described(desired(), digest="sha256:old"), desired(), DIGEST)
+    assert not same_job_definition(described(desired(), digest="sha256:old"), desired(), DIGEST, FINGERPRINT)
+
+
+def test_a_new_build_fingerprint_needs_a_new_revision():
+    current = described(desired(), fingerprint="0" * 32)
+    assert not same_job_definition(current, desired(), DIGEST, FINGERPRINT)
 
 
 def test_a_changed_environment_needs_a_new_revision():
     current = described(desired({"PDT_ENV_SECRET_RESOURCE": "arn:secret",
                                  "PDT_STORAGE_URL": "s3://b/my-app/"}))
-    assert not same_job_definition(current, desired(), DIGEST)
+    assert not same_job_definition(current, desired(), DIGEST, FINGERPRINT)
 
 
 def test_ensure_keeps_the_current_revision_when_nothing_changed():
     batch = FakeBatch([described(desired())])
-    arn = ensure_job_definition(batch, desired(), DIGEST)
+    arn = ensure_job_definition(batch, desired(), DIGEST, FINGERPRINT)
     assert arn.endswith(":1")
     assert batch.registered == []
     assert batch.deregistered == []
@@ -104,7 +112,7 @@ def test_ensure_keeps_the_current_revision_when_nothing_changed():
 
 def test_ensure_deregisters_older_revisions_left_by_an_interrupted_deploy():
     batch = FakeBatch([described(desired(), revision=2), described(desired(), revision=1)])
-    ensure_job_definition(batch, desired(), DIGEST)
+    ensure_job_definition(batch, desired(), DIGEST, FINGERPRINT)
     assert batch.registered == []
     assert batch.deregistered == ["arn:aws:batch:us-east-1:1:job-definition/pdt-my-app:1"]
 
@@ -113,15 +121,16 @@ def test_ensure_registers_a_revision_and_deregisters_the_tagged_older_ones():
     batch = FakeBatch([described(desired(), revision=2, digest="sha256:old"),
                        described(desired(), revision=1, digest="sha256:older",
                                  tags={"other": "owner"})])
-    arn = ensure_job_definition(batch, desired(), DIGEST)
+    arn = ensure_job_definition(batch, desired(), DIGEST, FINGERPRINT)
     assert arn.endswith(":9")
     [registered] = batch.registered
-    assert registered["tags"] == {"managed-by": "pdt", "image-digest": DIGEST}
+    assert registered["tags"] == {"managed-by": "pdt", "image-digest": DIGEST,
+                                  BUILD_TAG: FINGERPRINT}
     assert registered["jobDefinitionName"] == "pdt-my-app"
     assert batch.deregistered == ["arn:aws:batch:us-east-1:1:job-definition/pdt-my-app:2"]
 
 
 def test_ensure_registers_the_first_revision_when_none_exists():
     batch = FakeBatch()
-    ensure_job_definition(batch, desired(), DIGEST)
+    ensure_job_definition(batch, desired(), DIGEST, FINGERPRINT)
     assert len(batch.registered) == 1

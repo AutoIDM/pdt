@@ -31,6 +31,13 @@ def app_in(project) -> dict:
     return {"name": "report", "dir": folder, "platform": {"provider": "azure"}}
 
 
+def staged(project):
+    app = app_in(project)
+    stage = deploy_common.stage_build_context(app)
+    deploy_common.write_dockerfile(stage, app)
+    return stage
+
+
 LOGIN = '{"accessToken": "t", "loginServer": "pdtregistry.azurecr.io"}'
 
 
@@ -62,7 +69,7 @@ def fake_az(monkeypatch, returncode=0, stderr=""):
 
 def test_the_cloud_build_sends_the_staged_context_to_acr_tasks(project, monkeypatch):
     calls = fake_az(monkeypatch)
-    deploy_azure_container_apps.build_image(app_in(project), SETTINGS, "report", True)
+    deploy_azure_container_apps.build_image(staged(project), SETTINGS, "report", True)
     assert len(calls) == 1
     args = calls[0]["args"]
     assert args[:2] == ("acr", "build")
@@ -71,12 +78,11 @@ def test_the_cloud_build_sends_the_staged_context_to_acr_tasks(project, monkeypa
     assert args[args.index("--image") + 1] == "report:latest"
     assert args[args.index("--platform") + 1] == "linux/amd64"
     assert "--no-format" in args
-    assert not Path(args[-1]).exists()
 
 
 def test_the_cloud_build_context_holds_no_secret_files(project, monkeypatch):
     calls = fake_az(monkeypatch)
-    deploy_azure_container_apps.build_image(app_in(project), SETTINGS, "report", True)
+    deploy_azure_container_apps.build_image(staged(project), SETTINGS, "report", True)
     files = calls[0]["files"]
     assert {"Dockerfile", "pdt.yml", "report", "report/run.py", "report/data.csv"} <= set(files)
     assert not [name for name in files if name.endswith((".env", "id_rsa"))]
@@ -85,7 +91,7 @@ def test_the_cloud_build_context_holds_no_secret_files(project, monkeypatch):
 def test_the_build_log_cannot_stop_on_a_character_the_console_cannot_encode(project, monkeypatch):
     before = sys.stdout.errors
     calls = fake_az(monkeypatch)
-    deploy_azure_container_apps.build_image(app_in(project), SETTINGS, "report", True)
+    deploy_azure_container_apps.build_image(staged(project), SETTINGS, "report", True)
     assert calls[0]["stdout_errors"] == "replace"
     assert sys.stdout.errors == before
 
@@ -93,7 +99,7 @@ def test_the_build_log_cannot_stop_on_a_character_the_console_cannot_encode(proj
 def test_a_failed_cloud_build_fails_once_and_shows_the_error(project, monkeypatch, capsys):
     calls = fake_az(monkeypatch, 1, "ERROR: Run failed")
     with pytest.raises(SystemExit):
-        deploy_azure_container_apps.build_image(app_in(project), SETTINGS, "report", True)
+        deploy_azure_container_apps.build_image(staged(project), SETTINGS, "report", True)
     assert [call["args"][:2] for call in calls] == [("acr", "build")]
     out = said(capsys)
     assert "ERROR: Run failed" in out
@@ -106,7 +112,7 @@ def test_paused_acr_tasks_get_a_plain_message(project, monkeypatch, capsys):
              "http://aka.ms/azuresupport for assistance.")
     calls = fake_az(monkeypatch, 1, error)
     with pytest.raises(SystemExit):
-        deploy_azure_container_apps.build_image(app_in(project), SETTINGS, "report", True)
+        deploy_azure_container_apps.build_image(staged(project), SETTINGS, "report", True)
     assert len(calls) == 1
     out = said(capsys)
     assert "Azure pauses ACR Tasks for subscriptions on free credits" in out
@@ -122,7 +128,7 @@ def test_a_missing_acr_tasks_permission_names_the_role(project, monkeypatch, cap
              f"over scope '{ACR_ID}' or the scope is invalid.")
     calls = fake_az(monkeypatch, 1, error)
     with pytest.raises(SystemExit):
-        deploy_azure_container_apps.build_image(app_in(project), SETTINGS, "report", True)
+        deploy_azure_container_apps.build_image(staged(project), SETTINGS, "report", True)
     assert len(calls) == 1
     out = said(capsys)
     assert "Microsoft.ContainerRegistry/registries/listBuildSourceUploadUrl/action" in out
@@ -136,7 +142,7 @@ def test_the_local_build_never_runs_acr_tasks(project, monkeypatch):
     monkeypatch.setattr(deploy_azure_container_apps, "run_build",
                         lambda command, **_: commands.append(command))
     monkeypatch.setattr(deploy_azure_container_apps, "ssh_build_args", lambda: [])
-    deploy_azure_container_apps.build_image(app_in(project), SETTINGS, "report", False)
+    deploy_azure_container_apps.build_image(staged(project), SETTINGS, "report", False)
     assert [call["args"] for call in calls] == [
         ("acr", "login", "--name", "pdtregistry", "--expose-token")]
     image = "pdtregistry.azurecr.io/report:latest"
@@ -160,3 +166,35 @@ def test_the_plan_names_the_build_place_and_the_build_follows_it(monkeypatch, tm
     assert module.deploy(app, True) == 0
     assert f"build and push image pdtregistry.azurecr.io/report:latest {where}" in plain(plans[0])
     assert builds[0][2:] == ("report", cloud)
+
+
+def test_an_unchanged_app_skips_the_build_and_the_job_keeps_its_image(project, monkeypatch,
+                                                                       capsys):
+    module = deploy_azure_container_apps
+    app = app_in(project) | {"schedule": "0 0 * * *", "storage": False, "pause": False}
+    reconciled = []
+
+    def deploy(answers):
+        events, _plans = fake_deploy(monkeypatch, EXISTING | answers)
+        monkeypatch.setattr(module, "ensure_image", deploy_common.ensure_image)
+        monkeypatch.setattr(module, "reconcile_job", lambda *args: reconciled.append(args))
+        assert module.deploy(app, True) == 0
+        return ("build",) in events
+
+    assert deploy({})
+    fingerprint = reconciled[-1][-1]
+    pinned = "pdtregistry.azurecr.io/report@sha256:old"
+    job = {"tags": {"managed-by": "pdt", "pdt-app": "report", deploy_common.BUILD_TAG: fingerprint},
+           "properties": {"template": {"containers": [{"image": pinned}]}}}
+    capsys.readouterr()
+    assert not deploy({("containerapp", "job"): job, ("acr", "manifest"): {}})
+    assert reconciled[-1][2] == pinned and reconciled[-1][-1] == fingerprint
+    assert ("Image pdtregistry.azurecr.io/report:latest is unchanged; skipped the build and "
+            "push.") in said(capsys)
+    assert deploy({("containerapp", "job"): job})
+    assert reconciled[-1][2] == "report@sha256:1"
+    assert "the registry no longer holds the image the job runs" in said(capsys)
+    other = job | {"tags": job["tags"] | {deploy_common.BUILD_TAG: "0" * 32}}
+    assert deploy({("containerapp", "job"): other, ("acr", "manifest"): {}})
+    monkeypatch.setenv(deploy_common.REBUILD_ENV, "1")
+    assert deploy({("containerapp", "job"): job, ("acr", "manifest"): {}})
