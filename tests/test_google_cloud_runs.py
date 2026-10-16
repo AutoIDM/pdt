@@ -132,9 +132,16 @@ def test_list_runs_reads_every_exit_code_in_one_logging_read(monkeypatch):
     [logging_call] = [call for call in calls if call[0] == "logging"]
     assert 'resource.labels.job_name="pdt-app"' in logging_call[2]
     assert 'textPayload:"pdt: exit "' in logging_call[2]
+    assert logging_call[2].endswith(' AND timestamp>="2026-09-23T07:59:00+00:00"')
     assert logging_call[logging_call.index("--limit") + 1] == "3"
     [list_call] = [call for call in calls if call[0] == "run"]
     assert "--limit" not in list_call
+
+
+ENDED = runs_cli.Run("pdt-app-abcde", datetime(2026, 9, 23, 10, tzinfo=timezone.utc),
+                     datetime(2026, 9, 23, 10, 0, 5, tzinfo=timezone.utc), "succeeded")
+RUNNING = runs_cli.Run("pdt-app-abcde", datetime(2026, 9, 23, 10, tzinfo=timezone.utc), None,
+                       "running")
 
 
 def test_read_lines_builds_from_json_and_text_payloads(monkeypatch):
@@ -144,7 +151,7 @@ def test_read_lines_builds_from_json_and_text_payloads(monkeypatch):
         {"timestamp": "2026-09-23T10:00:02Z", "textPayload": "10:00:02 ERROR   boom"},
     ]
     fake_logging(monkeypatch, entries)
-    lines = deploy_google_cloud.read_lines("p", "pdt-app-abcde")
+    lines = deploy_google_cloud.read_lines("p", ENDED)
     assert lines == [
         runs_cli.Line(datetime(2026, 9, 23, 10, 0, 1, tzinfo=timezone.utc), "INFO", "starting  rows=3"),
         runs_cli.Line(datetime(2026, 9, 23, 10, 0, 2, tzinfo=timezone.utc), "ERROR", "boom"),
@@ -164,13 +171,13 @@ def fake_logging(monkeypatch, entries, code=0, stderr=""):
 
 def test_read_lines_with_no_entries_is_empty(monkeypatch):
     fake_logging(monkeypatch, [])
-    assert deploy_google_cloud.read_lines("p", "pdt-app-abcde") == []
+    assert deploy_google_cloud.read_lines("p", ENDED) == []
 
 
 def test_a_failed_read_warns_instead_of_looking_empty(monkeypatch, capsys):
     fake_logging(monkeypatch, None, 1, "ERROR: (gcloud.logging.read) RESOURCE_EXHAUSTED: Quota exceeded")
-    assert deploy_google_cloud.read_lines("p", "pdt-app-abcde") == []
-    assert deploy_google_cloud.read_lines("p", "pdt-app-abcde") == []
+    assert deploy_google_cloud.read_lines("p", ENDED) == []
+    assert deploy_google_cloud.read_lines("p", ENDED) == []
     assert capsys.readouterr().out.count("RESOURCE_EXHAUSTED: Quota exceeded") == 1
 
 
@@ -178,16 +185,30 @@ def test_read_lines_reads_every_entry_of_the_container_logs(monkeypatch):
     calls = fake_logging(monkeypatch, [
         {"timestamp": "2026-09-23T10:00:01Z", "textPayload": f"line {number}"}
         for number in range(6000)])
-    assert len(deploy_google_cloud.read_lines("p", "pdt-app-abcde")) == 6000
+    assert len(deploy_google_cloud.read_lines("p", ENDED)) == 6000
     [call] = calls
     assert "--limit" not in call
     assert 'log_id("run.googleapis.com/stdout") OR log_id("run.googleapis.com/stderr")' in call[2]
-    assert "timestamp" not in call[2]
+
+
+def test_read_lines_asks_only_for_the_time_of_the_run(monkeypatch):
+    calls = fake_logging(monkeypatch, [])
+    deploy_google_cloud.read_lines("p", ENDED)
+    [call] = calls
+    assert call[2].endswith(' AND timestamp>="2026-09-23T09:59:00+00:00"'
+                            ' AND timestamp<="2026-09-23T10:01:05+00:00"')
+
+
+def test_read_lines_of_a_running_run_has_no_end(monkeypatch):
+    calls = fake_logging(monkeypatch, [])
+    deploy_google_cloud.read_lines("p", RUNNING)
+    [call] = calls
+    assert call[2].endswith(' AND timestamp>="2026-09-23T09:59:00+00:00"')
 
 
 def test_read_lines_from_a_time_asks_only_for_the_entries_from_it(monkeypatch):
     calls = fake_logging(monkeypatch, [])
-    deploy_google_cloud.read_lines("p", "pdt-app-abcde",
+    deploy_google_cloud.read_lines("p", RUNNING,
                                    datetime(2026, 9, 23, 10, 0, 1, tzinfo=timezone.utc))
     [call] = calls
     assert call[2].endswith(' AND timestamp>="2026-09-23T10:00:01+00:00"')
