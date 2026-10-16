@@ -23,10 +23,9 @@ def fake_gcloud(monkeypatch):
     return calls
 
 
-def fake_scheduler(monkeypatch, *answers):
-    """Each answer is an HTTP error status, or None for a 200."""
+def fake_scheduler(monkeypatch, *error_statuses):
     requests = []
-    replies = iter(answers)
+    replies = iter(error_statuses)
 
     def fetch_json(request, timeout=60):
         requests.append(request)
