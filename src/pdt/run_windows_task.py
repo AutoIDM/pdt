@@ -62,6 +62,8 @@ def main(argv: list[str]) -> int:
     # Python holds stdout written to a file or pipe until a buffer fills, so a print()
     # line would land after a later stderr line. The cloud images set the same.
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # uv installs the app's packages through a company TLS proxy as the pdt command does.
+    env.setdefault("UV_SYSTEM_CERTS", "1")
     uv = os.environ.get("UV") or "uv"
     if (Path(app_dir) / "run.py").is_file():
         command = [uv, "run", "--script", "run.py"]

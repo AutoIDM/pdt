@@ -22,7 +22,6 @@ import argparse
 import json
 import os
 import smtplib
-import ssl
 import sys
 from email.message import EmailMessage
 from pathlib import Path
@@ -30,7 +29,7 @@ from pathlib import Path
 from pdt import config
 from pdt.utils import email_auth
 from pdt.utils import send_email_graph
-from pdt.utils.web import http_json
+from pdt.utils.web import http_json, os_ssl_context
 from pdt.utils.log import die, log
 
 EXIT_OK = 0
@@ -336,7 +335,7 @@ def _send_smtp(from_addr: str, to_addrs: list, subject: str, body: str,
 
     try:
         if port == 465:
-            with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=30) as smtp:
+            with smtplib.SMTP_SSL(host, port, context=os_ssl_context(), timeout=30) as smtp:
                 if auth_method == "password":
                     smtp.login(user, password)
                 else:
@@ -348,7 +347,7 @@ def _send_smtp(from_addr: str, to_addrs: list, subject: str, body: str,
                 smtp.send_message(msg)
             return
         with smtplib.SMTP(host, port, timeout=30) as smtp:
-            smtp.starttls(context=ssl.create_default_context())
+            smtp.starttls(context=os_ssl_context())
             if auth_method == "password":
                 smtp.login(user, password)
             else:

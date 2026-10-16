@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from pdt import console
+from pdt.utils import web
 
 GOOGLE_HOSTS = {"smtp.gmail.com"}
 MICROSOFT_HOSTS = {"smtp.office365.com", "smtp-mail.outlook.com"}
@@ -287,7 +288,7 @@ def _google_access_token(user: str, client_id: str, client_secret: str,
             scopes=[GOOGLE_SCOPE],
         )
         try:
-            credentials.refresh(Request())
+            credentials.refresh(Request(web.os_requests_session()))
             if credentials.refresh_token != refresh_token:
                 _save_cache(env_file, {
                     "client_id": client_id,
@@ -335,6 +336,7 @@ def _microsoft_access_token(user: str, client_id: str, tenant_id: str,
         client_id,
         authority=f"https://login.microsoftonline.com/{tenant_id}",
         token_cache=cache,
+        http_client=web.os_requests_session(),
     )
     accounts = app.get_accounts(username=user)
     result = None

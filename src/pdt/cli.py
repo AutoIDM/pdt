@@ -22,6 +22,7 @@ import rich_argparse
 
 from pdt import completion, config
 from pdt.config import ConfigError
+from pdt.utils import web
 
 if not completion.COMPLETING:
     from pdt import alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold
@@ -719,6 +720,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    if not completion.COMPLETING:
+        web.trust_os_certificates()
+        # uv's own downloads (a script's packages) then pass a company TLS proxy too.
+        os.environ.setdefault("UV_SYSTEM_CERTS", "1")
     parser = build_parser()
     completion.configure(parser)
     if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:

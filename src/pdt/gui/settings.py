@@ -51,12 +51,28 @@ TEMPLATES = [{
 }]
 MESSAGE_STORAGE = "django.contrib.messages.storage.cookie.CookieStorage"
 # The worker thread and a page can write at the same moment; SQLite makes
-# one of them wait, and this is how long it may.
+# one of them wait, and this is how long it may. A DEFERRED transaction
+# that reads and then writes (update_or_create) gets "database is locked" at
+# once when another connection is writing, without waiting; IMMEDIATE takes
+# the write lock at BEGIN, so the wait applies.
 DATABASES = {"default": {
     "ENGINE": "django.db.backends.sqlite3",
     "NAME": STATE / "gui.sqlite3" if STATE else ":memory:",
-    "OPTIONS": {"timeout": 30},
+    "OPTIONS": {"timeout": 30, "transaction_mode": "IMMEDIATE"},
 }}
+# The terminal shows only what pdt gui prints; the worker's errors and the
+# server's errors go to .pdt/gui.log, which gui_cli trims at each start.
+if STATE:
+    LOGGING = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {"plain": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"}},
+        "handlers": {"file": {"class": "logging.FileHandler", "filename": STATE / gui_cli.LOG_FILE,
+                              "formatter": "plain", "delay": True, "encoding": "utf-8"}},
+        "root": {"handlers": ["file"], "level": "INFO"},
+        "loggers": {name: {"handlers": ["file"], "level": "ERROR", "propagate": False}
+                    for name in ("django", "django.server")},
+    }
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Pages show the same local times `pdt runs` prints.
 TIME_ZONE = str(get_localzone())

@@ -5,6 +5,7 @@
 #     "pyyaml",
 #     "python-dotenv",
 #     "rich",
+#     "truststore",
 # ]
 # ///
 """Lifecycle events: a name, the UTC time, and a few parameters.
@@ -75,6 +76,7 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, slack
 from pdt.utils import storage
+from pdt.utils.web import trust_os_certificates
 
 JOB_RUN_STARTED = "job:run-started"
 JOB_RUN_COMPLETED = "job:run-completed"
@@ -334,4 +336,6 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # Here and not at import: an app may import any pdt module after its own boto3.
+    trust_os_certificates()
     sys.exit(main(sys.argv[1:]))

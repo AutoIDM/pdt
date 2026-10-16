@@ -67,7 +67,6 @@ import json
 import os
 import re
 import shutil
-import ssl
 import subprocess
 import sys
 import tempfile
@@ -119,7 +118,7 @@ WORKDIR /workspace/{app}
 # The PEP 723 script block, with the reference regex of the PEP.
 SCRIPT_HEADER = re.compile(r"(?m)^# /// script$\s(?:^#(?:| .*)$\s)+^# ///$")
 LIFECYCLE_MODULES = ("__init__.py", "config.py", "console.py", "lifecycle.py", "slack.py",
-                     "utils/__init__.py", "utils/storage.py")
+                     "utils/__init__.py", "utils/log.py", "utils/storage.py", "utils/web.py")
 # Secret shapes and local state that never belong in an image. The version-control names are
 # the ones `az acr build` always leaves out, so every build place gets the same context.
 BUILD_EXCLUDES = (
@@ -296,15 +295,7 @@ ECB_RATES = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
 
 
 def ecb_xml() -> bytes:
-    # The ECB certificate chains to Sectigo Root E46, which the CA file of
-    # uv's Python builds lacks. certifi holds it, and every provider script
-    # installs certifi.
-    try:
-        import certifi
-        context = ssl.create_default_context(cafile=certifi.where())
-    except ImportError:
-        context = None
-    with urllib.request.urlopen(ECB_RATES, timeout=30, context=context) as response:
+    with urllib.request.urlopen(ECB_RATES, timeout=30) as response:
         return response.read()
 
 

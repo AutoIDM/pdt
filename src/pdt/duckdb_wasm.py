@@ -5,8 +5,10 @@ server never needs DuckDB itself and no CDN is touched while a page is
 open. The files come from jsdelivr once, are checked against the sha256
 below, and land in the user's data folder rather than beside this file,
 so upgrading pdt keeps them; deleting DIR removes them, and the next
-`pdt gui` downloads them again. A download that fails leaves nothing
-behind and the server still starts; the workbench page then says so.
+`pdt gui` downloads them again. The server downloads them in a thread
+after it starts, and the workbench page starts that thread again when the
+files are missing. A download that fails leaves nothing behind; the page
+says so, names .pdt/gui.log, and offers to try again.
 
 DuckDB's browser module imports `apache-arrow` by bare name, which a
 browser cannot resolve, and the package ships no bundle that holds it.
@@ -24,12 +26,14 @@ ARROW_VERSION when the package's `apache-arrow` dependency moves.
 from __future__ import annotations
 
 import hashlib
+import logging
 import tempfile
+import threading
 import urllib.request
 from pathlib import Path
 
-from pdt import console
 from pdt.config import data_home
+from pdt.utils.web import os_ssl_context
 
 VERSION = "1.33.1-dev57.0"
 ARROW_VERSION = "17.0.0"
@@ -50,6 +54,11 @@ CONTENT_TYPES = {".wasm": "application/wasm", ".mjs": "text/javascript",
 
 DIR = data_home() / "pdt" / "duckdb-wasm" / VERSION
 
+# Held while a download thread runs.
+FETCH = threading.Lock()
+# Why the last download failed, or "".
+failure = ""
+
 
 class DuckdbWasmError(Exception):
     pass
@@ -59,19 +68,40 @@ def installed() -> bool:
     return all((DIR / name).is_file() for name in FILES)
 
 
+def fetching() -> bool:
+    return FETCH.locked()
+
+
+def fetch_in_background() -> None:
+    """Run `ensure` in a thread unless one is running already."""
+    if FETCH.acquire(blocking=False):
+        threading.Thread(target=fetch, name="pdt-gui-sql-tools", daemon=True).start()
+
+
+def fetch() -> None:
+    """`ensure`, keeping any failure in `failure` and the log; releases FETCH."""
+    global failure
+    try:
+        # A download stopped with the server leaves its temporary file behind.
+        for name in FILES:
+            for partial in DIR.glob(f"{name}.*"):
+                partial.unlink(missing_ok=True)
+        ensure()
+        failure = ""
+    except Exception as e:  # noqa: BLE001 - a full disk or a cut connection must not stop the server
+        failure = str(e) or type(e).__name__
+        logging.getLogger("pdt.gui").warning("the SQL tools did not download: %s", failure)
+    finally:
+        FETCH.release()
+
+
 def ensure() -> Path:
     """DIR, with every pinned file in it; downloads the ones that are missing."""
     DIR.mkdir(parents=True, exist_ok=True)
-    for name, (base, checksum, size) in FILES.items():
+    for name, (base, checksum, _size) in FILES.items():
         if not (DIR / name).is_file():
-            console.status(f"downloading DuckDB for the browser, {console.value(name)}, "
-                           f"{size_text(size)}, once")
             download(base + name, name, checksum)
     return DIR
-
-
-def size_text(count: int) -> str:
-    return f"{count / 2**20:.0f} MB" if count >= 2**20 else f"{count // 2**10} KB"
 
 
 def download(url: str, name: str, checksum: str) -> None:
@@ -79,7 +109,7 @@ def download(url: str, name: str, checksum: str) -> None:
     tmp = tempfile.NamedTemporaryFile(dir=DIR, prefix=name + ".", delete=False)
     tmp_path = Path(tmp.name)
     try:
-        with tmp, urllib.request.urlopen(url, timeout=60) as resp:
+        with tmp, urllib.request.urlopen(url, timeout=60, context=os_ssl_context()) as resp:
             while True:
                 chunk = resp.read(1024 * 1024)
                 if chunk == b"":
