@@ -19,16 +19,26 @@ tests/test_console_values.py fails on a value that is not wrapped.
 
 Import the module, not its functions: `from pdt import console`, then
 `console.error(...)`. The names here are short and would collide.
+
+On a terminal, a line wraps at a space to the terminal's width, and each
+line after the first starts under the text after the line's label or
+indent. A word too wide for a line, such as a long path or URL, gets a
+line of its own with no indent, so a copy of that line holds it whole. A
+table too wide for the terminal prints one block per row: the first cell,
+then `name: cell` for each other cell. Output that is not a terminal never
+wraps, so a log holds one line per message.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sys
 from contextlib import contextmanager
 from time import monotonic
 from typing import Iterator
 
+from rich.cells import cell_len
 from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
@@ -50,6 +60,65 @@ INDENT = 6
 
 def width() -> int:
     return _console.width
+
+
+def _wrap(line: Text, hang: int, room: int = 0) -> list[Text]:
+    """`line` cut at spaces into lines of `room` cells (default: the terminal's width),
+    each line after the first `hang` spaces in. A value() never breaks. A word too wide
+    for a line gets a line of its own with no indent."""
+    room = room or _console.width
+    lines = []
+    for number, paragraph in enumerate(line.split("\n", allow_blank=True)):
+        if number:
+            paragraph = Text(" " * hang) + paragraph
+        values = [span for span in paragraph.spans if span.style == VALUE]
+        words: list[tuple[int, int]] = []
+        for match in re.finditer(r"\S+\s*", paragraph.plain):
+            start, end = match.span()
+            if end <= hang:
+                continue
+            if words and any(span.start < start < span.end for span in values):
+                words[-1] = (words[-1][0], end)
+            else:
+                words.append((start, end))
+        breaks, alone = [], set()
+        used = hang
+        content = words != [] and paragraph.plain[:words[0][0]].strip() != ""
+        for start, end in words:
+            size = cell_len(paragraph.plain[start:end].rstrip())
+            if size > room - hang:
+                breaks += [end] if start in (0, *breaks[-1:]) else [start, end]
+                alone.add(start)
+                used, content = hang, False
+                continue
+            if content and used + size > room:
+                breaks.append(start)
+                used = hang
+            used += cell_len(paragraph.plain[start:end])
+            content = True
+        for offset, part in zip([0, *breaks], paragraph.divide(breaks)):
+            if offset == 0 and breaks and not part.plain.strip():
+                continue
+            if offset == 0 or offset in alone:
+                lines.append(part)
+            elif part.plain.strip():
+                lines.append(Text(" " * hang) + part)
+    for part in lines:
+        part.rstrip()
+    return lines
+
+
+def _print(message: str | Text, hang: int | None = None) -> None:
+    """Print marked-up `message`, wrapped on a terminal. `hang` defaults to the spaces
+    that start `message`."""
+    if not _console.is_terminal:
+        _console.print(message)
+        return
+    line = Text.from_markup(message, emoji=False) if isinstance(message, str) else message
+    if hang is None:
+        hang = len(line.plain) - len(line.plain.lstrip(" "))
+    for part in _wrap(line, hang):
+        _console.print(part)
 
 
 def to_stderr() -> None:
@@ -80,22 +149,26 @@ def data(text: str) -> None:
 
 def say(message: str = "") -> None:
     """A line with no colour."""
-    _console.print(message)
+    _print(message)
 
 
 def progress(text: str) -> None:
     """A counter that ticks in place. Call say() to end the line."""
+    if _console.is_terminal:
+        line = Text(text)
+        line.truncate(_console.width - 1)
+        text = line.plain
     _console.print(text, markup=False, end="\r")
 
 
 def styled(message: str) -> None:
     """A line the caller has already marked up."""
-    _console.print(message)
+    _print(message)
 
 
 def status(message: str) -> None:
     """A line about work in progress, such as a fetch or a login."""
-    _console.print(f"[dim]{message}[/]")
+    _print(f"[dim]{message}[/]")
 
 
 def status_once(message: str) -> None:
@@ -116,8 +189,12 @@ class Wait:
         if getattr(self, "message", None) != message:
             self.message, self.start = message, monotonic()
 
-    def __rich__(self) -> str:
-        return f"[dim]{self.message} ({round(monotonic() - self.start)}s)[/]"
+    def __rich__(self) -> Text:
+        """One line, cut short with an ellipsis, so a narrow terminal never wraps it."""
+        line = Text.from_markup(f"[dim]{self.message} ({round(monotonic() - self.start)}s)[/]",
+                                emoji=False, overflow="ellipsis")
+        line.no_wrap = True
+        return line
 
 
 @contextmanager
@@ -133,7 +210,7 @@ def waiting(message: str) -> Iterator[Wait]:
 
 def field(label: str, value: str) -> None:
     """A label and the value pdt found for it: an account, a URL, a path."""
-    _console.print(f"{escape(label)}: [bold]{escape(value)}[/]")
+    _print(f"{escape(label)}: [bold]{escape(value)}[/]", len(label) + 2)
 
 
 def choice(number: int, label: str, detail: str = "") -> None:
@@ -142,21 +219,21 @@ def choice(number: int, label: str, detail: str = "") -> None:
     line = f"  [bold cyan]{number})[/] {escape(label)}"
     if detail != "":
         line += f"  [bold]{escape(detail)}[/]"
-    _console.print(line)
+    _print(line, len(f"  {number}) "))
 
 
 def error(message: str) -> None:
-    _console.print(f"[bold red]error:[/] {message}")
+    _print(f"[bold red]error:[/] {message}", len("error: "))
 
 
 def note(message: str) -> None:
     """Something pdt did not do, and why."""
-    _console.print(f"[yellow]note:[/] {message}")
+    _print(f"[yellow]note:[/] {message}", len("note: "))
 
 
 def warn(message: str) -> None:
     """A caution with no label, such as a re-prompt after a bad answer."""
-    _console.print(f"[yellow]{message}[/]")
+    _print(f"[yellow]{message}[/]")
 
 
 def warn_once(message: str) -> None:
@@ -169,15 +246,15 @@ def warn_once(message: str) -> None:
 
 def step(message: str) -> None:
     """One reconcile action, printed as it happens."""
-    _console.print(f"[bold cyan]==>[/] {message}")
+    _print(f"[bold cyan]==>[/] {message}", len("==> "))
 
 
 def done(message: str) -> None:
-    _console.print(f"[green]{message}[/]")
+    _print(f"[green]{message}[/]")
 
 
 def failed(message: str) -> None:
-    _console.print(f"[red]{message}[/]")
+    _print(f"[red]{message}[/]")
 
 
 def event(text: str, mark: str = "", mark_style: str = "") -> None:
@@ -186,7 +263,7 @@ def event(text: str, mark: str = "", mark_style: str = "") -> None:
     the event) or `not delivered to <type>`, in `mark_style` when one is given."""
     styled = f"[{mark_style}]{escape(mark)}[/]" if mark_style else escape(mark)
     prefix = f"{styled} " if mark else ""
-    _console.print(f"[bold magenta]\\[event] {prefix}{escape(text)}[/]")
+    _print(f"[bold magenta]\\[event] {prefix}{escape(text)}[/]", len("[event] "))
 
 
 def event_failed(message: str) -> None:
@@ -195,12 +272,12 @@ def event_failed(message: str) -> None:
 
 
 def heading(message: str) -> None:
-    _console.print(f"[bold]{message}[/]")
+    _print(f"[bold]{message}[/]")
 
 
 def name(text: str) -> None:
     """A thing the user can type back to pdt: an app, an example."""
-    _console.print(f"  [bold]{escape(text)}[/]")
+    _print(f"  [bold]{escape(text)}[/]")
 
 
 class Markup(str):
@@ -208,10 +285,13 @@ class Markup(str):
     every plan line that is not one."""
 
 
+VALUE = "bold not dim"
+
+
 def value(text: object) -> str:
     """Markup that prints `text` bold. Inside dim text the value is bold and not dim,
     so it stands out."""
-    return f"[bold not dim]{escape(str(text))}[/]"
+    return f"[{VALUE}]{escape(str(text))}[/]"
 
 
 def detail(text: str, indent: int = INDENT) -> None:
@@ -219,16 +299,15 @@ def detail(text: str, indent: int = INDENT) -> None:
     that pdt did not write through escape(). A line
     breaks only at a space, so a name such as Import-Module stays whole. Spaces
     at the start of `text` indent every line of it."""
-    stripped = text.lstrip(" ")
-    indent += len(text) - len(stripped)
-    for part in Text.from_markup(stripped).wrap(_console, max(10, _console.width - indent)):
-        part.rstrip()
-        _console.print(Text(" " * indent) + part)
+    line = Text.from_markup(" " * indent + text, emoji=False)
+    for part in _wrap(line, len(line.plain) - len(line.plain.lstrip(" "))):
+        _console.print(part)
 
 
 def bullet(text: str, indent: int = 2) -> None:
-    """A marked-up line, indented. Pass text that pdt did not write through escape()."""
-    _console.print(f"{' ' * indent}{text}")
+    """A marked-up line, indented, and each line it wraps to two spaces further in. Pass
+    text that pdt did not write through escape()."""
+    _print(f"{' ' * indent}{text}", indent + 2)
 
 
 def rows(heading: str, items: list[tuple[str, str]]) -> list[str]:
@@ -243,10 +322,14 @@ def rows(heading: str, items: list[tuple[str, str]]) -> list[str]:
 
 def command(text: str, note: str = "", indent: int = 2) -> None:
     """A command line or a path the user can copy, with an optional note."""
-    if note != "":
-        _console.print(f"{' ' * indent}[bold]{escape(text)}[/]  [dim]{escape(note)}[/]")
+    line = f"{' ' * indent}[bold]{escape(text)}[/]"
+    if note == "":
+        _console.print(line)
+    elif _console.is_terminal and indent + len(text) + 2 + len(note) > _console.width:
+        _console.print(line)
+        _print(f"{' ' * (indent + 4)}[dim]{escape(note)}[/]")
     else:
-        _console.print(f"{' ' * indent}[bold]{escape(text)}[/]")
+        _console.print(f"{line}  [dim]{escape(note)}[/]")
 
 
 def next_steps(rows: list[tuple[str, str]], title: str = "Next steps:") -> None:
@@ -292,12 +375,8 @@ LOG_LEVEL_COLOURS = {"DEBUG": "dim", "INFO": "green", "WARNING": "yellow", "ERRO
 
 def secret_changes(rows: list[tuple[str, str, str, str]]) -> None:
     """One row per env var: kind, name, the deployed value, the .env value (both masked)."""
-    headers = ["", "env var", "deployed", ".env"]
-    widths = [max(len(cell) for cell in column) for column in zip(headers, *rows)]
-    _console.print(_row(headers, widths, ["bold"] * len(headers)))
-    for row in rows:
-        colour = SECRET_CHANGE_COLOURS[row[0]]
-        _console.print(_row(list(row), widths, [colour, "bold"]))
+    table(["", "env var", "deployed", ".env"], [list(row) for row in rows],
+          row_styles=[[SECRET_CHANGE_COLOURS[row[0]], "bold"] for row in rows])
 
 
 def log_line(time: str, level: str, message: str) -> None:
@@ -306,16 +385,28 @@ def log_line(time: str, level: str, message: str) -> None:
     line.append(f"{level:<7}", style=LOG_LEVEL_COLOURS.get(level, ""))
     line.append(f" {message}")
     line.rstrip()
-    _console.print(line)
+    _print(line, len(f"{time:<8} {level:<7} "))
+
+
+def _input(prompt: Text) -> str:
+    """The answer to `prompt`. On a terminal the prompt wraps, and the answer starts after
+    its last line."""
+    if _console.is_terminal:
+        *lines, prompt = _wrap(prompt, 0)
+        for line in lines:
+            _console.print(line)
+        prompt.append(" ")
+    return _console.input(prompt)
 
 
 def ask(question: str, default: str = "") -> str:
     suffix = f" [{default}]" if default != "" else ""
-    return _console.input(f"{question}{suffix}: ", markup=False).strip()
+    return _input(Text(f"{question}{suffix}: ")).strip()
 
 
 def confirm(question: str = "Proceed?") -> bool:
-    return _console.input(f"[bold]{escape(question)}[/] \\[y/N] ").strip().lower() in ("y", "yes")
+    return _input(Text.from_markup(f"[bold]{escape(question)}[/] \\[y/N] ")).strip().lower() in (
+        "y", "yes")
 
 
 def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:
@@ -360,14 +451,20 @@ def cost(items: list[tuple[str, float]], prices: str, excludes: str = "",
     width = max(len(label) for label, _ in items)
     total_symbol = currency_prefix(currency)
     symbol = escape(SHARED_SYMBOLS.get(currency, total_symbol).ljust(len(total_symbol)))
-    _console.print(f"[bold]Estimated monthly cost[/] ({escape(prices)}):")
+    room = _console.width - len(f"    {total_symbol}{0:>7.2f}")
+    if _console.is_terminal and width > room:
+        width = max(10, room)
+    _print(f"[bold]Estimated monthly cost[/] ({escape(prices)}):")
     for label, amount in items:
-        _console.print(f"  {escape(label):<{width}}  [cyan]{symbol}{amount:>7.2f}[/]")
+        first, *rest = _wrap(Text(label), 2, width) if len(label) > width else [Text(label)]
+        _console.print(f"  {escape(first.plain):<{width}}  [cyan]{symbol}{amount:>7.2f}[/]")
+        for part in rest:
+            _console.print(Text("  ") + part)
     total = sum(amount for _, amount in items)
     _console.print(
         f"  [bold]{'total':<{width}}  [cyan]{escape(total_symbol)}{total:>7.2f}[/][/]")
     if excludes != "":
-        _console.print(f"  [dim]{escape(excludes)}[/]")
+        _print(f"  [dim]{escape(excludes)}[/]")
 
 
 def table(headers: list[str], rows: list[list[str]],
@@ -381,6 +478,29 @@ def table(headers: list[str], rows: list[list[str]],
     cells = [[str(cell) for cell in row] for row in rows]
     widths = [max(len(row[index]) for row in (headers, *cells))
               for index in range(len(headers))]
+    if _console.is_terminal and sum(widths) + 2 * (len(widths) - 1) > _console.width:
+        _stacked(headers, cells, row_styles or [styles or []] * len(cells))
+        return
     _console.print(_row(headers, widths, ["bold"] * len(headers)))
     for index, row in enumerate(cells):
         _console.print(_row(row, widths, row_styles[index] if row_styles else styles or []))
+
+
+def _stacked(headers: list[str], rows: list[list[str]], row_styles: list[list[str]]) -> None:
+    """A table too wide for the terminal: each row's first cell bold on a line of its own,
+    then each other cell that is not empty as `name: cell`, as many to a line as fit."""
+    for row, styles in zip(rows, row_styles):
+        styles = styles + [""] * (len(row) - len(styles))
+        _print(Text(row[0], style=f"bold {styles[0]}".strip()))
+        line = Text("  ")
+        for header, cell, style in zip(headers[1:], row[1:], styles[1:]):
+            if cell == "":
+                continue
+            field = Text(f"{header}: " if header else "")
+            field.append(cell, style=style)
+            if line.plain.strip() and line.cell_len + 2 + field.cell_len > _console.width:
+                _console.print(line)
+                line = Text("  ")
+            line.append_text(Text("  ") + field if line.plain.strip() else field)
+        if line.plain.strip():
+            _console.print(line)
