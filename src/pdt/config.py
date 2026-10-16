@@ -1039,6 +1039,11 @@ def validate_app(name: str) -> list[str]:
         problems.append(
             f"{name}: platform.provider must be one of: {', '.join(PROVIDERS)}. "
             f"Set it under platform: in {PROJECT_FILE}, or in {name}/{APP_FILE}.")
+    from pdt import regions
+    problem = regions.region_problem(str(provider), str(app["platform"].get("region") or ""))
+    if problem != "":
+        problems.append(f"{name}: platform.region in {PROJECT_FILE} or {name}/{APP_FILE}: "
+                        f"{problem}")
     if provider == "aws":
         problem = aws_account_problem(str(app["platform"].get("account") or ""))
         if problem != "":

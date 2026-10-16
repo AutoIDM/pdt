@@ -14,10 +14,16 @@ When none can be read, it is USD.
 The region lists the tables below are drawn from:
 
 - AWS: https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html
-  Only Regions enabled by default appear, because an opt-in Region is a
-  manual step in the AWS console before anything can deploy there.
+  Only Regions enabled by default are suggested, because an opt-in Region is
+  a manual step in the AWS console before anything can deploy there.
+  `REGIONS` holds every Region, so a Region the user enabled still passes.
 - Azure: https://learn.microsoft.com/en-us/azure/reliability/regions-list
 - Google Cloud: https://docs.cloud.google.com/run/docs/locations
+
+`region_problem` rejects a name missing from `REGIONS` before any cloud
+call, so a typo stops with the names it is close to. A region a provider
+opens after a pdt release is rejected until `REGIONS` lists it; the tests
+compare the AWS list with the one botocore ships.
 
 macOS and Linux name the time zone the IANA way ("Europe/London").
 Windows names it its own way ("GMT Standard Time"); `WINDOWS_ZONES` maps
@@ -28,6 +34,7 @@ https://github.com/unicode-org/cldr/blob/main/common/supplemental/windowsZones.x
 from __future__ import annotations
 
 import configparser
+import difflib
 import os
 import subprocess
 import sys
@@ -48,6 +55,43 @@ REGION_ENV = {
     "aws": ("AWS_REGION", "AWS_DEFAULT_REGION"),
     "azure": ("PDT_AZURE_REGION",),
     "google-cloud": ("PDT_GOOGLE_CLOUD_REGION",),
+}
+
+# Every region name each provider accepts, from the lists named above.
+REGIONS = {
+    "aws": (
+        "af-south-1", "ap-east-1", "ap-east-2", "ap-northeast-1", "ap-northeast-2",
+        "ap-northeast-3", "ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2",
+        "ap-southeast-3", "ap-southeast-4", "ap-southeast-5", "ap-southeast-6", "ap-southeast-7",
+        "ca-central-1", "ca-west-1", "eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1",
+        "eu-south-2", "eu-west-1", "eu-west-2", "eu-west-3", "il-central-1", "me-central-1",
+        "me-south-1", "mx-central-1", "sa-east-1", "us-east-1", "us-east-2", "us-west-1",
+        "us-west-2",
+    ),
+    "azure": (
+        "australiacentral", "australiacentral2", "australiaeast", "australiasoutheast",
+        "austriaeast", "belgiumcentral", "brazilsouth", "brazilsoutheast", "canadacentral",
+        "canadaeast", "centralindia", "centralus", "chilecentral", "denmarkeast", "eastasia",
+        "eastus", "eastus2", "francecentral", "francesouth", "germanynorth", "germanywestcentral",
+        "indiasouthcentral", "indonesiacentral", "israelcentral", "italynorth", "japaneast",
+        "japanwest", "koreacentral", "koreasouth", "malaysiawest", "mexicocentral",
+        "newzealandnorth", "northcentralus", "northeurope", "norwayeast", "norwaywest",
+        "polandcentral", "qatarcentral", "southafricanorth", "southafricawest", "southcentralus",
+        "southeastasia", "southindia", "spaincentral", "swedencentral", "switzerlandnorth",
+        "switzerlandwest", "taiwannorth", "uaecentral", "uaenorth", "uksouth", "ukwest",
+        "westcentralus", "westeurope", "westindia", "westus", "westus2", "westus3",
+    ),
+    "google-cloud": (
+        "africa-south1", "asia-east1", "asia-east2", "asia-northeast1", "asia-northeast2",
+        "asia-northeast3", "asia-south1", "asia-south2", "asia-southeast1", "asia-southeast2",
+        "asia-southeast3", "australia-southeast1", "australia-southeast2", "europe-central2",
+        "europe-north1", "europe-north2", "europe-southwest1", "europe-west1", "europe-west10",
+        "europe-west12", "europe-west2", "europe-west3", "europe-west4", "europe-west6",
+        "europe-west8", "europe-west9", "me-central1", "me-central2", "me-west1",
+        "northamerica-northeast1", "northamerica-northeast2", "northamerica-south1",
+        "southamerica-east1", "southamerica-west1", "us-central1", "us-east1", "us-east4",
+        "us-east5", "us-south1", "us-west1", "us-west2", "us-west3", "us-west4",
+    ),
 }
 
 # (aws, azure, google-cloud) when the time zone names no known place.
@@ -375,6 +419,16 @@ def local_currency() -> str:
     return code if len(code) == 3 and code.isalpha() else "USD"
 
 
+def region_problem(provider: str, region: str) -> str:
+    """A problem with a region the user named, or "" when the provider has it."""
+    if provider not in PROVIDERS or region == "" or region in REGIONS[provider]:
+        return ""
+    close = difflib.get_close_matches(region, REGIONS[provider], n=3)
+    hint = f" Did you mean {' or '.join(close)}?" if close else ""
+    return (f"There is no {PROVIDER_NAMES[provider]} region named {region}.{hint} "
+            f"All {PROVIDER_NAMES[provider]} regions: {REGION_LISTS[provider]}")
+
+
 def question(provider: str) -> str:
     return f"Which {PROVIDER_NAMES[provider]} region should hold your jobs?"
 
@@ -401,11 +455,17 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
         console.say()
         console.say(f"pdt suggests {console.value(region)}, because {console.escape(reason)}.")
         console.field(f"All {PROVIDER_NAMES[provider]} regions", REGION_LISTS[provider])
-        try:
-            region = console.ask(question(provider), region) or region
-        except EOFError:
-            return (f"no {PROVIDER_NAMES[provider]} region is set. Add `region: {region}` under "
-                    f"platform: in {config.PROJECT_FILE}.")
+        suggested = region
+        while True:
+            try:
+                region = console.ask(question(provider), suggested) or suggested
+            except EOFError:
+                return (f"no {PROVIDER_NAMES[provider]} region is set. Add `region: {suggested}` "
+                        f"under platform: in {config.PROJECT_FILE}.")
+            problem = region_problem(provider, region)
+            if problem == "":
+                break
+            console.warn(console.escape(problem))
     saved = config.save_platform_key(app, "region", region)
     console.done(f"Saved region {console.value(region)} to "
                  f"{console.value(saved.relative_to(config.find_project()))}.")

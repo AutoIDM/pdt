@@ -35,14 +35,17 @@ def _needed(answer: str) -> str:
 # time zone is read only when the question is asked.
 PROVIDER_QUESTIONS = {
     "azure": [
-        ("region", regions.question("azure"), lambda: regions.suggest_region("azure"), _needed),
+        ("region", regions.question("azure"), lambda: regions.suggest_region("azure"),
+         lambda answer: _needed(answer) or regions.region_problem("azure", answer)),
     ],
     "aws": [
-        ("region", regions.question("aws"), lambda: regions.suggest_region("aws"), _needed),
+        ("region", regions.question("aws"), lambda: regions.suggest_region("aws"),
+         lambda answer: _needed(answer) or regions.region_problem("aws", answer)),
     ],
     "google-cloud": [
         ("region", regions.question("google-cloud"),
-         lambda: regions.suggest_region("google-cloud"), _needed),
+         lambda: regions.suggest_region("google-cloud"),
+         lambda answer: _needed(answer) or regions.region_problem("google-cloud", answer)),
     ],
     "windows": [],
     "": [],
