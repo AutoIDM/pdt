@@ -5,7 +5,9 @@ such a version is already there, then runs the real pdt with the same arguments.
 "or newer" keeps a `pdt upgrade` past VERSION from being undone at the next start.
 The tool and its pdt.exe go under %LOCALAPPDATA%\\AutoIDM\\pdt, a folder that
 is not on the PATH, so this launcher is the pdt that runs and a winget upgrade
-takes effect. A `uv tool install pdt-cli` keeps its own copy in uv's folders.
+takes effect. UV_TOOL_DIR and UV_TOOL_BIN_DIR are set for both the install and
+the real pdt, so `pdt upgrade` updates this copy. A `uv tool install pdt-cli`
+keeps its own copy in uv's folders.
 The release workflow replaces VERSION with the version being released.
 Standard library only, so PyInstaller has nothing else to bundle.
 """
@@ -43,7 +45,9 @@ def main(args: list[str]) -> int:
     if done.returncode != 0:
         sys.stderr.write(done.stderr)
         return 1
-    return subprocess.run([str(home / "bin" / "pdt.exe"), *args]).returncode
+    # The same UV_TOOL_* values must reach pdt.exe so `pdt upgrade` updates
+    # this isolated copy instead of uv's default tool folders.
+    return subprocess.run([str(home / "bin" / "pdt.exe"), *args], env=env).returncode
 
 
 if __name__ == "__main__":

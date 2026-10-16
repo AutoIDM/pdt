@@ -17,6 +17,7 @@ class FakeRun:
     def __init__(self, install_code=0, pdt_code=0):
         self.commands = []
         self.install_env = None
+        self.pdt_env = None
         self.install_code = install_code
         self.pdt_code = pdt_code
 
@@ -25,6 +26,7 @@ class FakeRun:
         if command == INSTALL:
             self.install_env = kwargs["env"]
             return subprocess.CompletedProcess(command, self.install_code, "", "no such version\n")
+        self.pdt_env = kwargs.get("env")
         return subprocess.CompletedProcess(command, self.pdt_code)
 
 
@@ -58,6 +60,9 @@ def test_installs_into_its_own_folders_off_the_path(monkeypatch, uv_on_path):
     launcher.main(["list"])
     assert run.install_env["UV_TOOL_DIR"] == str(HOME / "tools")
     assert run.install_env["UV_TOOL_BIN_DIR"] == str(HOME / "bin")
+    # pdt.exe inherits the same folders so `pdt upgrade` updates this copy.
+    assert run.pdt_env["UV_TOOL_DIR"] == str(HOME / "tools")
+    assert run.pdt_env["UV_TOOL_BIN_DIR"] == str(HOME / "bin")
 
 
 def test_failed_install_shows_uv_error_and_exits_1(monkeypatch, uv_on_path, capsys):
