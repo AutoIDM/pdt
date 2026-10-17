@@ -31,6 +31,8 @@ WHEEL_MUST_HOLD = (
     "pdt/examples/impossible-travel-report/env.template",
     "pdt/examples/hello-world/run.py",
     "pdt/examples/hello-world/config.yml",
+    "pdt/examples/powershell-hello-world/hello.ps1",
+    "pdt/examples/powershell-hello-world/config.yml",
     "pdt/gui_server.py",
     "pdt/gui/templates/gui/base.html",
     "pdt/gui/static/pdt.css",

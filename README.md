@@ -28,6 +28,21 @@ On Windows you can run `winget install AutoIDM.pdt` instead, which also installs
 
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
 
+## Quick start
+
+Deploy a PowerShell job. The commands are the same on Windows, macOS, and Linux.
+
+```
+pdt init my-jobs
+cd my-jobs
+pdt new hello-powershell --from powershell-hello-world
+pdt run hello-powershell
+pdt deploy hello-powershell
+pdt logs hello-powershell
+```
+
+To deploy your own script, put it in the `hello-powershell` folder in place of `hello.ps1`, then run `pdt run hello-powershell` and `pdt deploy hello-powershell` again.
+
 ## Set up a project
 
 A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, or the `.ps1` scripts of a PowerShell app. Every command except `init` finds the project by looking in the current folder, then each folder above it.
@@ -334,6 +349,10 @@ A PowerShell app. Once a week it exports the Intune configuration of a tenant wi
 ### monday-orphaned-account-report
 
 Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user.
+
+### powershell-hello-world
+
+A PowerShell app whose one script, `hello.ps1`, writes "Hello, world!". It is the app the [Quick start](#quick-start) deploys. Put your own `.ps1` files in its folder in place of `hello.ps1` to deploy your own PowerShell job.
 
 ### powershell-report
 

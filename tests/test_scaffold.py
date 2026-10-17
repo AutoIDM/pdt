@@ -156,6 +156,17 @@ def test_new_app_copies_a_powershell_example(project, capsys):
     assert "my-report/report.ps1" in capsys.readouterr().out
 
 
+def test_quick_start_copies_the_powershell_hello_world(project):
+    # README's Quick start runs this exact `pdt new`, so the example must stay a
+    # PowerShell app with one script the user can swap for their own.
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+    assert "pdt new hello-powershell --from powershell-hello-world" in readme
+    assert scaffold.new_app("hello-powershell", "powershell-hello-world") == 0
+    assert powershell_scripts(project / "hello-powershell") == ["hello.ps1"]
+    assert find_apps() == ["hello-powershell"]
+    assert validate_app("hello-powershell") == []
+
+
 def test_new_app_copies_an_examples_data_files(project):
     assert scaffold.new_app("license-audit", "azure-license-waste") == 0
     app = project / "license-audit"
