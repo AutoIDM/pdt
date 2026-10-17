@@ -357,7 +357,7 @@ def save_root_alerts(alerts: list[dict]) -> Path:
     `save_platform_key`), so comments elsewhere in the file survive.
     """
     path = find_project() / PROJECT_FILE
-    block = ["alerts:"]
+    block = ["alerts:" if alerts else "alerts: []"]
     for entry in alerts:
         for index, (key, value) in enumerate(entry.items()):
             if isinstance(value, list):
