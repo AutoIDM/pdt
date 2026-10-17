@@ -2,13 +2,16 @@
 
 Run scheduled jobs — reports, integrations, automations — and deploy them to AWS, Azure, Google Cloud, or Windows Task Scheduler with one command.
 
-## Quick start: put a PowerShell script into production
+## Install
 
-This takes a PowerShell script you already have and runs it on a schedule in your own cloud account. You need a Windows PC and a sign-in to Azure, AWS, or Google Cloud. You do not install anything else first: pdt installs PowerShell 7, the modules your script uses, and the cloud's command-line tool when it needs them.
+```
+uv tool install pdt-cli
+uv tool update-shell
+```
 
-### 1. Install pdt
+`uv tool install` puts the `pdt` command in uv's tool folder. `uv tool update-shell` adds that folder to your PATH if it is not there yet. A terminal window that was already open does not see a PATH change, so open a new window before you type `pdt`. To update pdt later, run `uv tool upgrade pdt-cli`.
 
-Open PowerShell and paste these lines:
+On Windows, paste these lines into PowerShell. They install `uv` and pdt, and they work in the window you type them in:
 
 ```powershell
 winget install --id astral-sh.uv -e
@@ -19,72 +22,26 @@ $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Env
 pdt --version
 ```
 
-On macOS or Linux, install pdt as [Install](#install) shows. Every step after this one is the same.
-
-### 2. Create a project
-
-A project is the folder that holds all your jobs. Keep it in git like any other code.
-
-```powershell
-pdt init my-jobs
-cd my-jobs
-```
-
-`pdt init` asks where your jobs should run (Azure, AWS, Google Cloud, or this Windows PC through Task Scheduler) and which region, and suggests the region nearest to you. It also adds a small `hello-world` app, which you can delete.
-
-### 3. Add your script
-
-Give the script a folder of its own. The folder name becomes the job's name.
-
-```powershell
-mkdir disk-report
-copy C:\scripts\Get-DiskReport.ps1 disk-report\
-```
-
-A folder can hold several `.ps1` files. pdt runs each script that no other script loads, in name order. Name one of them `run.ps1` to make it the only one that runs.
-
-### 4. Run it on this computer
-
-```powershell
-pdt run disk-report
-```
-
-pdt reads your script to find the modules it imports and the `$env:` values it reads, installs the modules, and runs it. When the script reads a value such as `$env:SMTP_PASSWORD`, add a line `SMTP_PASSWORD=...` to the `.env` file in `my-jobs`. pdt names each value that is missing. `.env` stays on your computer and out of git.
-
-### 5. Deploy it
-
-```powershell
-pdt deploy disk-report
-```
-
-The deploy asks how often the job should run (hourly, daily, weekly, monthly, or a cron expression), offers to open your browser to sign in when you are not signed in, then prints what it will create and what it will cost each month and asks `Proceed? [y/N]`. Your `.env` values go to the cloud's secret store, never into the job's image. When the deploy finishes, answer `y` to start a run and watch its log.
-
-### 6. Check on it
-
-```powershell
-pdt runs disk-report    # each run, and whether it worked
-pdt logs disk-report    # the newest run's log
-pdt gui                 # every job on one page in your browser
-```
-
-Files your script writes to the folder `$env:PDT_OUTPUT_DIR` are kept after each run, and `pdt storage disk-report ls` lists them. After you change the script, run `pdt deploy disk-report` again. `pdt destroy disk-report` removes everything the deploy created.
-
-The rest of this page explains each step in detail.
-
-## Install
-
-```
-uv tool install pdt-cli
-uv tool update-shell
-```
-
-`uv tool install` puts the `pdt` command in uv's tool folder. `uv tool update-shell` adds that folder to your PATH if it is not there yet. A terminal window that was already open does not see a PATH change, so open a new window before you type `pdt`. To update pdt later, run `uv tool upgrade pdt-cli`.
-
-On Windows, paste the lines in [step 1 of the quick start](#1-install-pdt) into PowerShell. They install `uv` and pdt, and they work in the window you type them in. `winget` and `uv tool update-shell` change the PATH for new windows only. Each `$env:Path = ...` line reads the new PATH into the current window. Another PowerShell window that was open before the install does not find `uv` or `pdt` until you paste the same line into it or open a new window.
+`winget` and `uv tool update-shell` change the PATH for new windows only. Each `$env:Path = ...` line reads the new PATH into the current window. Another PowerShell window that was open before the install does not find `uv` or `pdt` until you paste the same line into it or open a new window.
 
 On Windows you can run `winget install AutoIDM.pdt` instead, which also installs `uv` if you do not have it and puts the same `pdt` command on your PATH. Open a new PowerShell window after it finishes. `winget upgrade AutoIDM.pdt` moves pdt to the latest release, and the first `pdt` command after an install or upgrade finishes setting up that version.
 
 You can also clone this repository and run `./pdt` (or `.\pdt.bat` on Windows) instead. It installs `uv` for you if you do not have it. Both ways give you the same commands.
+
+## Quick start
+
+Deploy a PowerShell job. The commands are the same on Windows, macOS, and Linux.
+
+```
+pdt init my-jobs
+cd my-jobs
+pdt new hello-powershell --from powershell-hello-world
+pdt run hello-powershell
+pdt deploy hello-powershell
+pdt logs hello-powershell
+```
+
+To deploy your own script, put it in the `hello-powershell` folder in place of `hello.ps1`, then run `pdt run hello-powershell` and `pdt deploy hello-powershell` again.
 
 ## Set up a project
 
@@ -392,6 +349,10 @@ A PowerShell app. Once a week it exports the Intune configuration of a tenant wi
 ### monday-orphaned-account-report
 
 Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user.
+
+### powershell-hello-world
+
+A PowerShell app whose one script, `hello.ps1`, writes "Hello, world!". It is the app the [Quick start](#quick-start) deploys. Put your own `.ps1` files in its folder in place of `hello.ps1` to deploy your own PowerShell job.
 
 ### powershell-report
 

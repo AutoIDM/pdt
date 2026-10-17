@@ -1,0 +1,23 @@
+# Sample PowerShell hello world app. Its script writes one line. Replace
+# hello.ps1 with your own script, or add yours next to it, to deploy your
+# own PowerShell job.
+
+# How often this app runs.
+# Shorthand: hourly, daily, weekly, monthly, yearly.
+# Or a 5-field cron expression, for example "0 * * * *".
+schedule: "daily"
+
+# Every app gets a data store folder by default. Uncomment to opt out.
+# storage: false
+
+config:
+  # Anything under config: reaches the script as JSON in $env:PDT_CONFIG_JSON.
+  # See hello.ps1 for how it's used.
+  greeting: Hello, world!
+
+# Env vars this app needs. pdt also finds each $env:NAME the scripts read.
+# `pdt validate` checks them against your .env, and `pdt deploy` uploads the
+# ones that are set as cloud secrets. This app needs none.
+env:
+  required: []
+  optional: []
