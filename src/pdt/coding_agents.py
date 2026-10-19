@@ -28,6 +28,7 @@ SETTINGS = config.data_home() / "pdt" / "settings.yml"
 CHOICE_KEY = "coding-agent"
 CONSENT_KEY = "coding-agent-consent"
 REMOVED = "<secret removed>"
+FOLLOW_RULES = "Follow the rules in AGENTS.md of this pdt project, the folder that holds pdt.yml."
 # A value this short, such as 1 or yes, is not a secret, and removing it would change many words.
 SHORTEST_SECRET = 4
 REPLY_SECONDS = 300
@@ -155,7 +156,7 @@ def message(request: str, context: dict[str, str], secrets: set[str]) -> str:
     text = "\n\n".join([request, *(f"## {heading}\n{body}" for heading, body in context.items())])
     for value in sorted(secrets, key=len, reverse=True):
         text = text.replace(value, REMOVED)
-    return text
+    return f"{FOLLOW_RULES}\n\n{text}"
 
 
 def choose(settings: dict, found: dict[str, str], ask_user: bool) -> Agent | None:
@@ -203,7 +204,8 @@ def allowed(settings: dict, agent: Agent, context: dict[str, str]) -> bool:
     console.say(f"pdt sends it a request{sent}. "
                 f"pdt first removes each value of {SHORTEST_SECRET} or more characters "
                 "in your .env files.")
-    console.say(f"{label} can read files on this computer. It cannot change them.")
+    console.say(f"{label} can read files on this computer, .env files too. It cannot change "
+                "them. pdt tells it to follow the rules in your project's AGENTS.md.")
     console.say(f"pdt saves your answer in {console.value(str(SETTINGS))}. "
                 "Edit that file to change it.")
     try:

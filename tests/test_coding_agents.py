@@ -56,7 +56,7 @@ def test_the_first_request_asks_for_consent_and_remembers_the_answer(monkeypatch
     assert "this text: error text." in capsys.readouterr().out
     command, sent = computer.runs[0]
     assert command[:4] == ["/bin/claude", "-p", "--effort", "low"]
-    assert sent == "Why did it fail?\n\n## error text\nboom"
+    assert sent == f"{coding_agents.FOLLOW_RULES}\n\nWhy did it fail?\n\n## error text\nboom"
     assert coding_agents.ask("Again?") == "the reply"
     assert computer.asked == ["Let pdt send requests to Claude Code?"]
     assert coding_agents.read_settings() == {"coding-agent-consent": {"claude": True}}
