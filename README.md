@@ -134,8 +134,9 @@ pdt login my-report
 | `pdt run APP --deployed` | start one run of the deployed job now, on its platform |
 | `pdt deploy APP` | deploy an app to its configured platform, then ask whether to start a run and follow its log |
 | `pdt deploy APP --run` | deploy, then start a run and follow its log with no question |
-| `pdt deploy --all` | deploy every enabled app, in order; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
+| `pdt deploy --all` | deploy every enabled app, in order; skips an app whose plan you decline; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
 | `pdt destroy APP` | remove everything deploy created |
+| `pdt destroy --all` | destroy every deployed app, in order; each app shows its plan and asks; asks whether to skip an app that fails; add `--yes --skip-failures` to run unattended |
 | `pdt pause APP` | stop the deployed schedule from starting runs; writes `pause: true` into the app's `config.yml` |
 | `pdt unpause APP` | let the schedule start runs again; writes `pause: false` |
 | `pdt secrets APP` | show which `.env` values differ from the deployed app |

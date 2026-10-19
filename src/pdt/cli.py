@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 import rich_argparse
 
@@ -295,11 +296,43 @@ def cmd_deploy(args) -> int:
     return deploy.deploy(name, assume_yes=args.yes, run=args.run or None)
 
 
+ALL_WORDS = {"deploy": ("Deploying", "deployed"), "destroy": ("Destroying", "destroyed")}
+
+
 def deploy_all(assume_yes: bool, skip_failures: bool, run: bool = False) -> int:
     names = config.find_apps()
     if not names:
         say_no_apps()
         return 1
+    return each_app("deploy", names,
+                    lambda name: deploy.deploy(name, assume_yes=assume_yes, run=False),
+                    assume_yes, skip_failures, run)
+
+
+def destroy_all(assume_yes: bool, skip_failures: bool) -> int:
+    names = config.find_apps()
+    if not names:
+        say_no_apps()
+        return 1
+    deployed = [name for name in names if config.is_deployed(name)]
+    if len(deployed) < len(names):
+        console.say("Not deployed, so nothing to destroy: " + ", ".join(
+            console.value(name) for name in names if name not in deployed))
+    if not deployed:
+        console.say("No app is deployed, so there is nothing to destroy.")
+        return 0
+    if not assume_yes:
+        console.heading("pdt destroy --all will destroy these apps, one at a time:")
+        for name in deployed:
+            console.name(name)
+    return each_app("destroy", deployed,
+                    lambda name: deploy.destroy(name, assume_yes=assume_yes),
+                    assume_yes, skip_failures)
+
+
+def each_app(command: str, names: list[str], act: Callable[[str], int],
+             assume_yes: bool, skip_failures: bool, run: bool = False) -> int:
+    gerund, past = ALL_WORDS[command]
     ask = not skip_failures and can_prompt(None)
     failed: list[str] = []
     deployed: list[str] = []
@@ -309,20 +342,23 @@ def deploy_all(assume_yes: bool, skip_failures: bool, run: bool = False) -> int:
         for index, name in enumerate(names, 1):
             os.environ.clear()
             os.environ.update(original_env)
-            console.heading(f"Deploying {console.value(name)} ({index} of {len(names)})")
-            code = deploy.deploy(name, assume_yes=assume_yes, run=False)
+            console.heading(f"{gerund} {console.value(name)} ({index} of {len(names)})")
+            code = act(name)
             if code == 0:
                 deployed.append(name)
                 continue
             failed.append(name)
-            console.error(f"{console.value(name)} did not deploy.")
+            if code == deploy.DECLINED:
+                continue
+            console.error(f"{console.value(name)} did not {command}.")
             if index < len(names) and not skip_failures and not (
                     ask and console.confirm(
-                        f"Skip the failing app {name} and deploy the rest?")):
-                console.say("Fix the problem above and run pdt deploy --all again, "
+                        f"Skip the failing app {name} and {command} the rest?")):
+                console.say(f"Fix the problem above and run pdt {command} --all again, "
                             "or add --skip-failures to go on past it.")
                 return code
-            if ask and not assume_yes and console.confirm(
+            # Disabling an app hides it from pdt destroy, so its resources would stay.
+            if command == "deploy" and ask and not assume_yes and console.confirm(
                     f"Disable the failing app {name}?"):
                 path = config.set_app_enabled(name, False)
                 console.done(f"Disabled {console.value(name)} in "
@@ -338,7 +374,7 @@ def deploy_all(assume_yes: bool, skip_failures: bool, run: bool = False) -> int:
         os.environ.clear()
         os.environ.update(original_env)
     if failed:
-        console.warn(f"Not deployed: {', '.join(console.value(name) for name in failed)}")
+        console.warn(f"Not {past}: {', '.join(console.value(name) for name in failed)}")
     if failed_runs:
         console.warn(f"Runs that failed: {', '.join(console.value(name) for name in failed_runs)}")
     return 1 if failed or failed_runs else 0
@@ -352,6 +388,14 @@ def cmd_login(args) -> int:
 
 
 def cmd_destroy(args) -> int:
+    if args.skip_failures and not args.all:
+        console.error("--skip-failures only works with --all")
+        return 1
+    if args.all:
+        if args.app is not None:
+            console.error("pick an app or --all, not both")
+            return 1
+        return destroy_all(args.yes, args.skip_failures)
     name = choose_app(args.app, "destroy")
     if name is None:
         return 1
@@ -609,6 +653,11 @@ def build_parser() -> argparse.ArgumentParser:
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("--all", action="store_true",
+                   help="destroy every deployed app, in order; each app asks before it is "
+                        "destroyed")
+    p.add_argument("--skip-failures", action="store_true",
+                   help="with --all, go on past an app that fails to destroy instead of asking")
     p.set_defaults(func=cmd_destroy)
     p = add_parser("pause", help="stop an app's schedule from starting runs")
     app = p.add_argument("app", nargs="?", help=APP_HELP)

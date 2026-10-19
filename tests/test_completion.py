@@ -164,6 +164,7 @@ def test_typed_dash_offers_options(project, tmp_path):
     add_app(project, "daily-report")
 
     assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "--yes", "--all", "--skip-failures", "--run"]
+    assert _complete("pdt destroy -", tmp_path) == ["-h", "--help", "--yes", "--all", "--skip-failures"]
 
 
 @pytest.mark.parametrize("line", ["pdt ", "pdt deploy ", "pdt logs --"])
