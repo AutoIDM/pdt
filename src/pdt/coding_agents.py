@@ -48,9 +48,11 @@ def _claude_args(program: str, env: dict[str, str]) -> list[str]:
 
 
 def _codex_args(program: str, env: dict[str, str]) -> list[str]:
-    # The user's config.toml can add MCP servers and hooks that the sandbox does not cover.
+    # The user's config.toml can add MCP servers and hooks, and a .rules allow rule can run a
+    # command outside the sandbox.
     return [program, "exec", "--skip-git-repo-check", "--ephemeral", "--ignore-user-config",
-            "--color", "never", "-s", "read-only", "-c", 'model_reasoning_effort="low"', "-"]
+            "--ignore-rules", "--color", "never", "-s", "read-only", "-c",
+            'model_reasoning_effort="low"', "-"]
 
 
 def _cursor_args(program: str, env: dict[str, str]) -> list[str]:
