@@ -62,7 +62,7 @@ def deploy(monkeypatch, answers, job_after=None):
     monkeypatch.setattr(azure, "build_in_cloud", lambda *args: False)
     monkeypatch.setattr(azure, "gather_secrets", lambda app: {})
     monkeypatch.setattr(azure, "check_shared_names", lambda settings, resources: None)
-    monkeypatch.setattr(azure, "image_action", lambda app, text, cloud_builder="", if_changed=False: text)
+    monkeypatch.setattr(azure, "image_action", lambda app, text, cloud_builder="": text)
     monkeypatch.setattr(azure, "cost_estimate_for", lambda *args: None)
     monkeypatch.setattr(azure, "confirm", lambda *args: True)
     monkeypatch.setattr(azure, "build_image", lambda *args: None)

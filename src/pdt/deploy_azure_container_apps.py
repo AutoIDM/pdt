@@ -67,8 +67,8 @@ from pdt.deploy_azure import (
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, gather_secrets,
-    image_action, may_skip_build, run_build, run_secrets, ssh_build_args, store_cost_label,
-    store_kept_line, warn_if_locked)
+    image_action, run_build, run_secrets, ssh_build_args, store_cost_label, store_kept_line,
+    warn_if_locked)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -1104,7 +1104,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         actions += store_plan(store, store_present, name, job)
     actions.append(image_action(
         app, console.Markup(f"build and push image {console.value(image)}"),
-        "ACR Tasks" if cloud else "", may_skip_build(deployed)))
+        "ACR Tasks" if cloud else ""))
     actions += secret_actions(sid, values, current_secret, payload)
     if legacy_job:
         actions.append(console.Markup(f"delete Container Apps Job {console.value(legacy)} "

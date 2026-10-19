@@ -58,7 +58,7 @@ from pdt.deploy_aws import (
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, ensure_image, fail, gather_secrets, image_action,
-    may_skip_build, run_build, run_secrets, secret_contents, ssh_build_args, store_kept_line,
+    run_build, run_secrets, secret_contents, ssh_build_args, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked,
 )
 
@@ -829,8 +829,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                        f"compute environment {console.value(COMPUTE_ENVIRONMENT.name)}, and job "
                        f"queue {console.value(JOB_QUEUE.name)}"),
         image_action(app, console.Markup(f"build and push Docker image {console.value(image)} "
-                                         f"({DOCKER_PLATFORM})"), "CodeBuild" if cloud else "",
-                     may_skip_build(deployed)),
+                                         f"({DOCKER_PLATFORM})"), "CodeBuild" if cloud else ""),
         console.Markup(("update" if secret_exists else "create")
                        + f" Secrets Manager secret {console.value(names['secret'])} "
                        f"({secret_contents(secrets)})"),
@@ -907,6 +906,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
         else:
             docker_build(stage, image, clients["ecr"])
         image_digest = pushed_digest(clients["ecr"], image)
+        if image_digest is None:
+            fail(f"ECR holds no image {console.value(image)} after the build")
 
     fingerprint = ensure_image(
         app, image, DOCKER_PLATFORM, "CodeBuild" if cloud else "", deployed,

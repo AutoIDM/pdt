@@ -82,7 +82,7 @@ from pdt import regions
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
-    ensure_image, fail, fetch_json, gather_secrets, image_action, may_skip_build, run_build,
+    ensure_image, fail, fetch_json, gather_secrets, image_action, run_build,
     run_secrets, secret_contents, ssh_build_args, store_cost_label, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
@@ -932,8 +932,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
                                       f"{console.value(repo)} and use bucket "
                                       f"{console.value(builds)}"))
     actions.append(image_action(app, console.Markup(
-        f"build and push image {console.value(image)}"), "Cloud Build" if cloud else "",
-        may_skip_build(deployed)))
+        f"build and push image {console.value(image)}"), "Cloud Build" if cloud else ""))
     if secret_state:
         actions.append(console.Markup(f"{secret_state} secret {console.value(sid)} "
                                       f"({secret_contents(values)}, as one json blob)"))

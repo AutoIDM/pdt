@@ -31,8 +31,6 @@ def test_an_app_without_a_dockerfile_gets_the_generated_one(tmp_path):
     assert image_action(app, "build image x") == "build image x with Docker on this computer"
     assert plain([image_action(app, "build image x", "Cloud Build")]) == [
         "build image x in the cloud with Cloud Build"]
-    assert plain([image_action(app, "build image x", "Cloud Build", if_changed=True)]) == [
-        "build image x in the cloud with Cloud Build, if it changed"]
 
 
 def test_the_generated_dockerfile_installs_from_the_script_header_before_the_rest(tmp_path):

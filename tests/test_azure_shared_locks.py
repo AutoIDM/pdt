@@ -54,7 +54,7 @@ def fake_deploy(monkeypatch, answers):
     monkeypatch.setattr(module, "workspace_resource", lambda settings: MANAGED)
     monkeypatch.setattr(module, "acr_arm_auth_enabled", lambda registry: True)
     monkeypatch.setattr(module, "secret_state", lambda *args: (False, None))
-    monkeypatch.setattr(module, "image_action", lambda app, text, cloud_builder="", if_changed=False: text)
+    monkeypatch.setattr(module, "image_action", lambda app, text, cloud_builder="": text)
     monkeypatch.setattr(module, "cost_estimate_for", lambda *args: None)
     monkeypatch.setattr(module, "confirm", lambda actions, *args: plans.append(plain(actions)) or True)
     monkeypatch.setattr(module, "ensure_environment", lambda *args: None)

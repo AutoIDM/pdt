@@ -379,16 +379,13 @@ def test_a_job_whose_image_left_the_registry_builds_again(deploy, capsys):
     assert [command[:2] for command in commands][1:] == [["docker", "build"], ["docker", "push"]]
 
 
-def test_the_plan_says_the_build_runs_only_when_the_app_changed(deploy, monkeypatch):
-    shown = []
-    monkeypatch.setattr(batch_deploy, "confirm",
-                        lambda actions, assume_yes, estimate: shown.extend(plain(actions)))
-    deploy(cloud=False, revisions=recorded("0" * 32))
-    assert any(line.endswith("with Docker on this computer, if it changed") for line in shown)
-    shown.clear()
-    monkeypatch.setenv(REBUILD_ENV, "1")
-    deploy(cloud=False, revisions=recorded("0" * 32))
-    assert any(line.endswith("with Docker on this computer") for line in shown)
+def test_a_build_whose_image_is_not_in_the_registry_stops_before_the_job_definition(
+        deploy, capsys):
+    code, fakes, _commands, _roles, _logs = deploy(cloud=False, digest=None)
+    assert code == "failed"
+    assert fakes["definitions"] == []
+    assert f"ECR holds no image {IMAGE} after the build" in " ".join(
+        plain([capsys.readouterr().out]))
 
 
 @pytest.fixture

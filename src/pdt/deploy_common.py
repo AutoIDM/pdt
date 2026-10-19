@@ -48,7 +48,7 @@ builds it from an upload of the staged context. The `docker-build` key
 (config.DOCKER_BUILDS) forces either place. A failed build stops the
 deploy.
 
-A deploy builds and pushes the image only when the build context changed: the job records `context_fingerprint` of its image's context under BUILD_TAG (`pdt-build`), and `ensure_image` skips the build when the fingerprint is the same and the registry still holds the job's image, unless `pdt deploy --rebuild` sets REBUILD_ENV.
+The job records `context_fingerprint` of its image's context under BUILD_TAG (`pdt-build`). `ensure_image` skips the build when the fingerprint is the same and the registry still holds the job's image, unless `pdt deploy --rebuild` sets REBUILD_ENV.
 
 A local build forwards the deploying machine's SSH agent when one is
 running, so a RUN step marked `--mount=type=ssh` can install a private
@@ -216,25 +216,17 @@ def context_ignore_text(text: str, app_name: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def image_action(app: dict, what: console.Markup, cloud_builder: str = "",
-                 if_changed: bool = False) -> console.Markup:
+def image_action(app: dict, what: console.Markup, cloud_builder: str = "") -> console.Markup:
     """One plan line for the image build: where it builds, and a custom Dockerfile.
 
     `cloud_builder` names the provider's cloud builder when it builds the image, else "".
-    `if_changed` says the deploy skips the build when the build context did not change.
     """
     where = (f" in the cloud with {console.value(cloud_builder)}" if cloud_builder
              else " with Docker on this computer")
-    suffix = ", if it changed" if if_changed else ""
     if own_dockerfile(app) is not None:
         dockerfile = f"{app['name']}/Dockerfile"
-        return console.Markup(f"{what}{where} (from {console.value(dockerfile)}){suffix}")
-    return console.Markup(f"{what}{where}{suffix}")
-
-
-def may_skip_build(deployed: str | None) -> bool:
-    """Whether a deploy may skip the build of an image whose job records `deployed`."""
-    return deployed is not None and not os.environ.get(REBUILD_ENV)
+        return console.Markup(f"{what}{where} (from {console.value(dockerfile)})")
+    return console.Markup(f"{what}{where}")
 
 
 def context_fingerprint(stage: Path, image_platform: str) -> str:
@@ -280,7 +272,7 @@ def ensure_image(app: dict, image: str, image_platform: str, cloud_builder: str,
     try:
         write_dockerfile(stage, app)
         fingerprint = context_fingerprint(stage, image_platform)
-        if may_skip_build(deployed) and deployed == fingerprint:
+        if deployed == fingerprint and not os.environ.get(REBUILD_ENV):
             if current():
                 console.done(f"Image {console.value(image)} is unchanged; "
                              "skipped the build and push.")
