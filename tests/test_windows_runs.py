@@ -31,7 +31,7 @@ def test_task_action_runs_the_deployed_runner_through_the_machine_uv(project):
     runner = folder / "runtime" / "pdt" / "run_windows_task.py"
     deployed = folder / "app" / "my-report"
     assert f"<Command>{data / 'pdt' / 'bin' / 'uv.exe'}</Command>" in xml
-    assert (f"<Arguments>--cache-dir {data / 'pdt' / 'uv-cache'} run --script {runner} "
+    assert (f"<Arguments>--cache-dir {data / 'pdt' / 'uv-cache'} run --python 3.12 --script {runner} "
             f"{deployed} {folder / 'logs'} {(folder / 'storage').as_uri()}/</Arguments>") in xml
     assert f"<WorkingDirectory>{deployed}</WorkingDirectory>" in xml
     assert str(app["dir"]) not in xml

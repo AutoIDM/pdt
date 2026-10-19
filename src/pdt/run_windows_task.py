@@ -43,6 +43,8 @@ MISSING_UV = 127
 # MANUAL_START_SECONDS old, is manual.
 MANUAL_START = "manual-start"
 SECRETS_FILE = "secrets.json"
+# The Python of every cloud image (deploy_common.BASE_IMAGE); pdt.windows_uv.PYTHON too.
+PYTHON = "3.12"
 MANUAL_START_SECONDS = 300
 LINE_TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) ")
 DRAIN_SECONDS = 2
@@ -67,6 +69,7 @@ def main(argv: list[str]) -> int:
     if secrets.is_file():
         env["PDT_ENV_JSON"] = secrets.read_text(encoding="utf-8-sig")
     env.setdefault("UV_CACHE_DIR", str(folder.parent.parent / "uv-cache"))
+    env["UV_PYTHON"] = PYTHON
     marker = folder / MANUAL_START
     if marker.is_file():
         if time.time() - marker.stat().st_mtime < MANUAL_START_SECONDS:

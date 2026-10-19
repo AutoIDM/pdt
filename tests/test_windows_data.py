@@ -112,7 +112,8 @@ def test_plan_names_the_copy_the_secrets_the_uv_and_the_folders(project):
         "the job at the next deploy",
         f"store env vars API_KEY in {folder / 'secrets.json'} (SYSTEM and Administrators only)",
         f"run uv {deploy_windows.windows_uv.VERSION} from {data / 'bin' / 'uv.exe'}",
-        f"keep the app's run data in {folder} (SYSTEM: full control; PC\\jon: modify)",
+        f"keep the app's run data in {folder} (SYSTEM and Administrators: full control; "
+        "PC\\jon: modify in logs and storage)",
         f"write one log per run under {folder / 'logs'} (removed on destroy)",
         f"use folder {folder / 'storage'} for the app's files (kept after destroy)",
     ]

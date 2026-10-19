@@ -8,7 +8,7 @@
 #     "backoff",
 #     "fsspec",
 #     "duckdb",
-#     "pypsrp>=0.9.1",
+#     "pypsrp>=0.9.1; sys_platform != 'win32' or platform_machine != 'ARM64'",
 #     "pyspnego[kerberos]; sys_platform == 'darwin'",
 # ]
 # ///
@@ -195,7 +195,7 @@ def task_arguments(app: dict) -> str:
     name = app["name"]
     return subprocess.list2cmdline([
         "--cache-dir", str(machine_cache()),
-        "run", "--script", str(runtime_folder(name) / "pdt" / "run_windows_task.py"),
+        "run", "--python", windows_uv.PYTHON, "--script", str(runtime_folder(name) / "pdt" / "run_windows_task.py"),
         str(deployed_app_dir(name)), str(logs_folder(name)), storage_url(name)])
 
 
@@ -429,7 +429,8 @@ def plan(app: dict, verb: str, description: str, user: str, secrets: dict[str, s
                        f"run uv {console.value(windows_uv.VERSION)} from "
                        f"{console.value(machine_uv())}"),
         console.Markup(f"keep the app's run data in {console.value(app_folder(name))} "
-                       f"(SYSTEM: full control; {console.value(user)}: modify)"),
+                       f"(SYSTEM and Administrators: full control; {console.value(user)}: "
+                       "modify in logs and storage)"),
         console.Markup(f"write one log per run under {console.value(logs_folder(name))} "
                        "(removed on destroy)"),
     ]

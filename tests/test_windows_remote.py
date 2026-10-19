@@ -65,7 +65,11 @@ def test_each_app_can_name_its_own_pc(project):
 
 
 def decoded(args):
-    return base64.b64decode(args[args.index("-EncodedCommand") + 1]).decode("utf-16-le")
+    script = base64.b64decode(args[args.index("-EncodedCommand") + 1]).decode("utf-16-le")
+    quiet = "$ProgressPreference = 'SilentlyContinue'; "
+    assert script.startswith(quiet)
+    assert args[args.index("-OutputFormat") + 1] == "Text"
+    return script[len(quiet):]
 
 
 def test_ssh_runs_the_script_in_powershell_on_the_pc():
@@ -138,8 +142,8 @@ class FakeClient:
         self.outcomes = outcomes
         self.opened = opened
 
-    def __call__(self, name, port, ssl, user, password):
-        self.opened.append((port, ssl, password))
+    def __call__(self, name, user, password):
+        self.opened.append(password)
         return self
 
     def execute_ps(self, script):
@@ -158,14 +162,28 @@ class AuthenticationError(Exception):
     pass
 
 
-def test_winrm_probe_tries_https_then_http(monkeypatch):
+def test_winrm_probe_uses_only_https_and_stops_at_an_untrusted_certificate(monkeypatch):
     monkeypatch.setattr(windows_remote, "can_prompt", lambda interactive: False)
-    opened = []
-    client = FakeClient([SSLError("certificate verify failed"), ADMIN], opened)
-    result = windows_remote.probe_winrm(Target("", "pc01"), lambda name, port: "", client)
-    assert result.transport == "WinRM (HTTP, port 5985, Kerberos, encrypted messages)"
-    assert result.notes == ("port 5986 uses an HTTPS certificate that this computer does not trust",)
-    assert opened == [(5986, True, None), (5985, False, None)]
+    opened, ports = [], []
+    client = FakeClient([SSLError("certificate verify failed")], opened)
+    result = windows_remote.probe_winrm(Target("", "pc01"),
+                                        lambda name, port: ports.append(port) or "", client)
+    assert result == "port 5986 uses an HTTPS certificate that this computer does not trust"
+    assert ports == [5986]
+    assert opened == [None]
+
+
+def test_the_winrm_client_is_https_with_certificate_checks(monkeypatch):
+    import sys
+    import types
+    made = {}
+    module = types.ModuleType("pypsrp.client")
+    module.Client = lambda name, **kwargs: made.update(kwargs, name=name)
+    monkeypatch.setitem(sys.modules, "pypsrp", types.ModuleType("pypsrp"))
+    monkeypatch.setitem(sys.modules, "pypsrp.client", module)
+    windows_remote.winrm_client("pc01", "admin", None)
+    assert (made["port"], made["ssl"], made["cert_validation"]) == (5986, True, True)
+    assert made["auth"] == "negotiate"
 
 
 def test_winrm_probe_asks_for_a_password_once_when_kerberos_does_not_sign_in(monkeypatch):
@@ -173,21 +191,21 @@ def test_winrm_probe_asks_for_a_password_once_when_kerberos_does_not_sign_in(mon
     opened, asked = [], []
     client = FakeClient([AuthenticationError("401"), ADMIN], opened)
     result = windows_remote.probe_winrm(Target("CORP\\admin", "pc01"),
-                                        lambda name, port: "" if port == 5986 else "port 5985 did not answer", client,
+                                        lambda name, port: "", client,
                                         lambda prompt: asked.append(prompt) or "secret")
     assert result.transport == "WinRM (HTTPS, port 5986)"
     assert asked == ["Password for CORP\\admin on pc01: "]
-    assert opened == [(5986, True, None), (5986, True, "secret")]
+    assert opened == [None, "secret"]
 
 
-def test_winrm_probe_names_each_port_that_failed(monkeypatch):
+def test_winrm_probe_names_the_port_that_failed(monkeypatch):
     monkeypatch.setattr(windows_remote, "can_prompt", lambda interactive: False)
     def refused(address, timeout):
         raise ConnectionRefusedError(61, "Connection refused")
 
     monkeypatch.setattr(windows_remote.socket, "create_connection", refused)
     result = windows_remote.probe_winrm(Target("", "pc01"), client=FakeClient([], []))
-    assert result == "port 5986 did not answer; port 5985 did not answer"
+    assert result == "port 5986 did not answer"
 
 
 def test_winrm_probe_says_once_that_the_name_is_unknown(monkeypatch):
@@ -201,7 +219,7 @@ def test_winrm_probe_says_once_that_the_name_is_unknown(monkeypatch):
 
 def test_winrm_probe_rejects_a_filtered_local_administrator(monkeypatch):
     monkeypatch.setattr(windows_remote, "can_prompt", lambda interactive: False)
-    result = windows_remote.probe_winrm(Target("helpdesk", "pc01"), lambda name, port: "" if port == 5985 else "port 5986 did not answer",
+    result = windows_remote.probe_winrm(Target("helpdesk", "pc01"), lambda name, port: "",
                                         FakeClient([NOT_ADMIN], []))
     assert "did not give the session administrator rights" in result
 
@@ -232,13 +250,13 @@ def test_connect_says_why_ssh_failed_when_winrm_works(capsys):
 
 def test_connect_names_both_reasons_when_nothing_works():
     probes = (("SSH", lambda target: "port 22 refused the connection"),
-              ("WinRM", lambda target: "port 5986 did not answer; port 5985 did not answer"))
+              ("WinRM", lambda target: "port 5986 did not answer"))
     with pytest.raises(RemoteError) as raised:
         windows_remote.connect("admin@pc01", "my-report", probes)
     message = str(raised.value)
     assert "pdt could not sign in to pc01 as an administrator." in message
     assert "  SSH: port 22 refused the connection." in message
-    assert "  WinRM: port 5986 did not answer; port 5985 did not answer." in message
+    assert "  WinRM: port 5986 did not answer." in message
     assert "pdt login my-report" in message
 
 
@@ -276,17 +294,7 @@ def test_winrm_probe_never_sends_a_rejected_password_again(monkeypatch):
     result = windows_remote.probe_winrm(Target("CORP\\admin", "pc01"), lambda name, port: "",
                                         client, lambda prompt: "wrong")
     assert result == "the PC refused the sign-in for CORP\\admin"
-    assert opened == [(5986, True, None), (5986, True, "wrong")]
-
-
-def test_connect_names_the_https_failure_when_http_works(capsys):
-    found = Connection(Target("", "pc01"), "WinRM (HTTP, port 5985, Kerberos, encrypted messages)",
-                       "CORP\\admin", "PC01", "C:\\ProgramData", "AMD64", "-",
-                       ("port 5986 did not answer",))
-    probes = (("SSH", lambda target: "port 22 did not answer within 10 seconds"),
-              ("WinRM", lambda target: found))
-    windows_remote.connect("pc01", "my-report", probes)
-    assert "WinRM: port 5986 did not answer." in capsys.readouterr().out
+    assert opened == [None, "wrong"]
 
 
 class BadMechanismError(Exception):
@@ -305,16 +313,24 @@ def test_winrm_probe_asks_for_a_password_when_the_user_has_no_ticket_or_is_refus
     monkeypatch.setattr(windows_remote, "can_prompt", lambda interactive: True)
     opened = []
     result = windows_remote.probe_winrm(
-        Target("admin", "pc01"), lambda name, port: "" if port == 5986 else "port 5985 did not answer",
+        Target("admin", "pc01"), lambda name, port: "",
         FakeClient([failure, ADMIN], opened), lambda prompt: "secret")
     assert result.transport == "WinRM (HTTPS, port 5986)"
-    assert opened == [(5986, True, None), (5986, True, "secret")]
+    assert opened == [None, "secret"]
 
 
 def test_a_connection_error_that_names_401_is_not_a_refused_sign_in(monkeypatch):
     monkeypatch.setattr(windows_remote, "can_prompt", lambda interactive: True)
     result = windows_remote.probe_winrm(
         Target("admin", "pc401"), lambda name, port: "",
-        FakeClient([ConnectionError("pc401 reset"), ConnectionError("pc401 reset")], []),
+        FakeClient([ConnectionError("pc401 reset")], []),
         lambda prompt: pytest.fail("asked for a password"))
-    assert result == "port 5986: pc401 reset; port 5985: pc401 reset"
+    assert result == "port 5986: pc401 reset"
+
+
+def test_a_computer_without_pypsrp_says_why_winrm_is_missing(monkeypatch):
+    def missing(name, user, password):
+        raise ModuleNotFoundError("No module named 'pypsrp'")
+
+    result = windows_remote.probe_winrm(Target("admin", "pc01"), lambda name, port: "", missing)
+    assert result.startswith("this computer cannot use WinRM")

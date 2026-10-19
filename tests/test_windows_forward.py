@@ -176,6 +176,8 @@ def test_over_winrm_the_question_is_asked_here_and_the_command_runs_again_with_y
     assert "PDT_ASK_ON_CLIENT" not in second
     assert "'destroy' 'my-report' '--yes' 2>&1" in second
     assert second.endswith("'pdt-exit|' + $LASTEXITCODE")
+    assert second.index("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)") < \
+        second.index("2>&1")
     assert [call[0] for call in remote.calls].count("upload") == 1
 
 
@@ -391,8 +393,8 @@ def test_secrets_set_pipes_the_value_as_utf8(app, monkeypatch):
     windows_remote.forward(connection(), app, "secrets", ["set", "API_KEY"], True, remote)
     assert remote.bundles[0]["stdin.txt"] == "päss".encode()
     script = next(call[1] for call in remote.calls if call[0] == "command")
-    assert "$OutputEncoding = [Text.UTF8Encoding]::new($false); $env:PYTHONIOENCODING = 'utf-8';" \
-        in script
+    assert "$OutputEncoding = [Text.UTF8Encoding]::new($false); Get-Content" in script
+    assert "$env:PYTHONIOENCODING = 'utf-8'" in script
 
 
 def test_the_ssh_command_line_fits_the_windows_shell_limit(app, monkeypatch, tmp_path):

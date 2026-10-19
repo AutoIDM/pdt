@@ -17,6 +17,9 @@ from pdt.config import data_home
 from pdt.download import fetch_verified
 
 VERSION = "0.13.1"
+# The Python of deploy_common.BASE_IMAGE, so a Windows job gets the same Python as a cloud job,
+# and wheels exist for it (the newest Python can lack them on Windows ARM64).
+PYTHON = "3.12"
 CHECKSUMS = {
     "x86_64": "3b2661a463a5baea7f5076ea2b25ab71d77f36a6c0d809e5350651792f80a672",
     "aarch64": "ec7846a5939b4654afee24f2d82bf6fde71bd7a6952d7748f1135ab301dd0a49",

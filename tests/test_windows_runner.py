@@ -205,6 +205,7 @@ def test_runner_passes_the_stored_secrets_as_the_env_json_and_keeps_the_uv_cache
     (folder / "secrets.json").write_text('﻿{"API_KEY": "x"}', encoding="utf-8")
     calls = []
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.setenv("UV_PYTHON", "3.15")
     monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen(calls, b"", 0))
 
     assert run_windows_task.main([str(app_dir), str(folder / "logs"), "file:///s/"]) == 0
@@ -212,6 +213,7 @@ def test_runner_passes_the_stored_secrets_as_the_env_json_and_keeps_the_uv_cache
     (_command, kwargs), = calls
     assert kwargs["env"]["PDT_ENV_JSON"] == '{"API_KEY": "x"}'
     assert kwargs["env"]["UV_CACHE_DIR"] == str(tmp_path / "pdt" / "uv-cache")
+    assert kwargs["env"]["UV_PYTHON"] == "3.12"
 
 
 def test_runner_without_stored_secrets_sets_no_env_json(folders, monkeypatch):

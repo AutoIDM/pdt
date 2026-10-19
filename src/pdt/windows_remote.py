@@ -3,9 +3,8 @@ Windows gives a local account other than the built-in Administrator a filtered
 token (UAC remote restrictions); pdt never changes that policy, so such an
 account works only over SSH.
 
-Over HTTP the messages are encrypted, but NTLM does not prove the PC's
-identity; naming the PC in `platform.host` is the trust Microsoft asks for
-with TrustedHosts.
+pdt uses only secure channels: SSH, and WinRM over HTTPS with a certificate
+this computer trusts. It never uses WinRM over HTTP.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ from pdt.powershell import quoted
 from pdt.utils.email_auth import can_prompt
 
 SSH_PORT = 22
-WINRM_PORTS = ((5986, True), (5985, False))
+WINRM_PORT = 5986
 CONNECT_TIMEOUT = 10
 PROBE_MARK = "pdt-probe"
 PROBE_SCRIPT = (
@@ -66,10 +65,7 @@ class Connection:
     program_data: str
     processor: str
     uv_version: str
-    notes: tuple[str, ...] = ()
     kind: str = "ssh"
-    port: int = SSH_PORT
-    ssl: bool = False
     password: str | None = field(default=None, repr=False)
 
 
@@ -78,8 +74,11 @@ def encoded(script: str) -> str:
 
 
 def powershell_args(script: str) -> list[str]:
-    return ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive",
-            "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded(script)]
+    """-OutputFormat Text, because without a terminal Windows PowerShell writes its error and
+    progress streams as CLIXML."""
+    return ["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text",
+            "-ExecutionPolicy", "Bypass", "-EncodedCommand",
+            encoded("$ProgressPreference = 'SilentlyContinue'; " + script)]
 
 
 def ssh_args(target: Target, script: str, terminal: bool) -> list[str]:
@@ -143,14 +142,11 @@ def port_problem(name: str, port: int) -> str:
         return f"port {port} did not answer"
 
 
-def winrm_client(name: str, port: int, ssl: bool, user: str, password: str | None):
-    """Negotiate over HTTPS. Kerberos only over HTTP, because NTLM over HTTP does not prove
-    the PC's identity."""
+def winrm_client(name: str, user: str, password: str | None):
     from pypsrp.client import Client
 
-    return Client(name, port=port, ssl=ssl, auth="negotiate" if ssl else "kerberos",
-                  username=user or None, password=password, cert_validation=True,
-                  connection_timeout=CONNECT_TIMEOUT)
+    return Client(name, port=WINRM_PORT, ssl=True, auth="negotiate", username=user or None,
+                  password=password, cert_validation=True, connection_timeout=CONNECT_TIMEOUT)
 
 
 NO_CREDENTIALS = ("NoCredentialError", "CredentialsExpiredError", "BadMechanismError",
@@ -158,61 +154,52 @@ NO_CREDENTIALS = ("NoCredentialError", "CredentialsExpiredError", "BadMechanismE
 REJECTED = ("AuthenticationError", "InvalidCredentialError")
 
 
-def _winrm_failure(exc: Exception, target: Target, port: int, ssl: bool) -> tuple[str, str]:
+def _winrm_failure(exc: Exception, target: Target) -> tuple[str, str]:
     """(kind, reason): kind is "missing" or "rejected" when a password could help, else ""."""
     kind = type(exc).__name__
+    if isinstance(exc, ImportError):
+        return "", ("this computer cannot use WinRM, because pypsrp needs the cryptography "
+                    "package, which has no build for Windows on ARM")
     if kind == "SSLError":
         if "certificate verify failed" in str(exc).lower():
-            return "", f"port {port} uses an HTTPS certificate that this computer does not trust"
-        return "", f"port {port}: HTTPS failed ({exc})"
+            return "", (f"port {WINRM_PORT} uses an HTTPS certificate that this computer does "
+                        "not trust")
+        return "", f"port {WINRM_PORT}: HTTPS failed ({exc})"
     if kind in REJECTED or (kind == "WinRMTransportError" and getattr(exc, "code", None) == 401):
         if target.user:
             return "rejected", f"the PC refused the sign-in for {target.user}"
         return "rejected", ("the PC refused a sign-in with this computer's Kerberos ticket; put "
                             f"the user name in platform.host, for example admin@{target.name}")
     if kind in NO_CREDENTIALS:
-        if ssl:
-            return "missing", (f"port {port}: this computer has no Kerberos ticket for the PC, "
-                               "and no password was given")
-        return "missing", (f"port {port} is HTTP, where pdt signs in only with Kerberos, because "
-                           "NTLM over HTTP does not prove the PC's identity; this computer has no "
-                           "Kerberos ticket for the PC")
-    return "", f"port {port}: {exc}"
+        return "missing", (f"port {WINRM_PORT}: this computer has no Kerberos ticket for the PC, "
+                           "and no password was given")
+    return "", f"port {WINRM_PORT}: {exc}"
 
 
 def probe_winrm(target: Target, check_port: Callable = port_problem,
                 client: Callable = winrm_client,
                 ask_password: Callable[[str], str] = getpass.getpass) -> Connection | str:
-    reasons = []
+    """WinRM over HTTPS only (port 5986); pdt never uses WinRM over HTTP."""
+    problem = check_port(target.name, WINRM_PORT)
+    if problem != "":
+        return problem
     password = None
-    for port, ssl in WINRM_PORTS:
-        problem = check_port(target.name, port)
-        if problem != "":
-            reasons.append(problem)
-            continue
-        transport = (f"WinRM (HTTPS, port {port})" if ssl else
-                     f"WinRM (HTTP, port {port}, Kerberos, encrypted messages)")
-        while True:
-            try:
-                output, streams, had_errors = client(
-                    target.name, port, ssl, target.user, password).execute_ps(PROBE_SCRIPT)
-            except Exception as exc:
-                kind, reason = _winrm_failure(exc, target, port, ssl)
-                if kind != "" and password is None and target.user and can_prompt(None):
-                    password = ask_password(f"Password for {target.user} on {target.name}: ")
-                    continue
-                reasons.append(reason)
-                if kind == "rejected" and password is not None:
-                    return "; ".join(dict.fromkeys(reasons))
-                break
-            if had_errors:
-                output += "\n" + "\n".join(str(error) for error in streams.error)
-            result = _probe_result(target, transport, output)
-            if isinstance(result, Connection):
-                return replace(result, notes=tuple(dict.fromkeys(reasons)), kind="winrm",
-                               port=port, ssl=ssl, password=password)
-            return result
-    return "; ".join(dict.fromkeys(reasons))
+    while True:
+        try:
+            output, streams, had_errors = client(target.name, target.user,
+                                                 password).execute_ps(PROBE_SCRIPT)
+        except Exception as exc:
+            kind, reason = _winrm_failure(exc, target)
+            if kind != "" and password is None and target.user and can_prompt(None):
+                password = ask_password(f"Password for {target.user} on {target.name}: ")
+                continue
+            return reason
+        if had_errors:
+            output += "\n" + "\n".join(str(error) for error in streams.error)
+        result = _probe_result(target, f"WinRM (HTTPS, port {WINRM_PORT})", output)
+        if isinstance(result, Connection):
+            return replace(result, kind="winrm", password=password)
+        return result
 
 
 PROBES = (("SSH", probe_ssh), ("WinRM", probe_winrm))
@@ -227,8 +214,6 @@ def connect(host: str, app_name: str, probes=PROBES) -> Connection:
         if isinstance(result, Connection):
             for other, reason in failed:
                 console.note(f"{console.escape(other)} did not work: {console.escape(reason)}.")
-            for reason in result.notes:
-                console.note(f"{console.escape(name)}: {console.escape(reason)}.")
             console.done(f"Connected to {console.value(result.computer)} over "
                          f"{console.escape(result.transport)} as {console.value(result.account)} "
                          "(administrator).")
@@ -322,7 +307,8 @@ def run_script(connection: Connection, folder: PureWindowsPath, app_name: str, c
                    "New-Item -ItemType Directory -Force -Path $bin | Out-Null; "
                    f"{set_acl('$bin', True)}{replace_file(UV_IN_UPLOAD, uv, True)}")
     env = {"PDT_PROJECT": str(folder / "project"), "PDT_CLI_VERSION": pdt_version(),
-           "UV_CACHE_DIR": str(windows_uv.machine_cache(connection.program_data))}
+           "UV_CACHE_DIR": str(windows_uv.machine_cache(connection.program_data)),
+           "UV_PYTHON": windows_uv.PYTHON, "PYTHONIOENCODING": "utf-8"}
     if os.environ.get("PDT_JSON_OUTPUT"):
         env["PDT_JSON_OUTPUT"] = "1"
     if ask_on_client:
@@ -335,10 +321,11 @@ def run_script(connection: Connection, folder: PureWindowsPath, app_name: str, c
     call = (f"& {quoted(str(uv))} run --script {quoted(str(folder / 'pdt' / 'deploy_windows.py'))} "
             + " ".join(map(quoted, args)))
     if stdin:
-        call = ("$OutputEncoding = [Text.UTF8Encoding]::new($false); $env:PYTHONIOENCODING = 'utf-8'; "
+        call = ("$OutputEncoding = [Text.UTF8Encoding]::new($false); "
                 f"Get-Content -Raw -Encoding UTF8 (Join-Path $in 'stdin.txt') | {call}")
     if tag_lines:
-        return (script + f"{call} 2>&1 | ForEach-Object {{ if ($_ -is "
+        return (script + "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
+                f"{call} 2>&1 | ForEach-Object {{ if ($_ -is "
                 "[Management.Automation.ErrorRecord]) "
                 f"{{ '{ERR_MARK}' + $_ }} else {{ '{OUT_MARK}' + $_ }} }}; '{EXIT_MARK}' + $LASTEXITCODE")
     return script + f"{call}; exit $LASTEXITCODE"
@@ -447,7 +434,7 @@ class WinRMSession:
 
     def _client(self):
         c = self.connection
-        return self.client(c.target.name, c.port, c.ssl, c.target.user, c.password)
+        return self.client(c.target.name, c.target.user, c.password)
 
     def script(self, script: str) -> str:
         output, streams, had_errors = self._client().execute_ps(script)
