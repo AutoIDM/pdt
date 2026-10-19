@@ -2,6 +2,8 @@
 
 Run scheduled jobs — reports, integrations, automations — and deploy them to AWS, Azure, Google Cloud, or Windows Task Scheduler with one command.
 
+[AutoIDM](https://www.autoidm.com/service) makes pdt. Report a problem at https://github.com/AutoIDM/pdt/issues.
+
 ## Install
 
 ```
