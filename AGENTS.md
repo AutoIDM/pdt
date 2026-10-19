@@ -49,6 +49,7 @@ Both install routes must keep working, and a change is not done until both do:
 - `src/pdt/gui_cli.py` is `pdt gui`: it starts `src/pdt/gui_server.py` through `uv run --script` (Django lives in that script's header, never in `[project.dependencies]`) and opens the browser. `src/pdt/gui/` is the Django app. It never talks to a cloud: every fact on a page comes from a pdt command run in a child process (`pdt_cmd.run_pdt`), and every button runs one, so the GUI can only do what pdt can do. A new GUI feature starts as a pdt command or config key. Its SQLite database is `.pdt/gui.sqlite3` in the user's project; ship a migration with a model change.
 - `src/pdt/utils/` is code the user's apps import. It is public API. Changing it breaks every deployed app, so treat a change here as breaking.
 - `src/pdt/examples/<name>/` ships inside the wheel. `pdt new` copies one into the user's project. An example never sets `name:` in its `config.yml`, because the copy takes the new folder's name.
+- `src/pdt/watch.py` keeps one history of each top-level pdt command for the user in `watch.HISTORY`: the command shape with no value the user typed, the outcome, the exit code, a short error signature with paths, ids, and env values removed, and the pdt, OS, and Python versions. It hooks in at single points only: `cli.main`, `console.error`, `cli.Parser.error`, and each provider script's `__main__`; a pdt that pdt starts writes a note that the top-level command records, so one command gives one line. It offers to open `watch.SUPPORT_URL` after an error it did not expect, 3 command line mistakes in a row in a project, or the same error 3 times in 24 hours, at most once a day, only to a person at a terminal, never to an AI agent. In CI it records nothing. `PDT_ERROR_WATCH=0` or `error-watch: false` in `pdt.yml` turns it off. It sends nothing anywhere.
 - `tests/` runs with pytest and needs no network and no cloud account.
 
 ## Config rules
@@ -97,7 +98,7 @@ Both install routes must keep working, and a change is not done until both do:
 
 ## Anything written to disk outside the project
 
-The tool downloads the Google Cloud CLI, the PowerShell modules a local run needs, and the DuckDB-WASM files of the `pdt gui` SQL workbench (`src/pdt/duckdb_wasm.py`) to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). A deploy keeps the list prices and exchange rates of its cost estimate there too (`deploy_common.PRICE_CACHE`). Never write them beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
+The tool downloads the Google Cloud CLI, the PowerShell modules a local run needs, and the DuckDB-WASM files of the `pdt gui` SQL workbench (`src/pdt/duckdb_wasm.py`) to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). A deploy keeps the list prices and exchange rates of its cost estimate there too (`deploy_common.PRICE_CACHE`). Each pdt command adds a line to the command history there (`watch.HISTORY`), and a pdt that pdt starts writes a short note to the `notes` folder beside it, which the top-level command reads and deletes. Never write them beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
 
 ## verify/
 

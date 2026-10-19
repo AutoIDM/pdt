@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from rich.text import Text
 
-from pdt import console, deploy_common
+from pdt import console, deploy_common, watch
 
 # verify/scripts holds the live verification framework. It ships with the
 # user's project, not with the wheel, so it is not importable as a package.
@@ -23,6 +23,15 @@ def console_on_stdout(monkeypatch):
 def price_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "PRICE_CACHE", tmp_path / "prices")
     return tmp_path / "prices"
+
+
+@pytest.fixture(autouse=True)
+def history(tmp_path, monkeypatch):
+    monkeypatch.setattr(watch, "HISTORY", tmp_path / "history.jsonl")
+    monkeypatch.setattr(watch, "_seen", ("", ""))
+    for name in ("CI", watch.NOTE_ENV, watch.OFF_ENV, *watch.AGENT_ENVS):
+        monkeypatch.delenv(name, raising=False)
+    return tmp_path / "history.jsonl"
 
 
 @pytest.fixture

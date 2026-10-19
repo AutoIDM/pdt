@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import add_app, started
-from pdt import cli, config, console, deploy, lifecycle, powershell
+from pdt import cli, config, console, deploy, lifecycle, powershell, watch
 from pdt.deploy_common import REBUILD_ENV
 
 
@@ -201,6 +201,7 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
 
 def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
     monkeypatch.setenv("PSModulePath", "")
+    monkeypatch.setenv(watch.OFF_ENV, "0")
     folder = project / "ps-report"
     folder.mkdir()
     monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})
@@ -237,6 +238,7 @@ def test_run_stops_when_a_powershell_module_does_not_install(project, monkeypatc
 
 def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
     monkeypatch.setenv("PSModulePath", "")
+    monkeypatch.setenv(watch.OFF_ENV, "0")
     folder = project / "ps-report"
     folder.mkdir()
     monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})

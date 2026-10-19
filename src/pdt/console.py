@@ -33,6 +33,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
+from pdt import watch
+
 # soft_wrap keeps a long path or command on one logical line: the terminal
 # wraps it at the edge, and rich never re-flows it at a word boundary.
 _console = Console(highlight=False, soft_wrap=True, emoji=False)
@@ -146,6 +148,7 @@ def choice(number: int, label: str, detail: str = "") -> None:
 
 
 def error(message: str) -> None:
+    watch.saw(message)
     _console.print(f"[bold red]error:[/] {message}")
 
 

@@ -45,7 +45,7 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
-ROOT_KEYS = {"platform", "apps", "docker-build", "alerts"}
+ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
             "run_scripts", "continue_on_error", "pause", "docker-build", "alerts"}
 # Where a cloud provider builds the image: with Docker on this computer when
@@ -76,6 +76,7 @@ KEY_HOME = {
     "pause": APP_LEVEL,
     "docker-build": f"the top level of {PROJECT_FILE}, or {APP_LEVEL}",
     "alerts": f"the top level of {PROJECT_FILE}, or {APP_LEVEL}",
+    "error-watch": f"the top level of {PROJECT_FILE}",
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -1008,6 +1009,8 @@ def validate_by_app() -> list[tuple[str | None, str]]:
     except ConfigError as e:
         return [(None, str(e))]
     problems.extend(key_problems(PROJECT_FILE, root_cfg, ROOT_KEYS))
+    if not isinstance(root_cfg.get("error-watch", True), bool):
+        problems.append(f"{PROJECT_FILE}: error-watch must be true or false")
     if "alerts" in root_cfg:
         from pdt import lifecycle
         try:

@@ -60,7 +60,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, regions, runs_cli
+from pdt import config, console, regions, runs_cli, watch
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import CostEstimate, warn_if_locked
@@ -741,4 +741,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     console.json_output()
-    sys.exit(main())
+    sys.exit(watch.watched(main))
