@@ -29,6 +29,7 @@ ALLOWED = {
     "alerts_cli.py": {"question", "len(options)", "names"},
     "cli.py": {"APP_QUESTIONS[command]", "len(apps) - len(shown)", "len(problems)", "index",
                "len(names)", "len(deployed)", "line", "choices", "gerund", "command", "past"},
+    "coding_agents.py": {"label", "len(usable)", "sent", "SHORTEST_SECRET"},
     "deploy.py": {"tool", "line", "state", "action"},
     "deploy_common.py": {"what", "where", "key", "message", "description", "count", "provider", "len(values)",
                          "problem", "suffix",
