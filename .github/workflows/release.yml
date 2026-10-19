@@ -154,7 +154,8 @@ jobs:
   windows-msi:
     needs: [build, windows-launcher, publish]
     if: ${{ !cancelled() && needs.windows-launcher.result == 'success' }}
-    runs-on: windows-latest
+    # WiX v7.0.0 builds its ARM64 binaries with the v143 toolset, which only the VS 2022 image has.
+    runs-on: windows-2022
     environment: ${{ needs.build.outputs.sign == 'true' && 'signing' || '' }}
     permissions:
       contents: write
