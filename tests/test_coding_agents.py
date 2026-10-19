@@ -191,6 +191,11 @@ def test_claude_runs_with_no_mcp_servers_and_no_hooks():
     assert command[command.index("--settings") + 1] == '{"disableAllHooks": true}'
 
 
+def test_codex_runs_with_no_user_config_and_no_rules_files():
+    command = coding_agents.AGENTS[1].args("codex", {})
+    assert {"--ignore-user-config", "--ignore-rules", "read-only"} <= set(command)
+
+
 def test_the_project_env_file_counts_when_pdt_project_names_the_project(monkeypatch, tmp_path):
     (tmp_path / "elsewhere").mkdir()
     computer = FakeComputer(monkeypatch, tmp_path / "elsewhere")
