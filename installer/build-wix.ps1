@@ -38,7 +38,9 @@ Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll'
 Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=amd64 -no_logo'
 
 $env:NUGET_PACKAGES = Join-Path $Out 'nuget'
-$c = '-p:Configuration=Release'
+# WiX audits every package at every severity, and -warnaserror turns an advisory published
+# after the pinned tag (such as NU1902) into a build error that the pin cannot fix.
+$c = '-p:Configuration=Release;NuGetAudit=false'
 Push-Location (Join-Path $wix 'src')
 try {
   New-Item -ItemType Directory -Force ..\build\artifacts, ..\build\logs | Out-Null
