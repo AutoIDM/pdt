@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from conftest import fake_azure_reads
 from pdt import deploy_azure, deploy_azure_container_apps
 
 
@@ -99,14 +100,17 @@ def test_deploy_preserves_original_failure_after_reporting(monkeypatch):
     settings = SETTINGS | {
         "region": "eastus", "registry": "pdtregistry",
         "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
-        "identity": "pdt-runner", "workspace": "pdt-logs", "vault": "pdt-vault",
+        "identity": "pdt-runner", "workspace": "pdt-logs", "vault": "pdt-vault", "token": "t",
     }
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",
                         lambda app, requested: settings)
     monkeypatch.setattr(deploy_azure_container_apps, "build_in_cloud", lambda app, builder, image_platform: False)
     monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
     monkeypatch.setattr(deploy_azure_container_apps, "gather_secrets", lambda app: {})
-    monkeypatch.setattr(deploy_azure_container_apps, "check_shared_names", lambda settings: None)
+    monkeypatch.setattr(deploy_azure_container_apps, "check_shared_names",
+                        lambda settings, resources: None)
+    fake_azure_reads(monkeypatch, lambda *args: None)
+
     def read(*args):
         if args[:2] == ("identity", "create"):
             return {"id": "/identity/pdt-runner", "principalId": "principal-1"}

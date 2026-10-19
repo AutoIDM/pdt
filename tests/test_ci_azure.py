@@ -205,10 +205,9 @@ def shared(kind: str, name: str) -> dict:
 
 def test_a_deploy_stops_when_the_group_holds_a_pdt_vault_under_another_name(
         monkeypatch, capsys):
-    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: [
-        shared("Microsoft.KeyVault/vaults", "pdt-1aee26cd68")])
     with pytest.raises(SystemExit):
-        deploy_azure.check_shared_names(dict(SETTINGS))
+        deploy_azure.check_shared_names(dict(SETTINGS), [
+            shared("Microsoft.KeyVault/vaults", "pdt-1aee26cd68")])
     out = capsys.readouterr().out
     assert "pdt-1aee26cd68" in out
     assert "pdt-32bc31109c" in out
@@ -216,15 +215,14 @@ def test_a_deploy_stops_when_the_group_holds_a_pdt_vault_under_another_name(
     assert "pdt.yml" in out
 
 
-def test_a_deploy_continues_when_the_group_holds_only_the_expected_names(monkeypatch):
-    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: [
+def test_a_deploy_continues_when_the_group_holds_only_the_expected_names():
+    deploy_azure.check_shared_names(dict(SETTINGS), [
         shared("Microsoft.KeyVault/vaults", "pdt-32bc31109c"),
         shared("Microsoft.Storage/storageAccounts", "pdt32bc31109c"),
         dict(shared("Microsoft.KeyVault/vaults", "theirs"), tags={}),
     ])
-    deploy_azure.check_shared_names(dict(SETTINGS))
-    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: [])
-    deploy_azure.check_shared_names(dict(SETTINGS))
+    deploy_azure.check_shared_names(dict(SETTINGS), [])
+    deploy_azure.check_shared_names(dict(SETTINGS), None)
 
 
 def test_a_discovered_subscription_names_the_vault_like_a_saved_one(azure_app, monkeypatch):

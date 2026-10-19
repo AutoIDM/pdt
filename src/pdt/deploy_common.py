@@ -429,10 +429,10 @@ def backoff_handler(details) -> None:
     factor=2,
     on_backoff=backoff_handler,
 )
-def fetch_json(request: str | urllib.request.Request, timeout: int = 60):
-    """GET a JSON document, backing off and retrying whatever can pass."""
+def fetch_json(request: str | urllib.request.Request, timeout: int = 60,
+               open_url: Callable | None = None):
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with (open_url or urllib.request.urlopen)(request, timeout=timeout) as response:
             return json.load(response)
     except urllib.error.HTTPError as error:
         validate_response(error)
