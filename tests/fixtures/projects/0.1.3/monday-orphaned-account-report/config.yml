@@ -1,0 +1,47 @@
+# Lists active Monday users who have no active Entra ID account.
+
+# How often this app runs.
+# Shorthand: hourly, daily, weekly, monthly, yearly.
+# Or a 5-field cron expression, for example "0 * * * *".
+schedule: "daily"
+
+config:
+  # Monday API 2026-07 supports page/limit pagination, with at most 1000
+  # users per request.
+  monday_page_size: 1000
+
+  # Used only when exactly one email env block is configured.
+  # With no email transport, findings print to stdout.
+  email_to: recipient@example.com
+  email_from: sender@example.com
+  email_subject: Unmatched Accounts Report - Monday users missing from Entra ID
+
+# The Entra app needs User.Read.All (application) plus admin consent.
+env:
+  required:
+    - PDT_MONDAY_API_TOKEN
+    - PDT_AZURE_TENANT_ID
+    - PDT_AZURE_CLIENT_ID
+  one_of:
+    - [PDT_AZURE_CLIENT_SECRET]
+    - [PDT_AZURE_PRIVATE_KEY_B64]
+    - [PDT_AZURE_PRIVATE_KEY_PATH]
+  optional:
+    - PDT_AZURE_PRIVATE_KEY_PASSWORD
+    - PDT_SMTP_HOST
+    - PDT_SMTP_PORT
+    - PDT_SMTP_USER
+    - PDT_SMTP_PASSWORD
+    - PDT_SMTP_AUTH
+    - PDT_SMTP_OAUTH_CLIENT_ID
+    - PDT_SMTP_OAUTH_CLIENT_SECRET
+    - PDT_SMTP_OAUTH_TENANT_ID
+    - PDT_SMTP_OAUTH_CACHE_B64
+    - PDT_GRAPH_MAIL_USER
+    - PDT_GRAPH_MAIL_CLIENT_ID
+    - PDT_GRAPH_MAIL_TENANT_ID
+    - PDT_GRAPH_MAIL_CACHE_B64
+    - PDT_SES_REGION
+    - PDT_SES_ACCESS_KEY_ID
+    - PDT_SES_SECRET_ACCESS_KEY
+    - PDT_RESEND_API_KEY
