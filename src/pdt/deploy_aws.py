@@ -11,7 +11,7 @@
 #     "fsspec",
 #     "s3fs>=2024",
 #     "duckdb",
-#     "certifi",
+#     "truststore",
 # ]
 # ///
 """Deploy an app to AWS.
@@ -46,6 +46,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pdt.utils.web import trust_os_certificates
+trust_os_certificates()
+
 import boto3
 import certifi
 import botocore.session
@@ -53,7 +57,6 @@ from botocore import UNSIGNED
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError, MissingDependencyException
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_PREFIX, STORE_TAGS, CostEstimate, cached_price, convert_from_usd, fail, fetch_json,

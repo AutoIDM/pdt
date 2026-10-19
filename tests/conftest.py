@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import truststore
 from rich.text import Text
 
 from pdt import console, deploy_common
@@ -23,6 +24,15 @@ def console_on_stdout(monkeypatch):
 def price_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "PRICE_CACHE", tmp_path / "prices")
     return tmp_path / "prices"
+
+
+@pytest.fixture(autouse=True)
+def python_ssl_and_uv_certs(monkeypatch):
+    # pdt.cli.main replaces ssl.SSLContext and sets UV_SYSTEM_CERTS for the rest of the process.
+    monkeypatch.setenv("UV_SYSTEM_CERTS", "")
+    monkeypatch.delenv("UV_SYSTEM_CERTS")
+    yield
+    truststore.extract_from_ssl()
 
 
 @pytest.fixture

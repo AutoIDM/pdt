@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 
 from pdt import console
-from pdt.utils import email_auth
+from pdt.utils import email_auth, web
 from pdt.utils.log import die, log
 
 EXIT_CONFIG = 1
@@ -171,6 +171,7 @@ def _microsoft_access_token(user: str, client_id: str, tenant_id: str,
         client_id,
         authority=f"https://login.microsoftonline.com/{tenant_id}",
         token_cache=cache,
+        http_client=web.os_requests_session(),
     )
     accounts = app.get_accounts(username=user)
     result = None
@@ -253,7 +254,7 @@ def send_mail(from_addr: str, to_addrs: list, subject: str, body: str,
     req = urllib.request.Request(
         SEND_URL, data=payload, method="POST", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=60, context=web.os_ssl_context()) as resp:
             if resp.status != 202:
                 die(EXIT_EMAIL, "graph send failed", status=resp.status)
     except urllib.error.HTTPError as e:

@@ -12,6 +12,7 @@
 #     "rich",
 #     "python-dotenv",
 #     "backoff",
+#     "truststore",
 # ]
 #
 # [tool.uv]
@@ -77,6 +78,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pdt.utils.web import trust_os_certificates
+trust_os_certificates()
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,

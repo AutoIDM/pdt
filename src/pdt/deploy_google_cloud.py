@@ -12,6 +12,7 @@
 #     "google-auth",
 #     "google-cloud-logging==3.17.0",
 #     "duckdb",
+#     "truststore",
 # ]
 # ///
 """Deploy an app to Google Cloud as a scheduled Cloud Run job.
@@ -71,6 +72,8 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pdt.utils.web import trust_os_certificates
+trust_os_certificates()
 # gRPC logs an info line on every gcloud subprocess once the store has been
 # used, and no child of this script uses gRPC.
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")

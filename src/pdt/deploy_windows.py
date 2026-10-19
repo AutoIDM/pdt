@@ -8,6 +8,7 @@
 #     "backoff",
 #     "fsspec",
 #     "duckdb",
+#     "truststore",
 # ]
 # ///
 """Deploy an app locally as a Windows Task Scheduler task.
@@ -58,6 +59,8 @@ from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from pdt.utils.web import trust_os_certificates
+trust_os_certificates()
 from pdt import config, console, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm

@@ -21,7 +21,7 @@ import threading
 from collections import deque
 from datetime import timedelta
 
-from django.db import close_old_connections
+from django.db import OperationalError, close_old_connections
 from django.db.models import Q
 
 from pdt.gui import sync
@@ -98,14 +98,19 @@ def run_forever(stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             backlog = tick()
-        except Exception:  # noqa: BLE001 - the worker must outlive any one bad fetch
-            log.exception("pdt gui worker")
-            backlog = False
+            running = Run.objects.filter(status="running").exists()
+        except Exception as e:  # noqa: BLE001 - the worker must outlive any one bad fetch
+            # A write that waited the whole busy timeout; the next pass, PAUSE from now, tries again.
+            backlog = isinstance(e, OperationalError) and "locked" in str(e)
+            if backlog:
+                log.warning("pdt gui worker: %s, trying again", e)
+            else:
+                log.exception("pdt gui worker")
+            running = False
         finally:
             close_old_connections()
         WAKE.clear()
         if not backlog:
-            running = Run.objects.filter(status="running").exists()
             WAKE.wait((RUNNING_TICK if running else TICK).total_seconds())
         stop.wait(PAUSE.total_seconds() if backlog else 0)
 

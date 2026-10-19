@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 from pdt import console
+from pdt.utils.web import os_ssl_context
 
 
 def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
@@ -26,7 +27,7 @@ def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
     tmp = tempfile.NamedTemporaryFile(suffix=Path(url).suffix, delete=False)
     tmp_path = Path(tmp.name)
     try:
-        with tmp, urllib.request.urlopen(url, timeout=60) as resp:
+        with tmp, urllib.request.urlopen(url, timeout=60, context=os_ssl_context()) as resp:
             total = int(resp.headers.get("Content-Length") or 0)
             done = 0
             while True:
