@@ -77,7 +77,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, storage_cli, watch
+from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,
     secret_contents, store_plan_lines, store_suffix)
@@ -1203,4 +1203,4 @@ def run_command(app: dict, args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     console.json_output()
-    sys.exit(watch.watched(main))
+    sys.exit(main())

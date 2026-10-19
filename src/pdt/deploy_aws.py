@@ -54,7 +54,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError, MissingDependencyException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, storage_cli, watch
+from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_PREFIX, STORE_TAGS, CostEstimate, cached_price, convert_from_usd, fail, fetch_json,
     store_cost_label, store_name)
@@ -1291,4 +1291,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     console.json_output()
-    sys.exit(watch.watched(main))
+    sys.exit(main())

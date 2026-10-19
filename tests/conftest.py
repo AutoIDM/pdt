@@ -26,12 +26,9 @@ def price_cache(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def history(tmp_path, monkeypatch):
-    monkeypatch.setattr(watch, "HISTORY", tmp_path / "history.jsonl")
-    monkeypatch.setattr(watch, "_seen", ("", ""))
-    for name in ("CI", watch.NOTE_ENV, watch.OFF_ENV, *watch.AGENT_ENVS):
+def error_watch_env(monkeypatch):
+    for name in ("CI", watch.OFF_ENV, *watch.AGENT_ENVS):
         monkeypatch.delenv(name, raising=False)
-    return tmp_path / "history.jsonl"
 
 
 @pytest.fixture

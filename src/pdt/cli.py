@@ -572,7 +572,6 @@ class Parser(argparse.ArgumentParser):
         if typo is not None:
             choices = [choice for action in self._actions for choice in action.choices or []]
             message += "." + did_you_mean(typo.group(1), choices, f"{self.prog} {{}}")
-        watch.saw(message, usage=True)
         super().error(message)
 
 

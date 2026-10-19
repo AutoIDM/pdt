@@ -87,7 +87,6 @@ from pdt.deploy_common import (
     store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
 from pdt import storage_cli
-from pdt import watch
 from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
@@ -1486,4 +1485,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     console.json_output()
-    sys.exit(watch.watched(main))
+    sys.exit(main())
