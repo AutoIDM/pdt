@@ -3,7 +3,7 @@
 Inside an app folder, leave <app> off any command that takes one and pdt uses that app.
 Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
-Every command except init, examples, upgrade, completion, aws, az, and gcloud needs a project.
+Every command except init, examples, upgrade, completion, support, aws, az, and gcloud needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
 """
 
@@ -26,7 +26,7 @@ from pdt.config import ConfigError
 
 if not completion.COMPLETING:
     from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold,
-                     upgrade)
+                     support, upgrade)
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -546,6 +546,10 @@ def cmd_completion(args) -> int:
     return completion.install(args.shell, print_only=args.script)
 
 
+def cmd_support(_args) -> int:
+    return support.main()
+
+
 def did_you_mean(word: str, choices, hint: str) -> str:
     """" Did you mean `<hint>`?" with the choice closest to a mistyped `word` put in
     `hint`'s `{}`, or "" when no choice is close. Every typo hint in pdt comes from here."""
@@ -583,6 +587,7 @@ class Parser(argparse.ArgumentParser):
         if typo is not None:
             choices = [choice for action in self._actions for choice in action.choices or []]
             message += "." + did_you_mean(typo.group(1), choices, f"{self.prog} {{}}")
+        watch.saw(message, usage=True)
         super().error(message)
 
 
@@ -597,6 +602,7 @@ COMMAND_GROUPS = {
     "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
+    "Get help": ["support"],
 }
 
 
@@ -784,6 +790,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--script", action="store_true",
                    help="print the completion script instead of installing it")
     p.set_defaults(func=cmd_completion)
+    add_parser("support", help="report a problem to the pdt team, or ask on Discord").set_defaults(
+        func=cmd_support)
     for name, label in (("aws", "AWS"), ("az", "Azure"), ("gcloud", "Google Cloud")):
         p = add_parser(name, help=f"run the {label} CLI that pdt installs")
         args = p.add_argument("args", nargs=argparse.REMAINDER)

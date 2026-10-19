@@ -53,13 +53,13 @@ MODELS = "Available models\n\nauto - Auto (default)\nfast-low - Fast Low\nslow-l
 
 def test_the_first_request_asks_for_consent_and_remembers_the_answer(monkeypatch, tmp_path, capsys):
     computer = FakeComputer(monkeypatch, tmp_path)
-    assert coding_agents.ask("Why did it fail?", {"error text": "boom"}) == "the reply"
+    assert coding_agents.ask("Why did it fail?", {"error text": "boom"}).text == "the reply"
     assert computer.asked == [QUESTION]
     assert "found a coding agent on this computer: Claude Code." in capsys.readouterr().out
     command, sent = computer.runs[0]
     assert command[:4] == ["/bin/claude", "-p", "--effort", "low"]
     assert sent == f"{coding_agents.RULES}\n\nWhy did it fail?\n\n## error text\nboom"
-    assert coding_agents.ask("Again?") == "the reply"
+    assert coding_agents.ask("Again?").text == "the reply"
     assert computer.asked == [QUESTION]
     assert coding_agents.read_settings() == {"coding-agent-consent": True}
 
@@ -92,7 +92,7 @@ def test_inside_a_coding_agent_pdt_prints_the_request_and_starts_no_agent(monkey
 
 def test_pdt_asks_which_agent_only_when_more_than_one_can_answer(monkeypatch, tmp_path):
     computer = FakeComputer(monkeypatch, tmp_path, programs=("claude", "codex"), pick="2")
-    assert coding_agents.ask("Why?") == "the reply"
+    assert coding_agents.ask("Why?").text == "the reply"
     assert computer.asked == [QUESTION]
     assert computer.questions == ["Which one should pdt use?"]
     assert computer.runs[0][0][:2] == ["/bin/codex", "exec"]
@@ -112,7 +112,7 @@ def test_one_consent_covers_every_agent(monkeypatch, tmp_path):
     coding_agents.ask("Why?")
     monkeypatch.setattr(coding_agents.shutil, "which",
                         lambda name: "/bin/codex" if name == "codex" else None)
-    assert coding_agents.ask("Why?") == "the reply"
+    assert coding_agents.ask("Why?").text == "the reply"
     assert computer.asked == [QUESTION]
     assert computer.runs[1][0][0] == "/bin/codex"
 
@@ -156,7 +156,7 @@ def test_each_agent_runs_at_low_effort(name, flags):
 def test_with_no_one_to_ask_pdt_uses_the_stored_agent(monkeypatch, tmp_path):
     computer = FakeComputer(monkeypatch, tmp_path, programs=("claude", "codex"), terminal=False)
     coding_agents.SETTINGS.write_text("coding-agent-consent: true\ncoding-agent: claude\n")
-    assert coding_agents.ask("Why?") == "the reply"
+    assert coding_agents.ask("Why?").text == "the reply"
     assert computer.runs[0][0][0] == "/bin/claude"
 
 

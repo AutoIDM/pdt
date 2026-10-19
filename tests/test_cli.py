@@ -237,6 +237,7 @@ def test_logs_open_passes_the_run_number_only_when_one_is_given(project, monkeyp
 
 def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
     monkeypatch.setenv("PSModulePath", "")
+    monkeypatch.setenv(watch.OFF_ENV, "0")
     folder = project / "ps-report"
     folder.mkdir()
     monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})
@@ -273,6 +274,7 @@ def test_run_stops_when_a_powershell_module_does_not_install(project, monkeypatc
 
 def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
     monkeypatch.setenv("PSModulePath", "")
+    monkeypatch.setenv(watch.OFF_ENV, "0")
     folder = project / "ps-report"
     folder.mkdir()
     monkeypatch.setattr(powershell, "extract", lambda folder: {"files": []})
