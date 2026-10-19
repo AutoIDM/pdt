@@ -63,3 +63,10 @@ def test_apps_must_be_a_list(project):
 def test_free_form_config_keys_still_pass(project):
     add_app(project, "my-report", "config:\n  region: mars\n  name: x\n  greeting: hi\n")
     assert validate_app("my-report") == []
+
+
+def test_error_watch_must_be_true_or_false(project):
+    (project / "pdt.yml").write_text('platform:\n  provider: azure\nerror-watch: "no"\n')
+    assert "pdt.yml: error-watch must be true or false" in validate()
+    (project / "pdt.yml").write_text("platform:\n  provider: azure\nerror-watch: false\n")
+    assert validate() == []

@@ -21,7 +21,7 @@ from typing import Callable
 
 import rich_argparse
 
-from pdt import completion, config
+from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
@@ -771,7 +771,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
+def run() -> int:
     parser = build_parser()
     completion.configure(parser)
     if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
@@ -798,6 +798,10 @@ def main() -> int:
         return 130
     finally:
         lifecycle.flush()
+
+
+def main() -> int:
+    return watch.watched(run, {name for names in COMMAND_GROUPS.values() for name in names})
 
 
 if __name__ == "__main__":

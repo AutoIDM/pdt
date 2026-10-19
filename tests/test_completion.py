@@ -304,7 +304,7 @@ def test_completion_runs_before_cloud_dispatch(monkeypatch):
     monkeypatch.setattr("subprocess.run", dispatch)
 
     with pytest.raises(CompletionRequest):
-        cli.main()
+        cli.run()
 
 
 def test_data_home_is_shared_with_gcloud_sdk(tmp_path, monkeypatch):
