@@ -1,5 +1,6 @@
 import io
 import json
+import random
 import time
 import urllib.error
 import urllib.request
@@ -102,6 +103,13 @@ def test_gives_up_after_max_tries(monkeypatch):
         fetch_json(URL)
     assert len(calls) == attempts
     assert len(waits) == attempts - 1
+
+
+def test_each_wait_is_drawn_up_to_the_doubling_limit(monkeypatch):
+    calls, waits = install(monkeypatch, [http_error(503) for _ in range(4)] + [{"ok": True}])
+    monkeypatch.setattr(random, "uniform", lambda low, high: (low + high) / 2)
+    assert fetch_json(URL) == {"ok": True}
+    assert waits == [1, 2, 4, 8]
 
 
 def test_accepts_request_object(monkeypatch):

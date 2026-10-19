@@ -67,6 +67,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import ssl
@@ -439,10 +440,6 @@ def warn_if_locked(store, app_name: str) -> None:
                      f"{console.value('pdt storage ' + app_name + ' unlock')}")
 
 
-# HTTP fetching follows the Meltano SDK's RESTStream pattern:
-# validate_response splits responses into retriable (429 and every 5xx)
-# and fatal (any other 4xx), and fetch_json retries the retriable ones plus
-# connection errors and timeouts with an exponential wait.
 EXTRA_RETRY_STATUSES = (HTTPStatus.TOO_MANY_REQUESTS,)
 BACKOFF_MAX_TRIES = 5
 
@@ -496,9 +493,9 @@ def fetch_json(request: str | urllib.request.Request, timeout: int = 60,
         except (RetriableAPIError, ConnectionError, TimeoutError, urllib.error.URLError):
             if tries == BACKOFF_MAX_TRIES:
                 raise
-            wait = 2 ** tries
+            wait = random.uniform(0, 2 ** tries)
             console.bullet(f"the server did not answer (try {tries} of "
-                           f"{BACKOFF_MAX_TRIES}); backing off {wait}s...", indent=4)
+                           f"{BACKOFF_MAX_TRIES}); backing off {wait:.1f}s...", indent=4)
             time.sleep(wait)
 
 
