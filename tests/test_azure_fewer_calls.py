@@ -1,6 +1,6 @@
 import pytest
 
-from conftest import fake_azure_reads
+from conftest import built_image, fake_azure_reads
 from pdt import deploy_azure
 from pdt import deploy_azure_container_apps as azure
 
@@ -66,6 +66,7 @@ def deploy(monkeypatch, answers, job_after=None):
     monkeypatch.setattr(azure, "cost_estimate_for", lambda *args: None)
     monkeypatch.setattr(azure, "confirm", lambda *args: True)
     monkeypatch.setattr(azure, "build_image", lambda *args: None)
+    monkeypatch.setattr(azure, "ensure_image", built_image)
     monkeypatch.setattr(azure, "pushed_image", lambda settings, name: f"{name}@sha256:1")
     monkeypatch.setattr(azure, "reconcile_job", lambda *args: job_after)
     assert azure.deploy(APP, True) == 0

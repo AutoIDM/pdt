@@ -100,7 +100,7 @@ def test_deploy_all_gives_each_app_its_own_dot_env(project, monkeypatch, first_e
     (vendor / ".env").write_text("PDT_TOKEN=from-vendor\n")
     deployed = {}
 
-    def fake_dispatch(provider, command, app_name, assume_yes, extra=None):
+    def fake_dispatch(provider, command, app_name, assume_yes, extra=None, rebuild=False):
         deployed[app_name] = os.environ.get("PDT_TOKEN")
         return 0
 

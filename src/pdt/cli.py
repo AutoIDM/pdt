@@ -289,23 +289,25 @@ def cmd_deploy(args) -> int:
         if args.app is not None:
             console.error("pick an app or --all, not both")
             return 1
-        return deploy_all(args.yes, args.skip_failures, args.run)
+        return deploy_all(args.yes, args.skip_failures, args.run, args.rebuild)
     name = choose_app(args.app, "deploy")
     if name is None:
         return 1
-    return deploy.deploy(name, assume_yes=args.yes, run=args.run or None)
+    return deploy.deploy(name, assume_yes=args.yes, run=args.run or None, rebuild=args.rebuild)
 
 
 ALL_WORDS = {"deploy": ("Deploying", "deployed"), "destroy": ("Destroying", "destroyed")}
 
 
-def deploy_all(assume_yes: bool, skip_failures: bool, run: bool = False) -> int:
+def deploy_all(assume_yes: bool, skip_failures: bool, run: bool = False,
+               rebuild: bool = False) -> int:
     names = config.find_apps()
     if not names:
         say_no_apps()
         return 1
     return each_app("deploy", names,
-                    lambda name: deploy.deploy(name, assume_yes=assume_yes, run=False),
+                    lambda name: deploy.deploy(name, assume_yes=assume_yes, run=False,
+                                               rebuild=rebuild),
                     assume_yes, skip_failures, run)
 
 
@@ -644,6 +646,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", action="store_true",
                    help="after the deploy, start a run and follow its log without asking; "
                         "with --all, run each app that deployed")
+    p.add_argument("--rebuild", action="store_true",
+                   help="build and push the image even when the app did not change")
     p.set_defaults(func=cmd_deploy)
     p = add_parser("login", help="sign in again to an app's platform")
     app = p.add_argument("app", nargs="?", help=APP_HELP)

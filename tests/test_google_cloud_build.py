@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -6,24 +7,20 @@ import pytest
 
 from conftest import add_app
 from pdt import deploy_google_cloud as google
-from pdt.deploy_common import LIFECYCLE_MODULES, CostEstimate, store_suffix
+from pdt.deploy_common import BUILD_TAG, LIFECYCLE_MODULES, CostEstimate, store_suffix
 
 IMAGE = "us-central1-docker.pkg.dev/my-project/pdt/report:latest"
 BUILDER = "pdt-builder@my-project.iam.gserviceaccount.com"
 BUILDS = f"pdt-build-{store_suffix('my-project')}"
 
 
-def app_at(tmp_path):
-    """An app folder with no Dockerfile of its own, so the generated one is written."""
-    app_dir = tmp_path / "report"
-    app_dir.mkdir()
-    return {"name": "report", "dir": app_dir}
+def pinned(digest):
+    return f"{IMAGE.rsplit(':', 1)[0]}@{digest}"
 
 
 def fake_build(monkeypatch, tmp_path, build):
     stage = tmp_path / "stage"
     stage.mkdir()
-    monkeypatch.setattr(google, "stage_build_context", lambda app: stage)
     monkeypatch.setattr(google, "run_quiet", lambda *args: "ya29.token\n"
                         if args == ("auth", "print-access-token") else pytest.fail(args))
     monkeypatch.setattr(google, "run_build", build)
@@ -35,17 +32,16 @@ def test_logs_in_builds_for_amd64_and_pushes_to_artifact_registry(tmp_path, monk
     monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
     stage = fake_build(monkeypatch, tmp_path,
                        lambda command, data=None, **_: calls.append((command, data)))
-    google.build_image(app_at(tmp_path), IMAGE, "us-central1")
+    google.build_image(stage, IMAGE, "us-central1")
     assert calls == [
         (["docker", "login", "--username", "oauth2accesstoken", "--password-stdin",
           "https://us-central1-docker.pkg.dev"], "ya29.token"),
         (["docker", "build", "--platform", "linux/amd64", "-t", IMAGE, str(stage)], None),
         (["docker", "push", IMAGE], None),
     ]
-    assert not stage.exists()
 
 
-def test_a_failed_docker_build_does_not_push_and_removes_the_context(tmp_path, monkeypatch):
+def test_a_failed_docker_build_does_not_push(tmp_path, monkeypatch):
     calls = []
 
     def build(command, data=None, **_):
@@ -55,17 +51,17 @@ def test_a_failed_docker_build_does_not_push_and_removes_the_context(tmp_path, m
 
     stage = fake_build(monkeypatch, tmp_path, build)
     with pytest.raises(SystemExit):
-        google.build_image(app_at(tmp_path), IMAGE, "us-central1")
+        google.build_image(stage, IMAGE, "us-central1")
     assert calls == [["docker", "login"], ["docker", "build"]]
-    assert not stage.exists()
 
 
 class FakeGcloud:
     """gcloud as deploy and destroy see it: `found` maps a command prefix to its json."""
 
     def __init__(self, found=None, enabled=(*google.APIS, google.CLOUD_BUILD_API),
-                 submit_code=0, submit_stderr=""):
+                 submit_code=0, submit_stderr="", digest="sha256:new"):
         self.found = found or {}
+        self.digest = digest
         self.enabled = enabled
         self.submit_code = submit_code
         self.submit_stderr = submit_stderr
@@ -92,6 +88,10 @@ class FakeGcloud:
             self.ignore = (source / ".gcloudignore").read_text()
             return subprocess.CompletedProcess(command, self.submit_code, None,
                                                self.submit_stderr)
+        if args[:4] == ["artifacts", "docker", "images", "describe"] and self.digest:
+            summary = {"digest": self.digest, "fully_qualified_digest": pinned(self.digest)}
+            return subprocess.CompletedProcess(command, 0, json.dumps({"image_summary": summary}),
+                                               "")
         if "describe" in args:
             return subprocess.CompletedProcess(command, 1, "", "ERROR: NOT_FOUND: not found")
         if "list" in args:
@@ -207,7 +207,7 @@ def test_the_local_path_creates_no_cloud_build_resource(project, monkeypatch):
     built = []
     monkeypatch.setattr(google, "build_image", lambda *args: built.append(args))
     assert google.deploy(app, True) == 0
-    assert built == [(app, IMAGE, "us-central1")]
+    assert [args[1:] for args in built] == [(IMAGE, "us-central1")]
     assert fake.ran("services", "enable") == []
     assert fake.ran("builds") == []
     text = json.dumps(fake.calls)
@@ -270,6 +270,51 @@ def test_a_refused_submit_names_the_missing_role(project, monkeypatch, capsys, s
     assert f"add the role {role} for your account on" in out
     assert where in out.split("add the role")[-1]
     assert len(fake.ran("builds", "submit")) == 1
+
+
+def deployed_job(fingerprint, image):
+    return {"metadata": {"labels": {"managed-by": "pdt", BUILD_TAG: fingerprint}},
+            "spec": {"template": {"spec": {"template": {"spec": {
+                "containers": [{"image": image}]}}}}}}
+
+
+def test_the_job_runs_the_pushed_digest_and_records_the_fingerprint(project, monkeypatch):
+    fake = FakeGcloud()
+    assert google.deploy(deploy_app(project, monkeypatch, fake, cloud=True), True) == 0
+    [deploy] = fake.ran("run", "jobs", "deploy")
+    assert deploy[deploy.index("--image") + 1] == pinned("sha256:new")
+    labels = deploy[deploy.index("--labels") + 1]
+    assert re.fullmatch(f"managed-by=pdt,{BUILD_TAG}=[0-9a-f]{{32}}", labels)
+
+
+@pytest.mark.parametrize("cloud", [True, False])
+def test_an_unchanged_app_skips_the_build_and_the_builder_setup(project, monkeypatch, capsys,
+                                                                cloud):
+    fake = FakeGcloud()
+    google.deploy(deploy_app(project, monkeypatch, fake, cloud=True), True)
+    [deploy] = fake.ran("run", "jobs", "deploy")
+    fingerprint = deploy[deploy.index("--labels") + 1].rsplit("=", 1)[1]
+    job = deployed_job(fingerprint, pinned("sha256:new"))
+    fake = FakeGcloud(found={("run", "jobs", "describe"): job})
+    app = deploy_app(project, monkeypatch, fake, cloud=cloud)
+    monkeypatch.setattr(google, "build_image", lambda *args: pytest.fail("built locally"))
+    capsys.readouterr()
+    assert google.deploy(app, True) == 0
+    assert fake.ran("builds") == []
+    assert fake.ran("iam", "service-accounts", "create", "pdt-builder") == []
+    assert fake.ran("artifacts", "repositories", "add-iam-policy-binding") == []
+    [deploy] = fake.ran("run", "jobs", "deploy")
+    assert deploy[deploy.index("--image") + 1] == pinned("sha256:new")
+    assert deploy[deploy.index("--labels") + 1] == f"managed-by=pdt,{BUILD_TAG}={fingerprint}"
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"Image {IMAGE} is unchanged; skipped the build and push." in out
+
+
+def test_a_changed_app_or_a_gone_image_builds(project, monkeypatch):
+    for job in (deployed_job("0" * 32, pinned("sha256:new")), deployed_job("0" * 32, "x")):
+        fake = FakeGcloud(found={("run", "jobs", "describe"): job})
+        assert google.deploy(deploy_app(project, monkeypatch, fake, cloud=True), True) == 0
+        assert len(fake.ran("builds", "submit")) == 1
 
 
 def destroy_fake(builder=True, bucket=True, other_jobs=()):

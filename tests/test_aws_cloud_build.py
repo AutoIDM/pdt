@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError
 from conftest import add_app, plain
 from pdt import deploy_aws_batch as batch_deploy
 from pdt.deploy_aws import deployer_policy
+from pdt.deploy_common import BUILD_TAG, REBUILD_ENV
 from pdt.deploy_aws_batch import (
     BUILD_LOG_GROUP, BUILD_PROJECT, BUILD_ROLE, BUILDSPEC, DEPLOYER_ACTIONS, REPOSITORY,
     build_bucket,
@@ -143,12 +144,17 @@ class FakeLogs:
 
 
 class FakeEcr:
+    def __init__(self, digest="sha256:abc"):
+        self.digest = digest
+
     def get_authorization_token(self):
         return {"authorizationData": [{"authorizationToken": "QVdTOnNlY3JldA==",
                                        "proxyEndpoint": f"https://{REGISTRY}"}]}
 
     def describe_images(self, repositoryName, imageIds):
-        return {"imageDetails": [{"imageDigest": "sha256:abc"}]}
+        if self.digest is None:
+            raise client_error("ImageNotFoundException")
+        return {"imageDetails": [{"imageDigest": self.digest}]}
 
 
 class FakeIam:
@@ -179,6 +185,7 @@ def deploy(project, monkeypatch):
     commands = []
     roles = {}
     log_groups = []
+    definitions = []
     for name, value in {
         "ensure_session": lambda app: None,
         "aws_settings": lambda app, session: (ACCOUNT, REGION),
@@ -200,7 +207,7 @@ def deploy(project, monkeypatch):
         "ensure_roles": lambda *args: ("arn:execution", "arn:job", "arn:scheduler"),
         "ensure_role": lambda iam, name, service, policy, statements: roles.setdefault(
             name, (service, statements)) and f"arn:aws:iam::{ACCOUNT}:role/{name}",
-        "ensure_job_definition": lambda *args: "arn:definition",
+        "ensure_job_definition": lambda *args: definitions.append(args) or "arn:definition",
         "ensure_schedule": lambda *args, **kwargs: None,
         "BUILD_POLL_SECONDS": 0,
         "BUILD_LOG_SETTLE_SECONDS": 0,
@@ -210,12 +217,17 @@ def deploy(project, monkeypatch):
     monkeypatch.setattr(batch_deploy.subprocess, "run", lambda command, **kwargs: commands.append(
         command) or SimpleNamespace(returncode=0, stdout="", stderr=""))
 
-    def run(cloud: bool, status="SUCCEEDED"):
+    def run(cloud: bool, status="SUCCEEDED", revisions=(), digest="sha256:abc"):
         monkeypatch.setattr(batch_deploy, "build_in_cloud",
                             lambda app, builder, image_platform: cloud)
+        monkeypatch.setattr(batch_deploy, "active_job_definitions",
+                            lambda batch, name=None: list(revisions))
+        definitions.clear()
+        commands.clear()
         fakes = {"s3": FakeS3(), "codebuild": FakeCodeBuild(status), "logs": FakeLogs(),
-                 "ecr": FakeEcr(), "iam": FakeIam(), "ec2": None, "batch": None,
-                 "scheduler": None, "secretsmanager": None, "sts": None}
+                 "ecr": FakeEcr(digest), "iam": FakeIam(), "ec2": None, "batch": None,
+                 "scheduler": None, "secretsmanager": None, "sts": None,
+                 "definitions": definitions}
         monkeypatch.setattr(batch_deploy, "batch_clients", lambda session: fakes)
         app = {"name": "my-app", "dir": app_dir, "storage": False, "schedule": "0 6 * * *",
                "timezone": "UTC", "pause": False, "platform": {"provider": "aws"}}
@@ -326,6 +338,54 @@ def test_the_plan_names_where_the_image_builds_and_each_build_resource(deploy, m
     local = plan_lines(deploy, monkeypatch, cloud=False)
     assert any("with Docker on this computer" in line for line in local)
     assert not any("CodeBuild" in line or BUCKET in line for line in local)
+
+
+def recorded(fingerprint, digest="sha256:abc"):
+    return [{"revision": 1, "tags": {"managed-by": "pdt", "image-digest": digest,
+                                     BUILD_TAG: fingerprint}}]
+
+
+@pytest.mark.parametrize("cloud", [True, False])
+def test_an_unchanged_app_skips_the_build_and_the_build_resources(deploy, capsys, cloud):
+    _code, fakes, _commands, _roles, _logs = deploy(cloud=False)
+    [(_batch, _desired, digest, fingerprint)] = fakes["definitions"]
+    assert digest == "sha256:abc" and len(fingerprint) == 32
+    capsys.readouterr()
+    code, fakes, commands, roles, log_groups = deploy(cloud=cloud, revisions=recorded(fingerprint))
+    out = " ".join(plain([capsys.readouterr().out]))
+    assert code == 0
+    assert commands == []
+    assert fakes["codebuild"].started == [] and fakes["codebuild"].calls == []
+    assert fakes["s3"].calls == [] and BUILD_ROLE not in roles
+    assert BUILD_LOG_GROUP not in log_groups
+    assert f"Image {IMAGE} is unchanged; skipped the build and push." in out
+    assert fakes["definitions"][0][2:] == ("sha256:abc", fingerprint)
+
+
+def test_a_changed_app_builds_and_records_the_new_fingerprint(deploy):
+    _code, fakes, commands, _roles, _logs = deploy(cloud=False, revisions=recorded("0" * 32))
+    assert [command[:2] for command in commands][1:] == [["docker", "build"], ["docker", "push"]]
+    assert fakes["definitions"][0][3] != "0" * 32
+
+
+def test_a_job_whose_image_left_the_registry_builds_again(deploy, capsys):
+    _code, fakes, _commands, _roles, _logs = deploy(cloud=False)
+    fingerprint = fakes["definitions"][0][3]
+    capsys.readouterr()
+    _code, fakes, commands, _roles, _logs = deploy(
+        cloud=False, revisions=recorded(fingerprint, "sha256:old"))
+    out = " ".join(plain([capsys.readouterr().out]))
+    assert "the registry no longer holds the image the job runs" in out
+    assert [command[:2] for command in commands][1:] == [["docker", "build"], ["docker", "push"]]
+
+
+def test_a_build_whose_image_is_not_in_the_registry_stops_before_the_job_definition(
+        deploy, capsys):
+    code, fakes, _commands, _roles, _logs = deploy(cloud=False, digest=None)
+    assert code == "failed"
+    assert fakes["definitions"] == []
+    assert f"ECR holds no image {IMAGE} after the build" in " ".join(
+        plain([capsys.readouterr().out]))
 
 
 @pytest.fixture

@@ -81,10 +81,10 @@ from pdt import lifecycle
 from pdt import regions
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import (
-    STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd, fail,
-    fetch_json, gather_secrets, image_action, run_build, run_secrets, secret_contents,
-    ssh_build_args, stage_build_context, store_cost_label, store_kept_line, store_name,
-    store_plan_lines, store_suffix, warn_if_locked, write_dockerfile)
+    BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
+    ensure_image, fail, fetch_json, gather_secrets, image_action, run_build,
+    run_secrets, secret_contents, ssh_build_args, store_cost_label, store_kept_line,
+    store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -548,23 +548,25 @@ def secret_value(project: str, sid: str) -> str | None:
     return proc.stdout
 
 
-def build_image(app: dict, image: str, region: str) -> None:
-    stage = stage_build_context(app)
-    try:
-        write_dockerfile(stage, app)
-        # The gcloud credential helper works only with gcloud on the PATH, and
-        # pdt's own copy may not be there, so docker logs in with an access
-        # token, which is valid for 60 minutes:
-        # https://docs.cloud.google.com/artifact-registry/docs/docker/authentication#token
-        token = run_quiet("auth", "print-access-token").strip()
-        run_build(["docker", "login", "--username", "oauth2accesstoken", "--password-stdin",
-                   f"https://{region}-docker.pkg.dev"], data=token, quiet=True)
-        # Cloud Run runs only linux/amd64 images.
-        run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
-                   "-t", image, str(stage)])
-        run_build(["docker", "push", image])
-    finally:
-        shutil.rmtree(stage, ignore_errors=True)
+def build_image(stage: Path, image: str, region: str) -> None:
+    # The gcloud credential helper works only with gcloud on the PATH, and
+    # pdt's own copy may not be there, so docker logs in with an access
+    # token, which is valid for 60 minutes:
+    # https://docs.cloud.google.com/artifact-registry/docs/docker/authentication#token
+    token = run_quiet("auth", "print-access-token").strip()
+    run_build(["docker", "login", "--username", "oauth2accesstoken", "--password-stdin",
+               f"https://{region}-docker.pkg.dev"], data=token, quiet=True)
+    # Cloud Run runs only linux/amd64 images.
+    run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
+               "-t", image, str(stage)])
+    run_build(["docker", "push", image])
+
+
+def pushed_image(image: str, project: str) -> str | None:
+    """`image` by the digest the registry holds for its tag, or None when it holds no such tag."""
+    described = read_json_or_none("artifacts", "docker", "images", "describe", image,
+                                  "--project", project)
+    return ((described or {}).get("image_summary") or {}).get("fully_qualified_digest")
 
 
 def cloud_build_config(image: str, bucket: str) -> dict:
@@ -595,24 +597,19 @@ def missing_submit_roles(stderr: str) -> list[tuple[str, str]]:
     return found or [(role, kind) for _, role, kind in BUILD_SUBMIT_ROLES]
 
 
-def cloud_build_image(app: dict, image: str, project: str, region: str,
+def cloud_build_image(stage: Path, image: str, project: str, region: str,
                       builder: str, bucket: str) -> None:
-    stage = stage_build_context(app)
-    try:
-        write_dockerfile(stage, app)
-        # With no .gitignore or .git at the top of the upload, gcloud already uploads
-        # every file; this file makes that so whatever gcloud's default becomes.
-        (stage / ".gcloudignore").write_text("/.gcloudignore\n/cloudbuild.json\n")
-        build_config = stage / "cloudbuild.json"
-        build_config.write_text(json.dumps(cloud_build_config(image, bucket)))
-        proc = subprocess.run(
-            [GCLOUD, "builds", "submit", str(stage), "--config", str(build_config),
-             "--region", region, "--project", project,
-             "--service-account", f"projects/{project}/serviceAccounts/{builder}",
-             "--gcs-source-staging-dir", f"gs://{bucket}/source"],
-            stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    finally:
-        shutil.rmtree(stage, ignore_errors=True)
+    # With no .gitignore or .git at the top of the upload, gcloud already uploads
+    # every file; this file makes that so whatever gcloud's default becomes.
+    (stage / ".gcloudignore").write_text("/.gcloudignore\n/cloudbuild.json\n")
+    build_config = stage / "cloudbuild.json"
+    build_config.write_text(json.dumps(cloud_build_config(image, bucket)))
+    proc = subprocess.run(
+        [GCLOUD, "builds", "submit", str(stage), "--config", str(build_config),
+         "--region", region, "--project", project,
+         "--service-account", f"projects/{project}/serviceAccounts/{builder}",
+         "--gcs-source-staging-dir", f"gs://{bucket}/source"],
+        stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     if proc.returncode == 0:
         return
     console.say(console.escape(proc.stderr.strip()))
@@ -903,6 +900,7 @@ def deploy(app: dict, assume_yes: bool) -> int:
         "run", "jobs", "describe", job, "--region", region, "--project", project)
     require_managed(run_job, f"Cloud Run job {console.value(job)}")
     job_exists = run_job is not None
+    deployed = (((run_job or {}).get("metadata") or {}).get("labels") or {}).get(BUILD_TAG)
     scheduler = read_json_or_none(
         "scheduler", "jobs", "describe", job,
         "--location", region, "--project", project)
@@ -964,13 +962,23 @@ def deploy(app: dict, assume_yes: bool) -> int:
         run_quiet("artifacts", "repositories", "create", repo,
                   "--repository-format", "docker", "--location", region,
                   "--project", project, "--labels", "managed-by=pdt")
-    if cloud:
-        ensure_builder(project, region, repo, builder, builds, builder_exists, builds_exists)
-        console.step(f"building image {console.value(image)} with Cloud Build")
-        cloud_build_image(app, image, project, region, builder, builds)
-    else:
-        console.step(f"building image {console.value(image)} with Docker on this computer")
-        build_image(app, image, region)
+    template = ((run_job or {}).get("spec", {}).get("template", {}).get("spec", {})
+                .get("template", {}).get("spec", {}))
+    pinned = (template.get("containers") or [{}])[0].get("image")
+
+    def build(stage: Path) -> None:
+        nonlocal pinned
+        if cloud:
+            ensure_builder(project, region, repo, builder, builds, builder_exists, builds_exists)
+            cloud_build_image(stage, image, project, region, builder, builds)
+        else:
+            build_image(stage, image, region)
+        pinned = pushed_image(image, project)
+        if pinned is None:
+            fail(f"Artifact Registry holds no image {console.value(image)} after the build")
+
+    fingerprint = ensure_image(app, image, "linux/amd64", "Cloud Build" if cloud else "",
+                               deployed, lambda: pushed_image(image, project) == pinned, build)
     if not sa_exists:
         if not sa.startswith("pdt-runner@"):
             fail(f"CLOUD_RUN_SERVICE_ACCOUNT {console.value(sa)} does not exist in project "
@@ -1008,9 +1016,9 @@ def deploy(app: dict, assume_yes: bool) -> int:
                   "--member", f"serviceAccount:{sa}",
                   "--role", "roles/secretmanager.secretVersionManager")
     console.step(f"deploying Cloud Run job {console.value(job)}")
-    args = ["run", "jobs", "deploy", job, "--image", image, "--region", region,
+    args = ["run", "jobs", "deploy", job, "--image", pinned, "--region", region,
             "--project", project, "--service-account", sa, "--max-retries", "0",
-            "--labels", "managed-by=pdt"]
+            "--labels", f"managed-by=pdt,{BUILD_TAG}={fingerprint}"]
     if values:
         args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"]
     env_vars = []

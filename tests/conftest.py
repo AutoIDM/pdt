@@ -63,6 +63,12 @@ def add_app(root, name, config_text="", run_body="def main():\n    return 0\n"):
     return folder
 
 
+def built_image(app, image, image_platform, cloud_builder, deployed, current, build):
+    """deploy_common.ensure_image for a deploy test with no app folder: it always builds."""
+    build(Path("stage"))
+    return "f" * 32
+
+
 def started(run):
     """A subprocess.Popen for lifecycle.run_job that calls `run` as if it were subprocess.run."""
     return lambda command, **kwargs: SimpleNamespace(

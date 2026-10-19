@@ -6,11 +6,13 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from conftest import add_app, started
 from pdt import cli, config, console, deploy, lifecycle, powershell
+from pdt.deploy_common import REBUILD_ENV
 
 
 def run_cli(monkeypatch, *argv):
@@ -161,7 +163,7 @@ def test_the_next_argument_moves_past_the_app_inside_an_app_folder(project, monk
     monkeypatch.chdir(add_app(project, "daily-report", "schedule: daily\n"))
     monkeypatch.setattr(config, "check_env", lambda env: [])
     calls = []
-    monkeypatch.setattr(deploy, "dispatch", lambda provider, *a: calls.append(a) or 0)
+    monkeypatch.setattr(deploy, "dispatch", lambda provider, *a, **k: calls.append(a) or 0)
     assert run_cli(monkeypatch, *argv) == 0
     assert calls == [sent]
 
@@ -369,7 +371,7 @@ def test_health_with_an_app_and_all_is_refused(project, monkeypatch, capsys):
 def fake_deploys(monkeypatch, codes):
     calls = []
 
-    def fake_deploy(name, assume_yes=False, run=None):
+    def fake_deploy(name, assume_yes=False, run=None, rebuild=False):
         assert run is False
         calls.append((name, assume_yes))
         return codes.get(name, 0)
@@ -1039,7 +1041,7 @@ def test_secrets_takes_the_action_before_the_app(project, monkeypatch):
     add_app(project, "hello-world", "schedule: daily\n")
     monkeypatch.setattr(config, "check_env", lambda env: [])
     calls = []
-    monkeypatch.setattr(deploy, "dispatch", lambda provider, *a: calls.append(a) or 0)
+    monkeypatch.setattr(deploy, "dispatch", lambda provider, *a, **k: calls.append(a) or 0)
     assert run_cli(monkeypatch, "secrets", "save", "hello-world") == 0
     assert calls == [("secrets", "hello-world", False, ["save"])]
 
@@ -1072,3 +1074,15 @@ def test_deploy_all_without_run_starts_no_run(project, monkeypatch):
     fake_deploys(monkeypatch, {})
     monkeypatch.setattr(deploy, "start_run", lambda name: pytest.fail("started a run"))
     assert run_cli(monkeypatch, "deploy", "--all", "--yes") == 0
+
+
+@pytest.mark.parametrize("argv, rebuild", [((), None), (("--rebuild",), "1")])
+def test_rebuild_reaches_the_provider_script_as_pdt_rebuild(project, monkeypatch, argv, rebuild):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.delenv(REBUILD_ENV, raising=False)
+    envs = []
+    monkeypatch.setattr(deploy, "announce_install", lambda script: None)
+    monkeypatch.setattr(deploy.subprocess, "run", lambda args, **kwargs: envs.append(
+        kwargs["env"]) or SimpleNamespace(returncode=0))
+    assert run_cli(monkeypatch, "deploy", "hello-world", "--yes", *argv) == 0
+    assert [env.get(REBUILD_ENV) for env in envs] == [rebuild]

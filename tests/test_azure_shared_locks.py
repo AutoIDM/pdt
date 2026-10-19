@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from conftest import fake_azure_reads, plain
+from conftest import built_image, fake_azure_reads, plain
 from pdt import deploy_azure, deploy_azure_container_apps
 
 SUBSCRIPTION = "11111111-1111-1111-1111-111111111111"
@@ -62,6 +62,7 @@ def fake_deploy(monkeypatch, answers):
     monkeypatch.setattr(module, "assign_role", lambda *args: None)
     monkeypatch.setattr(module, "enable_acr_arm_auth", lambda registry: None)
     monkeypatch.setattr(module, "build_image", lambda *args: events.append(("build",)))
+    monkeypatch.setattr(module, "ensure_image", built_image)
     monkeypatch.setattr(module, "pushed_image", lambda settings, name: f"{name}@sha256:1")
     monkeypatch.setattr(module, "ensure_secret", lambda *args: None)
     monkeypatch.setattr(module, "reconcile_job", lambda *args: None)

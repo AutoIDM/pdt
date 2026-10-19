@@ -163,7 +163,8 @@ def test_path_arguments_still_offer_file_names(project, tmp_path):
 def test_typed_dash_offers_options(project, tmp_path):
     add_app(project, "daily-report")
 
-    assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "--yes", "--all", "--skip-failures", "--run"]
+    assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "--yes", "--all", "--skip-failures", "--run",
+                                                   "--rebuild"]
     assert _complete("pdt destroy -", tmp_path) == ["-h", "--help", "--yes", "--all", "--skip-failures"]
 
 

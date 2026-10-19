@@ -48,6 +48,8 @@ builds it from an upload of the staged context. The `docker-build` key
 (config.DOCKER_BUILDS) forces either place. A failed build stops the
 deploy.
 
+The job records `context_fingerprint` of its image's context under BUILD_TAG (`pdt-build`). `ensure_image` skips the build when the fingerprint is the same and the registry still holds the job's image, unless `pdt deploy --rebuild` sets REBUILD_ENV.
+
 A local build forwards the deploying machine's SSH agent when one is
 running, so a RUN step marked `--mount=type=ssh` can install a private
 git dependency. A cloud build has no agent, so `build_in_cloud` stops a
@@ -130,6 +132,8 @@ BUILD_EXCLUDES = (
     "credentials.json", "credentials", "id_rsa*", "id_ed25519*", "id_ecdsa*",
     ".ssh", ".pgpass", ".netrc", ".npmrc", ".pypirc", ".pdt", ".meltano",
 )
+BUILD_TAG = "pdt-build"
+REBUILD_ENV = "PDT_REBUILD"
 STORE_PREFIX = "pdt-data"
 STORE_TAGS = {"managed-by": "pdt", "pdt-lifecycle": "retain"}
 
@@ -223,6 +227,65 @@ def image_action(app: dict, what: console.Markup, cloud_builder: str = "") -> co
         dockerfile = f"{app['name']}/Dockerfile"
         return console.Markup(f"{what}{where} (from {console.value(dockerfile)})")
     return console.Markup(f"{what}{where}")
+
+
+def context_fingerprint(stage: Path, image_platform: str) -> str:
+    """32 hex characters of a sha256 over pdt's version, the platform, and the staged context.
+
+    Every file adds its path, size, and bytes, and every link its path and target, in sorted
+    path order. Modes and mtimes do not count.
+    """
+    from pdt import __version__
+
+    digest = hashlib.sha256()
+
+    def add(*fields: str | bytes) -> None:
+        for field in fields:
+            data = field.encode() if isinstance(field, str) else field
+            digest.update(f"{len(data)}:".encode() + data)
+
+    add(__version__, image_platform)
+    entries = []
+    for folder, dirs, files in os.walk(stage, followlinks=False):
+        for name in dirs + files:
+            path = Path(folder, name)
+            if path.is_symlink() or path.is_file():
+                entries.append((path.relative_to(stage).as_posix(), path))
+    for relative, path in sorted(entries):
+        if path.is_symlink():
+            add("link", relative, os.readlink(path))
+        else:
+            data = path.read_bytes()
+            add("file", relative, str(len(data)), data)
+    return digest.hexdigest()[:32]
+
+
+def ensure_image(app: dict, image: str, image_platform: str, cloud_builder: str,
+                 deployed: str | None, current: Callable[[], bool],
+                 build: Callable[[Path], None]) -> str:
+    """Build and push the image unless the job's fingerprint `deployed` is the same; return it.
+
+    `current` says whether the registry still holds the image the job runs. It runs only
+    when the fingerprints match. The staged context is removed on every path.
+    """
+    stage = stage_build_context(app)
+    try:
+        write_dockerfile(stage, app)
+        fingerprint = context_fingerprint(stage, image_platform)
+        if deployed == fingerprint and not os.environ.get(REBUILD_ENV):
+            if current():
+                console.done(f"Image {console.value(image)} is unchanged; "
+                             "skipped the build and push.")
+                return fingerprint
+            console.note("the registry no longer holds the image the job runs, so the deploy "
+                         "builds it again")
+        where = (f"in the cloud with {console.value(cloud_builder)}" if cloud_builder
+                 else "with Docker on this computer")
+        console.step(f"building and pushing image {console.value(image)} {where}")
+        build(stage)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return fingerprint
 
 
 def fail(message: str) -> None:

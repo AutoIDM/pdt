@@ -57,9 +57,9 @@ from pdt.deploy_aws import (
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
 )
 from pdt.deploy_common import (
-    CostEstimate, build_in_cloud, fail, gather_secrets, image_action,
-    run_build, run_secrets, secret_contents, ssh_build_args, stage_build_context, store_kept_line,
-    store_name, store_plan_lines, store_suffix, warn_if_locked, write_dockerfile,
+    BUILD_TAG, CostEstimate, build_in_cloud, ensure_image, fail, gather_secrets, image_action,
+    run_build, run_secrets, secret_contents, ssh_build_args, store_kept_line,
+    store_name, store_plan_lines, store_suffix, warn_if_locked,
 )
 
 REPOSITORY = "pdt"
@@ -468,8 +468,10 @@ def normalized_job_definition(definition: dict) -> dict:
     }
 
 
-def same_job_definition(current: dict, desired: dict, image_digest: str) -> bool:
-    return ((current.get("tags") or {}).get("image-digest") == image_digest
+def same_job_definition(current: dict, desired: dict, image_digest: str,
+                        fingerprint: str) -> bool:
+    tags = current.get("tags") or {}
+    return (tags.get("image-digest") == image_digest and tags.get(BUILD_TAG) == fingerprint
             and normalized_job_definition(current) == normalized_job_definition(desired))
 
 
@@ -486,17 +488,17 @@ def active_job_definitions(batch, name: str | None = None) -> list[dict]:
     return sorted(found, key=lambda item: item["revision"], reverse=True)
 
 
-def ensure_job_definition(batch, desired: dict, image_digest: str) -> str:
+def ensure_job_definition(batch, desired: dict, image_digest: str, fingerprint: str) -> str:
     revisions = active_job_definitions(batch, desired["jobDefinitionName"])
     if revisions:
         if not managed(revisions[0]):
             fail(f"Batch job definition {console.value(desired['jobDefinitionName'])} exists "
                  "but is not managed by PDT")
-        if same_job_definition(revisions[0], desired, image_digest):
+        if same_job_definition(revisions[0], desired, image_digest, fingerprint):
             deregister_job_definitions(batch, revisions[1:])
             return revisions[0]["jobDefinitionArn"]
     registered = with_role_propagation_retry(lambda: batch.register_job_definition(
-        **desired, tags={**MANAGED_TAGS, "image-digest": image_digest}))
+        **desired, tags={**MANAGED_TAGS, "image-digest": image_digest, BUILD_TAG: fingerprint}))
     deregister_job_definitions(batch, revisions)
     return registered["jobDefinitionArn"]
 
@@ -533,16 +535,15 @@ def submit_job_target(names: dict[str, str]) -> dict:
     }
 
 
-def build_and_push(app: dict, image: str, ecr, build: Callable[[Path], None]) -> str:
-    """Stage the context, let `build` build and push it, and return the pushed digest."""
-    stage = stage_build_context(app)
+def pushed_digest(ecr, image: str) -> str | None:
+    """The digest of the image at `image`'s tag, or None when the repository has no such tag."""
     try:
-        write_dockerfile(stage, app)
-        build(stage)
-    finally:
-        shutil.rmtree(stage, ignore_errors=True)
-    images = ecr.describe_images(
-        repositoryName=REPOSITORY, imageIds=[{"imageTag": image.rsplit(":", 1)[1]}])
+        images = ecr.describe_images(
+            repositoryName=REPOSITORY, imageIds=[{"imageTag": image.rsplit(":", 1)[1]}])
+    except ClientError as exc:
+        if not_found(exc):
+            return None
+        raise
     return images["imageDetails"][0]["imageDigest"]
 
 
@@ -814,6 +815,10 @@ def deploy(app: dict, assume_yes: bool) -> int:
     secret_exists = resource_exists(
         clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
     uploads = build_bucket(account, region)
+    revisions = [item for item in active_job_definitions(clients["batch"], names["job_definition"])
+                 if managed(item)]
+    recorded = (revisions[0].get("tags") or {}) if revisions else {}
+    deployed = recorded.get(BUILD_TAG)
     if cloud:
         project = build_project(clients["codebuild"])
         build_role_exists = resource_exists(clients["iam"], "get_role", RoleName=BUILD_ROLE)
@@ -891,20 +896,26 @@ def deploy(app: dict, assume_yes: bool) -> int:
     execution, job_role, scheduler_role = ensure_roles(
         clients["iam"], names, account, region, secret_arn, grants)
     image = f"{repository_uri}:{names['image_tag']}"
-    if cloud:
-        ensure_build_resources(clients, account, region, uploads, project)
-        console.step(f"building and pushing {console.value(image)} with "
-                     f"{console.value('CodeBuild')}")
-        image_digest = build_and_push(app, image, clients["ecr"], lambda stage: codebuild_build(
-            stage, image, clients, uploads, app["name"]))
-    else:
-        console.step(f"building and pushing {console.value(image)} with Docker on this computer")
-        image_digest = build_and_push(app, image, clients["ecr"],
-                                      lambda stage: docker_build(stage, image, clients["ecr"]))
+    image_digest = recorded.get("image-digest")
+
+    def build(stage: Path) -> None:
+        nonlocal image_digest
+        if cloud:
+            ensure_build_resources(clients, account, region, uploads, project)
+            codebuild_build(stage, image, clients, uploads, app["name"])
+        else:
+            docker_build(stage, image, clients["ecr"])
+        image_digest = pushed_digest(clients["ecr"], image)
+        if image_digest is None:
+            fail(f"ECR holds no image {console.value(image)} after the build")
+
+    fingerprint = ensure_image(
+        app, image, DOCKER_PLATFORM, "CodeBuild" if cloud else "", deployed,
+        lambda: pushed_digest(clients["ecr"], image) == image_digest, build)
     console.step("reconciling job definition and schedule")
     desired = desired_job_definition(
         names, image, region, execution, job_role, secret_arn, environment)
-    ensure_job_definition(clients["batch"], desired, image_digest)
+    ensure_job_definition(clients["batch"], desired, image_digest, fingerprint)
     ensure_schedule(clients["scheduler"], names["schedule"], expression,
                     app["timezone"], scheduler_role, submit_job_target(names), app["pause"])
     console.done(f"Deployed {console.value(app['name'])}.")
