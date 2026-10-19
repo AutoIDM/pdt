@@ -65,6 +65,12 @@ jobs:
 
       - run: uv run --no-project --python 3.12 --with pyinstaller pyinstaller --onefile --name pdt --distpath dist/launcher scripts/winget_launcher.py
 
+      # Signing: azure/artifact-signing-action signs dist/launcher/pdt.exe here, before the zip and the MSI take it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher
+          path: dist/launcher/pdt.exe
+
       - id: zip
         shell: pwsh
         run: |
@@ -98,6 +104,44 @@ jobs:
         with:
           files: pdt-windows-x64.zip
           body_path: release-notes.md
+
+  windows-msi:
+    needs: [windows-launcher, publish]
+    if: ${{ !cancelled() && needs.windows-launcher.result == 'success' }}
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: launcher
+          path: dist/launcher
+
+      - id: wix
+        uses: actions/cache@v4
+        with:
+          path: build/wix/bin
+          key: wix-${{ hashFiles('installer/build-wix.ps1') }}
+
+      - if: steps.wix.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: installer/build-wix.ps1 -Out build/wix
+
+      - shell: pwsh
+        run: installer/build-msi.ps1 -Wix build/wix/bin/wix.exe -Launcher dist/launcher/pdt.exe -Version ${{ needs.windows-launcher.outputs.version }} -Out pdt-windows-x64.msi
+
+      # Signing: azure/artifact-signing-action signs pdt-windows-x64.msi here.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msi
+          path: pdt-windows-x64.msi
+
+      - if: startsWith(github.ref, 'refs/tags/') && needs.publish.result == 'success'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: pdt-windows-x64.msi
 
   # The first submission of AutoIDM.pdt is a manual `wingetcreate new` from
   # the rendered manifests in the winget-manifests artifact. WINGET_TOKEN is a

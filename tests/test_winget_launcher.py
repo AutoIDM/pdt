@@ -22,16 +22,38 @@ class FakeRun:
 
     def __call__(self, command, **kwargs):
         self.commands.append(command)
-        if command == INSTALL:
+        if command[1:] == INSTALL[1:]:
             self.install_env = kwargs["env"]
             return subprocess.CompletedProcess(command, self.install_code, "", "no such version\n")
         return subprocess.CompletedProcess(command, self.pdt_code)
+
+
+@pytest.fixture(autouse=True)
+def launcher_folder(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher.sys, "executable", str(tmp_path / "pdt.exe"))
+    return tmp_path
 
 
 @pytest.fixture
 def uv_on_path(monkeypatch):
     monkeypatch.setattr(launcher.shutil, "which", lambda name: "uv")
     monkeypatch.setenv("LOCALAPPDATA", "C:/Users/me/AppData/Local")
+
+
+def test_uv_beside_the_launcher_comes_before_the_path(monkeypatch, uv_on_path, launcher_folder):
+    bundled = launcher_folder / "uv.exe"
+    bundled.write_bytes(b"")
+    run = FakeRun()
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    assert launcher.main(["list"]) == 0
+    assert run.commands[0] == [str(bundled), *INSTALL[1:]]
+
+
+def test_without_uv_beside_the_launcher_it_uses_the_path(monkeypatch, uv_on_path):
+    run = FakeRun()
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    launcher.main(["list"])
+    assert run.commands[0] == INSTALL
 
 
 def test_missing_uv_prints_the_winget_hint(monkeypatch, capsys):

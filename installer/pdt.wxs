@@ -1,0 +1,27 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="pdt"
+           Manufacturer="AutoIDM"
+           Version="$(Version)"
+           UpgradeCode="{367B1CCA-7463-4884-B4C9-B317CF67B763}"
+           Language="1033"
+           Scope="perUser">
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize" DowngradeErrorMessage="A newer version of pdt is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="LocalPrograms" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="pdt" />
+      </Directory>
+    </StandardDirectory>
+
+    <Component Directory="INSTALLFOLDER" Guid="{0BC63BCA-7324-484F-9C3A-B6173D3C24E3}">
+      <File Source="$(Payload)\pdt.exe" />
+      <File Source="$(Payload)\uv.exe" />
+      <File Source="$(Payload)\uv-LICENSE-MIT.txt" />
+      <Environment Id="PATH" Name="PATH" Value="[INSTALLFOLDER]" Action="set" Part="last" System="no" Permanent="no" />
+      <RegistryValue Root="HKCU" Key="Software\AutoIDM\pdt" Name="InstallFolder" Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
+      <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+      <RemoveFolder Id="RemoveLocalPrograms" Directory="LocalPrograms" On="uninstall" />
+    </Component>
+  </Package>
+</Wix>
