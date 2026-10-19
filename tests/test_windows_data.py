@@ -73,9 +73,8 @@ def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
         f"run uv from {project / 'uv.exe'} (uv is not on the system PATH; "
         "a machine-wide install drops the path from the task)",
         f"keep the app's run data in {folder} (SYSTEM: full control; PC\\jon: modify)",
-        f"write one log per run under {folder / 'logs'} (kept 30 days, removed on destroy)",
-        f"use folder {folder / 'storage'} for the app's files (kept after destroy; runs/ "
-        "folders kept 30 days)",
+        f"write one log per run under {folder / 'logs'} (removed on destroy)",
+        f"use folder {folder / 'storage'} for the app's files (kept after destroy)",
     ]
 
 

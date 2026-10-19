@@ -6,7 +6,7 @@ import re
 import subprocess
 import sys
 import types
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -166,25 +166,19 @@ def test_runner_puts_the_utc_time_before_each_line(folders, monkeypatch):
     assert all(before <= moment <= datetime.now(timezone.utc) for moment in times)
 
 
-def test_runner_deletes_logs_and_runs_folders_older_than_keep_days(folders, monkeypatch):
+def test_runner_keeps_old_logs_and_runs_folders(folders, monkeypatch):
     app_dir, logs, url = folders
     runs = app_dir.parent / "storage" / "runs"
     runs.mkdir(parents=True)
     logs.mkdir()
-    now = datetime.now(timezone.utc)
-    old = f"{now - timedelta(days=run_windows_task.KEEP_DAYS + 1):%Y%m%dT%H%M%SZ}"
-    recent = f"{now:%Y%m%dT%H%M%SZ}"
-    for name in (f"{old}.log", f"{recent[:9]}000000Z.log", "notes.log"):
-        (logs / name).write_text("pdt: exit 0\n")
-    for name in (f"{old}-a1", f"{recent[:9]}000000Z-b2", "keep"):
-        (runs / name / "output").mkdir(parents=True)
+    (logs / "20200101T000000Z.log").write_text("pdt: exit 0\n")
+    (runs / "20200101T000000Z-a1" / "output").mkdir(parents=True)
     monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen([], b"", 0))
 
     run_windows_task.main([str(app_dir), str(logs), url])
 
-    assert {path.name for path in runs.iterdir()} == {f"{recent[:9]}000000Z-b2", "keep"}
-    kept = {path.name for path in logs.glob("*.log")}
-    assert f"{old}.log" not in kept and {f"{recent[:9]}000000Z.log", "notes.log"} <= kept
+    assert [path.name for path in runs.iterdir()] == ["20200101T000000Z-a1"]
+    assert len(list(logs.glob("*.log"))) == 2
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the fake uv is a shell script")

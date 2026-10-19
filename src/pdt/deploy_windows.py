@@ -18,8 +18,7 @@ run, removed on destroy), and one scheduled task `pdt-<app>` whose action
 runs `run_windows_task.py` through uv. The runner sets PDT_STORAGE_URL to the
 storage folder, runs the app in its folder, and writes both output streams
 to `logs\\<UTC start>.log`, each line after its time, ending with
-`pdt: exit N`; `pdt runs` and `pdt logs` read those files. Each run deletes
-the logs and the `storage\\runs\\` folders older than KEEP_DAYS. A run is
+`pdt: exit N`; `pdt runs` and `pdt logs` read those files. A run is
 stopped after RUN_TIME_LIMIT.
 
 The task's action is `<uv> run --script run_windows_task.py <app dir>
@@ -66,7 +65,7 @@ from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import CostEstimate, warn_if_locked
 from pdt.pwsh import ensure_pwsh
-from pdt.run_windows_task import KEEP_DAYS, LINE_TIME, MANUAL_START
+from pdt.run_windows_task import LINE_TIME, MANUAL_START
 
 
 class WindowsDeployError(Exception):
@@ -430,7 +429,7 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
         console.Markup(f"keep the app's run data in {console.value(app_folder(name))} "
                        f"(SYSTEM: full control; {console.value(user)}: modify)"),
         console.Markup(f"write one log per run under {console.value(logs_folder(name))} "
-                       f"(kept {console.value(KEEP_DAYS)} days, removed on destroy)"),
+                       "(removed on destroy)"),
     ]
     dockerfile = Path(app["dir"]) / "Dockerfile"
     if dockerfile.is_file():
@@ -439,8 +438,7 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
             f"({console.escape(config.dockerfile_problem(app['platform']))})"))
     if app["storage"]:
         actions.append(console.Markup(f"use folder {console.value(storage_folder(name))} for "
-                                      "the app's files (kept after destroy; runs/ folders "
-                                      f"kept {console.value(KEEP_DAYS)} days)"))
+                                      "the app's files (kept after destroy)"))
     if pwsh is not None:
         actions.append(console.Markup(f"run the app's .ps1 files with PowerShell from "
                                       f"{console.value(pwsh)}"))

@@ -18,8 +18,6 @@ both streams to
 <logs folder>\\<UTC start>.log, each line after the UTC time it arrived
 (LINE_TIME), ends the file with `pdt: exit N` (the marker `pdt runs` reads),
 and exits with the child's exit code so `Get-ScheduledTaskInfo` shows it.
-Before the app starts, it deletes the logs and the storage `runs/` folders of
-runs that started more than KEEP_DAYS ago.
 
 It needs nothing beyond the standard library and never prints: nobody watches
 a scheduled task. When uv cannot be started the log holds the reason and
@@ -30,14 +28,12 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from urllib.request import url2pathname
 
 USAGE = "usage: run_windows_task.py <app dir> <logs folder> <storage url>"
 EXIT_MARKER = "pdt: exit "
@@ -48,30 +44,12 @@ MISSING_UV = 127
 MANUAL_START = "manual-start"
 MANUAL_START_SECONDS = 300
 LINE_TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) ")
-RUN_NAME = re.compile(r"\d{8}T\d{6}Z")
-# A cloud provider keeps a run's log 30 days: the CloudWatch retention that deploy_aws
-# sets, and the default of Cloud Logging and of Log Analytics. The cloud keeps runs/
-# folders, but this PC's disk is finite, so they go at the same age.
-KEEP_DAYS = 30
 DRAIN_SECONDS = 2
 
 
 def timed(raw: bytes) -> bytes:
     moment = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     return f"{moment.replace('+00:00', 'Z')} ".encode() + raw.rstrip(b"\r\n") + b"\n"
-
-
-def remove_old_runs(logs: Path, storage: Path, now: datetime) -> None:
-    oldest = f"{now - timedelta(days=KEEP_DAYS):%Y%m%dT%H%M%SZ}"
-    for path in [*logs.glob("*.log"), *(storage / "runs").glob("*")]:
-        if RUN_NAME.match(path.name) and path.name[:16] < oldest:
-            try:
-                if path.is_dir():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
-            except OSError:
-                pass
 
 
 def main(argv: list[str]) -> int:
@@ -81,9 +59,7 @@ def main(argv: list[str]) -> int:
     app_dir, logs, storage_url = argv
     folder = Path(logs)
     folder.mkdir(parents=True, exist_ok=True)
-    now = datetime.now(timezone.utc)
-    stamp = f"{now:%Y%m%dT%H%M%SZ}"
-    remove_old_runs(folder, Path(url2pathname(storage_url.removeprefix("file:"))), now)
+    stamp = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
     log = folder / f"{stamp}.log"
     env = {**os.environ, "PDT_STORAGE_URL": storage_url, "PDT_RUN_ID": stamp}
     marker = folder / MANUAL_START
