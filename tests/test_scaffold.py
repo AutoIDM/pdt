@@ -84,6 +84,7 @@ def test_init_writes_agent_docs(tmp_path, monkeypatch):
     assert scaffold.init(None, assume_yes=True) == 0
     agents = (tmp_path / "AGENTS.md").read_text()
     assert "pdt validate" in agents
+    assert "Never read, print, or change a `.env` file" in agents
     assert (tmp_path / "CLAUDE.md").read_text().strip() == "@AGENTS.md"
 
 
