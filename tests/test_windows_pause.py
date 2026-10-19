@@ -1,9 +1,10 @@
 import re
+from datetime import datetime, timezone
 
 import pytest
 
 from conftest import add_app
-from pdt import config, deploy_windows
+from pdt import config, deploy_windows, runs_cli
 
 
 @pytest.fixture
@@ -62,6 +63,30 @@ def test_start_runs_the_task_now_and_marks_the_run_manual(monkeypatch, capsys, t
     assert scripts[0][0].startswith("Start-ScheduledTask -TaskName 'pdt-my-report'")
     assert scripts[0][1] == {"elevate": True}
     assert "Started my-report" in capsys.readouterr().out
+
+
+def test_start_with_follow_waits_for_the_new_log_before_it_reads_the_run_list(
+        monkeypatch, tmp_path):
+    monkeypatch.setenv("ProgramData", str(tmp_path))
+    fake_task(monkeypatch, "managed")
+    folder = deploy_windows.logs_folder("my-report")
+    folder.mkdir(parents=True)
+    (folder / "20260923T090000Z.log").write_text("pdt: exit 0\n")
+    naps = []
+
+    def runner_starts(seconds):
+        naps.append(seconds)
+        if len(naps) == 3:
+            (folder / "20260923T100000Z.log").write_text("")
+    monkeypatch.setattr(deploy_windows.time, "sleep", runner_starts)
+    followed = []
+    monkeypatch.setattr(deploy_windows, "logs", lambda app, rest, new: followed.append(
+        [path.stem for path in folder.glob("*.log") if new(runs_cli.Run(path.stem, datetime.now(timezone.utc), None, "running"))])
+        or 0)
+
+    assert deploy_windows.start({"name": "my-report"}, follow=True) == 0
+    assert naps == [deploy_windows.FOLLOW_POLL_SECONDS] * 3
+    assert followed == [["20260923T100000Z"]]
 
 
 def test_a_missing_task_says_deploy_first(monkeypatch, capsys, tmp_path):

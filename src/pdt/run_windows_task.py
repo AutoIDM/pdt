@@ -15,9 +15,11 @@ an app with no run.py, `uv run --script run_powershell.py <app dir>`) inside
 `lifecycle.py`, which adds the job's lifecycle events to the log (with
 PDT_TRIGGER=manual when it finds MANUAL_START), writes
 both streams to
-<logs folder>\\<UTC start>.log, ends the file with `pdt: exit N` (the marker
-`pdt runs` reads), and exits with the child's exit code so
-`Get-ScheduledTaskInfo` shows it.
+<logs folder>\\<UTC start>.log, each line after the UTC time it arrived
+(LINE_TIME), ends the file with `pdt: exit N` (the marker `pdt runs` reads),
+and exits with the child's exit code so `Get-ScheduledTaskInfo` shows it.
+Before the app starts, it deletes the logs and the storage `runs/` folders of
+runs that started more than KEEP_DAYS ago.
 
 It needs nothing beyond the standard library and never prints: nobody watches
 a scheduled task. When uv cannot be started the log holds the reason and
@@ -27,11 +29,15 @@ a scheduled task. When uv cannot be started the log holds the reason and
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import subprocess
 import sys
+import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.request import url2pathname
 
 USAGE = "usage: run_windows_task.py <app dir> <logs folder> <storage url>"
 EXIT_MARKER = "pdt: exit "
@@ -41,6 +47,31 @@ MISSING_UV = 127
 # MANUAL_START_SECONDS old, is manual.
 MANUAL_START = "manual-start"
 MANUAL_START_SECONDS = 300
+LINE_TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) ")
+RUN_NAME = re.compile(r"\d{8}T\d{6}Z")
+# A cloud provider keeps a run's log 30 days: the CloudWatch retention that deploy_aws
+# sets, and the default of Cloud Logging and of Log Analytics. The cloud keeps runs/
+# folders, but this PC's disk is finite, so they go at the same age.
+KEEP_DAYS = 30
+DRAIN_SECONDS = 2
+
+
+def timed(raw: bytes) -> bytes:
+    moment = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    return f"{moment.replace('+00:00', 'Z')} ".encode() + raw.rstrip(b"\r\n") + b"\n"
+
+
+def remove_old_runs(logs: Path, storage: Path, now: datetime) -> None:
+    oldest = f"{now - timedelta(days=KEEP_DAYS):%Y%m%dT%H%M%SZ}"
+    for path in [*logs.glob("*.log"), *(storage / "runs").glob("*")]:
+        if RUN_NAME.match(path.name) and path.name[:16] < oldest:
+            try:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except OSError:
+                pass
 
 
 def main(argv: list[str]) -> int:
@@ -50,7 +81,9 @@ def main(argv: list[str]) -> int:
     app_dir, logs, storage_url = argv
     folder = Path(logs)
     folder.mkdir(parents=True, exist_ok=True)
-    stamp = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
+    now = datetime.now(timezone.utc)
+    stamp = f"{now:%Y%m%dT%H%M%SZ}"
+    remove_old_runs(folder, Path(url2pathname(storage_url.removeprefix("file:"))), now)
     log = folder / f"{stamp}.log"
     env = {**os.environ, "PDT_STORAGE_URL": storage_url, "PDT_RUN_ID": stamp}
     marker = folder / MANUAL_START
@@ -70,13 +103,46 @@ def main(argv: list[str]) -> int:
     command = [uv, "run", "--script", str(Path(__file__).with_name("lifecycle.py")), "--", *command]
     with log.open("wb") as out:
         try:
-            code = subprocess.run(
+            child = subprocess.Popen(
                 command, cwd=app_dir, env=env,
-                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT).returncode
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         except OSError as exc:
-            out.write(f"{uv} could not be started: {exc}\n".encode())
+            out.write(timed(f"{uv} could not be started: {exc}".encode()))
             code = MISSING_UV
-        out.write(f"{EXIT_MARKER}{code}\n".encode())
+        else:
+            lock = threading.Lock()
+            ended = []
+            rest = [b""]
+
+            def copy() -> None:
+                while True:
+                    chunk = child.stdout.read1()
+                    with lock:
+                        if ended:
+                            return
+                        if chunk == b"":
+                            chunk = b"\n" if rest[0] else b""
+                            ended.append(True)
+                        *complete, rest[0] = (rest[0] + chunk).split(b"\n")
+                        for raw in complete:
+                            out.write(timed(raw))
+                        out.flush()
+            reader = threading.Thread(target=copy, daemon=True)
+            reader.start()
+            try:
+                code = child.wait()
+            except BaseException:
+                child.kill()
+                child.wait()
+                raise
+            # A process the app started in the background can hold the pipe open after the
+            # app exits, so the run ends without waiting for it.
+            reader.join(DRAIN_SECONDS)
+            with lock:
+                ended.append(True)
+                if rest[0]:
+                    out.write(timed(rest[0]))
+        out.write(timed(f"{EXIT_MARKER}{code}".encode()))
     return code
 
 

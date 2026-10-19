@@ -83,6 +83,15 @@ def test_the_environment_beats_a_dot_env_file_that_sets_the_same_name(project, m
     assert os.environ["PDT_TOKEN"] == "from-environment"
 
 
+def test_a_dot_env_file_with_a_byte_order_mark_sets_its_first_name(project, monkeypatch):
+    folder = add_app(project, "my-report", APP_YAML)
+    clear(monkeypatch)
+    (folder / ".env").write_bytes(b"\xef\xbb\xbfPDT_TOKEN=t-1\nPDT_SECRET=s-1\n")
+    config.load_env(folder)
+    assert os.environ["PDT_TOKEN"] == "t-1"
+    assert config.check_env(config.merged_app("my-report")["env"]) == []
+
+
 DEPLOY_YAML = "schedule: '0 6 * * *'\nenv:\n  required: [PDT_TOKEN]\n"
 
 

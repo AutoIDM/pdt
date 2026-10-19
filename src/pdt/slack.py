@@ -138,7 +138,7 @@ def webhook_url(name: str) -> str:
         pass
     for start in starts:
         for path in config.find_env_files(start):
-            value = (dotenv_values(path).get(name) or "").strip()
+            value = (dotenv_values(path, encoding="utf-8-sig").get(name) or "").strip()
             if value:
                 return value
     return ""

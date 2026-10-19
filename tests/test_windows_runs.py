@@ -146,7 +146,7 @@ def test_read_lines_parses_the_log_file(project):
     (folder / "20260923T100000Z.log").write_text("10:00:00 INFO   starting\npdt: exit 0\n")
     run = runs_cli.Run("20260923T100000Z", datetime.now(timezone.utc), None, "succeeded")
 
-    lines = deploy_windows.read_lines("my-report", run)
+    lines = list(deploy_windows.read_lines("my-report", run))
 
     assert lines == [
         runs_cli.Line(None, "INFO", "starting"),
@@ -157,4 +157,109 @@ def test_read_lines_parses_the_log_file(project):
 def test_read_lines_with_no_file_is_empty(project):
     windows_app(project)
     run = runs_cli.Run("missing", datetime.now(timezone.utc), None, "failed")
-    assert deploy_windows.read_lines("my-report", run) == []
+    assert list(deploy_windows.read_lines("my-report", run)) == []
+    assert list(deploy_windows.read_lines("my-report", run, follow=True)) == []
+
+
+def test_read_lines_takes_each_line_time_from_the_runner(project):
+    windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder.mkdir(parents=True)
+    (folder / "20260923T100000Z.log").write_bytes(
+        b"2026-09-23T10:00:01.250Z \xef\xbb\xbf10:00:01 INFO     starting\n"
+        b"2026-09-23T10:00:02.000Z pdt: exit 0\n")
+    run = runs_cli.Run("20260923T100000Z", datetime.now(timezone.utc), None, "succeeded")
+
+    assert list(deploy_windows.read_lines("my-report", run)) == [
+        runs_cli.Line(datetime(2026, 9, 23, 10, 0, 1, 250000, tzinfo=timezone.utc), "INFO",
+                      "starting"),
+        runs_cli.Line(datetime(2026, 9, 23, 10, 0, 2, tzinfo=timezone.utc), "", "pdt: exit 0"),
+    ]
+
+
+def test_follow_reads_each_line_the_runner_adds_until_the_exit_line(project, monkeypatch):
+    windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder.mkdir(parents=True)
+    log = folder / "20260923T100000Z.log"
+    log.write_bytes(b"2026-09-23T10:00:01.000Z first\n2026-09-23T10:00:02.000Z sec")
+    later = [b"ond\n", b"", b"2026-09-23T10:00:03.000Z pdt: exit 0\n"]
+    naps = []
+
+    def runner_writes(seconds):
+        naps.append(seconds)
+        with log.open("ab") as file:
+            file.write(later.pop(0))
+    monkeypatch.setattr(deploy_windows.time, "sleep", runner_writes)
+    run = runs_cli.Run("20260923T100000Z", datetime.now(timezone.utc), None, "running")
+
+    lines = deploy_windows.read_lines("my-report", run, follow=True)
+
+    assert [line.message for line in lines] == ["first", "second", "pdt: exit 0"]
+    assert naps == [deploy_windows.FOLLOW_POLL_SECONDS] * 3
+
+
+def test_follow_ends_when_the_log_stays_quiet(project, monkeypatch):
+    windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder.mkdir(parents=True)
+    (folder / "20260923T100000Z.log").write_bytes(b"2026-09-23T10:00:01.000Z first\n")
+    clock = [0.0]
+    monkeypatch.setattr(deploy_windows.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(deploy_windows.time, "sleep", lambda seconds: clock.__setitem__(
+        0, clock[0] + seconds))
+    run = runs_cli.Run("20260923T100000Z", datetime.now(timezone.utc), None, "running")
+
+    lines = list(deploy_windows.read_lines("my-report", run, follow=True))
+
+    assert [line.message for line in lines] == ["first"]
+    assert clock[0] == runs_cli.STREAM_QUIET
+
+
+def test_list_runs_reads_only_the_end_of_each_log_and_asks_only_about_the_newest(
+        project, monkeypatch):
+    windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder.mkdir(parents=True)
+    (folder / "20260923T090000Z.log").write_text("x" * 10_000 + "\n10:00:00 ERROR boom\n")
+    (folder / "20260923T100000Z.log").write_text("x" * 10_000 + "\npdt: exit 0\n")
+    (folder / "20260923T110000Z.log").write_text("10:00:00 INFO   starting\n")
+    asked = []
+    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
+    monkeypatch.setattr(deploy_windows, "_task_running",
+                        lambda powershell, name: asked.append(name) or True)
+    reads = []
+    real_read = deploy_windows.parse_line
+    monkeypatch.setattr(deploy_windows, "parse_line",
+                        lambda raw: reads.append(len(raw)) or real_read(raw))
+
+    found = deploy_windows.list_runs("my-report")
+
+    assert [run.status for run in found] == ["running", "succeeded", "failed"]
+    assert asked == ["pdt-my-report"]
+    assert max(reads) < deploy_windows.EXIT_LINE_BYTES
+
+
+def test_list_runs_does_not_take_an_exit_marker_from_the_middle_of_a_line(project, monkeypatch):
+    windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder.mkdir(parents=True)
+    line = "2026-09-23T10:00:01.000Z said " + "x" * 300 + " pdt: exit 0 " + "y" * 200 + "\n"
+    (folder / "20260923T100000Z.log").write_text(line)
+    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
+    monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: True)
+
+    (run,) = deploy_windows.list_runs("my-report")
+
+    assert (run.status, run.exit_code) == ("running", None)
+
+
+def test_a_read_of_a_running_log_holds_back_a_line_the_runner_has_not_ended(project):
+    windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder.mkdir(parents=True)
+    (folder / "20260923T100000Z.log").write_bytes(
+        b"2026-09-23T10:00:01.000Z first\n2026-09-23T10:00:02.000Z sec")
+    run = runs_cli.Run("20260923T100000Z", datetime.now(timezone.utc), None, "running")
+
+    assert [line.message for line in deploy_windows.read_lines("my-report", run)] == ["first"]

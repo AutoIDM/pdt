@@ -1,9 +1,12 @@
 """The runner a Windows scheduled task calls: `src/pdt/run_windows_task.py`."""
 
+import io
 import os
 import re
 import subprocess
 import sys
+import types
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -22,12 +25,11 @@ def folders(tmp_path):
     return app_dir, tmp_path / "logs", (tmp_path / "storage").as_uri() + "/"
 
 
-def fake_run(calls, output: bytes, code: int):
-    def run(command, **kwargs):
+def fake_popen(calls, output: bytes, code: int):
+    def popen(command, **kwargs):
         calls.append((command, kwargs))
-        kwargs["stdout"].write(output)
-        return subprocess.CompletedProcess(command, code)
-    return run
+        return types.SimpleNamespace(stdout=io.BytesIO(output), wait=lambda: code)
+    return popen
 
 
 def only_log(logs: Path) -> Path:
@@ -36,26 +38,33 @@ def only_log(logs: Path) -> Path:
     return log
 
 
+def untimed(log: Path) -> str:
+    lines = log.read_text().splitlines(keepends=True)
+    assert all(run_windows_task.LINE_TIME.match(line) for line in lines)
+    return "".join(run_windows_task.LINE_TIME.sub("", line, count=1) for line in lines)
+
+
 def test_runner_logs_both_streams_and_exits_with_the_child_code(folders, monkeypatch):
     app_dir, logs, url = folders
     calls = []
     monkeypatch.delenv("UV", raising=False)
-    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run(calls, b"hello\n", 3))
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen(calls, b"hello\n", 3))
 
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 3
 
     (command, kwargs), = calls
     assert command == ["uv", "run", "--script", LIFECYCLE, "--", "uv", "run", "--script", "run.py"]
     assert kwargs["cwd"] == str(app_dir)
+    assert kwargs["stdout"] is subprocess.PIPE
     assert kwargs["stderr"] is subprocess.STDOUT
-    assert only_log(logs).read_text() == "hello\npdt: exit 3\n"
+    assert untimed(only_log(logs)) == "hello\npdt: exit 3\n"
 
 
 def test_runner_sets_the_storage_url_for_the_child(folders, monkeypatch):
     app_dir, logs, url = folders
     calls = []
     monkeypatch.setenv("UV", "/tools/uv.exe")
-    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run(calls, b"", 0))
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen(calls, b"", 0))
 
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
 
@@ -72,7 +81,7 @@ def test_runner_runs_an_app_without_run_py_through_the_powershell_wrapper(folder
     (app_dir / "report.ps1").write_text("")
     calls = []
     monkeypatch.setenv("UV", "/tools/uv.exe")
-    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run(calls, b"", 0))
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen(calls, b"", 0))
 
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
 
@@ -85,7 +94,7 @@ def test_runner_runs_an_app_without_run_py_through_the_powershell_wrapper(folder
 def test_runner_names_the_run_after_its_log(folders, monkeypatch):
     app_dir, logs, url = folders
     calls = []
-    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run(calls, b"", 0))
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen(calls, b"", 0))
 
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
 
@@ -98,10 +107,10 @@ def test_runner_without_uv_logs_exit_127(folders, monkeypatch):
 
     def missing(command, **kwargs):
         raise FileNotFoundError("uv")
-    monkeypatch.setattr(run_windows_task.subprocess, "run", missing)
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", missing)
 
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 127
-    text = only_log(logs).read_text()
+    text = untimed(only_log(logs))
     assert "could not be started" in text
     assert text.endswith("pdt: exit 127\n")
 
@@ -123,7 +132,7 @@ def test_runner_process_exit_code_is_the_child_exit_code(folders, tmp_path):
 
     assert proc.returncode == 5
     assert proc.stdout == b"" and proc.stderr == b""
-    assert only_log(logs).read_text() == (f"args: run --script {LIFECYCLE} -- {fake_uv} run --script run.py"
+    assert untimed(only_log(logs)) == (f"args: run --script {LIFECYCLE} -- {fake_uv} run --script run.py"
                                           "\noops\npdt: exit 5\n")
 
 
@@ -137,7 +146,57 @@ def test_runner_marks_a_run_manual_when_pdt_left_a_fresh_marker(folders, monkeyp
     os.utime(marker, (old, old))
     calls = []
     monkeypatch.delenv("PDT_TRIGGER", raising=False)
-    monkeypatch.setattr(run_windows_task.subprocess, "run", fake_run(calls, b"", 0))
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen(calls, b"", 0))
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
     assert calls[0][1]["env"].get("PDT_TRIGGER") == trigger
     assert not marker.exists()
+
+
+def test_runner_puts_the_utc_time_before_each_line(folders, monkeypatch):
+    app_dir, logs, url = folders
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen([], b"one\r\ntwo", 0))
+    before = datetime.now(timezone.utc).replace(microsecond=0)
+
+    run_windows_task.main([str(app_dir), str(logs), url])
+
+    lines = only_log(logs).read_text().splitlines()
+    times = [datetime.fromisoformat(run_windows_task.LINE_TIME.match(line).group(1))
+             for line in lines]
+    assert [line.split(" ", 1)[1] for line in lines] == ["one", "two", "pdt: exit 0"]
+    assert all(before <= moment <= datetime.now(timezone.utc) for moment in times)
+
+
+def test_runner_deletes_logs_and_runs_folders_older_than_keep_days(folders, monkeypatch):
+    app_dir, logs, url = folders
+    runs = app_dir.parent / "storage" / "runs"
+    runs.mkdir(parents=True)
+    logs.mkdir()
+    now = datetime.now(timezone.utc)
+    old = f"{now - timedelta(days=run_windows_task.KEEP_DAYS + 1):%Y%m%dT%H%M%SZ}"
+    recent = f"{now:%Y%m%dT%H%M%SZ}"
+    for name in (f"{old}.log", f"{recent[:9]}000000Z.log", "notes.log"):
+        (logs / name).write_text("pdt: exit 0\n")
+    for name in (f"{old}-a1", f"{recent[:9]}000000Z-b2", "keep"):
+        (runs / name / "output").mkdir(parents=True)
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen([], b"", 0))
+
+    run_windows_task.main([str(app_dir), str(logs), url])
+
+    assert {path.name for path in runs.iterdir()} == {f"{recent[:9]}000000Z-b2", "keep"}
+    kept = {path.name for path in logs.glob("*.log")}
+    assert f"{old}.log" not in kept and {f"{recent[:9]}000000Z.log", "notes.log"} <= kept
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake uv is a shell script")
+def test_runner_ends_when_the_app_exits_though_a_background_process_holds_its_output(
+        folders, tmp_path):
+    app_dir, logs, url = folders
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text("#!/bin/sh\necho started\nprintf 'no newline'\nsleep 30 &\nexit 0\n")
+    fake_uv.chmod(0o755)
+
+    proc = subprocess.run([sys.executable, str(RUNNER), str(app_dir), str(logs), url],
+                          env={**os.environ, "UV": str(fake_uv)}, timeout=20)
+
+    assert proc.returncode == 0
+    assert untimed(only_log(logs)) == "started\nno newline\npdt: exit 0\n"
