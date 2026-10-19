@@ -664,6 +664,8 @@ def show_plan(actions: list[str], cost: CostEstimate | None = None) -> int:
 def proceed(assume_yes: bool) -> bool:
     if assume_yes:
         return True
+    if os.environ.get("PDT_ASK_ON_CLIENT"):
+        raise SystemExit(DECLINED)
     if not can_prompt(None):
         console.say()
         console.warn("there is no one to answer. Run this in a terminal, "

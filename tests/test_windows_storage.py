@@ -20,7 +20,7 @@ def project(tmp_path, monkeypatch):
 def windows_app(project, monkeypatch):
     add_app(project, "my-report", "schedule: hourly\ntimezone: local\n")
     monkeypatch.setattr(deploy_windows, "_preflight",
-                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+                        lambda: "powershell.exe")
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     return config.merged_app("my-report")
