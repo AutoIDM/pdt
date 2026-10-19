@@ -1,4 +1,6 @@
 import base64
+import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -55,24 +57,26 @@ def test_local_windows_commands_stop_off_windows(
         "Windows PC, or run this command on the Windows PC.\n")
 
 
-@pytest.mark.parametrize("command", ["login", "deploy", "destroy", "secrets", "storage", "runs",
-                                     "logs", "pause", "unpause", "start"])
-def test_a_host_sends_only_login_to_that_pc(project, monkeypatch, capsys, command):
+@pytest.mark.parametrize("command", ["login", "deploy", "destroy", "storage", "runs", "logs",
+                                     "pause", "unpause", "start"])
+def test_a_host_runs_every_command_on_that_pc(project, monkeypatch, command):
     windows_app(project)
     (project / "my-report" / "config.yml").write_text(
         (project / "my-report" / "config.yml").read_text() + "platform:\n  host: admin@pc01\n")
-    reached = []
+    reached, forwarded = [], []
     monkeypatch.setattr(deploy_windows.windows_remote, "connect",
-                        lambda host, app_name: reached.append((host, app_name)))
-    monkeypatch.setattr(deploy_windows.sys, "argv", ["deploy_windows.py", command, "my-report"])
+                        lambda host, app_name: reached.append((host, app_name)) or "connection")
+    monkeypatch.setattr(deploy_windows.windows_remote, "forward",
+                        lambda connection, app, command, rest, yes:
+                        forwarded.append((connection, command, rest, yes)) or 0)
+    monkeypatch.setattr(deploy_windows, "deploy", lambda app, yes: pytest.fail("ran locally"))
+    monkeypatch.setattr(deploy_windows.sys, "argv",
+                        ["deploy_windows.py", command, "my-report", "--yes"])
 
-    assert deploy_windows.main() == (0 if command == "login" else 1)
+    assert deploy_windows.main() == 0
 
-    if command == "login":
-        assert reached == [("admin@pc01", "my-report")]
-    else:
-        assert reached == []
-        assert f"pdt cannot run {command} on another PC yet" in capsys.readouterr().out
+    assert reached == [("admin@pc01", "my-report")]
+    assert forwarded == ([] if command == "login" else [("connection", command, [], True)])
 
 
 def test_login_checks_the_host_before_it_connects(project, monkeypatch, capsys):
@@ -94,17 +98,20 @@ def test_app_folders_live_under_the_machine_data_home(project):
     assert deploy_windows.logs_folder("my-report") == folder / "logs"
 
 
-def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
+def test_plan_names_the_copy_the_secrets_the_uv_and_the_folders(project):
     app = windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report"
+    data = project / "ProgramData" / "pdt"
+    folder = data / "my-report"
     actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
-                                  "uv.exe", False)
+                                  {"API_KEY": "x"}, False)
     assert plain(actions) == [
         "create Windows scheduled task pdt-my-report (runs as SYSTEM)",
         "run my-report hourly at minute 00 (machine local time)",
-        f"working directory: {app['dir']}",
-        f"run uv from {project / 'uv.exe'} (uv is not on the system PATH; "
-        "a machine-wide install drops the path from the task)",
+        f"copy the app to {folder / 'app'} and pdt {deploy_windows.windows_remote.pdt_version()} to "
+        f"{folder / 'runtime'}; the task runs this copy, so a change to the project reaches "
+        "the job at the next deploy",
+        f"store env vars API_KEY in {folder / 'secrets.json'} (SYSTEM and Administrators only)",
+        f"run uv {deploy_windows.windows_uv.VERSION} from {data / 'bin' / 'uv.exe'}",
         f"keep the app's run data in {folder} (SYSTEM: full control; PC\\jon: modify)",
         f"write one log per run under {folder / 'logs'} (removed on destroy)",
         f"use folder {folder / 'storage'} for the app's files (kept after destroy)",
@@ -113,28 +120,110 @@ def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
 
 def test_plan_without_storage_has_no_storage_line(project):
     app = windows_app(project, "schedule: hourly\ntimezone: local\nstorage: false\n")
-    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
-                                  "uv.exe", False)
-    assert len(actions) == 6
+    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon", {}, False)
+    assert len(actions) == 7
     assert not any("app's files" in action for action in actions)
 
 
-def test_folder_script_creates_the_folders_and_grants_the_two_rules(project):
+def test_the_release_holds_the_app_without_secret_files_this_pdt_and_the_secrets(project):
+    app = windows_app(project)
+    (project / "my-report" / ".env").write_text("API_KEY=x\n")
+    (project / "my-report" / "run.py").write_text("print('hi')\n")
+    release = deploy_windows.stage_release(app, {"API_KEY": "x"}, None)
+    try:
+        assert (release / "app" / "pdt.yml").is_file()
+        assert (release / "app" / "my-report" / "run.py").is_file()
+        assert not (release / "app" / "my-report" / ".env").exists()
+        assert not (release / "app" / ".pdt-lifecycle").exists()
+        assert (release / "runtime" / "pdt" / "run_windows_task.py").is_file()
+        assert (release / "runtime" / "pdt" / "lifecycle.py").is_file()
+        assert not list((release / "runtime").rglob("__pycache__"))
+        assert json.loads((release / "secrets.json").read_text()) == {"API_KEY": "x"}
+        assert not (release / "uv.exe").exists()
+    finally:
+        shutil.rmtree(release)
+
+
+def test_the_release_is_staged_then_swapped_in_and_put_back_on_any_failure(project):
+    app = windows_app(project)
+    release = project / "release"
+    release.mkdir()
+    (release / "uv.exe").write_text("")
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    uv = project / "ProgramData" / "pdt" / "bin" / "uv.exe"
+    script = deploy_windows._release_script(app, release, "INSTALL; ", "REGISTER; ")
+    body, rollback = script.split("} catch { ", 1)
+    assert f"$new = '{folder / 'app'}.new'" in body
+    assert f"$new = '{folder / 'runtime'}.new'" in body
+    assert "Set-PdtAcl $bin $true" in body
+    assert f"$target = '{uv}'" in body
+    assert "[IO.File]::Replace($new, $target, [NullString]::Value)" in body
+    assert "Set-PdtAcl $target $true" in body
+    assert "Set-PdtAcl $cache $false" in body
+    assert (body.index("New-Item -ItemType File -Path $placed") < body.index("Set-PdtAcl $placed $false")
+            < body.index("[IO.File]::WriteAllBytes($placed") < body.index("INSTALL")
+            < body.index("Rename-Item -Path \"$t.new\"")
+            < body.index("Move-Item -Path $placed -Destination $secret") < body.index("REGISTER"))
+    assert "icacls" not in script
+    assert "Rename-Item -Path \"$t.old\" -NewName (Split-Path $t -Leaf)" in rollback
+    assert "Remove-Item -Recurse -Force \"$t.new\"" in rollback
+    assert "if ($newSecret) { Remove-Item -Force $secret" in rollback
+    assert "Rename-Item -Path \"$secret.old\"" in rollback
+    assert rollback.index("throw") < rollback.index("Remove-Item -Recurse -Force $old")
+
+
+def test_the_acl_function_sets_owner_protection_and_the_rules_in_one_write():
+    acl = deploy_windows.SET_ACL
+    assert "$acl.SetAccessRuleProtection($true, $false)" in acl
+    assert "SetOwner([Security.Principal.SecurityIdentifier]'S-1-5-32-544')" in acl
+    assert "@('S-1-5-18', 'FullControl'), @('S-1-5-32-544', 'FullControl')" in acl
+    assert "$rules += ,@('S-1-5-32-545', 'ReadAndExecute')" in acl
+    assert acl.count("Set-Acl ") == 1
+
+
+def test_folder_script_locks_the_app_folder_and_lets_the_user_change_logs_and_storage(project):
     app = windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report"
     script = deploy_windows._folder_script(app, r"PC\jon")
-    assert (f"New-Item -ItemType Directory -Force -Path '{folder}', "
-            f"'{folder / 'logs'}', '{folder / 'storage'}'") in script
-    assert "icacls $folder /grant '*S-1-5-18:(OI)(CI)F' 'PC\\jon:(OI)(CI)M'" in script
-    assert script.count("/grant") == 1
-    assert "/inheritance" not in script
+    assert f"$folder = '{folder}'" in script
+    assert "Set-PdtAcl $folder $true" in script
+    assert f"foreach ($sub in @('{folder / 'logs'}', '{folder / 'storage'}'))" in script
+    assert "icacls $sub /grant 'PC\\jon:(OI)(CI)M'" in script
+    assert "$folder /grant 'PC" not in script
+
+
+def test_deploy_runs_one_elevated_script_that_registers_the_task_inside_the_rollback(
+        project, monkeypatch):
+    app = windows_app(project)
+    scripts = []
+    monkeypatch.setattr(deploy_windows, "_preflight", lambda: "powershell.exe")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_run",
+                        lambda powershell, script, **kw: scripts.append(script) or True)
+    assert deploy_windows.deploy(app, assume_yes=True) == 0
+    (script,) = scripts
+    assert script.startswith("$ErrorActionPreference = 'Stop'; ")
+    assert script.index("$folder =") < script.index("try {") < script.index(
+        "Register-ScheduledTask") < script.index("} catch {")
+
+
+def test_an_elevated_step_starts_with_a_short_command_line_and_runs_a_file(tmp_path):
+    long_script = tmp_path / "step.ps1"
+    args = deploy_windows.run_args("powershell.exe", long_script, elevate=True)
+    wrapper = base64.b64decode(args[-1]).decode("utf-16-le")
+    assert "-Verb RunAs" in wrapper
+    assert f'-File "{long_script}"' in wrapper
+    assert len(" ".join(args)) < 2000
+    assert deploy_windows.run_args("powershell.exe", long_script, elevate=False)[-2:] == [
+        "-File", str(long_script)]
 
 
 def test_deploy_creates_the_folders_before_registering_the_task(project, monkeypatch):
     app = windows_app(project)
     scripts = []
     monkeypatch.setattr(deploy_windows, "_preflight",
-                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+                        lambda: "powershell.exe")
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run",
@@ -149,7 +238,7 @@ def test_deploy_creates_the_folders_before_registering_the_task(project, monkeyp
 def test_deploy_says_what_it_does_before_each_slow_step(project, monkeypatch, capsys):
     app = windows_app(project)
     monkeypatch.setattr(deploy_windows, "_preflight",
-                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+                        lambda: "powershell.exe")
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run", lambda powershell, script, **kw: True)
@@ -182,9 +271,10 @@ def powershell_deploy(project, monkeypatch):
         return deploy_windows.subprocess.CompletedProcess(command, 0, missing, "")
 
     monkeypatch.setattr(deploy_windows.subprocess, "run", has_module)
+    monkeypatch.setattr(deploy_windows, "gather_secrets", lambda app: {})
     monkeypatch.setattr(deploy_windows.regions, "local_currency", lambda: "USD")
     monkeypatch.setattr(deploy_windows, "_preflight",
-                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+                        lambda: "powershell.exe")
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run",
@@ -250,8 +340,7 @@ def test_powershell_deploy_names_the_windows_feature_of_a_missing_module(
 def test_plan_says_the_windows_provider_ignores_a_dockerfile(project):
     app = windows_app(project)
     (Path(app["dir"]) / "Dockerfile").write_text("FROM python:3.12-slim\n")
-    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
-                                  "uv.exe", False)
+    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon", {}, False)
     assert (f"ignore {Path(app['dir']) / 'Dockerfile'} (not used by the windows provider)"
             in plain(actions))
 
@@ -267,7 +356,7 @@ def test_plan_says_the_windows_provider_ignores_a_dockerfile(project):
 def test_validate_and_deploy_accept_the_same_schedules(project, schedule, description):
     app = windows_app(project, f"schedule: '{schedule}'\n")
     assert config.validate_app("my-report") == []
-    assert deploy_windows.task_xml(app, "uv.exe", False)[0] == description
+    assert deploy_windows.task_xml(app)[0] == description
 
 
 @pytest.mark.parametrize("config_text, problem", [
@@ -287,7 +376,7 @@ def test_validate_reports_what_the_windows_deploy_rejects(project, config_text, 
     problems = config.validate_app("my-report")
     assert len(problems) == 1 and problems[0].startswith(f"my-report: {problem}")
     with pytest.raises(deploy_windows.WindowsDeployError) as rejected:
-        deploy_windows.task_xml(app, "uv.exe", False)
+        deploy_windows.task_xml(app)
     assert problems[0] == f"my-report: {problem.split(': ', 1)[0]}: {rejected.value}"
 
 

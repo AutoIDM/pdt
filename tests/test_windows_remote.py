@@ -9,8 +9,8 @@ from pdt import config, windows_remote
 from pdt.config import validate_app, windows_host_problem
 from pdt.windows_remote import Connection, RemoteError, Target
 
-ADMIN = "pdt-probe|True|CORP\\admin|PC01|C:\\ProgramData\n"
-NOT_ADMIN = "pdt-probe|False|PC01\\helpdesk|PC01|C:\\ProgramData\n"
+ADMIN = "pdt-probe|True|CORP\\admin|PC01|C:\\ProgramData|AMD64|-\n"
+NOT_ADMIN = "pdt-probe|False|PC01\\helpdesk|PC01|C:\\ProgramData|AMD64|-\n"
 
 
 @pytest.mark.parametrize("host,user,name", [
@@ -101,7 +101,7 @@ def test_ssh_probe_signs_in_as_an_administrator(monkeypatch):
     calls, run = fake_ssh(monkeypatch, 0, ADMIN)
     result = windows_remote.probe_ssh(Target("admin", "pc01"), run)
     assert result == Connection(Target("admin", "pc01"), "SSH (port 22)", "CORP\\admin", "PC01",
-                                "C:\\ProgramData")
+                                "C:\\ProgramData", "AMD64", "-")
     assert decoded(calls[0]) == windows_remote.PROBE_SCRIPT
 
 
@@ -207,7 +207,8 @@ def test_winrm_probe_rejects_a_filtered_local_administrator(monkeypatch):
 
 
 def connection(transport):
-    return Connection(Target("", "pc01"), transport, "CORP\\admin", "PC01", "C:\\ProgramData")
+    return Connection(Target("", "pc01"), transport, "CORP\\admin", "PC01", "C:\\ProgramData",
+                      "AMD64", "-")
 
 
 def test_connect_uses_ssh_and_does_not_try_winrm_when_ssh_works(capsys):
@@ -260,8 +261,8 @@ def test_ssh_probe_that_hangs_gives_a_reason(monkeypatch):
         "the PC did not finish the sign-in within 2 minutes"
 
 
-@pytest.mark.parametrize("output", ["pdt-probe|True\n", "pdt-probe|True||PC01|C:\\ProgramData\n",
-                                    "pdt-probe|yes|a|b|c\n", "pdt-probe|True|a|b|c|extra\n"])
+@pytest.mark.parametrize("output", ["pdt-probe|True\n", "pdt-probe|True||PC01|C:\\ProgramData|AMD64|-\n",
+                                    "pdt-probe|yes|a|b|c|d|e\n", "pdt-probe|True|a|b|c|d|e|extra\n"])
 def test_a_broken_probe_line_is_a_reason_not_a_connection(monkeypatch, output):
     _calls, run = fake_ssh(monkeypatch, 0, output)
     assert windows_remote.probe_ssh(Target("", "pc01"), run).startswith(
@@ -280,7 +281,7 @@ def test_winrm_probe_never_sends_a_rejected_password_again(monkeypatch):
 
 def test_connect_names_the_https_failure_when_http_works(capsys):
     found = Connection(Target("", "pc01"), "WinRM (HTTP, port 5985, Kerberos, encrypted messages)",
-                       "CORP\\admin", "PC01", "C:\\ProgramData",
+                       "CORP\\admin", "PC01", "C:\\ProgramData", "AMD64", "-",
                        ("port 5986 did not answer",))
     probes = (("SSH", lambda target: "port 22 did not answer within 10 seconds"),
               ("WinRM", lambda target: found))
