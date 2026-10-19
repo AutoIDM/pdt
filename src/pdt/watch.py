@@ -1,7 +1,7 @@
-"""Keep a history of each top-level pdt command, and offer the support page.
+"""Keep a history of each top-level pdt command, and point at help from the pdt community.
 
-The history in `HISTORY` holds no value the user typed. pdt offers help after
-a pattern of failure, only to a person at a terminal. It sends nothing anywhere.
+The history in `HISTORY` holds no value the user typed. pdt prints where to get
+help after repeated errors, only to a person at a terminal. It sends nothing anywhere.
 """
 
 from __future__ import annotations
@@ -10,12 +10,9 @@ import json
 import os
 import platform
 import re
-import shutil
-import subprocess
 import sys
 import time
 import traceback
-import webbrowser
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -23,7 +20,7 @@ from uuid import uuid4
 
 from pdt import config
 
-SUPPORT_URL = "https://autoidm.com"
+SUPPORT_URL = "https://discord.gg/4j83nqnNfK"
 HISTORY = config.data_home() / "pdt" / "history.jsonl"
 NOTE_ENV = "PDT_WATCH_NOTE"
 OFF_ENV = "PDT_ERROR_WATCH"
@@ -33,6 +30,7 @@ WINDOW = timedelta(hours=24)
 TAIL_BYTES = 262144
 AGENT_ENVS = ("CLAUDECODE", "CURSOR_AGENT", "CODEX_SANDBOX", "GEMINI_CLI")
 OUTCOMES = ("ok", "error", "usage", "unhandled", "interrupted")
+ERRORS = ("error", "usage", "unhandled")
 PACKAGE = Path(__file__).resolve().parent
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 NOTE_RANKS = {"unhandled": 2, "error": 1, "usage": 1, "interrupted": 1}
@@ -199,7 +197,7 @@ def watched(main: Callable[[], int], commands: set[str] = frozenset()) -> int:
                 "project": project(), "command": shape(sys.argv, commands),
                 "outcome": outcome, "code": code, "signature": sign,
                 "seconds": round(time.monotonic() - start, 2), "pdt": version(),
-                "os": sys.platform, "python": platform.python_version(), "offered": False})
+                "os": sys.platform, "python": platform.python_version()})
     except Exception:
         pass
     os.environ.pop(NOTE_ENV, None)
@@ -242,23 +240,32 @@ def version() -> str:
 
 
 def record(entry: dict) -> None:
-    why = ""
-    if entry["outcome"] != "ok" and can_offer():
-        why = reason(recent() + [entry], datetime.now(timezone.utc))
-        entry["offered"] = why != ""
+    now = datetime.now(timezone.utc)
+    entry["interactive"] = can_offer()
+    entry["offered"] = (entry["interactive"] and entry["outcome"] in ERRORS
+                        and needs_help(recent(now) + [entry], now))
     HISTORY.parent.mkdir(parents=True, exist_ok=True)
     with HISTORY.open("a") as f:
         f.write(json.dumps(entry) + "\n")
-    if why != "":
-        offer(why, entry)
+    if entry["offered"]:
+        offer(entry)
 
 
-def recent() -> list[dict]:
+def recent(now: datetime) -> list[dict]:
+    size = TAIL_BYTES
+    while True:
+        entries, whole = tail(size)
+        if whole or not entries or not within(entries[0], now):
+            return entries
+        size *= 4
+
+
+def tail(size: int) -> tuple[list[dict], bool]:
     if not HISTORY.is_file():
-        return []
+        return [], True
     with HISTORY.open("rb") as f:
         f.seek(0, os.SEEK_END)
-        start = max(0, f.tell() - TAIL_BYTES)
+        start = max(0, f.tell() - size)
         f.seek(start)
         lines = f.read().decode(errors="replace").splitlines()
     if start > 0:
@@ -271,7 +278,7 @@ def recent() -> list[dict]:
             continue
         if isinstance(entry, dict):
             entries.append(entry)
-    return entries
+    return entries, start == 0
 
 
 def within(entry: dict, now: datetime) -> bool:
@@ -282,82 +289,21 @@ def within(entry: dict, now: datetime) -> bool:
     return now - then <= WINDOW
 
 
-def unexpected(entries: list[dict], _now: datetime) -> bool:
-    return entries[-1].get("outcome") == "unhandled"
+def needs_help(entries: list[dict], now: datetime) -> bool:
+    if entries[-1].get("outcome") == "unhandled":
+        return True
+    errors = [entry for entry in entries
+              if entry.get("interactive") is True and entry.get("outcome") in ERRORS
+              and within(entry, now)]
+    return len(errors) >= REPEATS
 
 
-def mistakes(entries: list[dict], _now: datetime) -> bool:
-    here = [entry for entry in entries if entry.get("project") == entries[-1].get("project")]
-    last = here[-REPEATS:]
-    return len(last) == REPEATS and all(entry.get("outcome") == "usage" for entry in last)
+def command_type(command: str) -> str:
+    word = next((word for word in command.split()[1:] if not is_flag(word)), "<arg>")
+    return "pdt" if word == "<arg>" else f"pdt {word}"
 
 
-def repeated(entries: list[dict], now: datetime) -> bool:
-    last = entries[-1]
-    if last.get("outcome") != "error":
-        return False
-    same = [entry for entry in entries
-            if all(entry.get(key) == last.get(key)
-                   for key in ("project", "outcome", "command", "signature"))
-            and within(entry, now)]
-    return len(same) >= REPEATS
-
-
-RULES = (
-    (unexpected, "an error it did not expect"),
-    (mistakes, f"{REPEATS} command line mistakes in a row"),
-    (repeated, f"the same error {REPEATS} times in the last {WINDOW.days * 24} hours"),
-)
-
-
-def reason(entries: list[dict], now: datetime) -> str:
-    if not entries or any(entry.get("offered") is True and within(entry, now)
-                          for entry in entries):
-        return ""
-    for rule, text in RULES:
-        if rule(entries, now):
-            return text
-    return ""
-
-
-def summary(entry: dict) -> list[str]:
-    lines = [f"pdt {entry['pdt']}, {entry['os']}, Python {entry['python']}",
-             f"{entry['command']}: {entry['outcome']}, exit {entry['code']}"]
-    if entry["signature"] != "":
-        lines.append(entry["signature"])
-    return lines
-
-
-def copy(text: str) -> bool:
-    tools = [["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"]]
-    if os.name == "nt":
-        tools.insert(0, ["clip"])
-    for tool in tools:
-        if shutil.which(tool[0]) is not None:
-            try:
-                done = subprocess.run(tool, input=text, text=True, check=False, timeout=5)
-            except (OSError, subprocess.SubprocessError):
-                return False
-            return done.returncode == 0
-    return False
-
-
-def offer(why: str, entry: dict) -> None:
+def offer(entry: dict) -> None:
     from pdt import console
-    console.warn(f"pdt saw {console.escape(why)}.")
-    console.say(f"The pdt support team can help: {console.value(SUPPORT_URL)}")
-    try:
-        if not console.confirm("Open the support page in your browser?"):
-            return
-    except (EOFError, KeyboardInterrupt):
-        return
-    lines = summary(entry)
-    if copy("\n".join(lines)):
-        console.say("pdt copied this summary to your clipboard. Paste it in your message:")
-    else:
-        console.say("Copy this summary into your message:")
-    for line in lines:
-        console.bullet(console.escape(line))
-    if not webbrowser.open(SUPPORT_URL):
-        console.say("Open this page:")
-        console.command(SUPPORT_URL)
+    console.say(f"Get help with {console.escape(command_type(entry['command']))} "
+                f"at {console.value(SUPPORT_URL)}")

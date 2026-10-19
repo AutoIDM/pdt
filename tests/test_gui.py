@@ -24,8 +24,8 @@ call_command("migrate", verbosity=0)
 setup_test_environment()
 
 from conftest import add_app  # noqa: E402
-from pdt import config, duckdb_wasm  # noqa: E402
-from pdt.gui import health, sync, views, worker  # noqa: E402
+from pdt import config, duckdb_wasm, watch  # noqa: E402
+from pdt.gui import health, pdt_cmd, sync, views, worker  # noqa: E402
 from pdt.gui.models import Project, Run, Timing  # noqa: E402
 
 T0 = datetime(2026, 9, 23, 10, 0, 12, tzinfo=UTC)
@@ -523,3 +523,21 @@ def test_every_shown_command_is_a_copy_button(gui):
     run = Run.objects.get(run_id="ecs/my-report/task2")
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert '<button type="button" class="chip" data-copy>pdt logs my-report --id ecs/my-report/task2 --full</button>' in html
+
+
+def test_a_gui_command_records_its_own_history_line_and_offers_nothing(project, monkeypatch):
+    data = project / "data"
+    monkeypatch.setenv("XDG_DATA_HOME", str(data))
+    monkeypatch.setenv("LOCALAPPDATA", str(data))
+    monkeypatch.setenv(watch.NOTE_ENV, str(project / "gui-note.json"))
+    history = data / "pdt" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    mistake = {"time": datetime.now(UTC).strftime(watch.TIME_FORMAT),
+               "project": str(project.resolve()), "outcome": "usage", "interactive": True}
+    history.write_text((json.dumps(mistake) + "\n") * 2)
+    code, _output = pdt_cmd.run_pdt("no-such-command")
+    Timing.objects.all().delete()
+    assert code == 2
+    last = json.loads(history.read_text().splitlines()[-1])
+    assert last["outcome"] == "usage" and last["interactive"] is False and last["offered"] is False
+    assert not (project / "gui-note.json").exists()

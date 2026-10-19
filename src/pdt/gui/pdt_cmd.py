@@ -3,6 +3,8 @@
 The child is `python -m pdt.cli` with this interpreter, which is the
 `uv run --script` environment of gui_server.py, so it sees the same pdt
 package. PDT_PROJECT names the project, NO_COLOR keeps the output plain.
+The child gets no PDT_WATCH_NOTE of the `pdt gui` that started the server, so
+it adds its own line to the history, and with no terminal it offers no help.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pdt
-from pdt import config
+from pdt import config, watch
 from pdt.gui import timing
 
 
@@ -24,6 +26,7 @@ def run_pdt(*args: str, timeout: int = 900) -> tuple[int, str]:
     """The exit code and output of `pdt <args>`; stderr is added when it failed."""
     env = dict(os.environ, PDT_PROJECT=str(config.find_project()), NO_COLOR="1",
                PYTHONPATH=str(Path(pdt.__file__).resolve().parent.parent))
+    env.pop(watch.NOTE_ENV, None)
     started = datetime.now(UTC)
     clock = time.monotonic()
     try:

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import plain
 from pdt import cli, completion, console, watch
 
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
@@ -12,7 +13,7 @@ NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
 def entry(outcome="error", hours=0, **fields):
     time = (NOW - timedelta(hours=hours)).strftime(watch.TIME_FORMAT)
     return {"time": time, "project": "/p", "command": "pdt run <arg>", "outcome": outcome,
-            "signature": "boom", "offered": False, **fields}
+            "signature": "boom", "interactive": True, **fields}
 
 
 def lines(history):
@@ -20,11 +21,11 @@ def lines(history):
 
 
 @pytest.fixture
-def asked(monkeypatch):
-    questions = []
+def said(monkeypatch):
+    printed = []
     monkeypatch.setattr(watch, "can_offer", lambda: True)
-    monkeypatch.setattr(console, "confirm", lambda question: questions.append(question) or False)
-    return questions
+    monkeypatch.setattr(console, "say", lambda message="": printed.append(message))
+    return printed
 
 
 def test_shape_keeps_command_names_and_flags_and_hides_values():
@@ -40,28 +41,29 @@ def test_signature_removes_values_that_identify_someone(monkeypatch):
         "failed <value> at <url> for <email> KEY=<value> <path> <path> <id> after # tries")
 
 
-def test_reason_rules():
-    assert watch.reason([entry("unhandled")], NOW) == "an error it did not expect"
-    assert watch.reason([entry("usage")] * 3, NOW) == "3 command line mistakes in a row"
-    assert watch.reason([entry("usage")] * 2, NOW) == ""
-    assert watch.reason([entry()] * 3, NOW) == "the same error 3 times in the last 24 hours"
+def test_needs_help_after_three_errors_at_a_terminal_in_24_hours():
+    assert watch.needs_help([entry("unhandled")], NOW)
+    assert not watch.needs_help([entry("usage"), entry()], NOW)
+    assert watch.needs_help([entry("usage", command="pdt deploy"), entry(project="/q"),
+                             entry()], NOW)
+    assert not watch.needs_help([entry("usage"), entry("interrupted"), entry()], NOW)
+    assert not watch.needs_help([entry(hours=25), entry(), entry()], NOW)
+    assert not watch.needs_help([entry(interactive=False), entry(), entry()], NOW)
 
 
-def test_reason_counts_only_errors_in_the_last_24_hours():
-    assert watch.reason([entry(hours=25), entry(), entry()], NOW) == ""
+def test_the_command_type_names_the_pdt_command():
+    assert watch.command_type("pdt deploy <arg> --yes") == "pdt deploy"
+    assert watch.command_type("pdt --verbose run <arg>") == "pdt run"
+    assert watch.command_type("pdt <arg> run") == "pdt"
 
 
-def test_reason_offers_at_most_once_a_day():
-    assert watch.reason([entry("unhandled", hours=2, offered=True), entry("unhandled")], NOW) == ""
-    assert watch.reason([entry("unhandled", hours=25, offered=True), entry("unhandled")], NOW) != ""
-
-
-def test_three_command_line_mistakes_ask_on_the_third(project, monkeypatch, history, asked):
+def test_each_error_from_the_third_prints_where_to_get_help(project, monkeypatch, history, said):
     monkeypatch.setattr("sys.argv", ["pdt", "hello-world", "run"])
-    for count in range(3):
+    for count in range(4):
         with pytest.raises(SystemExit):
             cli.main()
-        assert len(asked) == (1 if count == 2 else 0)
+        assert len(said) == max(0, count - 1)
+    assert plain(said) == [f"Get help with pdt at {watch.SUPPORT_URL}"] * 2
     last = lines(history)[-1]
     assert last["command"] == "pdt <arg> run"
     assert last["outcome"] == "usage" and last["code"] == 2 and last["offered"] is True
@@ -81,7 +83,7 @@ def test_a_value_joined_to_a_short_flag_stays_out_of_the_history():
     assert watch.typed_words(["pdt", "run", "-pSecret", "-y"], {"run"}) == ["-pSecret"]
 
 
-def test_json_output_gets_no_offer(project, monkeypatch, history):
+def test_json_output_gets_no_help_line(project, monkeypatch, history):
     monkeypatch.setattr("sys.argv", ["pdt", "validate", "--json"])
     monkeypatch.setattr("pdt.utils.email_auth.can_prompt", lambda interactive: True)
     monkeypatch.setattr("sys.stderr.isatty", lambda: True)
@@ -107,41 +109,35 @@ def test_a_broken_note_still_records_the_command(monkeypatch, history):
     assert lines(history)[-1]["signature"] == "exit 1"
 
 
-def test_a_clipboard_failure_still_opens_the_page(monkeypatch):
-    opened = []
-    monkeypatch.setattr(console, "confirm", lambda question: True)
-    monkeypatch.setattr("shutil.which", lambda name: "/bin/" + name)
-    monkeypatch.setattr("subprocess.run", lambda *a, **k: (_ for _ in ()).throw(OSError()))
-    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
-    watch.offer("a test", {"pdt": "1", "os": "x", "python": "3", "command": "pdt",
-                           "outcome": "error", "code": 1, "signature": ""})
-    assert opened == [watch.SUPPORT_URL]
-
-
 def test_ci_records_nothing(monkeypatch, history):
     monkeypatch.setenv("CI", "true")
     assert watch.watched(lambda: 1) == 1
     assert not history.exists()
 
 
-def test_the_same_error_three_times_asks_on_the_third(project, history, asked):
+def test_an_unhandled_error_prints_where_to_get_help_the_first_time(project, monkeypatch,
+                                                                      history, said):
+    monkeypatch.setattr("sys.argv", ["pdt", "run", "my-app"])
+    assert watch.watched(lambda: 1 / 0, {"run"}) == 1
+    assert plain(said) == [f"Get help with pdt run at {watch.SUPPORT_URL}"]
+
+
+def test_the_signature_hides_paths(project, history):
     def main():
         console.error("no app named 'x' in /home/u/proj")
         return 1
-    for _ in range(3):
-        assert watch.watched(main) == 1
-    assert len(asked) == 1
+    assert watch.watched(main) == 1
     assert lines(history)[-1]["signature"] == "no app named 'x' in <path>"
 
 
-def test_the_off_switches_record_and_ask_nothing(project, monkeypatch, history, asked):
+def test_the_off_switches_record_and_print_nothing(project, monkeypatch, history, said):
     monkeypatch.setenv(watch.OFF_ENV, "0")
     assert watch.watched(lambda: 1) == 1
     monkeypatch.delenv(watch.OFF_ENV)
     (project / "pdt.yml").write_text("platform:\n  provider: azure\nerror-watch: false\n")
     for _ in range(3):
         assert watch.watched(lambda: 1) == 1
-    assert not history.exists() and asked == []
+    assert not history.exists() and said == []
 
 
 def test_a_child_writes_its_note_and_no_history(tmp_path, monkeypatch, history):
@@ -177,3 +173,13 @@ def test_every_provider_script_is_watched():
     folder = Path(watch.__file__).parent
     for name in ("aws", "azure", "google_cloud", "windows"):
         assert "sys.exit(watch.watched(main))" in (folder / f"deploy_{name}.py").read_text()
+
+
+def test_recent_reads_past_the_tail_to_cover_24_hours(monkeypatch, history):
+    monkeypatch.setattr(watch, "TAIL_BYTES", 200)
+    now = datetime.now(timezone.utc)
+    stamp = now.strftime(watch.TIME_FORMAT)
+    rows = [entry(time=stamp)] * 2 + [entry("ok", time=stamp, interactive=False)] * 50
+    history.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    assert len(watch.recent(now)) == 52
+    assert watch.needs_help(watch.recent(now) + [entry(time=stamp)], now)
