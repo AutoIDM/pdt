@@ -47,7 +47,7 @@ try {
   Invoke-Native msbuild -Restore internal\SetBuildNumber\SomeVerInit.verproj -nologo
   Push-Location dtf
   Invoke-Native msbuild -Restore SfxCA\sfxca_t.proj $c -nologo -m -warnaserror
-  Invoke-Native msbuild -Restore -t:Pack dtf.slnx $c -nologo -m -warnaserror
+  Invoke-Native msbuild -Restore '-t:Pack' dtf.slnx $c -nologo -m -warnaserror
   Pop-Location
   Push-Location internal
   Invoke-Native nuget restore
@@ -64,7 +64,7 @@ try {
   Invoke-Native msbuild burn_t.proj $c -nologo -m -warnaserror
   Pop-Location
   Push-Location wix
-  Invoke-Native msbuild -t:Restore wix.slnx $c -nologo -m -warnaserror
+  Invoke-Native msbuild '-t:Restore' wix.slnx $c -nologo -m -warnaserror
   Invoke-Native msbuild wixnative\wixnative_t.proj $c -nologo -m -warnaserror
   Invoke-Native msbuild publish_t.proj $c -nologo -warnaserror
   Pop-Location
