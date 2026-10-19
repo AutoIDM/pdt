@@ -17,6 +17,7 @@ provider script deploys or destroys an app where `.pdt/state` says it is deploye
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -58,7 +59,7 @@ PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
     "subscription", "resource_group", "environment",
-    "timezone",
+    "timezone", "host",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
 # The platform keys besides provider that say where an app of each provider runs.
@@ -652,6 +653,29 @@ def azure_environment_problem(environment: str) -> str:
             "<resource-group>/<name>, for example my-group/my-environment.")
 
 
+def windows_host_problem(host: str) -> str:
+    host = host.strip()
+    if host == "":
+        if os.name == "nt":
+            return ""
+        return ("This computer is not Windows, so it cannot run the jobs itself. "
+                "Type the name of the Windows PC, for example pc01.example.com.")
+    user, at, name = host.rpartition("@")
+    if at and (user.strip() == "" or any(ord(char) < 32 for char in user)):
+        return ("The user name before @ is empty or holds a control character. Write it as "
+                "user@pc01.example.com, or leave out user@.")
+    try:
+        ipaddress.ip_address(name)
+        return ""
+    except ValueError:
+        pass
+    labels = name.removesuffix(".").split(".")
+    if all(re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in labels):
+        return ""
+    return ("That is not the name of a PC. Write the PC's name or address, with no "
+            "http:// and no port, for example pc01.example.com or admin@pc01.example.com.")
+
+
 def cron_expression(schedule) -> str:
     if not isinstance(schedule, str) or schedule.strip() == "":
         raise ConfigError("schedule is missing")
@@ -1193,6 +1217,17 @@ def validate_app(name: str) -> list[str]:
         problem = azure_environment_problem(str(app["platform"].get("environment") or ""))
         if problem != "":
             problems.append(f"{name}: platform.environment: {problem}")
+    host = app["platform"].get("host")
+    if host is not None and provider != "windows":
+        problems.append(f"{name}: platform.host names a Windows PC, so it works only with "
+                        "provider: windows; remove it")
+    elif host is not None and not isinstance(host, str):
+        problems.append(f"{name}: platform.host: write the name of the Windows PC, for "
+                        "example pc01.example.com")
+    elif host is not None:
+        problem = windows_host_problem(host) if host.strip() != "" else ""
+        if problem != "":
+            problems.append(f"{name}: platform.host: {problem}")
     if app["schedule"] is not None:
         try:
             cron = cron_expression(app["schedule"])
