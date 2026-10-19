@@ -19,14 +19,6 @@ tests/test_console_values.py fails on a value that is not wrapped.
 
 Import the module, not its functions: `from pdt import console`, then
 `console.error(...)`. The names here are short and would collide.
-
-On a terminal, a line wraps at a space to the terminal's width, and each
-line after the first starts under the text after the line's label or
-indent. A word too wide for a line, such as a long path or URL, gets a
-line of its own with no indent, so a copy of that line holds it whole. A
-table too wide for the terminal prints one block per row: the first cell,
-then `name: cell` for each other cell. Output that is not a terminal never
-wraps, so a log holds one line per message.
 """
 
 from __future__ import annotations
@@ -63,9 +55,6 @@ def width() -> int:
 
 
 def _wrap(line: Text, hang: int, room: int = 0) -> list[Text]:
-    """`line` cut at spaces into lines of `room` cells (default: the terminal's width),
-    each line after the first `hang` spaces in. A value() never breaks. A word too wide
-    for a line gets a line of its own with no indent."""
     room = room or _console.width
     lines = []
     for number, paragraph in enumerate(line.split("\n", allow_blank=True)):
@@ -81,25 +70,25 @@ def _wrap(line: Text, hang: int, room: int = 0) -> list[Text]:
                 words[-1] = (words[-1][0], end)
             else:
                 words.append((start, end))
-        breaks, alone = [], set()
-        used = hang
-        content = words != [] and paragraph.plain[:words[0][0]].strip() != ""
+        cuts, own_line = [], set()
+        column = hang
+        text_before = words != [] and paragraph.plain[:words[0][0]].strip() != ""
         for start, end in words:
             size = cell_len(paragraph.plain[start:end].rstrip())
             if size > room - hang:
-                breaks += [end] if start in (0, *breaks[-1:]) else [start, end]
-                alone.add(start)
-                used, content = hang, False
+                cuts += [end] if start in (0, *cuts[-1:]) else [start, end]
+                own_line.add(start)
+                column, text_before = hang, False
                 continue
-            if content and used + size > room:
-                breaks.append(start)
-                used = hang
-            used += cell_len(paragraph.plain[start:end])
-            content = True
-        for offset, part in zip([0, *breaks], paragraph.divide(breaks)):
-            if offset == 0 and breaks and not part.plain.strip():
+            if text_before and column + size > room:
+                cuts.append(start)
+                column = hang
+            column += cell_len(paragraph.plain[start:end])
+            text_before = True
+        for offset, part in zip([0, *cuts], paragraph.divide(cuts)):
+            if offset == 0 and cuts and not part.plain.strip():
                 continue
-            if offset == 0 or offset in alone:
+            if offset == 0 or offset in own_line:
                 lines.append(part)
             elif part.plain.strip():
                 lines.append(Text(" " * hang) + part)
@@ -109,8 +98,6 @@ def _wrap(line: Text, hang: int, room: int = 0) -> list[Text]:
 
 
 def _print(message: str | Text, hang: int | None = None) -> None:
-    """Print marked-up `message`, wrapped on a terminal. `hang` defaults to the spaces
-    that start `message`."""
     if not _console.is_terminal:
         _console.print(message)
         return
@@ -190,7 +177,6 @@ class Wait:
             self.message, self.start = message, monotonic()
 
     def __rich__(self) -> Text:
-        """One line, cut short with an ellipsis, so a narrow terminal never wraps it."""
         line = Text.from_markup(f"[dim]{self.message} ({round(monotonic() - self.start)}s)[/]",
                                 emoji=False, overflow="ellipsis")
         line.no_wrap = True
@@ -210,7 +196,7 @@ def waiting(message: str) -> Iterator[Wait]:
 
 def field(label: str, value: str) -> None:
     """A label and the value pdt found for it: an account, a URL, a path."""
-    _print(f"{escape(label)}: [bold]{escape(value)}[/]", len(label) + 2)
+    _print(f"{escape(label)}: [{VALUE}]{escape(value)}[/]", len(label) + 2)
 
 
 def choice(number: int, label: str, detail: str = "") -> None:
@@ -299,14 +285,20 @@ def detail(text: str, indent: int = INDENT) -> None:
     that pdt did not write through escape(). A line
     breaks only at a space, so a name such as Import-Module stays whole. Spaces
     at the start of `text` indent every line of it."""
+    if not _console.is_terminal:
+        stripped = text.lstrip(" ")
+        indent += len(text) - len(stripped)
+        for part in Text.from_markup(stripped).wrap(_console, max(10, _console.width - indent)):
+            part.rstrip()
+            _console.print(Text(" " * indent) + part)
+        return
     line = Text.from_markup(" " * indent + text, emoji=False)
     for part in _wrap(line, len(line.plain) - len(line.plain.lstrip(" "))):
         _console.print(part)
 
 
 def bullet(text: str, indent: int = 2) -> None:
-    """A marked-up line, indented, and each line it wraps to two spaces further in. Pass
-    text that pdt did not write through escape()."""
+    """A marked-up line, indented. Pass text that pdt did not write through escape()."""
     _print(f"{' ' * indent}{text}", indent + 2)
 
 
@@ -325,7 +317,7 @@ def command(text: str, note: str = "", indent: int = 2) -> None:
     line = f"{' ' * indent}[bold]{escape(text)}[/]"
     if note == "":
         _console.print(line)
-    elif _console.is_terminal and indent + len(text) + 2 + len(note) > _console.width:
+    elif _console.is_terminal and indent + cell_len(text) + 2 + cell_len(note) > _console.width:
         _console.print(line)
         _print(f"{' ' * (indent + 4)}[dim]{escape(note)}[/]")
     else:
@@ -389,10 +381,8 @@ def log_line(time: str, level: str, message: str) -> None:
 
 
 def _input(prompt: Text) -> str:
-    """The answer to `prompt`. On a terminal the prompt wraps, and the answer starts after
-    its last line."""
     if _console.is_terminal:
-        *lines, prompt = _wrap(prompt, 0)
+        *lines, prompt = _wrap(prompt, 0, _console.width - 1)
         for line in lines:
             _console.print(line)
         prompt.append(" ")
@@ -478,7 +468,8 @@ def table(headers: list[str], rows: list[list[str]],
     cells = [[str(cell) for cell in row] for row in rows]
     widths = [max(len(row[index]) for row in (headers, *cells))
               for index in range(len(headers))]
-    if _console.is_terminal and sum(widths) + 2 * (len(widths) - 1) > _console.width:
+    if _console.is_terminal and max(_row(row, widths, []).cell_len
+                                    for row in (headers, *cells)) > _console.width:
         _stacked(headers, cells, row_styles or [styles or []] * len(cells))
         return
     _console.print(_row(headers, widths, ["bold"] * len(headers)))
@@ -487,11 +478,9 @@ def table(headers: list[str], rows: list[list[str]],
 
 
 def _stacked(headers: list[str], rows: list[list[str]], row_styles: list[list[str]]) -> None:
-    """A table too wide for the terminal: each row's first cell bold on a line of its own,
-    then each other cell that is not empty as `name: cell`, as many to a line as fit."""
     for row, styles in zip(rows, row_styles):
         styles = styles + [""] * (len(row) - len(styles))
-        _print(Text(row[0], style=f"bold {styles[0]}".strip()))
+        _console.print(Text(row[0], style=f"bold {styles[0]}".strip()))
         line = Text("  ")
         for header, cell, style in zip(headers[1:], row[1:], styles[1:]):
             if cell == "":

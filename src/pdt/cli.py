@@ -576,8 +576,10 @@ class Parser(argparse.ArgumentParser):
         if not sys.stderr.isatty():
             super().error(message)
         self.print_usage(sys.stderr)
+        message = re.sub(r"`[^`]*`", lambda quoted: quoted[0].replace(" ", "\0"), message)
         self.exit(2, textwrap.fill(f"{self.prog}: error: {message}", console.width(),
-                                   break_long_words=False, break_on_hyphens=False) + "\n")
+                                   break_long_words=False, break_on_hyphens=False)
+                  .replace("\0", " ") + "\n")
 
 
 # Capitalize only the first letter of a section title, so "Cloud CLIs" keeps its case.
@@ -586,9 +588,6 @@ rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
 
 
 class HelpFormatter(rich_argparse.RawDescriptionRichHelpFormatter):
-    """Keeps each line break of a description, and on a terminal wraps a line too wide
-    for it at a space."""
-
     def _rich_fill_text(self, text, width, indent):
         if not self.console.is_terminal:
             return super()._rich_fill_text(text, width, indent)
