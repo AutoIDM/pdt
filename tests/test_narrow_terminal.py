@@ -1,6 +1,7 @@
 import builtins
 import io
 import sys
+import threading
 from datetime import UTC, datetime
 
 import pytest
@@ -26,11 +27,13 @@ def screen(monkeypatch, columns: int, terminal: bool = True) -> io.StringIO:
     return out
 
 
+def copied_whole(line: str) -> bool:
+    return " " not in line.strip() or line.strip() == COMMAND
+
+
 def assert_fits(text: str, columns: int) -> None:
-    """Every line fits, except a line that holds only a URL or a command, which the terminal
-    wraps."""
     for line in text.splitlines():
-        assert cell_len(line) <= columns or " " not in line.strip() or line.strip() == COMMAND, line
+        assert cell_len(line) <= columns or copied_whole(line), line
 
 
 def deploy_plan() -> None:
@@ -133,6 +136,26 @@ def test_a_question_asked_again_wraps_at_a_space(monkeypatch):
     assert "Please answer y or n." in out.getvalue().splitlines()
 
 
+def test_a_line_from_another_thread_never_prints_inside_a_wrapped_question(monkeypatch):
+    out = screen(monkeypatch, 30)
+    question = "Remove pdt-report from Azure before it deploys to AWS?"
+    printed = console._console.print
+
+    def print_then_queue(*objects, **options):
+        printed(*objects, **options)
+        if threading.current_thread() is not threading.main_thread():
+            return
+        worker = threading.Thread(target=console.say, args=("Queued alert warning",))
+        worker.start()
+        worker.join()
+
+    monkeypatch.setattr(console._console, "print", print_then_queue)
+    monkeypatch.setattr(builtins, "input", lambda *_: "y")
+    assert console.confirm(question)
+    lines = out.getvalue().splitlines()
+    assert " ".join(lines[:lines.index("Queued alert warning")]).startswith(question)
+
+
 def test_a_word_too_wide_for_the_line_is_never_cut(monkeypatch):
     out = screen(monkeypatch, 30)
     console.bullet("x" * 40 + " tail")
@@ -146,6 +169,16 @@ def test_a_word_too_wide_for_the_line_is_never_cut(monkeypatch):
         "    1 vCPU",
         "  total            $USD   1.00",
     ]
+
+
+def test_a_path_with_spaces_stays_whole(monkeypatch):
+    out = screen(monkeypatch, 40)
+    folder = "C:/Users/Alex Smith/Documents/quarterly-license-report"
+    console.field("This folder", folder)
+    console.table(["Folder", "Status"], [[folder, "succeeded"]])
+    console.table(["App", "Folder"], [["report", folder]])
+    assert out.getvalue().splitlines() == [
+        "This folder:", folder, folder, "  Status: succeeded", "report", f"  Folder: {folder}"]
 
 
 def test_a_table_too_wide_prints_one_block_per_row(monkeypatch):
@@ -203,6 +236,14 @@ def test_a_mistyped_command_wraps_its_error_at_a_space(monkeypatch, capsys):
     assert "`pdt logs`" in error
 
 
+def test_a_mistyped_command_keeps_the_suggested_command_on_one_line(monkeypatch, capsys):
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(console, "width", lambda: 60)
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["alerts", "setpu"])
+    assert "`pdt alerts setup`" in capsys.readouterr().err
+
+
 def test_pdt_list_fits_the_terminal(project, monkeypatch):
     add_app(project, "quarterly-license-report-for-finance", "schedule: \"0 6 * * 1\"\n")
     out = screen(monkeypatch, 60)
@@ -233,6 +274,7 @@ def test_output_that_is_not_a_terminal_does_not_wrap(monkeypatch):
     console.table(["#", "Started", "Status", "Id"],
                   [["1", "2026-10-14 20:00:00", "succeeded", "pdt-report-850a747-29867040"]])
     console.cost([("Container Apps Jobs: 4 runs x 5 min assumed", 0.07)], "list prices")
+    console.detail("reads " + console.value("x" * 50))
     assert out.getvalue().splitlines() == [
         "error: one two three four five six seven eight nine ten eleven twelve",
         "#  Started              Status     Id",
@@ -240,4 +282,7 @@ def test_output_that_is_not_a_terminal_does_not_wrap(monkeypatch):
         "Estimated monthly cost (list prices):",
         "  Container Apps Jobs: 4 runs x 5 min assumed  $      0.07",
         "  total                                        $USD   0.07",
+        "      reads",
+        "      " + "x" * 34,
+        "      " + "x" * 16,
     ]
