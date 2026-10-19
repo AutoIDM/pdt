@@ -86,10 +86,9 @@ def test_a_leftover_runtime_key_is_told_to_go(project):
         "Fargate and Azure on Container Apps Jobs; remove the key"]
 
 
-def test_a_dockerfile_on_a_provider_without_images_is_flagged(project):
+def test_a_dockerfile_for_the_cloud_does_not_stop_a_windows_app(project):
     app_with_dockerfile(project, "platform:\n  provider: windows\n")
-    assert validate_app("my-report") == [
-        "my-report/Dockerfile: not used by the windows provider; remove the file"]
+    assert validate_app("my-report") == []
 
 
 def test_an_app_dockerignore_is_moved_to_the_context_root(tmp_path):

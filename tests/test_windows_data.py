@@ -212,3 +212,47 @@ def test_powershell_deploy_names_the_windows_feature_of_a_missing_module(
     out = " ".join(capsys.readouterr().out.split())
     assert "the PowerShell module ActiveDirectory, which this PC does not have" in out
     assert "RSAT: Active Directory Domain Services and Lightweight Directory Services Tools" in out
+
+
+def test_plan_says_the_windows_provider_ignores_a_dockerfile(project):
+    app = windows_app(project)
+    (Path(app["dir"]) / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
+                                  "uv.exe", False)
+    assert (f"ignore {Path(app['dir']) / 'Dockerfile'} (not used by the windows provider)"
+            in plain(actions))
+
+
+@pytest.mark.parametrize("schedule, description", [
+    ("*/15 * * * *", "every 15 minutes"),
+    ("hourly", "hourly at minute 00"),
+    ("30 6 * * *", "daily at 06:30"),
+    ("0 9 * * 1-5", "weekly on Monday, Tuesday, Wednesday, Thursday, Friday at 09:00"),
+    ("0 8 1,15 * *", "every month on day 1, 15 at 08:00"),
+    ("yearly", "January on day 1 at 00:00"),
+])
+def test_validate_and_deploy_accept_the_same_schedules(project, schedule, description):
+    app = windows_app(project, f"schedule: '{schedule}'\n")
+    assert config.validate_app("my-report") == []
+    assert deploy_windows.task_xml(app, "uv.exe", False)[0] == description
+
+
+@pytest.mark.parametrize("config_text, problem", [
+    ("schedule: '*/7 * * * *'\n", "schedule: cron minute interval '*/7' resets each hour"),
+    ("schedule: '0,30 * * * *'\n", "schedule: Windows Task Scheduler requires one numeric "
+                                   "minute; got '0,30'"),
+    ("schedule: '0 */2 * * *'\n", "schedule: Windows Task Scheduler requires one numeric "
+                                  "hour; got '*/2'"),
+    ("schedule: '0 9 * * */2'\n", "schedule: Windows Task Scheduler cannot represent "
+                                  "day-of-week field '*/2'"),
+    ("schedule: '0 9 1 * 1'\n", "schedule: cron '0 9 1 * 1' cannot be represented"),
+    ("schedule: daily\ntimezone: America/New_York\n",
+     "timezone: the windows provider runs on this PC's local time"),
+])
+def test_validate_reports_what_the_windows_deploy_rejects(project, config_text, problem):
+    app = windows_app(project, config_text)
+    problems = config.validate_app("my-report")
+    assert len(problems) == 1 and problems[0].startswith(f"my-report: {problem}")
+    with pytest.raises(deploy_windows.WindowsDeployError) as rejected:
+        deploy_windows.task_xml(app, "uv.exe", False)
+    assert problems[0] == f"my-report: {problem.split(': ', 1)[0]}: {rejected.value}"

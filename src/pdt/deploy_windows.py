@@ -17,8 +17,9 @@ Per app on this PC there is one folder, `%ProgramData%\\pdt\\<app>\\`, with
 run, removed on destroy), and one scheduled task `pdt-<app>` whose action
 runs `run_windows_task.py` through uv. The runner sets PDT_STORAGE_URL to the
 storage folder, runs the app in its folder, and writes both output streams
-to `logs\\<UTC start>.log`, ending with `pdt: exit N`; `pdt runs` and
-`pdt logs` read those files. A run is stopped after RUN_TIME_LIMIT.
+to `logs\\<UTC start>.log`, each line after its time, ending with
+`pdt: exit N`; `pdt runs` and `pdt logs` read those files. A run is
+stopped after RUN_TIME_LIMIT.
 
 The task's action is `<uv> run --script run_windows_task.py <app dir>
 <logs folder> <storage url>`. SYSTEM sees only the machine PATH, so `<uv>`
@@ -53,9 +54,10 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, regions, runs_cli
@@ -63,7 +65,7 @@ from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import CostEstimate, warn_if_locked
 from pdt.pwsh import ensure_pwsh
-from pdt.run_windows_task import MANUAL_START
+from pdt.run_windows_task import LINE_TIME, MANUAL_START
 
 
 class WindowsDeployError(Exception):
@@ -80,56 +82,33 @@ FORBIDDEN_TASK_NAME_CHARS = set('\\/:*?"<>|')
 RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
 # The same limit as --replica-timeout on Azure Container Apps.
 RUN_TIME_LIMIT = "PT30M"
+FOLLOW_POLL_SECONDS = 0.25
+EXIT_LINE_BYTES = 256
 
 
-def _single_number(field: str, label: str, lo: int, hi: int) -> int:
-    try:
-        value = int(field)
-    except ValueError:
-        raise WindowsDeployError(
-            f"Windows Task Scheduler requires one numeric {label}; got {field!r}")
-    if not lo <= value <= hi:
-        raise WindowsDeployError(f"{label} must be between {lo} and {hi}")
-    return value
-
-
-def _number_set(field: str, label: str, lo: int, hi: int) -> list[int]:
+def _number_set(field: str) -> list[int]:
     values: set[int] = set()
-    try:
-        for part in field.split(","):
-            if "/" in part or part == "*":
-                raise ValueError
-            if "-" in part:
-                first, last = (int(value) for value in part.split("-", 1))
-            else:
-                first = last = int(part)
-            if first > last or first < lo or last > hi:
-                raise ValueError
-            values.update(range(first, last + 1))
-    except ValueError:
-        raise WindowsDeployError(
-            f"Windows Task Scheduler cannot represent {label} field {field!r}; "
-            "use numbers, comma-separated numbers, or ranges")
+    for part in field.split(","):
+        first, _, last = part.partition("-")
+        values.update(range(int(first), int(last or first) + 1))
     return sorted(values)
 
 
 def schedule_trigger(cron: str) -> tuple[str, str]:
     """Return (human description, Task Scheduler XML trigger fragment)."""
+    problem = config.windows_schedule_problem(cron)
+    if problem != "":
+        raise WindowsDeployError(problem)
     minute_field, hour_field, dom, month, dow = cron.split()
 
     if hour_field == "*" and dom == month == dow == "*":
         if minute_field.startswith("*/"):
-            interval = _single_number(minute_field[2:], "minute interval", 1, 59)
-            if 60 % interval:
-                raise WindowsDeployError(
-                    f"cron minute interval {minute_field!r} resets each hour, "
-                    "but a Windows Task Scheduler repetition interval does not; "
-                    "use an interval that divides 60")
+            interval = int(minute_field[2:])
             minute = 0
             description = f"every {interval} minutes"
             repetition = f"<Interval>PT{interval}M</Interval>"
         else:
-            minute = _single_number(minute_field, "minute", 0, 59)
+            minute = int(minute_field)
             description = f"hourly at minute {minute:02d}"
             repetition = "<Interval>PT1H</Interval>"
         trigger = (
@@ -142,8 +121,8 @@ def schedule_trigger(cron: str) -> tuple[str, str]:
         )
         return description, trigger
 
-    minute = _single_number(minute_field, "minute", 0, 59)
-    hour = _single_number(hour_field, "hour", 0, 23)
+    minute = int(minute_field)
+    hour = int(hour_field)
     start = f"<StartBoundary>2000-01-01T{hour:02d}:{minute:02d}:00</StartBoundary>"
 
     if dom == month == dow == "*":
@@ -154,7 +133,7 @@ def schedule_trigger(cron: str) -> tuple[str, str]:
         )
 
     if dom == month == "*" and dow != "*":
-        weekdays = {value % 7 for value in _number_set(dow, "day-of-week", 0, 7)}
+        weekdays = {value % 7 for value in _number_set(dow)}
         day_xml = "".join(f"<{DAYS[value]}/>" for value in sorted(weekdays))
         names = ", ".join(DAYS[value] for value in sorted(weekdays))
         return (
@@ -164,26 +143,19 @@ def schedule_trigger(cron: str) -> tuple[str, str]:
             "</ScheduleByWeek></CalendarTrigger>",
         )
 
-    if dow == "*" and dom != "*":
-        month_values = (list(range(1, 13)) if month == "*"
-                        else _number_set(month, "month", 1, 12))
-        day_values = _number_set(dom, "day-of-month", 1, 31)
-        days_xml = "".join(f"<Day>{value}</Day>" for value in day_values)
-        months_xml = "".join(f"<{MONTHS[value - 1]}/>" for value in month_values)
-        month_words = "every month" if month == "*" else ", ".join(
-            MONTHS[value - 1] for value in month_values)
-        return (
-            f"{month_words} on day {', '.join(map(str, day_values))} "
-            f"at {hour:02d}:{minute:02d}",
-            f"<CalendarTrigger>{start}<Enabled>true</Enabled><ScheduleByMonth>"
-            f"<DaysOfMonth>{days_xml}</DaysOfMonth><Months>{months_xml}</Months>"
-            "</ScheduleByMonth></CalendarTrigger>",
-        )
-
-    raise WindowsDeployError(
-        f"cron {cron!r} cannot be represented faithfully by Windows Task "
-        "Scheduler; use hourly, daily, weekly, monthly, yearly, '*/N * * * *', "
-        "or a fixed-time cron restricted by either day-of-week or day-of-month")
+    month_values = list(range(1, 13)) if month == "*" else _number_set(month)
+    day_values = _number_set(dom)
+    days_xml = "".join(f"<Day>{value}</Day>" for value in day_values)
+    months_xml = "".join(f"<{MONTHS[value - 1]}/>" for value in month_values)
+    month_words = "every month" if month == "*" else ", ".join(
+        MONTHS[value - 1] for value in month_values)
+    return (
+        f"{month_words} on day {', '.join(map(str, day_values))} "
+        f"at {hour:02d}:{minute:02d}",
+        f"<CalendarTrigger>{start}<Enabled>true</Enabled><ScheduleByMonth>"
+        f"<DaysOfMonth>{days_xml}</DaysOfMonth><Months>{months_xml}</Months>"
+        "</ScheduleByMonth></CalendarTrigger>",
+    )
 
 
 def app_folder(app_name: str) -> Path:
@@ -239,11 +211,9 @@ def uv_on_machine_path() -> bool:
 
 def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
     cron = config.cron_expression(app["schedule"])
-    tz = str(app.get("timezone") or "").strip().lower()
-    if tz != "local":
-        raise WindowsDeployError(
-            "the Windows provider runs on this PC's local time; remove timezone: "
-            f"{app.get('timezone')} from this app, or set timezone: local")
+    problem = config.windows_timezone_problem(app.get("timezone"))
+    if problem != "":
+        raise WindowsDeployError(problem)
     description, trigger = schedule_trigger(cron)
     command = "uv" if on_machine_path else html.escape(str(Path(uv).resolve()))
     arguments = html.escape(task_arguments(app))
@@ -461,6 +431,11 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
         console.Markup(f"write one log per run under {console.value(logs_folder(name))} "
                        "(removed on destroy)"),
     ]
+    dockerfile = Path(app["dir"]) / "Dockerfile"
+    if dockerfile.is_file():
+        actions.append(console.Markup(
+            f"ignore {console.value(dockerfile)} "
+            f"({console.escape(config.dockerfile_problem(app['platform']))})"))
     if app["storage"]:
         actions.append(console.Markup(f"use folder {console.value(storage_folder(name))} for "
                                       "the app's files (kept after destroy)"))
@@ -623,13 +598,18 @@ def start(app: dict, follow: bool = False) -> int:
     console.done(f"Started {console.value(app['name'])}: Windows task {console.value(name)}.")
     if not follow:
         return 0
+    deadline = time.monotonic() + runs_cli.NEW_RUN_TRIES * runs_cli.FOLLOW_SECONDS
+    while (time.monotonic() < deadline and all(
+            file.stem in before for file in logs_folder(app["name"]).glob("*.log"))):
+        time.sleep(FOLLOW_POLL_SECONDS)
     return logs(app, ["--follow"], new=lambda run: run.id not in before)
 
 
 def logs(app: dict, rest: list[str], new: Callable[[runs_cli.Run], bool] | None = None) -> int:
     return runs_cli.logs(lambda: list_runs(app["name"]),
-                         lambda run, since: read_lines(app["name"], run), app["name"], rest,
-                         store="the run's log file", new=new)
+                         lambda run, since: list(read_lines(app["name"], run)), app["name"], rest,
+                         store="the run's log file",
+                         stream=lambda run, follow: read_lines(app["name"], run, follow), new=new)
 
 
 def _kept_storage_line(app_name: str) -> str:
@@ -650,12 +630,38 @@ def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
     return storage_cli.run(_store(app["name"]), app, rest, assume_yes)
 
 
-def read_lines(app_name: str, run: runs_cli.Run) -> list[runs_cli.Line]:
+def parse_line(raw: bytes) -> runs_cli.Line:
+    text = raw.decode("utf-8-sig", "replace")
+    match = LINE_TIME.match(text)
+    if match is None:
+        return runs_cli.parse_line(text, None)
+    return runs_cli.parse_line(text[match.end():].removeprefix("\ufeff"),
+                               datetime.fromisoformat(match.group(1)))
+
+
+def read_lines(app_name: str, run: runs_cli.Run, follow: bool = False) -> Iterator[runs_cli.Line]:
     try:
-        text = (logs_folder(app_name) / f"{run.id}.log").read_text(encoding="utf-8-sig")
+        file = (logs_folder(app_name) / f"{run.id}.log").open("rb")
     except FileNotFoundError:
-        return []
-    return [runs_cli.parse_line(line, None) for line in text.splitlines()]
+        return
+    with file:
+        rest = b""
+        heard = time.monotonic()
+        while True:
+            chunk = file.read()
+            *complete, rest = (rest + chunk).split(b"\n")
+            for raw in complete:
+                line = parse_line(raw)
+                yield line
+                if line.message.startswith(runs_cli.EXIT_MARKER):
+                    return
+            if not follow:
+                return
+            if chunk:
+                heard = time.monotonic()
+            elif time.monotonic() - heard >= runs_cli.STREAM_QUIET:
+                return
+            time.sleep(FOLLOW_POLL_SECONDS)
 
 
 def list_runs(app_name: str) -> list[runs_cli.Run]:
@@ -666,14 +672,26 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
     powershell = shutil.which("powershell.exe") or shutil.which("powershell")
     task_name = _task_name(app_name)
     found = []
+    newest = files[0] if files else None
     for file in files:
         started = datetime.strptime(file.stem, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-        lines = [runs_cli.parse_line(line, None) for line in
-                file.read_text(encoding="utf-8-sig").splitlines()]
+        try:
+            handle = file.open("rb")
+        except FileNotFoundError:
+            continue
+        with handle:
+            facts = os.fstat(handle.fileno())
+            start = max(0, facts.st_size - EXIT_LINE_BYTES)
+            handle.seek(start)
+            tail = handle.read()
+        if start > 0:
+            tail = tail.partition(b"\n")[2]
+        lines = [parse_line(raw) for raw in tail.splitlines()]
         status = runs_cli.marker_status(
-            lines, lambda: powershell is not None and _task_running(powershell, task_name))
+            lines, lambda: file == newest and powershell is not None
+            and _task_running(powershell, task_name))
         code = runs_cli.exit_code(lines)
-        ended = (datetime.fromtimestamp(file.stat().st_mtime, tz=timezone.utc)
+        ended = (datetime.fromtimestamp(facts.st_mtime, tz=timezone.utc)
                 if code is not None else None)
         found.append(runs_cli.Run(file.stem, started, ended, status, code))
     return found

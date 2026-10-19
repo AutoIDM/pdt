@@ -172,7 +172,8 @@ class EnvFile(Backend):
         values: dict[str, str] = {}
         for path in reversed(self.files()):
             if path.is_file():
-                values.update({k: v for k, v in dotenv_values(path).items() if v is not None})
+                values.update({k: v for k, v in dotenv_values(path, encoding="utf-8-sig").items()
+                               if v is not None})
         return values
 
     def write(self, values: dict[str, str]) -> None:
@@ -180,8 +181,9 @@ class EnvFile(Backend):
         current = self.read()
         changed = {name: new for name, new in values.items() if current.get(name) != new}
         for name, new in changed.items():
-            target = next((path for path in self.files()
-                           if path.is_file() and name in dotenv_values(path)), self.files()[0])
+            target = next((path for path in self.files() if path.is_file()
+                           and name in dotenv_values(path, encoding="utf-8-sig")),
+                          self.files()[0])
             private_file(target)
             set_key(str(target), name, new, quote_mode="never")
             self.written.append(target)

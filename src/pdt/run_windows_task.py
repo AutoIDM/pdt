@@ -15,9 +15,9 @@ an app with no run.py, `uv run --script run_powershell.py <app dir>`) inside
 `lifecycle.py`, which adds the job's lifecycle events to the log (with
 PDT_TRIGGER=manual when it finds MANUAL_START), writes
 both streams to
-<logs folder>\\<UTC start>.log, ends the file with `pdt: exit N` (the marker
-`pdt runs` reads), and exits with the child's exit code so
-`Get-ScheduledTaskInfo` shows it.
+<logs folder>\\<UTC start>.log, each line after the UTC time it arrived
+(LINE_TIME), ends the file with `pdt: exit N` (the marker `pdt runs` reads),
+and exits with the child's exit code so `Get-ScheduledTaskInfo` shows it.
 
 It needs nothing beyond the standard library and never prints: nobody watches
 a scheduled task. When uv cannot be started the log holds the reason and
@@ -27,8 +27,10 @@ a scheduled task. When uv cannot be started the log holds the reason and
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +43,13 @@ MISSING_UV = 127
 # MANUAL_START_SECONDS old, is manual.
 MANUAL_START = "manual-start"
 MANUAL_START_SECONDS = 300
+LINE_TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) ")
+DRAIN_SECONDS = 2
+
+
+def timed(raw: bytes) -> bytes:
+    moment = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    return f"{moment.replace('+00:00', 'Z')} ".encode() + raw.rstrip(b"\r\n") + b"\n"
 
 
 def main(argv: list[str]) -> int:
@@ -70,13 +79,46 @@ def main(argv: list[str]) -> int:
     command = [uv, "run", "--script", str(Path(__file__).with_name("lifecycle.py")), "--", *command]
     with log.open("wb") as out:
         try:
-            code = subprocess.run(
+            child = subprocess.Popen(
                 command, cwd=app_dir, env=env,
-                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT).returncode
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         except OSError as exc:
-            out.write(f"{uv} could not be started: {exc}\n".encode())
+            out.write(timed(f"{uv} could not be started: {exc}".encode()))
             code = MISSING_UV
-        out.write(f"{EXIT_MARKER}{code}\n".encode())
+        else:
+            lock = threading.Lock()
+            ended = []
+            rest = [b""]
+
+            def copy() -> None:
+                while True:
+                    chunk = child.stdout.read1()
+                    with lock:
+                        if ended:
+                            return
+                        if chunk == b"":
+                            chunk = b"\n" if rest[0] else b""
+                            ended.append(True)
+                        *complete, rest[0] = (rest[0] + chunk).split(b"\n")
+                        for raw in complete:
+                            out.write(timed(raw))
+                        out.flush()
+            reader = threading.Thread(target=copy, daemon=True)
+            reader.start()
+            try:
+                code = child.wait()
+            except BaseException:
+                child.kill()
+                child.wait()
+                raise
+            # A process the app started in the background can hold the pipe open after the
+            # app exits, so the run ends without waiting for it.
+            reader.join(DRAIN_SECONDS)
+            with lock:
+                ended.append(True)
+                if rest[0]:
+                    out.write(timed(rest[0]))
+        out.write(timed(f"{EXIT_MARKER}{code}".encode()))
     return code
 
 

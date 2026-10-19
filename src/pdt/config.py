@@ -104,7 +104,7 @@ def load_yaml(path: Path) -> dict:
     import yaml
     if not path.is_file():
         return {}
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8-sig")
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
@@ -308,7 +308,7 @@ def save_app_key(app: dict, key: str, value) -> Path:
     path = app["dir"] / APP_FILE
     text = ("true" if value else "false") if isinstance(value, bool) else yaml_quoted(value)
     with locked(path):
-        lines = path.read_text().splitlines() if path.is_file() else []
+        lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
         existing = next((i for i, line in enumerate(lines)
                          if not line.startswith((" ", "\t")) and line.split("#")[0].strip()
                          .startswith(f"{key}:")), None)
@@ -329,7 +329,7 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
     else:
         path = app["dir"] / APP_FILE
     with locked(path):
-        lines = path.read_text().splitlines() if path.is_file() else []
+        lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
         start = next((i for i, line in enumerate(lines) if line.strip() == "platform:"), None)
         if start is None:
             lines += ["platform:", f"  {key}: {yaml_quoted(value)}"]
@@ -366,7 +366,7 @@ def save_root_alerts(alerts: list[dict]) -> Path:
                 text = _yaml_scalar(value)
             block.append(f"  {'- ' if index == 0 else '  '}{key}: {text}")
     with locked(path):
-        lines = path.read_text().splitlines() if path.is_file() else []
+        lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
         start = next((i for i, line in enumerate(lines)
                       if line.split("#")[0].rstrip().startswith("alerts:")), None)
         if start is None:
@@ -405,8 +405,8 @@ def yaml_quoted(value: str) -> str:
 def write_text_atomically(path: Path, text: str) -> None:
     # The temporary file sits in the same folder because a rename is atomic only
     # within one filesystem.
-    tmp = tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=path.name + ".",
-                                      suffix=".tmp", delete=False)
+    tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                      prefix=path.name + ".", suffix=".tmp", delete=False)
     try:
         with tmp:
             tmp.write(text)
@@ -553,6 +553,43 @@ def cron_expression(schedule) -> str:
     for field, (label, lo, hi) in zip(fields, CRON_FIELDS):
         _cron_values(field, lo, hi, label)
     return text
+
+
+def windows_timezone_problem(timezone) -> str:
+    if str(timezone or "").strip().lower() == "local":
+        return ""
+    return ("the windows provider runs on this PC's local time; remove timezone: "
+            f"{timezone} from this app, or set timezone: local")
+
+
+def windows_schedule_problem(cron: str) -> str:
+    """Why Windows Task Scheduler cannot run this valid cron as written, or ""."""
+    minute, hour, dom, month, dow = cron.split()
+    hourly = hour == dom == month == dow == "*"
+    if hourly and minute.startswith("*/"):
+        step = minute[2:]
+        if step.isdigit() and int(step) < 60 and 60 % int(step) == 0:
+            return ""
+        return (f"cron minute interval {minute!r} resets each hour, but a Windows Task "
+                "Scheduler repetition interval does not; use an interval that divides 60")
+    for label, field in [("minute", minute)] + ([] if hourly else [("hour", hour)]):
+        if not field.isdigit():
+            return f"Windows Task Scheduler requires one numeric {label}; got {field!r}"
+    if hourly or dom == month == dow == "*":
+        return ""
+    if dom == month == "*":
+        listed = [("day-of-week", dow)]
+    elif dow == "*" and dom != "*":
+        listed = [("day-of-month", dom)] + ([] if month == "*" else [("month", month)])
+    else:
+        return (f"cron {cron!r} cannot be represented faithfully by Windows Task "
+                "Scheduler; use hourly, daily, weekly, monthly, yearly, '*/N * * * *', "
+                "or a fixed-time cron restricted by either day-of-week or day-of-month")
+    for label, field in listed:
+        if "*" in field or "/" in field:
+            return (f"Windows Task Scheduler cannot represent {label} field {field!r}; "
+                    "use numbers, comma-separated numbers, or ranges")
+    return ""
 
 
 def _cron_values(field: str, lo: int, hi: int, label: str) -> set[int]:
@@ -742,7 +779,8 @@ def env_file_lines(start: Path) -> list[str]:
     else:
         lines = [f"{env} files read, the first one wins: "
                  f"{', '.join(console.value(shown_path(path)) for path in files)}"]
-    kept = sorted({name for path in files for name, value in dotenv_values(path).items()
+    kept = sorted({name for path in files
+                   for name, value in dotenv_values(path, encoding="utf-8-sig").items()
                    if name in os.environ and os.environ[name] != (value or "")})
     if kept:
         lines.append(f"this terminal already sets {', '.join(map(console.value, kept))}, "
@@ -756,7 +794,7 @@ def load_env(start: Path) -> list[Path]:
     # Existing process env wins (override=False).
     files = find_env_files(start)
     for path in files:
-        load_dotenv(path, override=False)
+        load_dotenv(path, override=False, encoding="utf-8-sig")
     load_env_json()
     return files
 
@@ -1005,7 +1043,7 @@ def dockerfile_problem(platform: dict) -> str:
     """Why an app's own Dockerfile would be ignored, or "" when it is used."""
     if builds_image(platform):
         return ""
-    return f"not used by the {platform.get('provider')} provider; remove the file"
+    return f"not used by the {platform.get('provider')} provider"
 
 
 def validate_app(name: str) -> list[str]:
@@ -1047,16 +1085,19 @@ def validate_app(name: str) -> list[str]:
         problem = azure_environment_problem(str(app["platform"].get("environment") or ""))
         if problem != "":
             problems.append(f"{name}: platform.environment: {problem}")
-    dockerfile = find_project() / name / "Dockerfile"
-    if dockerfile.is_file():
-        problem = dockerfile_problem(app["platform"])
+    if provider == "windows":
+        problem = windows_timezone_problem(app["timezone"])
         if problem != "":
-            problems.append(f"{name}/Dockerfile: {problem}")
+            problems.append(f"{name}: timezone: {problem}")
     if app["schedule"] is not None:
         try:
-            cron_expression(app["schedule"])
+            cron = cron_expression(app["schedule"])
         except ConfigError as e:
             problems.append(f"{name}: {e}")
+        else:
+            problem = windows_schedule_problem(cron) if provider == "windows" else ""
+            if problem != "":
+                problems.append(f"{name}: schedule: {problem}")
     if not isinstance(app["storage"], bool):
         problems.append(f"{where}: storage must be true or false")
     if not isinstance(app["enabled"], bool):
@@ -1068,7 +1109,7 @@ def validate_app(name: str) -> list[str]:
         problems.append(f"{where}: pause must be true or false")
     if app["docker_build_from"] and not builds_image(app["platform"]):
         problems.append(f"{app['docker_build_from']}: docker-build: "
-                        f"{dockerfile_problem(app['platform']).replace('the file', 'the key')}")
+                        f"{dockerfile_problem(app['platform'])}; remove the key")
     elif app["docker_build"] not in DOCKER_BUILDS:
         problems.append(f"{app['docker_build_from']}: docker-build must be "
                         f"{', '.join(DOCKER_BUILDS[:-1])}, or {DOCKER_BUILDS[-1]}")

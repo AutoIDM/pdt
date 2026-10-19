@@ -47,6 +47,18 @@ def test_schedule_comes_from_the_app_file_when_both_set_it(project):
     assert merged_app("my-report")["schedule"] == "daily"
 
 
+def test_a_byte_order_mark_from_windows_powershell_is_not_part_of_the_first_key(project):
+    (project / "pdt.yml").write_bytes(b"\xef\xbb\xbf" + "platform:\n  provider: windows\n"
+                                      "apps: []\n".encode())
+    folder = add_app(project, "my-report")
+    (folder / "config.yml").write_bytes(
+        b"\xef\xbb\xbf" + "schedule: daily\nconfig:\n  greeting: Grüße\n".encode())
+    assert validate_app("my-report") == []
+    app = merged_app("my-report")
+    assert app["platform"]["provider"] == "windows"
+    assert app["config"]["greeting"] == "Grüße"
+
+
 def test_unknown_app_is_an_error(project):
     with pytest.raises(ConfigError):
         merged_app("nope")
