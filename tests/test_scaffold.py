@@ -61,6 +61,12 @@ def test_project_yaml_is_valid_and_carries_the_platform():
     assert data["apps"] == []
 
 
+@pytest.mark.parametrize("host", ["off", "123", "null", "admin@pc01", "CORP\\admin@pc01"])
+def test_project_yaml_keeps_a_host_as_the_text_the_user_typed(host):
+    data = yaml.safe_load(scaffold.project_yaml({"provider": "windows", "host": host}))
+    assert data["platform"]["host"] == host
+
+
 def test_project_yaml_without_a_platform_is_still_valid():
     data = yaml.safe_load(scaffold.project_yaml({}))
     assert "platform" not in data

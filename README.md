@@ -310,6 +310,8 @@ apps:
     schedule: daily
 ```
 
+Without `host`, the jobs run on this PC. You can set `host:` under `platform:` to the name of another Windows PC, for example `host: pc01.example.com` or `host: admin@pc01.example.com`. Each app can name its own PC. At this time, only `pdt login <app>` works with `host`. It signs in to the PC as an administrator. The other commands stop with a message. `pdt login` tries SSH first. Then it tries WinRM over HTTPS, and then WinRM over HTTP with Kerberos. It says which one it used and why the others did not work. A domain administrator can sign in over both. A local administrator account can sign in over SSH. Over WinRM, Windows gives administrator rights only to the built-in Administrator account, and pdt does not change that setting.
+
 The Windows provider runs each job on the PC's local time, so `timezone` defaults to `local` there, the only value it accepts.
 
 The job runs as the SYSTEM account. Windows accepts these schedules:

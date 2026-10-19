@@ -51,7 +51,40 @@ def test_local_windows_commands_stop_off_windows(
 
     assert capsys.readouterr().out == (
         "error: the windows provider targets this computer, but the current operating "
-        "system is not Windows. Run this command on the Windows PC.\n")
+        "system is not Windows. Set host: under platform: in pdt.yml to the name of the "
+        "Windows PC, or run this command on the Windows PC.\n")
+
+
+@pytest.mark.parametrize("command", ["login", "deploy", "destroy", "secrets", "storage", "runs",
+                                     "logs", "pause", "unpause", "start"])
+def test_a_host_sends_only_login_to_that_pc(project, monkeypatch, capsys, command):
+    windows_app(project)
+    (project / "my-report" / "config.yml").write_text(
+        (project / "my-report" / "config.yml").read_text() + "platform:\n  host: admin@pc01\n")
+    reached = []
+    monkeypatch.setattr(deploy_windows.windows_remote, "connect",
+                        lambda host, app_name: reached.append((host, app_name)))
+    monkeypatch.setattr(deploy_windows.sys, "argv", ["deploy_windows.py", command, "my-report"])
+
+    assert deploy_windows.main() == (0 if command == "login" else 1)
+
+    if command == "login":
+        assert reached == [("admin@pc01", "my-report")]
+    else:
+        assert reached == []
+        assert f"pdt cannot run {command} on another PC yet" in capsys.readouterr().out
+
+
+def test_login_checks_the_host_before_it_connects(project, monkeypatch, capsys):
+    windows_app(project)
+    (project / "my-report" / "config.yml").write_text(
+        (project / "my-report" / "config.yml").read_text() + "platform:\n  host: https://pc01\n")
+    monkeypatch.setattr(deploy_windows.windows_remote, "connect",
+                        lambda host, app_name: pytest.fail("connected to a bad host"))
+    monkeypatch.setattr(deploy_windows.sys, "argv", ["deploy_windows.py", "login", "my-report"])
+
+    assert deploy_windows.main() == 1
+    assert "platform.host in pdt.yml or my-report/config.yml" in capsys.readouterr().out
 
 
 def test_app_folders_live_under_the_machine_data_home(project):
@@ -256,3 +289,17 @@ def test_validate_reports_what_the_windows_deploy_rejects(project, config_text, 
     with pytest.raises(deploy_windows.WindowsDeployError) as rejected:
         deploy_windows.task_xml(app, "uv.exe", False)
     assert problems[0] == f"my-report: {problem.split(': ', 1)[0]}: {rejected.value}"
+
+
+@pytest.mark.parametrize("host", ["false", "5"])
+def test_a_host_that_is_not_text_is_rejected_and_never_runs_locally(project, monkeypatch, capsys,
+                                                                    host):
+    windows_app(project)
+    (project / "my-report" / "config.yml").write_text(
+        (project / "my-report" / "config.yml").read_text() + f"platform:\n  host: {host}\n")
+    assert any("platform.host" in problem for problem in config.validate_app("my-report"))
+    monkeypatch.setattr(deploy_windows, "deploy", lambda app, yes: pytest.fail("deployed locally"))
+    monkeypatch.setattr(deploy_windows.sys, "argv", ["deploy_windows.py", "deploy", "my-report"])
+
+    assert deploy_windows.main() == 1
+    assert "platform.host" in capsys.readouterr().out

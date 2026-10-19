@@ -8,6 +8,8 @@
 #     "backoff",
 #     "fsspec",
 #     "duckdb",
+#     "pypsrp>=0.9.1",
+#     "pyspnego[kerberos]; sys_platform == 'darwin'",
 # ]
 # ///
 """Deploy an app locally as a Windows Task Scheduler task.
@@ -60,7 +62,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, regions, runs_cli
+from pdt import config, console, regions, runs_cli, windows_remote
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import CostEstimate, warn_if_locked
@@ -697,6 +699,27 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
     return found
 
 
+def remote(app: dict, host, command: str) -> int:
+    problem = (config.windows_host_problem(host) if isinstance(host, str)
+               else "write the name of the Windows PC, for example pc01.example.com")
+    if problem != "":
+        console.error(f"platform.host in {console.value(config.PROJECT_FILE)} or "
+                      f"{console.value(app['name'] + '/' + config.APP_FILE)}: "
+                      f"{console.escape(problem)}")
+        return 1
+    if command != "login":
+        login = f"pdt login {app['name']}"
+        console.error(f"pdt cannot run {console.value(command)} on another PC yet. "
+                      f"{console.value(login)} checks the connection.")
+        return 1
+    try:
+        windows_remote.connect(host, app["name"])
+    except windows_remote.RemoteError as exc:
+        console.error(console.escape(str(exc)))
+        return 1
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
@@ -711,10 +734,14 @@ def main() -> int:
     except config.ConfigError as exc:
         console.error(console.escape(str(exc)))
         return 1
+    host = app["platform"].get("host")
+    if host is not None and (not isinstance(host, str) or host.strip() != ""):
+        return remote(app, host, args.command)
     if sys.platform != "win32":
         console.error(
             "the windows provider targets this computer, but the current operating system "
-            "is not Windows. Run this command on the Windows PC.")
+            "is not Windows. Set host: under platform: in pdt.yml to the name of the Windows "
+            "PC, or run this command on the Windows PC.")
         return 1
     if args.command == "login":
         console.note("the windows provider deploys to this computer, so it needs no login.")
