@@ -40,33 +40,35 @@ Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-ar
 $env:NUGET_PACKAGES = Join-Path $Out 'nuget'
 # WiX audits every package at every severity, and -warnaserror turns an advisory published
 # after the pinned tag (such as NU1902) into a build error that the pin cannot fix.
+# nuget.exe restore ignores NuGetAudit=false, so -nowarn keeps its audit results out of the build.
 $c = '-p:Configuration=Release;NuGetAudit=false'
+$n = '-nowarn:NU1900;NU1901;NU1902;NU1903;NU1904'
 Push-Location (Join-Path $wix 'src')
 try {
   New-Item -ItemType Directory -Force ..\build\artifacts, ..\build\logs | Out-Null
   Invoke-Native msbuild -Restore internal\SetBuildNumber\SomeVerInit.verproj -nologo
   Push-Location dtf
-  Invoke-Native msbuild -Restore SfxCA\sfxca_t.proj $c -nologo -m -warnaserror
-  Invoke-Native msbuild -Restore '-t:Pack' dtf.slnx $c -nologo -m -warnaserror
+  Invoke-Native msbuild -Restore SfxCA\sfxca_t.proj $c $n -nologo -m -warnaserror
+  Invoke-Native msbuild -Restore '-t:Pack' dtf.slnx $c $n -nologo -m -warnaserror
   Pop-Location
   Push-Location internal
   Invoke-Native nuget restore
-  Invoke-Native msbuild internal_t.proj $c -nologo -warnaserror
+  Invoke-Native msbuild internal_t.proj $c $n -nologo -warnaserror
   Pop-Location
   Push-Location libs
-  Invoke-Native msbuild -Restore libs_t.proj $c -nologo -m -warnaserror
+  Invoke-Native msbuild -Restore libs_t.proj $c $n -nologo -m -warnaserror
   Pop-Location
   Push-Location api
-  Invoke-Native msbuild api_t.proj $c -nologo -warnaserror
+  Invoke-Native msbuild api_t.proj $c $n -nologo -warnaserror
   Pop-Location
   Push-Location burn
   Invoke-Native nuget restore
-  Invoke-Native msbuild burn_t.proj $c -nologo -m -warnaserror
+  Invoke-Native msbuild burn_t.proj $c $n -nologo -m -warnaserror
   Pop-Location
   Push-Location wix
-  Invoke-Native msbuild '-t:Restore' wix.slnx $c -nologo -m -warnaserror
-  Invoke-Native msbuild wixnative\wixnative_t.proj $c -nologo -m -warnaserror
-  Invoke-Native msbuild publish_t.proj $c -nologo -warnaserror
+  Invoke-Native msbuild '-t:Restore' wix.slnx $c $n -nologo -m -warnaserror
+  Invoke-Native msbuild wixnative\wixnative_t.proj $c $n -nologo -m -warnaserror
+  Invoke-Native msbuild publish_t.proj $c $n -nologo -warnaserror
   Pop-Location
 } finally {
   Pop-Location
