@@ -320,7 +320,7 @@ YES_NO = {"y": True, "yes": True, "n": False, "no": False}
 def confirm(question: str = "Proceed?", default: bool = False) -> bool:
     """Ask until the answer is y, yes, n, or no in any case; Enter takes the default.
 
-    End of input raises EOFError, so each caller keeps its own answer for it."""
+    End of input raises EOFError."""
     choices = "\\[Y/n]" if default else "\\[y/N]"
     while True:
         answer = _console.input(f"[bold]{escape(question)}[/] {choices} ").strip().lower()
