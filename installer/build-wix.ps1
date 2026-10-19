@@ -24,7 +24,8 @@ $patches = @(
   @('src\wix\WixToolset.Core\CommandLine\CommandLine.cs', '(?s)(private bool RequiresEulaAcceptance\(ICommandLineCommand command\)\s*\{\s*)return [^;]*;', '${1}return false;'),
   @('src\Directory.csproj.props', '<AcceptEula>[^<]*</AcceptEula>', ''),
   @('src\Directory.wixproj.targets', '<AcceptEula>[^<]*</AcceptEula>', ''),
-  @('src\internal\targets\CheckLicenseAcceptance.targets', '<Error\s[^>]*Code="WIX7015"[^>]*/>', '')
+  @('src\internal\targets\CheckLicenseAcceptance.targets', '<Error\s[^>]*Code="WIX7015"[^>]*/>', ''),
+  @('src\wix\WixToolset.Sdk\tools\wix.targets', '<Error\s[^>]*Code="WIX7015"[^>]*/>', '')
 )
 foreach ($p in $patches) {
   $file = Join-Path $wix $p[0]
@@ -69,6 +70,10 @@ try {
   Invoke-Native msbuild '-t:Restore' wix.slnx $c $n -nologo -m -warnaserror
   Invoke-Native msbuild wixnative\wixnative_t.proj $c $n -nologo -m -warnaserror
   Invoke-Native msbuild publish_t.proj $c $n -nologo -warnaserror
+  Invoke-Native msbuild '-t:Publish;Pack' WixToolset.Sdk\WixToolset.Sdk.csproj $c $n -nologo -warnaserror
+  Pop-Location
+  Push-Location ext\UI\wixext
+  Invoke-Native msbuild -Restore WixToolset.UI.wixext.csproj $c $n -nologo -warnaserror
   Pop-Location
 } finally {
   Pop-Location
@@ -76,4 +81,5 @@ try {
 
 New-Item -ItemType Directory -Force (Join-Path $Out 'bin') | Out-Null
 Copy-Item (Join-Path $wix 'build\wix\Release\publish\wix\*') (Join-Path $Out 'bin') -Recurse -Force
+Copy-Item (Join-Path $wix 'build\UI.wixext\Release\netstandard2.0\WixToolset.UI.wixext.dll') (Join-Path $Out 'bin')
 Invoke-Native (Join-Path $Out 'bin\wix.exe') --version

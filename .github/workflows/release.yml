@@ -6,6 +6,11 @@ on:
   pull_request:
     paths: ["installer/**", "scripts/winget_launcher.py"]
   workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign pdt.exe and the MSI and upload them as artifacts. Publishes nothing.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,7 +19,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     outputs:
-      sign: ${{ startsWith(github.ref, 'refs/tags/v') && vars.SIGNING_ENDPOINT != '' && vars.SIGNING_ACCOUNT != '' && vars.SIGNING_PROFILE != '' }}
+      sign: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.sign) && vars.SIGNING_ENDPOINT != '' && vars.SIGNING_ACCOUNT != '' && vars.SIGNING_PROFILE != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -72,10 +77,10 @@ jobs:
           sed -i "s/^VERSION = \"0.0.0\"$/VERSION = \"${version}\"/" scripts/winget_launcher.py
           grep -qx "VERSION = \"${version}\"" scripts/winget_launcher.py
 
-      - run: uv run --no-project --python 3.12 --with pyinstaller pyinstaller --onefile --name pdt --distpath dist/launcher scripts/winget_launcher.py
+      - run: uv run --no-project --python 3.12 --with pyinstaller pyinstaller --onefile --name pdt --icon installer/pdt.ico --distpath dist/launcher scripts/winget_launcher.py
 
       - if: needs.build.outputs.sign != 'true'
-        run: echo "::notice title=Unsigned::pdt.exe is not signed. Only a release tag is signed, and only when the SIGNING_ENDPOINT, SIGNING_ACCOUNT, and SIGNING_PROFILE variables are set."
+        run: echo "::notice title=Unsigned::pdt.exe is not signed. Only a release tag or a manual run with sign set is signed, and only when the SIGNING_ENDPOINT, SIGNING_ACCOUNT, and SIGNING_PROFILE variables are set."
 
       - if: needs.build.outputs.sign == 'true'
         uses: azure/login@v3
@@ -182,7 +187,7 @@ jobs:
         run: installer/build-msi.ps1 -Wix build/wix/bin/wix.exe -Launcher dist/launcher/pdt.exe -Version ${{ needs.windows-launcher.outputs.version }} -Out pdt-windows-x64.msi
 
       - if: needs.build.outputs.sign != 'true'
-        run: echo "::notice title=Unsigned::pdt-windows-x64.msi is not signed. Only a release tag is signed, and only when the SIGNING_ENDPOINT, SIGNING_ACCOUNT, and SIGNING_PROFILE variables are set."
+        run: echo "::notice title=Unsigned::pdt-windows-x64.msi is not signed. Only a release tag or a manual run with sign set is signed, and only when the SIGNING_ENDPOINT, SIGNING_ACCOUNT, and SIGNING_PROFILE variables are set."
 
       - if: needs.build.outputs.sign == 'true'
         uses: azure/login@v3
