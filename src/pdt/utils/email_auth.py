@@ -232,10 +232,10 @@ def _confirm(provider: str, user: str) -> None:
         console.say("PDT will not request permission to read email.")
     console.say()
     try:
-        answer = input(f"Open {name} sign-in now? [Y/n] ").strip().lower()
+        answer = console.confirm(f"Open {name} sign-in now?", default=True)
     except EOFError:
-        answer = "n"
-    if answer not in ("", "y", "yes"):
+        answer = False
+    if not answer:
         raise OAuthError("OAuth authorization was not completed")
 
 
