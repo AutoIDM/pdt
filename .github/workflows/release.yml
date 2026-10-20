@@ -3,11 +3,23 @@ name: release
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  pull_request:
+    paths: ["installer/**"]
   workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign pdt.exe and the MSI and upload them as artifacts. Publishes nothing.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      sign: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.sign) && vars.SIGNING_ENDPOINT != '' && vars.SIGNING_ACCOUNT != '' && vars.SIGNING_PROFILE != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -46,9 +58,11 @@ jobs:
   windows-launcher:
     needs: build
     runs-on: windows-latest
+    environment: ${{ needs.build.outputs.sign == 'true' && 'signing' || '' }}
     permissions:
       contents: write
       pull-requests: read
+      id-token: write
     outputs:
       version: ${{ steps.zip.outputs.version }}
       sha256: ${{ steps.zip.outputs.sha256 }}
@@ -56,14 +70,51 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
 
-      - name: Stamp the launcher with the release version
-        shell: bash
-        run: |
-          version="$(uv version --short)"
-          sed -i "s/^VERSION = \"0.0.0\"$/VERSION = \"${version}\"/" scripts/winget_launcher.py
-          grep -qx "VERSION = \"${version}\"" scripts/winget_launcher.py
+      - shell: pwsh
+        run: installer/build-launcher.ps1 -Version (uv version --short) -Out dist/launcher/pdt.exe
 
-      - run: uv run --no-project --python 3.12 --with pyinstaller pyinstaller --onefile --name pdt --distpath dist/launcher scripts/winget_launcher.py
+      - if: needs.build.outputs.sign != 'true'
+        run: echo "::notice title=Unsigned::pdt.exe is not signed. Only a release tag or a manual run with sign set is signed, and only when the SIGNING_ENDPOINT, SIGNING_ACCOUNT, and SIGNING_PROFILE variables are set."
+
+      - if: needs.build.outputs.sign == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - if: needs.build.outputs.sign == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\dist\launcher\pdt.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - if: needs.build.outputs.sign == 'true'
+        shell: pwsh
+        run: |
+          $s = Get-AuthenticodeSignature dist\launcher\pdt.exe
+          if ($s.Status -ne 'Valid' -or -not $s.TimeStamperCertificate) { throw "pdt.exe signature: $($s.Status) $($s.StatusMessage)" }
+          "pdt.exe is signed by $($s.SignerCertificate.Subject)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher
+          path: dist/launcher/pdt.exe
 
       - id: zip
         shell: pwsh
@@ -98,6 +149,84 @@ jobs:
         with:
           files: pdt-windows-x64.zip
           body_path: release-notes.md
+
+  windows-msi:
+    needs: [build, windows-launcher, publish]
+    if: ${{ !cancelled() && needs.windows-launcher.result == 'success' }}
+    # WiX v7.0.0 builds its ARM64 binaries with the v143 toolset, which only the VS 2022 image has.
+    runs-on: windows-2022
+    environment: ${{ needs.build.outputs.sign == 'true' && 'signing' || '' }}
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: launcher
+          path: dist/launcher
+
+      - id: wix
+        uses: actions/cache@v4
+        with:
+          path: build/wix/bin
+          key: wix-${{ hashFiles('installer/build-wix.ps1') }}
+
+      - if: steps.wix.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: installer/build-wix.ps1 -Out build/wix
+
+      - shell: pwsh
+        run: installer/build-msi.ps1 -Wix build/wix/bin/wix.exe -Launcher dist/launcher/pdt.exe -Version ${{ needs.windows-launcher.outputs.version }} -Out pdt-windows-x64.msi
+
+      - if: needs.build.outputs.sign != 'true'
+        run: echo "::notice title=Unsigned::pdt-windows-x64.msi is not signed. Only a release tag or a manual run with sign set is signed, and only when the SIGNING_ENDPOINT, SIGNING_ACCOUNT, and SIGNING_PROFILE variables are set."
+
+      - if: needs.build.outputs.sign == 'true'
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - if: needs.build.outputs.sign == 'true'
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\pdt-windows-x64.msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - if: needs.build.outputs.sign == 'true'
+        shell: pwsh
+        run: |
+          $s = Get-AuthenticodeSignature pdt-windows-x64.msi
+          if ($s.Status -ne 'Valid' -or -not $s.TimeStamperCertificate) { throw "pdt-windows-x64.msi signature: $($s.Status) $($s.StatusMessage)" }
+          "pdt-windows-x64.msi is signed by $($s.SignerCertificate.Subject)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msi
+          path: pdt-windows-x64.msi
+
+      - if: startsWith(github.ref, 'refs/tags/') && needs.publish.result == 'success'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: pdt-windows-x64.msi
 
   # The first submission of AutoIDM.pdt is a manual `wingetcreate new` from
   # the rendered manifests in the winget-manifests artifact. WINGET_TOKEN is a
