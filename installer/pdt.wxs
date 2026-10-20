@@ -21,7 +21,7 @@
       <File Source="$(Payload)\pdt.exe" />
       <File Source="$(Payload)\uv.exe" />
       <File Source="$(Payload)\uv-LICENSE-MIT.txt" />
-      <Environment Id="PATH" Name="PATH" Value="[INSTALLFOLDER]" Action="set" Part="last" System="no" Permanent="no" />
+      <Environment Id="PATH" Name="PATH" Value="[INSTALLFOLDER]" Action="set" Part="first" System="no" Permanent="no" />
       <RegistryValue Root="HKCU" Key="Software\AutoIDM\pdt" Name="InstallFolder" Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
       <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
       <RemoveFolder Id="RemoveLocalPrograms" Directory="LocalPrograms" On="uninstall" />
@@ -30,6 +30,11 @@
     <WixVariable Id="WixUIBannerBmp" Value="$(sys.SOURCEFILEDIR)banner.bmp" />
     <WixVariable Id="WixUIDialogBmp" Value="$(sys.SOURCEFILEDIR)dialog.bmp" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="pdt is installed. Open a new terminal and run pdt init to start." />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open PowerShell and run pdt" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <!-- msiexec still has the PATH from before the install, so the new PowerShell adds INSTALLFOLDER itself. -->
+    <CustomAction Id="LaunchPdt" Directory="INSTALLFOLDER" Return="asyncNoWait" Impersonate="yes"
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoExit -NoLogo -Command &quot;Set-Location ~; $env:Path = '[INSTALLFOLDER];' + $env:Path; pdt&quot;" />
 
     <!-- WixUI_Minimal without its license dialog: Next on the welcome dialog installs. -->
     <UI Id="pdt">
@@ -49,6 +54,7 @@
       <DialogRef Id="WelcomeDlg" />
 
       <Publish Dialog="WelcomeDlg" Control="Next" Event="EndDialog" Value="Return" Condition="NOT Installed" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchPdt" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
       <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
 
       <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
