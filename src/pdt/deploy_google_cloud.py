@@ -140,6 +140,8 @@ ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 # Measured in October 2026: Cloud Logging showed a line 27 s after the write.
 HOLD = datetime.timedelta(seconds=30)
+# The live tail sorts what it holds this long; with its 2 s default, a line came 9 s late.
+TAIL_BUFFER = datetime.timedelta(seconds=10)
 
 
 # A freshly enabled API reports SERVICE_DISABLED for a few minutes, Cloud
@@ -1352,7 +1354,8 @@ def tail_entries(project: str, log_filter: str, stop: threading.Event) -> Iterat
     found = queue.Queue()
 
     def requests():
-        yield TailLogEntriesRequest(resource_names=[f"projects/{project}"], filter=log_filter)
+        yield TailLogEntriesRequest(resource_names=[f"projects/{project}"], filter=log_filter,
+                                    buffer_window=TAIL_BUFFER)
         # The server ends the tail once the requests end.
         stop.wait()
 

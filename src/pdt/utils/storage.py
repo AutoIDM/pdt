@@ -297,8 +297,11 @@ class GCS(Backend):
         return storage.Client(credentials=self.credentials).bucket(self.host)
 
     def filesystem(self):
-        import fsspec
-        return fsspec.filesystem("gs", token=self.credentials)
+        # fsspec's "gs" is gcsfs's ExtendedGcsFileSystem, which asks for the bucket's
+        # storage layout. That needs storage.objects.list on the whole bucket, and the
+        # runner may list only its app folder.
+        from gcsfs.core import GCSFileSystem
+        return GCSFileSystem(token=self.credentials)
 
     def versions(self, prefix: str) -> dict[str, str]:
         blobs = self.bucket.list_blobs(prefix=self.key(prefix))
