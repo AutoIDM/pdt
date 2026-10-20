@@ -10,7 +10,8 @@ from conftest import add_app, plain
 from pdt import __version__, powershell
 from pdt.config import validate_app
 from pdt.deploy_common import (
-    DOCKERFILE, ENTRYPOINT, POWERSHELL_DOCKERFILE, context_ignore_text, image_action, write_dockerfile)
+    DOCKERFILE, ENTRYPOINT, POWERSHELL_DOCKERFILE, context_ignore_text, image_action, run_build,
+    write_dockerfile)
 
 
 def staged(tmp_path, name, own=None):
@@ -38,9 +39,11 @@ def test_the_generated_dockerfile_installs_from_the_script_header_before_the_res
     header = '# /// script\n# dependencies = ["pdt-cli==0.1.9"]\n# ///\n'
     (app["dir"] / "run.py").write_text(header + "def main():\n    return 0\n")
     (app["dir"] / "run.py.lock").write_text("lock\n")
+    (app["dir"] / "pdt_cli-0.1.11-py3-none-any.whl").write_text("wheel\n")
     write_dockerfile(stage, app)
     assert (stage / ".pdt-script" / "run.py").read_text() == header
     assert (stage / ".pdt-script" / "run.py.lock").read_text() == "lock\n"
+    assert (stage / ".pdt-script" / "pdt_cli-0.1.11-py3-none-any.whl").read_text() == "wheel\n"
     text = (stage / "Dockerfile").read_text()
     assert (text.index("WORKDIR /workspace/my-report\n") < text.index("COPY .pdt-script .\n")
             < text.index("RUN uv sync --script run.py\n") < text.index("COPY . /workspace\n"))
@@ -227,3 +230,18 @@ def test_python_writes_each_line_as_it_prints_it_in_every_image():
     for dockerfile in (DOCKERFILE, POWERSHELL_DOCKERFILE):
         env = next(line for line in dockerfile.splitlines() if line.startswith("ENV "))
         assert "PYTHONUNBUFFERED=1" in env.split()
+
+
+def test_a_failed_build_that_streamed_its_output_stops_with_the_command(monkeypatch, capsys):
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1))
+    with pytest.raises(SystemExit):
+        run_build(["docker", "build", "."])
+    assert "docker build . failed" in capsys.readouterr().out
+
+
+def test_a_wheel_link_to_an_excluded_file_stays_a_link(tmp_path):
+    app, stage = staged(tmp_path, "my-report")
+    (app["dir"] / "credentials.json").write_text("secret\n")
+    (app["dir"] / "x-1-py3-none-any.whl").symlink_to(app["dir"] / "credentials.json")
+    write_dockerfile(stage, app)
+    assert (stage / ".pdt-script" / "x-1-py3-none-any.whl").is_symlink()
