@@ -75,6 +75,9 @@ try {
   Push-Location ext\UI\wixext
   Invoke-Native msbuild -Restore WixToolset.UI.wixext.csproj $c $n -nologo -warnaserror
   Pop-Location
+  Push-Location ext\Util\wixext
+  Invoke-Native msbuild -Restore WixToolset.Util.wixext.csproj $c $n -nologo -warnaserror
+  Pop-Location
 } finally {
   Pop-Location
 }
@@ -82,4 +85,5 @@ try {
 New-Item -ItemType Directory -Force (Join-Path $Out 'bin') | Out-Null
 Copy-Item (Join-Path $wix 'build\wix\Release\publish\wix\*') (Join-Path $Out 'bin') -Recurse -Force
 Copy-Item (Join-Path $wix 'build\UI.wixext\Release\netstandard2.0\WixToolset.UI.wixext.dll') (Join-Path $Out 'bin')
+Copy-Item (Join-Path $wix 'build\Util.wixext\Release\netstandard2.0\WixToolset.Util.wixext.dll') (Join-Path $Out 'bin')
 Invoke-Native (Join-Path $Out 'bin\wix.exe') --version

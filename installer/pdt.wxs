@@ -32,6 +32,12 @@
     <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="pdt is installed. Open a new terminal and run pdt init to start." />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open PowerShell and run pdt" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <!-- Without a network the setup fails, the install still succeeds, and the first pdt run sets up. -->
+    <SetProperty Id="SetUpPdt" Value="&quot;[INSTALLFOLDER]pdt.exe&quot; --version" Before="SetUpPdt" Sequence="execute" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+    <CustomAction Id="SetUpPdt" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="yes" />
+    <InstallExecuteSequence>
+      <Custom Action="SetUpPdt" After="InstallFiles" Condition="NOT REMOVE~=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
     <!-- msiexec still has the PATH from before the install, so the new PowerShell adds INSTALLFOLDER itself. -->
     <CustomAction Id="LaunchPdt" Directory="INSTALLFOLDER" Return="asyncNoWait" Impersonate="yes"
                   ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoExit -NoLogo -Command &quot;Set-Location ~; $env:Path = '[INSTALLFOLDER];' + $env:Path; pdt&quot;" />
@@ -42,6 +48,7 @@
       <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
       <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
       <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <ProgressText Action="SetUpPdt" Message="Setting up pdt. This downloads Python and the pdt libraries." />
 
       <DialogRef Id="ErrorDlg" />
       <DialogRef Id="FatalError" />

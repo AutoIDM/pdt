@@ -25,7 +25,8 @@ Invoke-WebRequest "https://raw.githubusercontent.com/astral-sh/uv/$UvVersion/LIC
 Copy-Item $Launcher (Join-Path $payload 'pdt.exe')
 
 $ui = Join-Path (Split-Path $Wix) 'WixToolset.UI.wixext.dll'
-& $Wix build (Join-Path $PSScriptRoot 'pdt.wxs') -arch x64 -ext $ui -d "Version=$Version" -d "Payload=$payload" -o $Out
+$util = Join-Path (Split-Path $Wix) 'WixToolset.Util.wixext.dll'
+& $Wix build (Join-Path $PSScriptRoot 'pdt.wxs') -arch x64 -ext $ui -ext $util -d "Version=$Version" -d "Payload=$payload" -o $Out
 if ($LASTEXITCODE) { throw "wix build failed with exit code $LASTEXITCODE" }
 & $Wix msi validate $Out
 if ($LASTEXITCODE) { throw "wix msi validate failed with exit code $LASTEXITCODE" }

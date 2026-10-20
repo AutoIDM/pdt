@@ -1,5 +1,6 @@
 import importlib.util
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -13,19 +14,55 @@ HOME = Path("C:/Users/me/AppData/Local/AutoIDM/pdt")
 INSTALL = ["uv", "tool", "install", f"pdt-cli=={launcher.VERSION}"]
 
 
-class FakeRun:
-    def __init__(self, install_code=0, pdt_code=0):
+UV_LINES = [
+    b"Downloading cpython-3.14.7-windows-x86_64-none (download) (21.5MiB)\n",
+    b" Downloaded cpython-3.14.7-windows-x86_64-none (download)\n",
+    b"Resolved 27 packages in 950ms\n",
+    b"Downloading cryptography (3.7MiB)\n",
+    b" Downloaded cryptography\n",
+    b"Prepared 27 packages in 702ms\n",
+    b"Installed 27 packages in 23ms\n",
+    b" + pdt-cli==0.1.10\n",
+    b"Installed 1 executable: pdt\n",
+    b"warning: `C:\\Users\\me\\AppData\\Local\\AutoIDM\\pdt\\bin` is not on your PATH."
+    b" To use installed tools, run `uv tool update-shell`.\n",
+]
+UV_FAILURE = [
+    "  \u00d7 No solution found when resolving dependencies:\n".encode(),
+    "  \u2570\u2500\u25b6 Because there is no version of pdt-cli==0.0.0 and you require\n".encode(),
+]
+
+
+class FakeUv:
+    def __init__(self, install_code=0, pdt_code=0, lines=UV_LINES, pause=0.0):
         self.commands = []
         self.install_env = None
         self.install_code = install_code
         self.pdt_code = pdt_code
+        self.lines = lines
+        self.pause = pause
 
-    def __call__(self, command, **kwargs):
+    def popen(self, command, **kwargs):
         self.commands.append(command)
-        if command[1:] == INSTALL[1:]:
-            self.install_env = kwargs["env"]
-            return subprocess.CompletedProcess(command, self.install_code, "", "no such version\n")
+        self.install_env = kwargs["env"]
+        return FakeProcess(self.stdout(), self.install_code)
+
+    def stdout(self):
+        time.sleep(self.pause)
+        yield from self.lines
+
+    def run(self, command, **kwargs):
+        self.commands.append(command)
         return subprocess.CompletedProcess(command, self.pdt_code)
+
+
+class FakeProcess:
+    def __init__(self, stdout, code):
+        self.stdout = stdout
+        self.code = code
+
+    def wait(self):
+        return self.code
 
 
 @pytest.fixture(autouse=True)
@@ -40,18 +77,23 @@ def uv_on_path(monkeypatch):
     monkeypatch.setenv("LOCALAPPDATA", "C:/Users/me/AppData/Local")
 
 
+def fake_uv(monkeypatch, **kwargs):
+    uv = FakeUv(**kwargs)
+    monkeypatch.setattr(launcher.subprocess, "Popen", uv.popen)
+    monkeypatch.setattr(launcher.subprocess, "run", uv.run)
+    return uv
+
+
 def test_uv_beside_the_launcher_comes_before_the_path(monkeypatch, uv_on_path, launcher_folder):
     bundled = launcher_folder / "uv.exe"
     bundled.write_bytes(b"")
-    run = FakeRun()
-    monkeypatch.setattr(launcher.subprocess, "run", run)
+    run = fake_uv(monkeypatch)
     assert launcher.main(["list"]) == 0
     assert run.commands[0] == [str(bundled), *INSTALL[1:]]
 
 
 def test_without_uv_beside_the_launcher_it_uses_the_path(monkeypatch, uv_on_path):
-    run = FakeRun()
-    monkeypatch.setattr(launcher.subprocess, "run", run)
+    run = fake_uv(monkeypatch)
     launcher.main(["list"])
     assert run.commands[0] == INSTALL
 
@@ -65,8 +107,7 @@ def test_missing_uv_prints_the_winget_hint(monkeypatch, capsys):
 
 
 def test_installs_the_pinned_version_then_runs_pdt_with_the_same_arguments(monkeypatch, uv_on_path):
-    run = FakeRun(pdt_code=3)
-    monkeypatch.setattr(launcher.subprocess, "run", run)
+    run = fake_uv(monkeypatch, pdt_code=3)
     assert launcher.main(["deploy", "my-report", "--yes"]) == 3
     assert run.commands == [
         INSTALL,
@@ -75,32 +116,90 @@ def test_installs_the_pinned_version_then_runs_pdt_with_the_same_arguments(monke
 
 
 def test_installs_into_its_own_folders_off_the_path(monkeypatch, uv_on_path):
-    run = FakeRun()
-    monkeypatch.setattr(launcher.subprocess, "run", run)
+    run = fake_uv(monkeypatch)
     launcher.main(["list"])
     assert run.install_env["UV_TOOL_DIR"] == str(HOME / "tools")
     assert run.install_env["UV_TOOL_BIN_DIR"] == str(HOME / "bin")
 
 
 def test_failed_install_exits_1_without_running_pdt(monkeypatch, uv_on_path):
-    run = FakeRun(install_code=2)
-    monkeypatch.setattr(launcher.subprocess, "run", run)
+    run = fake_uv(monkeypatch, install_code=2)
     assert launcher.main(["list"]) == 1
     assert run.commands == [INSTALL]
 
 
-def test_install_says_what_it_installs(monkeypatch, uv_on_path, capsys):
-    monkeypatch.setattr(launcher.subprocess, "run", FakeRun())
+def test_phase_follows_the_last_uv_line_it_knows():
+    expected = [
+        "downloading Python",
+        "finding the pdt libraries",
+        "downloading the pdt libraries",
+        "downloading the pdt libraries",
+        "downloading the pdt libraries",
+        "installing",
+        "installing",
+        "installing",
+        "installing",
+        "installing",
+    ]
+    assert launcher.phase([]) == "finding the pdt libraries"
+    assert [launcher.phase(UV_LINES[:n + 1]) for n in range(len(UV_LINES))] == expected
+
+
+def test_terminal_shows_one_status_line_that_ends_done(monkeypatch, uv_on_path, capsys):
+    fake_uv(monkeypatch, pause=0.05)
+    monkeypatch.setattr(launcher.sys.stderr, "isatty", lambda: True)
     launcher.main(["list"])
-    assert f"Installing pdt {launcher.VERSION}." in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert err.startswith("\r")
+    assert err.count("\n") == 1
+    assert err.split("\r")[-1].rstrip() == f"Setting up pdt {launcher.VERSION}: done (0s)"
+
+
+def test_status_update_clears_the_longer_line_before_it(monkeypatch, uv_on_path, capsys):
+    fake_uv(monkeypatch, pause=0.05)
+    monkeypatch.setattr(launcher.sys.stderr, "isatty", lambda: True)
+    monkeypatch.setattr(launcher, "TICK", 1.0)
+    monkeypatch.setattr(launcher, "phase", lambda output: "downloading the pdt libraries")
+    launcher.main(["list"])
+    first, done = capsys.readouterr().err.split("\r")[1:]
+    assert first == f"Setting up pdt {launcher.VERSION}: downloading the pdt libraries (0s)"
+    assert done == f"Setting up pdt {launcher.VERSION}: done (0s)".ljust(len(first)) + "\n"
+
+
+def test_not_a_terminal_prints_the_start_and_done_lines_only(monkeypatch, uv_on_path, capsys):
+    fake_uv(monkeypatch)
+    launcher.main(["list"])
+    assert capsys.readouterr().err == (
+        f"Setting up pdt {launcher.VERSION}: started\n"
+        f"Setting up pdt {launcher.VERSION}: done (0s)\n"
+    )
+
+
+def test_uv_package_list_and_path_warning_never_print(monkeypatch, uv_on_path, capsys):
+    fake_uv(monkeypatch, pause=0.05)
+    monkeypatch.setattr(launcher.sys.stderr, "isatty", lambda: True)
+    launcher.main(["list"])
+    err = capsys.readouterr().err
+    assert "PATH" not in err
+    assert "update-shell" not in err
+    assert "pdt-cli==" not in err
+
+
+def test_failed_install_prints_what_uv_said(monkeypatch, uv_on_path, capsys):
+    fake_uv(monkeypatch, install_code=1, lines=UV_FAILURE)
+    assert launcher.main(["list"]) == 1
+    assert capsys.readouterr().err == (
+        f"Setting up pdt {launcher.VERSION}: started\n"
+        f"Setting up pdt {launcher.VERSION}: failed (0s)\n"
+        + b"".join(UV_FAILURE).decode()
+    )
 
 
 def test_installed_version_runs_pdt_without_uv(monkeypatch, uv_on_path, tmp_path, capsys):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
     home = tmp_path / "AutoIDM" / "pdt"
     (home / "tools" / "pdt-cli" / "Lib" / "site-packages" / f"pdt_cli-{launcher.VERSION}.dist-info").mkdir(parents=True)
-    run = FakeRun()
-    monkeypatch.setattr(launcher.subprocess, "run", run)
+    run = fake_uv(monkeypatch)
     assert launcher.main(["list"]) == 0
     assert run.commands == [[str(home / "bin" / "pdt.exe"), "list"]]
     assert capsys.readouterr().err == ""
