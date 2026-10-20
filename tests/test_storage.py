@@ -165,6 +165,12 @@ def test_a_folder_with_spaces_is_not_percent_encoded(tmp_path):
     assert not any("%20" in path.name for path in tmp_path.rglob("*"))
 
 
+def test_gcs_filesystem_does_not_read_the_bucket_layout():
+    extended = pytest.importorskip("gcsfs.extended_gcsfs")
+    fs = storage.GCS("gs://pdt-data-x/my-report/", "anon").filesystem()
+    assert not isinstance(fs, extended.ExtendedGcsFileSystem)
+
+
 def test_abort_releases_the_lock_without_pushing(store, tmp_path):
     write(store, "state/meltano.db", "v1")
     local = tmp_path / "local"
