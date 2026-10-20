@@ -8,9 +8,11 @@ A project is a folder holding `pdt.yml`. Each app is a folder inside it that con
 pdt init my-jobs
 ```
 
-`pdt init` asks where the project should live, which cloud you want, and which region. It warns you if you are about to create a project somewhere unwise, such as your home folder. The folder name is optional: `pdt init` with no name uses the current folder, and `pdt init DIR` uses `DIR`, creating it if it is not there yet. Add `--yes` to take the defaults and answer nothing.
+`pdt init` asks where the project should live, which cloud you want, which region, and which time zone the schedules use. Then it offers to sign you in to that cloud with `pdt login`. It warns you if you are about to create a project somewhere unwise, such as your home folder. The folder name is optional: `pdt init` with no name uses the current folder, and `pdt init DIR` uses `DIR`, creating it if it is not there yet. Add `--yes` to take the defaults and answer nothing.
 
-Region is the only setting it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it.
+Region and time zone are the only settings it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it.
+
+To move a project to another provider, run `pdt init` in the project and pick the new provider. pdt replaces the `platform:` block of `pdt.yml` and keeps your apps and every other setting. It keeps the time zone, and drops the region, account, subscription, and project of the old provider. `pdt destroy` removes apps from the provider that `pdt.yml` names, so run `pdt destroy --all` before the move if apps are deployed. pdt warns you when they are. After the move, run `pdt deploy --all`.
 
 pdt suggests the region nearest to you from your computer's time zone. If `pdt.yml` has no region when you first deploy, the deploy suggests one the same way, asks you to confirm it or type another, and saves your answer. With `--yes` it takes the suggestion and tells you which region it used.
 
