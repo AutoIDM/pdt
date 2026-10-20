@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 
 $work = Join-Path ([IO.Path]::GetTempPath()) "pdt-launcher-$([guid]::NewGuid())"
 New-Item -ItemType Directory -Force $work, (Split-Path $Out) | Out-Null
-Set-Content (Join-Path $work 'launcher.rc') "1 ICON `"$(Join-Path $PSScriptRoot 'pdt.ico')`"" -Encoding ascii
+Set-Content (Join-Path $work 'launcher.rc') "1 ICON `"$((Join-Path $PSScriptRoot 'pdt.ico').Replace('\', '/'))`"" -Encoding ascii
 
 $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
 Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
