@@ -363,7 +363,7 @@ def rehome(target: Path) -> int:
     deployed = config.read_state().get("deployed") or []
     if provider != old and old != "" and deployed:
         console.say()
-        console.warn(f"These apps are deployed on {NAMES.get(old, old)}: "
+        console.warn(f"These apps are deployed on {console.escape(NAMES.get(old, old))}: "
                      + ", ".join(console.value(name) for name in deployed))
         console.say(f"{console.value('pdt destroy')} removes an app from the provider that "
                     f"{console.value(PROJECT_FILE)} names. After the move, it cannot reach them.")
