@@ -22,32 +22,34 @@ def windows_app(project):
     return config.merged_app("my-report")
 
 
-def test_task_action_runs_the_runner_through_uv(project):
+def test_task_action_runs_the_deployed_runner_through_the_machine_uv(project):
     app = windows_app(project)
-    description, xml = deploy_windows.task_xml(app, "uv.exe", False)
+    description, xml = deploy_windows.task_xml(app)
     assert description == "hourly at minute 00"
-    runner = Path(deploy_windows.__file__).resolve().with_name("run_windows_task.py")
-    folder = project / "ProgramData" / "pdt" / "my-report"
-    assert f"<Command>{Path('uv.exe').resolve()}</Command>" in xml
-    assert (f"<Arguments>run --script {runner} {app['dir']} {folder / 'logs'} "
-            f"{(folder / 'storage').as_uri()}/</Arguments>") in xml
-    assert f"<WorkingDirectory>{app['dir']}</WorkingDirectory>" in xml
+    data = project / "ProgramData"
+    folder = data / "pdt" / "my-report"
+    runner = folder / "runtime" / "pdt" / "run_windows_task.py"
+    deployed = folder / "app" / "my-report"
+    assert f"<Command>{data / 'pdt' / 'bin' / 'uv.exe'}</Command>" in xml
+    assert (f"<Arguments>--cache-dir {data / 'pdt' / 'uv-cache'} run --python 3.12 --script {runner} "
+            f"{deployed} {folder / 'logs'} {(folder / 'storage').as_uri()}/</Arguments>") in xml
+    assert f"<WorkingDirectory>{deployed}</WorkingDirectory>" in xml
+    assert str(app["dir"]) not in xml
     assert "powershell.exe" not in xml.lower()
 
 
 def test_task_stops_a_run_after_30_minutes_and_skips_an_overlapping_start(project):
     app = windows_app(project)
-    _description, xml = deploy_windows.task_xml(app, "uv.exe", False)
+    _description, xml = deploy_windows.task_xml(app)
     assert "<ExecutionTimeLimit>PT30M</ExecutionTimeLimit>" in xml
     assert "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" in xml
 
 
-def test_task_arguments_quote_a_folder_with_a_space(project):
-    app = windows_app(project)
-    app["dir"] = str(project / "my report")
-    arguments = deploy_windows.task_arguments(app)
-    assert f'"{project / "my report"}"' in arguments
-    assert arguments.startswith("run --script ")
+def test_task_arguments_quote_a_folder_with_a_space(project, monkeypatch):
+    monkeypatch.setenv("ProgramData", str(project / "Program Data"))
+    arguments = deploy_windows.task_arguments(windows_app(project))
+    assert f'"{project / "Program Data" / "pdt" / "uv-cache"}"' in arguments
+    assert arguments.startswith("--cache-dir ")
 
 
 def test_storage_url_is_the_file_uri_with_a_trailing_slash(project):
@@ -57,36 +59,34 @@ def test_storage_url_is_the_file_uri_with_a_trailing_slash(project):
     assert deploy_windows.storage_url("my-report").startswith("file://")
 
 
-def deploy_plan(project, monkeypatch, on_machine_path: bool) -> list[str]:
+def deploy_plan(project, monkeypatch, uv_current: bool) -> tuple[list[str], list[str]]:
     app = windows_app(project)
-    shown = []
-    monkeypatch.setattr(deploy_windows, "_preflight", lambda: ("powershell.exe", "uv.exe"))
+    shown, fetched = [], []
+    monkeypatch.setattr(deploy_windows, "_preflight", lambda: "powershell.exe")
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
-    monkeypatch.setattr(deploy_windows, "uv_on_machine_path", lambda: on_machine_path)
+    monkeypatch.setattr(deploy_windows, "_machine_uv_current", lambda: uv_current)
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "ARM64")
+    monkeypatch.setattr(deploy_windows.windows_uv, "fetch",
+                        lambda processor: fetched.append(processor) or project / "uv.exe")
     monkeypatch.setattr(deploy_windows, "confirm",
                         lambda actions, assume_yes, cost: shown.extend(plain(actions)))
     assert deploy_windows.deploy(app, assume_yes=False) == DECLINED
-    return shown
+    return shown, fetched
 
 
-def test_plan_names_the_system_path_when_uv_is_on_it(project, monkeypatch):
-    assert "run uv from the system PATH" in deploy_plan(project, monkeypatch, True)
-    _description, xml = deploy_windows.task_xml(windows_app(project), "uv.exe", True)
-    assert "<Command>uv</Command>" in xml
+def test_plan_installs_the_pinned_uv_for_the_pc_processor_when_it_is_missing(project, monkeypatch):
+    shown, fetched = deploy_plan(project, monkeypatch, False)
+    uv = project / "ProgramData" / "pdt" / "bin" / "uv.exe"
+    assert f"install uv {deploy_windows.windows_uv.VERSION} at {uv}" in shown
+    assert fetched == ["ARM64"]
 
 
-def test_plan_names_the_saved_path_when_uv_is_not_on_the_system_path(project, monkeypatch):
-    saved = project / "uv.exe"
-    assert (f"run uv from {saved} (uv is not on the system PATH; "
-            "a machine-wide install drops the path from the task)"
-            ) in deploy_plan(project, monkeypatch, False)
-    _description, xml = deploy_windows.task_xml(windows_app(project), "uv.exe", False)
-    assert f"<Command>{saved}</Command>" in xml
-
-
-def test_uv_is_never_on_the_machine_path_off_windows():
-    assert deploy_windows.uv_on_machine_path() is False
+def test_plan_runs_the_installed_uv_when_it_is_the_pinned_version(project, monkeypatch):
+    shown, fetched = deploy_plan(project, monkeypatch, True)
+    uv = project / "ProgramData" / "pdt" / "bin" / "uv.exe"
+    assert f"run uv {deploy_windows.windows_uv.VERSION} from {uv}" in shown
+    assert fetched == []
 
 
 def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch):

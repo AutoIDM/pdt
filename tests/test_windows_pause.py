@@ -23,20 +23,20 @@ def settings_enabled(xml: str) -> str:
 
 def test_a_paused_app_registers_a_disabled_task(project):
     add_app(project, "my-report", "schedule: hourly\ntimezone: local\npause: true\n")
-    _description, xml = deploy_windows.task_xml(config.merged_app("my-report"), "uv.exe", False)
+    _description, xml = deploy_windows.task_xml(config.merged_app("my-report"))
     assert settings_enabled(xml) == "false"
     assert "<StartBoundary>2000-01-01T00:00:00</StartBoundary><Enabled>true</Enabled>" in xml
 
 
 def test_an_app_that_is_not_paused_registers_an_enabled_task(project):
     add_app(project, "my-report", "schedule: hourly\ntimezone: local\n")
-    _description, xml = deploy_windows.task_xml(config.merged_app("my-report"), "uv.exe", False)
+    _description, xml = deploy_windows.task_xml(config.merged_app("my-report"))
     assert settings_enabled(xml) == "true"
 
 
 def fake_task(monkeypatch, state: str):
     scripts = []
-    monkeypatch.setattr(deploy_windows, "_preflight", lambda require_uv=True: ("powershell.exe", None))
+    monkeypatch.setattr(deploy_windows, "_preflight", lambda: "powershell.exe")
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: state)
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kwargs: scripts.append((script, kwargs)) or True)

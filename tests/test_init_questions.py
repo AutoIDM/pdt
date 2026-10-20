@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
 
+from pdt import config, scaffold
 from pdt.scaffold import PROVIDER_CHOICES, PROVIDER_QUESTIONS
 
 
@@ -29,7 +32,7 @@ def test_azure_does_not_ask_for_the_subscription():
 @pytest.mark.parametrize("provider,expected", [
     ("aws", ["region"]),
     ("google-cloud", ["region"]),
-    ("windows", []),
+    ("windows", ["host"]),
     ("", []),
 ])
 def test_the_other_providers_ask_only_what_pdt_cannot_supply(provider, expected):
@@ -45,10 +48,30 @@ def test_no_provider_asks_for_something_deploy_can_discover(provider, key):
     assert key not in keys(provider)
 
 
-@pytest.mark.parametrize("provider", list(PROVIDER_QUESTIONS))
-def test_no_question_accepts_an_empty_answer(provider):
+@pytest.mark.parametrize("provider", ["azure", "aws", "google-cloud"])
+def test_no_cloud_question_accepts_an_empty_answer(provider):
     for key, _q, _default, check in PROVIDER_QUESTIONS[provider]:
         assert check("") != "", f"{provider}.{key} accepts an empty answer"
+
+
+def test_windows_takes_an_empty_answer_as_this_pc_and_writes_no_host(monkeypatch):
+    answers = iter(["4", ""])
+    monkeypatch.setattr(scaffold.console, "ask", lambda question, default="": next(answers))
+    monkeypatch.setattr(config, "os", SimpleNamespace(name="nt"))
+    assert scaffold.ask_platform(False) == {"provider": "windows"}
+
+
+def test_windows_asks_again_for_a_pc_on_a_computer_that_is_not_windows(monkeypatch):
+    answers = iter(["4", "", "pc01"])
+    monkeypatch.setattr(scaffold.console, "ask", lambda question, default="": next(answers))
+    monkeypatch.setattr(config, "os", SimpleNamespace(name="posix"))
+    assert scaffold.ask_platform(False) == {"provider": "windows", "host": "pc01"}
+
+
+def test_windows_saves_the_pc_the_user_names(monkeypatch):
+    answers = iter(["4", " admin@pc01 "])
+    monkeypatch.setattr(scaffold.console, "ask", lambda question, default="": next(answers))
+    assert scaffold.ask_platform(False) == {"provider": "windows", "host": "admin@pc01"}
 
 
 @pytest.mark.parametrize("provider", list(PROVIDER_QUESTIONS))

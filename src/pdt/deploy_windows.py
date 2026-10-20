@@ -8,32 +8,11 @@
 #     "backoff",
 #     "fsspec",
 #     "duckdb",
+#     "pypsrp>=0.9.1; sys_platform != 'win32' or platform_machine != 'ARM64'",
+#     "pyspnego[kerberos]; sys_platform == 'darwin'",
 # ]
 # ///
-"""Deploy an app locally as a Windows Task Scheduler task.
-
-Per app on this PC there is one folder, `%ProgramData%\\pdt\\<app>\\`, with
-`storage\\` (the app's files, kept after destroy) and `logs\\` (one log per
-run, removed on destroy), and one scheduled task `pdt-<app>` whose action
-runs `run_windows_task.py` through uv. The runner sets PDT_STORAGE_URL to the
-storage folder, runs the app in its folder, and writes both output streams
-to `logs\\<UTC start>.log`, each line after its time, ending with
-`pdt: exit N`; `pdt runs` and `pdt logs` read those files. A run is
-stopped after RUN_TIME_LIMIT.
-
-The task's action is `<uv> run --script run_windows_task.py <app dir>
-<logs folder> <storage url>`. SYSTEM sees only the machine PATH, so `<uv>`
-is the bare word `uv` when uv is on that PATH at deploy time and otherwise
-the absolute path deploy found. Either way `uv run` hands the runner the uv
-that started it in `UV`, so the runner never looks uv up again.
-
-The task runs as the SYSTEM account, so it does not depend on a user being
-logged on. Registering or removing it needs administrator rights; a
-non-elevated shell gets one UAC prompt. The same elevated script creates the
-app folder and gives SYSTEM full control and the deploying user modify
-rights, so that user can delete what the task wrote. Deploy always registers
-the complete desired task definition with -Force, so rerunning it safely
-reconciles changes to the schedule or repository path.
+"""Deploy an app as a Windows Task Scheduler task on this PC.
 
 A PowerShell app (.ps1 files, no run.py) runs through run_powershell.py
 instead of run.py, unless `pdt new APP --from-scripts` wrote it one. Before
@@ -50,22 +29,26 @@ import argparse
 import base64
 import ctypes
 import html
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, regions, runs_cli
+from pdt import config, console, regions, runs_cli, windows_remote, windows_uv
+from pdt.windows_remote import SET_ACL, replace_file, set_acl
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm
-from pdt.deploy_common import CostEstimate, warn_if_locked
+from pdt.deploy_common import (CostEstimate, gather_secrets, run_secrets, secret_contents,
+                               stage_build_context, warn_if_locked)
 from pdt.pwsh import ensure_pwsh
-from pdt.run_windows_task import LINE_TIME, MANUAL_START
+from pdt.run_windows_task import LINE_TIME, MANUAL_START, SECRETS_FILE
 
 
 class WindowsDeployError(Exception):
@@ -79,7 +62,6 @@ MONTHS = (
 DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday",
         "Thursday", "Friday", "Saturday")
 FORBIDDEN_TASK_NAME_CHARS = set('\\/:*?"<>|')
-RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
 # The same limit as --replica-timeout on Azure Container Apps.
 RUN_TIME_LIMIT = "PT30M"
 FOLLOW_POLL_SECONDS = 0.25
@@ -185,42 +167,49 @@ def storage_url(app_name: str) -> str:
     return storage_folder(app_name).as_uri() + "/"
 
 
+def deployed_folder(app_name: str) -> Path:
+    return app_folder(app_name) / "app"
+
+
+def runtime_folder(app_name: str) -> Path:
+    return app_folder(app_name) / "runtime"
+
+
+def secrets_file(app_name: str) -> Path:
+    return app_folder(app_name) / SECRETS_FILE
+
+
+def deployed_app_dir(app_name: str) -> Path:
+    return deployed_folder(app_name) / app_name
+
+
+def machine_uv() -> Path:
+    return Path(windows_uv.machine_uv(str(config.machine_data_home().parent)))
+
+
+def machine_cache() -> Path:
+    return Path(windows_uv.machine_cache(str(config.machine_data_home().parent)))
+
+
 def task_arguments(app: dict) -> str:
-    """The uv arguments the task runs: the runner, then the app folder, its log folder,
-    and its storage url. Quoted the way CreateProcess splits them."""
+    name = app["name"]
     return subprocess.list2cmdline([
-        "run", "--script", str(RUNNER), str(Path(app["dir"]).resolve()),
-        str(logs_folder(app["name"])), storage_url(app["name"])])
+        "--cache-dir", str(machine_cache()),
+        "run", "--python", windows_uv.PYTHON, "--script", str(runtime_folder(name) / "pdt" / "run_windows_task.py"),
+        str(deployed_app_dir(name)), str(logs_folder(name)), storage_url(name)])
 
 
-def uv_on_machine_path() -> bool:
-    """Whether the machine PATH, the only PATH the SYSTEM account sees, holds uv.exe."""
-    if os.name != "nt":
-        return False
-    import winreg
-    try:
-        with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment") as key:
-            path, _type = winreg.QueryValueEx(key, "Path")
-    except OSError:
-        return False
-    return any((Path(folder) / "uv.exe").is_file()
-               for folder in os.path.expandvars(path).split(";") if folder)
-
-
-def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
+def task_xml(app: dict) -> tuple[str, str]:
     cron = config.cron_expression(app["schedule"])
     problem = config.windows_timezone_problem(app.get("timezone"))
     if problem != "":
         raise WindowsDeployError(problem)
     description, trigger = schedule_trigger(cron)
-    command = "uv" if on_machine_path else html.escape(str(Path(uv).resolve()))
+    command = html.escape(str(machine_uv()))
     arguments = html.escape(task_arguments(app))
-    workdir = html.escape(str(Path(app["dir"]).resolve()))
+    workdir = html.escape(str(deployed_app_dir(app["name"])))
     task_description = html.escape(
-        f"Managed by pdt; runs {app['name']} from "
-        f"{Path(app['dir']).resolve()}")
+        f"Managed by pdt; runs {app['name']} from {deployed_app_dir(app['name'])}")
     xml = f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>{task_description}</Description></RegistrationInfo>
@@ -254,18 +243,14 @@ def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
     return description, xml
 
 
-def _preflight(require_uv: bool = True) -> tuple[str, str | None]:
+def _preflight() -> str:
     if sys.platform != "win32":
         raise WindowsDeployError(
             f"provider 'windows' requires Windows; current platform is {sys.platform}")
     powershell = shutil.which("powershell.exe") or shutil.which("powershell")
     if powershell is None:
         raise WindowsDeployError("Windows PowerShell was not found on PATH")
-    uv = shutil.which("uv.exe") or shutil.which("uv")
-    if require_uv and uv is None:
-        raise WindowsDeployError(
-            "uv is unavailable; run this deployment through pdt.bat")
-    return powershell, uv
+    return powershell
 
 
 def _encoded(script: str) -> str:
@@ -276,19 +261,28 @@ def _is_admin() -> bool:
     return bool(ctypes.windll.shell32.IsUserAnAdmin())
 
 
+def run_args(powershell: str, script_file: Path, elevate: bool) -> list[str]:
+    """Run `script_file`, through one UAC prompt when `elevate`. A file, not -EncodedCommand,
+    because a deploy script encoded twice passes the 32767-character command line limit."""
+    run = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
+    if not elevate:
+        return [powershell, *run, "-File", str(script_file)]
+    arguments = " ".join(run) + f' -File "{script_file}"'
+    wrapper = (f"$p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden "
+               f"-ArgumentList {_ps_string(arguments)}; exit $p.ExitCode")
+    return [powershell, *run, "-EncodedCommand", _encoded(wrapper)]
+
+
 def _run(powershell: str, script: str, *, not_found_ok: bool = False,
          elevate: bool = False) -> bool:
-    if elevate and not _is_admin():
-        script = (
-            "$p = Start-Process powershell -Verb RunAs -Wait -PassThru "
-            "-WindowStyle Hidden -ArgumentList '-NoLogo','-NoProfile',"
-            "'-NonInteractive','-ExecutionPolicy','Bypass',"
-            f"'-EncodedCommand','{_encoded(script)}'; exit $p.ExitCode"
-        )
-    proc = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
-         "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    folder = Path(tempfile.mkdtemp(prefix="pdt-step-"))
+    try:
+        script_file = folder / "step.ps1"
+        script_file.write_text(script, encoding="utf-8-sig")
+        proc = subprocess.run(run_args(powershell, script_file, elevate and not _is_admin()),
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
     if proc.returncode == 0:
         return True
     if not_found_ok and proc.returncode == 3:
@@ -327,18 +321,21 @@ def _deploying_user() -> str:
 
 
 def _folder_script(app: dict, user: str) -> str:
-    """Create the app folder with the two rules its files need: SYSTEM (the task) has full
-    control, and the deploying user can change and delete what SYSTEM writes."""
-    folders = [app_folder(app["name"]), logs_folder(app["name"])]
+    """Create the app folder: SYSTEM and Administrators own it and Users can read it, because
+    SYSTEM runs what it holds; the deploying user can change and delete what the task writes
+    in logs and storage."""
+    folders = [logs_folder(app["name"])]
     if app["storage"]:
         folders.append(storage_folder(app["name"]))
     paths = ", ".join(_ps_string(str(folder)) for folder in folders)
+    grant = _ps_string(user + ":(OI)(CI)M")
     return (
         f"$folder = {_ps_string(str(app_folder(app['name'])))}; "
-        f"New-Item -ItemType Directory -Force -Path {paths} | Out-Null; "
-        f"icacls $folder /grant '*S-1-5-18:(OI)(CI)F' {_ps_string(user + ':(OI)(CI)M')} "
-        "| Out-Null; "
-        "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+        "New-Item -ItemType Directory -Force -Path $folder | Out-Null; "
+        f"{set_acl('$folder', True)}"
+        f"foreach ($sub in @({paths})) {{ New-Item -ItemType Directory -Force -Path $sub | Out-Null; "
+        f"icacls $sub /grant {grant} | Out-Null; "
+        "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" } }; "
     )
 
 
@@ -413,21 +410,27 @@ def _prepare_powershell(app: dict) -> tuple[str | None, list]:
     return pwsh, scan.modules
 
 
-def plan(app: dict, verb: str, description: str, user: str, uv: str,
-         on_machine_path: bool, pwsh: str | None = None,
-         modules: list = ()) -> list[console.Markup]:
+def plan(app: dict, verb: str, description: str, user: str, secrets: dict[str, str],
+         install_uv: bool, pwsh: str | None = None, modules: list = ()) -> list[console.Markup]:
     name = app["name"]
     actions = [
         console.Markup(f"{verb} Windows scheduled task {console.value(_task_name(name))} "
                        "(runs as SYSTEM)"),
         console.Markup(f"run {console.value(name)} {console.escape(description)} "
                        "(machine local time)" + (" (paused)" if app.get("pause") else "")),
-        console.Markup(f"working directory: {console.value(app['dir'])}"),
-        console.Markup("run uv from the system PATH" if on_machine_path else
-                       f"run uv from {console.value(Path(uv).resolve())} (uv is not on the "
-                       "system PATH; a machine-wide install drops the path from the task)"),
+        console.Markup(f"copy the app to {console.value(deployed_folder(name))} and pdt "
+                       f"{console.value(windows_remote.pdt_version())} to {console.value(runtime_folder(name))}; "
+                       "the task runs this copy, so a change to the project reaches the job "
+                       "at the next deploy"),
+        console.Markup(f"store {secret_contents(secrets)} in {console.value(secrets_file(name))} "
+                       "(SYSTEM and Administrators only)"),
+        console.Markup(f"install uv {console.value(windows_uv.VERSION)} at "
+                       f"{console.value(machine_uv())}" if install_uv else
+                       f"run uv {console.value(windows_uv.VERSION)} from "
+                       f"{console.value(machine_uv())}"),
         console.Markup(f"keep the app's run data in {console.value(app_folder(name))} "
-                       f"(SYSTEM: full control; {console.value(user)}: modify)"),
+                       f"(SYSTEM and Administrators: full control; {console.value(user)}: "
+                       "modify in logs and storage)"),
         console.Markup(f"write one log per run under {console.value(logs_folder(name))} "
                        "(removed on destroy)"),
     ]
@@ -448,33 +451,112 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
     return actions
 
 
+def _machine_uv_current() -> bool:
+    try:
+        proc = subprocess.run([str(machine_uv()), "--version"], stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True)
+    except OSError:
+        return False
+    return proc.returncode == 0 and proc.stdout.split()[1:2] == [windows_uv.VERSION]
+
+
+def stage_release(app: dict, secrets: dict[str, str], uv: Path | None) -> Path:
+    context = stage_build_context(app)
+    release = Path(tempfile.mkdtemp(prefix="pdt-release-"))
+    shutil.rmtree(context / ".pdt-lifecycle", ignore_errors=True)
+    shutil.move(str(context), str(release / "app"))
+    shutil.copytree(Path(__file__).resolve().parent, release / "runtime" / "pdt",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    (release / SECRETS_FILE).write_text(json.dumps(secrets, sort_keys=True), encoding="utf-8")
+    if uv is not None:
+        shutil.copy(uv, release / "uv.exe")
+    return release
+
+
+def _release_script(app: dict, release: Path, install: str, register: str) -> str:
+    """Copy the release next to the deployed one (`app.new`, `runtime.new`), install the
+    modules, then swap both folders and the secrets file in and register the task. A failure
+    at any step puts the last release back, so a failed deploy leaves it whole."""
+    name = app["name"]
+    source = _ps_string(str(release))
+    targets = ", ".join(_ps_string(str(folder))
+                        for folder in (deployed_folder(name), runtime_folder(name)))
+    stage = ""
+    for part, folder in (("app", deployed_folder(name)), ("runtime", runtime_folder(name))):
+        stage += (f"$new = {_ps_string(str(folder) + '.new')}; "
+                  "if (Test-Path $new) { Remove-Item -Recurse -Force $new }; "
+                  f"Copy-Item -Recurse -Path (Join-Path {source} '{part}') -Destination $new; ")
+    if (release / "uv.exe").is_file():
+        stage += (f"$bin = {_ps_string(str(machine_uv().parent))}; "
+                  "New-Item -ItemType Directory -Force -Path $bin | Out-Null; "
+                  f"{set_acl('$bin', True)}"
+                  + replace_file(f"(Join-Path {source} 'uv.exe')", machine_uv(), True))
+    stage += (f"$cache = {_ps_string(str(machine_cache()))}; "
+              "New-Item -ItemType Directory -Force -Path $cache | Out-Null; "
+              f"{set_acl('$cache', False)}"
+              f"$secret = {_ps_string(str(secrets_file(name)))}; $placed = \"$secret.tmp\"; "
+              "if (Test-Path $placed) { Remove-Item -Force $placed }; "
+              "New-Item -ItemType File -Path $placed | Out-Null; "
+              f"{set_acl('$placed', False)}"
+              "[IO.File]::WriteAllBytes($placed, [IO.File]::ReadAllBytes("
+              f"(Join-Path {source} '{SECRETS_FILE}'))); ")
+    return (
+        f"$targets = @({targets}); $swapped = @(); $oldSecret = $false; $newSecret = $false; "
+        f"try {{ {stage}{install}"
+        "foreach ($t in $targets) { "
+        "if (Test-Path \"$t.old\") { Remove-Item -Recurse -Force \"$t.old\" }; "
+        "if (Test-Path $t) { Rename-Item -Path $t -NewName ((Split-Path $t -Leaf) + '.old') }; "
+        "Rename-Item -Path \"$t.new\" -NewName (Split-Path $t -Leaf); $swapped += $t }; "
+        "if (Test-Path \"$secret.old\") { Remove-Item -Force \"$secret.old\" }; "
+        "if (Test-Path $secret) { Rename-Item -Path $secret -NewName ((Split-Path $secret -Leaf) "
+        "+ '.old'); $oldSecret = $true }; "
+        "Move-Item -Path $placed -Destination $secret; $newSecret = $true; "
+        f"{register}"
+        "} catch { "
+        "foreach ($t in $targets) { "
+        "if ($swapped -contains $t) { Remove-Item -Recurse -Force $t -ErrorAction SilentlyContinue }; "
+        "if ((-not (Test-Path $t)) -and (Test-Path \"$t.old\")) { "
+        "Rename-Item -Path \"$t.old\" -NewName (Split-Path $t -Leaf) }; "
+        "Remove-Item -Recurse -Force \"$t.new\" -ErrorAction SilentlyContinue }; "
+        "if ($newSecret) { Remove-Item -Force $secret -ErrorAction SilentlyContinue }; "
+        "Remove-Item -Force $placed -ErrorAction SilentlyContinue; "
+        "if ($oldSecret) { Rename-Item -Path \"$secret.old\" -NewName (Split-Path $secret -Leaf) }; "
+        "throw }; "
+        "foreach ($old in ($targets | ForEach-Object { \"$_.old\" }) + \"$secret.old\") { "
+        "Remove-Item -Recurse -Force $old -ErrorAction SilentlyContinue }; "
+    )
+
+
 def deploy(app: dict, assume_yes: bool) -> int:
     try:
-        powershell, uv = _preflight()
-        assert uv is not None
-        on_machine_path = uv_on_machine_path()
+        powershell = _preflight()
         name = _task_name(app["name"])
         console.status(f"Checking Windows scheduled task {console.value(name)}...")
         user = _deploying_user()
-        description, xml = task_xml(app, uv, on_machine_path)
+        description, xml = task_xml(app)
         state = _task_state(powershell, name)
         if state == "unmanaged":
             raise WindowsDeployError(
                 f"Windows scheduled task {name} exists but is not managed by PDT")
         exists = state == "managed"
         pwsh, modules = _prepare_powershell(app)
-    except (config.ConfigError, WindowsDeployError) as exc:
+        install_uv = not _machine_uv_current()
+        uv = (windows_uv.fetch(os.environ.get("PROCESSOR_ARCHITECTURE", "AMD64"))
+              if install_uv else None)
+    except (config.ConfigError, WindowsDeployError, windows_uv.UvError) as exc:
         console.error(console.escape(str(exc)))
         return 1
+    secrets = gather_secrets(app)
 
-    actions = plan(app, "update" if exists else "create", description, user, uv,
-                   on_machine_path, pwsh, modules)
+    actions = plan(app, "update" if exists else "create", description, user, secrets,
+                   install_uv, pwsh, modules)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges", currency=regions.local_currency())
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
 
+    release = stage_release(app, secrets, uv)
     payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     install = ""
     if modules:
@@ -482,14 +564,12 @@ def deploy(app: dict, assume_yes: bool) -> int:
         install = (f"& {_ps_string(pwsh)} -NoProfile -NonInteractive -EncodedCommand {command}; "
                    "if ($LASTEXITCODE -ne 0) { throw \"PowerShell module install failed "
                    "with exit $LASTEXITCODE\" }; ")
-    script = (
-        f"{_folder_script(app, user)}"
-        f"{install}"
+    register = (
         f"$name = {_ps_string(name)}; "
         f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
-        "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
-        "-ErrorAction Stop | Out-Null"
-    )
+        "Register-ScheduledTask -TaskName $name -Xml $xml -Force | Out-Null; ")
+    script = ("$ErrorActionPreference = 'Stop'; " + SET_ACL + _folder_script(app, user)
+              + _release_script(app, release, install, register))
     console.status(f"{'Updating' if exists else 'Creating'} Windows scheduled task "
                    f"{console.value(name)}...")
     try:
@@ -497,13 +577,15 @@ def deploy(app: dict, assume_yes: bool) -> int:
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
+    finally:
+        shutil.rmtree(release, ignore_errors=True)
     console.done(f"Deployed {console.value(app['name'])} as Windows task {console.value(name)}.")
     return 0
 
 
 def destroy(app: dict, assume_yes: bool) -> int:
     try:
-        powershell, _uv = _preflight(require_uv=False)
+        powershell = _preflight()
         name = _task_name(app["name"])
         console.status(f"Checking Windows scheduled task {console.value(name)}...")
         state = _task_state(powershell, name)
@@ -514,9 +596,14 @@ def destroy(app: dict, assume_yes: bool) -> int:
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
-    logs = logs_folder(app["name"])
-    logs_exist = logs.is_dir()
-    if not exists and not logs_exist:
+    parts = [(logs_folder(app["name"]), "run logs folder"),
+             (deployed_folder(app["name"]), "deployed app folder"),
+             (runtime_folder(app["name"]), "deployed pdt folder"),
+             (secrets_file(app["name"]), "secrets file")]
+    leftovers = [(Path(f"{path}{suffix}"), f"{label} ({suffix[1:]} copy)" if suffix else label)
+                 for path, label in parts for suffix in ("", ".new", ".old", ".tmp")
+                 if Path(f"{path}{suffix}").exists()]
+    if not exists and not leftovers:
         console.done(f"Nothing to remove for {console.value(app['name'])}; task "
                      f"{console.value(name)} does not exist.")
         if app["storage"]:
@@ -528,9 +615,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
         actions.append(console.Markup(f"delete Windows scheduled task {console.value(name)}"))
         script += (f"Unregister-ScheduledTask -TaskName {_ps_string(name)} "
                    "-Confirm:$false -ErrorAction Stop; ")
-    if logs_exist:
-        actions.append(console.Markup(f"delete run logs folder {console.value(logs)}"))
-        script += f"Remove-Item -Recurse -Force -Path {_ps_string(str(logs))} -ErrorAction Stop; "
+    for path, label in leftovers:
+        actions.append(console.Markup(f"delete {console.escape(label)} {console.value(path)}"))
+        script += f"Remove-Item -Recurse -Force -Path {_ps_string(str(path))} -ErrorAction Stop; "
     if app["storage"]:
         actions.append(console.Markup(f"keep folder {console.value(storage_folder(app['name']))} "
                                       "(the app's files)"))
@@ -539,7 +626,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.warn("Aborted; nothing was changed.")
         return DECLINED
     console.status(f"Removing Windows scheduled task {console.value(name)}..." if exists
-                   else f"Removing {console.value(logs)}...")
+                   else f"Removing the files of {console.value(app['name'])}...")
     try:
         _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
@@ -548,16 +635,70 @@ def destroy(app: dict, assume_yes: bool) -> int:
     console.done(f"Removed Windows task {console.value(name)}." if exists
                  else f"Nothing to remove for {console.value(app['name'])}; task "
                  f"{console.value(name)} does not exist.")
-    if logs_exist:
-        console.say(f"removed: run logs folder {console.value(logs)}")
+    for path, label in leftovers:
+        console.say(f"removed: {console.escape(label)} {console.value(path)}")
     if app["storage"]:
         console.say(_kept_storage_line(app["name"]))
     return 0
 
 
+def _read_secret(powershell: str, app_name: str) -> str | None:
+    secret = secrets_file(app_name)
+    if not secret.exists():
+        return None
+    if _is_admin():
+        return secret.read_text(encoding="utf-8-sig")
+    folder = Path(tempfile.mkdtemp(prefix="pdt-secret-"))
+    try:
+        copy = folder / secret.name
+        _run(powershell, f"Copy-Item -Path {_ps_string(str(secret))} -Destination "
+                         f"{_ps_string(str(copy))} -ErrorAction Stop", elevate=True)
+        return copy.read_text(encoding="utf-8-sig")
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
+    try:
+        powershell = _preflight()
+        current = _read_secret(powershell, app["name"])
+    except WindowsDeployError as exc:
+        console.error(console.escape(str(exc)))
+        return 1
+
+    def write(values: dict[str, str]) -> None:
+        folder = Path(tempfile.mkdtemp(prefix="pdt-secret-"))
+        try:
+            staged = folder / SECRETS_FILE
+            staged.write_text(json.dumps(values, sort_keys=True), encoding="utf-8")
+            secret = secrets_file(app["name"])
+            console.step(f"updating {console.value(secret)}")
+            _run(powershell, f"$ErrorActionPreference = 'Stop'; {SET_ACL}"
+                             f"$secret = {_ps_string(str(secret))}; $placed = \"$secret.tmp\"; "
+                             "try { if (Test-Path $placed) { Remove-Item -Force $placed }; "
+                             "New-Item -ItemType File -Path $placed | Out-Null; "
+                             f"{set_acl('$placed', False)}"
+                             "[IO.File]::WriteAllBytes($placed, [IO.File]::ReadAllBytes("
+                             f"{_ps_string(str(staged))})); "
+                             "if (Test-Path $secret) { "
+                             "[IO.File]::Replace($placed, $secret, [NullString]::Value) } "
+                             "else { Move-Item -Path $placed -Destination $secret }; "
+                             f"{set_acl('$secret', False)}"
+                             "} catch { Remove-Item -Force $placed -ErrorAction SilentlyContinue; throw }",
+                 elevate=True)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    try:
+        return run_secrets(action, app, current, write, assume_yes, name)
+    except WindowsDeployError as exc:
+        console.error(console.escape(str(exc)))
+        return 1
+
+
 def _managed_task(app: dict) -> tuple[str, str]:
     """The PowerShell path and the task name, once the task exists and is pdt's."""
-    powershell, _uv = _preflight(require_uv=False)
+    powershell = _preflight()
     name = _task_name(app["name"])
     state = _task_state(powershell, name)
     if state == "unmanaged":
@@ -697,6 +838,24 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
     return found
 
 
+def remote(app: dict, host, command: str, rest: list[str], assume_yes: bool) -> int:
+    problem = (config.windows_host_problem(host) if isinstance(host, str)
+               else "write the name of the Windows PC, for example pc01.example.com")
+    if problem != "":
+        console.error(f"platform.host in {console.value(config.PROJECT_FILE)} or "
+                      f"{console.value(app['name'] + '/' + config.APP_FILE)}: "
+                      f"{console.escape(problem)}")
+        return 1
+    try:
+        connection = windows_remote.connect(host, app["name"])
+        if command == "login":
+            return 0
+        return windows_remote.forward(connection, app, command, rest, assume_yes)
+    except (windows_remote.RemoteError, windows_uv.UvError) as exc:
+        console.error(console.escape(str(exc)))
+        return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
@@ -711,19 +870,21 @@ def main() -> int:
     except config.ConfigError as exc:
         console.error(console.escape(str(exc)))
         return 1
+    config.load_env(app["dir"])
+    host = app["platform"].get("host")
+    if host is not None and (not isinstance(host, str) or host.strip() != ""):
+        return remote(app, host, args.command, args.rest, args.yes)
     if sys.platform != "win32":
         console.error(
             "the windows provider targets this computer, but the current operating system "
-            "is not Windows. Run this command on the Windows PC.")
+            "is not Windows. Set host: under platform: in pdt.yml to the name of the Windows "
+            "PC, or run this command on the Windows PC.")
         return 1
     if args.command == "login":
         console.note("the windows provider deploys to this computer, so it needs no login.")
         return 0
     if args.command == "secrets":
-        console.note("the windows provider reads your .env file at every run, "
-                     "so there is nothing to compare, save, get, or set.")
-        return 0
-    config.load_env(app["dir"])
+        return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
     if args.command == "runs":

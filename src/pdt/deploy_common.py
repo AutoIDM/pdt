@@ -641,6 +641,9 @@ def gather_secrets(app: dict) -> dict[str, str]:
         value = os.environ.get(name, "").strip()
         if value and name not in values:
             values[name] = value
+        encoded = name[:-5] + "_B64"
+        if name.endswith("_PATH") and not value and os.environ.get(encoded, "").strip():
+            values[encoded] = os.environ[encoded].strip()
     for name in [key for key in values if key.endswith("_PATH")]:
         target = name[:-5] + "_B64"
         path = Path(values[name]).expanduser()

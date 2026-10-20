@@ -20,6 +20,14 @@ def console_on_stdout(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def pinned_windows_uv_installed(monkeypatch):
+    from pdt import deploy_windows
+    monkeypatch.setattr(deploy_windows, "_machine_uv_current", lambda: True)
+    monkeypatch.setattr(deploy_windows.windows_uv, "fetch",
+                        lambda processor: pytest.fail("a test downloaded uv"))
+
+
+@pytest.fixture(autouse=True)
 def price_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "PRICE_CACHE", tmp_path / "prices")
     return tmp_path / "prices"
