@@ -40,6 +40,15 @@ def test_help_points_to_the_discord_and_hides_welcome(monkeypatch, capsys, flag)
     assert "welcome" not in out
 
 
+def test_welcome_with_a_command_is_an_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as raised:
+        run_cli(monkeypatch, "--welcome", "init", "demo", "--yes")
+    assert raised.value.code == 2
+    assert "--welcome takes no command" in capsys.readouterr().err
+    assert not (tmp_path / "demo").exists()
+
+
 def test_welcome_runs_without_a_project(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     monkeypatch.chdir(tmp_path)

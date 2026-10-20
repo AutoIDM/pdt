@@ -351,7 +351,6 @@ def init(directory: str | None, assume_yes: bool) -> int:
 
 
 def welcome() -> int:
-    """What the PowerShell window that the Windows installer opens shows first."""
     console.say(console.escape(ART))
     console.next_steps([("pdt init my-project", "create a project in a new folder"),
                         ("cd my-project", "go to the new project"),
