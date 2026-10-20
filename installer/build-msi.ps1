@@ -24,9 +24,16 @@ Copy-Item (Join-Path $work 'uv\uv.exe') $payload
 Invoke-WebRequest "https://raw.githubusercontent.com/astral-sh/uv/$UvVersion/LICENSE-MIT" -OutFile (Join-Path $payload 'uv-LICENSE-MIT.txt')
 Copy-Item $Launcher (Join-Path $payload 'pdt.exe')
 
+$vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+Import-Module (Join-Path $vs 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=amd64 -no_logo'
+$setup = Join-Path $work 'setup.dll'
+& cl /nologo /O2 /MT /LD /EHsc /W4 /WX "/Fo$work\setup.obj" (Join-Path $PSScriptRoot 'setup.cpp') /link "/OUT:$setup" msi.lib
+if ($LASTEXITCODE) { throw "cl failed with exit code $LASTEXITCODE" }
+
 $ui = Join-Path (Split-Path $Wix) 'WixToolset.UI.wixext.dll'
 $util = Join-Path (Split-Path $Wix) 'WixToolset.Util.wixext.dll'
-& $Wix build (Join-Path $PSScriptRoot 'pdt.wxs') -arch x64 -ext $ui -ext $util -d "Version=$Version" -d "Payload=$payload" -o $Out
+& $Wix build (Join-Path $PSScriptRoot 'pdt.wxs') -arch x64 -ext $ui -ext $util -d "Version=$Version" -d "Payload=$payload" -d "SetupDll=$setup" -o $Out
 if ($LASTEXITCODE) { throw "wix build failed with exit code $LASTEXITCODE" }
 & $Wix msi validate $Out
 if ($LASTEXITCODE) { throw "wix msi validate failed with exit code $LASTEXITCODE" }

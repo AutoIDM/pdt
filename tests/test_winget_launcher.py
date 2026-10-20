@@ -11,7 +11,7 @@ launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
 
 HOME = Path("C:/Users/me/AppData/Local/AutoIDM/pdt")
-INSTALL = ["uv", "tool", "install", f"pdt-cli=={launcher.VERSION}"]
+INSTALL = ["uv", "tool", "install", "--python", "3.12", "--compile-bytecode", f"pdt-cli=={launcher.VERSION}"]
 
 
 UV_LINES = [
@@ -128,23 +128,6 @@ def test_failed_install_exits_1_without_running_pdt(monkeypatch, uv_on_path):
     assert run.commands == [INSTALL]
 
 
-def test_phase_follows_the_last_uv_line_it_knows():
-    expected = [
-        "downloading Python",
-        "finding the pdt libraries",
-        "downloading the pdt libraries",
-        "downloading the pdt libraries",
-        "downloading the pdt libraries",
-        "installing",
-        "installing",
-        "installing",
-        "installing",
-        "installing",
-    ]
-    assert launcher.phase([]) == "finding the pdt libraries"
-    assert [launcher.phase(UV_LINES[:n + 1]) for n in range(len(UV_LINES))] == expected
-
-
 def test_terminal_shows_one_status_line_that_ends_done(monkeypatch, uv_on_path, capsys):
     fake_uv(monkeypatch, pause=0.05)
     monkeypatch.setattr(launcher.sys.stderr, "isatty", lambda: True)
@@ -152,26 +135,25 @@ def test_terminal_shows_one_status_line_that_ends_done(monkeypatch, uv_on_path, 
     err = capsys.readouterr().err
     assert err.startswith("\r")
     assert err.count("\n") == 1
-    assert err.split("\r")[-1].rstrip() == f"Setting up pdt {launcher.VERSION}: done (0s)"
+    assert err.split("\r")[-1].rstrip() == "Setting up pdt: done (0s)"
 
 
-def test_status_update_clears_the_longer_line_before_it(monkeypatch, uv_on_path, capsys):
+def test_status_line_counts_seconds_with_no_phase_names(monkeypatch, uv_on_path, capsys):
     fake_uv(monkeypatch, pause=0.05)
     monkeypatch.setattr(launcher.sys.stderr, "isatty", lambda: True)
     monkeypatch.setattr(launcher, "TICK", 1.0)
-    monkeypatch.setattr(launcher, "phase", lambda output: "downloading the pdt libraries")
     launcher.main(["list"])
     first, done = capsys.readouterr().err.split("\r")[1:]
-    assert first == f"Setting up pdt {launcher.VERSION}: downloading the pdt libraries (0s)"
-    assert done == f"Setting up pdt {launcher.VERSION}: done (0s)".ljust(len(first)) + "\n"
+    assert first == "Setting up pdt (0s)"
+    assert done == "Setting up pdt: done (0s)\n"
 
 
 def test_not_a_terminal_prints_the_start_and_done_lines_only(monkeypatch, uv_on_path, capsys):
     fake_uv(monkeypatch)
     launcher.main(["list"])
     assert capsys.readouterr().err == (
-        f"Setting up pdt {launcher.VERSION}: started\n"
-        f"Setting up pdt {launcher.VERSION}: done (0s)\n"
+        "Setting up pdt: started\n"
+        "Setting up pdt: done (0s)\n"
     )
 
 
@@ -189,8 +171,8 @@ def test_failed_install_prints_what_uv_said(monkeypatch, uv_on_path, capsys):
     fake_uv(monkeypatch, install_code=1, lines=UV_FAILURE)
     assert launcher.main(["list"]) == 1
     assert capsys.readouterr().err == (
-        f"Setting up pdt {launcher.VERSION}: started\n"
-        f"Setting up pdt {launcher.VERSION}: failed (0s)\n"
+        "Setting up pdt: started\n"
+        "Setting up pdt: failed (0s)\n"
         + b"".join(UV_FAILURE).decode()
     )
 

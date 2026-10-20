@@ -24,25 +24,11 @@ VERSION = "0.0.0"
 NEEDS_UV = ("pdt needs uv. Install it with: winget install astral-sh.uv\n"
             "Then open a new PowerShell window and run pdt again.")
 TICK = 0.25
-PHASES = (
-    (b"Downloading cpython", "downloading Python"),
-    (b"Downloaded cpython", "finding the pdt libraries"),
-    (b"Resolved ", "downloading the pdt libraries"),
-    (b"Prepared ", "installing"),
-)
-
-
-def phase(output: list[bytes]) -> str:
-    for line in reversed(output):
-        for prefix, name in PHASES:
-            if line.lstrip().startswith(prefix):
-                return name
-    return "finding the pdt libraries"
 
 
 def install(uv: str, env: dict[str, str]) -> bool:
     started = time.monotonic()
-    proc = subprocess.Popen([uv, "tool", "install", f"pdt-cli=={VERSION}"], env=env, stdin=subprocess.DEVNULL,
+    proc = subprocess.Popen([uv, "tool", "install", "--python", "3.12", "--compile-bytecode", f"pdt-cli=={VERSION}"], env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     output: list[bytes] = []
 
@@ -54,18 +40,18 @@ def install(uv: str, env: dict[str, str]) -> bool:
     reader.start()
     tty = sys.stderr.isatty()
     if not tty:
-        sys.stderr.write(f"Setting up pdt {VERSION}: started\n")
+        sys.stderr.write("Setting up pdt: started\n")
     shown = ""
     while reader.is_alive():
         if tty:
-            line = f"Setting up pdt {VERSION}: {phase(output)} ({int(time.monotonic() - started)}s)"
+            line = f"Setting up pdt ({int(time.monotonic() - started)}s)"
             sys.stderr.write("\r" + line.ljust(len(shown)))
             sys.stderr.flush()
             shown = line
         reader.join(TICK)
     ok = proc.wait() == 0
     state = "done" if ok else "failed"
-    end = f"Setting up pdt {VERSION}: {state} ({int(time.monotonic() - started)}s)"
+    end = f"Setting up pdt: {state} ({int(time.monotonic() - started)}s)"
     if tty:
         sys.stderr.write("\r")
     sys.stderr.write(end.ljust(len(shown)) + "\n")
