@@ -115,8 +115,6 @@ def destroy(store, app, assume_yes) -> int:
 
 def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
         note: str = "") -> int:
-    """`page` is where `--open` with no subcommand goes: the app's folder in the console.
-    `note` tells the user what to do on it."""
     name = app["name"]
     if not app["storage"]:
         console.error(f"storage is turned off for {console.value(name)}; "

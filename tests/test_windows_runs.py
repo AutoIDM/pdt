@@ -288,8 +288,8 @@ def two_logs(project, monkeypatch):
     app = windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
     folder.mkdir(parents=True)
-    (folder / "20260923T090000Z.log").write_text("10:00:00 INFO   starting\npdt: exit 3\n")
-    (folder / "20260923T100000Z.log").write_text("10:00:00 INFO   starting\n")
+    (folder / "20260923T090000Z.log").write_bytes(b"10:00:00 INFO   starting\npdt: exit 3\n")
+    (folder / "20260923T100000Z.log").write_bytes(b"10:00:00 INFO   starting\n")
     monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
     monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: True)
     return app, folder

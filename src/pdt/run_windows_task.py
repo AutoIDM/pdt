@@ -19,9 +19,7 @@ both streams to
 (LINE_TIME), ends the file with `pdt: exit N` (the marker `pdt runs` reads),
 and exits with the child's exit code so `Get-ScheduledTaskInfo` shows it.
 It then writes the result to the Windows Application log under the source
-`pdt` (event RUN_SUCCEEDED or RUN_FAILED), where the monitoring an IT team
-already runs can alert on it; a run whose event cannot be written keeps its
-exit code.
+`pdt` (event RUN_SUCCEEDED or RUN_FAILED).
 
 It needs nothing beyond the standard library and never prints: nobody watches
 a scheduled task. When uv cannot be started the log holds the reason and
@@ -80,7 +78,7 @@ def report(app: str, log: Path, code: int) -> None:
         advapi.ReportEventW(source, kind, 0, event, None, 1, 0,
                             (ctypes.c_wchar_p * 1)(message), None)
         advapi.DeregisterEventSource(source)
-    except Exception:
+    except (AttributeError, OSError):
         pass
 
 

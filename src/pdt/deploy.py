@@ -368,8 +368,7 @@ def pause(app_name: str, paused: bool) -> int:
 
 
 def start(app_name: str, follow: bool = False) -> int:
-    """Start one run of the deployed job now; with `follow`, print its log until it ends and
-    return the run's exit code."""
+    """Start one run of the deployed job now."""
     try:
         app, provider = _load(app_name)
     except ConfigError as e:

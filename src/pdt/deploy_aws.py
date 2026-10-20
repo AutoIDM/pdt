@@ -1000,8 +1000,6 @@ def storage(app: dict, session, account: str, rest: list[str], assume_yes: bool)
 
 
 def sso_role(profile: str) -> tuple[str, str, str] | None:
-    """The (start URL, account, role) an IAM Identity Center profile signs in to; None for
-    any other login."""
     target = sso_target(profile)
     settings = botocore.session.Session().full_config["profiles"].get(profile, {})
     if target is None or not settings.get("sso_account_id") or not settings.get("sso_role_name"):

@@ -367,7 +367,6 @@ def currency_prefix(currency: str) -> str:
 
 
 def size(count: int) -> str:
-    """Bytes in B, KB, MB, GB, or TB: the largest unit that keeps the number at 1 or more."""
     if count < 1024:
         return f"{count} B"
     amount = count / 1024

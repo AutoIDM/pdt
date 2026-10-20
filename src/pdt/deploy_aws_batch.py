@@ -1121,7 +1121,6 @@ def log_stream(batch, run: runs_cli.Run) -> str | None:
 
 
 def log_streams(batch, found: list[runs_cli.Run]) -> list[str]:
-    """Each run's log stream, from one describe_jobs call per 100 runs, its limit."""
     ids = [run.id for run in found]
     streams = {}
     for start in range(0, len(ids), 100):

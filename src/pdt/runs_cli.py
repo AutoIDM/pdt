@@ -62,9 +62,6 @@ class Line:
 
 @dataclasses.dataclass
 class LogPlace:
-    """Where `pdt logs` reads each run's log: `shared` for every run, under `label`, and
-    `items(runs)` for each run, in order, under `column`. A `folder` on this computer holds a
-    file per run, named by its item. `--open` opens `page()`, or `link(item)` for one run."""
     label: str
     shared: str
     column: str
@@ -234,7 +231,6 @@ def say_not_run(app_name: str, args: argparse.Namespace, since: datetime | None,
 
 
 def open_place(target: str, note: str = "") -> int:
-    """Open a console URL in the browser, or a file or folder on this computer in its app."""
     if Path(target).is_absolute() and not Path(target).exists():
         console.error(f"{console.value(target)} does not exist yet; deploy and run the app first")
         return 1
@@ -264,7 +260,6 @@ def numbered(list_runs: Callable[[], list[Run]]) -> list[Run]:
 def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
          resolve: Callable[[list[Run]], None] | None = None, page: str = "",
          note: str = "") -> int:
-    """`page` is where `--open` goes; `note` tells the user where to look on it."""
     parser = argparse.ArgumentParser(prog=f"pdt runs {app_name}")
     add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
@@ -305,8 +300,7 @@ def logs(list_runs: Callable[[], list[Run]],
          stream: Callable[[Run, bool], Iterable[Line]] | None = None,
          new: Callable[[Run], bool] | None = None,
          place: LogPlace | None = None) -> int:
-    """`new` picks the run a start just made; the list may show it a few seconds late.
-    `place` says where each run's log is, for --list."""
+    """`new` picks the run a start just made; the list may show it a few seconds late."""
     parser = argparse.ArgumentParser(prog=f"pdt logs {app_name}")
     parser.add_argument("number", nargs="?", type=int)
     parser.add_argument("--id", action="append")

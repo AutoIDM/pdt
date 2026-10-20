@@ -28,13 +28,12 @@ the absolute path deploy found. Either way `uv run` hands the runner the uv
 that started it in `UV`, so the runner never looks uv up again.
 
 The task runs as the SYSTEM account, so it does not depend on a user being
-logged on. The runner writes each run's result to the Application log under
-the event source `pdt`, which deploy registers. Registering or removing the
-task needs administrator rights; a non-elevated shell gets one UAC prompt. The
-same elevated script creates the app folder and gives SYSTEM full control and
-the deploying user modify rights, so that user can delete what the task wrote.
-Deploy always registers the complete desired task definition with -Force, so
-rerunning it safely reconciles changes to the schedule or repository path.
+logged on. Registering or removing it needs administrator rights; a
+non-elevated shell gets one UAC prompt. The same elevated script creates the
+app folder and gives SYSTEM full control and the deploying user modify
+rights, so that user can delete what the task wrote. Deploy always registers
+the complete desired task definition with -Force, so rerunning it safely
+reconciles changes to the schedule or repository path.
 
 A PowerShell app (.ps1 files, no run.py) runs through run_powershell.py
 instead of run.py, unless `pdt new APP --from-scripts` wrote it one. Before

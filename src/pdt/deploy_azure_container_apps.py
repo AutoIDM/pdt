@@ -188,14 +188,11 @@ def enable_acr_arm_auth(registry: str) -> None:
 
 
 def job_history_url(settings: dict[str, str], job: str) -> str:
-    # The Execution history tab lists every run, and each run's Console link
-    # opens that run's logs. No deeper deep link exists.
     return portal_url(settings, "resource" + resource_id(settings, "Microsoft.App", "jobs", job)
                       + "/executionHistory")
 
 
 def logs_query_url(settings: dict, job: str, execution: str = "") -> str:
-    # The portal's "share link to query" form, which takes the query gzipped, then base64.
     workspace = (f"/subscriptions/{settings['subscription']}/resourceGroups/"
                  f"{settings['environment'].resource_group}/providers/"
                  f"Microsoft.OperationalInsights/workspaces/{settings['workspace']}")

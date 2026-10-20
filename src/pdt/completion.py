@@ -54,13 +54,10 @@ def files(prefix: str, **_kwargs) -> list[str]:
 
 
 def storage_args(prefix: str, parsed_args, **_kwargs) -> list[str]:
-    """`pdt storage APP ls|get PATH` takes a path in the app's store and `get`'s DEST a local
-    path; the other words are not paths."""
     rest = parsed_args.rest or []
     if not rest:
         return [name for name in config.STORAGE_COMMANDS if name.startswith(prefix)]
     if rest[0] in ("ls", "get") and len(rest) == 1:
-        # Only a Windows store is a local folder; a cloud store would need a network call.
         try:
             app = parsed_args.app or config.current_app()
             if app is None or config.merged_app(app)["platform"].get("provider") != "windows":
