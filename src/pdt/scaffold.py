@@ -314,8 +314,13 @@ def platform_lines(platform: dict) -> list[str]:
 
 def replace_platform(text: str, platform: dict) -> str:
     import yaml
-    lines = text.splitlines()
+    end_of_line = "\r" if "\r\n" in text else ""
+    lines = text.split("\n")
+    new = [line + end_of_line for line in platform_lines(platform)]
     root = yaml.compose(text)
+    if isinstance(root, yaml.MappingNode) and root.flow_style:
+        raise ConfigError(f"the top level of {PROJECT_FILE} is in braces, so pdt cannot change "
+                          f"it safely. Change platform: in {PROJECT_FILE} by hand.")
     found = [(key, value) for key, value in (root.value if root is not None else [])
              if key.value == "platform"]
     if found:
@@ -324,27 +329,39 @@ def replace_platform(text: str, platform: dict) -> str:
             last = value.value[-1][1].end_mark
         else:
             last = value.end_mark
-        lines[key.start_mark.line:last.line + (last.column > 0)] = platform_lines(platform)
-    elif PLATFORM_TEMPLATE in lines:
-        start = lines.index(PLATFORM_TEMPLATE)
-        end = start + 1
-        while end < len(lines) and lines[end].startswith("#  "):
-            end += 1
-        lines[start:end] = platform_lines(platform)
+        start, stop = key.start_mark.line, last.line + (last.column > 0)
+        if any(getattr(event, "anchor", None) and start <= event.start_mark.line < stop
+               and not isinstance(event, yaml.AliasEvent) for event in yaml.parse(text)):
+            raise ConfigError(f"platform: in {PROJECT_FILE} holds a YAML anchor (&), so pdt "
+                              f"cannot change it safely. Change platform: in {PROJECT_FILE} by hand.")
+        lines[start:stop] = new
+    elif PLATFORM_TEMPLATE + end_of_line in lines:
+        start = lines.index(PLATFORM_TEMPLATE + end_of_line)
+        stop = start + 1
+        while stop < len(lines) and lines[stop].startswith("#  "):
+            stop += 1
+        lines[start:stop] = new
     else:
-        lines += [""] + platform_lines(platform)
-    return "\n".join(lines) + "\n"
+        if lines[-1] != "":
+            lines[-1] += end_of_line
+            lines.append("")
+        lines[-1:] = [end_of_line, *new, ""]
+    return "\n".join(lines)
 
 
-def provider_and_region(name: str) -> tuple:
-    platform = merged_app(name)["platform"]
+def provider_and_region(root_cfg: dict, root_platform: dict, app_dir: Path) -> tuple:
+    platform = {**root_platform,
+                **(config.root_app_entry(root_cfg, app_dir.name).get("platform") or {}),
+                **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
     return platform.get("provider"), platform.get("region")
 
 
 def change_provider(target: Path) -> int:
     marker = target / PROJECT_FILE
-    text = marker.read_text(encoding="utf-8-sig")
-    current = config.load_yaml(marker).get("platform") or {}
+    text = marker.read_bytes().decode("utf-8")
+    bom = "\ufeff" if text.startswith("\ufeff") else ""
+    root_cfg = config.load_yaml(marker)
+    current = root_cfg.get("platform") or {}
     old = str(current.get("provider") or "")
     console.say(f"{console.value(target)} is already a pdt project.")
     if old != "":
@@ -354,11 +371,11 @@ def change_provider(target: Path) -> int:
         console.say("Nothing changed.")
         return 0
     platform = ask_settings(provider, kept_settings(current, provider))
-    deployed = [name for name in config.read_state().get("deployed") or []
-                if name in config.app_folders()]
-    before = {name: provider_and_region(name) for name in deployed}
-    marker.write_text(replace_platform(text, platform))
-    moved = [name for name in deployed if provider_and_region(name) != before[name]]
+    changed = bom + replace_platform(text.removeprefix(bom), platform)
+    moved = [name for name in config.read_state().get("deployed") or []
+             if name in config.app_folders()
+             and provider_and_region(root_cfg, current, target / name)
+             != provider_and_region(root_cfg, platform, target / name)]
     if moved:
         console.say()
         console.warn("These deployed apps move to another provider or region: "
@@ -371,12 +388,13 @@ def change_provider(target: Path) -> int:
         except EOFError:
             answer = False
         if not answer:
-            marker.write_text(text)
             console.say()
             console.next_steps([*((f"pdt destroy {name}", "remove the deployed app first")
                                   for name in moved),
                                 ("pdt init", "then move the project")])
             return 0
+    with config.locked(marker):
+        config.write_text_atomically(marker, changed, newline="")
     console.say()
     console.done(f"Saved the {console.value('platform:')} settings to {console.value(PROJECT_FILE)}.")
     console.next_steps([("pdt validate", "check every app on the new settings"),
@@ -430,8 +448,15 @@ def init(directory: str | None, assume_yes: bool) -> int:
         if assume_yes:
             console.say(f"{console.value(target)} is already a pdt project.")
             return 0
+        previous = os.environ.get("PDT_PROJECT")
         os.environ["PDT_PROJECT"] = str(target)
-        return change_provider(target)
+        try:
+            return change_provider(target)
+        finally:
+            if previous is None:
+                del os.environ["PDT_PROJECT"]
+            else:
+                os.environ["PDT_PROJECT"] = previous
     starting_fresh = has_nothing_in_it(target)
 
     platform = ask_platform(assume_yes)

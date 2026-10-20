@@ -432,3 +432,39 @@ def test_init_again_reads_this_folder_when_pdt_project_names_another(project, mo
     assert scaffold.init(None, assume_yes=False) == 0
     assert "pdt destroy report" in capsys.readouterr().out
     assert yaml.safe_load((other / PROJECT_FILE).read_text())["platform"]["provider"] == "azure"
+
+
+@pytest.mark.parametrize("text", [
+    "{platform: {provider: azure}, apps: []}\n",
+    "platform: &defaults\n  provider: azure\napps:\n- name: report\n  platform: *defaults\n",
+])
+def test_replace_platform_refuses_a_form_it_cannot_change_safely(text):
+    with pytest.raises(ConfigError, match="by hand"):
+        scaffold.replace_platform(text, {"provider": "aws"})
+
+
+def test_a_move_keeps_the_byte_order_mark_and_the_line_endings(project, monkeypatch):
+    (project / PROJECT_FILE).write_bytes(
+        "﻿# mine\r\nplatform:\r\n  provider: azure\r\n\r\napps: []\r\n".encode())
+    answer(monkeypatch, ["2", "us-east-2", "UTC"])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert (project / PROJECT_FILE).read_bytes().decode() == (
+        "﻿# mine\r\nplatform:\r\n  provider: \"aws\"\r\n  region: \"us-east-2\"\r\n"
+        "  timezone: \"UTC\"\r\n\r\napps: []\r\n")
+
+
+def test_ctrl_c_at_the_move_question_changes_nothing(project, monkeypatch):
+    deployed_app(project, "report")
+    before = (project / PROJECT_FILE).read_text()
+    answer(monkeypatch, ["2", "us-east-2", ""])
+    monkeypatch.setattr(scaffold.console, "confirm",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))
+    with pytest.raises(KeyboardInterrupt):
+        scaffold.init(None, assume_yes=False)
+    assert (project / PROJECT_FILE).read_text() == before
+
+
+def test_init_again_puts_pdt_project_back(project, monkeypatch):
+    answer(monkeypatch, ["5"])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert "PDT_PROJECT" not in os.environ

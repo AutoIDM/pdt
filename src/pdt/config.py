@@ -474,10 +474,10 @@ def yaml_quoted(value: str) -> str:
     return f'"{escaped}"'
 
 
-def write_text_atomically(path: Path, text: str) -> None:
+def write_text_atomically(path: Path, text: str, newline: str | None = None) -> None:
     # The temporary file sits in the same folder because a rename is atomic only
     # within one filesystem.
-    tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+    tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, newline=newline,
                                       prefix=path.name + ".", suffix=".tmp", delete=False)
     try:
         with tmp:
