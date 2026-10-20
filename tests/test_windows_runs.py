@@ -122,6 +122,27 @@ def test_list_runs_without_a_running_task_is_failed(project, monkeypatch):
     assert found[0].status == "failed"
 
 
+def test_list_runs_reads_an_exit_line_written_while_it_checks_the_task(project, monkeypatch):
+    windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder.mkdir(parents=True)
+    log = folder / "20261020T132758Z.log"
+    log.write_bytes(b"2026-10-20T13:29:24.100Z 06:29:24 INFO    Hello, world!\r\n")
+
+    def task_ends(powershell, name):
+        with log.open("ab") as out:
+            out.write(b"2026-10-20T13:29:24.300Z pdt: exit 0\n")
+        return False
+
+    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
+    monkeypatch.setattr(deploy_windows, "_task_running", task_ends)
+
+    (run,) = deploy_windows.list_runs("my-report")
+
+    assert (run.status, run.exit_code) == ("succeeded", 0)
+    assert run.ended is not None
+
+
 def test_list_runs_keeps_every_file(project):
     windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
