@@ -19,9 +19,9 @@ struct Phase {
 };
 
 const Phase PHASES[] = {
-    {"", L"Setting up pdt", 3},
-    {"Downloading cpython", L"Downloading Python", 8},
-    {"Resolved ", L"Downloading pdt", 6},
+    {"", L"Setting up pdt", 4},
+    {"Downloading cpython", L"Downloading Python", 20},
+    {"Resolved ", L"Downloading pdt", 9},
     {"Prepared ", L"Installing pdt", 5},
     {"Installed ", L"Preparing pdt", 12},
 };
