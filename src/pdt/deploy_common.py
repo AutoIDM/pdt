@@ -200,6 +200,8 @@ def stage_script_header(stage: Path, app_dir: Path) -> None:
     lock = app_dir / "run.py.lock"
     if lock.is_file():
         shutil.copy(lock, folder / lock.name)
+    for wheel in app_dir.glob("*.whl"):
+        shutil.copy(wheel, folder / wheel.name)
 
 
 def context_ignore_text(text: str, app_name: str) -> str:
@@ -615,9 +617,9 @@ def run_build(command: list[str], data: str | None = None, quiet: bool = False) 
     proc = subprocess.run(
         command, input=data, capture_output=quiet, text=True, check=False)
     if proc.returncode:
-        if proc.stdout.strip():
+        if (proc.stdout or "").strip():
             console.say(console.escape(proc.stdout.strip()))
-        if proc.stderr.strip():
+        if (proc.stderr or "").strip():
             console.say(console.escape(proc.stderr.strip()))
         fail(f"{console.value(' '.join(command[:3]))} failed")
 
