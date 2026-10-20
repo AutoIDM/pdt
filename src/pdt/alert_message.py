@@ -61,8 +61,6 @@ FIELDS = {"project": "Project", "app": "App", "provider": "Provider", "deployed"
 HIDDEN = {"url"}
 CLOUDS = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
 MAX_FIELDS = 10
-# The console line of each event pdt emits. {to} and {on} name the provider, such as
-# " to Azure". The line leaves out the time and the run id; a failed run adds its exit code.
 SENTENCES = {
     "app:deploy-started": "Deploying {app}{to}",
     "app:deploy-completed": "Deployed {app}{to}",
@@ -130,7 +128,7 @@ def event_message(event, unhandled: bool = False) -> Message:
 
 def event_sentence(event) -> str:
     """One event as the console says it, such as `Run of hello-world failed (interrupted, exit code 130)`.
-    An event that SENTENCES does not name says the title of event_message."""
+    An event that SENTENCES does not name, or one without an `app`, says the title of event_message."""
     params = event.params
     if event.name not in SENTENCES or "app" not in params:
         return event_message(event).title
