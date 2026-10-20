@@ -39,7 +39,6 @@ def webhook_id(url: str) -> str:
 
 
 def label(entry: dict) -> str:
-    """The entry as pdt names it: its `name`, its old #channel, or its webhook ID."""
     if entry.get("name"):
         return str(entry["name"])
     if entry.get("channel"):
@@ -48,8 +47,6 @@ def label(entry: dict) -> str:
 
 
 def secret_name(entry: dict) -> str:
-    """The env var that holds the entry's webhook: SLACK_WEBHOOK_B0123ABC, or
-    SLACK_WEBHOOK_IT_ALERTS for an old `channel: it-alerts`."""
     return alert_message.env_name("SLACK_WEBHOOK_", str(entry.get("webhook") or entry["channel"]))
 
 

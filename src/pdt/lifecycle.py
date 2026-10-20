@@ -116,8 +116,6 @@ class Transport:
     name: str
     keys: frozenset[str]
     deliver: Callable[[Event, dict, bool], None]
-    # The keys of which an entry must set exactly one, and the env vars that hold its
-    # secrets, which config.env_spec adds to every app's env spec so deploy sends them.
     one_of: tuple[str, ...] = ()
     secrets: Callable[[dict], list[str]] = lambda entry: []
 

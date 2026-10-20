@@ -31,20 +31,17 @@ CARD_VERSION = "1.2"
 
 
 def webhook_id(url: str) -> str:
-    """The workflow ID of a Workflows URL: the part after /workflows/."""
     found = re.search(r"/workflows/([A-Za-z0-9]+)(?:/|$)", urllib.parse.urlparse(url).path)
     return found.group(1) if found else alert_message.url_id(url)
 
 
 def label(entry: dict) -> str:
-    """The entry as pdt names it: its `name`, or its workflow ID."""
     if entry.get("name"):
         return str(entry["name"])
     return f"workflow {entry['webhook']}"
 
 
 def secret_name(entry: dict) -> str:
-    """The env var that holds the entry's workflow URL: TEAMS_WEBHOOK_<ID>."""
     return alert_message.env_name("TEAMS_WEBHOOK_", str(entry["webhook"]))
 
 
