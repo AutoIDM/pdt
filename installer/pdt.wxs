@@ -1,4 +1,4 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package Name="pdt"
            Manufacturer="AutoIDM"
            Version="$(Version)"
@@ -15,6 +15,7 @@
       <Directory Id="LocalPrograms" Name="Programs">
         <Directory Id="INSTALLFOLDER" Name="pdt" />
       </Directory>
+      <Directory Id="AutoIDMFolder" Name="AutoIDM" />
     </StandardDirectory>
 
     <Component Directory="INSTALLFOLDER" Guid="{0BC63BCA-7324-484F-9C3A-B6173D3C24E3}">
@@ -25,6 +26,9 @@
       <RegistryValue Root="HKCU" Key="Software\AutoIDM\pdt" Name="InstallFolder" Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
       <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
       <RemoveFolder Id="RemoveLocalPrograms" Directory="LocalPrograms" On="uninstall" />
+      <!-- A major upgrade keeps the uv tool folder, and the setup step of the new version updates it. -->
+      <util:RemoveFolderEx Id="RemovePdtHome" Property="PdtHome" On="uninstall" Condition="NOT UPGRADINGPRODUCTCODE" />
+      <RemoveFolder Id="RemoveAutoIDMFolder" Directory="AutoIDMFolder" On="uninstall" />
     </Component>
 
     <WixVariable Id="WixUIBannerBmp" Value="$(sys.SOURCEFILEDIR)banner.bmp" />
@@ -32,6 +36,7 @@
     <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="pdt is installed. Open a new terminal and run pdt init to start." />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open PowerShell and run pdt" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <SetProperty Id="PdtHome" Value="[LocalAppDataFolder]AutoIDM\pdt" Before="Wix4RemoveFoldersEx_X64" Sequence="execute" />
     <!-- Without a network the setup fails, the install still succeeds, and the first pdt run sets up. -->
     <Binary Id="PdtSetup" SourceFile="$(SetupDll)" />
     <SetProperty Id="SetUpPdt" Value="&quot;[INSTALLFOLDER]uv.exe&quot; tool install --python 3.12 --compile-bytecode pdt-cli==[ProductVersion]" Before="SetUpPdt" Sequence="execute" Condition="NOT REMOVE~=&quot;ALL&quot;" />
