@@ -41,7 +41,6 @@ Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-ar
 $env:NUGET_PACKAGES = Join-Path $Out 'nuget'
 # WiX audits every package at every severity, and -warnaserror turns an advisory published
 # after the pinned tag (such as NU1902) into a build error that the pin cannot fix.
-# nuget.exe restore ignores NuGetAudit=false, so -nowarn keeps its audit results out of the build.
 $c = '-p:Configuration=Release;NuGetAudit=false'
 $n = '-nowarn:NU1900;NU1901;NU1902;NU1903;NU1904'
 Push-Location (Join-Path $wix 'src')

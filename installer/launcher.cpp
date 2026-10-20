@@ -1,7 +1,3 @@
-// The pdt.exe that the winget zip and the MSI install. It installs pdt-cli at PDT_VERSION as a uv tool
-// under %LOCALAPPDATA%\AutoIDM\pdt when that version is not there yet, then runs the real pdt with the
-// same arguments. That folder is not on the PATH, so this launcher is the pdt that runs, and a winget
-// upgrade or a newer MSI takes effect. build-launcher.ps1 sets PDT_VERSION.
 #include <windows.h>
 #include <string>
 
@@ -92,10 +88,19 @@ void drain(HANDLE pipe, std::string& output) {
     }
 }
 
-bool install(const std::wstring& uv) {
+bool install(const std::wstring& uv, const std::wstring& home) {
     ULONGLONG started = GetTickCount64();
     auto seconds = [&] { return std::to_string((GetTickCount64() - started) / 1000); };
     std::wstring command = L"\"" + uv + L"\" tool install --python 3.12 --compile-bytecode pdt-cli==" + VERSION;
+
+    std::wstring uv_environment;
+    wchar_t* strings = GetEnvironmentStringsW();
+    for (const wchar_t* entry = strings; *entry; entry += wcslen(entry) + 1) {
+        if (_wcsnicmp(entry, L"UV_TOOL_DIR=", 12) && _wcsnicmp(entry, L"UV_TOOL_BIN_DIR=", 16)) uv_environment.append(entry) += L'\0';
+    }
+    FreeEnvironmentStringsW(strings);
+    uv_environment += L"UV_TOOL_DIR=" + home + L"\\tools" + L'\0';
+    uv_environment += L"UV_TOOL_BIN_DIR=" + home + L"\\bin" + L'\0';
 
     SECURITY_ATTRIBUTES inherit = {sizeof(inherit), nullptr, TRUE};
     HANDLE read = nullptr, write_end = nullptr;
@@ -108,7 +113,7 @@ bool install(const std::wstring& uv) {
     startup.hStdOutput = write_end;
     startup.hStdError = write_end;
     PROCESS_INFORMATION process = {};
-    BOOL launched = CreateProcessW(nullptr, &command[0], nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup, &process);
+    BOOL launched = CreateProcessW(nullptr, &command[0], nullptr, nullptr, TRUE, CREATE_UNICODE_ENVIRONMENT, &uv_environment[0], nullptr, &startup, &process);
     DWORD error = GetLastError();
     CloseHandle(write_end);
     if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
@@ -164,14 +169,7 @@ int wmain() {
             write(NEEDS_UV);
             return 1;
         }
-        // uv gets UV_TOOL_DIR and UV_TOOL_BIN_DIR; pdt gets the environment the launcher started with.
-        std::wstring tool_dir = environment(L"UV_TOOL_DIR"), bin_dir = environment(L"UV_TOOL_BIN_DIR");
-        SetEnvironmentVariableW(L"UV_TOOL_DIR", (home + L"\\tools").c_str());
-        SetEnvironmentVariableW(L"UV_TOOL_BIN_DIR", (home + L"\\bin").c_str());
-        bool ok = install(uv);
-        SetEnvironmentVariableW(L"UV_TOOL_DIR", tool_dir.empty() ? nullptr : tool_dir.c_str());
-        SetEnvironmentVariableW(L"UV_TOOL_BIN_DIR", bin_dir.empty() ? nullptr : bin_dir.c_str());
-        if (!ok) return 1;
+        if (!install(uv, home)) return 1;
     }
     return static_cast<int>(run(L"\"" + home + L"\\bin\\pdt.exe\"" + arguments()));
 }

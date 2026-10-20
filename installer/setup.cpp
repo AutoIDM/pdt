@@ -1,5 +1,3 @@
-// The MSI setup step: runs the uv tool install that CustomActionData holds and shows its progress
-// in the installer dialog. A failed install does not fail the MSI, because the first pdt run retries.
 #include <windows.h>
 #include <msiquery.h>
 #include <cstring>
@@ -10,12 +8,10 @@ namespace {
 const int TICKS = 500000000;
 const DWORD TICK_MS = 250;
 
-// seconds is how long the phase took on a test computer. A phase gets that share of the bar
-// that is still empty, so a phase that uv skips (Python already present) leaves no jump.
 struct Phase {
     const char* line;
     const wchar_t* text;
-    double seconds;
+    double typical_seconds;
 };
 
 const Phase PHASES[] = {
@@ -27,15 +23,19 @@ const Phase PHASES[] = {
 };
 const int COUNT = sizeof(PHASES) / sizeof(PHASES[0]);
 
+double share_of_empty_bar(int phase) {
+    double left = 0;
+    for (int i = phase; i < COUNT; ++i) left += PHASES[i].typical_seconds;
+    return PHASES[phase].typical_seconds / left;
+}
+
 class Progress {
 public:
     explicit Progress(MSIHANDLE install) : install_(install) {}
 
     bool show(int phase) {
         phase_ = phase;
-        double left = 0;
-        for (int i = phase; i < COUNT; ++i) left += PHASES[i].seconds;
-        end_ = position_ + (1 - position_) * PHASES[phase].seconds / left;
+        end_ = position_ + (1 - position_) * share_of_empty_bar(phase);
         PMSIHANDLE action = MsiCreateRecord(3);
         MsiRecordSetStringW(action, 1, L"SetUpPdt");
         MsiRecordSetStringW(action, 2, PHASES[phase].text);
@@ -45,7 +45,7 @@ public:
     }
 
     bool tick() {
-        position_ += (end_ - position_) * (TICK_MS / 1000.0) / (PHASES[phase_].seconds / 2);
+        position_ += (end_ - position_) * (TICK_MS / 1000.0) / (PHASES[phase_].typical_seconds / 2);
         return move(position_);
     }
 
@@ -117,7 +117,9 @@ bool read_lines(HANDLE pipe, std::string& pending, Progress& progress) {
     return true;
 }
 
-UINT run(MSIHANDLE install) {
+enum Setup { SET_UP, FAILED, CANCELLED };
+
+Setup set_up(MSIHANDLE install) {
     DWORD size = 0;
     wchar_t empty[1] = L"";
     MsiGetPropertyW(install, L"CustomActionData", empty, &size);
@@ -127,13 +129,13 @@ UINT run(MSIHANDLE install) {
     command.resize(size);
 
     Progress progress(install);
-    if (!progress.show(0)) return ERROR_INSTALL_USEREXIT;
+    if (!progress.show(0)) return CANCELLED;
 
     wchar_t local[MAX_PATH];
     DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
     if (command.empty() || !length || length >= MAX_PATH) {
         progress.log(L"pdt setup skipped: no command or no LOCALAPPDATA");
-        return progress.finish() ? ERROR_SUCCESS : ERROR_INSTALL_USEREXIT;
+        return progress.finish() ? FAILED : CANCELLED;
     }
     std::wstring home = std::wstring(local) + L"\\AutoIDM\\pdt";
     SetEnvironmentVariableW(L"UV_TOOL_DIR", (home + L"\\tools").c_str());
@@ -142,7 +144,7 @@ UINT run(MSIHANDLE install) {
     progress.log(L"pdt setup: " + command);
     SECURITY_ATTRIBUTES inherit = {sizeof(inherit), nullptr, TRUE};
     HANDLE read = nullptr, write = nullptr;
-    if (!CreatePipe(&read, &write, &inherit, 0)) return ERROR_SUCCESS;
+    if (!CreatePipe(&read, &write, &inherit, 0)) return FAILED;
     SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
     HANDLE nul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr);
 
@@ -158,7 +160,7 @@ UINT run(MSIHANDLE install) {
     if (!started) {
         progress.log(L"pdt setup could not start uv, error " + std::to_wstring(GetLastError()));
         CloseHandle(read);
-        return progress.finish() ? ERROR_SUCCESS : ERROR_INSTALL_USEREXIT;
+        return progress.finish() ? FAILED : CANCELLED;
     }
 
     std::string pending;
@@ -178,8 +180,8 @@ UINT run(MSIHANDLE install) {
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     CloseHandle(read);
-    if (cancelled || !progress.finish()) return ERROR_INSTALL_USEREXIT;
-    return ERROR_SUCCESS;
+    if (cancelled || !progress.finish()) return CANCELLED;
+    return code == 0 ? SET_UP : FAILED;
 }
 
 }  // namespace
@@ -191,5 +193,5 @@ extern "C" __declspec(dllexport) UINT __stdcall SetUpPdt(MSIHANDLE install) {
         MsiRecordSetInteger(record, 2, TICKS);
         return MsiProcessMessage(install, INSTALLMESSAGE_PROGRESS, record) == IDCANCEL ? ERROR_INSTALL_USEREXIT : ERROR_SUCCESS;
     }
-    return run(install);
+    return set_up(install) == CANCELLED ? ERROR_INSTALL_USEREXIT : ERROR_SUCCESS;
 }
