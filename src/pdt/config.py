@@ -275,13 +275,13 @@ def merged_app(name: str) -> dict:
             docker_build, docker_build_from = section["docker-build"], where
         if "alerts" in section:
             alerts, alerts_from = section["alerts"], where
-    default_timezone = platform.get(
-        "timezone", "local" if platform.get("provider") == "windows" else "Etc/UTC")
+    default_timezone = platform.get("timezone") or (
+        "local" if platform.get("provider") == "windows" else "Etc/UTC")
     return {
         "name": name,
         "dir": app_dir,
         "schedule": own.get("schedule", entry.get("schedule")),
-        "timezone": own.get("timezone", entry.get("timezone", default_timezone)),
+        "timezone": own.get("timezone") or entry.get("timezone") or default_timezone,
         "platform": platform,
         "config": {
             **mapping(entry, "config", entry_where),

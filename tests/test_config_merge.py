@@ -108,6 +108,17 @@ def test_windows_app_with_no_timezone_runs_on_local_time(project):
     assert merged_app("my-report")["timezone"] == "local"
 
 
+@pytest.mark.parametrize(("root", "own"), [
+    ("platform:\n  provider: windows\n  timezone:\n", "schedule: daily\n"),
+    ("platform:\n  provider: windows\n", "schedule: daily\ntimezone:\n"),
+])
+def test_windows_app_with_a_blank_timezone_runs_on_local_time(project, root, own):
+    (project / "pdt.yml").write_text(root)
+    add_app(project, "my-report", own)
+    assert merged_app("my-report")["timezone"] == "local"
+    assert validate_app("my-report") == []
+
+
 def test_cloud_app_with_no_timezone_runs_on_utc(project):
     (project / "pdt.yml").write_text("platform:\n  provider: google-cloud\n  region: us-central1\n")
     add_app(project, "my-report", "schedule: daily\n")
