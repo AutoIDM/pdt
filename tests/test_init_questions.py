@@ -12,8 +12,9 @@ def test_every_provider_choice_has_questions_defined():
         assert provider in PROVIDER_QUESTIONS
 
 
-def test_azure_asks_only_for_the_region_and_time_zone():
-    assert keys("azure") == ["region", "timezone"]
+def test_azure_asks_only_for_the_region():
+    # deploy_azure stops on any time zone but UTC, so there is nothing to ask.
+    assert keys("azure") == ["region"]
 
 
 def test_azure_does_not_ask_for_the_resource_group():

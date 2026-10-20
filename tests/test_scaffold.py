@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from conftest import add_app
 from pdt import __version__, powershell, scaffold, watch
 from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_apps, powershell_scripts, validate_app
 
@@ -323,6 +324,24 @@ def test_replace_platform_keeps_every_other_line():
                                    "apps": []}
 
 
+@pytest.mark.parametrize("text", [
+    "platform:\n  provider: azure\n# a comment at column zero\n  subscription: s\n\n# apps\napps: []\n",
+    "#platform:\n#  provider: azure\nplatform:\n  provider: azure\n  subscription: s\napps: []\n",
+    '"platform":\n  provider: azure\n  subscription: s\napps: []\n',
+    "platform: {provider: azure, subscription: s}\napps: []\n",
+])
+def test_replace_platform_replaces_the_whole_active_block(text):
+    out = scaffold.replace_platform(text, {"provider": "aws"})
+    assert yaml.safe_load(out) == {"platform": {"provider": "aws"}, "apps": []}
+    assert "subscription" not in out
+
+
+def test_replace_platform_keeps_the_comment_above_the_next_key():
+    out = scaffold.replace_platform("platform:\n  provider: azure\n\n# apps\napps: []\n",
+                                    {"provider": "aws"})
+    assert "# apps\napps: []" in out
+
+
 def test_replace_platform_fills_in_the_commented_block():
     out = scaffold.replace_platform(scaffold.project_yaml({}), {"provider": "aws"})
     assert yaml.safe_load(out)["platform"] == {"provider": "aws"}
@@ -334,47 +353,82 @@ def test_replace_platform_adds_a_block_when_there_is_none():
     assert yaml.safe_load(out) == {"apps": [], "platform": {"provider": "windows"}}
 
 
-@pytest.mark.parametrize("provider,kept", [
-    ("azure", {"provider": "azure", "region": "eastus2", "subscription": "s",
-               "timezone": "America/Chicago"}),
-    ("aws", {"timezone": "America/Chicago"}),
-    ("windows", {}),
+@pytest.mark.parametrize("current,provider,kept", [
+    ({"provider": "aws", "region": "us-east-1", "timezone": "America/Chicago"}, "aws",
+     {"provider": "aws", "region": "us-east-1", "timezone": "America/Chicago"}),
+    ({"provider": "aws", "account": "1", "timezone": "America/Chicago"}, "google-cloud",
+     {"timezone": "America/Chicago"}),
+    ({"provider": "aws", "timezone": "America/Chicago"}, "azure", {}),
+    ({"provider": "aws", "timezone": "America/Chicago"}, "windows", {}),
+    ({"provider": "windows", "timezone": "local"}, "aws", {}),
 ])
-def test_a_move_keeps_only_the_settings_the_new_provider_reads(provider, kept):
-    current = {"provider": "azure", "region": "eastus2", "subscription": "s",
-               "timezone": "America/Chicago"}
+def test_a_move_keeps_only_the_settings_the_new_provider_reads(current, provider, kept):
     assert scaffold.kept_settings(current, provider) == kept
 
 
-def answer(monkeypatch, choices, confirms=()):
-    replies, yes = iter(choices), iter(confirms)
+def answer(monkeypatch, replies, confirms=()):
+    replies, confirms = iter(replies), iter(confirms)
     monkeypatch.setattr(scaffold.console, "ask", lambda question, default="": next(replies))
-    monkeypatch.setattr(scaffold.console, "confirm", lambda *a, **k: next(yes))
-    logins = []
-    monkeypatch.setattr(scaffold.deploy, "login", lambda name: logins.append(name) or 0)
-    return logins
+    monkeypatch.setattr(scaffold.console, "confirm", lambda *a, **k: next(confirms))
+
+
+def deployed_app(project, name, config_text=""):
+    add_app(project, name, config_text)
+    from pdt import config
+    config.mark_deployed(name, True)
 
 
 def test_init_again_moves_the_project_to_another_provider(project, monkeypatch):
     (project / PROJECT_FILE).write_text(
-        "platform:\n  provider: azure\n  region: eastus2\n  subscription: s\n"
+        "platform:\n  provider: aws\n  region: us-east-1\n  account: \"1\"\n"
         "  timezone: America/Chicago\n\nalerts: []\n")
-    (project / "report").mkdir()
-    (project / "report" / "run.py").write_text("")
-    logins = answer(monkeypatch, ["2", "us-east-2", ""], [True])
+    answer(monkeypatch, ["3", "us-east4", ""])
     assert scaffold.init(None, assume_yes=False) == 0
-    data = yaml.safe_load((project / PROJECT_FILE).read_text())
-    assert data == {"platform": {"provider": "aws", "timezone": "America/Chicago",
-                                 "region": "us-east-2"}, "alerts": []}
-    assert logins == ["report"]
+    assert yaml.safe_load((project / PROJECT_FILE).read_text()) == {
+        "platform": {"provider": "google-cloud", "timezone": "America/Chicago",
+                     "region": "us-east4"},
+        "alerts": []}
 
 
 def test_init_again_stops_before_a_move_that_leaves_apps_deployed(project, monkeypatch):
+    deployed_app(project, "report")
     before = (project / PROJECT_FILE).read_text()
-    (project / "report").mkdir()
-    (project / "report" / "run.py").write_text("")
-    from pdt import config
-    config.mark_deployed("report", True)
-    answer(monkeypatch, ["2"], [False])
+    answer(monkeypatch, ["2", "us-east-2", ""], [False])
     assert scaffold.init(None, assume_yes=False) == 0
     assert (project / PROJECT_FILE).read_text() == before
+
+
+def test_a_region_change_warns_too(project, monkeypatch, capsys):
+    (project / PROJECT_FILE).write_text("platform:\n  provider: azure\n  region: eastus2\n")
+    deployed_app(project, "report")
+    answer(monkeypatch, ["1", "westeurope"], [False])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert "pdt destroy report" in capsys.readouterr().out
+
+
+def test_an_app_with_its_own_provider_is_not_warned_about(project, monkeypatch, capsys):
+    deployed_app(project, "own", "platform:\n  provider: google-cloud\n  region: us-east4\n")
+    answer(monkeypatch, ["2", "us-east-2", ""])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert "pdt destroy" not in capsys.readouterr().out
+
+
+def test_no_answer_at_the_move_question_changes_nothing(project, monkeypatch):
+    deployed_app(project, "report")
+    before = (project / PROJECT_FILE).read_text()
+    answer(monkeypatch, ["2", "us-east-2", ""])
+    monkeypatch.setattr(scaffold.console, "confirm", lambda *a, **k: (_ for _ in ()).throw(EOFError))
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert (project / PROJECT_FILE).read_text() == before
+
+
+def test_init_again_reads_this_folder_when_pdt_project_names_another(project, monkeypatch,
+                                                                       capsys, tmp_path_factory):
+    other = tmp_path_factory.mktemp("other")
+    (other / PROJECT_FILE).write_text("platform:\n  provider: azure\n")
+    deployed_app(project, "report")
+    monkeypatch.setenv("PDT_PROJECT", str(other))
+    answer(monkeypatch, ["2", "us-east-2", ""], [False])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert "pdt destroy report" in capsys.readouterr().out
+    assert yaml.safe_load((other / PROJECT_FILE).read_text())["platform"]["provider"] == "azure"

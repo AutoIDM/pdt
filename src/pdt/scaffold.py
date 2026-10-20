@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pdt import __version__, config, console, deploy, powershell, pwsh, regions, watch
+from pdt import __version__, config, console, powershell, pwsh, regions, watch
 from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
                         merged_app, powershell_scripts)
 from pdt.utils.env_secret import private_file
@@ -40,6 +40,7 @@ PROVIDER_CHOICES = [
     ("", "Decide later"),
 ]
 NAMES = {**regions.PROVIDER_NAMES, "windows": "Windows Task Scheduler"}
+PLATFORM_TEMPLATE = "#platform:"
 
 
 def _needed(answer: str) -> str:
@@ -51,14 +52,12 @@ TIMEZONE_QUESTION = ("timezone", "Which time zone should the schedules use?",
 
 # Ask only what pdt cannot supply. Every provider learns its own account,
 # subscription, or project from the credentials at deploy time and writes the
-# answer back, so the user chooses only the region and the time zone. A cloud
-# provider reads schedules in Etc/UTC unless timezone: names another zone.
+# answer back, so region is the only thing left that the user must choose.
 # Each default is a function, so the region suggested from this computer's
 # time zone is read only when the question is asked.
 PROVIDER_QUESTIONS = {
     "azure": [
         ("region", regions.question("azure"), lambda: regions.suggest_region("azure"), _needed),
-        TIMEZONE_QUESTION,
     ],
     "aws": [
         ("region", regions.question("aws"), lambda: regions.suggest_region("aws"), _needed),
@@ -278,12 +277,11 @@ def ask_provider(current: str = "") -> str:
 
 
 def kept_settings(current: dict, provider: str) -> dict:
-    """The settings in `current` that still hold on `provider`. The account, subscription,
-    project, and region of one provider mean nothing to another; the time zone does."""
     if current.get("provider") == provider:
         return dict(current)
-    if provider in config.CONTAINER_PROVIDERS and "timezone" in current:
-        return {"timezone": current["timezone"]}
+    timezone = current.get("timezone")
+    if timezone not in (None, "local") and TIMEZONE_QUESTION in PROVIDER_QUESTIONS[provider]:
+        return {"timezone": timezone}
     return {}
 
 
@@ -315,42 +313,37 @@ def platform_lines(platform: dict) -> list[str]:
 
 
 def replace_platform(text: str, platform: dict) -> str:
-    """`text` of a pdt.yml with its platform: block, or the commented one `pdt init`
-    writes, replaced by `platform`. Every other line stays as it was."""
+    import yaml
     lines = text.splitlines()
-    start = next((i for i, line in enumerate(lines)
-                  if line.split("#")[0].rstrip() == "platform:" or line.startswith("#platform:")),
-                 None)
-    if start is None:
-        return "\n".join(lines + [""] + platform_lines(platform)) + "\n"
-    commented = lines[start].startswith("#")
-    end = start + 1
-    while end < len(lines) and (lines[end].startswith((" ", "\t")) or lines[end].strip() == ""
-                                or (commented and lines[end].startswith("#  "))):
-        end += 1
-    while end > start + 1 and lines[end - 1].strip() == "":
-        end -= 1
-    lines[start:end] = platform_lines(platform)
+    root = yaml.compose(text)
+    found = [(key, value) for key, value in (root.value if root is not None else [])
+             if key.value == "platform"]
+    if found:
+        key, value = found[0]
+        if isinstance(value, yaml.MappingNode) and not value.flow_style and value.value:
+            last = value.value[-1][1].end_mark
+        else:
+            last = value.end_mark
+        lines[key.start_mark.line:last.line + (last.column > 0)] = platform_lines(platform)
+    elif PLATFORM_TEMPLATE in lines:
+        start = lines.index(PLATFORM_TEMPLATE)
+        end = start + 1
+        while end < len(lines) and lines[end].startswith("#  "):
+            end += 1
+        lines[start:end] = platform_lines(platform)
+    else:
+        lines += [""] + platform_lines(platform)
     return "\n".join(lines) + "\n"
 
 
-def sign_in(provider: str) -> None:
-    """Offer `pdt login` for the first app on `provider`, the same sign-in a deploy asks for."""
-    if provider not in config.CONTAINER_PROVIDERS:
-        return
-    apps = [name for name in config.find_apps()
-            if merged_app(name)["platform"].get("provider") == provider]
-    name = NAMES[provider]
-    if not apps or not console.confirm(f"Sign in to {name} now?", default=True):
-        return
-    if deploy.login(apps[0]) != 0:
-        console.warn(f"The sign-in did not finish. Run {console.value('pdt login')} to try again.")
+def provider_and_region(name: str) -> tuple:
+    platform = merged_app(name)["platform"]
+    return platform.get("provider"), platform.get("region")
 
 
-def rehome(target: Path) -> int:
-    """`pdt init` in a project that has a pdt.yml: walk through the platform settings
-    again, and move the project to another provider when the user picks one."""
+def change_provider(target: Path) -> int:
     marker = target / PROJECT_FILE
+    text = marker.read_text(encoding="utf-8-sig")
     current = config.load_yaml(marker).get("platform") or {}
     old = str(current.get("provider") or "")
     console.say(f"{console.value(target)} is already a pdt project.")
@@ -360,24 +353,32 @@ def rehome(target: Path) -> int:
     if provider == "":
         console.say("Nothing changed.")
         return 0
-    deployed = config.read_state().get("deployed") or []
-    if provider != old and old != "" and deployed:
+    platform = ask_settings(provider, kept_settings(current, provider))
+    deployed = [name for name in config.read_state().get("deployed") or []
+                if name in config.app_folders()]
+    before = {name: provider_and_region(name) for name in deployed}
+    marker.write_text(replace_platform(text, platform))
+    moved = [name for name in deployed if provider_and_region(name) != before[name]]
+    if moved:
         console.say()
-        console.warn(f"These apps are deployed on {console.escape(NAMES.get(old, old))}: "
-                     + ", ".join(console.value(name) for name in deployed))
-        console.say(f"{console.value('pdt destroy')} removes an app from the provider that "
-                    f"{console.value(PROJECT_FILE)} names. After the move, it cannot reach them.")
-        if not console.confirm(f"Move the project to {NAMES[provider]} anyway?"):
+        console.warn("These deployed apps move to another provider or region: "
+                     + ", ".join(console.value(name) for name in moved))
+        console.say(f"{console.value('pdt destroy')} reaches an app only where "
+                    f"{console.value(PROJECT_FILE)} says it runs. After the move, it cannot "
+                    "reach the old deploy.")
+        try:
+            answer = console.confirm("Move them anyway?")
+        except EOFError:
+            answer = False
+        if not answer:
+            marker.write_text(text)
             console.say()
-            console.next_steps([("pdt destroy --all", f"remove the apps from {NAMES.get(old, old)}"),
+            console.next_steps([*((f"pdt destroy {name}", "remove the deployed app first")
+                                  for name in moved),
                                 ("pdt init", "then move the project")])
             return 0
-    platform = ask_settings(provider, kept_settings(current, provider))
-    marker.write_text(replace_platform(marker.read_text(encoding="utf-8-sig"), platform))
     console.say()
     console.done(f"Saved the {console.value('platform:')} settings to {console.value(PROJECT_FILE)}.")
-    sign_in(provider)
-    console.say()
     console.next_steps([("pdt validate", "check every app on the new settings"),
                         ("pdt deploy --all", f"deploy every app to {NAMES[provider]}")])
     return 0
@@ -398,7 +399,7 @@ def project_yaml(platform: dict) -> str:
     else:
         lines += [
             "# Defaults for every app. Fill this in before you deploy.",
-            "#platform:",
+            PLATFORM_TEMPLATE,
             "#  provider: azure        # azure, aws, google-cloud, or windows",
             "#  region: eastus2",
         ]
@@ -429,8 +430,8 @@ def init(directory: str | None, assume_yes: bool) -> int:
         if assume_yes:
             console.say(f"{console.value(target)} is already a pdt project.")
             return 0
-        os.chdir(target)
-        return rehome(target)
+        os.environ["PDT_PROJECT"] = str(target)
+        return change_provider(target)
     starting_fresh = has_nothing_in_it(target)
 
     platform = ask_platform(assume_yes)
@@ -444,9 +445,6 @@ def init(directory: str | None, assume_yes: bool) -> int:
     private_file(target / ".env")
     if starting_fresh:
         copy_example(target, STARTER, EXAMPLES / STARTER)
-    os.chdir(target)
-    if not assume_yes:
-        sign_in(platform.get("provider", ""))
 
     console.done(f"Your project is ready: {console.value(target)}")
     files = [(PROJECT_FILE, "settings shared by every app"), (".env", "secrets, never committed"),
