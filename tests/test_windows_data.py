@@ -70,8 +70,7 @@ def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
         "create Windows scheduled task pdt-my-report (runs as SYSTEM)",
         "run my-report hourly at minute 00 (machine local time)",
         f"working directory: {app['dir']}",
-        f"run uv from {project / 'uv.exe'} (uv is not on the system PATH; "
-        "a machine-wide install drops the path from the task)",
+        f"run uv from {project / 'uv.exe'}",
         f"keep the app's run data in {folder} (SYSTEM: full control; PC\\jon: modify)",
         f"write one log per run under {folder / 'logs'} (removed on destroy)",
         f"use folder {folder / 'storage'} for the app's files (kept after destroy)",
