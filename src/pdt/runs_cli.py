@@ -238,6 +238,8 @@ def open_place(target: str, note: str = "") -> int:
         if target.startswith("https://"):
             if not webbrowser.open(target):
                 console.field("open this page in a browser", target)
+                if note:
+                    console.say(note)
                 return 0
         elif sys.platform == "win32":
             os.startfile(target)
@@ -265,6 +267,9 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--open", action="store_true")
     args = parser.parse_args(rest)
+    if args.open and args.json:
+        console.error("--open does not print JSON; leave out --json")
+        return 1
     if args.open:
         return open_place(page, note)
     try:
@@ -315,6 +320,9 @@ def logs(list_runs: Callable[[], list[Run]],
     add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
+    if args.open and args.json:
+        console.error("--open does not print JSON; leave out --json")
+        return 1
     if args.open and args.number is None and not args.id and not args.failed:
         return open_place(place.page(), place.note)
     if args.list and (args.follow or args.id or args.failed):

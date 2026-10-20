@@ -136,7 +136,7 @@ pdt login my-report
 | `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
 | `pdt run APP` | run an app on this machine |
 | `pdt run APP --deployed` | start one run of the deployed job now, on its platform |
-| `pdt run APP --deployed --follow` | start one run of the deployed job, follow its log, and exit with the run's exit code |
+| `pdt run APP --deployed --follow` | start one run of the deployed job, follow its log, and exit 0 when it succeeds or 1 when it fails |
 | `pdt deploy APP` | deploy an app to its configured platform, then ask whether to start a run and follow its log |
 | `pdt deploy APP --run` | deploy, then start a run and follow its log with no question |
 | `pdt deploy APP --rebuild` | deploy, and build and push the image even when the app did not change |

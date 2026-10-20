@@ -1051,3 +1051,20 @@ def test_logs_list_shows_the_exit_code_of_a_running_run_that_has_one(capsys):
     running = Run("stream-3", T1, None, "running", 0)
     assert runs_cli.logs(lambda: [running], read, "my-report", ["--list"], place=PLACE) == 0
     assert capsys.readouterr().out.splitlines()[-1].split()[-1] == "0"
+
+
+@pytest.mark.parametrize("command", [
+    lambda rest: runs_cli.runs(list_two, "my-report", rest, page="https://console.example/runs"),
+    lambda rest: runs_cli.logs(list_two, read, "my-report", rest, place=PLACE)])
+def test_open_with_json_is_an_error(command, opened, capsys):
+    assert command(["--open", "--json"]) == 1
+    assert opened == []
+    assert "--open does not print JSON; leave out --json" in capsys.readouterr().out
+
+
+def test_open_without_a_browser_prints_the_page_and_the_note(monkeypatch, capsys):
+    monkeypatch.setattr(runs_cli.webbrowser, "open", lambda url: False)
+    assert runs_cli.open_place("https://console.example/runs", "look for pdt-my-report") == 0
+    out = capsys.readouterr().out
+    assert "https://console.example/runs" in out
+    assert "look for pdt-my-report" in out

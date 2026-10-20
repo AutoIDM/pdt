@@ -29,9 +29,9 @@ def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
     totals = {entry["name"].rstrip("/"): [0, 0] for entry in entries
               if entry.get("type") == "directory"}
     if totals:
-        depth = len(path.strip("/").split("/")) if path.strip("/") else 0
+        depth = len(next(iter(totals)).split("/"))
         for name, entry in fs.find(path, detail=True).items():
-            top = totals.get("/".join(name.split("/")[:depth + 1]))
+            top = totals.get("/".join(name.split("/")[:depth]))
             if top is not None:
                 top[0] += 1
                 top[1] += entry.get("size") or 0
@@ -53,9 +53,10 @@ def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
 
 
 def get(store, path, dest: Path, show: bool = False) -> int:
+    saved = dest / Path(path).name if dest.is_dir() else dest
     store.fs().get(path, str(dest))
     console.done(f"saved {console.value(path)} to {console.value(dest)}")
-    return runs_cli.open_place(str(dest.resolve())) if show else 0
+    return runs_cli.open_place(str(saved.resolve())) if show else 0
 
 
 def query(store, sql) -> int:
@@ -126,6 +127,9 @@ def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
     assume_yes = assume_yes or "--yes" in rest
     show = "--open" in rest
     rest = [arg for arg in rest if arg not in ("--json", "--recursive", "--yes", "--open")]
+    if show and as_json:
+        console.error("--open does not print JSON; leave out --json")
+        return 1
     if show and not rest:
         return runs_cli.open_place(page, note)
     handlers = {

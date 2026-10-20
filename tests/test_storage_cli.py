@@ -146,3 +146,34 @@ def test_get_open_opens_the_saved_file(store, app, monkeypatch, tmp_path):
 def test_open_with_another_subcommand_is_an_error(store, app, capsys):
     assert storage_cli.run(store, app, ["ls", "--open"], False) == 1
     assert "--open works only with get" in capsys.readouterr().out
+
+
+def test_open_with_json_is_an_error(store, app, monkeypatch, capsys):
+    monkeypatch.setattr(storage_cli.runs_cli, "open_place", lambda *args: pytest.fail("opened"))
+    assert storage_cli.run(store, app, ["--open", "--json"], False, "https://console.example/b") == 1
+    assert "--open does not print JSON; leave out --json" in capsys.readouterr().out
+
+
+def test_ls_counts_a_subfolder_of_a_backslash_path(store, app, monkeypatch, capsys, tmp_path):
+    nested = tmp_path / "store" / "my-report" / "runs" / "r1" / "more"
+    nested.mkdir(parents=True)
+    (nested / "b.txt").write_text("bb")
+    fs = store.fs()
+    monkeypatch.setattr(Store, "fs", lambda self: type("Windows", (), {
+        "ls": lambda self, path, detail: fs.ls(path.replace("\\", "/"), detail=detail),
+        "find": lambda self, path, detail: fs.find(path.replace("\\", "/"), detail=detail),
+    })())
+    assert storage_cli.run(store, app, ["ls", "runs\\r1", "--json"], False) == 0
+    assert [(entry["files"], entry["size"]) for entry in json.loads(capsys.readouterr().out)] == [
+        (1, 2)]
+
+
+def test_get_open_into_a_folder_opens_the_saved_file(store, app, monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr(storage_cli.runs_cli, "open_place",
+                        lambda target, note="": opened.append(target) or 0)
+    folder = tmp_path / "downloads"
+    folder.mkdir()
+    assert storage_cli.run(store, app, ["get", "a.csv", str(folder), "--open"], False) == 0
+    assert opened == [str((folder / "a.csv").resolve())]
+    assert (folder / "a.csv").read_text() == "a"
