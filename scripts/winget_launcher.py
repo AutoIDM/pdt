@@ -1,7 +1,7 @@
 """The pdt.exe that the winget zip and the MSI install.
 
-It installs pdt-cli at VERSION as a uv tool, which returns at once when that
-version is already there, then runs the real pdt with the same arguments.
+It installs pdt-cli at VERSION as a uv tool when that version is not there yet,
+then runs the real pdt with the same arguments.
 The tool and its pdt.exe go under %LOCALAPPDATA%\\AutoIDM\\pdt, a folder that
 is not on the PATH, so this launcher is the pdt that runs and a winget upgrade
 or a newer MSI takes effect. A `uv tool install pdt-cli` keeps its own copy in
@@ -35,15 +35,11 @@ def main(args: list[str]) -> int:
         "UV_TOOL_DIR": str(home / "tools"),
         "UV_TOOL_BIN_DIR": str(home / "bin"),
     }
-    done = subprocess.run(
-        [uv, "tool", "install", f"pdt-cli=={VERSION}"],
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    if done.returncode != 0:
-        sys.stderr.write(done.stderr)
-        return 1
+    installed = home / "tools" / "pdt-cli" / "Lib" / "site-packages" / f"pdt_cli-{VERSION}.dist-info"
+    if not installed.is_dir():
+        sys.stderr.write(f"Installing pdt {VERSION}. The first install downloads Python and the pdt libraries.\n")
+        if subprocess.run([uv, "tool", "install", f"pdt-cli=={VERSION}"], env=env).returncode != 0:
+            return 1
     return subprocess.run([str(home / "bin" / "pdt.exe"), *args]).returncode
 
 

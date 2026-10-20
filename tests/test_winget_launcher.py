@@ -82,9 +82,25 @@ def test_installs_into_its_own_folders_off_the_path(monkeypatch, uv_on_path):
     assert run.install_env["UV_TOOL_BIN_DIR"] == str(HOME / "bin")
 
 
-def test_failed_install_shows_uv_error_and_exits_1(monkeypatch, uv_on_path, capsys):
+def test_failed_install_exits_1_without_running_pdt(monkeypatch, uv_on_path):
     run = FakeRun(install_code=2)
     monkeypatch.setattr(launcher.subprocess, "run", run)
     assert launcher.main(["list"]) == 1
-    assert "no such version" in capsys.readouterr().err
     assert run.commands == [INSTALL]
+
+
+def test_install_says_what_it_installs(monkeypatch, uv_on_path, capsys):
+    monkeypatch.setattr(launcher.subprocess, "run", FakeRun())
+    launcher.main(["list"])
+    assert f"Installing pdt {launcher.VERSION}." in capsys.readouterr().err
+
+
+def test_installed_version_runs_pdt_without_uv(monkeypatch, uv_on_path, tmp_path, capsys):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    home = tmp_path / "AutoIDM" / "pdt"
+    (home / "tools" / "pdt-cli" / "Lib" / "site-packages" / f"pdt_cli-{launcher.VERSION}.dist-info").mkdir(parents=True)
+    run = FakeRun()
+    monkeypatch.setattr(launcher.subprocess, "run", run)
+    assert launcher.main(["list"]) == 0
+    assert run.commands == [[str(home / "bin" / "pdt.exe"), "list"]]
+    assert capsys.readouterr().err == ""
