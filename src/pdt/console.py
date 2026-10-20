@@ -180,13 +180,12 @@ def failed(message: str) -> None:
     _console.print(f"[red]{message}[/]")
 
 
-def event(text: str, mark: str = "", mark_style: str = "") -> None:
-    """One lifecycle event (pdt.lifecycle), bold magenta so it stands out in a run's output.
-    `mark` names how it reached the console, such as `unhandled` (no alerts entry names
-    the event) or `not delivered to <type>`, in `mark_style` when one is given."""
-    styled = f"[{mark_style}]{escape(mark)}[/]" if mark_style else escape(mark)
-    prefix = f"{styled} " if mark else ""
-    _console.print(f"[bold magenta]\\[event] {prefix}{escape(text)}[/]")
+def event(text: str, mark: str = "") -> None:
+    """One lifecycle event (pdt.lifecycle) as an `[alert]` line, bold magenta so it stands
+    out in a run's output. `mark` is `not delivered to <type>:` when an alerts transport
+    could not send the event."""
+    prefix = f"{escape(mark)} " if mark else ""
+    _console.print(f"[bold magenta]\\[alert] {prefix}{escape(text)}[/]")
 
 
 def event_failed(message: str) -> None:
