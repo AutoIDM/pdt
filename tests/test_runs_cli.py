@@ -781,6 +781,33 @@ def test_store_and_tail_reads_the_store_again_once_hold_has_passed(monkeypatch):
     assert asked == [None, T0 - hold]
 
 
+def test_store_and_tail_reads_the_store_again_only_up_to_the_tail_line(monkeypatch):
+    hold = timedelta(seconds=30)
+    behind, ahead = Line(T0 + timedelta(seconds=20), "INFO", "behind"), Line(T0 + timedelta(seconds=25), "INFO", "ahead")
+    exit_line = Line(T0 + timedelta(seconds=26), "", "pdt: exit 0")
+    read, asked = store_reads([[], [ahead, exit_line]])
+    Clock.moments = [T0, T0 + hold]
+    monkeypatch.setattr(runs_cli, "datetime", Clock)
+    lines = list(runs_cli.store_and_tail(read, [behind, ahead, exit_line], hold))
+    assert lines == [behind, ahead, exit_line]
+    assert asked == [None, T0 - hold]
+
+
+def test_store_and_tail_prints_the_tail_line_before_ending_at_a_stored_exit_line(monkeypatch):
+    hold = timedelta(seconds=30)
+    late = Line(T0 + timedelta(seconds=20), "INFO", "late")
+    exit_line = Line(late.time, "", "pdt: exit 0")
+    read, asked = store_reads([[], [exit_line]])
+
+    def tail():
+        yield late
+        raise AssertionError("the store already gave the exit line")
+    Clock.moments = [T0, T0 + hold]
+    monkeypatch.setattr(runs_cli, "datetime", Clock)
+    assert list(runs_cli.store_and_tail(read, tail(), hold)) == [exit_line, late]
+    assert asked == [None, T0 - hold]
+
+
 def test_store_and_tail_ends_at_the_exit_line_after_one_more_store_read(monkeypatch):
     hold = timedelta(seconds=30)
     started, exit_line = Line(T0, "INFO", "started"), Line(T1, "", "pdt: exit 0")

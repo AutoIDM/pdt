@@ -609,7 +609,8 @@ def unseen(lines: list[Line], errors: bool, seen: Counter) -> list[Line]:
 def store_and_tail(read: Callable[[datetime | None], list[Line]], tail: Iterable[Line],
                    hold: timedelta) -> Iterator[Line]:
     """The store's lines, then each new tail line, until the exit line. A second store read
-    from `hold` before the tail opened gives the lines the store showed late."""
+    from `hold` before the tail opened gives the lines the store showed late; it gives none
+    newer than the tail's line, which the tail itself still delivers in order."""
     opened = datetime.now(UTC)
     printed = Counter()
     lines = unseen(read(None), False, printed)
@@ -622,10 +623,11 @@ def store_and_tail(read: Callable[[datetime | None], list[Line]], tail: Iterable
         exit_line = line.message.startswith(EXIT_MARKER)
         if not reread and (exit_line or datetime.now(UTC) >= opened + hold):
             reread = True
-            lines = unseen(read(opened - hold), False, printed)
+            stored = [s for s in read(opened - hold)
+                      if s.time is None or line.time is None or s.time <= line.time]
+            lines = unseen(stored, False, printed)
             yield from lines
-            if last_exit_line(lines) is not None:
-                return
+            exit_line = exit_line or last_exit_line(lines) is not None
         key = line_key(line)
         tailed[key] += 1
         if tailed[key] > printed[key]:
