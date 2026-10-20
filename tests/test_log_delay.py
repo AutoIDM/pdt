@@ -23,7 +23,7 @@ def test_every_cloud_waits_5_minutes_for_its_log_store(monkeypatch):
     monkeypatch.setattr(deploy_google_cloud, "project_region", lambda app: ("p", "r"))
     monkeypatch.setattr(deploy_google_cloud, "preflight", lambda app, project, yes: project)
     monkeypatch.setattr(deploy_azure_container_apps, "find_job", lambda settings, name: ("job", None))
-    app = {"name": "report"}
+    app = {"name": "report", "platform": {}}
     deploy_aws_batch.logs(app, Session(), [])
     deploy_google_cloud.logs(app, [], False)
     deploy_azure_container_apps.logs(app, {"workspace": "pdt-logs", "subscription": "s"}, [])

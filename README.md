@@ -320,7 +320,7 @@ The Windows provider runs each job on the PC's local time, so `timezone` default
 
 The job runs as the SYSTEM account.
 
-Each run writes one event to the Windows Application log, source `pdt`: event 1000 when it succeeds, event 1001 when it fails. A monitoring tool that reads the Application log can alert on a failed run.
+Each run writes one event to the Windows Application log, source `pdt`: event 1000 when it succeeds, event 1001 when it fails.
 
 Windows accepts these schedules:
 

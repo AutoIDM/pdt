@@ -62,7 +62,7 @@ from pdt.deploy_azure import (
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
     ensure_secret, ensure_store, ensure_workspace, group_can_be_deleted, held_token_store, list_remaining,
     managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
-    purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
+    portal_url, purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, secret_actions, secret_name,
     secret_reads, secret_scope, secret_state, store_condition, store_description,
     store_exists, store_plan, store_reads, store_settings, store_url, store_usage, workspace_keys,
@@ -188,10 +188,10 @@ def enable_acr_arm_auth(registry: str) -> None:
 
 
 def job_history_url(settings: dict[str, str], job: str) -> str:
-    # The job's portal page; its Execution history tab lists every run, and
-    # each run's Console link opens that run's logs. No deeper deep link exists.
-    return ("https://portal.azure.com/#resource"
-            + resource_id(settings, "Microsoft.App", "jobs", job))
+    # The Execution history tab lists every run, and each run's Console link
+    # opens that run's logs. No deeper deep link exists.
+    return portal_url(settings, "resource" + resource_id(settings, "Microsoft.App", "jobs", job)
+                      + "/executionHistory")
 
 
 def logs_query_url(settings: dict, job: str, execution: str = "") -> str:
@@ -204,12 +204,13 @@ def logs_query_url(settings: dict, job: str, execution: str = "") -> str:
              + " | project TimeGenerated, ContainerGroupName_s, Log_s | order by TimeGenerated asc")
     now = datetime.datetime.now(datetime.UTC)
     span = f"{now - datetime.timedelta(days=30):%Y-%m-%dT%H:%M:%SZ}/{now:%Y-%m-%dT%H:%M:%SZ}"
-    return ("https://portal.azure.com/#blade/Microsoft_OperationsManagementSuite_Workspace/"
-            "AnalyticsBlade/initiator/AnalyticsShareLinkToQuery/isQueryEditorVisible/true/scope/"
-            + urllib.parse.quote(json.dumps({"resources": [{"resourceId": workspace}]}), safe="")
-            + "/query/"
-            + urllib.parse.quote(base64.b64encode(gzip.compress(query.encode())).decode(), safe="")
-            + "/isQueryBase64Compressed/true/timespan/" + urllib.parse.quote(span, safe=""))
+    return portal_url(
+        settings, "blade/Microsoft_OperationsManagementSuite_Workspace/"
+        "AnalyticsBlade/initiator/AnalyticsShareLinkToQuery/isQueryEditorVisible/true/scope/"
+        + urllib.parse.quote(json.dumps({"resources": [{"resourceId": workspace}]}), safe="")
+        + "/query/"
+        + urllib.parse.quote(base64.b64encode(gzip.compress(query.encode())).decode(), safe="")
+        + "/isQueryBase64Compressed/true/timespan/" + urllib.parse.quote(span, safe=""))
 
 
 def _activity_error(status_message) -> dict:
@@ -660,8 +661,7 @@ def stream_lines(settings: dict, job: str, run: runs_cli.Run,
 def runs(app: dict, settings: dict, rest: list[str]) -> int:
     job, _current = find_job(settings, app["name"])
     return runs_cli.runs(lambda: list_runs(settings, job), app["name"], rest,
-                         page=job_history_url(settings, job),
-                         note="Open the Execution history tab to see each run.")
+                         page=job_history_url(settings, job))
 
 
 def job_url(settings: dict, job: str, action: str = "") -> str:

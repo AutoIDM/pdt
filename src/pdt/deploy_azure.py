@@ -407,6 +407,7 @@ def preflight(app: dict, settings: dict) -> dict:
     if problem:
         fail(console.escape(problem))
     settings["subscription"] = str(account["id"])
+    settings["tenant"] = str(account.get("tenantId") or "")
     # A first deploy learns the subscription here, and its names must match
     # every later deploy that reads the saved one.
     settings.update(shared_names(settings["subscription"], settings["resource_group"]))
@@ -549,6 +550,12 @@ def relogin(requested: str) -> int:
 def resource_id(settings: dict[str, str], provider: str, kind: str, name: str) -> str:
     return (f"/subscriptions/{settings['subscription']}/resourceGroups/"
             f"{settings['resource_group']}/providers/{provider}/{kind}/{name}")
+
+
+def portal_url(settings: dict, page: str) -> str:
+    """`page` in the Azure portal's directory for the subscription's tenant, so the portal
+    opens it without asking which account to use."""
+    return f"https://portal.azure.com/#@{settings['tenant']}/{page}"
 
 
 def secret_name(app_name: str) -> str:
@@ -1133,9 +1140,9 @@ def note_if_unreadable(usage: tuple[int, int] | None) -> bool:
 
 def storage(app: dict, settings: dict[str, str], rest: list[str], assume_yes: bool) -> int:
     store = store_settings(settings)
-    page = ("https://portal.azure.com/#blade/Microsoft_Azure_Storage/ContainerMenuBlade/overview/"
-            f"storageAccountId/{urllib.parse.quote(store['account_id'], safe='')}/path/"
-            f"{urllib.parse.quote(store['container'] + '/' + app['name'], safe='')}")
+    page = portal_url(settings, "blade/Microsoft_Azure_Storage/ContainerMenuBlade/overview/"
+                      f"storageAccountId/{urllib.parse.quote(store['account_id'], safe='')}/path/"
+                      f"{urllib.parse.quote(store['container'] + '/' + app['name'], safe='')}")
     return storage_cli.run(cli_credential_store(settings, app["name"]), app, rest, assume_yes,
                            page)
 
