@@ -424,8 +424,7 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
                        "(machine local time)" + (" (paused)" if app.get("pause") else "")),
         console.Markup(f"working directory: {console.value(app['dir'])}"),
         console.Markup("run uv from the system PATH" if on_machine_path else
-                       f"run uv from {console.value(Path(uv).resolve())} (uv is not on the "
-                       "system PATH; a machine-wide install drops the path from the task)"),
+                       f"run uv from {console.value(Path(uv).resolve())}"),
         console.Markup(f"keep the app's run data in {console.value(app_folder(name))} "
                        f"(SYSTEM: full control; {console.value(user)}: modify)"),
         console.Markup(f"write one log per run under {console.value(logs_folder(name))} "

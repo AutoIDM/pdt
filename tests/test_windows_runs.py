@@ -78,9 +78,7 @@ def test_plan_names_the_system_path_when_uv_is_on_it(project, monkeypatch):
 
 def test_plan_names_the_saved_path_when_uv_is_not_on_the_system_path(project, monkeypatch):
     saved = project / "uv.exe"
-    assert (f"run uv from {saved} (uv is not on the system PATH; "
-            "a machine-wide install drops the path from the task)"
-            ) in deploy_plan(project, monkeypatch, False)
+    assert f"run uv from {saved}" in deploy_plan(project, monkeypatch, False)
     _description, xml = deploy_windows.task_xml(windows_app(project), "uv.exe", False)
     assert f"<Command>{saved}</Command>" in xml
 
