@@ -199,6 +199,15 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     assert calls == [(("azure", "storage", "hello-world", False, ["--", "ls", "state/"]), {})]
 
 
+@pytest.mark.parametrize("argv, extra", [([], ["--open"]), (["2"], ["2", "--open"])])
+def test_logs_open_passes_the_run_number_only_when_one_is_given(project, monkeypatch, argv, extra):
+    add_app(project, "hello-world", "schedule: daily\n")
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *a: calls.append(a) or 0)
+    assert run_cli(monkeypatch, "logs", "hello-world", *argv, "--open") == 0
+    assert calls == [("azure", "logs", "hello-world", False, ["--", *extra])]
+
+
 def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
     monkeypatch.setenv("PSModulePath", "")
     folder = project / "ps-report"

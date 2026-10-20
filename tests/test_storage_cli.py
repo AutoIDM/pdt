@@ -124,3 +124,23 @@ def test_size_prints_bytes_until_kb_and_so_on_up_to_tb():
     assert [console.size(count) for count in (0, 5, 2048, 1536 * 1024, 3 * 1024 ** 3,
                                               2 * 1024 ** 4, 5000 * 1024 ** 4)] == [
         "0 B", "5 B", "2.0 KB", "1.5 MB", "3.0 GB", "2.0 TB", "5000.0 TB"]
+
+
+def test_open_with_no_subcommand_opens_the_storage_page(store, app, monkeypatch):
+    opened = []
+    monkeypatch.setattr(storage_cli.runs_cli, "open_place", lambda target: opened.append(target) or 0)
+    assert storage_cli.run(store, app, ["--open"], False, "https://console.example/bucket") == 0
+    assert opened == ["https://console.example/bucket"]
+
+
+def test_get_open_opens_the_saved_file(store, app, monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr(storage_cli.runs_cli, "open_place", lambda target: opened.append(target) or 0)
+    assert storage_cli.run(store, app, ["get", "a.csv", str(tmp_path / "a.csv"), "--open"],
+                           False) == 0
+    assert opened == [str(tmp_path / "a.csv")]
+
+
+def test_open_with_another_subcommand_is_an_error(store, app, capsys):
+    assert storage_cli.run(store, app, ["ls", "--open"], False) == 1
+    assert "--open works only with get" in capsys.readouterr().out

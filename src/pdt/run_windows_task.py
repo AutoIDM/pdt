@@ -18,6 +18,10 @@ both streams to
 <logs folder>\\<UTC start>.log, each line after the UTC time it arrived
 (LINE_TIME), ends the file with `pdt: exit N` (the marker `pdt runs` reads),
 and exits with the child's exit code so `Get-ScheduledTaskInfo` shows it.
+It then writes the result to the Windows Application log under the source
+`pdt` (event RUN_SUCCEEDED or RUN_FAILED), where the monitoring an IT team
+already runs can alert on it; a run whose event cannot be written keeps its
+exit code.
 
 It needs nothing beyond the standard library and never prints: nobody watches
 a scheduled task. When uv cannot be started the log holds the reason and
@@ -45,11 +49,39 @@ MANUAL_START = "manual-start"
 MANUAL_START_SECONDS = 300
 LINE_TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) ")
 DRAIN_SECONDS = 2
+EVENT_SOURCE = "pdt"
+RUN_SUCCEEDED = 1000
+RUN_FAILED = 1001
+EVENTLOG_ERROR_TYPE = 1
+EVENTLOG_INFORMATION_TYPE = 4
 
 
 def timed(raw: bytes) -> bytes:
     moment = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     return f"{moment.replace('+00:00', 'Z')} ".encode() + raw.rstrip(b"\r\n") + b"\n"
+
+
+def report(app: str, log: Path, code: int) -> None:
+    message = f"pdt app {app}, run {log.stem}, ended with exit code {code}. Log: {log}"
+    try:
+        import ctypes
+
+        advapi = ctypes.WinDLL("advapi32")
+        advapi.RegisterEventSourceW.restype = ctypes.c_void_p
+        advapi.ReportEventW.argtypes = (
+            ctypes.c_void_p, ctypes.c_ushort, ctypes.c_ushort, ctypes.c_ulong, ctypes.c_void_p,
+            ctypes.c_ushort, ctypes.c_ulong, ctypes.POINTER(ctypes.c_wchar_p), ctypes.c_void_p)
+        advapi.DeregisterEventSource.argtypes = (ctypes.c_void_p,)
+        source = advapi.RegisterEventSourceW(None, EVENT_SOURCE)
+        if not source:
+            return
+        kind, event = ((EVENTLOG_INFORMATION_TYPE, RUN_SUCCEEDED) if code == 0
+                       else (EVENTLOG_ERROR_TYPE, RUN_FAILED))
+        advapi.ReportEventW(source, kind, 0, event, None, 1, 0,
+                            (ctypes.c_wchar_p * 1)(message), None)
+        advapi.DeregisterEventSource(source)
+    except Exception:
+        pass
 
 
 def main(argv: list[str]) -> int:
@@ -119,6 +151,7 @@ def main(argv: list[str]) -> int:
                 if rest[0]:
                     out.write(timed(rest[0]))
         out.write(timed(f"{EXIT_MARKER}{code}".encode()))
+    report(Path(app_dir).name, log, code)
     return code
 
 

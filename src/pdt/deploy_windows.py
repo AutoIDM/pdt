@@ -28,12 +28,13 @@ the absolute path deploy found. Either way `uv run` hands the runner the uv
 that started it in `UV`, so the runner never looks uv up again.
 
 The task runs as the SYSTEM account, so it does not depend on a user being
-logged on. Registering or removing it needs administrator rights; a
-non-elevated shell gets one UAC prompt. The same elevated script creates the
-app folder and gives SYSTEM full control and the deploying user modify
-rights, so that user can delete what the task wrote. Deploy always registers
-the complete desired task definition with -Force, so rerunning it safely
-reconciles changes to the schedule or repository path.
+logged on. The runner writes each run's result to the Application log under
+the event source `pdt`, which deploy registers. Registering or removing the
+task needs administrator rights; a non-elevated shell gets one UAC prompt. The
+same elevated script creates the app folder and gives SYSTEM full control and
+the deploying user modify rights, so that user can delete what the task wrote.
+Deploy always registers the complete desired task definition with -Force, so
+rerunning it safely reconciles changes to the schedule or repository path.
 
 A PowerShell app (.ps1 files, no run.py) runs through run_powershell.py
 instead of run.py, unless `pdt new APP --from-scripts` wrote it one. Before
@@ -65,7 +66,7 @@ from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm
 from pdt.deploy_common import CostEstimate, warn_if_locked
 from pdt.pwsh import ensure_pwsh
-from pdt.run_windows_task import LINE_TIME, MANUAL_START
+from pdt.run_windows_task import EVENT_SOURCE, LINE_TIME, MANUAL_START
 
 
 class WindowsDeployError(Exception):
@@ -429,6 +430,8 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
                        f"(SYSTEM: full control; {console.value(user)}: modify)"),
         console.Markup(f"write one log per run under {console.value(logs_folder(name))} "
                        "(removed on destroy)"),
+        console.Markup("write each run's result to the Windows Application log, source "
+                       f"{console.value(EVENT_SOURCE)}"),
     ]
     dockerfile = Path(app["dir"]) / "Dockerfile"
     if dockerfile.is_file():
@@ -484,6 +487,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     script = (
         f"{_folder_script(app, user)}"
         f"{install}"
+        f"if (-not [Diagnostics.EventLog]::SourceExists({_ps_string(EVENT_SOURCE)})) {{ "
+        f"New-EventLog -LogName Application -Source {_ps_string(EVENT_SOURCE)} }}; "
         f"$name = {_ps_string(name)}; "
         f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
         "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
@@ -611,6 +616,8 @@ def logs(app: dict, rest: list[str], new: Callable[[runs_cli.Run], bool] | None 
                          stream=lambda run, follow: read_lines(app["name"], run, follow), new=new,
                          place=runs_cli.LogPlace("Logs folder", str(logs_folder(app["name"])),
                                                  "Log File", lambda runs: [f"{run.id}.log" for run in runs],
+                                                 lambda: str(logs_folder(app["name"])),
+                                                 lambda item: str(logs_folder(app["name"]) / item),
                                                  logs_folder(app["name"])))
 
 
@@ -629,7 +636,8 @@ def _store(app_name: str):
 def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
     from pdt import storage_cli
 
-    return storage_cli.run(_store(app["name"]), app, rest, assume_yes)
+    return storage_cli.run(_store(app["name"]), app, rest, assume_yes,
+                           str(storage_folder(app["name"])))
 
 
 def parse_line(raw: bytes) -> runs_cli.Line:
@@ -740,7 +748,10 @@ def main() -> int:
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
     if args.command == "runs":
-        return runs_cli.runs(lambda: list_runs(app["name"]), app["name"], args.rest)
+        return runs_cli.runs(lambda: list_runs(app["name"]), app["name"], args.rest,
+                             page="taskschd.msc",
+                             note=f"Find the task {console.value(_task_name(app['name']))} "
+                                  "in Task Scheduler Library.")
     if args.command == "logs":
         return logs(app, args.rest)
     if args.command in ("pause", "unpause"):

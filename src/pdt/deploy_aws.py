@@ -991,13 +991,16 @@ def deployer_store(app: dict, session, account: str) -> Store:
 
 
 def storage(app: dict, session, account: str, rest: list[str], assume_yes: bool) -> int:
-    return storage_cli.run(deployer_store(app, session, account), app, rest, assume_yes)
+    return storage_cli.run(deployer_store(app, session, account), app, rest, assume_yes,
+                           f"https://s3.console.aws.amazon.com/s3/buckets/{store_name(account)}"
+                           f"?region={session.region_name}&prefix={app['name']}/")
 
 
-def log_group_url(region: str, log_group: str) -> str:
+def log_group_url(region: str, log_group: str, stream: str = "") -> str:
     # The CloudWatch console double-encodes names in its URLs: "/" -> "%2F" -> "$252F".
-    return (f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
-            f"#logsV2:log-groups/log-group/{log_group.replace('/', '$252F')}")
+    url = (f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
+           f"#logsV2:log-groups/log-group/{log_group.replace('/', '$252F')}")
+    return f"{url}/log-events/{stream.replace('/', '$252F')}" if stream else url
 
 
 def find_log_group(logs, name: str) -> dict | None:

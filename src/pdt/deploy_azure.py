@@ -1132,7 +1132,12 @@ def note_if_unreadable(usage: tuple[int, int] | None) -> bool:
 
 
 def storage(app: dict, settings: dict[str, str], rest: list[str], assume_yes: bool) -> int:
-    return storage_cli.run(cli_credential_store(settings, app["name"]), app, rest, assume_yes)
+    store = store_settings(settings)
+    page = ("https://portal.azure.com/#blade/Microsoft_Azure_Storage/ContainerMenuBlade/overview/"
+            f"storageAccountId/{urllib.parse.quote(store['account_id'], safe='')}/path/"
+            f"{urllib.parse.quote(store['container'] + '/' + app['name'], safe='')}")
+    return storage_cli.run(cli_credential_store(settings, app["name"]), app, rest, assume_yes,
+                           page)
 
 
 def run_basis(seconds: float | None) -> tuple[float, str]:

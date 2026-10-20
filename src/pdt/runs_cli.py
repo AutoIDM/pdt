@@ -10,8 +10,12 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import re
+import subprocess
+import sys
 import time
+import webbrowser
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -60,11 +64,13 @@ class Line:
 class LogPlace:
     """Where `pdt logs` reads each run's log: `shared` for every run, under `label`, and
     `items(runs)` for each run, in order, under `column`. A `folder` on this computer holds a
-    file per run, named by its item."""
+    file per run, named by its item. `--open` opens `page()`, or `link(item)` for one run."""
     label: str
     shared: str
     column: str
     items: Callable[[list[Run]], list[str]]
+    page: Callable[[], str]
+    link: Callable[[str], str]
     folder: Path | None = None
 
 
@@ -226,16 +232,45 @@ def say_not_run(app_name: str, args: argparse.Namespace, since: datetime | None,
                     f"and {local_text(since + span)}.")
 
 
+def open_place(target: str, note: str = "") -> int:
+    """Open a console URL in the browser, or a file or folder on this computer in its app."""
+    if Path(target).is_absolute() and not Path(target).exists():
+        console.error(f"{console.value(target)} does not exist yet; deploy and run the app first")
+        return 1
+    try:
+        if target.startswith("https://"):
+            if not webbrowser.open(target):
+                console.field("open this page in a browser", target)
+                return 0
+        elif sys.platform == "win32":
+            os.startfile(target)
+        else:
+            subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", target],
+                           check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        console.error(f"pdt cannot open {console.value(target)}: {console.escape(str(exc))}")
+        return 1
+    console.done(f"opened {console.value(target)}")
+    if note:
+        console.say(note)
+    return 0
+
+
 def numbered(list_runs: Callable[[], list[Run]]) -> list[Run]:
     return [dataclasses.replace(run, number=number) for number, run in enumerate(list_runs(), 1)]
 
 
 def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
-         resolve: Callable[[list[Run]], None] | None = None) -> int:
+         resolve: Callable[[list[Run]], None] | None = None, page: str = "",
+         note: str = "") -> int:
+    """`page` is where `--open` goes; `note` tells the user where to look on it."""
     parser = argparse.ArgumentParser(prog=f"pdt runs {app_name}")
     add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--open", action="store_true")
     args = parser.parse_args(rest)
+    if args.open:
+        return open_place(page, note)
     try:
         since, span, count = parse_window(args, datetime.now(UTC))
     except ValueError as exc:
@@ -281,9 +316,12 @@ def logs(list_runs: Callable[[], list[Run]],
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--follow", action="store_true")
     parser.add_argument("--list", action="store_true")
+    parser.add_argument("--open", action="store_true")
     add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
+    if args.open and args.number is None and not args.id and not args.failed:
+        return open_place(place.page())
     if args.list and (args.follow or args.id or args.failed):
         console.error("--list lists the log files; drop --follow, --id, and --failed")
         return 1
@@ -361,6 +399,8 @@ def logs(list_runs: Callable[[], list[Run]],
         chosen = [shown[0] if args.number is None else found[args.number - 1]]
         if resolve is not None:
             resolve(chosen)
+    if args.open:
+        return max(open_place(place.link(item)) for item in place.items(chosen))
     if place is not None and place.folder is not None:
         for item in place.items(chosen):
             console.status(f"reading {console.value(place.folder / item)}")
@@ -454,7 +494,7 @@ def list_logs(found: list[Run], place: LogPlace, app_name: str, args: argparse.N
     for run, record in zip(found, records):
         code = "-" if run.exit_code is None else str(run.exit_code)
         row = [str(run.number), record["location"], started_text(run),
-               "running" if run.status == "running" else code]
+               "running" if run.exit_code is None and run.status == "running" else code]
         if place.folder is not None:
             row.append(console.size(record["size"]))
         rows.append(row)

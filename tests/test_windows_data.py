@@ -73,6 +73,7 @@ def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
         f"run uv from {project / 'uv.exe'}",
         f"keep the app's run data in {folder} (SYSTEM: full control; PC\\jon: modify)",
         f"write one log per run under {folder / 'logs'} (removed on destroy)",
+        "write each run's result to the Windows Application log, source pdt",
         f"use folder {folder / 'storage'} for the app's files (kept after destroy)",
     ]
 
@@ -81,7 +82,7 @@ def test_plan_without_storage_has_no_storage_line(project):
     app = windows_app(project, "schedule: hourly\ntimezone: local\nstorage: false\n")
     actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
                                   "uv.exe", False)
-    assert len(actions) == 6
+    assert len(actions) == 7
     assert not any("app's files" in action for action in actions)
 
 
@@ -255,3 +256,19 @@ def test_validate_reports_what_the_windows_deploy_rejects(project, config_text, 
     with pytest.raises(deploy_windows.WindowsDeployError) as rejected:
         deploy_windows.task_xml(app, "uv.exe", False)
     assert problems[0] == f"my-report: {problem.split(': ', 1)[0]}: {rejected.value}"
+
+
+
+def test_deploy_registers_the_event_source_before_the_task(project, monkeypatch):
+    app = windows_app(project)
+    scripts = []
+    monkeypatch.setattr(deploy_windows, "_preflight",
+                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_run",
+                        lambda powershell, script, **kw: scripts.append(script) or True)
+    assert deploy_windows.deploy(app, assume_yes=True) == 0
+    assert (scripts[0].index("New-EventLog -LogName Application -Source 'pdt'")
+            < scripts[0].index("Register-ScheduledTask -TaskName $name -Xml $xml -Force "
+                               "-ErrorAction Stop"))

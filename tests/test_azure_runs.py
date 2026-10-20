@@ -9,8 +9,8 @@ import pytest
 from pdt import deploy_azure, deploy_azure_container_apps, runs_cli
 
 SETTINGS = {
-    "resource_group": "pdt", "workspace": "pdt-logs", "suffix": "abc1234def",
-    "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
+    "subscription": "123456789012", "resource_group": "pdt", "workspace": "pdt-logs",
+    "suffix": "abc1234def", "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
 }
 
 
@@ -387,9 +387,7 @@ def test_logs_list_names_the_workspace_once_and_each_execution(monkeypatch, caps
     ], marker_rows=[("job-a", "Container 'x' was terminated with exit code '0' and reason")])
     assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS, ["--list"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0].startswith("Log Analytics workspace pdt-logs, table "
-                               "ContainerAppConsoleLogs_CL: ContainerJobName_s == 'pdt-report")
-    assert lines[0].endswith("' and ContainerGroupName_s startswith the execution")
+    assert lines[0] == "Log Analytics workspace: pdt-logs, by execution name"
     assert lines[1].split() == ["#", "Execution", "Started", "Exit", "Code"]
     assert lines[2].split()[:2] == ["1", "job-b"]
     assert lines[2].split()[-1] == "running"

@@ -52,6 +52,7 @@ from pdt.deploy_aws import (
     delete_secret, list_price, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     deployer_store, ensure_session, ensure_store, find_log_group, has_managed_tag, iam_tags,
+    log_group_url,
     delete_if_present, error_code, not_found,
     delete_schedule_group, other_schedules, preflight, resource_exists, retry, secret_statements,
     store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
@@ -1210,7 +1211,11 @@ def stream_lines(batch, logs, log_group: str, run: runs_cli.Run,
 def runs(app: dict, session, rest: list[str]) -> int:
     names = resource_names(app["name"])
     batch = session.client("batch", config=RETRIES)
-    return runs_cli.runs(lambda: list_runs(batch, names["job_definition"]), app["name"], rest)
+    region = session.region_name
+    return runs_cli.runs(lambda: list_runs(batch, names["job_definition"]), app["name"], rest,
+                         page=f"https://{region}.console.aws.amazon.com/batch/home?region={region}#jobs",
+                         note=f"Choose the job queue {console.value(JOB_QUEUE.name)} to see "
+                              f"the runs of {console.value(names['job_definition'])}.")
 
 
 def current_schedule(scheduler, name: str, app_name: str) -> dict:
@@ -1267,5 +1272,8 @@ def logs(app: dict, session, rest: list[str],
         lambda run, since: read_lines(batch, logs_client, names["log_group"], run, since),
         app["name"], rest, store="CloudWatch Logs", delay=runs_cli.LOG_DELAY, hold=HOLD,
         stream=lambda run, follow: stream_lines(batch, logs_client, names["log_group"], run, follow),
-        new=new, place=runs_cli.LogPlace("CloudWatch log group", names["log_group"],
-                                         "Log Stream", lambda runs: log_streams(batch, runs)))
+        new=new, place=runs_cli.LogPlace(
+            "CloudWatch log group", names["log_group"], "Log Stream",
+            lambda runs: log_streams(batch, runs),
+            lambda: log_group_url(session.region_name, names["log_group"]),
+            lambda stream: log_group_url(session.region_name, names["log_group"], stream)))

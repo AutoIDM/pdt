@@ -34,8 +34,10 @@ record and log stay in the registry, so destroy removes them with it.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import datetime
+import gzip
 import hashlib
 import http.client
 import json
@@ -43,6 +45,7 @@ import re
 import shutil
 import sys
 import time
+import urllib.parse
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -189,6 +192,24 @@ def job_history_url(settings: dict[str, str], job: str) -> str:
     # each run's Console link opens that run's logs. No deeper deep link exists.
     return ("https://portal.azure.com/#resource"
             + resource_id(settings, "Microsoft.App", "jobs", job))
+
+
+def logs_query_url(settings: dict, job: str, execution: str = "") -> str:
+    # The portal's "share link to query" form, which takes the query gzipped, then base64.
+    workspace = (f"/subscriptions/{settings['subscription']}/resourceGroups/"
+                 f"{settings['environment'].resource_group}/providers/"
+                 f"Microsoft.OperationalInsights/workspaces/{settings['workspace']}")
+    query = (f"ContainerAppConsoleLogs_CL | where ContainerJobName_s == '{job}'"
+             + (f" and ContainerGroupName_s startswith '{execution}'" if execution else "")
+             + " | project TimeGenerated, ContainerGroupName_s, Log_s | order by TimeGenerated asc")
+    now = datetime.datetime.now(datetime.UTC)
+    span = f"{now - datetime.timedelta(days=30):%Y-%m-%dT%H:%M:%SZ}/{now:%Y-%m-%dT%H:%M:%SZ}"
+    return ("https://portal.azure.com/#blade/Microsoft_OperationsManagementSuite_Workspace/"
+            "AnalyticsBlade/initiator/AnalyticsShareLinkToQuery/isQueryEditorVisible/true/scope/"
+            + urllib.parse.quote(json.dumps({"resources": [{"resourceId": workspace}]}), safe="")
+            + "/query/"
+            + urllib.parse.quote(base64.b64encode(gzip.compress(query.encode())).decode(), safe="")
+            + "/isQueryBase64Compressed/true/timespan/" + urllib.parse.quote(span, safe=""))
 
 
 def _activity_error(status_message) -> dict:
@@ -638,7 +659,9 @@ def stream_lines(settings: dict, job: str, run: runs_cli.Run,
 
 def runs(app: dict, settings: dict, rest: list[str]) -> int:
     job, _current = find_job(settings, app["name"])
-    return runs_cli.runs(lambda: list_runs(settings, job), app["name"], rest)
+    return runs_cli.runs(lambda: list_runs(settings, job), app["name"], rest,
+                         page=job_history_url(settings, job),
+                         note="Open the Execution history tab to see each run.")
 
 
 def job_url(settings: dict, job: str, action: str = "") -> str:
@@ -718,11 +741,11 @@ def logs(app: dict, settings: dict, rest: list[str],
                                                             [run.id for run in chosen]),
                          stream=lambda run, follow: stream_lines(settings, job, run, follow),
                          new=new, place=runs_cli.LogPlace(
-                             f"Log Analytics workspace {settings['workspace']}, "
-                             "table ContainerAppConsoleLogs_CL",
-                             f"ContainerJobName_s == '{job}' and ContainerGroupName_s "
-                             "startswith the execution", "Execution",
-                             lambda runs: [run.id for run in runs]))
+                             "Log Analytics workspace",
+                             f"{settings['workspace']}, by execution name", "Execution",
+                             lambda runs: [run.id for run in runs],
+                             lambda: logs_query_url(settings, job),
+                             lambda execution: logs_query_url(settings, job, execution)))
 
 
 def unit_prices(region: str, currency: str, secrets: bool, storage: bool) -> dict[str, float]:

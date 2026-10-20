@@ -51,7 +51,7 @@ ALLOWED = {
     "runs_cli.py": {"local_text(since)", "local_text(since + span)", "len(shown)", "len(found)",
                     "side", "len(lines)", "total", "store", "local_text(run.ended, '%H:%M:%S')",
                     "minutes_text(delay)", "local_text(settled, '%H:%M:%S')", "run.status",
-                    "after", "exit_part", "result_text", "kind"},
+                    "after", "exit_part", "result_text", "kind", "note"},
     "scaffold.py": {"question", "len(labels)"},
     "storage_cli.py": {"len(objects)"},
 }

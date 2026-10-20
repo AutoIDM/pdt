@@ -10,10 +10,10 @@ import re
 import tempfile
 from pathlib import Path
 
-from pdt import console
+from pdt import console, runs_cli
 
-USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] | get <path> [dest] "
-         "| query <sql> | unlock [--yes] | destroy [--yes]")
+USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] | get <path> [dest] [--open] "
+         "| query <sql> | unlock [--yes] | destroy [--yes] | --open")
 
 
 def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
@@ -52,10 +52,10 @@ def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
     return 0
 
 
-def get(store, path, dest: Path) -> int:
+def get(store, path, dest: Path, show: bool = False) -> int:
     store.fs().get(path, str(dest))
     console.done(f"saved {console.value(path)} to {console.value(dest)}")
-    return 0
+    return runs_cli.open_place(str(dest.resolve())) if show else 0
 
 
 def query(store, sql) -> int:
@@ -113,7 +113,8 @@ def destroy(store, app, assume_yes) -> int:
     return 0
 
 
-def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
+def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "") -> int:
+    """`page` is where `--open` with no subcommand goes: the app's folder in the console."""
     name = app["name"]
     if not app["storage"]:
         console.error(f"storage is turned off for {console.value(name)}; "
@@ -123,11 +124,15 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
     as_json = "--json" in rest
     recursive = "--recursive" in rest
     assume_yes = assume_yes or "--yes" in rest
-    rest = [arg for arg in rest if arg not in ("--json", "--recursive", "--yes")]
+    show = "--open" in rest
+    rest = [arg for arg in rest if arg not in ("--json", "--recursive", "--yes", "--open")]
+    if show and not rest:
+        return runs_cli.open_place(page)
     handlers = {
         "ls": (0, lambda args: ls(store, args[0] if args else "", as_json, recursive)),
         "get": (1, lambda args: get(store, args[0],
-                                    Path(args[1] if len(args) > 1 else Path(args[0]).name))),
+                                    Path(args[1] if len(args) > 1 else Path(args[0]).name),
+                                    show)),
         "query": (1, lambda args: query(store, args[0])),
         "unlock": (0, lambda args: unlock(store, name, assume_yes)),
         "destroy": (0, lambda args: destroy(store, name, assume_yes)),
@@ -138,6 +143,9 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
         return 1
     if as_json and subcommand != "ls":
         console.error("--json works only with ls")
+        return 1
+    if show and subcommand != "get":
+        console.error("--open works only with get, or with no subcommand")
         return 1
     needed, handler = handlers[subcommand]
     if len(args) < needed:

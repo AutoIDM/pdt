@@ -12,6 +12,8 @@ def captured(monkeypatch):
 
 
 class Session:
+    region_name = "us-east-1"
+
     def client(self, name, config=None):
         return name
 
@@ -24,7 +26,7 @@ def test_every_cloud_waits_5_minutes_for_its_log_store(monkeypatch):
     app = {"name": "report"}
     deploy_aws_batch.logs(app, Session(), [])
     deploy_google_cloud.logs(app, [], False)
-    deploy_azure_container_apps.logs(app, {"workspace": "pdt-logs"}, [])
+    deploy_azure_container_apps.logs(app, {"workspace": "pdt-logs", "subscription": "s"}, [])
     assert [call["delay"] for call in calls] == [timedelta(minutes=5)] * 3
 
 

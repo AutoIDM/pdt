@@ -1253,7 +1253,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
 def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
     project, _ = project_region(app)
     project = preflight(app, project, assume_yes)
-    return storage_cli.run(deployer_store(project, app["name"]), app, rest, assume_yes)
+    return storage_cli.run(deployer_store(project, app["name"]), app, rest, assume_yes,
+                           f"https://console.cloud.google.com/storage/browser/"
+                           f"{store_bucket(project)}/{app['name']}?project={project}")
 
 
 def execution_run(execution: dict) -> runs_cli.Run:
@@ -1399,7 +1401,9 @@ def runs(app: dict, rest: list[str], assume_yes: bool) -> int:
     project, region = project_region(app)
     project = preflight(app, project, assume_yes)
     job = f"pdt-{app['name']}"
-    return runs_cli.runs(lambda: list_runs(project, region, job), app["name"], rest)
+    return runs_cli.runs(lambda: list_runs(project, region, job), app["name"], rest,
+                         page=f"https://console.cloud.google.com/run/jobs/details/{region}/{job}"
+                              f"/executions?project={project}")
 
 
 def logs(app: dict, rest: list[str], assume_yes: bool,
@@ -1411,9 +1415,13 @@ def logs(app: dict, rest: list[str], assume_yes: bool,
                          lambda run, since: read_lines(project, run.id, since), app["name"], rest,
                          store="Cloud Logging", delay=runs_cli.LOG_DELAY, hold=HOLD,
                          stream=lambda run, follow: stream_lines(project, run, follow), new=new,
-                         place=runs_cli.LogPlace(f"Cloud Logging filter in project {project}",
-                                                 execution_filter("EXECUTION"), "Execution",
-                                                 lambda runs: [run.id for run in runs]))
+                         place=runs_cli.LogPlace(
+                             "Cloud Logging", f"project {project}, by execution name", "Execution",
+                             lambda runs: [run.id for run in runs],
+                             lambda: job_logs_url(project, region, job),
+                             lambda execution: "https://console.cloud.google.com/logs/query;query="
+                             f"{urllib.parse.quote(execution_filter(execution), safe='')}"
+                             f"?project={project}"))
 
 
 def pause(app: dict, paused: bool, assume_yes: bool) -> int:

@@ -253,8 +253,9 @@ def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(ca
                              for job_id in jobs]}
 
     batch = Batch({None: ([job("job-1", started=2_000), job("job-2", started=1_000)], None)})
-    session = type("Session", (), {"client": lambda self, name, config=None:
-                                    batch if name == "batch" else None})()
+    session = type("Session", (), {"region_name": "us-east-1",
+                                   "client": lambda self, name, config=None:
+                                   batch if name == "batch" else None})()
     assert deploy_aws_batch.logs({"name": "report"}, session, ["--list"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == f"CloudWatch log group: {resource_names('report')['log_group']}"
