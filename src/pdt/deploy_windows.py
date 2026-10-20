@@ -663,6 +663,22 @@ def read_lines(app_name: str, run: runs_cli.Run, follow: bool = False) -> Iterat
             time.sleep(FOLLOW_POLL_SECONDS)
 
 
+def _tail(file: Path) -> tuple[list[runs_cli.Line], float] | None:
+    """The log's last whole lines, enough to hold its exit line, and its write time."""
+    try:
+        handle = file.open("rb")
+    except FileNotFoundError:
+        return None
+    with handle:
+        facts = os.fstat(handle.fileno())
+        start = max(0, facts.st_size - EXIT_LINE_BYTES)
+        handle.seek(start)
+        tail = handle.read()
+    if start > 0:
+        tail = tail.partition(b"\n")[2]
+    return [parse_line(raw) for raw in tail.splitlines()], facts.st_mtime
+
+
 def list_runs(app_name: str) -> list[runs_cli.Run]:
     folder = logs_folder(app_name)
     if not folder.is_dir():
@@ -674,24 +690,19 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
     newest = files[0] if files else None
     for file in files:
         started = datetime.strptime(file.stem, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-        try:
-            handle = file.open("rb")
-        except FileNotFoundError:
+        read = _tail(file)
+        if read is None:
             continue
-        with handle:
-            facts = os.fstat(handle.fileno())
-            start = max(0, facts.st_size - EXIT_LINE_BYTES)
-            handle.seek(start)
-            tail = handle.read()
-        if start > 0:
-            tail = tail.partition(b"\n")[2]
-        lines = [parse_line(raw) for raw in tail.splitlines()]
-        status = runs_cli.marker_status(
-            lines, lambda: file == newest and powershell is not None
-            and _task_running(powershell, task_name))
+        lines, mtime = read
+        running = False
+        if file == newest and runs_cli.exit_code(lines) is None:
+            running = powershell is not None and _task_running(powershell, task_name)
+            if not running:
+                # The run can write its exit line and end while _task_running waits for powershell.
+                lines, mtime = _tail(file) or read
+        status = runs_cli.marker_status(lines, lambda: running)
         code = runs_cli.exit_code(lines)
-        ended = (datetime.fromtimestamp(facts.st_mtime, tz=timezone.utc)
-                if code is not None else None)
+        ended = datetime.fromtimestamp(mtime, tz=timezone.utc) if code is not None else None
         found.append(runs_cli.Run(file.stem, started, ended, status, code))
     return found
 
