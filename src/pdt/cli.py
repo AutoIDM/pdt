@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 from typing import Callable
 
@@ -572,12 +573,27 @@ class Parser(argparse.ArgumentParser):
         if typo is not None:
             choices = [choice for action in self._actions for choice in action.choices or []]
             message += "." + did_you_mean(typo.group(1), choices, f"{self.prog} {{}}")
-        super().error(message)
+        if not sys.stderr.isatty():
+            super().error(message)
+        self.print_usage(sys.stderr)
+        message = re.sub(r"`[^`]*`", lambda quoted: quoted[0].replace(" ", "\0"), message)
+        self.exit(2, textwrap.fill(f"{self.prog}: error: {message}", console.width(),
+                                   break_long_words=False, break_on_hyphens=False)
+                  .replace("\0", " ") + "\n")
 
 
 # Capitalize only the first letter of a section title, so "Cloud CLIs" keeps its case.
 rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
     lambda title: title[:1].upper() + title[1:])
+
+
+class HelpFormatter(rich_argparse.RawDescriptionRichHelpFormatter):
+    def _rich_fill_text(self, text, width, indent):
+        if not self.console.is_terminal:
+            return super()._rich_fill_text(text, width, indent)
+        lines = [indent + part for line in text.split() for part in line.wrap(self.console, width)]
+        return type(text)("\n").join(lines) + "\n\n"
+
 
 COMMAND_GROUPS = {
     "Get started": ["init", "examples", "new", "completion"],
@@ -593,7 +609,7 @@ def build_parser() -> argparse.ArgumentParser:
     summary, _, note = __doc__.strip().partition("\n\n")
     parser = Parser(
         prog="pdt", description=summary, epilog=note, usage="pdt [-h] [--version] <command> ...",
-        formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
+        formatter_class=HelpFormatter)
     parser.add_argument("--version", action="version")
     # The commands are listed under COMMAND_GROUPS instead of the one argparse section.
     sub = parser.add_subparsers(dest="command", metavar="<command>", help=argparse.SUPPRESS,
@@ -601,7 +617,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_parser(name: str, **kwargs):
         return sub.add_parser(
-            name, formatter_class=rich_argparse.RawDescriptionRichHelpFormatter, **kwargs)
+            name, formatter_class=HelpFormatter, **kwargs)
 
     p = add_parser("init", help="create a project here, or in DIR")
     directory = p.add_argument("directory", nargs="?",
@@ -736,10 +752,10 @@ def build_parser() -> argparse.ArgumentParser:
     actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt alerts")
     actions.add_parser(
         "setup", help="choose the alert types and events, connect each one, and send a test "
-                      "message", formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
+                      "message", formatter_class=HelpFormatter)
     actions.add_parser(
         "test", help="send a test message to every alert that is set up",
-        formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
+        formatter_class=HelpFormatter)
     p.set_defaults(func=cmd_alerts)
     p = add_parser("gui", help="open the project's dashboard in your web browser")
     p.add_argument("--port", type=int, default=config.GUI_PORT,
