@@ -165,14 +165,16 @@ def test_the_console_prints_an_event_as_one_bold_alert_sentence_handled_or_not(
                          "trigger": "schedule"}, "Run of report started"),
     ("job:run-failed", {"provider": "azure", "exit_code": 130, "reason": "interrupted",
                         "signal": "SIGINT", "state": "runs/*-d2142205/"},
-     "Run of report failed (interrupted)"),
+     "Run of report failed (interrupted, exit code 130)"),
+    ("job:run-failed", {"provider": "windows", "exit_code": 2, "state": "runs/*-d2142205/"},
+     "Run of report failed (exit code 2)"),
     ("job:paused", {"provider": "azure", "deployed": False}, "Paused report"),
     ("job:unpaused", {"provider": "", "deployed": True}, "Unpaused report"),
     ("app:secrets-updated", {"provider": "google-cloud", "action": "set", "count": 1},
      "Updated the secrets of report on Google Cloud: 1 changed"),
     ("app:report-ready", {"provider": "azure"}, "Report ready: report"),
 ])
-def test_each_event_is_a_sentence_without_its_time_exit_code_or_run_id(
+def test_each_event_is_a_sentence_without_its_time_or_run_id(
         project, monkeypatch, capsys, name, params, line):
     lifecycle.emit(name, project="proj", app="report", **params)
     assert capsys.readouterr().out == f"[alert] {line}\n"
@@ -196,7 +198,7 @@ def test_a_failing_transport_warns_falls_back_to_the_console_and_the_run_goes_on
     assert seen == [("job:run-started", False), ("job:run-failed", False)]
     out, err = capsys.readouterr()
     assert err.count("The boom alert could not send job:run-failed: no [route]") == 1
-    assert out.count("[alert] not delivered to boom: Run of report failed\n") == 1
+    assert out.count("[alert] not delivered to boom: Run of report failed (exit code 3)\n") == 1
 
 
 def test_a_delivery_past_the_time_limit_falls_back_to_the_console(project, monkeypatch, capsys):

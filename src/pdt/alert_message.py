@@ -62,7 +62,7 @@ HIDDEN = {"url"}
 CLOUDS = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
 MAX_FIELDS = 10
 # The console line of each event pdt emits. {to} and {on} name the provider, such as
-# " to Azure"; the surrounding output already shows the time, the exit code, and the run id.
+# " to Azure". The line leaves out the time and the run id; a failed run adds its exit code.
 SENTENCES = {
     "app:deploy-started": "Deploying {app}{to}",
     "app:deploy-completed": "Deployed {app}{to}",
@@ -129,7 +129,7 @@ def event_message(event, unhandled: bool = False) -> Message:
 
 
 def event_sentence(event) -> str:
-    """One event as the console says it, such as `Run of hello-world failed (interrupted)`.
+    """One event as the console says it, such as `Run of hello-world failed (interrupted, exit code 130)`.
     An event that SENTENCES does not name says the title of event_message."""
     params = event.params
     if event.name not in SENTENCES or "app" not in params:
@@ -139,7 +139,10 @@ def event_sentence(event) -> str:
     sentence = SENTENCES[event.name].format(
         app=params["app"], to=f" to {place}" if place else "",
         on=f" on {place}" if place else "", count=params.get("count"))
-    return f"{sentence} ({params['reason']})" if "reason" in params else sentence
+    details = [str(params["reason"])] if "reason" in params else []
+    if event.name == "job:run-failed" and "exit_code" in params:
+        details.append(f"exit code {params['exit_code']}")
+    return f"{sentence} ({', '.join(details)})" if details else sentence
 
 
 def ready_message(project: str, target: str, events: list[str]) -> Message:
