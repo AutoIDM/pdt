@@ -10,10 +10,10 @@ import re
 import tempfile
 from pathlib import Path
 
-from pdt import console
+from pdt import console, runs_cli
 
-USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] | get <path> [dest] "
-         "| query <sql> | unlock [--yes] | destroy [--yes]")
+USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] | get <path> [dest] [--open] "
+         "| query <sql> | unlock [--yes] | destroy [--yes] | --open")
 
 
 def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
@@ -26,22 +26,37 @@ def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
             entries = sorted(fs.ls(path, detail=True), key=lambda entry: entry["name"])
     except FileNotFoundError:
         entries = []
+    totals = {entry["name"].rstrip("/"): [0, 0] for entry in entries
+              if entry.get("type") == "directory"}
+    if totals:
+        depth = len(next(iter(totals)).split("/"))
+        for name, entry in fs.find(path, detail=True).items():
+            top = totals.get("/".join(name.split("/")[:depth]))
+            if top is not None:
+                top[0] += 1
+                top[1] += entry.get("size") or 0
+    rows = []
+    for entry in entries:
+        files, size = totals.get(entry["name"].rstrip("/"), (1, entry.get("size")))
+        rows.append({"name": entry["name"], "files": files, "size": size,
+                     "type": entry.get("type", "file")})
     if as_json:
-        console.data(json.dumps([{"name": entry["name"], "size": entry.get("size"),
-                                  "type": entry.get("type", "file")} for entry in entries]))
+        console.data(json.dumps(rows))
         return 0
-    if not entries:
+    if not rows:
         console.say(f"nothing under {console.value(path or '/')}")
         return 0
-    console.table(["Path", "Size"], [[entry["name"], entry["size"]] for entry in entries],
+    console.table(["Path", "Files", "Size"],
+                  [[row["name"], row["files"], console.size(row["size"] or 0)] for row in rows],
                   ["bold"])
     return 0
 
 
-def get(store, path, dest: Path) -> int:
+def get(store, path, dest: Path, show: bool = False) -> int:
+    saved = dest / Path(path).name if dest.is_dir() else dest
     store.fs().get(path, str(dest))
     console.done(f"saved {console.value(path)} to {console.value(dest)}")
-    return 0
+    return runs_cli.open_place(str(saved.resolve())) if show else 0
 
 
 def query(store, sql) -> int:
@@ -99,7 +114,8 @@ def destroy(store, app, assume_yes) -> int:
     return 0
 
 
-def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
+def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
+        note: str = "") -> int:
     name = app["name"]
     if not app["storage"]:
         console.error(f"storage is turned off for {console.value(name)}; "
@@ -109,11 +125,18 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
     as_json = "--json" in rest
     recursive = "--recursive" in rest
     assume_yes = assume_yes or "--yes" in rest
-    rest = [arg for arg in rest if arg not in ("--json", "--recursive", "--yes")]
+    show = "--open" in rest
+    rest = [arg for arg in rest if arg not in ("--json", "--recursive", "--yes", "--open")]
+    if show and as_json:
+        console.error("--open does not print JSON; leave out --json")
+        return 1
+    if show and not rest:
+        return runs_cli.open_place(page, note)
     handlers = {
         "ls": (0, lambda args: ls(store, args[0] if args else "", as_json, recursive)),
         "get": (1, lambda args: get(store, args[0],
-                                    Path(args[1] if len(args) > 1 else Path(args[0]).name))),
+                                    Path(args[1] if len(args) > 1 else Path(args[0]).name),
+                                    show)),
         "query": (1, lambda args: query(store, args[0])),
         "unlock": (0, lambda args: unlock(store, name, assume_yes)),
         "destroy": (0, lambda args: destroy(store, name, assume_yes)),
@@ -124,6 +147,9 @@ def run(store, app: dict, rest: list[str], assume_yes: bool) -> int:
         return 1
     if as_json and subcommand != "ls":
         console.error("--json works only with ls")
+        return 1
+    if show and subcommand != "get":
+        console.error("--open works only with get, or with no subcommand")
         return 1
     needed, handler = handlers[subcommand]
     if len(args) < needed:

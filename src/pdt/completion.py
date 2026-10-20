@@ -54,10 +54,19 @@ def files(prefix: str, **_kwargs) -> list[str]:
 
 
 def storage_args(prefix: str, parsed_args, **_kwargs) -> list[str]:
-    """`pdt storage APP get KEY [PATH]` takes a local path; the other words are not paths."""
     rest = parsed_args.rest or []
     if not rest:
         return [name for name in config.STORAGE_COMMANDS if name.startswith(prefix)]
+    if rest[0] in ("ls", "get") and len(rest) == 1:
+        try:
+            app = parsed_args.app or config.current_app()
+            if app is None or config.merged_app(app)["platform"].get("provider") != "windows":
+                return []
+            folder = config.machine_data_home() / app / "storage"
+            return [path.relative_to(folder).as_posix() + ("/" if path.is_dir() else "")
+                    for path in sorted(folder.glob(glob.escape(prefix) + "*"))]
+        except (config.ConfigError, OSError, ValueError, NotImplementedError):
+            return []
     return files(prefix) if rest[0] == "get" and len(rest) == 2 else []
 
 

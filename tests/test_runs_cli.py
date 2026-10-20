@@ -1009,3 +1009,62 @@ def test_a_wait_names_what_it_waits_for_and_counts_its_seconds(monkeypatch):
         console._console.print("a line")
     assert "reading the run list (7s)" in out.getvalue()
     assert "a line" in out.getvalue()
+
+
+PLACE = runs_cli.LogPlace("Log group", "/pdt/my-report", "Stream",
+                          lambda runs: [f"stream/{run.id}" for run in runs],
+                          lambda: "https://console.example/group", lambda item: f"https://console.example/{item}")
+
+
+@pytest.fixture
+def opened(monkeypatch):
+    pages = []
+    monkeypatch.setattr(runs_cli.webbrowser, "open", lambda url: pages.append(url) or True)
+    return pages
+
+
+def test_logs_open_without_a_run_opens_the_app_logs_page(opened, capsys):
+    assert runs_cli.logs(lambda: pytest.fail("listed runs"), read, "my-report", ["--open"],
+                         place=PLACE) == 0
+    assert opened == ["https://console.example/group"]
+    assert "opened https://console.example/group" in capsys.readouterr().out
+
+
+def test_logs_open_with_a_run_opens_that_run_log(opened):
+    assert runs_cli.logs(list_two, read, "my-report", ["2", "--open"], place=PLACE) == 0
+    assert opened == ["https://console.example/stream/stream-1"]
+
+
+def test_runs_open_opens_the_runs_page_and_says_where_to_look(opened, capsys):
+    assert runs_cli.runs(lambda: pytest.fail("listed runs"), "my-report", ["--open"],
+                         page="https://console.example/runs", note="look for pdt-my-report") == 0
+    assert opened == ["https://console.example/runs"]
+    assert "look for pdt-my-report" in capsys.readouterr().out
+
+
+def test_open_a_missing_folder_says_run_the_app_first(tmp_path, capsys):
+    assert runs_cli.open_place(str(tmp_path / "logs")) == 1
+    assert "does not exist yet" in capsys.readouterr().out
+
+
+def test_logs_list_shows_the_exit_code_of_a_running_run_that_has_one(capsys):
+    running = Run("stream-3", T1, None, "running", 0)
+    assert runs_cli.logs(lambda: [running], read, "my-report", ["--list"], place=PLACE) == 0
+    assert capsys.readouterr().out.splitlines()[-1].split()[-1] == "0"
+
+
+@pytest.mark.parametrize("command", [
+    lambda rest: runs_cli.runs(list_two, "my-report", rest, page="https://console.example/runs"),
+    lambda rest: runs_cli.logs(list_two, read, "my-report", rest, place=PLACE)])
+def test_open_with_json_is_an_error(command, opened, capsys):
+    assert command(["--open", "--json"]) == 1
+    assert opened == []
+    assert "--open does not print JSON; leave out --json" in capsys.readouterr().out
+
+
+def test_open_without_a_browser_prints_the_page_and_the_note(monkeypatch, capsys):
+    monkeypatch.setattr(runs_cli.webbrowser, "open", lambda url: False)
+    assert runs_cli.open_place("https://console.example/runs", "look for pdt-my-report") == 0
+    out = capsys.readouterr().out
+    assert "https://console.example/runs" in out
+    assert "look for pdt-my-report" in out

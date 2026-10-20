@@ -314,3 +314,32 @@ def test_relogin_with_the_wrong_region_names_the_config_section(aws, project, mo
     assert "do not match" in out
     assert "[sso-session corp]" in out
     assert "config" in out
+
+
+@pytest.mark.parametrize("profile", [
+    "[sso-session corp]\nsso_start_url = {url}\nsso_region = eu-west-1\n\n"
+    "[profile work]\nsso_session = corp\nsso_account_id = 123456789012\nsso_role_name = Deployer\n",
+    "[profile work]\nsso_start_url = {url}\nsso_region = eu-west-1\n"
+    "sso_account_id = 123456789012\nsso_role_name = Deployer\n"])
+def test_an_sso_profile_opens_console_pages_through_a_shortcut_link(aws, project, profile):
+    config_file = aws / ".aws" / "config"
+    config_file.parent.mkdir()
+    config_file.write_text(profile.format(url=URL))
+    session = boto3.Session(profile_name="work")
+    page = "https://eu-west-1.console.aws.amazon.com/batch/home?region=eu-west-1#jobs"
+    assert deploy_aws.console_url(session, page) == (
+        f"{URL}/#/console?account_id=123456789012&role_name=Deployer&destination="
+        "https%3A%2F%2Feu-west-1.console.aws.amazon.com%2Fbatch%2Fhome%3Fregion%3Deu-west-1%23jobs")
+    assert deploy_aws.console_note(app(project), session) == ""
+
+
+def test_an_access_key_profile_opens_the_page_and_names_the_account(aws, project):
+    config_file = aws / ".aws" / "config"
+    config_file.parent.mkdir()
+    config_file.write_text("[profile keys]\nregion = eu-west-1\n")
+    session = boto3.Session(profile_name="keys")
+    target = app(project)
+    target["platform"]["account"] = "123456789012"
+    page = "https://s3.console.aws.amazon.com/s3/buckets/pdt"
+    assert deploy_aws.console_url(session, page) == page
+    assert "123456789012" in deploy_aws.console_note(target, session)

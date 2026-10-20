@@ -199,6 +199,15 @@ def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     assert calls == [(("azure", "storage", "hello-world", False, ["--", "ls", "state/"]), {})]
 
 
+@pytest.mark.parametrize("argv, extra", [([], ["--open"]), (["2"], ["2", "--open"])])
+def test_logs_open_passes_the_run_number_only_when_one_is_given(project, monkeypatch, argv, extra):
+    add_app(project, "hello-world", "schedule: daily\n")
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *a: calls.append(a) or 0)
+    assert run_cli(monkeypatch, "logs", "hello-world", *argv, "--open") == 0
+    assert calls == [("azure", "logs", "hello-world", False, ["--", *extra])]
+
+
 def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
     monkeypatch.setenv("PSModulePath", "")
     folder = project / "ps-report"
@@ -1090,3 +1099,13 @@ def test_rebuild_reaches_the_provider_script_as_pdt_rebuild(project, monkeypatch
         kwargs["env"]) or SimpleNamespace(returncode=0))
     assert run_cli(monkeypatch, "deploy", "hello-world", "--yes", *argv) == 0
     assert [env.get(REBUILD_ENV) for env in envs] == [rebuild]
+
+
+def test_run_deployed_follow_starts_the_job_and_follows_its_log(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    config.mark_deployed("hello-world", True)
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append(a) or 1)
+    assert run_cli(monkeypatch, "run", "hello-world", "--deployed", "--follow") == 1
+    assert calls == [("azure", "start", "hello-world", False, ["--", "--follow"])]
+    assert "pdt runs hello-world" not in capsys.readouterr().out

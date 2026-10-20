@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from pdt import storage_cli
+from pdt import console, storage_cli
 from pdt.utils.storage import Store
 
 
@@ -96,3 +96,84 @@ def test_yes_after_the_separator_skips_the_question(store, app, tmp_path, monkey
     monkeypatch.setattr("pdt.deploy.confirm", lambda actions, assume_yes: seen.append(assume_yes))
     storage_cli.run(store, app, [subcommand, "--yes"], False)
     assert seen == [True]
+
+
+def test_ls_counts_the_files_and_bytes_under_each_folder(store, app, capsys, tmp_path):
+    runs = tmp_path / "store" / "my-report" / "runs"
+    (runs / "r1" / "more").mkdir(parents=True)
+    (runs / "r1" / "a.csv").write_text("abc")
+    (runs / "r1" / "more" / "b.txt").write_text("de")
+    (runs / "r2").mkdir()
+    (runs / "r2" / "c.txt").write_text("f")
+    (runs / "empty").mkdir()
+    assert storage_cli.run(store, app, ["ls", "--json"], False) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [(entry["name"], entry["files"], entry["size"]) for entry in entries] == [
+        ("a.csv", 1, 1), ("runs", 3, 6)]
+    assert storage_cli.run(store, app, ["ls", "runs/", "--json"], False) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [(entry["name"], entry["files"], entry["size"]) for entry in entries] == [
+        ("runs/empty", 0, 0), ("runs/r1", 2, 5), ("runs/r2", 1, 1)]
+    assert storage_cli.run(store, app, ["ls", "runs"], False) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].split() == ["Path", "Files", "Size"]
+    assert lines[2].split() == ["runs/r1", "2", "5", "B"]
+
+
+def test_size_prints_bytes_until_kb_and_so_on_up_to_tb():
+    assert [console.size(count) for count in (0, 5, 2048, 1536 * 1024, 3 * 1024 ** 3,
+                                              2 * 1024 ** 4, 5000 * 1024 ** 4)] == [
+        "0 B", "5 B", "2.0 KB", "1.5 MB", "3.0 GB", "2.0 TB", "5000.0 TB"]
+
+
+def test_open_with_no_subcommand_opens_the_storage_page(store, app, monkeypatch):
+    opened = []
+    monkeypatch.setattr(storage_cli.runs_cli, "open_place",
+                        lambda target, note="": opened.append(target) or 0)
+    assert storage_cli.run(store, app, ["--open"], False, "https://console.example/bucket") == 0
+    assert opened == ["https://console.example/bucket"]
+
+
+def test_get_open_opens_the_saved_file(store, app, monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr(storage_cli.runs_cli, "open_place",
+                        lambda target, note="": opened.append(target) or 0)
+    assert storage_cli.run(store, app, ["get", "a.csv", str(tmp_path / "a.csv"), "--open"],
+                           False) == 0
+    assert opened == [str(tmp_path / "a.csv")]
+
+
+def test_open_with_another_subcommand_is_an_error(store, app, capsys):
+    assert storage_cli.run(store, app, ["ls", "--open"], False) == 1
+    assert "--open works only with get" in capsys.readouterr().out
+
+
+def test_open_with_json_is_an_error(store, app, monkeypatch, capsys):
+    monkeypatch.setattr(storage_cli.runs_cli, "open_place", lambda *args: pytest.fail("opened"))
+    assert storage_cli.run(store, app, ["--open", "--json"], False, "https://console.example/b") == 1
+    assert "--open does not print JSON; leave out --json" in capsys.readouterr().out
+
+
+def test_ls_counts_a_subfolder_of_a_backslash_path(store, app, monkeypatch, capsys, tmp_path):
+    nested = tmp_path / "store" / "my-report" / "runs" / "r1" / "more"
+    nested.mkdir(parents=True)
+    (nested / "b.txt").write_text("bb")
+    fs = store.fs()
+    monkeypatch.setattr(Store, "fs", lambda self: type("Windows", (), {
+        "ls": lambda self, path, detail: fs.ls(path.replace("\\", "/"), detail=detail),
+        "find": lambda self, path, detail: fs.find(path.replace("\\", "/"), detail=detail),
+    })())
+    assert storage_cli.run(store, app, ["ls", "runs\\r1", "--json"], False) == 0
+    assert [(entry["files"], entry["size"]) for entry in json.loads(capsys.readouterr().out)] == [
+        (1, 2)]
+
+
+def test_get_open_into_a_folder_opens_the_saved_file(store, app, monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr(storage_cli.runs_cli, "open_place",
+                        lambda target, note="": opened.append(target) or 0)
+    folder = tmp_path / "downloads"
+    folder.mkdir()
+    assert storage_cli.run(store, app, ["get", "a.csv", str(folder), "--open"], False) == 0
+    assert opened == [str((folder / "a.csv").resolve())]
+    assert (folder / "a.csv").read_text() == "a"

@@ -194,3 +194,38 @@ def test_runner_ends_when_the_app_exits_though_a_background_process_holds_its_ou
 
     assert proc.returncode == 0
     assert untimed(only_log(logs)) == "started\nno newline\npdt: exit 0\n"
+
+
+@pytest.mark.parametrize(("code", "kind", "event"), [(0, 4, 1000), (3, 1, 1001)])
+def test_runner_writes_the_result_to_the_application_log(folders, monkeypatch, code, kind, event):
+    app_dir, logs, url = folders
+    reported = []
+    advapi = types.SimpleNamespace(
+        RegisterEventSourceW=lambda server, source: reported.append(source) or 7,
+        ReportEventW=lambda *args: reported.append(args[:4] + (list(args[7]),)),
+        DeregisterEventSource=lambda source: reported.append(("closed", source)))
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen([], b"", code))
+    monkeypatch.setattr("ctypes.WinDLL", lambda name: advapi, raising=False)
+
+    assert run_windows_task.main([str(app_dir), str(logs), url]) == code
+
+    log = only_log(logs)
+    assert reported == [
+        "pdt",
+        (7, kind, 0, event, [f"pdt app my-report, run {log.stem}, ended with exit code "
+                             f"{code}. Log: {log}"]),
+        ("closed", 7)]
+
+
+def test_runner_keeps_the_exit_code_when_the_event_write_fails(folders, monkeypatch):
+    app_dir, logs, url = folders
+
+    def fail(*args):
+        raise OSError("event log full")
+
+    advapi = types.SimpleNamespace(RegisterEventSourceW=lambda server, source: 7,
+                                   ReportEventW=fail, DeregisterEventSource=lambda source: None)
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen([], b"", 3))
+    monkeypatch.setattr("ctypes.WinDLL", lambda name: advapi, raising=False)
+
+    assert run_windows_task.main([str(app_dir), str(logs), url]) == 3

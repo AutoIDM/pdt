@@ -366,6 +366,17 @@ def currency_prefix(currency: str) -> str:
     return f"{currency} "
 
 
+def size(count: int) -> str:
+    if count < 1024:
+        return f"{count} B"
+    amount = count / 1024
+    for unit in ("KB", "MB", "GB"):
+        if amount < 1024:
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{amount:.1f} TB"
+
+
 def cost(items: list[tuple[str, float]], prices: str, excludes: str = "",
          currency: str = "USD") -> None:
     """A monthly cost estimate: one line per item, then the total."""

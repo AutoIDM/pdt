@@ -2,6 +2,8 @@ import json
 import subprocess
 from datetime import datetime, timezone
 
+import pytest
+
 from pdt import deploy_google_cloud, runs_cli
 
 
@@ -240,3 +242,24 @@ def test_without_follow_the_stream_reads_the_store_only(monkeypatch):
                        "running")
     assert [line.message for line in deploy_google_cloud.stream_lines("p", run, False)] == [
         "starting  rows=3"]
+
+
+def test_logs_list_names_the_filter_once_and_each_execution(monkeypatch, capsys):
+    found = [runs_cli.Run("pdt-app-b", datetime(2026, 9, 23, 11, tzinfo=timezone.utc), None,
+                          "running"),
+             runs_cli.Run("pdt-app-a", datetime(2026, 9, 23, 10, tzinfo=timezone.utc),
+                          datetime(2026, 9, 23, 10, 1, tzinfo=timezone.utc), "failed", 2)]
+    monkeypatch.setattr(deploy_google_cloud, "project_region", lambda app: ("p", "r"))
+    monkeypatch.setattr(deploy_google_cloud, "preflight", lambda app, project, yes: project)
+    monkeypatch.setattr(deploy_google_cloud, "list_runs", lambda project, region, job: found)
+    monkeypatch.setattr(deploy_google_cloud, "read_lines",
+                        lambda *args: pytest.fail("read a log"))
+    assert deploy_google_cloud.logs({"name": "app"}, ["--list", "--json"], False) == 0
+    records = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert [(record["number"], record["location"], record["exit_code"]) for record in records] == [
+        (1, "pdt-app-b", None), (2, "pdt-app-a", 2)]
+    assert deploy_google_cloud.logs({"name": "app"}, ["--list"], False) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "Cloud Logging: project p, by execution name"
+    assert lines[2].split()[:2] == ["1", "pdt-app-b"]
+    assert lines[3].split()[-1] == "2"

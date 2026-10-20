@@ -10,10 +10,15 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import re
+import subprocess
+import sys
 import time
+import webbrowser
 from collections import Counter
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
 from pdt import console
@@ -53,6 +58,18 @@ class Line:
     time: datetime | None
     level: str
     message: str
+
+
+@dataclasses.dataclass
+class LogPlace:
+    label: str
+    shared: str
+    column: str
+    items: Callable[[list[Run]], list[str]]
+    page: Callable[[], str]
+    link: Callable[[str], str]
+    folder: Path | None = None
+    note: str = ""
 
 
 class StreamError(Exception):
@@ -213,16 +230,48 @@ def say_not_run(app_name: str, args: argparse.Namespace, since: datetime | None,
                     f"and {local_text(since + span)}.")
 
 
+def open_place(target: str, note: str = "") -> int:
+    if Path(target).is_absolute() and not Path(target).exists():
+        console.error(f"{console.value(target)} does not exist yet; deploy and run the app first")
+        return 1
+    try:
+        if target.startswith("https://"):
+            if not webbrowser.open(target):
+                console.field("open this page in a browser", target)
+                if note:
+                    console.say(note)
+                return 0
+        elif sys.platform == "win32":
+            os.startfile(target)
+        else:
+            subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", target],
+                           check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        console.error(f"pdt cannot open {console.value(target)}: {console.escape(str(exc))}")
+        return 1
+    console.done(f"opened {console.value(target)}")
+    if note:
+        console.say(note)
+    return 0
+
+
 def numbered(list_runs: Callable[[], list[Run]]) -> list[Run]:
     return [dataclasses.replace(run, number=number) for number, run in enumerate(list_runs(), 1)]
 
 
 def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
-         resolve: Callable[[list[Run]], None] | None = None) -> int:
+         resolve: Callable[[list[Run]], None] | None = None, page: str = "",
+         note: str = "") -> int:
     parser = argparse.ArgumentParser(prog=f"pdt runs {app_name}")
     add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--open", action="store_true")
     args = parser.parse_args(rest)
+    if args.open and args.json:
+        console.error("--open does not print JSON; leave out --json")
+        return 1
+    if args.open:
+        return open_place(page, note)
     try:
         since, span, count = parse_window(args, datetime.now(UTC))
     except ValueError as exc:
@@ -254,7 +303,8 @@ def logs(list_runs: Callable[[], list[Run]],
          hold: timedelta = timedelta(0),
          read_many: Callable[[list[Run]], dict[str, list[Line]]] | None = None,
          stream: Callable[[Run, bool], Iterable[Line]] | None = None,
-         new: Callable[[Run], bool] | None = None) -> int:
+         new: Callable[[Run], bool] | None = None,
+         place: LogPlace | None = None) -> int:
     """`new` picks the run a start just made; the list may show it a few seconds late."""
     parser = argparse.ArgumentParser(prog=f"pdt logs {app_name}")
     parser.add_argument("number", nargs="?", type=int)
@@ -265,9 +315,19 @@ def logs(list_runs: Callable[[], list[Run]],
     parser.add_argument("--head", action="store_true")
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--follow", action="store_true")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--open", action="store_true")
     add_window_arguments(parser)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
+    if args.open and args.json:
+        console.error("--open does not print JSON; leave out --json")
+        return 1
+    if args.open and args.number is None and not args.id and not args.failed:
+        return open_place(place.page(), place.note)
+    if args.list and (args.follow or args.id or args.failed):
+        console.error("--list lists the log files; drop --follow, --id, and --failed")
+        return 1
     if args.full and (args.lines is not None or args.head):
         console.error("--full prints every line; drop --lines and --head")
         return 1
@@ -285,6 +345,9 @@ def logs(list_runs: Callable[[], list[Run]],
     except ValueError as exc:
         console.error(console.escape(str(exc)))
         return 1
+    if args.list:
+        return list_logs(window(numbered(list_runs), since, span, count), place, app_name,
+                         args, since, span)
     chosen = []
     with console.waiting("reading the run list") as wait:
         found = numbered(list_runs)
@@ -339,6 +402,11 @@ def logs(list_runs: Callable[[], list[Run]],
         chosen = [shown[0] if args.number is None else found[args.number - 1]]
         if resolve is not None:
             resolve(chosen)
+    if args.open:
+        return max(open_place(place.link(item), place.note) for item in place.items(chosen))
+    if place is not None and place.folder is not None:
+        for item in place.items(chosen):
+            console.status(f"reading {console.value(place.folder / item)}")
     lines_by_id = {}
     live = set()
     with console.waiting("reading the log"):
@@ -400,6 +468,41 @@ def logs(list_runs: Callable[[], list[Run]],
     if args.json:
         console.data(json.dumps(output if len(args.id or []) > 1 else output[chosen[0].id]))
     return 1 if any(run.status == "failed" for run in results) else 0
+
+
+def list_logs(found: list[Run], place: LogPlace, app_name: str, args: argparse.Namespace,
+              since: datetime | None, span: timedelta | None) -> int:
+    records = []
+    for run, item in zip(found, place.items(found)):
+        record = dict(run_json(run), location=item)
+        if place.folder is not None:
+            path = place.folder / item
+            try:
+                size = path.stat().st_size
+            except FileNotFoundError:
+                size = 0
+            record.update(file=str(path), size=size)
+        records.append(record)
+    if args.json:
+        console.data(json.dumps(records))
+        return 0
+    if not found:
+        say_not_run(app_name, args, since, span)
+        return 0
+    console.field(place.label, place.shared)
+    headers = ["#", place.column, "Started", "Exit Code"]
+    if place.folder is not None:
+        headers.append("Size")
+    rows = []
+    for run, record in zip(found, records):
+        code = "-" if run.exit_code is None else str(run.exit_code)
+        row = [str(run.number), record["location"], started_text(run),
+               "running" if run.exit_code is None and run.status == "running" else code]
+        if place.folder is not None:
+            row.append(console.size(record["size"]))
+        rows.append(row)
+    console.table(headers, rows, ["bold", "bold"])
+    return 0
 
 
 def log_lines(lines: list[Line], errors: bool) -> list[Line]:
