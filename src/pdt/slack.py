@@ -7,10 +7,8 @@ it in the app's cloud secret. A Slack webhook posts to the one channel it was
 made for; `channel` names that channel and the env var, and a new channel
 needs a new webhook from `pdt alerts setup`.
 
-The content of a message comes from pdt.alert_message, which also finds the URL
-(`secret_value`) and posts it; `blocks` lays a Message out as Block Kit. The
-message name and icon come from the Slack app that made the webhook, and the
-colour bar from the Message's tone; a webhook cannot set its own name or icon.
+The message name and icon come from the Slack app that made the webhook; a
+webhook cannot set its own name or icon.
 
 This module is in deploy_common.LIFECYCLE_MODULES, so it imports only what
 lifecycle.py's script header installs.
@@ -36,7 +34,6 @@ def secrets(entry: dict) -> list[str]:
 
 
 def blocks(message: Message) -> dict:
-    """The Block Kit payload of a Message."""
     tone = message.tone
     layout: list[dict] = [{"type": "header", "text": {
         "type": "plain_text", "text": f"{tone.slack_emoji} {message.title}"}}]
@@ -65,7 +62,6 @@ def ready_message(project: str, channel: str, events: list[str]) -> dict:
 
 
 def send(entry: dict, payload: dict) -> None:
-    """POST `payload` to the channel's webhook. Raises when Slack does not answer `ok`."""
     name = secret_name(str(entry["channel"]))
     url = alert_message.secret_value(name)
     if url == "":

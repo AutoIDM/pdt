@@ -25,11 +25,9 @@ implicit entry, so no entry receives any event.
 
 A Transport is a name, the extra entry keys it allows, and
 `deliver(event, entry, unhandled)`, where `unhandled` says the entry got the
-event through `unhandled`. The console type prints a `[event]` line, and the
+event through `unhandled`. The console type prints a `[event]` line, the
 slack type (pdt.slack) posts to a Slack channel, and the teams type
-(pdt.teams) posts to a Teams channel; both build their message from
-pdt.alert_message. A later transport (email, the GUI history) adds its own
-Transport.
+(pdt.teams) posts to a Teams channel.
 `deliver` must not change the event. The console prints at once; every
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the

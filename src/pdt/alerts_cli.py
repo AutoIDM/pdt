@@ -11,8 +11,7 @@ sends the browser on to a server on 127.0.0.1 here with that code, and pdt
 trades the code at CONNECT_URL for the webhook URL and its channel. CONNECT_URL
 holds the app's client secret, so it is a server and not this program. Without
 it, the user pastes a webhook URL, and pdt can open Slack with a filled-in app
-manifest that makes one. A Teams entry always connects by pasting: pdt prints the
-steps that make a Teams workflow, and the user pastes its URL.
+manifest that makes one.
 """
 
 from __future__ import annotations
@@ -168,7 +167,6 @@ def paste_webhook() -> tuple[str, str] | None:
 
 
 def paste(url: str, noun: str, known, starts: str) -> tuple[str, str] | None:
-    """The URL the user pasted, asked again until it is a web address, and its channel."""
     link = noun.rpartition(" ")[2]
     while True:
         if url == "":

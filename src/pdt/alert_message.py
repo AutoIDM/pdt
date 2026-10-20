@@ -7,15 +7,6 @@ text, footer, and field values use one markup, `*bold*` and `code`, which Slack
 shows as written and Teams converts. A Tone (`OUTCOMES`, `OTHER`, `UNHANDLED`,
 `READY`) holds the colour and icon of an outcome for both types. The title also
 says the outcome in words, so the tone is never the only sign of it.
-
-The secret lookup (`secret_value`), the env var name (`env_name`), and the HTTP
-POST (`post`) are shared too. lifecycle.py runs before the app and loads no env,
-so `secret_value` finds a webhook URL itself: the environment, then the job's
-PDT_ENV_JSON secret, then the `.env` files from the working folder and the
-project up.
-
-This module is in deploy_common.LIFECYCLE_MODULES, so it imports only what
-lifecycle.py's script header installs.
 """
 
 from __future__ import annotations
@@ -41,7 +32,6 @@ class Tone:
     colour: str
     slack_emoji: str
     emoji: str
-    # An Adaptive Card ContainerStyle: good, attention, accent, or emphasis.
     style: str
 
 
@@ -57,7 +47,6 @@ class Message:
     footer: str = ""
 
 
-# By the last word of an event name.
 OUTCOMES = {
     "completed": Tone("#2EB67D", ":large_green_circle:", "\U0001F7E2", "good"),
     "failed": Tone("#E01E5A", ":red_circle:", "\U0001F534", "attention"),
@@ -65,22 +54,18 @@ OUTCOMES = {
 OTHER = Tone("#1D9BD1", ":large_blue_circle:", "\U0001F535", "accent")
 UNHANDLED = Tone("#868686", ":white_circle:", "⚪", "emphasis")
 READY = Tone("#2EB67D", ":white_check_mark:", "✅", "good")
-# Each parameter's label, in the order the message shows them; any other parameter follows.
 FIELDS = {"project": "Project", "app": "App", "provider": "Provider", "deployed": "Where",
           "trigger": "Trigger", "exit_code": "Exit code", "run_id": "Run id", "state": "Logs"}
 HIDDEN = {"url"}
-# The cloud a deployed run ran in; a deployed Windows task runs on this computer.
 CLOUDS = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
 MAX_FIELDS = 10
 
 
 def env_name(prefix: str, channel: str) -> str:
-    """The env var that holds the webhook of `channel`: `SLACK_WEBHOOK_` and #it-alerts give SLACK_WEBHOOK_IT_ALERTS."""
     return prefix + re.sub(r"[^A-Z0-9]+", "_", channel.lstrip("#").upper()).strip("_")
 
 
 def event_words(name: str) -> str:
-    """`job:run-failed` as `Run failed`."""
     words = name.partition(":")[2] or name
     return words.replace("-", " ").replace("_", " ").capitalize()
 
@@ -92,12 +77,10 @@ def event_label(name: str) -> str:
 
 
 def event_message(event, unhandled: bool = False) -> Message:
-    """The content of one lifecycle event: the same layout for every event."""
     params = event.params
     tone = UNHANDLED if unhandled else OUTCOMES.get(event.name.rsplit("-", 1)[-1], OTHER)
     words = event_words(event.name)
     title = f"{words}: {params['app']}" if "app" in params else words
-    # `pdt logs` reads only a deployed run's log, so a local run shows no Logs field.
     keys = [key for key in FIELDS if key in params and (key != "state" or params.get("deployed"))]
     keys += [key for key in params if key not in FIELDS and key not in HIDDEN]
     fields = []
@@ -124,7 +107,6 @@ def event_message(event, unhandled: bool = False) -> Message:
 
 
 def ready_message(project: str, target: str, events: list[str]) -> Message:
-    """The test message. `target` is the destination as the user knows it, such as #it-alerts."""
     names = ", ".join(map(event_label, events)) or "no events yet"
     return Message(
         title="Success, you're ready!", summary="Success, you're ready!", tone=READY,
@@ -156,7 +138,6 @@ def secret_value(name: str) -> str:
 
 
 def post(url: str, payload: dict, service: str) -> str:
-    """POST `payload` to a webhook and return the answer's body. Raises when `service` does not answer 2xx."""
     request = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
                                      headers={"Content-Type": "application/json"})
     try:

@@ -8,13 +8,8 @@ picked when it was made; `channel` names that channel and the env var. The card
 goes through the Workflows trigger "When a Teams webhook request is received",
 which answers 202 Accepted, so any 2xx answer is success.
 
-The content of a card comes from pdt.alert_message, which also finds the URL
-(`secret_value`) and posts it; `card` lays a Message out as an Adaptive Card.
 Teams cards have no inline code, so `teams_text` turns `*bold*` into bold and
 drops the backticks.
-
-This module is in deploy_common.LIFECYCLE_MODULES, so it imports only what
-lifecycle.py's script header installs.
 """
 
 from __future__ import annotations
@@ -40,12 +35,10 @@ def secrets(entry: dict) -> list[str]:
 
 
 def teams_text(text: str) -> str:
-    """`*bold*` and `code` as Teams card markdown."""
     return re.sub(r"\*([^*]+)\*", r"**\1**", text).replace("`", "")
 
 
 def card(message: Message) -> dict:
-    """The workflow payload of a Message: one Adaptive Card."""
     tone = message.tone
     body: list[dict] = [{"type": "Container", "style": tone.style, "bleed": True, "items": [{
         "type": "TextBlock", "text": f"{tone.emoji} {message.title}", "size": "Large",

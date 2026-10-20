@@ -15,8 +15,6 @@ PARAMS = {"project": "contoso-jobs", "app": "sync-users", "provider": "aws"}
 
 @pytest.fixture
 def workflow():
-    """A local stand-in for a Teams workflow: it records each JSON body and answers 202
-    with no body, or `answer` when a test sets it."""
     seen = []
     answer = {"status": 202, "body": ""}
 
@@ -37,7 +35,6 @@ def workflow():
 
 
 def answers(monkeypatch, *replies):
-    """Scripted answers for console.ask and console.confirm, in order."""
     queue = list(replies)
     monkeypatch.setattr(alerts_cli.console, "ask", lambda *_a, **_k: queue.pop(0))
     monkeypatch.setattr(alerts_cli.console, "confirm", lambda *_a, **_k: queue.pop(0) == "y")
