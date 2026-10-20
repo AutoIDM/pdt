@@ -243,3 +243,21 @@ def test_without_follow_the_stream_reads_the_store_only():
     lines = list(stream_lines(FakeBatch(), logs, NAMES["log_group"], RUNNING, False))
     assert [line.message for line in lines] == ["starting"]
     assert logs.calls == ["get_log_events", "get_log_events"]
+
+
+def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(capsys):
+    class Batch(FakeBatch):
+        def describe_jobs(self, jobs):
+            self.described = getattr(self, "described", []) + [jobs]
+            return {"jobs": [{"jobId": job_id, "container": {"logStreamName": f"s/{job_id}"}}
+                             for job_id in jobs]}
+
+    batch = Batch({None: ([job("job-1", started=2_000), job("job-2", started=1_000)], None)})
+    session = type("Session", (), {"client": lambda self, name, config=None:
+                                    batch if name == "batch" else None})()
+    assert deploy_aws_batch.logs({"name": "report"}, session, ["--list"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"CloudWatch log group: {resource_names('report')['log_group']}"
+    assert lines[2].split()[:2] == ["1", "s/job-1"]
+    assert lines[3].split()[:2] == ["2", "s/job-2"]
+    assert batch.described == [["job-1", "job-2"]]

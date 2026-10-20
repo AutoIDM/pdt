@@ -367,8 +367,9 @@ def pause(app_name: str, paused: bool) -> int:
     return code
 
 
-def start(app_name: str) -> int:
-    """Start one run of the deployed job now."""
+def start(app_name: str, follow: bool = False) -> int:
+    """Start one run of the deployed job now; with `follow`, print its log until it ends and
+    return the run's exit code."""
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
@@ -379,6 +380,8 @@ def start(app_name: str) -> int:
                       f"run {console.value(f'pdt deploy {app_name}')} first")
         return 1
     config.load_env(app["dir"])
+    if follow:
+        return dispatch(provider, "start", app_name, False, ["--", "--follow"])
     code = dispatch(provider, "start", app_name, False)
     if code == 0:
         console.say()

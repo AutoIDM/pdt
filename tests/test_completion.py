@@ -566,3 +566,20 @@ def test_bash_and_zsh_tab_complete_app_names(project, tmp_path_factory, shell):
 
     found = [sorted(saved.split()[2:]) for saved in tabs.read_text().splitlines()]
     assert found == [["daily-report", "weekly-report"]] * 4 + [[]] * 2
+
+
+def test_storage_ls_and_get_offer_the_paths_of_a_windows_store(project, tmp_path, monkeypatch):
+    add_app(project, "daily-report", "platform:\n  provider: windows\n")
+    add_app(project, "cloud-report")
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+    storage = tmp_path / "ProgramData" / "pdt" / "daily-report" / "storage"
+    (storage / "runs" / "r1").mkdir(parents=True)
+    (storage / "runs" / "r1" / "a.csv").write_text("")
+    (storage / "state.json").write_text("")
+    (project / "notes.txt").write_text("")
+
+    assert _complete("pdt storage daily-report ls ", tmp_path) == ["runs/", "state.json"]
+    assert _complete("pdt storage daily-report get runs/", tmp_path) == ["runs/r1/"]
+    assert _complete("pdt storage daily-report get runs/r1/", tmp_path) == ["runs/r1/a.csv "]
+    assert "notes.txt" in _complete("pdt storage daily-report get runs/r1/a.csv ", tmp_path)
+    assert _complete("pdt storage cloud-report ls ", tmp_path) == [""]

@@ -26,14 +26,28 @@ def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
             entries = sorted(fs.ls(path, detail=True), key=lambda entry: entry["name"])
     except FileNotFoundError:
         entries = []
+    totals = {entry["name"].rstrip("/"): [0, 0] for entry in entries
+              if entry.get("type") == "directory"}
+    if totals:
+        depth = len(path.strip("/").split("/")) if path.strip("/") else 0
+        for name, entry in fs.find(path, detail=True).items():
+            top = totals.get("/".join(name.split("/")[:depth + 1]))
+            if top is not None:
+                top[0] += 1
+                top[1] += entry.get("size") or 0
+    rows = []
+    for entry in entries:
+        files, size = totals.get(entry["name"].rstrip("/"), (1, entry.get("size")))
+        rows.append({"name": entry["name"], "files": files, "size": size,
+                     "type": entry.get("type", "file")})
     if as_json:
-        console.data(json.dumps([{"name": entry["name"], "size": entry.get("size"),
-                                  "type": entry.get("type", "file")} for entry in entries]))
+        console.data(json.dumps(rows))
         return 0
-    if not entries:
+    if not rows:
         console.say(f"nothing under {console.value(path or '/')}")
         return 0
-    console.table(["Path", "Size"], [[entry["name"], entry["size"]] for entry in entries],
+    console.table(["Path", "Files", "Size"],
+                  [[row["name"], row["files"], console.size(row["size"] or 0)] for row in rows],
                   ["bold"])
     return 0
 

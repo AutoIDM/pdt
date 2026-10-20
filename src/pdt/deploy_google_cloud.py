@@ -1410,7 +1410,10 @@ def logs(app: dict, rest: list[str], assume_yes: bool,
     return runs_cli.logs(lambda: list_runs(project, region, job),
                          lambda run, since: read_lines(project, run.id, since), app["name"], rest,
                          store="Cloud Logging", delay=runs_cli.LOG_DELAY, hold=HOLD,
-                         stream=lambda run, follow: stream_lines(project, run, follow), new=new)
+                         stream=lambda run, follow: stream_lines(project, run, follow), new=new,
+                         place=runs_cli.LogPlace(f"Cloud Logging filter in project {project}",
+                                                 execution_filter("EXECUTION"), "Execution",
+                                                 lambda runs: [run.id for run in runs]))
 
 
 def pause(app: dict, paused: bool, assume_yes: bool) -> int:

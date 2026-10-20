@@ -24,7 +24,7 @@ def test_every_cloud_waits_5_minutes_for_its_log_store(monkeypatch):
     app = {"name": "report"}
     deploy_aws_batch.logs(app, Session(), [])
     deploy_google_cloud.logs(app, [], False)
-    deploy_azure_container_apps.logs(app, {}, [])
+    deploy_azure_container_apps.logs(app, {"workspace": "pdt-logs"}, [])
     assert [call["delay"] for call in calls] == [timedelta(minutes=5)] * 3
 
 

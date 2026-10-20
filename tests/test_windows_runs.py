@@ -282,3 +282,33 @@ def test_a_read_of_a_running_log_holds_back_a_line_the_runner_has_not_ended(proj
     run = runs_cli.Run("20260923T100000Z", datetime.now(timezone.utc), None, "running")
 
     assert [line.message for line in deploy_windows.read_lines("my-report", run)] == ["first"]
+
+
+def two_logs(project, monkeypatch):
+    app = windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder.mkdir(parents=True)
+    (folder / "20260923T090000Z.log").write_text("10:00:00 INFO   starting\npdt: exit 3\n")
+    (folder / "20260923T100000Z.log").write_text("10:00:00 INFO   starting\n")
+    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
+    monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: True)
+    return app, folder
+
+
+def test_logs_names_the_file_it_reads(project, monkeypatch, capsys):
+    app, folder = two_logs(project, monkeypatch)
+    assert deploy_windows.logs(app, ["2"]) == 1
+    assert f"reading {folder / '20260923T090000Z.log'}" in capsys.readouterr().out
+
+
+def test_logs_list_prints_the_folder_once_and_one_row_per_file(project, monkeypatch, capsys):
+    app, folder = two_logs(project, monkeypatch)
+    assert deploy_windows.logs(app, ["1", "--list"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"Logs folder: {folder}"
+    assert lines[1].split() == ["#", "Log", "File", "Started", "Exit", "Code", "Size"]
+    assert lines[2].split()[:2] == ["1", "20260923T100000Z.log"]
+    assert lines[2].split()[-3:] == ["running", "25", "B"]
+    assert lines[3].split()[:2] == ["2", "20260923T090000Z.log"]
+    assert lines[3].split()[-3:] == ["3", "37", "B"]
+

@@ -717,7 +717,12 @@ def logs(app: dict, settings: dict, rest: list[str],
                          read_many=lambda chosen: read_many(settings, job,
                                                             [run.id for run in chosen]),
                          stream=lambda run, follow: stream_lines(settings, job, run, follow),
-                         new=new)
+                         new=new, place=runs_cli.LogPlace(
+                             f"Log Analytics workspace {settings['workspace']}, "
+                             "table ContainerAppConsoleLogs_CL",
+                             f"ContainerJobName_s == '{job}' and ContainerGroupName_s "
+                             "startswith the execution", "Execution",
+                             lambda runs: [run.id for run in runs]))
 
 
 def unit_prices(region: str, currency: str, secrets: bool, storage: bool) -> dict[str, float]:

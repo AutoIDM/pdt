@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from pdt import storage_cli
+from pdt import console, storage_cli
 from pdt.utils.storage import Store
 
 
@@ -96,3 +96,31 @@ def test_yes_after_the_separator_skips_the_question(store, app, tmp_path, monkey
     monkeypatch.setattr("pdt.deploy.confirm", lambda actions, assume_yes: seen.append(assume_yes))
     storage_cli.run(store, app, [subcommand, "--yes"], False)
     assert seen == [True]
+
+
+def test_ls_counts_the_files_and_bytes_under_each_folder(store, app, capsys, tmp_path):
+    runs = tmp_path / "store" / "my-report" / "runs"
+    (runs / "r1" / "more").mkdir(parents=True)
+    (runs / "r1" / "a.csv").write_text("abc")
+    (runs / "r1" / "more" / "b.txt").write_text("de")
+    (runs / "r2").mkdir()
+    (runs / "r2" / "c.txt").write_text("f")
+    (runs / "empty").mkdir()
+    assert storage_cli.run(store, app, ["ls", "--json"], False) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [(entry["name"], entry["files"], entry["size"]) for entry in entries] == [
+        ("a.csv", 1, 1), ("runs", 3, 6)]
+    assert storage_cli.run(store, app, ["ls", "runs/", "--json"], False) == 0
+    entries = json.loads(capsys.readouterr().out)
+    assert [(entry["name"], entry["files"], entry["size"]) for entry in entries] == [
+        ("runs/empty", 0, 0), ("runs/r1", 2, 5), ("runs/r2", 1, 1)]
+    assert storage_cli.run(store, app, ["ls", "runs"], False) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].split() == ["Path", "Files", "Size"]
+    assert lines[2].split() == ["runs/r1", "2", "5", "B"]
+
+
+def test_size_prints_bytes_until_kb_and_so_on_up_to_tb():
+    assert [console.size(count) for count in (0, 5, 2048, 1536 * 1024, 3 * 1024 ** 3,
+                                              2 * 1024 ** 4, 5000 * 1024 ** 4)] == [
+        "0 B", "5 B", "2.0 KB", "1.5 MB", "3.0 GB", "2.0 TB", "5000.0 TB"]

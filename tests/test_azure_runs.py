@@ -378,3 +378,23 @@ def test_a_recorded_stream_line_and_its_log_analytics_row_are_the_same_line(monk
         ["2026-10-09T21:15:44.4795058Z", "line 0001 burst 0", "pdt-report-x1-abc"]])
     [stored] = deploy_azure_container_apps.read_lines(SETTINGS, "pdt-report", "pdt-report-x1")
     assert runs_cli.line_key(streamed) == runs_cli.line_key(stored)
+
+
+def test_logs_list_names_the_workspace_once_and_each_execution(monkeypatch, capsys):
+    calls = fake_az(monkeypatch, [
+        execution("job-a", "Succeeded", "2026-09-23T10:00:00Z", "2026-09-23T10:00:12Z"),
+        execution("job-b", "Running", "2026-09-23T10:05:00Z", None),
+    ], marker_rows=[("job-a", "Container 'x' was terminated with exit code '0' and reason")])
+    assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS, ["--list"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("Log Analytics workspace pdt-logs, table "
+                               "ContainerAppConsoleLogs_CL: ContainerJobName_s == 'pdt-report")
+    assert lines[0].endswith("' and ContainerGroupName_s startswith the execution")
+    assert lines[1].split() == ["#", "Execution", "Started", "Exit", "Code"]
+    assert lines[2].split()[:2] == ["1", "job-b"]
+    assert lines[2].split()[-1] == "running"
+    assert lines[3].split()[:2] == ["2", "job-a"]
+    assert lines[3].split()[-1] == "0"
+    assert [call[:3] for call in calls] == [("containerapp", "job", "show"),
+                                            ("containerapp", "job", "execution"),
+                                            ("rest", "--method", "post")]

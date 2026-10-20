@@ -230,7 +230,7 @@ def cmd_run(args) -> int:
     if name is None:
         return 1
     if args.deployed:
-        return deploy.start(name)
+        return deploy.start(name, args.follow)
     app = config.merged_app(name)
     sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
@@ -496,7 +496,8 @@ def cmd_logs(args) -> int:
         return 1
     flags = [flag for flag, on in (("--failed", args.failed), ("--errors", args.errors),
                                    ("--head", args.head), ("--full", args.full),
-                                   ("--follow", args.follow), ("--json", args.json)) if on]
+                                   ("--follow", args.follow), ("--list", args.list),
+                                   ("--json", args.json)) if on]
     lines = [] if args.lines is None else ["--lines", str(args.lines)]
     number = 1 if args.number is None else args.number
     run_id = [part for wanted in args.id or [] for part in ("--id", wanted)]
@@ -635,6 +636,9 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("--deployed", action="store_true",
                    help="start the deployed job now, instead of running the app on this machine")
+    p.add_argument("--follow", action="store_true",
+                   help="print the run's log until it ends and exit with the run's result; "
+                        "a run on this machine always does")
     p.set_defaults(func=cmd_run)
     p = add_parser("deploy", help="deploy an app")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
@@ -721,6 +725,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print every line, not only the last 20")
     p.add_argument("--follow", action="store_true",
                    help="keep printing new lines until the run ends and its log is complete")
+    p.add_argument("--list", action="store_true",
+                   help="list each run log")
     p.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_logs)
     p = add_parser("health", help="show whether each deployed app's last run succeeded")

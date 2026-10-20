@@ -1119,6 +1119,16 @@ def log_stream(batch, run: runs_cli.Run) -> str | None:
     return (jobs[0].get("container") or {}).get("logStreamName") if jobs else None
 
 
+def log_streams(batch, found: list[runs_cli.Run]) -> list[str]:
+    """Each run's log stream, from one describe_jobs call per 100 runs, its limit."""
+    ids = [run.id for run in found]
+    streams = {}
+    for start in range(0, len(ids), 100):
+        for job in batch.describe_jobs(jobs=ids[start:start + 100]).get("jobs", []):
+            streams[job["jobId"]] = (job.get("container") or {}).get("logStreamName") or "-"
+    return [streams.get(run_id, "-") for run_id in ids]
+
+
 def read_lines(batch, logs, log_group: str, run: runs_cli.Run,
                since: datetime | None = None) -> list[runs_cli.Line]:
     stream = log_stream(batch, run)
@@ -1257,4 +1267,5 @@ def logs(app: dict, session, rest: list[str],
         lambda run, since: read_lines(batch, logs_client, names["log_group"], run, since),
         app["name"], rest, store="CloudWatch Logs", delay=runs_cli.LOG_DELAY, hold=HOLD,
         stream=lambda run, follow: stream_lines(batch, logs_client, names["log_group"], run, follow),
-        new=new)
+        new=new, place=runs_cli.LogPlace("CloudWatch log group", names["log_group"],
+                                         "Log Stream", lambda runs: log_streams(batch, runs)))

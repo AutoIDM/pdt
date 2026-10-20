@@ -1086,3 +1086,13 @@ def test_rebuild_reaches_the_provider_script_as_pdt_rebuild(project, monkeypatch
         kwargs["env"]) or SimpleNamespace(returncode=0))
     assert run_cli(monkeypatch, "deploy", "hello-world", "--yes", *argv) == 0
     assert [env.get(REBUILD_ENV) for env in envs] == [rebuild]
+
+
+def test_run_deployed_follow_starts_the_job_and_follows_its_log(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    config.mark_deployed("hello-world", True)
+    calls = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append(a) or 1)
+    assert run_cli(monkeypatch, "run", "hello-world", "--deployed", "--follow") == 1
+    assert calls == [("azure", "start", "hello-world", False, ["--", "--follow"])]
+    assert "pdt runs hello-world" not in capsys.readouterr().out

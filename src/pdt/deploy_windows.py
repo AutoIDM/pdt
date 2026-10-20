@@ -608,7 +608,10 @@ def logs(app: dict, rest: list[str], new: Callable[[runs_cli.Run], bool] | None 
     return runs_cli.logs(lambda: list_runs(app["name"]),
                          lambda run, since: list(read_lines(app["name"], run)), app["name"], rest,
                          store="the run's log file",
-                         stream=lambda run, follow: read_lines(app["name"], run, follow), new=new)
+                         stream=lambda run, follow: read_lines(app["name"], run, follow), new=new,
+                         place=runs_cli.LogPlace("Logs folder", str(logs_folder(app["name"])),
+                                                 "Log File", lambda runs: [f"{run.id}.log" for run in runs],
+                                                 logs_folder(app["name"])))
 
 
 def _kept_storage_line(app_name: str) -> str:
