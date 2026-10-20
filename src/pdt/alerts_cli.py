@@ -329,7 +329,6 @@ def own_alerts_apps() -> list[str]:
 
 
 def entries() -> list[dict]:
-    """Every alerts entry of the project and its apps of a type with a test, each once."""
     found = lifecycle.alerts_for(None)
     for app in config.app_folders():
         try:
