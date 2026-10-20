@@ -113,8 +113,10 @@ def destroy(store, app, assume_yes) -> int:
     return 0
 
 
-def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "") -> int:
-    """`page` is where `--open` with no subcommand goes: the app's folder in the console."""
+def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
+        note: str = "") -> int:
+    """`page` is where `--open` with no subcommand goes: the app's folder in the console.
+    `note` tells the user what to do on it."""
     name = app["name"]
     if not app["storage"]:
         console.error(f"storage is turned off for {console.value(name)}; "
@@ -127,7 +129,7 @@ def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "") -> 
     show = "--open" in rest
     rest = [arg for arg in rest if arg not in ("--json", "--recursive", "--yes", "--open")]
     if show and not rest:
-        return runs_cli.open_place(page)
+        return runs_cli.open_place(page, note)
     handlers = {
         "ls": (0, lambda args: ls(store, args[0] if args else "", as_json, recursive)),
         "get": (1, lambda args: get(store, args[0],

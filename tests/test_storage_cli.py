@@ -128,14 +128,16 @@ def test_size_prints_bytes_until_kb_and_so_on_up_to_tb():
 
 def test_open_with_no_subcommand_opens_the_storage_page(store, app, monkeypatch):
     opened = []
-    monkeypatch.setattr(storage_cli.runs_cli, "open_place", lambda target: opened.append(target) or 0)
+    monkeypatch.setattr(storage_cli.runs_cli, "open_place",
+                        lambda target, note="": opened.append(target) or 0)
     assert storage_cli.run(store, app, ["--open"], False, "https://console.example/bucket") == 0
     assert opened == ["https://console.example/bucket"]
 
 
 def test_get_open_opens_the_saved_file(store, app, monkeypatch, tmp_path):
     opened = []
-    monkeypatch.setattr(storage_cli.runs_cli, "open_place", lambda target: opened.append(target) or 0)
+    monkeypatch.setattr(storage_cli.runs_cli, "open_place",
+                        lambda target, note="": opened.append(target) or 0)
     assert storage_cli.run(store, app, ["get", "a.csv", str(tmp_path / "a.csv"), "--open"],
                            False) == 0
     assert opened == [str(tmp_path / "a.csv")]

@@ -245,7 +245,9 @@ def test_without_follow_the_stream_reads_the_store_only():
     assert logs.calls == ["get_log_events", "get_log_events"]
 
 
-def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(capsys):
+def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(
+        capsys, monkeypatch, tmp_path):
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
     class Batch(FakeBatch):
         def describe_jobs(self, jobs):
             self.described = getattr(self, "described", []) + [jobs]
@@ -253,10 +255,10 @@ def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(ca
                              for job_id in jobs]}
 
     batch = Batch({None: ([job("job-1", started=2_000), job("job-2", started=1_000)], None)})
-    session = type("Session", (), {"region_name": "us-east-1",
+    session = type("Session", (), {"region_name": "us-east-1", "profile_name": "default",
                                    "client": lambda self, name, config=None:
                                    batch if name == "batch" else None})()
-    assert deploy_aws_batch.logs({"name": "report"}, session, ["--list"]) == 0
+    assert deploy_aws_batch.logs({"name": "report", "platform": {}}, session, ["--list"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines[0] == f"CloudWatch log group: {resource_names('report')['log_group']}"
     assert lines[2].split()[:2] == ["1", "s/job-1"]

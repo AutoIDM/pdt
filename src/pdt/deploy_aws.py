@@ -44,7 +44,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import boto3
 import certifi
@@ -992,8 +992,40 @@ def deployer_store(app: dict, session, account: str) -> Store:
 
 def storage(app: dict, session, account: str, rest: list[str], assume_yes: bool) -> int:
     return storage_cli.run(deployer_store(app, session, account), app, rest, assume_yes,
-                           f"https://s3.console.aws.amazon.com/s3/buckets/{store_name(account)}"
-                           f"?region={session.region_name}&prefix={app['name']}/")
+                           console_url(session,
+                                       f"https://s3.console.aws.amazon.com/s3/buckets/"
+                                       f"{store_name(account)}?region={session.region_name}"
+                                       f"&prefix={app['name']}/"),
+                           console_note(app, session))
+
+
+def sso_role(profile: str) -> tuple[str, str, str] | None:
+    """The (start URL, account, role) an IAM Identity Center profile signs in to; None for
+    any other login."""
+    target = sso_target(profile)
+    settings = botocore.session.Session().full_config["profiles"].get(profile, {})
+    if target is None or not settings.get("sso_account_id") or not settings.get("sso_role_name"):
+        return None
+    return target[1], settings["sso_account_id"], settings["sso_role_name"]
+
+
+def console_url(session, url: str) -> str:
+    """`url`, behind an IAM Identity Center shortcut link when the profile is an SSO profile,
+    so the browser signs in to the profile's account and role before it opens the page."""
+    role = sso_role(session.profile_name)
+    if role is None:
+        return url
+    start, account, name = role
+    query = urlencode({"account_id": account, "role_name": name, "destination": url},
+                      quote_via=quote)
+    return f"{start.rstrip('/')}/#/console?{query}"
+
+
+def console_note(app: dict, session) -> str:
+    account = str(app["platform"].get("account") or "").strip()
+    if not account or sso_role(session.profile_name) is not None:
+        return ""
+    return f"Sign in to AWS account {console.value(account)} to see this page."
 
 
 def log_group_url(region: str, log_group: str, stream: str = "") -> str:

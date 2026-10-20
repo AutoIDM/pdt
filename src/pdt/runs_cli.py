@@ -72,6 +72,7 @@ class LogPlace:
     page: Callable[[], str]
     link: Callable[[str], str]
     folder: Path | None = None
+    note: str = ""
 
 
 class StreamError(Exception):
@@ -321,7 +322,7 @@ def logs(list_runs: Callable[[], list[Run]],
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(rest)
     if args.open and args.number is None and not args.id and not args.failed:
-        return open_place(place.page())
+        return open_place(place.page(), place.note)
     if args.list and (args.follow or args.id or args.failed):
         console.error("--list lists the log files; drop --follow, --id, and --failed")
         return 1
@@ -400,7 +401,7 @@ def logs(list_runs: Callable[[], list[Run]],
         if resolve is not None:
             resolve(chosen)
     if args.open:
-        return max(open_place(place.link(item)) for item in place.items(chosen))
+        return max(open_place(place.link(item), place.note) for item in place.items(chosen))
     if place is not None and place.folder is not None:
         for item in place.items(chosen):
             console.status(f"reading {console.value(place.folder / item)}")
