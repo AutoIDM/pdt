@@ -7,13 +7,22 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pdt import __version__, console, powershell, pwsh, regions
+from pdt import __version__, console, powershell, pwsh, regions, watch
 from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
                         merged_app, powershell_scripts)
 from pdt.utils.env_secret import private_file
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
 STARTER = "hello-world"
+
+ART = r"""
+             _   _
+ _ __     __| | | |_       _____
+| '_ \   / _` | | __|     / ^ ^ \
+| |_) | | (_| | | |_      \  u  /   hi!
+| .__/   \__,_|  \__|      '---'
+|_|
+"""
 
 PROVIDER_CHOICES = [
     ("azure", "Microsoft Azure"),
@@ -319,7 +328,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
     if starting_fresh:
         copy_example(target, STARTER, EXAMPLES / STARTER)
 
-    console.say()
+    console.say(console.escape(ART))
     console.done(f"Your project is ready: {console.value(target)}")
     files = [(PROJECT_FILE, "settings shared by every app"), (".env", "secrets, never committed"),
              (".gitignore", ""),
@@ -336,6 +345,20 @@ def init(directory: str | None, assume_yes: bool) -> int:
         steps.append((f"pdt run {STARTER}", "run the starter app on this computer"))
     steps.append(("pdt examples", "see what else you can start from"))
     console.next_steps(steps)
+    console.say()
+    console.say(f"{watch.COMMUNITY} {console.value(watch.SUPPORT_URL)}")
+    return 0
+
+
+def welcome() -> int:
+    """What the PowerShell window that the Windows installer opens shows first."""
+    console.say(console.escape(ART))
+    console.next_steps([("pdt init my-project", "create a project in a new folder"),
+                        ("cd my-project", "go to the new project"),
+                        (f"pdt run {STARTER}", "run the starter app on this computer"),
+                        ("pdt --help", "see every command")], "Get started:")
+    console.say()
+    console.say(f"{watch.COMMUNITY} {console.value(watch.SUPPORT_URL)}")
     return 0
 
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from pdt import __version__, powershell, scaffold
+from pdt import __version__, powershell, scaffold, watch
 from pdt.config import APP_FILE, PROJECT_FILE, ConfigError, find_apps, powershell_scripts, validate_app
 
 POSIX_SYSTEM_FOLDERS = ["/", "/usr", "/usr/local/bin", "/etc"]
@@ -94,6 +94,29 @@ def test_init_keeps_the_users_own_agent_docs(tmp_path, monkeypatch):
     assert scaffold.init(None, assume_yes=True) == 0
     assert (tmp_path / "AGENTS.md").read_text() == "mine\n"
     assert (tmp_path / "CLAUDE.md").read_text().strip() == "@AGENTS.md"
+
+
+def test_init_ends_with_the_art_and_the_discord_link(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert scaffold.init(None, assume_yes=True) == 0
+    out = capsys.readouterr().out
+    assert scaffold.ART in out
+    assert out.rstrip().endswith(f"{watch.COMMUNITY} {watch.SUPPORT_URL}")
+
+
+def test_welcome_shows_the_art_the_first_commands_and_the_discord_link(capsys):
+    assert scaffold.welcome() == 0
+    out = capsys.readouterr().out
+    assert scaffold.ART in out
+    assert "pdt init my-project" in out
+    assert f"pdt run {scaffold.STARTER}" in out
+    assert out.rstrip().endswith(f"{watch.COMMUNITY} {watch.SUPPORT_URL}")
+
+
+def test_the_art_fits_a_narrow_console():
+    assert scaffold.ART.isascii()
+    assert max(len(line) for line in scaffold.ART.splitlines()) <= 60
 
 
 def test_init_on_an_existing_project_changes_nothing(project):

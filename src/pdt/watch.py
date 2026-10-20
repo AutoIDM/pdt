@@ -13,6 +13,7 @@ from typing import Callable
 from pdt import config
 
 SUPPORT_URL = "https://autoidm.com/discord"
+COMMUNITY = "Get help and share ideas in the pdt community on Discord:"
 OFF_ENV = "PDT_ERROR_WATCH"
 SETTING = "error-watch"
 AGENT_ENVS = ("CLAUDECODE", "CURSOR_AGENT", "CODEX_SANDBOX", "GEMINI_CLI")

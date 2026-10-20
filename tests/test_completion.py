@@ -132,6 +132,10 @@ def test_first_tab_offers_app_names_without_options(project, tmp_path):
     assert _complete("pdt deploy ", tmp_path) == ["daily-report", "weekly-report"]
 
 
+def test_tab_completion_hides_the_welcome_flag(tmp_path):
+    assert "--welcome" not in " ".join(_complete("pdt --", tmp_path))
+
+
 def test_positionals_that_are_not_paths_offer_no_file_names(project, tmp_path):
     add_app(project, "daily-report")
     (project / "notes.txt").write_text("")
