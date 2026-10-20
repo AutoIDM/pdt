@@ -132,7 +132,7 @@ def sync_logs(runs: list[Run], force: bool = False) -> bool:
     if not runs:
         return False
     ids = [part for run in runs for part in ("--id", run.run_id)]
-    code, output = run_pdt("logs", runs[0].app.name, *ids, "--full", "--json")
+    code, output = run_pdt("logs", runs[0].app.name, *ids, "--full", "--json", module="pdt.deploy")
     answer = last_json(output)
     if len(runs) == 1 and isinstance(answer, list):
         answer = {runs[0].run_id: answer}

@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import runpy
 import subprocess
 import sys
 import threading
@@ -300,6 +301,30 @@ def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatc
         ("azure", "logs", "hello-world", False, ["--", "1", "--follow"]),
     ]
 
+
+
+def test_logs_takes_no_run_id(project, monkeypatch, capsys):
+    add_app(project, "hello-world", "schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
+    with pytest.raises(SystemExit) as stop:
+        run_cli(monkeypatch, "logs", "hello-world", "--id", "7")
+    assert stop.value.code == 2
+    assert "unrecognized arguments: --id" in capsys.readouterr().err
+
+
+def test_the_gui_reads_runs_by_id_through_python_m_pdt_deploy(project, monkeypatch):
+    add_app(project, "hello-world", "schedule: daily\n")
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda args, **_k: calls.append(args)
+                        or subprocess.CompletedProcess(args, 0))
+    monkeypatch.setattr("sys.argv", ["deploy.py", "logs", "hello-world", "--id", "job-1",
+                                     "--id", "job-2", "--full", "--json"])
+    monkeypatch.delitem(sys.modules, "pdt.deploy")
+    with pytest.raises(SystemExit) as stop:
+        runpy.run_module("pdt.deploy", run_name="__main__")
+    assert stop.value.code == 0
+    assert calls[-1][-9:] == ["logs", "hello-world", "--", "--id", "job-1", "--id", "job-2",
+                              "--full", "--json"]
 
 def test_health_checks_every_enabled_app(project, monkeypatch, capsys):
     add_app(project, "hello-world", "schedule: daily\n")
