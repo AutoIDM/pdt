@@ -1,11 +1,15 @@
 """The slack alerts type: a Block Kit message in one Slack channel, through an incoming webhook.
 
-An entry is `{type: slack, channel: <name>}` plus its events. The webhook URL is
-a secret, so it lives in `.env` as SLACK_WEBHOOK_<CHANNEL> (`secret_name`), and
-`config.env_spec` adds that name to every app's env spec, so `pdt deploy` sends
-it in the app's cloud secret. A Slack webhook posts to the one channel it was
-made for; `channel` names that channel and the env var, and a new channel
-needs a new webhook from `pdt alerts setup`.
+An entry is `{type: slack, webhook: <id>}` plus its events, and an optional
+`name`. A Slack webhook URL holds the workspace and webhook IDs, not the
+channel. `webhook_id` takes the webhook ID (B0123ABC) from the URL, or a hash
+of the URL when it has none. The URL is a secret, so it lives in `.env` as
+SLACK_WEBHOOK_<ID> (`secret_name`), and `config.env_spec` adds that name to
+every app's env spec, so `pdt deploy` sends it in the app's cloud secret.
+`name` is a label that pdt shows in its own text (`label`), such as #it-alerts.
+An entry of pdt 0.1.9, `{type: slack, channel: <name>}`, still works: its
+`channel` names the env var, SLACK_WEBHOOK_IT_ALERTS for it-alerts. An entry
+sets exactly one of `webhook` and `channel`.
 
 The message name and icon come from the Slack app that made the webhook; a
 webhook cannot set its own name or icon.
@@ -16,21 +20,38 @@ lifecycle.py's script header installs.
 
 from __future__ import annotations
 
+import re
+import urllib.parse
+
 from pdt import alert_message
 from pdt.alert_message import Message
 
-KEYS = frozenset({"channel"})
+KEYS = frozenset({"webhook", "name", "channel"})
+ONE_OF = ("webhook", "channel")
 # Slack, and Slack for government (GovSlack).
 WEBHOOK_HOSTS = ("hooks.slack.com", "hooks.slack-gov.com")
 
 
-def secret_name(channel: str) -> str:
-    """The env var that holds the webhook of `channel`: #it-alerts is SLACK_WEBHOOK_IT_ALERTS."""
-    return alert_message.env_name("SLACK_WEBHOOK_", channel)
+def webhook_id(url: str) -> str:
+    """The B0123ABC of https://hooks.slack.com/services/T0123ABC/B0123ABC/<secret>."""
+    found = re.search(r"/services/[^/]+/([A-Za-z0-9]+)/", urllib.parse.urlparse(url).path)
+    return found.group(1) if found else alert_message.url_id(url)
+
+
+def label(entry: dict) -> str:
+    if entry.get("name"):
+        return str(entry["name"])
+    if entry.get("channel"):
+        return f"#{str(entry['channel']).lstrip('#')}"
+    return f"webhook {entry['webhook']}"
+
+
+def secret_name(entry: dict) -> str:
+    return alert_message.env_name("SLACK_WEBHOOK_", str(entry.get("webhook") or entry["channel"]))
 
 
 def secrets(entry: dict) -> list[str]:
-    return [secret_name(str(entry["channel"]))]
+    return [secret_name(entry)]
 
 
 def blocks(message: Message) -> dict:
@@ -57,16 +78,16 @@ def message(event, unhandled: bool = False) -> dict:
     return blocks(alert_message.event_message(event, unhandled))
 
 
-def ready_message(project: str, channel: str, events: list[str]) -> dict:
-    return blocks(alert_message.ready_message(project, f"#{channel.lstrip('#')}", events))
+def ready_message(project: str, entry: dict) -> dict:
+    return blocks(alert_message.ready_message(project, label(entry), entry.get("events", [])))
 
 
 def send(entry: dict, payload: dict) -> None:
-    name = secret_name(str(entry["channel"]))
+    name = secret_name(entry)
     url = alert_message.secret_value(name)
     if url == "":
-        raise RuntimeError(f"{name} is not set; run pdt alerts setup to connect "
-                           f"#{entry['channel']}")
+        raise RuntimeError(f"{name} is not set; run pdt alerts setup to connect Slack "
+                           f"{label(entry)}")
     body = alert_message.post(url, payload, "Slack")
     if body != "ok":
         raise RuntimeError(f"Slack answered {body!r}, not ok")
