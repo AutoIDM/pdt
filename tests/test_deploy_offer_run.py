@@ -123,14 +123,22 @@ def test_the_exit_code_is_the_runs(project, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("start_code, hint", [(0, True), (1, False)])
-def test_pdt_run_deployed_ends_with_the_command_to_see_the_run(project, monkeypatch, capsys,
-                                                               start_code, hint):
+def test_pdt_run_deployed_ends_with_the_commands_to_follow_the_run(project, monkeypatch, capsys,
+                                                                   start_code, hint):
+    monkeypatch.setattr(console._console, "width", 80)
     cloud = Cloud(monkeypatch)
     cloud.codes["start"] = start_code
     config.mark_deployed(APP, True)
     assert deploy.start(APP) == start_code
     assert cloud.commands() == ["start"]
-    assert (f"pdt runs {APP}" in capsys.readouterr().out) == hint
+    out = capsys.readouterr().out.splitlines()
+    steps = [
+        "Next steps:",
+        f"  pdt logs {APP} --follow  print the log lines as they arrive",
+        f"  pdt runs {APP}           list the recent runs",
+        f"  pdt health {APP}         show whether the last run succeeded",
+    ]
+    assert (out[-4:] == steps) == hint
 
 
 def run_cli(monkeypatch, *argv):
