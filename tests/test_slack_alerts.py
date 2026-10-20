@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 from conftest import add_app
 
-from pdt import alerts_cli, config, deploy, lifecycle, slack
+from pdt import alert_message, alerts_cli, config, deploy, lifecycle, slack
 
 AT = datetime(2026, 10, 13, 14, 2, tzinfo=timezone.utc)
 PARAMS = {"project": "contoso-jobs", "app": "sync-users", "provider": "aws"}
@@ -76,7 +76,7 @@ def test_a_failed_scheduled_run_is_red_and_lists_every_parameter_in_order():
 ])
 def test_where_names_the_computer_or_cloud_and_logs_is_only_for_a_deployed_run(
         monkeypatch, deployed, provider, where, logs):
-    monkeypatch.setattr(slack.socket, "gethostname", lambda: "build-pc")
+    monkeypatch.setattr(alert_message.socket, "gethostname", lambda: "build-pc")
     event = lifecycle.Event("job:run-completed", AT, {
         **PARAMS, "provider": provider, "run_id": "c77b2dd0", "deployed": deployed,
         "trigger": "manual", "exit_code": 0, "state": "runs/*-c77b2dd0/"})
@@ -143,7 +143,7 @@ def test_a_missing_webhook_names_the_env_var_and_the_fix(project, monkeypatch):
 def test_a_cloud_job_finds_the_webhook_in_its_env_secret(monkeypatch):
     monkeypatch.delenv("SLACK_WEBHOOK_OPS", raising=False)
     monkeypatch.setenv("PDT_ENV_JSON", json.dumps({"SLACK_WEBHOOK_OPS": "https://hooks.slack.com/x"}))
-    assert slack.webhook_url("SLACK_WEBHOOK_OPS") == "https://hooks.slack.com/x"
+    assert alert_message.secret_value("SLACK_WEBHOOK_OPS") == "https://hooks.slack.com/x"
 
 
 def test_a_slack_entry_needs_a_channel_and_takes_no_other_key(project):
@@ -240,7 +240,7 @@ def test_setup_starts_from_the_entries_in_pdt_yml(project, monkeypatch):
     assert shown == {
         "Where should pdt send alerts?": ["[x] Slack: a message in a Slack channel"],
         "Which events should go to Slack?": [
-            f"[x] {slack.event_words(event)} ({event})" for event in APP_EVENTS]}
+            f"[x] {alert_message.event_words(event)} ({event})" for event in APP_EVENTS]}
 
 
 def test_enter_at_every_question_leaves_pdt_yml_as_it_is(project, monkeypatch):
@@ -262,7 +262,7 @@ def test_the_events_shown_checked_are_the_ones_the_entry_receives(
     answers(monkeypatch, "", "")
     alerts_cli.setup()
     assert shown["Which events should go to Console?"] == [
-        f"[x] {slack.event_words(event)} ({event})" for event in checked]
+        f"[x] {alert_message.event_words(event)} ({event})" for event in checked]
 
 
 def test_an_unchecked_type_loses_its_entry_and_every_other_entry_stays(project, monkeypatch):
@@ -276,7 +276,7 @@ def test_an_unchecked_type_loses_its_entry_and_every_other_entry_stays(project, 
 
 def test_unchecking_the_only_entry_leaves_an_empty_list(project, monkeypatch):
     (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [all]\n")
-    answers(monkeypatch, "2", "")
+    answers(monkeypatch, "3", "")
     alerts_cli.setup()
     assert config.load_yaml(project / "pdt.yml")["alerts"] == []
 
@@ -284,7 +284,7 @@ def test_unchecking_the_only_entry_leaves_an_empty_list(project, monkeypatch):
 def test_console_starts_unchecked_and_adds_an_entry_with_no_secret_and_no_test(
         project, monkeypatch):
     shown = first_checked(monkeypatch)
-    answers(monkeypatch, "1 2", "", "3 5", "")
+    answers(monkeypatch, "1 3", "", "3 5", "")
     assert alerts_cli.setup() == 0
     assert shown["Where should pdt send alerts?"] == ["[x] Slack: a message in a Slack channel"]
     assert config.load_yaml(project / "pdt.yml")["alerts"] == [{"type": "console", "events": [
@@ -294,7 +294,7 @@ def test_console_starts_unchecked_and_adds_an_entry_with_no_secret_and_no_test(
 
 
 def test_every_event_checked_is_written_as_all(project, monkeypatch):
-    answers(monkeypatch, "1 2", "", "")
+    answers(monkeypatch, "1 3", "", "")
     alerts_cli.setup()
     assert (project / "pdt.yml").read_text().endswith(
         "alerts:\n  - type: console\n    events: [all]\n")

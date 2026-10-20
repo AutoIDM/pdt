@@ -25,9 +25,9 @@ implicit entry, so no entry receives any event.
 
 A Transport is a name, the extra entry keys it allows, and
 `deliver(event, entry, unhandled)`, where `unhandled` says the entry got the
-event through `unhandled`. The console type prints a `[event]` line, and the
-slack type (pdt.slack) posts to a Slack channel; a later transport (email,
-the GUI history) adds its own Transport.
+event through `unhandled`. The console type prints a `[event]` line, the
+slack type (pdt.slack) posts to a Slack channel, and the teams type
+(pdt.teams) posts to a Teams channel.
 `deliver` must not change the event. The console prints at once; every
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the
@@ -73,7 +73,7 @@ from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, slack
+from pdt import config, console, slack, teams
 from pdt.utils import storage
 
 JOB_RUN_STARTED = "job:run-started"
@@ -128,6 +128,7 @@ UNHANDLED = "unhandled"
 TRANSPORTS: dict[str, Transport] = {
     "console": Transport("console", frozenset(), print_event),
     "slack": Transport("slack", slack.KEYS, slack.deliver, slack.KEYS, slack.secrets),
+    "teams": Transport("teams", teams.KEYS, teams.deliver, teams.KEYS, teams.secrets),
 }
 
 
