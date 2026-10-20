@@ -684,11 +684,15 @@ def test_health_keeps_the_app_order_when_apps_finish_in_another_order(project, m
     for name in names:
         add_app(project, name)
     finished = []
+    done = {name: threading.Event() for name in names}
 
     def fake_output(provider, command, app_name, extra, stderr=None):
-        time.sleep(0.05 * (len(names) - names.index(app_name)))
+        later = names[names.index(app_name) + 1:]
+        if later:
+            assert done[later[0]].wait(5)
         stderr.write(f"line from {app_name}\n")
         finished.append(app_name)
+        done[app_name].set()
         return 0, one_run("succeeded")
 
     monkeypatch.setattr(deploy, "dispatch_output", fake_output)
