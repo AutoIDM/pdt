@@ -237,3 +237,11 @@ def test_a_failed_build_that_streamed_its_output_stops_with_the_command(monkeypa
     with pytest.raises(SystemExit):
         run_build(["docker", "build", "."])
     assert "docker build . failed" in capsys.readouterr().out
+
+
+def test_a_wheel_link_to_an_excluded_file_stays_a_link(tmp_path):
+    app, stage = staged(tmp_path, "my-report")
+    (app["dir"] / "credentials.json").write_text("secret\n")
+    (app["dir"] / "x-1-py3-none-any.whl").symlink_to(app["dir"] / "credentials.json")
+    write_dockerfile(stage, app)
+    assert (stage / ".pdt-script" / "x-1-py3-none-any.whl").is_symlink()

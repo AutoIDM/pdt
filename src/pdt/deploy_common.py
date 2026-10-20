@@ -201,7 +201,7 @@ def stage_script_header(stage: Path, app_dir: Path) -> None:
     if lock.is_file():
         shutil.copy(lock, folder / lock.name)
     for wheel in app_dir.glob("*.whl"):
-        shutil.copy(wheel, folder / wheel.name)
+        shutil.copy(wheel, folder / wheel.name, follow_symlinks=False)
 
 
 def context_ignore_text(text: str, app_name: str) -> str:
