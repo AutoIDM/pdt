@@ -1,0 +1,25 @@
+# Sample Docker app in Node.js. Its Dockerfile builds the image and its CMD
+# starts hello.js, which writes one line and keeps greeting.txt in the data
+# store. Any language works the same way: write a Dockerfile that runs your
+# program, and pdt deploys it.
+
+# How often this app runs.
+# Shorthand: hourly, daily, weekly, monthly, yearly.
+# Or a 5-field cron expression, for example "0 * * * *".
+schedule: "daily"
+
+# Every app gets a data store folder by default. Uncomment to opt out.
+# storage: false
+
+config:
+  # Anything under config: reaches the program as JSON in PDT_CONFIG_JSON.
+  # See hello.js for how it's used.
+  greeting: Hello, world!
+
+# Env vars this app needs. pdt cannot read them from the code of a Docker app,
+# so list every one here. `pdt validate` checks them against your .env, and
+# `pdt deploy` uploads the ones that are set as cloud secrets. This app needs
+# none.
+env:
+  required: []
+  optional: []

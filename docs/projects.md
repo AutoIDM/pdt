@@ -2,7 +2,7 @@
 
 ## Set up a project
 
-A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, or the `.ps1` scripts of a PowerShell app. Every command except `init` finds the project by looking in the current folder, then each folder above it.
+A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, the `.ps1` scripts of a PowerShell app, or the `Dockerfile` of a Docker app in any other language. Every command except `init` finds the project by looking in the current folder, then each folder above it.
 
 ```
 pdt init my-jobs

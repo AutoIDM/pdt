@@ -8,7 +8,7 @@ pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Win
 
 ## Key Features
 
-1. **Bring your scripts** - Drop in your PowerShell or Python files. pdt finds what they need and runs them.
+1. **Bring your scripts** - Drop in your PowerShell or Python files, or a Dockerfile for a job in any other language. pdt finds what they need and runs them.
 2. **One command to deploy** - No cloud skills needed. `pdt deploy` installs the tools it needs and opens the sign-in page for you.
 3. **Any cloud** - Move a job between AWS, Azure, Google Cloud, and Windows by changing one line.
 4. **Know the cost first** - See the plan and a monthly cost estimate before anything changes.
@@ -110,6 +110,10 @@ PowerShell job. Once a week it exports the Intune configuration of a tenant with
 ### monday-orphaned-account-report
 Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user.
 
+### node-hello-world
+
+A Docker app in Node.js. Its `Dockerfile` builds a Node image and its `CMD` starts `hello.js`, which writes one line and keeps `greeting.txt` in the app's data store. Replace `hello.js` and the `Dockerfile` with your own program, in any language, to deploy your own job. See [Docker apps](docs/writing-apps.md#docker-apps-any-language).
+
 ### powershell-hello-world
 A PowerShell job whose one script, `hello.ps1`, writes "Hello, world!". It is the job the [Quick Start](#quick-start) deploys. Put your own `.ps1` files in its folder in place of `hello.ps1` to deploy your own PowerShell job.
 
@@ -131,6 +135,6 @@ PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in th
 - [Choosing where jobs run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
 - [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
 - [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's runs, logs, and files
-- [Writing your own app](docs/writing-apps.md): Python and PowerShell apps, and logging
+- [Writing your own app](docs/writing-apps.md): Python, PowerShell, and Docker apps, and logging
 - [Sending email](docs/email.md): send mail from an app over SMTP, Microsoft Graph, SES, or Resend
 - [More ways to install](docs/install.md): other installs, and how to update or remove pdt
