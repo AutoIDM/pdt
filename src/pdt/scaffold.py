@@ -15,13 +15,21 @@ from pdt.utils.env_secret import private_file
 EXAMPLES = Path(__file__).resolve().parent / "examples"
 STARTER = "hello-world"
 
-ART = r"""
-             _   _
- _ __     __| | | |_       _____
-| '_ \   / _` | | __|     / ^ ^ \
-| |_) | | (_| | | |_      \  u  /   hi!
-| .__/   \__,_|  \__|      '---'
-|_|
+ART = """
+                   +  ·.    .     .    .·  °
+            ·.·  +  .*  .°.   +··   °°·  ·*  +  ·++
+             · * .* ° ·  .  ++·..·°  ·  . · *. . .
+          °.+··°   ██████╗ ██████╗ ████████╗   *··°··
+       ·   ·.·*    ██╔══██╗██╔══██╗╚══██╔══╝    ··*°   °
+                ·  ██████╔╝██║  ██║   ██║     ·
+            ···    ██╔═══╝ ██║  ██║   ██║       °°·
+       .    ++ *°  ██║     ██████╔╝   ██║     *. ..    ·
+         ° +  °·   ╚═╝     ╚═════╝    ╚═╝      .*  + °
+         · .   ·  °·                       °.  *   . +
+
+                      PROCESS DEPLOY TOOL
+
+                           welcome!
 """
 
 PROVIDER_CHOICES = [
@@ -328,7 +336,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
     if starting_fresh:
         copy_example(target, STARTER, EXAMPLES / STARTER)
 
-    console.say(console.escape(ART))
+    console.art(ART)
     console.done(f"Your project is ready: {console.value(target)}")
     files = [(PROJECT_FILE, "settings shared by every app"), (".env", "secrets, never committed"),
              (".gitignore", ""),
@@ -351,7 +359,7 @@ def init(directory: str | None, assume_yes: bool) -> int:
 
 
 def welcome() -> int:
-    console.say(console.escape(ART))
+    console.art(ART)
     console.next_steps([("pdt init my-project", "create a project in a new folder"),
                         ("cd my-project", "go to the new project"),
                         (f"pdt run {STARTER}", "run the starter app on this computer"),

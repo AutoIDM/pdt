@@ -1,4 +1,6 @@
+import io
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -114,8 +116,19 @@ def test_welcome_shows_the_art_the_first_commands_and_the_discord_link(capsys):
     assert out.rstrip().endswith(f"{watch.COMMUNITY} {watch.SUPPORT_URL}")
 
 
+def test_a_cp1252_stdout_leaves_out_the_art(monkeypatch):
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert scaffold.welcome() == 0
+    stdout.flush()
+    out = stdout.buffer.getvalue().decode("cp1252")
+    assert "pdt init my-project" in out
+    assert out.rstrip().endswith(f"{watch.COMMUNITY} {watch.SUPPORT_URL}")
+
+
 def test_the_art_fits_a_narrow_console():
-    assert scaffold.ART.isascii()
+    assert set(scaffold.ART) - set("█═║╔╗╚╝·°") <= {chr(code) for code in range(128)}
+    assert scaffold.ART.encode("cp437").decode("cp437") == scaffold.ART
     assert max(len(line) for line in scaffold.ART.splitlines()) <= 60
 
 
