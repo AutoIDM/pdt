@@ -288,6 +288,15 @@ def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
     assert os.environ["PSModulePath"] == "MODULE-PATH"
 
 
+@pytest.mark.parametrize("command", [["init"], ["deploy", "hello-world"],
+                                     ["destroy", "hello-world"], ["secrets", "hello-world"]])
+def test_y_is_short_for_yes(command):
+    parser = cli.build_parser()
+    assert parser.parse_args([*command, "-y"]).yes
+    assert parser.parse_args([*command, "--yes"]).yes
+    assert not parser.parse_args(command).yes
+
+
 def test_new_takes_from_scripts_but_not_together_with_from(monkeypatch, capsys):
     parser = cli.build_parser()
     args = parser.parse_args(["new", "ad-report", "--from-scripts"])

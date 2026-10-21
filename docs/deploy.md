@@ -6,7 +6,7 @@
 pdt deploy my-report
 ```
 
-A deploy to AWS, Azure, or Google Cloud builds the app's image with Docker on your computer when Docker is running, and in the cloud when it is not (see [Choosing where jobs run](platforms.md)). The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question.
+A deploy to AWS, Azure, or Google Cloud builds the app's image with Docker on your computer when Docker is running, and in the cloud when it is not (see [Choosing where jobs run](platforms.md)). The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` (or `-y`) to skip the question.
 
 The cost estimate shows prices in the currency of your computer's regional setting, or in US dollars when pdt cannot read it. pdt takes the price in that currency from the cloud when the cloud lists one. Otherwise it converts from US dollars at the cloud's own exchange rate, or at the European Central Bank's daily reference rate, and the estimate names the rate it used.
 
@@ -44,4 +44,4 @@ Every command reads its values from the environment it runs in. A build server s
 - A `.env` file is a convenience for a person working on their own machine. A value that is already in the environment wins over the same name in a `.env` file.
 - `PDT_ENV_JSON` holds every value as one JSON object, for a CI system that keeps one secret instead of many. For example, `PDT_ENV_JSON={"PDT_TOKEN": "abc", "PDT_SMTP_USER": "reports@example.com"}`.
 - pdt creates no `.env` file on a build server. It looks for the `CI` variable that build systems set, and for a missing terminal. Email authorization must therefore be done first: run `pdt run APP` once on a machine with a browser, then copy `PDT_SMTP_OAUTH_CACHE_B64` (or `PDT_GRAPH_MAIL_CACHE_B64` for Microsoft Graph) from your `.env` into the CI variables.
-- `pdt deploy APP` and `pdt destroy APP` ask before they change anything. Add `--yes` so they proceed without asking. On a build server, `pdt deploy APP` starts no run after the deploy; add `--run` to start a run and follow its log.
+- `pdt deploy APP` and `pdt destroy APP` ask before they change anything. Add `--yes` (or `-y`) so they proceed without asking. On a build server, `pdt deploy APP` starts no run after the deploy; add `--run` to start a run and follow its log.
