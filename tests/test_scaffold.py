@@ -468,3 +468,35 @@ def test_init_again_puts_pdt_project_back(project, monkeypatch):
     answer(monkeypatch, ["5"])
     assert scaffold.init(None, assume_yes=False) == 0
     assert "PDT_PROJECT" not in os.environ
+
+
+@pytest.mark.parametrize("text", [
+    "defaults: &defaults\n  provider: azure\nplatform: *defaults\napps: []\n",
+    "zone: &zone UTC\nplatform:\n  provider: aws\n  timezone: *zone\napps: []\n",
+    "platform:\n  provider: azure\napps: []\n...\n",
+])
+def test_replace_platform_refuses_an_alias_or_a_document_end(text):
+    with pytest.raises(ConfigError, match="by hand"):
+        scaffold.replace_platform(text, {"provider": "aws"})
+
+
+def test_replace_platform_leaves_out_an_empty_setting():
+    out = scaffold.replace_platform("platform:\n  provider: azure\n  environment:\n",
+                                    {"provider": "azure", "environment": None, "region": "eastus2"})
+    assert yaml.safe_load(out) == {"platform": {"provider": "azure", "region": "eastus2"}}
+
+
+def test_a_change_to_pdt_yml_during_the_questions_stops_the_move(project, monkeypatch):
+    replies = iter(["2", "us-east-2"])
+
+    def ask(question, default=""):
+        reply = next(replies, None)
+        if reply is None:
+            (project / PROJECT_FILE).write_text("platform:\n  provider: google-cloud\n")
+            return ""
+        return reply
+
+    monkeypatch.setattr(scaffold.console, "ask", ask)
+    with pytest.raises(ConfigError, match="changed while pdt init was asking"):
+        scaffold.init(None, assume_yes=False)
+    assert (project / PROJECT_FILE).read_text() == "platform:\n  provider: google-cloud\n"

@@ -309,7 +309,8 @@ def ask_platform(assume_yes: bool) -> dict:
 
 
 def platform_lines(platform: dict) -> list[str]:
-    return ["platform:", *(f"  {key}: {config.yaml_quoted(value)}" for key, value in platform.items())]
+    return ["platform:", *(f"  {key}: {config.yaml_quoted(value)}" for key, value in platform.items()
+                           if value is not None)]
 
 
 def replace_platform(text: str, platform: dict) -> str:
@@ -318,22 +319,30 @@ def replace_platform(text: str, platform: dict) -> str:
     lines = text.split("\n")
     new = [line + end_of_line for line in platform_lines(platform)]
     root = yaml.compose(text)
+    events = list(yaml.parse(text))
     if isinstance(root, yaml.MappingNode) and root.flow_style:
         raise ConfigError(f"the top level of {PROJECT_FILE} is in braces, so pdt cannot change "
                           f"it safely. Change platform: in {PROJECT_FILE} by hand.")
+    if any(isinstance(event, yaml.DocumentEndEvent) and event.explicit for event in events):
+        raise ConfigError(f"{PROJECT_FILE} has a ... document end line, so pdt cannot change it "
+                          f"safely. Change platform: in {PROJECT_FILE} by hand.")
+    keys = [key for key, _value in (root.value if root is not None else [])]
     found = [(key, value) for key, value in (root.value if root is not None else [])
              if key.value == "platform"]
     if found:
         key, value = found[0]
+        following = [other.start_mark.line for other in keys if other.start_mark.line > key.start_mark.line]
+        bound = min(following, default=len(lines))
         if isinstance(value, yaml.MappingNode) and not value.flow_style and value.value:
             last = value.value[-1][1].end_mark
         else:
             last = value.end_mark
         start, stop = key.start_mark.line, last.line + (last.column > 0)
-        if any(getattr(event, "anchor", None) and start <= event.start_mark.line < stop
-               and not isinstance(event, yaml.AliasEvent) for event in yaml.parse(text)):
-            raise ConfigError(f"platform: in {PROJECT_FILE} holds a YAML anchor (&), so pdt "
-                              f"cannot change it safely. Change platform: in {PROJECT_FILE} by hand.")
+        if any(getattr(event, "anchor", None) and start <= event.start_mark.line < bound
+               for event in events):
+            raise ConfigError(f"platform: in {PROJECT_FILE} holds a YAML anchor (&) or alias (*), "
+                              f"so pdt cannot change it safely. Change platform: in {PROJECT_FILE} "
+                              "by hand.")
         lines[start:stop] = new
     elif PLATFORM_TEMPLATE + end_of_line in lines:
         start = lines.index(PLATFORM_TEMPLATE + end_of_line)
@@ -394,6 +403,9 @@ def change_provider(target: Path) -> int:
                                 ("pdt init", "then move the project")])
             return 0
     with config.locked(marker):
+        if marker.read_bytes().decode("utf-8") != text:
+            raise ConfigError(f"{PROJECT_FILE} changed while pdt init was asking; "
+                              "run pdt init again")
         config.write_text_atomically(marker, changed, newline="")
     console.say()
     console.done(f"Saved the {console.value('platform:')} settings to {console.value(PROJECT_FILE)}.")
