@@ -87,7 +87,7 @@ def art(text: str) -> None:
     """Text drawn in characters, such as pdt's banner. It is left out when the output's
     encoding, such as cp1252 on a redirected Windows stdout, has no code for one of them."""
     try:
-        text.encode(_console.file.encoding or "utf-8")
+        text.encode(_console.encoding)
     except UnicodeEncodeError:
         return
     _console.print(text, markup=False)

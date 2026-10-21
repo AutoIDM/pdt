@@ -126,6 +126,23 @@ def test_a_cp1252_stdout_leaves_out_the_art(monkeypatch):
     assert out.rstrip().endswith(f"{watch.COMMUNITY} {watch.SUPPORT_URL}")
 
 
+def test_a_stdout_with_no_encoding_still_prints_the_welcome(monkeypatch):
+    class Writer:
+        def __init__(self):
+            self.text = ""
+
+        def write(self, text):
+            self.text += text
+
+        def flush(self):
+            pass
+
+    stdout = Writer()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert scaffold.welcome() == 0
+    assert stdout.text.rstrip().endswith(f"{watch.COMMUNITY} {watch.SUPPORT_URL}")
+
+
 def test_the_art_fits_a_narrow_console():
     assert set(scaffold.ART) - set("█═║╔╗╚╝·°") <= {chr(code) for code in range(128)}
     assert scaffold.ART.encode("cp437").decode("cp437") == scaffold.ART
