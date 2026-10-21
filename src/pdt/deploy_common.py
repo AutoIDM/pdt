@@ -27,6 +27,15 @@ build), and runs `pdt.run_powershell`, or the app's own run.py when
 `pdt new APP --from-scripts` wrote one.
 PDT_PROJECT names the project directory, so no job depends on its cwd.
 
+A Docker app (`pdt.docker_app`) has no run.py and no .ps1 file, only its
+own Dockerfile, written for a build in its own folder. Its context holds
+the app's files at the root, with pdt.yml and the app's config.yml and
+Dockerfile in .pdt-project and the lifecycle in .pdt-lifecycle.
+DOCKER_APP_TAIL, appended to its Dockerfile, installs pdt-cli[apps] at this
+pdt's version in folders of its own and starts the Dockerfile's command
+through `pdt.run_docker`, so the job gets the same secrets, config, data
+store, lifecycle events, and `pdt: exit N` line as every other app.
+
 BUILD_EXCLUDES leaves secret shapes (env files, keys, certificates, credentials files, ssh and package-manager logins) and local state out of the context, and one note names what it left out. A symbolic link stays a link when its target is inside the app directory, and the build stops when one points outside, so no file from elsewhere on the machine reaches the image.
 
 The image is built from DOCKERFILE (or POWERSHELL_DOCKERFILE) unless the
@@ -68,6 +77,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -97,8 +107,9 @@ BASE_IMAGE = ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
 ENTRYPOINT = ('ENTRYPOINT ["sh", "-c", "stop() {{ kill -s $1 $pid; wait $pid; finish $?; }}; '
               'finish() {{ echo \\"pdt: exit $1\\"; exit $1; }}; '
               'trap \\"stop TERM\\" TERM; trap \\"stop INT\\" INT; '
-              'uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- {start} & pid=$!; '
+              '{lifecycle} -- {start} & pid=$!; '
               'wait $pid; finish $?"]\n')
+LIFECYCLE = "uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py"
 DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
 COPY .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
@@ -107,7 +118,7 @@ ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false PYTHONUNBUFFERED=1
 COPY .pdt-script .
 RUN uv sync --script run.py
 COPY . /workspace
-""" + ENTRYPOINT.replace("{start}", "uv run --script run.py")
+""" + ENTRYPOINT.replace("{lifecycle}", LIFECYCLE).replace("{start}", "uv run --script run.py")
 POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFFERED=1
@@ -117,7 +128,20 @@ RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pw
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 WORKDIR /workspace/{app}
 {sync}COPY . /workspace
-""" + ENTRYPOINT
+""" + ENTRYPOINT.replace("{lifecycle}", LIFECYCLE)
+# Appended to a Docker app's own Dockerfile. pdt keeps to folders of its own (uv, a Python
+# that uv installs, pdt-cli[apps] at this pdt's version, the lifecycle copy, and the app's
+# config under /workspace), so the image keeps the app's program, working folder, and user.
+DOCKER_APP_TAIL = """
+# Added by pdt: start the command above inside the job lifecycle.
+{root}COPY --from=""" + BASE_IMAGE + """ /usr/local/bin/uv /opt/pdt-uv/uv
+RUN UV_PYTHON_INSTALL_DIR=/opt/pdt-python UV_PYTHON_PREFERENCE=only-managed UV_NO_CACHE=1 /opt/pdt-uv/uv venv --python 3.12 /opt/pdt && UV_NO_CACHE=1 /opt/pdt-uv/uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
+COPY .pdt-lifecycle /opt/pdt-lifecycle
+COPY .pdt-project /workspace
+ENV PDT_PROJECT=/workspace PDT_APP={app} NO_COLOR=1 PYTHONUNBUFFERED=1
+{user}""" + ENTRYPOINT.replace("{lifecycle}", "/opt/pdt/bin/python /opt/pdt-lifecycle/pdt/lifecycle.py")
+# The folders a Docker app's build context holds next to the app's own files.
+DOCKER_APP_FOLDERS = (".pdt-lifecycle", ".pdt-project")
 # The PEP 723 script block, with the reference regex of the PEP.
 SCRIPT_HEADER = re.compile(r"(?m)^# /// script$\s(?:^#(?:| .*)$\s)+^# ///$")
 LIFECYCLE_MODULES = ("__init__.py", "alert_message.py", "config.py", "console.py", "lifecycle.py",
@@ -165,15 +189,37 @@ def powershell_dockerfile(app: dict) -> str:
         sync=sync, start=start)
 
 
-def write_dockerfile(stage: Path, app: dict) -> None:
+def docker_app_tail(app: dict) -> str:
+    """DOCKER_APP_TAIL for the app: its command, its user, and whether it keeps state."""
+    from pdt import __version__, docker_app
+    stage = docker_app.stage_of(app)
+    state = ["--state"] if docker_app.state_reader(Path(app["dir"])) else []
+    start = shlex.join(["/opt/pdt/bin/python", "-m", "pdt.run_docker", f"/workspace/{app['name']}",
+                        *state, "--", *stage.command])
+    return DOCKER_APP_TAIL.format(
+        root="USER root\n" if stage.user else "", user=f"USER {stage.user}\n" if stage.user else "",
+        version=__version__, app=app["name"], start=json.dumps(start)[1:-1])
+
+
+def write_dockerfile(stage: Path, app: dict, wrap: bool = True) -> None:
     """Put the Dockerfile to build at the root of the staged build context.
 
-    An app's own Dockerfile is used as is. An app made of .ps1 files gets
-    POWERSHELL_DOCKERFILE, any other app DOCKERFILE.
-    The context is the same either way: the app directory under its own
-    name next to pdt.yml, so a custom file starts from the generated one.
+    A Docker app's Dockerfile gets DOCKER_APP_TAIL, unless `wrap` is False (`pdt run`
+    builds it as it is). Any other app's own Dockerfile is used as is. An app made of .ps1
+    files gets POWERSHELL_DOCKERFILE, any other app DOCKERFILE. The context of those is the
+    same either way: the app directory under its own name next to pdt.yml, so a custom file
+    starts from the generated one.
     """
     own = own_dockerfile(app)
+    if own is not None and config.docker_app(Path(app["dir"])):
+        text = own.read_text(encoding="utf-8")
+        (stage / "Dockerfile").write_text(
+            text.rstrip("\n") + "\n" + docker_app_tail(app) if wrap else text, encoding="utf-8")
+        ignore = stage / ".dockerignore"
+        if ignore.is_file():
+            kept = "".join(f"!{folder}\n!{folder}/**\n" for folder in DOCKER_APP_FOLDERS)
+            ignore.write_text(ignore.read_text().rstrip("\n") + "\n" + kept)
+        return
     if own is not None:
         shutil.copy(own, stage / "Dockerfile")
     elif config.powershell_scripts(app["dir"]):
@@ -288,6 +334,32 @@ def ensure_image(app: dict, image: str, image_platform: str, cloud_builder: str,
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     return fingerprint
+
+
+def local_image(app: dict) -> str:
+    """Build a Docker app's Dockerfile as it is with Docker on this computer; return the tag.
+
+    `pdt run` runs the app's command in a container of it. The program exists only in the
+    image, and pdt cannot install Docker (it needs an administrator and a running service),
+    so a Docker app is the one app that `pdt run` cannot start without it.
+    """
+    name = app["name"]
+    problem = docker_problem()
+    if problem:
+        fail(f"{console.value(name)} is a Docker app, so {console.value('pdt run')} builds its "
+             f"image with Docker on this computer, and {console.escape(problem)}. Start Docker "
+             "(Docker Desktop on Windows and macOS) and run the same command again, or run the "
+             f"deployed job with {console.value(f'pdt run {name} --deployed')}.")
+    tag = f"pdt-{name}:local"
+    stage = stage_build_context(app)
+    try:
+        write_dockerfile(stage, app, wrap=False)
+        console.step(f"building image {console.value(tag)} from "
+                     f"{console.value(f'{name}/Dockerfile')} with Docker on this computer")
+        run_build(["docker", "build", *ssh_build_args(), "-t", tag, str(stage)])
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    return tag
 
 
 def fail(message: str) -> None:
@@ -803,6 +875,12 @@ def env_line(name: str, value: str) -> str:
 
 
 def stage_build_context(app: dict) -> Path:
+    """Copy the app folder, pdt.yml, and the lifecycle modules to a new folder.
+
+    The app folder goes under its own name next to pdt.yml, except for a Docker app, whose
+    Dockerfile was written for a build in its own folder: its files go at the root, and
+    pdt.yml with the app's config.yml and Dockerfile under .pdt-project.
+    """
     app_dir = Path(app["dir"]).resolve()
     skip = shutil.ignore_patterns(*BUILD_EXCLUDES)
     for folder, dirs, files in os.walk(app_dir):
@@ -816,10 +894,19 @@ def stage_build_context(app: dict) -> Path:
                      "outside the app folder; the image must not carry it")
     stage = Path(tempfile.mkdtemp(prefix="pdt-build-"))
     try:
-        shutil.copytree(app_dir, stage / app["name"], ignore=skip, symlinks=True)
+        project = stage
+        if config.docker_app(app_dir):
+            shutil.copytree(app_dir, stage, ignore=skip, symlinks=True, dirs_exist_ok=True)
+            project = stage / ".pdt-project"
+            (project / app["name"]).mkdir(parents=True)
+            for name in (config.APP_FILE, "Dockerfile"):
+                if (app_dir / name).is_file():
+                    shutil.copy(app_dir / name, project / app["name"] / name)
+        else:
+            shutil.copytree(app_dir, stage / app["name"], ignore=skip, symlinks=True)
         project_file = config.find_project() / config.PROJECT_FILE
         if project_file.is_file():
-            shutil.copy(project_file, stage / config.PROJECT_FILE)
+            shutil.copy(project_file, project / config.PROJECT_FILE)
         for module in LIFECYCLE_MODULES:
             target = stage / ".pdt-lifecycle" / "pdt" / module
             target.parent.mkdir(parents=True, exist_ok=True)

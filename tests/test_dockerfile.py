@@ -10,7 +10,7 @@ from conftest import add_app, plain
 from pdt import __version__, powershell
 from pdt.config import validate_app
 from pdt.deploy_common import (
-    DOCKERFILE, ENTRYPOINT, POWERSHELL_DOCKERFILE, context_ignore_text, image_action, run_build,
+    DOCKERFILE, ENTRYPOINT, LIFECYCLE, POWERSHELL_DOCKERFILE, context_ignore_text, image_action, run_build,
     write_dockerfile)
 
 
@@ -195,7 +195,8 @@ def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modul
     write_dockerfile(stage, app)
     text = (stage / "Dockerfile").read_text()
     tail = ("WORKDIR /workspace/my-report\nCOPY .pdt-script .\nRUN uv sync --script run.py\n"
-            "COPY . /workspace\n" + ENTRYPOINT.replace("{start}", "uv run --script run.py").format())
+            "COPY . /workspace\n" + ENTRYPOINT.replace("{lifecycle}", LIFECYCLE)
+            .replace("{start}", "uv run --script run.py").format())
     assert text.endswith(tail)
     assert text.index("Install-PSResource") < text.index("RUN uv sync")
     assert "pdt.run_powershell" not in text

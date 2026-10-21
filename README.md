@@ -1,6 +1,6 @@
 # pdt
 
-Run scheduled jobs — reports, integrations, automations — and deploy them to AWS, Azure, Google Cloud, or Windows Task Scheduler with one command.
+Run scheduled jobs — reports, integrations, automations — written in Python, PowerShell, or any language you can put in a container, and deploy them to AWS, Azure, Google Cloud, or Windows Task Scheduler with one command.
 
 [AutoIDM](https://www.autoidm.com/service) makes pdt. Report a problem at https://github.com/AutoIDM/pdt/issues.
 
@@ -49,7 +49,7 @@ To deploy your own script, put it in the `hello-powershell` folder in place of `
 
 ## Set up a project
 
-A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, or the `.ps1` scripts of a PowerShell app. Every command except `init` finds the project by looking in the current folder, then each folder above it.
+A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, the `.ps1` scripts of a PowerShell app, or the `Dockerfile` of a Docker app in any other language. Every command except `init` finds the project by looking in the current folder, then each folder above it.
 
 ```
 pdt init my-jobs
@@ -362,6 +362,10 @@ A PowerShell app. Once a week it exports the Intune configuration of a tenant wi
 
 Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user.
 
+### node-hello-world
+
+A Docker app in Node.js. Its `Dockerfile` builds a Node image and its `CMD` starts `hello.js`, which writes one line and keeps `greeting.txt` in the app's data store. Replace `hello.js` and the `Dockerfile` with your own program, in any language, to deploy your own job. See [Docker apps](#docker-apps-any-language).
+
 ### powershell-hello-world
 
 A PowerShell app whose one script, `hello.ps1`, writes "Hello, world!". It is the app the [Quick start](#quick-start) deploys. Put your own `.ps1` files in its folder in place of `hello.ps1` to deploy your own PowerShell job.
@@ -417,6 +421,23 @@ A folder of `.ps1` files with no `run.py` is a PowerShell app: pdt reads the scr
 ```
 pdt new my-report --from-scripts
 ```
+
+### Docker apps (any language)
+
+A folder with a `Dockerfile` and neither a `run.py` nor a `.ps1` file is a Docker app. Write the program in any language — Node.js, Go, Java, .NET, Rust, a shell script — and a Dockerfile that builds it. The `Dockerfile` builds in the app's own folder, exactly as `docker build .` would, and each run starts what its `ENTRYPOINT` and `CMD` say. `pdt new my-job --from node-hello-world` gives you one to start from:
+
+```dockerfile
+FROM node:22-bookworm-slim
+WORKDIR /app
+COPY hello.js .
+CMD ["node", "hello.js"]
+```
+
+A Docker app gets what every other app gets. The program reads its `config:` section as JSON from the env var `PDT_CONFIG_JSON`, and its secrets from env vars. pdt keeps each file the program writes to the folder in `PDT_OUTPUT_DIR` in the app's data store. When a file in the app folder names `PDT_STATE_DIR`, that folder holds the app's saved state at the start of each run, and pdt saves it again when the run succeeds. pdt cannot read the env vars a program in another language uses, so list each one under `env:` in the app's `config.yml`.
+
+To do this, the deploy adds a few lines to the end of your Dockerfile. They install pdt in folders of its own under `/opt`, then start your command inside pdt, so the run's log shows pdt's start and end lines and `pdt runs` sees the exit code. Your program, its working folder, and its `USER` stay as you wrote them. The image needs a Linux base with `sh`, such as Debian, Ubuntu, or Alpine.
+
+`pdt run <app>` builds the Dockerfile with Docker on your computer and runs the command in a container. That is the one command that needs Docker running on your computer, because the program exists only in the image. A deploy does not need it: without Docker, the cloud builds the image. A Docker app deploys to AWS, Azure, or Google Cloud. The `windows` provider runs jobs on the PC without containers, so it cannot run one.
 
 # Utilities
 

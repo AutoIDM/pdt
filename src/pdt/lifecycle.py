@@ -54,8 +54,10 @@ run ends with `job:run-failed` and reason=interrupted once the command exits. `p
 it, and the Windows task and every cloud image (a copy at
 /opt/pdt-lifecycle, deploy_common.LIFECYCLE_MODULES) run this file as a
 script around the app's command, from the app folder, so the events land in
-the run's log. A SIGKILL, a Windows task that Task Scheduler ends, or a
-power loss stops pdt at once, so no event fires.
+the run's log. A Docker app's image runs it from the image's own working
+folder and names the app in PDT_APP (config.running_app_dir). A SIGKILL, a
+Windows task that Task Scheduler ends, or a power loss stops pdt at once,
+so no event fires.
 """
 
 from __future__ import annotations
@@ -332,7 +334,7 @@ def main(argv: list[str]) -> int:
     if argv[:1] != ["--"] or len(argv) < 2:
         sys.stderr.write("usage: lifecycle.py -- <command...>\n")
         return 2
-    app = Path.cwd().name
+    app = config.running_app_dir().name
     try:
         provider = config.merged_app(app)["platform"].get("provider", "")
     except config.ConfigError:

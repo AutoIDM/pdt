@@ -47,6 +47,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, powershell
@@ -111,21 +112,33 @@ def main(argv: list[str]) -> int:
         entries, _helpers = powershell.split_files(files, app["run_scripts"])
     except powershell.PowerShellError as exc:
         die(1, str(exc))
+    return run_with_storage(app, reads_state(files), lambda output, state: run_entries(
+        pwsh, app_dir, entries, app["continue_on_error"],
+        {**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
+         "PDT_CONFIG_JSON": json.dumps(app["config"], default=str)}))
+
+
+def run_with_storage(app: dict, keeps_state: bool, run: Callable[[Path, Path], int]) -> int:
+    """`run(output, state)` with two new folders, then keep what the run left in them.
+
+    Every file in `output`, also after a failure, goes to `runs/<run>/output/` in the app's
+    data store. When `keeps_state`, `state/` is pulled into `state` under the state lock
+    first and pushed back when the run exits 0. `pdt.run_docker` runs a Docker app the same
+    way. With `storage: false` both folders start empty and nothing is kept.
+    """
     store = storage.store() if app["storage"] else None
     with tempfile.TemporaryDirectory(prefix="pdt-run-") as local:
         output, state = Path(local) / "output", Path(local) / "state"
         output.mkdir()
         state.mkdir()
         lease = None
-        if store is not None and reads_state(files):
+        if store is not None and keeps_state:
             try:
                 lease = store.pull("state/", state)
             except storage.StorageLocked as exc:
                 die(1, str(exc))
         try:
-            code = run_entries(pwsh, app_dir, entries, app["continue_on_error"],
-                               {**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
-                                "PDT_CONFIG_JSON": json.dumps(app["config"], default=str)})
+            code = run(output, state)
             kept = [file for file in output.rglob("*") if file.is_file()]
             if store is not None and kept:
                 folder = store.run_folder() + "output/"
@@ -136,7 +149,7 @@ def main(argv: list[str]) -> int:
                 lease = None
                 log("info", f"saved state to {store.url}state/")
             elif lease is not None:
-                log("info", "a script failed, so state/ keeps the last good run's files")
+                log("info", "the run failed, so state/ keeps the last good run's files")
         finally:
             if lease is not None:
                 store.abort(lease)

@@ -1,8 +1,10 @@
 """Load, merge, and validate pdt configuration.
 
 A project is a directory holding pdt.yml. An app is a directory inside it
-that contains run.py, or one that holds PowerShell scripts (.ps1) and no
-run.py; `pdt.powershell` describes how those run. Commands find the
+that contains run.py, one that holds PowerShell scripts (.ps1) and no
+run.py (`pdt.powershell` describes how those run), or one that holds a
+Dockerfile and neither (a Docker app, any language; see `pdt.docker_app`).
+Commands find the
 project by walking up from the working directory, so pdt works the same
 whether it was installed from PyPI or run from a clone of this repository.
 
@@ -176,8 +178,16 @@ def powershell_scripts(app_dir: Path) -> list[str]:
                   if path.is_file() and path.suffix.lower() == ".ps1")
 
 
+def docker_app(app_dir: Path) -> bool:
+    """True for a Docker app: a Dockerfile, and neither run.py nor a .ps1 file. Its image
+    holds the program, in any language."""
+    return ((app_dir / "Dockerfile").is_file() and not (app_dir / "run.py").is_file()
+            and powershell_scripts(app_dir) == [])
+
+
 def is_app(folder: Path) -> bool:
-    return (folder / "run.py").is_file() or powershell_scripts(folder) != []
+    return ((folder / "run.py").is_file() or powershell_scripts(folder) != []
+            or (folder / "Dockerfile").is_file())
 
 
 def app_folders() -> list[str]:
@@ -256,7 +266,8 @@ def merged_app(name: str) -> dict:
         raise ConfigError(problem)
     app_dir = find_project() / name
     if not is_app(app_dir):
-        raise ConfigError(f"no app named {name!r} (no {name}/run.py and no .ps1 file in {name}/)")
+        raise ConfigError(f"no app named {name!r} (no {name}/run.py, no .ps1 file, and no "
+                          f"Dockerfile in {name}/)")
     root_cfg = load_yaml(find_project() / PROJECT_FILE)
     entry = root_app_entry(root_cfg, name)
     own = load_yaml(app_dir / APP_FILE)
@@ -750,7 +761,12 @@ def find_env_files(start: Path) -> list[Path]:
 
 
 def running_app_dir() -> Path:
-    """The app folder of this process: where the running run.py is, else the working folder."""
+    """The app folder of this process: the app PDT_APP names, else where the running run.py
+    is, else the working folder. A Docker app's image sets PDT_APP, because its working
+    folder is the one its own Dockerfile chose."""
+    name = os.environ.get("PDT_APP", "").strip()
+    if name != "":
+        return find_project() / name
     main = getattr(sys.modules.get("__main__"), "__file__", None)
     if main is not None and Path(main).name == "run.py":
         return Path(main).resolve().parent
@@ -1029,7 +1045,8 @@ def validate_by_app() -> list[tuple[str | None, str]]:
             problems.append(f"{PROJECT_FILE}: every apps entry needs a name")
             continue
         if entry["name"] not in app_folders():
-            problems.append(f"{PROJECT_FILE}: app {entry['name']!r} has no directory with a run.py or a .ps1 file")
+            problems.append(f"{PROJECT_FILE}: app {entry['name']!r} has no directory with a run.py, "
+                            "a .ps1 file, or a Dockerfile")
     found = [(None, problem) for problem in problems]
     found += [(name, problem) for name in apps for problem in validate_app(name)]
     # Every app re-checks the shared platform: block; report it once.
@@ -1094,6 +1111,19 @@ def validate_app(name: str) -> list[str]:
         problem = windows_timezone_problem(app["timezone"])
         if problem != "":
             problems.append(f"{name}: timezone: {problem}")
+    if docker_app(app["dir"]):
+        from pdt import docker_app as docker
+        problem = docker.command_problem(app)
+        if problem != "":
+            problems.append(problem)
+        if provider in PROVIDERS and provider not in CONTAINER_PROVIDERS:
+            # The Windows task runs the app on the PC itself, with no container, and pdt
+            # cannot install Docker there, so a Docker app needs a cloud provider.
+            problems.append(
+                f"{name}: platform.provider is {provider}, which runs jobs on this PC without "
+                f"containers, so it cannot run the image {name}/Dockerfile builds. Set "
+                f"platform.provider to aws, azure, or google-cloud in "
+                f"{name}/{APP_FILE}.")
     if app["schedule"] is not None:
         try:
             cron = cron_expression(app["schedule"])
