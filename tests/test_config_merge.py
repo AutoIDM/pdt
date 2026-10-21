@@ -114,13 +114,21 @@ def test_cloud_app_with_no_timezone_runs_on_utc(project):
     assert merged_app("my-report")["timezone"] == "Etc/UTC"
 
 
-@pytest.mark.parametrize("provider", ["windows", "google-cloud"])
-def test_explicit_timezone_on_the_apps_entry_wins_on_every_provider(project, provider):
+def test_explicit_timezone_on_the_apps_entry_wins_on_a_cloud_provider(project):
     (project / "pdt.yml").write_text(
-        f"platform:\n  provider: {provider}\n"
+        "platform:\n  provider: google-cloud\n  region: us-central1\n"
         "apps:\n  - name: my-report\n    timezone: America/Chicago\n")
     add_app(project, "my-report", "schedule: daily\n")
     assert merged_app("my-report")["timezone"] == "America/Chicago"
+
+
+def test_windows_app_runs_on_local_time_whatever_timezone_it_sets(project):
+    (project / "pdt.yml").write_text(
+        "platform:\n  provider: windows\n  timezone: America/Chicago\n"
+        "apps:\n  - name: my-report\n    timezone: Europe/London\n")
+    add_app(project, "my-report", "schedule: daily\ntimezone: Asia/Tokyo\n")
+    assert merged_app("my-report")["timezone"] == "local"
+    assert validate_app("my-report") == []
 
 
 def test_app_that_picks_windows_itself_defaults_to_local_time(project):
@@ -130,7 +138,8 @@ def test_app_that_picks_windows_itself_defaults_to_local_time(project):
 
 
 def test_platform_timezone_in_pdt_yml_reaches_an_app_without_one(project):
-    (project / "pdt.yml").write_text("platform:\n  provider: windows\n  timezone: America/Chicago\n")
+    (project / "pdt.yml").write_text(
+        "platform:\n  provider: google-cloud\n  region: us-central1\n  timezone: America/Chicago\n")
     add_app(project, "my-report", "schedule: daily\n")
     assert merged_app("my-report")["timezone"] == "America/Chicago"
 
