@@ -50,6 +50,7 @@ Both install routes must keep working, and a change is not done until both do:
 - `src/pdt/utils/` is code the user's apps import. It is public API. Changing it breaks every deployed app, so treat a change here as breaking.
 - `src/pdt/examples/<name>/` ships inside the wheel. `pdt new` copies one into the user's project. An example never sets `name:` in its `config.yml`, because the copy takes the new folder's name.
 - `tests/` runs with pytest and needs no network and no cloud account.
+- `docs/` holds the images the README shows. The README links each one by its `raw.githubusercontent.com` URL on `main`, not a relative path, because PyPI shows the same README and cannot follow a relative path. An SVG there uses literal colors, not CSS variables, so every renderer draws it.
 
 ## Config rules
 

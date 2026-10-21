@@ -2,6 +2,8 @@
 
 Run scheduled jobs — reports, integrations, automations — and deploy them to AWS, Azure, Google Cloud, or Windows Task Scheduler with one command.
 
+![Your project folder goes through pdt deploy, which checks it, builds an image, shows the plan and monthly cost, asks, then creates the schedule, job, secrets, logs, and file storage. pdt runs, logs, health, and gui read the results back.](https://raw.githubusercontent.com/AutoIDM/pdt/main/docs/what-is-pdt.svg)
+
 [AutoIDM](https://www.autoidm.com/service) makes pdt. Report a problem at https://github.com/AutoIDM/pdt/issues.
 
 ## Install

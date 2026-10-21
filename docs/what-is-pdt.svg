@@ -1,0 +1,150 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1060" height="500" viewBox="0 0 1060 500" role="img" aria-label="Your project folder on your computer goes through pdt deploy, which checks it, builds an image, shows the plan and monthly cost, asks, then creates a schedule, the job, secrets, logs, and file storage in your own AWS, Google Cloud, or Azure account, or in Windows Task Scheduler on a PC. pdt runs, logs, health, and gui read the results back to your computer.">
+<style>
+  .ground { fill: #ffffff; }
+  .panel { fill: #eff2f5; stroke: #dfe1e4; }
+  .box { fill: #ffffff; stroke: #dfe1e4; }
+  .box-accent { fill: #e8f3ff; stroke: #007dd9; }
+  .box-dashed, .edge { stroke: #5b646f; }
+  .edge-accent { stroke: #007dd9; }
+  .head { fill: #5b646f; }
+  text { fill: #080c0f; }
+  .eb, .sub, .lbl { fill: #5b646f; }
+  .head-accent, .mono-accent, .num { fill: #007dd9; }
+  @media (prefers-color-scheme: dark) {
+    .ground { fill: #080c0f; }
+    .panel { fill: #0e1216; stroke: #2a2e33; }
+    .box { fill: #080c0f; stroke: #2a2e33; }
+    .box-accent { fill: #1a222b; stroke: #0089eb; }
+    .box-dashed, .edge { stroke: #95a0ab; }
+    .edge-accent { stroke: #0089eb; }
+    .head { fill: #95a0ab; }
+    text { fill: #f8f8f8; }
+    .eb, .sub, .lbl { fill: #95a0ab; }
+    .head-accent, .mono-accent, .num { fill: #0089eb; }
+  }
+  .panel, .box { stroke-width: 1; }
+  .box-accent { stroke-width: 1.5; }
+  .box-dashed { fill: none; stroke-width: 1; stroke-dasharray: 4 4; }
+  .edge { fill: none; stroke-width: 1.5; }
+  .edge-accent { fill: none; stroke-width: 2; }
+  text { font-family: Inter, "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 13px; }
+  .eb { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; }
+  .tt { font-weight: 600; }
+  .sub, .lbl { font-size: 11.5px; }
+  .lbl { font-style: italic; }
+  .mono, .num { font-family: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; font-size: 12px; }
+  .mono-accent { font-family: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace; font-size: 13px; font-weight: 600; }
+  .num { font-weight: 600; }
+</style>
+<rect class="ground" x="0" y="0" width="1060" height="500" rx="10"/>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" class="head"/>
+    </marker>
+    <marker id="arr-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" class="head-accent"/>
+    </marker>
+  </defs>
+
+  <!-- Your computer -->
+  <rect class="panel" x="20" y="40" width="270" height="370" rx="8"/>
+  <text class="eb" x="40" y="68">YOUR COMPUTER</text>
+  <text class="mono tt" x="40" y="102">jobs/</text>
+  <text class="mono" x="58" y="124">pdt.yml</text>
+  <text class="sub" x="168" y="124">when and where</text>
+  <text class="mono" x="58" y="146">.env</text>
+  <text class="sub" x="168" y="146">passwords, keys</text>
+  <text class="mono" x="58" y="168">hello-world/</text>
+  <text class="mono" x="76" y="190">run.py</text>
+  <text class="sub" x="168" y="190">a Python job</text>
+  <text class="mono" x="58" y="212">weekly-report/</text>
+  <text class="mono" x="76" y="234">report.ps1</text>
+  <text class="sub" x="168" y="234">a PowerShell job</text>
+
+  <rect class="box" x="40" y="260" width="230" height="52" rx="6"/>
+  <text class="mono tt" x="56" y="282">pdt run hello-world</text>
+  <text class="sub" x="56" y="300">test it here, on your data</text>
+
+  <rect class="box-dashed" x="40" y="328" width="230" height="52" rx="6"/>
+  <text class="tt" x="56" y="350">Your AI agent (optional)</text>
+  <text class="sub" x="56" y="368">writes and fixes jobs with you</text>
+
+  <!-- computer -> deploy -->
+  <line class="edge-accent" x1="290" y1="111" x2="348" y2="111" marker-end="url(#arr-accent)"/>
+  <text class="lbl" x="319" y="102" text-anchor="middle">one app</text>
+
+  <!-- pdt deploy -->
+  <text class="mono-accent" x="480" y="68" text-anchor="middle">pdt deploy hello-world</text>
+
+  <rect class="box" x="350" y="88" width="260" height="46" rx="6"/>
+  <text class="num" x="366" y="109">1</text>
+  <text class="tt" x="386" y="108">Check config and secrets</text>
+  <text class="sub" x="386" y="124">names the file and key to fix</text>
+  <line class="edge" x1="480" y1="134" x2="480" y2="150" marker-end="url(#arr)"/>
+
+  <rect class="box" x="350" y="152" width="260" height="46" rx="6"/>
+  <text class="num" x="366" y="173">2</text>
+  <text class="tt" x="386" y="172">Build the container image</text>
+  <text class="sub" x="386" y="188">with Docker here, or in the cloud</text>
+  <line class="edge" x1="480" y1="198" x2="480" y2="214" marker-end="url(#arr)"/>
+
+  <rect class="box" x="350" y="216" width="260" height="46" rx="6"/>
+  <text class="num" x="366" y="237">3</text>
+  <text class="tt" x="386" y="236">Show the plan and monthly cost</text>
+  <text class="sub" x="386" y="252">real list prices, in your currency</text>
+  <line class="edge" x1="480" y1="262" x2="480" y2="278" marker-end="url(#arr)"/>
+
+  <rect class="box-accent" x="350" y="280" width="260" height="46" rx="6"/>
+  <text class="num" x="366" y="301">4</text>
+  <text class="mono tt" x="386" y="300">Proceed? [y/N]</text>
+  <text class="sub" x="386" y="316">nothing changes until you say yes</text>
+  <line class="edge" x1="480" y1="326" x2="480" y2="342" marker-end="url(#arr)"/>
+
+  <rect class="box" x="350" y="344" width="260" height="46" rx="6"/>
+  <text class="num" x="366" y="365">5</text>
+  <text class="tt" x="386" y="364">Create or update resources</text>
+  <text class="sub" x="386" y="380">each one tagged managed-by=pdt</text>
+
+  <!-- Your cloud account -->
+  <rect class="panel" x="710" y="40" width="330" height="370" rx="8"/>
+  <text class="eb" x="734" y="68">AWS · GCP · AZURE · TASK SCHEDULER</text>
+
+  <!-- deploy -> cloud -->
+  <line class="edge" x1="610" y1="182" x2="732" y2="182" marker-end="url(#arr)"/>
+  <text class="lbl" x="660" y="174" text-anchor="middle">image</text>
+  <path class="edge" d="M610 367 H650 V250 H708" marker-end="url(#arr)"/>
+  <text class="lbl" x="658" y="314">creates</text>
+
+  <rect class="box" x="734" y="88" width="282" height="46" rx="6"/>
+  <text class="tt" x="750" y="108">Schedule</text>
+  <text class="sub" x="750" y="124">for example, weekdays at 7:00</text>
+  <line class="edge" x1="875" y1="134" x2="875" y2="168" marker-end="url(#arr)"/>
+  <text class="lbl" x="884" y="155">starts a run</text>
+
+  <rect class="box-accent" x="734" y="170" width="282" height="56" rx="6"/>
+  <text class="tt" x="750" y="193">Your job, in a container</text>
+  <text class="sub" x="750" y="212">runs your code, then stops</text>
+
+  <line class="edge" x1="783" y1="226" x2="783" y2="268" marker-end="url(#arr)"/>
+  <text class="lbl" x="790" y="252">reads</text>
+  <line class="edge" x1="875" y1="226" x2="875" y2="268" marker-end="url(#arr)"/>
+  <text class="lbl" x="882" y="252">writes</text>
+  <line class="edge" x1="967" y1="226" x2="967" y2="268" marker-end="url(#arr)"/>
+  <text class="lbl" x="974" y="252">saves</text>
+
+  <rect class="box" x="734" y="270" width="88" height="56" rx="6"/>
+  <text class="tt" x="778" y="292" text-anchor="middle">Secrets</text>
+  <text class="sub" x="778" y="310" text-anchor="middle">from .env</text>
+  <rect class="box" x="831" y="270" width="88" height="56" rx="6"/>
+  <text class="tt" x="875" y="292" text-anchor="middle">Logs</text>
+  <text class="sub" x="875" y="310" text-anchor="middle">every line</text>
+  <rect class="box" x="928" y="270" width="88" height="56" rx="6"/>
+  <text class="tt" x="972" y="292" text-anchor="middle">Files</text>
+  <text class="sub" x="972" y="310" text-anchor="middle">between runs</text>
+
+
+  <!-- results back to you -->
+  <path class="edge" d="M875 410 V470 H155 V414" marker-end="url(#arr)"/>
+  <text class="mono" x="515" y="458" text-anchor="middle">pdt runs · pdt logs · pdt health · pdt gui</text>
+  <text class="sub" x="515" y="490" text-anchor="middle">see each run, its log, and its files from your computer</text>
+</svg>
