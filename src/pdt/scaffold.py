@@ -8,8 +8,8 @@ import tempfile
 from pathlib import Path
 
 from pdt import __version__, console, powershell, pwsh, regions
-from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
-                        merged_app, powershell_scripts)
+from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, docker_app,
+                        find_project, merged_app, powershell_scripts)
 from pdt.utils.env_secret import private_file
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
@@ -72,7 +72,7 @@ ENV_TEXT = """\
 AGENTS_TEXT = """\
 # AGENTS.md
 
-This folder is a pdt project: a set of small scheduled jobs. Every folder holding a `config.yml` and a `run.py` is one Python app. Every folder holding a `config.yml` and one or more `.ps1` files but no `run.py` is one PowerShell app. `pdt.yml` holds the settings shared by every app.
+This folder is a pdt project: a set of small scheduled jobs. Every folder holding a `config.yml` and a `run.py` is one Python app. Every folder holding a `config.yml` and one or more `.ps1` files but no `run.py` is one PowerShell app. Every folder holding a `config.yml` and a `Dockerfile` but neither a `run.py` nor a `.ps1` file is one Docker app, in any language. `pdt.yml` holds the settings shared by every app.
 
 ## Working here
 
@@ -86,7 +86,8 @@ This folder is a pdt project: a set of small scheduled jobs. Every folder holdin
 - A PowerShell app reads its `config:` section from `$env:PDT_CONFIG_JSON | ConvertFrom-Json`, and pdt keeps each file it writes to `$env:PDT_OUTPUT_DIR` in the app's data store.
 - A `run.ps1` file is the only entry script. Otherwise, `run_scripts` lists the entry scripts in order, or pdt runs each `.ps1` file that no other `.ps1` file loads in name order. Do not use `run.ps1` and `run_scripts` together.
 - `pdt new <name> --from-scripts` writes `requirements.psd1` (the modules to install) and `run.py` (how the scripts run) into a PowerShell app's folder; once there, `requirements.psd1` replaces the modules pdt finds in the scripts, and `run.py` replaces how pdt runs them.
-- An app folder holding a `Dockerfile` is built from that file instead of the generated one when it deploys to a cloud provider. The build context is the app folder under its own name next to `pdt.yml`; a `.dockerignore` in the app folder, with patterns relative to it, keeps files out of the image.
+- A Docker app's `Dockerfile` builds in the app's own folder, as `docker build .` would, and its `ENTRYPOINT` and `CMD` are what each run starts. pdt adds itself to the image, so the program reads its `config:` section from the env var `PDT_CONFIG_JSON` (JSON), and pdt keeps each file it writes to the folder in `PDT_OUTPUT_DIR` in the app's data store. pdt cannot find the env vars a Docker app's code reads, so list each one under `env:` in its `config.yml`. `pdt run <name>` builds and runs the image with Docker on this computer. A Docker app deploys to AWS, Azure, or Google Cloud, not to `windows`.
+- A Python or PowerShell app folder holding a `Dockerfile` is built from that file instead of the generated one when it deploys to a cloud provider. The build context is the app folder under its own name next to `pdt.yml`; a `.dockerignore` in the app folder, with patterns relative to it, keeps files out of the image.
 - A deploy to AWS, Azure, or Google Cloud builds the image with Docker on this computer when `docker info` answers, else in the cloud (ACR Tasks, Cloud Build, CodeBuild). `docker-build: local` or `docker-build: cloud` at the top level of `pdt.yml` or of an app's `config.yml` forces one place. A build with Docker forwards this computer's SSH agent, so a `RUN --mount=type=ssh` step in an app's `Dockerfile` can install a private git dependency. A build in the cloud has no agent, so it stops on such a step and names it.
 """
 
@@ -392,7 +393,11 @@ def new_app(name: str, source: str | None) -> int:
     copy_example(root, name, example)
     console.done(f"Created {console.value(f'{name}/')} from the {console.value(example.name)} "
                  "example.")
-    files = [(f"{name}/{job}", "the job itself") for job in powershell_scripts(destination) or ["run.py"]]
+    if docker_app(destination):
+        files = [(f"{name}/Dockerfile", "builds the job and names the command it runs")]
+    else:
+        files = [(f"{name}/{job}", "the job itself")
+                 for job in powershell_scripts(destination) or ["run.py"]]
     files.append((f"{name}/config.yml", "how often it runs and what it needs"))
     needs_secrets = (destination / "env.template").is_file()
     if needs_secrets:

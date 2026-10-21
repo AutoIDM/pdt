@@ -25,7 +25,8 @@ from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold
+    from pdt import (alerts_cli, console, deploy, deploy_common, docker_app, gui_cli, lifecycle,
+                     powershell, pwsh, scaffold)
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -176,7 +177,8 @@ def cmd_validate(args) -> int:
                                 for problem in powershell_problems(name, app, quiet=args.json))
             elif not args.json:
                 console.name(name)
-                console.detail(f"runs {console.value('run.py')}")
+                for line in run_lines(app):
+                    console.detail(line)
             if not args.json:
                 try:
                     found = config.found_env_lines(app)
@@ -257,6 +259,15 @@ def cmd_run(args) -> int:
     provider = app["platform"].get("provider", "")
     if (app["dir"] / "run.py").is_file():
         code = lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"])
+    elif config.docker_app(app["dir"]):
+        image = deploy_common.local_image(app)
+        wrapper = Path(__file__).with_name("run_docker.py")
+        state = ["--state"] if docker_app.state_reader(app["dir"]) else []
+        code = lifecycle.run_job(
+            name, provider,
+            ["uv", "run", "--project", str(Path.cwd()), "--script", str(wrapper), str(app["dir"]),
+             *state, "--image", image, "--", *docker_app.stage_of(app).command],
+            app["dir"], dict(os.environ, PDT_PROJECT=str(config.find_project())))
     else:
         wrapper = Path(__file__).with_name("run_powershell.py")
         code = lifecycle.run_job(
@@ -272,9 +283,12 @@ def cmd_run(args) -> int:
 
 
 def run_lines(app: dict) -> list[str]:
-    """What `pdt run` starts: run.py, or the PowerShell entry scripts and why."""
+    """What `pdt run` starts: run.py, the command of a Docker app's Dockerfile, or the
+    PowerShell entry scripts and why."""
     if (app["dir"] / "run.py").is_file():
         return [f"runs {console.value('run.py')}"]
+    if config.docker_app(app["dir"]):
+        return docker_app.summary_lines(app)
     files = powershell.extract(app["dir"])["files"]
     entries, helpers = powershell.split_files(files, app["run_scripts"])
     return powershell.script_lines(entries, helpers,
