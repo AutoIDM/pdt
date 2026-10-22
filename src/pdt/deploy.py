@@ -278,7 +278,7 @@ def deployed_next_steps(app_name: str, started: bool = False) -> None:
     """The same commands after every provider's deploy; no `pdt run` when pdt just started one."""
     console.say()
     console.next_steps([
-        *([] if started else [(f"pdt run {app_name} --deployed", "start a run now")]),
+        *([] if started else [(f"pdt run {app_name} --deployed --follow", "start a run now and follow its log")]),
         (f"pdt logs {app_name}", "read the log of the newest run"),
         (f"pdt runs {app_name}", "list the recent runs"),
         (f"pdt health {app_name}", "show whether the last run succeeded"),

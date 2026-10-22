@@ -78,7 +78,7 @@ def test_a_no_at_the_terminal_starts_nothing(project, monkeypatch, capsys):
     assert deploy.deploy(APP) == 0
     assert cloud.asked == [QUESTION]
     assert cloud.commands() == ["deploy"]
-    assert f"pdt run {APP} --deployed" in capsys.readouterr().out
+    assert f"pdt run {APP} --deployed --follow" in capsys.readouterr().out
 
 
 def test_no_answer_at_the_terminal_starts_nothing(project, monkeypatch):
@@ -93,7 +93,7 @@ def test_yes_or_no_terminal_starts_nothing(project, monkeypatch, capsys, assume_
     assert deploy.deploy(APP, assume_yes=assume_yes) == 0
     assert cloud.asked == []
     assert cloud.commands() == ["deploy"]
-    assert f"pdt run {APP} --deployed" in capsys.readouterr().out
+    assert f"pdt run {APP} --deployed --follow" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("assume_yes, terminal", [(False, True), (True, True), (True, False)])
@@ -169,4 +169,4 @@ def test_deploy_all_at_a_terminal_asks_nothing_and_starts_no_run(project, monkey
     assert run_cli(monkeypatch, "deploy", "--all") == 0
     assert cloud.asked == []
     assert cloud.commands() == ["deploy"]
-    assert f"pdt run {APP} --deployed" in capsys.readouterr().out
+    assert f"pdt run {APP} --deployed --follow" in capsys.readouterr().out
