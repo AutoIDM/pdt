@@ -795,10 +795,11 @@ def run() -> int:
             ["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
              *sys.argv[1:]]).returncode
     args = parser.parse_args()
-    if args.welcome and args.command is not None:
-        parser.error("--welcome takes no command")
     if args.welcome:
-        return scaffold.welcome()
+        scaffold.welcome()
+        if args.command is not None:
+            parser.error("--welcome takes no command")
+        return 0
     if args.command is None:
         parser.print_help()
         return 0
