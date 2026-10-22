@@ -62,7 +62,7 @@ from typing import Callable, Iterator
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, regions, runs_cli
 from pdt import powershell as ps
-from pdt.deploy import DECLINED, confirm
+from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import CostEstimate, warn_if_locked
 from pdt.pwsh import ensure_pwsh
 from pdt.run_windows_task import EVENT_SOURCE, LINE_TIME, MANUAL_START
@@ -446,7 +446,7 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
     return actions
 
 
-def deploy(app: dict, assume_yes: bool) -> int:
+def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     try:
         powershell, uv = _preflight()
         assert uv is not None
@@ -469,6 +469,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
                    on_machine_path, pwsh, modules)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges", currency=regions.local_currency())
+    if plan_only:
+        return show_plan(actions, cost)
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
@@ -722,6 +724,7 @@ def main() -> int:
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--plan", action="store_true")
     args = parser.parse_intermixed_args()
     try:
         app = config.merged_app(args.app)
@@ -755,7 +758,7 @@ def main() -> int:
     if args.command == "start":
         return start(app, "--follow" in args.rest)
     if args.command == "deploy":
-        return deploy(app, args.yes)
+        return deploy(app, args.yes, args.plan)
     return destroy(app, args.yes)
 
 

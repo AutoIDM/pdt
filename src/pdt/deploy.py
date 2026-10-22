@@ -3,7 +3,7 @@
 Validates the app, then dispatches to one script per provider
 (pdt/deploy_<provider>.py) with `uv run --script`, so each provider
 installs its own SDK packages. Every provider script accepts
-`deploy|destroy|login <app> [--yes]`, and also
+`deploy|destroy|login <app> [--yes]` (`deploy` also takes `--plan`), and also
 `pause|unpause|start <app>`,
 `storage <app> -- <ls|get|query|unlock|destroy> [args...]` and
 `runs|logs <app> -- [args...]`. The `--` keeps flags such as `--json` for
@@ -112,13 +112,19 @@ def dispatch_output(provider: str, command: str, app_name: str,
 
 
 def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
-           rebuild: bool = False) -> int:
+           rebuild: bool = False, plan_only: bool = False) -> int:
     """Deploy one app; then offer to start a run of it.
 
     `run` None asks a person at a terminal and starts nothing with `--yes` or
     with no terminal, True starts the run with no question (`--run`), and
     False never offers it (`pdt deploy --all`). The exit code is the deploy's,
-    or the run's when pdt followed one."""
+    or the run's when pdt followed one.
+
+    `plan_only` prints the plan and the cost estimate and changes nothing: it asks
+    no question, takes each default that --yes takes, and saves no config file
+    (`config.plan_only`)."""
+    if plan_only:
+        config.plan_only()
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
@@ -147,10 +153,18 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
     console.name(app_name)
     for line in [*lines, *config.found_env_lines(app), *sources]:
         console.detail(line)
-    problem = choose_schedule(app, assume_yes) or regions.choose_region(app, provider, assume_yes)
+    problem = (choose_schedule(app, assume_yes or plan_only)
+               or regions.choose_region(app, provider, assume_yes or plan_only))
     if problem != "":
         console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
+    if plan_only:
+        code = dispatch(provider, "deploy", app_name, False, ["--plan"])
+        if code == 0:
+            console.say()
+            console.done("Plan only; nothing was deployed. To deploy this plan, run:")
+            console.command(f"pdt deploy {app_name} --yes")
+        return code
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
     alerts_cli.offer(app_name, assume_yes)
@@ -201,10 +215,15 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
                 break
             except ConfigError as e:
                 console.error(console.escape(str(e)))
-    saved = config.save_app_key(app, "schedule", schedule)
+    saved = console.value(config.save_app_key(app, "schedule", schedule)
+                          .relative_to(config.find_project()))
     app["schedule"] = schedule
-    console.done(f"Saved schedule {console.value(schedule)} ({console.escape(words)}) to "
-                 f"{console.value(saved.relative_to(config.find_project()))}.")
+    if config.unsaved() is None:
+        console.done(f"Saved schedule {console.value(schedule)} ({console.escape(words)}) to "
+                     f"{saved}.")
+    else:
+        console.note(f"Using schedule {console.value(schedule)}. A deploy saves it to {saved}; "
+                     "this plan changes no file.")
     return ""
 
 
@@ -469,12 +488,19 @@ DECLINED = 10
 
 def confirm(actions: list[str], assume_yes: bool,
             cost: CostEstimate | None = None) -> bool:
+    show_plan(actions, cost)
+    return proceed(assume_yes)
+
+
+def show_plan(actions: list[str], cost: CostEstimate | None = None) -> int:
+    """Print the plan and the cost estimate. A provider's `deploy --plan` returns this and
+    changes nothing."""
     console.heading("Plan:")
     for action in actions:
         console.bullet(action if isinstance(action, console.Markup) else console.escape(action))
     if cost is not None:
         cost.show()
-    return proceed(assume_yes)
+    return 0
 
 
 def proceed(assume_yes: bool) -> bool:

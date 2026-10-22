@@ -13,6 +13,7 @@
 | `pdt deploy APP` | deploy an app to its configured platform, then ask whether to start a run and follow its log |
 | `pdt deploy APP --run` | deploy, then start a run and follow its log with no question |
 | `pdt deploy APP --rebuild` | deploy, and build and push the image even when the app did not change |
+| `pdt deploy APP --plan` | show the plan and the monthly cost estimate, then stop; deploys nothing, asks nothing, and saves no config file (on Google Cloud it enables the project's required APIs so it can read and price the project) |
 | `pdt deploy --all` | deploy every enabled app, in order; skips an app whose plan you decline; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
 | `pdt destroy APP` | remove everything deploy created |
 | `pdt destroy --all` | destroy every deployed app, in order; each app shows its plan and asks; asks whether to skip an app that fails; add `--yes --skip-failures` to run unattended |

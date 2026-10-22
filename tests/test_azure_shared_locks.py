@@ -78,6 +78,13 @@ EXISTING = {
 }
 
 
+def test_a_plan_shows_the_plan_and_changes_nothing(monkeypatch, capsys):
+    events, plans = fake_deploy(monkeypatch, EXISTING)
+    assert deploy_azure_container_apps.deploy(APP, False, plan_only=True) == 0
+    assert plans == [] and events == []
+    assert "create lock pdt-report on ACR pdtregistry" in capsys.readouterr().out
+
+
 def test_deploy_locks_the_registry_and_the_environment_before_the_build(monkeypatch):
     events, plans = fake_deploy(monkeypatch, EXISTING)
     assert deploy_azure_container_apps.deploy(APP, True) == 0

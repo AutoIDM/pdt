@@ -471,9 +471,7 @@ def access_token(resource: str = "") -> str:
 
 
 def save_subscription(app: dict, sub: dict) -> None:
-    saved = config.save_platform_key(app, "subscription", sub["id"])
-    console.done(f"Saved subscription: {console.value(sub['id'])} to "
-                 f"{console.value(saved.relative_to(config.find_project()))}.")
+    config.save_platform_key(app, "subscription", sub["id"])
 
 
 def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
@@ -1178,6 +1176,7 @@ def main() -> int:
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--plan", action="store_true")
     args = parser.parse_intermixed_args()
     app = load_app(args.app)
     try:
@@ -1209,7 +1208,7 @@ def run_command(app: dict, args: argparse.Namespace) -> int:
     if args.command == "secrets":
         return module.secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
-        return module.deploy(app, args.yes)
+        return module.deploy(app, args.yes, args.plan)
     return module.destroy(app, args.yes)
 
 

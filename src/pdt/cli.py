@@ -285,6 +285,10 @@ def cmd_deploy(args) -> int:
     if args.skip_failures and not args.all:
         console.error("--skip-failures only works with --all")
         return 1
+    if args.plan and (args.all or args.yes or args.run or args.rebuild):
+        console.error("--plan shows one app's plan and deploys nothing; "
+                      "leave out --all, --yes, --run, and --rebuild")
+        return 1
     if args.all:
         if args.app is not None:
             console.error("pick an app or --all, not both")
@@ -293,7 +297,8 @@ def cmd_deploy(args) -> int:
     name = choose_app(args.app, "deploy")
     if name is None:
         return 1
-    return deploy.deploy(name, assume_yes=args.yes, run=args.run or None, rebuild=args.rebuild)
+    return deploy.deploy(name, assume_yes=args.yes, run=args.run or None, rebuild=args.rebuild,
+                         plan_only=args.plan)
 
 
 ALL_WORDS = {"deploy": ("Deploying", "deployed"), "destroy": ("Destroying", "destroyed")}
@@ -656,6 +661,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "with --all, run each app that deployed")
     p.add_argument("--rebuild", action="store_true",
                    help="build and push the image even when the app did not change")
+    p.add_argument("--plan", action="store_true",
+                   help="show the plan and the monthly cost estimate, then stop; "
+                        "deploys nothing and saves no config file")
     p.set_defaults(func=cmd_deploy)
     p = add_parser("login", help="sign in again to an app's platform")
     app = p.add_argument("app", nargs="?", help=APP_HELP)

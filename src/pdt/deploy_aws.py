@@ -320,9 +320,7 @@ def adopt_account(app: dict, session) -> str:
     account = identity["Account"]
     console.field("These credentials belong to AWS account", account)
     console.bullet(console.value(identity["Arn"]))
-    saved = config.save_platform_key(app, "account", account)
-    console.done(f"Saved account {console.value(account)} to "
-                 f"{console.value(saved.relative_to(config.find_project()))}.")
+    config.save_platform_key(app, "account", account)
     return account
 
 
@@ -446,9 +444,7 @@ def choose_profile(app: dict, session) -> str:
 
 
 def save_profile(app: dict, profile: str) -> str:
-    saved = config.save_platform_key(app, "profile", profile)
-    console.done(f"Saved profile {console.value(profile)} to "
-                 f"{console.value(saved.relative_to(config.find_project()))}.")
+    config.save_platform_key(app, "profile", profile)
     return profile
 
 
@@ -1284,6 +1280,7 @@ def main() -> int:
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--plan", action="store_true")
     args = parser.parse_intermixed_args()
     app = load_app(args.app)
     if args.command == "login":
@@ -1297,7 +1294,7 @@ def main() -> int:
         if args.command == "secrets":
             return batch.secrets(app, args.rest[0], args.yes, *args.rest[1:])
         if args.command == "deploy":
-            return batch.deploy(app, args.yes)
+            return batch.deploy(app, args.yes, args.plan)
         if args.command == "runs":
             return batch.runs(app, ensure_session(app), args.rest)
         if args.command == "logs":
