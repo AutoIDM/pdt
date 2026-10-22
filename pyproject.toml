@@ -1,7 +1,7 @@
 [project]
 name = "pdt-cli"
 version = "0.1.12"
-description = "Easily deploy your process to AWS, Azure, Google Cloud, or Windows."
+description = "Run a Python or PowerShell script that works on your computer on a schedule in AWS, Azure, Google Cloud, or Windows Task Scheduler."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
