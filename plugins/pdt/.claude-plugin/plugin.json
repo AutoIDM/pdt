@@ -1,0 +1,13 @@
+{
+  "name": "pdt",
+  "version": "0.1.0",
+  "description": "Run a Python or PowerShell script that works on your computer on a schedule in AWS, Azure, Google Cloud, or Windows Task Scheduler, with the pdt command-line tool.",
+  "author": {
+    "name": "AutoIDM",
+    "url": "https://github.com/AutoIDM"
+  },
+  "homepage": "https://github.com/AutoIDM/pdt",
+  "repository": "https://github.com/AutoIDM/pdt",
+  "license": "MIT",
+  "keywords": ["schedule", "cron", "scheduled-job", "deploy", "aws", "azure", "google-cloud", "task-scheduler", "powershell", "python"]
+}
