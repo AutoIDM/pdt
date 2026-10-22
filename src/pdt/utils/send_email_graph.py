@@ -61,7 +61,7 @@ def setup_help(env_file: Path | None) -> list[str]:
         f"  {CLIENT_ID_ENV}=",
         "Get it: create an app registration at https://entra.microsoft.com/ "
         "and copy its Application (client) ID.",
-        "Guide: README.md, section \"Microsoft Graph\".",
+        "Guide: https://github.com/AutoIDM/pdt/blob/main/docs/email.md#microsoft-graph",
     ]
 
 

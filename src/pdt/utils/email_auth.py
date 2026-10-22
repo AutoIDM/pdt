@@ -98,7 +98,7 @@ def oauth_setup_help(host: str, configured_auth: str,
             "https://console.cloud.google.com/auth/clients and copy the client ID and client secret.",
             "Simpler option: set PDT_SMTP_PASSWORD to a Gmail App Password "
             "from https://myaccount.google.com/apppasswords instead.",
-            "Guide: README.md, section \"Google OAuth\".",
+            "Guide: https://github.com/AutoIDM/pdt/blob/main/docs/email.md#google-oauth",
         ]
     return [
         reason,
@@ -106,7 +106,7 @@ def oauth_setup_help(host: str, configured_auth: str,
         "  PDT_SMTP_OAUTH_CLIENT_ID=",
         "Get it: create an app registration at https://entra.microsoft.com/ "
         "and copy its Application (client) ID.",
-        "Guide: README.md, section \"Microsoft OAuth\".",
+        "Guide: https://github.com/AutoIDM/pdt/blob/main/docs/email.md#microsoft-oauth",
     ]
 
 
