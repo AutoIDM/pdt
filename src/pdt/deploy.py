@@ -15,11 +15,13 @@ PDT_CLI_VERSION does the same for pdt's version: from a clone, the script
 imports pdt from src/, where no package metadata says which version it is,
 and the image a PowerShell app builds pins pdt-cli at that version.
 PDT_JSON_OUTPUT tells a script given `--json` to print every line but the
-JSON on stderr; see `pdt.console.json_output`.
+JSON on stderr; see `pdt.console.json_output`. `config.DEPLOYED_PLATFORM_ENV`
+gives a destroy the platform the app was deployed with.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -96,9 +98,14 @@ def provider_env(extra: list[str] | None = None, rebuild: bool = False) -> dict[
 
 
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
-             extra: list[str] | None = None, rebuild: bool = False) -> int:
+             extra: list[str] | None = None, rebuild: bool = False,
+             platform: dict | None = None) -> int:
+    """Run the provider script; `platform` replaces the app's platform section in it."""
     args = provider_command(provider, command, app_name, assume_yes, extra)
-    return subprocess.run(args, check=False, env=provider_env(extra, rebuild)).returncode
+    env = provider_env(extra, rebuild)
+    if platform is not None:
+        env[config.DEPLOYED_PLATFORM_ENV] = json.dumps({"app": app_name, "platform": platform})
+    return subprocess.run(args, check=False, env=env).returncode
 
 
 def dispatch_output(provider: str, command: str, app_name: str,
@@ -169,6 +176,9 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
             console.done("Plan only; nothing was deployed. To deploy this plan, run:")
             console.command(f"pdt deploy {app_name} --yes")
         return code
+    code = leave_old_place(app_name, assume_yes)
+    if code != 0:
+        return code
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
     alerts_cli.offer(app_name, assume_yes)
@@ -231,6 +241,56 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
     return ""
 
 
+def describe_place(place: dict[str, str]) -> str:
+    return ", ".join([place["provider"], *(f"{key.replace('_', ' ')} {value}"
+                                           for key, value in place.items() if key != "provider")])
+
+
+def moved(recorded: dict, platform: dict) -> bool:
+    """Whether `platform` deploys somewhere other than the recorded platform did. A place key
+    the config leaves empty is not a difference, because the deploy finds it."""
+    old = config.place(recorded)
+    return any(old.get(key) != value for key, value in config.place(platform).items())
+
+
+def leave_old_place(app_name: str, assume_yes: bool) -> int:
+    """Before a deploy to another provider, region, or account, ask whether to destroy the app
+    where it runs now. 0 goes on with the deploy; any other code is the deploy's exit code.
+
+    An app with no record (deployed by an older pdt) gets no question. With --yes or no one
+    to ask, nothing is destroyed, because only a person decides that."""
+    recorded = config.deployed_platform(app_name)
+    platform = config.merged_app(app_name)["platform"]
+    if recorded is None or not moved(recorded, platform):
+        return 0
+    old = describe_place(config.place(recorded))
+    new = describe_place(config.place(platform))
+    console.say()
+    console.say(f"{console.value(app_name)} is deployed to {console.value(old)}.")
+    console.say(f"This deploy goes to {console.value(new)}.")
+    if assume_yes or not can_prompt(None):
+        console.error(f"{console.value(app_name)}: pdt stopped and changed nothing, because "
+                      f"only a person can choose to remove the old copy. Run "
+                      f"{console.value(f'pdt deploy {app_name}')} in a terminal to choose, or "
+                      f"{console.value(f'pdt destroy {app_name}')} to remove the old copy first.")
+        return 1
+    console.say("A deploy to the new place leaves the old copy running there.")
+    console.choice(1, "Remove it from the old place first, then deploy")
+    console.choice(2, "Cancel and change nothing")
+    while True:
+        try:
+            answer = console.ask("Which one?", "2") or "2"
+        except EOFError:
+            answer = "2"
+        if answer in ("1", "2"):
+            break
+        console.say("Please answer 1 or 2.")
+    if answer == "2":
+        console.say("Cancelled. Nothing changed.")
+        return DECLINED
+    return provider_step("destroy", recorded["provider"], app_name, False, platform=recorded)
+
+
 # The started, completed, and failed events of each provider_step command.
 STEP_EVENTS = {
     "deploy": (lifecycle.APP_DEPLOY_STARTED, lifecycle.APP_DEPLOY_COMPLETED,
@@ -241,14 +301,15 @@ STEP_EVENTS = {
 
 
 def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
-                  rebuild: bool = False) -> int:
+                  rebuild: bool = False, platform: dict | None = None) -> int:
     """Run `deploy` or `destroy` through the provider script between its STEP_EVENTS, and
-    on success record whether the app is now deployed."""
+    on success record where the app is now deployed, or that it is not."""
     started, completed, failed = STEP_EVENTS[command]
     params = lifecycle.app_params(app_name, provider)
     lifecycle.emit(started, **params)
     try:
-        code = dispatch(provider, command, app_name, assume_yes, rebuild=rebuild)
+        code = dispatch(provider, command, app_name, assume_yes, rebuild=rebuild,
+                        platform=platform)
     except KeyboardInterrupt:
         lifecycle.emit(failed, **params, reason="interrupted")
         raise
@@ -259,7 +320,8 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
     if code != 0:
         lifecycle.emit(failed, **params, exit_code=code)
         return code
-    config.mark_deployed(app_name, command == "deploy")
+    config.mark_deployed(app_name,
+                         config.merged_app(app_name)["platform"] if command == "deploy" else None)
     lifecycle.emit(completed, **params)
     return 0
 
@@ -477,7 +539,15 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
         console.error(console.escape(str(e)))
         return 1
     config.load_env(app["dir"])
-    return provider_step("destroy", provider, app_name, assume_yes)
+    recorded = config.deployed_platform(app_name)
+    if recorded is None:
+        return provider_step("destroy", provider, app_name, assume_yes)
+    if moved(recorded, app["platform"]):
+        console.say(f"{console.value(app_name)} is deployed to "
+                    f"{console.value(describe_place(config.place(recorded)))}, so pdt destroys "
+                    f"it there. Your settings now name "
+                    f"{console.value(describe_place(config.place(app['platform'])))}.")
+    return provider_step("destroy", recorded["provider"], app_name, assume_yes, platform=recorded)
 
 
 # The exit code of a provider script whose plan the user declined, so provider_step can

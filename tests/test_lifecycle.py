@@ -317,12 +317,13 @@ def test_a_declined_plan_or_a_failure_fails_the_step_and_a_success_completes_it(
     monkeypatch.setattr(deploy, "deployed_next_steps", lambda *args, **kwargs: None)
     marked = []
     monkeypatch.setattr(config, "mark_deployed",
-                        lambda app, deployed: marked.append((app, deployed)))
+                        lambda app, platform: marked.append((app, platform)))
     assert STEPS[command]() == code
     assert [name for name, _ in deployable] == [f"app:{command}-started", f"app:{command}-{event}"]
     assert deployable[-1][1].get("reason") == reason
     assert deployable[-1][1]["app"] == scaffold.STARTER
-    assert marked == ([(scaffold.STARTER, command == "deploy")] if code == 0 else [])
+    platform = {"provider": "aws", "region": "us-east-1"} if command == "deploy" else None
+    assert marked == ([(scaffold.STARTER, platform)] if code == 0 else [])
 
 
 @pytest.mark.parametrize(("deployed", "override", "trigger"), [

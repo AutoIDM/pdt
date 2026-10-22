@@ -11,6 +11,8 @@ Merge order for one app, least to most specific:
   2. the app's entry under `apps:` in pdt.yml
   3. the app's own config.yml
   4. PDT_<APP>_<KEY> environment variables (config keys only)
+DEPLOYED_PLATFORM_ENV replaces the whole platform of the one app it names, so a
+provider script destroys an app where `.pdt/state` says it is deployed.
 """
 
 from __future__ import annotations
@@ -59,6 +61,11 @@ PLATFORM_KEYS = {
     "timezone",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
+# The platform keys that say where a deployed app runs. `profile` is only the
+# credentials that reach an account, and `timezone` is when the app runs.
+PLACE_KEYS = ("provider", "region", "account", "project", "subscription", "resource_group",
+              "environment")
+DEPLOYED_PLATFORM_ENV = "PDT_DEPLOYED_PLATFORM"
 # Where each known key belongs, so a key in the wrong section gets told
 # where to move instead of "unknown key".
 APP_LEVEL = f"the top level of the app's {APP_FILE}, or its apps: entry in {PROJECT_FILE}"
@@ -267,6 +274,9 @@ def merged_app(name: str) -> dict:
         **mapping(entry, "platform", entry_where),
         **mapping(own, "platform", own_where),
     }
+    deployed = json.loads(os.environ.get(DEPLOYED_PLATFORM_ENV) or "{}")
+    if deployed.get("app") == name:
+        platform = deployed["platform"]
     from pdt import lifecycle
     docker_build, docker_build_from = "auto", ""
     alerts, alerts_from = [], PROJECT_FILE
@@ -524,15 +534,39 @@ def write_state(state: dict, name: str = "state") -> None:
     write_text_atomically(path, json.dumps(state, indent=2) + "\n")
 
 
-def mark_deployed(name: str, deployed: bool) -> None:
+def mark_deployed(name: str, platform: dict | None) -> None:
+    """Record that the app is deployed with this merged platform section, or with None that
+    it is not deployed."""
     state = read_state()
     apps = set(state.get("deployed") or [])
-    if deployed:
-        apps.add(name)
-    else:
+    platforms = state.get("platforms") or {}
+    if platform is None:
         apps.discard(name)
+        platforms.pop(name, None)
+    else:
+        apps.add(name)
+        platforms[name] = platform
     state["deployed"] = sorted(apps)
+    state["platforms"] = platforms
     write_state(state)
+
+
+def deployed_platform(name: str) -> dict | None:
+    """The platform section the app was last deployed with, or None when pdt has no record:
+    the app is not deployed, or a pdt older than the record deployed it."""
+    return (read_state().get("platforms") or {}).get(name)
+
+
+def place(platform: dict) -> dict[str, str]:
+    """The PLACE_KEYS a platform section sets, in that order."""
+    return {key: str(platform[key]) for key in PLACE_KEYS if str(platform.get(key) or "") != ""}
+
+
+def deployed_places() -> dict[str, dict[str, str]]:
+    """The place of each deployed app that has a record: its provider, region, and the keys
+    that name its account."""
+    return {name: place(platform)
+            for name, platform in sorted((read_state().get("platforms") or {}).items())}
 
 
 def is_deployed(name: str) -> bool:
