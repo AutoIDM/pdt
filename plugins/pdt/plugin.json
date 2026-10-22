@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "pdt",
+  "version": "0.1.0",
+  "description": "Run a Python or PowerShell script that works on your computer on a schedule in AWS, Azure, Google Cloud, or Windows Task Scheduler, with the pdt command-line tool.",
+  "author": {
+    "name": "AutoIDM",
+    "url": "https://github.com/AutoIDM"
+  },
+  "homepage": "https://github.com/AutoIDM/pdt",
+  "repository": "https://github.com/AutoIDM/pdt",
+  "license": "MIT",
+  "keywords": ["schedule", "cron", "scheduled-job", "deploy", "aws", "azure", "google-cloud", "task-scheduler", "powershell", "python"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "pdt",
+        "shortDescription": "Run a working script on a schedule in your own cloud",
+        "longDescription": "Checks, runs, and deploys a Python or PowerShell script as a scheduled job on AWS, Azure, Google Cloud, or Windows Task Scheduler with the pdt command-line tool. Shows the plan and a monthly cost estimate before it changes anything.",
+        "developerName": "AutoIDM",
+        "category": "Productivity",
+        "websiteURL": "https://github.com/AutoIDM/pdt",
+        "defaultPrompt": "Run this script every morning in my cloud account."
+      }
+    }
+  }
+}
