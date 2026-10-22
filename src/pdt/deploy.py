@@ -272,16 +272,19 @@ def leave_old_place(app_name: str, assume_yes: bool) -> int:
     platform = app["platform"]
     if recorded is None or not moved(recorded, platform):
         return 0
+    current = describe_place(config.place(recorded))
+    target = describe_place(config.place(platform))
     console.say()
     say_places(app, recorded)
     if assume_yes or not can_prompt(None):
         console.error(f"{console.value(app_name)} was not deployed.")
-        console.next_steps([(f"pdt deploy {app_name}",
-                             "choose what happens to the deployed copy, then deploy")],
-                           "Deploy once without --yes:")
+        console.next_steps([(f"pdt deploy {app_name}", "")],
+                           f"To choose what to do with the app currently deployed to {current}, "
+                           f"deploy without --yes:")
         return 1
-    console.say("A deploy to the new place leaves the old copy running there.")
-    console.choice(1, "Remove it from the old place first, then deploy")
+    console.say(f"What do you want to do with the app currently deployed to "
+                f"{console.value(current)}?")
+    console.choice(1, f"Remove it from {current}, then deploy it to {target}")
     console.choice(2, "Cancel and change nothing")
     while True:
         try:

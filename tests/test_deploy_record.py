@@ -99,7 +99,8 @@ def test_cancel_is_the_default_and_changes_nothing(project, monkeypatch, capsys,
     assert cloud.asked == ["Which one?"]
     assert config.deployed_platform(APP) == recorded
     out = capsys.readouterr().out
-    assert "Remove it from the old place first, then deploy" in out
+    assert "What do you want to do with the app currently deployed to" in out
+    assert "1) Remove it from " in out and ", then deploy it to " in out
     assert "Cancel and change nothing" in out
 
 
@@ -127,7 +128,7 @@ def test_with_yes_or_no_one_to_ask_it_stops_and_destroys_nothing(project, monkey
     assert config.deployed_platform(APP) == recorded
     out = capsys.readouterr().out
     assert "now deploys it to" in out and "was not deployed" in out
-    assert f"pdt deploy {APP} " in out
+    assert f"\n  pdt deploy {APP}\n" in out
 
 
 @pytest.mark.parametrize("new", [
