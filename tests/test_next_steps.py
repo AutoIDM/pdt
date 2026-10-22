@@ -61,10 +61,10 @@ def test_a_deploy_suggests_pdt_run_deployed_first(width, capsys):
     deployed_next_steps("my-report")
     assert capsys.readouterr().out.splitlines()[1:] == [
         "Next steps:",
-        "  pdt run my-report --deployed  start a run now",
-        "  pdt logs my-report            read the log of the newest run",
-        "  pdt runs my-report            list the recent runs",
-        "  pdt health my-report          show whether the last run succeeded",
+        "  pdt run my-report --deployed --follow  start a run now and follow its log",
+        "  pdt logs my-report                     read the log of the newest run",
+        "  pdt runs my-report                     list the recent runs",
+        "  pdt health my-report                   show whether the last run succeeded",
     ]
 
 
