@@ -274,6 +274,8 @@ def merged_app(name: str) -> dict:
         **mapping(entry, "platform", entry_where),
         **mapping(own, "platform", own_where),
     }
+    platform_from = next((where for section, where in ((own, own_where), (entry, entry_where))
+                          if section.get("platform")), PROJECT_FILE)
     deployed = json.loads(os.environ.get(DEPLOYED_PLATFORM_ENV) or "{}")
     if deployed.get("app") == name:
         platform = deployed["platform"]
@@ -297,6 +299,7 @@ def merged_app(name: str) -> dict:
         "schedule": plan.get("schedule", own.get("schedule", entry.get("schedule"))),
         "timezone": timezone,
         "platform": platform,
+        "platform_from": platform_from,
         "config": {
             **mapping(entry, "config", entry_where),
             **mapping(own, "config", own_where),

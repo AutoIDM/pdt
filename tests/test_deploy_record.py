@@ -125,7 +125,9 @@ def test_with_yes_or_no_one_to_ask_it_stops_and_destroys_nothing(project, monkey
     assert deploy.deploy(APP, assume_yes=yes, run=False) == 1
     assert cloud.calls == [] and cloud.asked == []
     assert config.deployed_platform(APP) == recorded
-    assert "pdt stopped and changed nothing" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "now deploys it to" in out and "was not deployed" in out
+    assert f"pdt deploy {APP} " in out
 
 
 @pytest.mark.parametrize("new", [
@@ -160,7 +162,7 @@ def test_destroy_goes_where_the_record_says(project, monkeypatch, capsys, move):
     cloud = Cloud(monkeypatch)
     assert deploy.destroy(APP) == 0
     assert cloud.calls == [(recorded["provider"], "destroy", recorded)]
-    assert "so pdt destroys it there" in capsys.readouterr().out
+    assert "pdt destroys it where it is deployed" in capsys.readouterr().out
     assert not config.is_deployed(APP)
 
 
@@ -169,7 +171,7 @@ def test_destroy_at_the_same_place_says_nothing_extra(project, monkeypatch, caps
     cloud = Cloud(monkeypatch)
     assert deploy.destroy(APP) == 0
     assert cloud.calls == [("aws", "destroy", recorded)]
-    assert "so pdt destroys it there" not in capsys.readouterr().out
+    assert "pdt destroys it where it is deployed" not in capsys.readouterr().out
 
 
 def test_an_app_config_yml_that_names_another_provider_is_a_move(project, monkeypatch):

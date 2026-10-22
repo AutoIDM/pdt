@@ -253,6 +253,14 @@ def moved(recorded: dict, platform: dict) -> bool:
     return any(old.get(key) != value for key, value in config.place(platform).items())
 
 
+def say_places(app: dict, recorded: dict) -> None:
+    """Where the app is deployed, and where its config now deploys it, one line each."""
+    console.say(f"{console.value(app['name'])} is deployed to "
+                f"{console.value(describe_place(config.place(recorded)))},")
+    console.say(f"but {console.value(app['platform_from'])} now deploys it to "
+                f"{console.value(describe_place(config.place(app['platform'])))}.")
+
+
 def leave_old_place(app_name: str, assume_yes: bool) -> int:
     """Before a deploy to another provider, region, or account, ask whether to destroy the app
     where it runs now. 0 goes on with the deploy; any other code is the deploy's exit code.
@@ -260,19 +268,17 @@ def leave_old_place(app_name: str, assume_yes: bool) -> int:
     An app with no record (deployed by an older pdt) gets no question. With --yes or no one
     to ask, nothing is destroyed, because only a person decides that."""
     recorded = config.deployed_platform(app_name)
-    platform = config.merged_app(app_name)["platform"]
+    app = config.merged_app(app_name)
+    platform = app["platform"]
     if recorded is None or not moved(recorded, platform):
         return 0
-    old = describe_place(config.place(recorded))
-    new = describe_place(config.place(platform))
     console.say()
-    console.say(f"{console.value(app_name)} is deployed to {console.value(old)}.")
-    console.say(f"This deploy goes to {console.value(new)}.")
+    say_places(app, recorded)
     if assume_yes or not can_prompt(None):
-        console.error(f"{console.value(app_name)}: pdt stopped and changed nothing, because "
-                      f"only a person can choose to remove the old copy. Run "
-                      f"{console.value(f'pdt deploy {app_name}')} in a terminal to choose, or "
-                      f"{console.value(f'pdt destroy {app_name}')} to remove the old copy first.")
+        console.error(f"{console.value(app_name)} was not deployed.")
+        console.next_steps([(f"pdt deploy {app_name}",
+                             "choose what happens to the deployed copy, then deploy")],
+                           "Deploy once without --yes:")
         return 1
     console.say("A deploy to the new place leaves the old copy running there.")
     console.choice(1, "Remove it from the old place first, then deploy")
@@ -543,10 +549,9 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
     if recorded is None:
         return provider_step("destroy", provider, app_name, assume_yes)
     if moved(recorded, app["platform"]):
-        console.say(f"{console.value(app_name)} is deployed to "
-                    f"{console.value(describe_place(config.place(recorded)))}, so pdt destroys "
-                    f"it there. Your settings now name "
-                    f"{console.value(describe_place(config.place(app['platform'])))}.")
+        say_places(app, recorded)
+        console.say(f"pdt destroys it where it is deployed: "
+                    f"{console.value(describe_place(config.place(recorded)))}.")
     return provider_step("destroy", recorded["provider"], app_name, assume_yes, platform=recorded)
 
 
