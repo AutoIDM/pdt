@@ -98,12 +98,12 @@ def test_init_keeps_the_users_own_agent_docs(tmp_path, monkeypatch):
     assert (tmp_path / "CLAUDE.md").read_text().strip() == "@AGENTS.md"
 
 
-def test_init_ends_with_the_art_and_the_discord_link(tmp_path, monkeypatch, capsys):
+def test_init_starts_with_the_art_and_ends_with_the_discord_link(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     monkeypatch.chdir(tmp_path)
     assert scaffold.init(None, assume_yes=True) == 0
     out = capsys.readouterr().out
-    assert scaffold.ART in out
+    assert out.startswith(scaffold.ART)
     assert out.rstrip().endswith(f"{watch.COMMUNITY} {watch.SUPPORT_URL}")
 
 

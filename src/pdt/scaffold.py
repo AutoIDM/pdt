@@ -317,6 +317,7 @@ def has_nothing_in_it(folder: Path) -> bool:
 
 
 def init(directory: str | None, assume_yes: bool) -> int:
+    console.art(ART)
     target = choose_target(directory, assume_yes)
     marker = target / PROJECT_FILE
     if marker.is_file():
@@ -336,7 +337,6 @@ def init(directory: str | None, assume_yes: bool) -> int:
     if starting_fresh:
         copy_example(target, STARTER, EXAMPLES / STARTER)
 
-    console.art(ART)
     console.done(f"Your project is ready: {console.value(target)}")
     files = [(PROJECT_FILE, "settings shared by every app"), (".env", "secrets, never committed"),
              (".gitignore", ""),
