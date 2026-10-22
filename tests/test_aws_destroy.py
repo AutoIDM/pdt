@@ -100,6 +100,24 @@ def test_remove_still_deletes_an_invalid_queue():
     assert batch.calls == [("update_job_queue", "DISABLED"), ("delete_job_queue",)]
 
 
+def test_remove_prints_one_line_for_a_state_that_lasts_several_polls(monkeypatch, capsys):
+    monkeypatch.setattr(deploy_aws_batch, "BATCH_WAIT_DELAYS", (0, 0, 0, 0))
+    batch = FakeBatch()
+    deleting = []
+    original = batch.describe_job_queues
+
+    def describe_job_queues(jobQueues):
+        if ("delete_job_queue",) in batch.calls:
+            deleting.append(1)
+            batch.items[JOB_QUEUE.key][0]["status"] = "DELETING" if len(deleting) < 4 else "DELETED"
+        return original(jobQueues)
+
+    batch.describe_job_queues = describe_job_queues
+    remove(batch, JOB_QUEUE)
+    assert capsys.readouterr().out.splitlines() == ["Batch job queue pdt: deleting",
+                                                    "Batch job queue pdt: deleted (0s)"]
+
+
 def test_remove_of_an_absent_queue_does_nothing():
     batch = FakeBatch(queue=False)
     remove(batch, JOB_QUEUE)

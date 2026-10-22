@@ -141,6 +141,51 @@ def waiting(message: str) -> Iterator[Wait]:
         yield wait
 
 
+class WaitOn:
+    """One object pdt polls, its state at the last poll, and the seconds since the first
+    poll that found it not ready."""
+
+    def __init__(self, name: str) -> None:
+        self.name, self.state, self.start, self.spinner = name, "", 0.0, None
+
+    def now(self, state: str) -> None:
+        """Called on each poll that finds the object not ready. A poll in the same state
+        changes nothing on the screen."""
+        if state == self.state:
+            return
+        if self.state == "":
+            self.start = monotonic()
+        self.state = state
+        if not _console.is_terminal or _data is not None:
+            status(f"{self.name}: {state}")
+        elif self.spinner is None:
+            self.spinner = _console.status(self)
+            self.spinner.start()
+
+    def __rich__(self) -> str:
+        return f"[dim]{self.name}: {self.state} ({round(monotonic() - self.start)}s)[/]"
+
+
+@contextmanager
+def wait_on(name: str, end: str) -> Iterator[WaitOn]:
+    """One line for one object that pdt polls until it reaches a state, such as a queue
+    that Batch deletes.
+
+    On a terminal, a spinner line names the object, its state, and the seconds it has
+    waited. Elsewhere, and with --json, a line prints each time the state changes. When
+    the block ends, a line names the object, `end`, and the seconds the wait took. A
+    block that never waited, or that raised, prints no end line.
+    """
+    wait = WaitOn(name)
+    try:
+        yield wait
+    finally:
+        if wait.spinner is not None:
+            wait.spinner.stop()
+    if wait.state != "":
+        status(f"{name}: {end} ({round(monotonic() - wait.start)}s)")
+
+
 def field(label: str, value: str) -> None:
     """A label and the value pdt found for it: an account, a URL, a path."""
     _console.print(f"{escape(label)}: [bold]{escape(value)}[/]")

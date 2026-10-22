@@ -163,29 +163,29 @@ def az(*args: str) -> subprocess.CompletedProcess:
 def run_quiet(*args: str, retry_access: bool = False,
               retry_internal: bool = False, hints: dict[str, str] | None = None) -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
-    for wait in waits:
-        proc = az(*args)
-        if proc.returncode == 0:
-            return proc.stdout
-        output = proc.stderr.lower()
-        access_error = retry_access and any(text in output for text in (
-            "unable to fetch secret", "forbidden", "authorizationfailed",
-            "does not have authorization",
-        ))
-        internal_error = retry_internal and "internalservererror" in output
-        if proc.stderr.strip():
-            console.say(console.escape(proc.stderr.strip()))
-        if wait == 0 or not (access_error or internal_error):
-            break
-        reason = ("Azure returned an access error" if access_error
-                  else "Azure returned InternalServerError")
-        console.bullet(f"{reason}; retrying in {wait}s...", indent=4)
-        time.sleep(wait)
-    for text, hint in (hints or {}).items():
-        if text.lower() in output:
-            console.say(console.escape(hint))
     command = "pdt az " + " ".join(args[:4])
-    fail(f"{console.value(command)} failed; fix the problem above and re-run")
+    with console.wait_on(console.value(command), "done") as wait:
+        for seconds in waits:
+            proc = az(*args)
+            if proc.returncode == 0:
+                return proc.stdout
+            output = proc.stderr.lower()
+            access_error = retry_access and any(text in output for text in (
+                "unable to fetch secret", "forbidden", "authorizationfailed",
+                "does not have authorization",
+            ))
+            internal_error = retry_internal and "internalservererror" in output
+            if proc.stderr.strip():
+                console.say(console.escape(proc.stderr.strip()))
+            if seconds == 0 or not (access_error or internal_error):
+                break
+            wait.now("Azure returned an access error" if access_error
+                     else "Azure returned InternalServerError")
+            time.sleep(seconds)
+        for text, hint in (hints or {}).items():
+            if text.lower() in output:
+                console.say(console.escape(hint))
+        fail(f"{console.value(command)} failed; fix the problem above and re-run")
 
 
 LOCK_NAME = re.compile(r"Microsoft\.Authorization/locks/([^'\s,]+)", re.IGNORECASE)
@@ -749,16 +749,13 @@ def register_providers(names: tuple[str, ...]) -> None:
     console.bullet("(a new subscription can take several minutes for this)", indent=4)
     for name in pending:
         run_quiet("provider", "register", "--namespace", name)
-    waited = 0
-    while pending:
-        time.sleep(10)
-        waited += 10
-        pending = [name for name in pending
-                   if az_tsv("provider", "show", "--namespace", name,
-                             "--query", "registrationState") != "Registered"]
-        if pending:
-            console.bullet(f"still waiting after {waited}s for: "
-                           f"{', '.join(console.value(name) for name in pending)}", indent=4)
+    with console.wait_on("Azure providers", "registered") as wait:
+        while pending:
+            wait.now(f"registering {', '.join(console.value(name) for name in pending)}")
+            time.sleep(10)
+            pending = [name for name in pending
+                       if az_tsv("provider", "show", "--namespace", name,
+                                 "--query", "registrationState") != "Registered"]
 
 
 def ensure_group(settings: dict, name: str, group: dict | None) -> None:
