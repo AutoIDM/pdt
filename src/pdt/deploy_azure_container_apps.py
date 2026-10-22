@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from pdt import config, console, lifecycle, regions, runs_cli
-from pdt.deploy import DECLINED, confirm
+from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_azure import (
     COMMON_PROVIDERS, ENVIRONMENT_TYPE, JOBS_API_VERSION, MANAGEMENT_API, RECENT_RUNS, SECRET_ROLE,
     STORAGE_RESOURCE, STORE_ROLE, VAULT_RESOURCE, access_token, arm_get, arm_list, arm_url,
@@ -1051,7 +1051,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     return run_secrets(action, app, current, write, assume_yes, name)
 
 
-def deploy(app: dict, assume_yes: bool) -> int:
+def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     cloud = build_in_cloud(app, "ACR Tasks", "linux/amd64")
     console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
@@ -1154,9 +1154,11 @@ def deploy(app: dict, assume_yes: bool) -> int:
                                   + f' Container Apps Job {console.value(job)}: '
                                   f'"{console.value(cron)}" (UTC)'
                                   + (" (paused)" if app["pause"] else "")))
-    if not confirm(actions, assume_yes, cost_estimate_for(
-            settings["region"], cron, average_run_seconds(executions), 1 if values else 0, usage,
-            state["price_read"])):
+    cost = cost_estimate_for(settings["region"], cron, average_run_seconds(executions),
+                             1 if values else 0, usage, state["price_read"])
+    if plan_only:
+        return show_plan(actions, cost)
+    if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
 

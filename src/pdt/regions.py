@@ -406,7 +406,5 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
         except EOFError:
             return (f"no {PROVIDER_NAMES[provider]} region is set. Add `region: {region}` under "
                     f"platform: in {config.PROJECT_FILE}.")
-    saved = config.save_platform_key(app, "region", region)
-    console.done(f"Saved region {console.value(region)} to "
-                 f"{console.value(saved.relative_to(config.find_project()))}.")
+    config.save_platform_key(app, "region", region)
     return ""

@@ -217,7 +217,7 @@ def deploy(project, monkeypatch):
     monkeypatch.setattr(batch_deploy.subprocess, "run", lambda command, **kwargs: commands.append(
         command) or SimpleNamespace(returncode=0, stdout="", stderr=""))
 
-    def run(cloud: bool, status="SUCCEEDED", revisions=(), digest="sha256:abc"):
+    def run(cloud: bool, status="SUCCEEDED", revisions=(), digest="sha256:abc", plan=False):
         monkeypatch.setattr(batch_deploy, "build_in_cloud",
                             lambda app, builder, image_platform: cloud)
         monkeypatch.setattr(batch_deploy, "active_job_definitions",
@@ -232,7 +232,7 @@ def deploy(project, monkeypatch):
         app = {"name": "my-app", "dir": app_dir, "storage": False, "schedule": "0 6 * * *",
                "timezone": "UTC", "pause": False, "platform": {"provider": "aws"}}
         try:
-            code = batch_deploy.deploy(app, assume_yes=True)
+            code = batch_deploy.deploy(app, assume_yes=not plan, plan_only=plan)
         except SystemExit:
             code = "failed"
         return code, fakes, commands, roles, log_groups
@@ -317,6 +317,16 @@ def test_a_local_build_never_touches_codebuild_or_the_build_bucket(deploy):
     assert fakes["codebuild"].started == [] and fakes["codebuild"].calls == []
     assert fakes["s3"].buckets == {} and fakes["s3"].calls == []
     assert BUILD_ROLE not in roles and BUILD_LOG_GROUP not in log_groups
+
+
+@pytest.mark.parametrize("cloud", [True, False])
+def test_a_plan_shows_the_plan_and_changes_nothing(deploy, monkeypatch, capsys, cloud):
+    monkeypatch.setattr(batch_deploy, "confirm", lambda *args: pytest.fail("asked to proceed"))
+    code, fakes, commands, roles, log_groups = deploy(cloud=cloud, plan=True)
+    assert code == 0
+    assert "Plan:" in capsys.readouterr().out
+    assert commands == [] and roles == {} and log_groups == [] and fakes["definitions"] == []
+    assert fakes["codebuild"].started == [] and fakes["s3"].calls == []
 
 
 def plan_lines(deploy_fixture, monkeypatch, cloud):

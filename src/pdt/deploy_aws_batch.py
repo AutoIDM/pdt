@@ -44,7 +44,7 @@ from typing import Callable, Iterator
 from botocore.exceptions import BotoCoreError, ClientError
 
 from pdt import config, console, lifecycle, regions, runs_cli
-from pdt.deploy import DECLINED, confirm
+from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_aws import (
     BUILD_BUCKET_PREFIX, COMMON_ACTIONS, MANAGED_TAGS, RETRIES, SCHEDULE_GROUP,
     aws_schedule_expression,
@@ -782,7 +782,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     return run_secrets(action, app, current, write, assume_yes, name)
 
 
-def deploy(app: dict, assume_yes: bool) -> int:
+def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     cloud = build_in_cloud(app, "CodeBuild", DOCKER_PLATFORM)
     console.status("Checking your AWS sign-in...")
     session = ensure_session(app)
@@ -875,6 +875,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
     estimate = cost_estimate_for(clients["logs"], names, region, cron, schedule_exists, usage,
                                  regions.local_currency())
     wait_for_permissions()
+    if plan_only:
+        return show_plan(actions, estimate)
     if not confirm(actions, assume_yes, estimate):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
