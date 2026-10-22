@@ -275,13 +275,15 @@ def merged_app(name: str) -> dict:
             docker_build, docker_build_from = section["docker-build"], where
         if "alerts" in section:
             alerts, alerts_from = section["alerts"], where
-    default_timezone = platform.get(
-        "timezone", "local" if platform.get("provider") == "windows" else "Etc/UTC")
+    # Task Scheduler runs a task on the PC's own clock, so a Windows app always
+    # runs on local time and any timezone it sets does not apply.
+    timezone = ("local" if platform.get("provider") == "windows" else
+                own.get("timezone", entry.get("timezone", platform.get("timezone", "Etc/UTC"))))
     return {
         "name": name,
         "dir": app_dir,
         "schedule": own.get("schedule", entry.get("schedule")),
-        "timezone": own.get("timezone", entry.get("timezone", default_timezone)),
+        "timezone": timezone,
         "platform": platform,
         "config": {
             **mapping(entry, "config", entry_where),
@@ -556,13 +558,6 @@ def cron_expression(schedule) -> str:
     for field, (label, lo, hi) in zip(fields, CRON_FIELDS):
         _cron_values(field, lo, hi, label)
     return text
-
-
-def windows_timezone_problem(timezone) -> str:
-    if str(timezone or "").strip().lower() == "local":
-        return ""
-    return ("the windows provider runs on this PC's local time; remove timezone: "
-            f"{timezone} from this app, or set timezone: local")
 
 
 def windows_schedule_problem(cron: str) -> str:
@@ -1090,10 +1085,6 @@ def validate_app(name: str) -> list[str]:
         problem = azure_environment_problem(str(app["platform"].get("environment") or ""))
         if problem != "":
             problems.append(f"{name}: platform.environment: {problem}")
-    if provider == "windows":
-        problem = windows_timezone_problem(app["timezone"])
-        if problem != "":
-            problems.append(f"{name}: timezone: {problem}")
     if app["schedule"] is not None:
         try:
             cron = cron_expression(app["schedule"])
