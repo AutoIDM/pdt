@@ -2,7 +2,7 @@
 
 **Turn any script into a scheduled job in your cloud.**
 
-pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Windows Task Scheduler. It gives every job the same [primitives](#primitives), chosen from years of deploying scheduled jobs for businesses on each cloud. No servers to run and nothing extra to install, and everything it makes lives in your own account.
+pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Windows Task Scheduler. It gives every job the same [primitives](docs/primitives.md#primitives), chosen from years of deploying scheduled jobs for businesses on each cloud. No servers to run and nothing extra to install, and everything it makes lives in your own account.
 
 ![What pdt does: your project folder goes through pdt deploy to a schedule on AWS, GCP, Azure, or Task Scheduler, and pdt runs, logs, health, and gui read the results back.](docs/what-is-pdt.svg)
 
@@ -54,513 +54,44 @@ pdt logs
 3. Test the job locally with `pdt run your-powershell-job`
 4. Deploy it with `pdt deploy your-powershell-job`
 
-See [every command](#commands).
+See [every command](docs/commands.md).
 
-## Primitives
+### Example deployment
 
-Every job gets the same building blocks. pdt picks the service on each cloud for you.
+A first deploy of the `hello-world-example` app to Azure, then a look at its run:
 
-| | AWS | Azure | Google Cloud | Windows |
-| --- | --- | --- | --- | --- |
-| **Compute** | AWS Batch (Fargate) | Container Apps Jobs | Cloud Run Jobs | Task Scheduler |
-| **Schedule** | EventBridge Scheduler | Container Apps Jobs | Cloud Scheduler | Task Scheduler |
-| **Secrets** | Secrets Manager | Key Vault | Secret Manager | `.env` file, read at each run |
-| **Storage** (job files and state) | S3 | Blob Storage | Cloud Storage | `%ProgramData%\pdt` |
-| **Logs** | CloudWatch Logs | Log Analytics | Cloud Logging | Log files |
-| **Alerts** | Slack, Teams, email | Slack, Teams, email | Slack, Teams, email | Slack, Teams, email |
+![pdt deploy hello-world-example: the plan, the monthly cost estimate, the build, and the first run's log, followed by pdt logs, pdt health, and pdt run --deployed.](docs/example-deploy.svg)
 
-## Practices
+See [the same output as text](docs/example-deploy.md).
 
-1. **One folder per job** - Each job is built, deployed, and destroyed on its own.
-2. **Run it locally first** - `pdt run` runs the job the same way the cloud does, with the same config and storage.
-3. **You own everything** - Your jobs live in your own git repo, and they run in your own cloud account. There is no pdt server.
-4. **Secrets stay secret** - Kept in `.env` on your computer and in the cloud's secret store, never in git or the image.
-5. **Nothing left behind** - Everything pdt makes is tagged `managed-by=pdt`, and `pdt destroy` removes all of it.
-6. **Cheapest by default** - Jobs run only when scheduled, on the lowest-cost option that works (for example arm64 on AWS).
-7. **One run at a time** - A job's saved state is locked during a run, so two runs never overwrite each other.
-
-## Set up a project
-
-A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, or the `.ps1` scripts of a PowerShell app. Every command except `init` finds the project by looking in the current folder, then each folder above it.
-
-```
-pdt init my-jobs
-```
-
-`pdt init` asks where the project should live, which cloud you want, and which region. It warns you if you are about to create a project somewhere unwise, such as your home folder. The folder name is optional: `pdt init` with no name uses the current folder, and `pdt init DIR` uses `DIR`, creating it if it is not there yet. Add `--yes` to take the defaults and answer nothing.
-
-Region is the only setting it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it.
-
-pdt suggests the region nearest to you from your computer's time zone. If `pdt.yml` has no region when you first deploy, the deploy suggests one the same way, asks you to confirm it or type another, and saves your answer. With `--yes` it takes the suggestion and tells you which region it used.
-
-Starting in an empty folder also gives you a working app called `hello-world`. Run it straight away:
-
-```
-cd my-jobs
-pdt run hello-world
-```
-
-It writes one log line and nothing else. Edit `hello-world/run.py` to make it do real work, or delete the folder if you would rather start from one of the [bundled examples](#the-bundled-examples). A folder that already holds your own files gets no starter app.
-
-## Add an app
-
-```
-pdt examples
-pdt new my-report --from impossible-travel-report
-```
-
-`pdt new` copies one of the examples bundled with pdt into your project. Open `my-report/env.template`, copy the names you need into `.env`, then:
-
-```
-pdt validate
-pdt run my-report
-```
-
-A project ends up looking like this:
-
-```
-my-jobs/
-  pdt.yml           settings shared by every app
-  .env              secrets, never committed
-  my-report/
-    run.py          the job
-    config.yml      schedule, settings, and the env vars it needs
-    env.template
-```
-
-## Deploy
-
-```
-pdt deploy my-report
-```
-
-A deploy to AWS, Azure, or Google Cloud builds the app's image with Docker on your computer when Docker is running, and in the cloud when it is not (see [Choosing where jobs run](#choosing-where-jobs-run)). The command prints a resource plan and a monthly cost estimate before it changes anything. Add `--yes` to skip the question.
-
-The cost estimate shows prices in the currency of your computer's regional setting, or in US dollars when pdt cannot read it. pdt takes the price in that currency from the cloud when the cloud lists one. Otherwise it converts from US dollars at the cloud's own exchange rate, or at the European Central Bank's daily reference rate, and the estimate names the rate it used.
-
-After each deploy, pdt then asks `Start a run now and show its log? [y/N]`. A yes starts one run, as `pdt run my-report --deployed` does, and prints the run's log lines as they arrive, as `pdt logs my-report --follow` does. The deploy then exits with the run's result: 0 when the run succeeded, 1 when it failed. A run can have side effects, for example an email to real people, so the answer is no unless you type `y`. With `--yes`, or with no terminal (a build server), pdt does not ask and starts no run. Add `--run` to start the run and follow its log with no question. `pdt deploy --all` does not offer a run, so a deploy of many apps asks no question per app. `pdt deploy --all --run` deploys every app, then starts a run of each app that deployed and follows its log, one app at a time.
-
-To start one run of the deployed job now, and then read its log:
-
-```
-pdt run my-report --deployed
-pdt logs my-report
-```
-
-To remove everything the deploy created:
-
-```
-pdt destroy my-report
-```
-
-To sign in again, or to switch to a different cloud account:
-
-```
-pdt login my-report
-```
-
-### Pausing or turning off a job
-
-An app that should stay deployed but not run for a while sets `pause: true`. The schedule stays in place and does not fire until the key goes back to `false`. `pdt pause APP` and `pdt unpause APP` write the key into the app's `config.yml` and apply it to the deployed schedule in the same step; `pdt deploy` also honors it. A paused app still runs when you ask for it with `pdt run APP --deployed`.
-
-An app that is not ready sets `enabled: false` in its `config.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it. `enabled: false` does not stop a schedule that is already deployed, so run `pdt pause APP` or `pdt destroy APP` before you set it.
-
-## Commands
-
-| Command | What it does |
-| --- | --- |
-| `pdt init [DIR]` | create a project here, or in DIR |
-| `pdt examples` | list the example apps bundled with pdt |
-| `pdt new APP` | add an empty app to the project |
-| `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
-| `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
-| `pdt run APP` | run an app on this machine |
-| `pdt run APP --deployed` | start one run of the deployed job now, on its platform |
-| `pdt run APP --deployed --follow` | start one run of the deployed job, follow its log, and exit 0 when it succeeds or 1 when it fails |
-| `pdt deploy APP` | deploy an app to its configured platform, then ask whether to start a run and follow its log |
-| `pdt deploy APP --run` | deploy, then start a run and follow its log with no question |
-| `pdt deploy APP --rebuild` | deploy, and build and push the image even when the app did not change |
-| `pdt deploy --all` | deploy every enabled app, in order; skips an app whose plan you decline; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
-| `pdt destroy APP` | remove everything deploy created |
-| `pdt destroy --all` | destroy every deployed app, in order; each app shows its plan and asks; asks whether to skip an app that fails; add `--yes --skip-failures` to run unattended |
-| `pdt pause APP` | stop the deployed schedule from starting runs; writes `pause: true` into the app's `config.yml` |
-| `pdt unpause APP` | let the schedule start runs again; writes `pause: false` |
-| `pdt secrets APP` | show which `.env` values differ from the deployed app |
-| `pdt secrets APP save` | send your `.env` values to the deployed app; the next run uses them |
-| `pdt secrets APP get` | copy the deployed values into a `.env.<provider>` file |
-| `pdt secrets APP set NAME` | put one value, read from stdin, into the deployed app's secrets |
-| `pdt login APP` | sign in again to the app's platform |
-| `pdt storage APP ls\|get\|query\|unlock\|destroy` | look at, fetch, query, unlock, or delete the app's stored files; `ls` shows the number of files and the size under each folder; `ls PATH --recursive` lists every file under a folder, and `ls --json` prints the list as JSON; on Windows, Tab completes the path after `ls` and `get`; `--open` opens the app's storage folder (File Explorer on Windows, the cloud console otherwise), and `get PATH --open` opens the saved file |
-| `pdt runs APP` | list the deployed app's runs with each run's exit code: the 10 newest, or with `--since 3d` (or `12h`, `2w`, `2026-09-20`, `2026-09-20T14:00`) every run since then, `--span 1d` keeping only the runs within that long after `--since` and `--count N` keeping only the N newest; a run's number is its place among every run pdt can still find, so it stays the same whichever runs print; `--open` opens the runs in Task Scheduler on Windows, or in the cloud console |
-| `pdt logs APP [N]` | read the log of run N as `pdt runs` numbers it; with no N, the newest run, `--failed` picks the newest failed run instead, and `--id ID` picks a run by the id `pdt runs` shows (repeat it to read several runs; their `--json` is then an object keyed by id); `--since`, `--span`, and `--count` limit which runs those two choose from, `--errors` leaves out DEBUG and INFO lines; the last 20 lines print, `--lines N` prints N instead, `--head` prints the first lines instead of the last, `--full` prints every line, and `--follow` keeps printing new lines, in time order, until the run ends and its log has the run's exit line; a running run's lines come from a live tail of its log (the container's log stream on Azure, a Cloud Logging tail on Google Cloud, CloudWatch Logs Live Tail on AWS), because the log store shows a line seconds to minutes after the job writes it; a run that is still running, or whose lines have not reached the log store yet, says so; on Windows, `pdt logs` names the log file it reads; `--open` opens the app's logs (the logs folder on Windows, the cloud console otherwise), or one run's log with N, `--failed`, or `--id` |
-| `pdt logs APP --list` | list each run log, for the same runs as `pdt runs` (`--since`, `--span`, `--count`, and `--json` work the same way) |
-| `pdt health [APP] [--all]` | show whether each app's last run succeeded; exits 1 when one failed; inside an app folder it checks only that app, and `--all` checks every app |
-| `pdt gui` | open the project's dashboard in your browser: every app's health, each app's run history, and each run's log and files, with buttons for pause, unpause, and run now; `--background` keeps the server up after the command returns and `pdt gui --stop` ends it; `--port N` and `--no-browser` are there for the rare case |
-| `pdt aws ...` | run the AWS CLI that pdt installs |
-| `pdt az ...` | run the Azure CLI that pdt installs |
-| `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |
-| `pdt completion [SHELL]` | turn on tab completion for a shell |
-
-Inside an app folder, or any folder below it, leave `APP` off any command that takes one and pdt uses that app. For example, `pdt logs 3` in the `hello-world` folder reads run 3 of `hello-world`. Anywhere else, leave `APP` off or mistype it and pdt lists the apps in the project so you can pick one; a mistyped name also gets the closest app name. A mistyped command or option gets the closest one too, for example `pdt lgos` asks "Did you mean `pdt logs`?".
-
-With `--json`, `pdt list`, `pdt validate`, `pdt runs`, `pdt logs`, `pdt health`, and `pdt storage APP ls` print only JSON on stdout, and every other line, such as an error or a sign-in question, on stderr. In a project with no enabled apps, `pdt runs`, `pdt logs`, `pdt health`, and `pdt storage APP ls` print `[]`. A command that has no JSON to print exits with a code other than 0 and prints nothing on stdout.
-
-`pdt aws`, `pdt az`, and `pdt gcloud` hand your arguments straight to the cloud tool, and install it first if it is missing. For example, `pdt az account list`.
-
-## Keeping files between runs
-
-Your app runs, writes some files, and stops. Then the computer it ran on is thrown away, and the files go with it. So pdt gives every app a folder in your cloud account that stays. Deploy the app, destroy it, deploy it again: the folder and everything in it is still there.
-
-pdt creates one bucket per cloud account, named `pdt-data-` plus a short code, and gives each app its own folder inside it. When your app runs in the cloud, `PDT_STORAGE_URL` points at that folder. A Windows scheduled task points it at `%ProgramData%\pdt\APP\storage\`. When you run `pdt run APP` on your own computer, it points at `.pdt/storage/APP/` inside your project instead. The app code is the same in every place.
-
-Write and read files with `pdt.utils.storage`:
-
-```python
-from pdt.utils import storage
-
-store = storage.store()
-with store.open("report.csv", "wb") as f:
-    f.write(b"name,count\n")
-```
-
-`store.fs()` gives you the full [fsspec](https://filesystem-spec.readthedocs.io/) filesystem, rooted at your app's folder. Output from one run goes under `store.run_folder()`, which names a new `runs/<time>-<id>/` folder each run.
-
-Some apps need files from the last run: a Meltano bookmark, a database. Keep those in the `state` folder that `storage.sync()` hands you, and put anything a person may want to look at afterwards in its `output` folder:
-
-```python
-from pdt.utils import storage
-
-with storage.sync() as run:
-    # do the work; keep anything the next run needs inside run.state/
-    (run.output / "report.csv").write_text("name,count\n")
-```
-
-`sync` copies `state/` down from your app's folder and locks it, so a second copy of your app cannot run at the same time and mix up the files. When the block ends, it uploads `run.output` to this run's `runs/` folder, checks that nobody else changed the state files, saves them, and unlocks. When the block raises, or the run is interrupted, it still uploads `run.output`, unlocks, and leaves `state/` as it was, so the next run starts from the last good state. An app whose state is safe to keep at any point, such as a Meltano bookmark or an OAuth token that rotates on every login, passes `storage.sync(push_state_on_error=True)` so a failed run keeps what it saved. Both local folders live under `.pdt/runs/` in the app folder and stay there for inspection.
-
-The same steps by hand are `store.pull("state/", folder)`, which returns a lease, then `store.push(folder, "state/", lease)` on success or `store.abort(lease)` on failure.
-
-A run that dies without reaching either call leaves the lock behind. The next run takes it over right away when it can tell the holder is gone: the holder ran on the same computer and its process has ended, or it carries the same `PDT_RUN_ID`. Otherwise it waits 30 minutes, or you release the lock yourself with `pdt storage APP unlock`, which asks first.
-
-From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
-
-## The dashboard
-
-`pdt gui` starts a small web server on your own computer and opens it in your browser. The first page is `pdt health` as a table, with a grid of every run by hour, day, week, or month underneath it. Click an app for its run history, and click a run for its log and the files it kept in storage. A CSV file a run kept opens in a SQL workbench in the browser: a table you can sort, filter, and page, and a SQL view where every CSV of the run is a view you can query and join, with the matching `pdt storage APP query` command shown under it. The workbench runs on DuckDB, which the first `pdt gui` downloads once into the pdt data folder (`~/.local/share/pdt`); a Download link next to each file still saves it. Every number on a page came out of a pdt command (`pdt runs`, `pdt logs`, `pdt storage ls`), and every button runs one (`pdt pause`, `pdt unpause`, `pdt run --deployed`); hover a button to see which. The pages keep what they fetched in `.pdt/gui.sqlite3` inside the project and fetch again when it is older than five minutes or when you press Refresh, so a run stays in the history after the cloud has forgotten it. A worker inside the server checks for work every two minutes: it refreshes each app's runs, asks the provider once for every run it still keeps, and then fetches the log and files of each run that lacks them, newest first, until every run has them. A page shows what is there; it only waits when it asks for something the worker has not reached yet. The Stats link shows how long each page and each pdt command took. The server listens on localhost only and has no login. `pdt gui --background` leaves it running after the command returns; `pdt gui --stop` ends it.
-
-## Running pdt from CI
-
-Every command reads its values from the environment it runs in. A build server sets them as CI variables, and no `.env` file is needed.
-
-- A `.env` file is a convenience for a person working on their own machine. A value that is already in the environment wins over the same name in a `.env` file.
-- `PDT_ENV_JSON` holds every value as one JSON object, for a CI system that keeps one secret instead of many. For example, `PDT_ENV_JSON={"PDT_TOKEN": "abc", "PDT_SMTP_USER": "reports@example.com"}`.
-- pdt creates no `.env` file on a build server. It looks for the `CI` variable that build systems set, and for a missing terminal. Email authorization must therefore be done first: run `pdt run APP` once on a machine with a browser, then copy `PDT_SMTP_OAUTH_CACHE_B64` (or `PDT_GRAPH_MAIL_CACHE_B64` for Microsoft Graph) from your `.env` into the CI variables.
-- `pdt deploy APP` and `pdt destroy APP` ask before they change anything. Add `--yes` so they proceed without asking. On a build server, `pdt deploy APP` starts no run after the deploy; add `--run` to start a run and follow its log.
-
-## Choosing where jobs run
-
-Set `platform:` in `pdt.yml` for every app, or in an app's own `config.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
-
-A deploy to AWS, Azure, or Google Cloud builds each app's image in one of two places, and it says which place and why:
-
-- When `docker info` answers, Docker on your computer builds the image and uploads it to the cloud's image registry.
-- When Docker is not installed or not running, the cloud builds the image: ACR Tasks on Azure, Cloud Build on Google Cloud, and CodeBuild on AWS. The deploy uploads the app folder and `pdt.yml`, without `.env` and the other secret files, and the cloud builder builds them with the same Dockerfile, the same base image, and the same CPU type as a build on your computer.
-
-When a build fails, the deploy shows the error and stops.
-
-Set `docker-build` to choose the place yourself. Put it at the top level of `pdt.yml` for every app, or at the top level of an app's `config.yml` (or its `apps:` entry) for one app. The app's value wins.
-
-```yaml
-docker-build: auto   # Docker on this computer when it answers, else the cloud (the default)
-# docker-build: local  # Docker on this computer only; the deploy stops when Docker is not running
-# docker-build: cloud  # the cloud only
-```
-
-### Azure
-
-```yaml
-platform:
-  provider: azure
-  subscription: 00000000-0000-0000-0000-000000000000
-  region: eastus
-  resource_group: pdt
-  # Optional. An environment you already own, as <resource-group>/<name>.
-  # environment: my-group/my-environment
-```
-
-`subscription` is optional. When it is missing or wrong, the deploy asks you to choose one.
-
-Every pdt project in a subscription runs its jobs in one shared Container Apps environment per region, `pdt-<region>` in the resource group `pdt-shared`, because a subscription allows only a few environments. Destroying the last app that uses the environment removes it, and removes `pdt-shared` once it holds no environment. Set `environment` to use an environment you already have; pdt then never creates, changes, or deletes it.
-
-### AWS
-
-```yaml
-platform:
-  provider: aws
-  region: us-east-1
-  # Written for you on the first deploy, from your credentials.
-  account: "123456789012"
-  # Optional. Which profile in ~/.aws to use. Written for you if pdt has to ask.
-  profile: work
-```
-
-`profile` is optional. When it is missing, pdt uses `AWS_PROFILE`, or the only profile on your computer. When there are several and none is chosen, or the one in the file is not on this computer, the deploy lists them and asks you to choose, then writes your answer here.
-
-### Google Cloud
-
-```yaml
-platform:
-  provider: google-cloud
-  region: us-central1
-  project: my-starter-project
-```
-
-`project` is optional. When it is missing or wrong, the deploy lists your projects and asks you to choose one, then writes your answer here.
-
-### Bringing your own Dockerfile
-
-Every cloud provider runs a job as a container (see [Primitives](#primitives)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the entrypoint. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
-
-Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
-
-```dockerfile
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58
-COPY . /workspace
-WORKDIR /workspace/my-app
-ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
-RUN uv sync --script run.py
-ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \"pdt: exit $code\"; exit $code"]
-```
-
-A `.dockerignore` in the app folder keeps files out of the image. Write its patterns relative to the app folder (`.meltano`, `output`, `*.csv`); pdt moves them to the root of the build context for you. `.env` and the other secret files never reach the context, with or without a `.dockerignore`.
-
-The `ENTRYPOINT` ends each run's output with the line `pdt: exit N`, which `pdt runs` reads for the run's exit code. Keep that line when you change the rest of the file.
-
-A `RUN --mount=type=ssh` step in your own `Dockerfile` can install a private git dependency with your computer's SSH agent. Only a build with Docker on your computer has the agent, so a deploy that would build such an app in the cloud stops and names the step.
-
-The Windows provider never builds an image, so `pdt validate` reports a Dockerfile in an app that uses it.
-
-### Windows Task Scheduler
-
-```yaml
-platform:
-  provider: windows
-
-apps:
-  - name: my-report
-    schedule: daily
-```
-
-The Windows provider runs each job on the PC's local time, so `timezone` defaults to `local` there, the only value it accepts.
-
-The job runs as the SYSTEM account.
-
-Each run writes one event to the Windows Application log, source `pdt`: event 1000 when it succeeds, event 1001 when it fails.
-
-Windows accepts these schedules:
-
-- `hourly`, `daily`, `weekly`, `monthly`, and `yearly`
-- `*/N * * * *` minute intervals where `N` divides 60
-- one fixed time daily
-- one fixed time on selected weekdays
-- one fixed time on selected days of selected months
-
-Other cron forms are rejected, because they do not translate to Windows Task Scheduler.
-
-Each app keeps its run data in `%ProgramData%\pdt\<app>\`. The task writes one log file per run to the `logs\` folder in it, named by the run's UTC start time, and `pdt runs <app>` and `pdt logs <app>` read those files. The app's own files (see [Keeping files between runs](#keeping-files-between-runs)) live in the `storage\` folder next to it. Deploy creates the folder and gives the SYSTEM account full control and you modify rights, so `pdt storage <app> destroy` works without an administrator. `pdt destroy <app>` removes the task and the `logs\` folder and keeps `storage\`. A run is stopped after 30 minutes, the same limit as the cloud providers, and a run that is still going when the next one is due is left alone; the new start is skipped.
 
 ## The bundled examples
 
 Run `pdt examples` to list them, then `pdt new <name> --from <example>` to copy one.
 
 ### hello-world
-
-Small app that logs "Hello world." Shows how to write a config.yml and useful as an empty starting project so you can write your own. `pdt init` puts a copy of this in every new empty project.
+Small job that logs "Hello world." `pdt init` puts a copy of this in every new empty project.
 
 ### azure-license-waste
-
-A PowerShell app. Finds the Microsoft 365 licenses a tenant pays for that nobody uses: paid licenses on disabled accounts, on accounts that have not signed in for 90 days (or never did), and seats bought but assigned to nobody. Each run keeps a `LicenseWaste-<date>.xlsx` workbook in the app's data store, with a Summary sheet of monthly and annual cost and one sheet per finding.
-
-Monthly prices come from the app's `license-prices.csv`; edit it to match what your tenant pays. A license missing from it is listed on an Unpriced Licenses sheet so you can add it. The Graph permissions and env vars it needs are listed in its `config.yml` and `env.template`.
+PowerShell job. Finds the Microsoft 365 licenses a tenant pays for that nobody uses: paid licenses on disabled accounts, on accounts that have not signed in for 90 days (or never did), and seats bought but assigned to nobody. Each run keeps a `LicenseWaste-<date>.xlsx` workbook in the job's data store, with a Summary sheet of monthly and annual cost and one sheet per finding.
 
 ### impossible-travel-report
-
 Looks at recent Entra ID sign-ins. Sends an email when one person signs in from two far-apart places too quickly: Dallas an hour ago, Paris now.
 
-Settings for the lookback window, the minimum distance, and the email addresses live in the app's `config.yml`. The env vars it needs are listed there too, and in its `env.template`.
+Settings for the lookback window, the minimum distance, and the email addresses live in the job's `config.yml`. The env vars it needs are listed there too, and in its `env.template`.
 
 ### intune-export
 
-A PowerShell app. Once a week it exports the Intune configuration of a tenant with the bulk export of [IntuneManagement](https://github.com/Micke-K/IntuneManagement) version 4, and keeps an `IntuneExport-<date>.zip` in the app's data store. To import, unzip it and point IntuneManagement's import at the company folder inside. Each run uses a pinned commit of IntuneManagement, which the script downloads once to pdt's data folder and checks against its SHA-256. Which object types to export and IntuneManagement's own export settings live in its `config.yml`; the Graph permissions and env vars it needs are listed there and in its `env.template`. A run fails when Microsoft Graph refuses to list an object type, so a missing permission does not leave a silent gap in the zip. The zip can hold scripts and other sensitive settings, so treat the data store as sensitive.
+PowerShell job. Once a week it exports the Intune configuration of a tenant with the bulk export of [IntuneManagement](https://github.com/Micke-K/IntuneManagement) version 4, and keeps an `IntuneExport-<date>.zip` in the job's data store. To import, unzip it and point IntuneManagement's import at the company folder inside. 
 
 ### monday-orphaned-account-report
-
 Reports active Monday users whose email address does not match the `userPrincipalName` of an active Entra ID user.
 
 ### powershell-hello-world
-
-A PowerShell app whose one script, `hello.ps1`, writes "Hello, world!". It is the app the [Quick Start](#quick-start) deploys. Put your own `.ps1` files in its folder in place of `hello.ps1` to deploy your own PowerShell job.
+A PowerShell job whose one script, `hello.ps1`, writes "Hello, world!". It is the job the [Quick Start](#quick-start) deploys. Put your own `.ps1` files in its folder in place of `hello.ps1` to deploy your own PowerShell job.
 
 ### powershell-report
-
-A PowerShell app with no `run.py`. Its script writes a small CSV report with `Export-Csv`, and pdt keeps the file in the app's data store.
-
-## Where things live
-
-| Item | Where |
-| --- | --- |
-| the `pdt` command and its code | the tool's own environment, from `uv tool install` |
-| the example apps | inside the pdt package, copied out by `pdt new` |
-| your apps, `pdt.yml`, `.env` | your project folder, under version control |
-| the Google Cloud CLI pdt downloads | `~/.local/share/pdt/gcloud`, or `%LOCALAPPDATA%\pdt\gcloud` |
-| the PowerShell 7 pdt downloads | `~/.local/share/pdt/pwsh`, or `%ProgramData%\pdt\pwsh` |
-| the DuckDB files of the `pdt gui` SQL workbench | `~/.local/share/pdt/duckdb-wasm`, or `%LOCALAPPDATA%\pdt\duckdb-wasm` |
-| what `pdt gui` fetched | `.pdt/gui.sqlite3` in your project folder |
-| a Windows scheduled task's run logs and files | `%ProgramData%\pdt\<app>\logs` and `%ProgramData%\pdt\<app>\storage` |
-| cloud sign-in state | `~/.aws`, `~/.azure`, and `~/.config/gcloud`, as usual |
-
-Set `PDT_PROJECT` to name the project folder directly, instead of letting pdt search upward. Deployed jobs get it set for them.
-
-## Writing your own app
-
-An app is a folder with a `run.py` that has a `main()` function. It declares its own dependencies in a script header, and pdt is one of them:
-
-```python
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["pdt-cli[apps]==0.1.12"]
-# ///
-from pathlib import Path
-
-from pdt.config import check_env, load_env, merged_app
-from pdt.utils.log import log
-
-
-def main() -> int:
-    app = merged_app(Path(__file__).resolve().parent.name)
-    load_env(app["dir"])
-    ...
-```
-
-The pinned version is the pdt version the app runs with, on your computer and in a deployed job. Upgrading pdt on your computer does not change it. Keep the pin at the newest pdt release, and run `pdt deploy APP` after you raise it, so the deployed job uses it too.
-
-### PowerShell apps
-
-A folder of `.ps1` files with no `run.py` is a PowerShell app: pdt reads the scripts to find the modules to install, then runs the entry scripts in name order through pwsh. Before `pdt run` starts the scripts on your computer, pdt installs each of those modules that is missing or at another version into its own folder (`~/.local/share/pdt/powershell-modules`, or `%LOCALAPPDATA%\pdt\powershell-modules` on Windows), so a local run loads the same versions a deploy installs. Other PowerShell sessions do not see that folder, and deleting it removes the modules.
-
-A script reads the app's `config:` section from `$env:PDT_CONFIG_JSON | ConvertFrom-Json`, and pdt keeps every file a script writes to `$env:PDT_OUTPUT_DIR` in the app's data store. For files a later run needs, such as the last result to compare against, use `$env:PDT_STATE_DIR`: when a script reads it, pdt fills it with the app's saved state before the first script and saves it again when every script succeeds. After a failure the saved state stays as the last good run left it. While a run holds the state, another run of the same app stops with an error; `pdt storage <app> unlock` frees state that a dead run still holds.
-
-A `run.ps1` file is the only entry script. Otherwise, use `run_scripts` in `config.yml` to choose entries and set their order. Do not use `run.ps1` and `run_scripts` together. By default, pdt stops after the first failed script. Set `continue_on_error: true` to run every entry script. The run still fails with the first script's exit code.
-
-To change either step, run `pdt new <app> --from-scripts`. It writes `requirements.psd1`, which lists the modules with pinned versions, and `run.py`, which runs the scripts. Once they exist, pdt installs exactly the modules in `requirements.psd1` (`pdt validate` warns about a module the scripts need that it leaves out), and `pdt run` and deploy run your `run.py`.
-
-```
-pdt new my-report --from-scripts
-```
-
-## Utilities
-
-`pdt.utils` provides built-in support for common functionality:
-
-- Send emails
-- Logging
-
-### Send Email
-
-`pdt.utils.send_email` sends plain-text mail.
-
-Supports:
-
-- SMTP + password
-- SMTP + OAuth for Microsoft or Google
-- Microsoft Graph delegated Mail.Send
-- SES (Amazon Simple Email Service)
-- Resend
-
-#### SMTP
-
-Required environment variables:
-
-- PDT_SMTP_HOST
-- PDT_SMTP_USER
-
-When using password auth:
-
-- PDT_SMTP_PASSWORD
-
-When using OAuth for Google or Microsoft:
-
-- PDT_SMTP_OAUTH_CLIENT_ID
-
-Optional:
-
-- PDT_SMTP_AUTH = oauth2
-- PDT_SMTP_PORT: Port 587 is the default and uses STARTTLS; port 465 uses implicit TLS.
-
-Google also requires:
-
-- PDT_SMTP_OAUTH_CLIENT_SECRET
-
-Microsoft optionally accepts:
-
-- PDT_SMTP_OAUTH_TENANT_ID: Defaults to `common`.
-
-PDT infers OAuth when the host is `smtp.gmail.com`, `smtp.office365.com`, or `smtp-mail.outlook.com` and no password is set. If a provider revokes authorization, run or deploy the app from a terminal again.
-
-##### Google OAuth
-
-Create a Desktop app OAuth client in the [Google Auth Platform](https://console.cloud.google.com/auth/clients). Set its client ID and client secret in the variables above. The OAuth consent screen must include `https://mail.google.com/` because Google requires that scope for SMTP OAuth.
-
-##### Microsoft OAuth
-
-Create an app registration in the [Microsoft Entra admin center](https://entra.microsoft.com/). Add a Mobile and desktop application platform with `http://localhost` as a redirect URI. Add the delegated Office 365 Exchange Online permission `https://outlook.office.com/SMTP.Send` and allow public client flows.
-
-Microsoft 365 must also have Authenticated SMTP enabled for the sending mailbox. Use `PDT_SMTP_OAUTH_TENANT_ID` for a tenant-specific registration, or leave it empty to use `common`.
-
-#### Microsoft Graph
-
-Required environment variables:
-
-- PDT_GRAPH_MAIL_USER
-- PDT_GRAPH_MAIL_CLIENT_ID
-
-Optional:
-
-- PDT_GRAPH_MAIL_TENANT_ID: Defaults to `common`.
-
-PDT sends as `PDT_GRAPH_MAIL_USER`, so `email_from` in config.yml must match it. Graph sends the HTML part alone; the other transports send both parts. If a provider revokes authorization, run or deploy the app from a terminal again.
-
-Create an app registration in the [Microsoft Entra admin center](https://entra.microsoft.com/). Add a Mobile and desktop application platform with `http://localhost` as a redirect URI. Add the Microsoft Graph delegated permission `Mail.Send` and allow public client flows. Do not add a client secret.
-
-#### SES
-
-Required environment variables:
-
-- PDT_SES_REGION
-
-Optional:
-
-- PDT_SES_ACCESS_KEY_ID
-- PDT_SES_SECRET_ACCESS_KEY
-
-Leave the two SES key variables empty to use the standard AWS credential chain (for example, `AWS_PROFILE`, environment credentials, or a workload role).
-
-#### Resend
-
-Required environment variables:
-
-- PDT_RESEND_API_KEY
-
-### Logging
-
-`pdt.utils.log` writes one log line per event:
-
-```python
-from pdt.utils.log import die, log
-
-log("info", "processed", rows=42)
-```
-
-Levels are `debug`, `info`, `warning`, and `error`. Locally a line is human-readable text on stdout; with `LOG_FORMAT=json` it is one JSON object per line, which is also the default on Cloud Run.
+PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in the app's data store.
 
 ## Support
 
@@ -568,3 +99,16 @@ Levels are `debug`, `info`, `warning`, and `error`. Locally a line is human-read
 
 1. [Discord](https://autoidm.com/discord)
 2. Report a problem at https://github.com/AutoIDM/pdt/issues.
+
+## Documentation
+
+- [How pdt works](docs/primitives.md): the building blocks every job gets on each cloud, and the practices behind them
+- [Projects and apps](docs/projects.md): set up a project, add an app, and where pdt keeps its files
+- [Deploying](docs/deploy.md): deploy, run, pause, and destroy a job, and run pdt from CI
+- [Commands](docs/commands.md): every `pdt` command and its options
+- [Choosing where jobs run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
+- [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
+- [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's runs, logs, and files
+- [Writing your own app](docs/writing-apps.md): Python and PowerShell apps, and logging
+- [Sending email](docs/email.md): send mail from an app over SMTP, Microsoft Graph, SES, or Resend
+- [More ways to install](docs/install.md): other installs, and how to update or remove pdt
