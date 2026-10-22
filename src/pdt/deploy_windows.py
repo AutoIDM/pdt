@@ -211,9 +211,6 @@ def uv_on_machine_path() -> bool:
 
 def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
     cron = config.cron_expression(app["schedule"])
-    problem = config.windows_timezone_problem(app.get("timezone"))
-    if problem != "":
-        raise WindowsDeployError(problem)
     description, trigger = schedule_trigger(cron)
     command = "uv" if on_machine_path else html.escape(str(Path(uv).resolve()))
     arguments = html.escape(task_arguments(app))

@@ -246,8 +246,6 @@ def test_validate_and_deploy_accept_the_same_schedules(project, schedule, descri
     ("schedule: '0 9 * * */2'\n", "schedule: Windows Task Scheduler cannot represent "
                                   "day-of-week field '*/2'"),
     ("schedule: '0 9 1 * 1'\n", "schedule: cron '0 9 1 * 1' cannot be represented"),
-    ("schedule: daily\ntimezone: America/New_York\n",
-     "timezone: the windows provider runs on this PC's local time"),
 ])
 def test_validate_reports_what_the_windows_deploy_rejects(project, config_text, problem):
     app = windows_app(project, config_text)
