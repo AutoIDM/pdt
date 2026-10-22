@@ -48,7 +48,7 @@
     </InstallExecuteSequence>
     <!-- msiexec still has the PATH from before the install, so the new PowerShell adds INSTALLFOLDER itself. -->
     <CustomAction Id="LaunchPdt" Directory="INSTALLFOLDER" Return="asyncNoWait" Impersonate="yes"
-                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoExit -NoLogo -Command &quot;Set-Location ~; $env:Path = '[INSTALLFOLDER];' + $env:Path; pdt&quot;" />
+                  ExeCommand="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoExit -NoLogo -Command &quot;Set-Location ~; $env:Path = '[INSTALLFOLDER];' + $env:Path; pdt --welcome&quot;" />
 
     <!-- WixUI_Minimal without its license dialog: Next on the welcome dialog installs. -->
     <UI Id="pdt">

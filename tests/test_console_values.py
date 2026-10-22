@@ -52,7 +52,7 @@ ALLOWED = {
                     "side", "len(lines)", "total", "store", "local_text(run.ended, '%H:%M:%S')",
                     "minutes_text(delay)", "local_text(settled, '%H:%M:%S')", "run.status",
                     "after", "exit_part", "result_text", "kind", "note"},
-    "scaffold.py": {"question", "len(labels)"},
+    "scaffold.py": {"question", "len(labels)", "watch.COMMUNITY"},
     "storage_cli.py": {"len(objects)"},
 }
 

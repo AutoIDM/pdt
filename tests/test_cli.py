@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import add_app, started
-from pdt import cli, config, console, deploy, lifecycle, powershell
+from pdt import cli, config, console, deploy, lifecycle, powershell, watch
 from pdt.deploy_common import REBUILD_ENV
 
 
@@ -29,6 +29,33 @@ def test_no_command_prints_help(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Usage: pdt" in out
     assert "deploy" in out
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_help_points_to_the_discord_and_hides_welcome(monkeypatch, capsys, flag):
+    with pytest.raises(SystemExit):
+        run_cli(monkeypatch, flag)
+    out = capsys.readouterr().out
+    assert f"{watch.COMMUNITY} {watch.SUPPORT_URL}" in " ".join(out.split())
+    assert "welcome" not in out
+
+
+def test_welcome_with_a_command_prints_the_welcome_then_an_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as raised:
+        run_cli(monkeypatch, "--welcome", "init", "demo", "--yes")
+    assert raised.value.code == 2
+    out, err = capsys.readouterr()
+    assert "Get started:" in out
+    assert "--welcome takes no command" in err
+    assert not (tmp_path / "demo").exists()
+
+
+def test_welcome_runs_without_a_project(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert run_cli(monkeypatch, "--welcome") == 0
+    assert watch.SUPPORT_URL in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("command", APP_COMMANDS)

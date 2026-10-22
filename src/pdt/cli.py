@@ -594,9 +594,12 @@ COMMAND_GROUPS = {
 def build_parser() -> argparse.ArgumentParser:
     summary, _, note = __doc__.strip().partition("\n\n")
     parser = Parser(
-        prog="pdt", description=summary, epilog=note, usage="pdt [-h] [--version] <command> ...",
+        prog="pdt", description=summary,
+        epilog=f"{note}\n\n{watch.COMMUNITY} {watch.SUPPORT_URL}",
+        usage="pdt [-h] [--version] <command> ...",
         formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
     parser.add_argument("--version", action="version")
+    parser.add_argument("--welcome", action="store_true", help=argparse.SUPPRESS)
     # The commands are listed under COMMAND_GROUPS instead of the one argparse section.
     sub = parser.add_subparsers(dest="command", metavar="<command>", help=argparse.SUPPRESS,
                                 prog="pdt")
@@ -792,6 +795,11 @@ def run() -> int:
             ["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
              *sys.argv[1:]]).returncode
     args = parser.parse_args()
+    if args.welcome:
+        scaffold.welcome()
+        if args.command is not None:
+            parser.error("--welcome takes no command")
+        return 0
     if args.command is None:
         parser.print_help()
         return 0
