@@ -112,7 +112,7 @@ def download_pwsh(key: str) -> None:
     url = (f"https://github.com/PowerShell/PowerShell/releases/download/"
            f"v{VERSION}/{archive_name(key)}")
     install_dir().parent.mkdir(parents=True, exist_ok=True)
-    # The stage sits beside the install, so each move below is a rename.
+    # Path.rename fails across file systems, and the default temp folder can be on another one.
     stage = Path(tempfile.mkdtemp(prefix="pdt-pwsh-", dir=install_dir().parent))
     try:
         fetch_verified(url, CHECKSUMS[key], stage / "new", PwshError)

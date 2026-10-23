@@ -126,7 +126,7 @@ def download_sdk(key: str) -> None:
     url = (f"https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/"
            f"{archive_name(key)}")
     SDK_DIR.parent.mkdir(parents=True, exist_ok=True)
-    # The stage sits beside the install, so each move below is a rename.
+    # Path.rename fails across file systems, and the default temp folder can be on another one.
     stage = Path(tempfile.mkdtemp(prefix="pdt-gcloud-", dir=SDK_DIR.parent))
     try:
         fetch_verified(url, CHECKSUMS[key], stage / "new", GcloudError)
