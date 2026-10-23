@@ -74,9 +74,10 @@ def deployed_app(project, name, config_text=""):
 class Cloud:
     """Each destroy and deploy with the place it runs at, and each write of a config file, in order."""
 
-    def __init__(self, monkeypatch, failing=()):
+    def __init__(self, monkeypatch, failing=(), before=lambda command, app_name: None):
         self.events = []
         self.failing = failing
+        self.before = before
         self.write_text_atomically = move.config.write_text_atomically
         monkeypatch.setattr(move.deploy, "dispatch", self.dispatch)
         monkeypatch.setattr(move.config, "write_text_atomically", self.write)
@@ -85,6 +86,7 @@ class Cloud:
                  platform=None):
         if app_name in self.failing:
             return 1
+        self.before(command, app_name)
         from pdt import config
         platform = platform or move.deploy.resolved(config.merged_app(app_name)["platform"])
         self.events.append((command, app_name, {**config.place(platform),
@@ -122,6 +124,7 @@ def platform_of(project, name):
 
 AZURE_PIN = {"provider": "azure", "region": "eastus2", "subscription": "sub-1",
              "resource_group": "pdt"}
+AZURE_STAY = {**AZURE_PIN, "timezone": "Etc/UTC"}
 AWS_PLACE = {"provider": "aws", "region": "us-east-2"}
 
 
@@ -130,7 +133,7 @@ AWS_PLACE = {"provider": "aws", "region": "us-east-2"}
     "platform: &defaults\n  provider: azure\napps:\n- name: report\n  platform: *defaults\n",
 ])
 def test_replace_platform_refuses_a_form_it_cannot_change_safely(text):
-    with pytest.raises(ConfigError, match="by hand"):
+    with pytest.raises(ConfigError, match="pdt.yml"):
         move.replace_platform(text, {"provider": "aws"})
 
 
@@ -140,7 +143,7 @@ def test_replace_platform_refuses_a_form_it_cannot_change_safely(text):
     "platform:\n  provider: azure\napps: []\n...\n",
 ])
 def test_replace_platform_refuses_an_alias_or_a_document_end(text):
-    with pytest.raises(ConfigError, match="by hand"):
+    with pytest.raises(ConfigError, match="pdt.yml"):
         move.replace_platform(text, {"provider": "aws"})
 
 
@@ -201,8 +204,8 @@ def test_a_new_default_pins_each_app_that_stays(project, monkeypatch, capsys):
     assert "update beta/config.yml: beta stays on azure, region eastus2, subscription sub-1, resource group pdt" in out
     assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"] == AWS
     assert platform_of(project, "alpha") is None
-    assert platform_of(project, "beta") == AZURE_PIN
-    assert platform_of(project, "gamma") == AZURE_PIN
+    assert platform_of(project, "beta") == AZURE_STAY
+    assert platform_of(project, "gamma") == AZURE_STAY
     assert [event[:2] for event in cloud.events][:4] == [
         ("destroy", "alpha"), ("write", "beta/config.yml"), ("write", "gamma/config.yml"),
         ("write", "pdt.yml")]
@@ -322,11 +325,11 @@ def test_move_to_the_current_place_changes_nothing(project, monkeypatch, capsys)
     assert (project / PROJECT_FILE).read_text() == before
 
 
-def test_move_with_no_terminal_changes_nothing(project, monkeypatch):
+def test_move_with_no_terminal_changes_nothing(project, monkeypatch, capsys):
     before = moving_project(project)
     monkeypatch.setattr(move.deploy, "can_prompt", lambda interactive: False)
-    with pytest.raises(ConfigError, match="Run pdt move in a terminal"):
-        move.move_app("alpha")
+    assert move.move_app("alpha") == 1
+    assert "Run this in a terminal:\n  pdt move alpha\n" in capsys.readouterr().out
     assert (project / PROJECT_FILE).read_text() == before
 
 
@@ -410,13 +413,13 @@ def test_a_move_to_the_deployed_place_writes_the_config(project, monkeypatch):
     assert cloud.events == [("write", "alpha/config.yml", None)]
 
 
-def test_no_answer_in_move_names_pdt_move(project, monkeypatch):
+def test_no_answer_in_move_names_pdt_move(project, monkeypatch, capsys):
     moving_project(project)
     monkeypatch.setattr(move.deploy, "can_prompt", lambda interactive: True)
     monkeypatch.setattr(move.console, "ask",
                         lambda question, default="": (_ for _ in ()).throw(EOFError))
-    with pytest.raises(ConfigError, match="Run pdt move in a terminal"):
-        move.move_app("alpha")
+    assert move.move_app("alpha") == 1
+    assert "Run this in a terminal:\n  pdt move alpha\n" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("assume_yes", [True, False])
@@ -440,22 +443,26 @@ def test_move_in_a_project_with_no_apps_moves_pdt_yml(project, monkeypatch, caps
         "  timezone: \"UTC\"\r\n\r\napps: []\r\n")
 
 
-def test_a_change_to_pdt_yml_during_the_confirmation_stops_the_move_before_any_destroy(
-        project, monkeypatch):
+@pytest.mark.parametrize("edited", [PROJECT_FILE, f"beta/{APP_FILE}"])
+def test_an_edit_during_the_confirmation_stops_the_move_before_any_destroy(
+        project, monkeypatch, capsys, edited):
     moving_project(project)
     cloud = Cloud(monkeypatch)
-    answer(monkeypatch, ["3", *TO_AWS], [True])
+    answer(monkeypatch, ["1", *TO_AWS])
 
     def confirm(question, *args, **kwargs):
         if question == "Continue?":
-            (project / PROJECT_FILE).write_text("platform:\n  provider: google-cloud\n")
-        return True
+            (project / edited).write_text("platform:\n  provider: google-cloud\n")
+            return True
+        return False
 
     monkeypatch.setattr(move.console, "confirm", confirm)
-    with pytest.raises(ConfigError, match="changed while pdt move was asking"):
-        move.move_app("alpha")
+    assert move.move_app("alpha") == 1
+    out = capsys.readouterr().out
+    assert f"{edited} changed while pdt move was asking. Nothing changed." in out
+    assert "Next steps:\n  pdt move alpha" in out
     assert cloud.events == []
-    assert (project / PROJECT_FILE).read_text() == "platform:\n  provider: google-cloud\n"
+    assert (project / edited).read_text() == "platform:\n  provider: google-cloud\n"
 
 
 def test_a_failed_destroy_pins_each_app_still_deployed(project, monkeypatch, capsys):
@@ -467,8 +474,8 @@ def test_a_failed_destroy_pins_each_app_still_deployed(project, monkeypatch, cap
     assert cloud.destroyed == [("alpha", AZURE_PIN)]
     assert cloud.deployed == [("alpha", AWS_PLACE)]
     assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"] == AWS
-    assert platform_of(project, "beta") == AZURE_PIN
-    assert platform_of(project, "gamma") == AZURE_PIN
+    assert platform_of(project, "beta") == AZURE_STAY
+    assert platform_of(project, "gamma") == AZURE_STAY
 
 
 def test_a_new_default_pins_an_app_that_is_not_deployed(project, monkeypatch):
@@ -478,8 +485,8 @@ def test_a_new_default_pins_an_app_that_is_not_deployed(project, monkeypatch):
     answer(monkeypatch, ["1", *TO_AWS], [True, True])
     assert move.move_app("alpha") == 0
     assert cloud.destroyed == [("alpha", AZURE_PIN)]
-    assert platform_of(project, "beta") == AZURE_PIN
-    assert platform_of(project, "gamma") == AZURE_PIN
+    assert platform_of(project, "beta") == AZURE_STAY
+    assert platform_of(project, "gamma") == AZURE_STAY
 
 
 def test_a_config_yml_that_pdt_cannot_change_stops_the_move_before_any_destroy(project, monkeypatch):
@@ -492,3 +499,76 @@ def test_a_config_yml_that_pdt_cannot_change_stops_the_move_before_any_destroy(p
     assert cloud.events == []
     assert (project / PROJECT_FILE).read_text() == before
     assert (project / "beta" / APP_FILE).read_text() == "{}\n"
+
+
+def test_a_missing_env_var_stops_the_move_before_any_destroy(project, monkeypatch, capsys):
+    monkeypatch.delenv("REPORT_TOKEN", raising=False)
+    moving_project(project, names=())
+    deployed_app(project, "alpha", "env:\n  required: [REPORT_TOKEN]\n")
+    cloud = Cloud(monkeypatch)
+    answer(monkeypatch, TO_AWS, [False])
+    assert move.move_app("alpha") == 1
+    assert "REPORT_TOKEN" in capsys.readouterr().out
+    assert cloud.events == []
+
+
+def test_ctrl_c_after_a_destroy_names_the_commands_left(project, monkeypatch, capsys):
+    moving_project(project, names=("alpha",))
+
+    def interrupt(command, app_name):
+        if command == "deploy":
+            raise KeyboardInterrupt
+
+    Cloud(monkeypatch, before=interrupt)
+    answer(monkeypatch, TO_AWS, [True, True])
+    with pytest.raises(KeyboardInterrupt):
+        move.move_app("alpha")
+    out = capsys.readouterr().out
+    assert "alpha was removed from azure, region eastus2, subscription sub-1, resource group pdt." in out
+    assert "Next steps:\n  pdt deploy alpha  deploy it to aws, region us-east-2\n" in out
+
+
+def test_an_edit_during_the_destroy_names_the_commands_left(project, monkeypatch, capsys):
+    moving_project(project, names=("alpha",))
+
+    def edit(command, app_name):
+        (project / "alpha" / APP_FILE).write_text("schedule: daily\n")
+
+    cloud = Cloud(monkeypatch, before=edit)
+    answer(monkeypatch, TO_AWS, [False, True])
+    assert move.move_app("alpha") == 1
+    out = capsys.readouterr().out
+    assert "alpha/config.yml changed while pdt move was running." in out
+    assert "  pdt move alpha    update the platform: settings\n  pdt deploy alpha" in out
+    assert [event[:2] for event in cloud.events] == [("destroy", "alpha")]
+
+
+def test_the_plan_names_the_place_from_the_merged_platform(project, monkeypatch, capsys):
+    (project / PROJECT_FILE).write_text("platform:\n  provider: azure\n  region: eastus2\n"
+                                        "  subscription: sub-1\n  resource_group: jobs\n")
+    deployed_app(project, "own", "platform:\n  provider: google-cloud\n  region: us-central1\n")
+    cloud = Cloud(monkeypatch)
+    answer(monkeypatch, ["1", "eastus2"], [False, True])
+    assert move.move_app("own") == 0
+    assert ("deploy own to azure, region eastus2, subscription sub-1, resource group jobs"
+            in capsys.readouterr().out)
+    assert cloud.deployed == [("own", {"provider": "azure", "region": "eastus2",
+                                       "subscription": "sub-1", "resource_group": "jobs"})]
+
+
+def test_an_app_config_that_does_not_load_blocks_no_other_move(project, monkeypatch):
+    moving_project(project, names=())
+    add_app(project, "alpha", "env: []\n")
+    add_app(project, "beta", "env: []\n")
+    Cloud(monkeypatch)
+    answer(monkeypatch, ["1", *TO_AWS], [False, True])
+    assert move.move_app("alpha") == 0
+    assert platform_of(project, "alpha") == AWS
+
+
+def test_init_in_an_app_folder_finds_the_project(project, monkeypatch, capsys):
+    add_app(project, "alpha")
+    monkeypatch.chdir(project / "alpha")
+    assert scaffold.init(None, assume_yes=True) == 0
+    assert f"{project} is already a pdt project." in capsys.readouterr().out
+    assert not (project / "alpha" / PROJECT_FILE).exists()

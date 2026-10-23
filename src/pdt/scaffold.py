@@ -342,9 +342,11 @@ def has_nothing_in_it(folder: Path) -> bool:
 def init(directory: str | None, assume_yes: bool) -> int:
     console.art(ART)
     here = Path.cwd().resolve()
-    if directory is None and (here / PROJECT_FILE).is_file():
-        target = here
-    else:
+    try:
+        target = find_project() if directory is None else None
+    except ConfigError:
+        target = None
+    if target is None:
         target = choose_target(directory, assume_yes)
     marker = target / PROJECT_FILE
     if marker.is_file():
