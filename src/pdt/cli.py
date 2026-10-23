@@ -97,7 +97,8 @@ def choose_app(name: str | None, command: str, quiet: bool = False) -> str | Non
     exact command to run next. `quiet` keeps --json output free of the line
     that names the app pdt picked.
     """
-    apps = config.destroyable_apps() if command == "destroy" else config.find_apps()
+    apps = (config.destroyable_apps() if command == "destroy" else
+            config.app_folders() if command == "move" else config.find_apps())
     if not apps:
         say_no_apps()
         return None

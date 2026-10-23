@@ -9,9 +9,6 @@ from pdt.config import APP_FILE, PROJECT_FILE, ConfigError
 from pdt.scaffold import (PLATFORM_TEMPLATE, PROVIDER_CHOICES, PROVIDER_QUESTIONS,
                           TIMEZONE_QUESTION, NoAnswer, _ask, _ask_choice, ask_settings)
 
-NO_TERMINAL = "there is no one to answer the questions. Run pdt move in a terminal."
-
-
 def platform_lines(platform: dict) -> list[str]:
     return ["platform:", *(f"  {key}: {config.yaml_quoted(value)}" for key, value in platform.items()
                            if value is not None)]
@@ -26,11 +23,11 @@ def replace_platform(text: str, platform: dict, shown: str = PROJECT_FILE) -> st
     root = yaml.compose(text)
     events = list(yaml.parse(text))
     if isinstance(root, yaml.MappingNode) and root.flow_style:
-        raise ConfigError(f"the top level of {shown} is in braces, so pdt cannot change "
-                          f"it safely. Change platform: in {shown} by hand.")
+        raise ConfigError(f"the top level of {shown} is in braces {{...}}. Write each key of "
+                          f"{shown} on its own line, or delete the {{}} when {shown} holds "
+                          "nothing else.")
     if any(isinstance(event, yaml.DocumentEndEvent) and event.explicit for event in events):
-        raise ConfigError(f"{shown} has a ... document end line, so pdt cannot change it "
-                          f"safely. Change platform: in {shown} by hand.")
+        raise ConfigError(f"{shown} has a document end line (...). Delete that line.")
     keys = [key for key, _value in (root.value if root is not None else [])]
     found = [(key, value) for key, value in (root.value if root is not None else [])
              if key.value == "platform"]
@@ -45,9 +42,9 @@ def replace_platform(text: str, platform: dict, shown: str = PROJECT_FILE) -> st
         start, stop = key.start_mark.line, last.line + (last.column > 0)
         if any(getattr(event, "anchor", None) and start <= event.start_mark.line < bound
                for event in events):
-            raise ConfigError(f"platform: in {shown} holds a YAML anchor (&) or alias (*), "
-                              f"so pdt cannot change it safely. Change platform: in {shown} "
-                              "by hand.")
+            raise ConfigError(f"platform: in {shown} holds a YAML anchor (&) or alias (*). "
+                              f"Write each value under platform: in {shown} in full, "
+                              "with no & or *.")
         lines[start:stop] = new
     elif not new:
         return text
@@ -102,9 +99,26 @@ def merged_platform(root_cfg: dict, root_platform: dict, app_dir: Path) -> dict:
             **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
 
 
+def configured(name: str) -> dict:
+    """Where the platform: blocks of the config deploy the app."""
+    root_cfg = config.load_yaml(config.find_project() / PROJECT_FILE)
+    return deploy.resolved(merged_platform(root_cfg, root_cfg.get("platform") or {},
+                                           config.find_project() / name))
+
+
+def settings_in(name: str) -> str:
+    """The file whose platform: block sets the app's place."""
+    if config.load_yaml(config.find_project() / name / APP_FILE).get("platform"):
+        return f"{name}/{APP_FILE}"
+    root_cfg = config.load_yaml(config.find_project() / PROJECT_FILE)
+    if config.root_app_entry(root_cfg, name).get("platform"):
+        return f"{PROJECT_FILE}: apps entry {name!r}"
+    return PROJECT_FILE
+
+
 def current(name: str) -> dict:
     """Where the app is deployed, or where its config deploys it when it is not deployed."""
-    return config.deployed_platform(name) or deploy.resolved(config.merged_app(name)["platform"])
+    return config.deployed_platform(name) or configured(name)
 
 
 def same(one: dict, other: dict) -> bool:
@@ -127,13 +141,18 @@ def pins_for(names: list[str], root_platform: dict) -> dict[str, dict]:
     pins = {}
     for name in names:
         recorded = current(name)
-        before = deploy.resolved(config.merged_app(name)["platform"])
+        before = configured(name)
         after = deploy.resolved(merged_platform(root_cfg, root_platform, target / name))
         profile = recorded.get("profile") or before.get("profile")
-        extra = {"profile": profile if recorded.get("provider") == root_provider else None,
-                 "timezone": before.get("timezone")}
+        extra = {"profile": profile if recorded.get("provider") == root_provider else None}
         settings = {**config.place(recorded), **{key: str(value) for key, value in extra.items() if value}}
         pin = {key: value for key, value in settings.items() if str(after.get(key) or "") != value}
+        # An app with no time zone runs on Etc/UTC; a time zone outside platform: wins over it.
+        timezone = str(before.get("timezone") or "Etc/UTC")
+        if (str(after.get("timezone") or "Etc/UTC") != timezone and recorded.get("provider") != "windows"
+                and "timezone" not in config.load_yaml(target / name / APP_FILE)
+                and "timezone" not in config.root_app_entry(root_cfg, name)):
+            pin["timezone"] = timezone
         if pin:
             pins[name] = pin
     return pins
@@ -171,26 +190,47 @@ def ask_place(current: dict) -> dict | None:
     return ask_settings(keys[choice - 1], kept_settings(current, keys[choice - 1]))
 
 
-def check_unchanged(path: Path, text: str) -> None:
-    if read_text(path) != text:
-        raise ConfigError(f"{path.relative_to(config.find_project()).as_posix()} changed while "
-                          "pdt move was asking; run pdt move again")
+def stopped(rerun: str, destroyed: list[str], written: bool, redeployed: list[str],
+            where: dict[str, str], there: dict[str, str]) -> None:
+    """Say what a move that stopped after its first destroy did, and what is left to run."""
+    console.say()
+    for name in destroyed:
+        console.say(f"{console.value(name)} was removed from {console.value(where[name])}.")
+    if written:
+        console.say(f"The {console.value('platform:')} settings are updated.")
+    for name in redeployed:
+        console.say(f"{console.value(name)} is deployed to {console.value(there[name])}.")
+    console.say()
+    console.next_steps(([] if written else [(rerun, "update the platform: settings")])
+                       + [(f"pdt deploy {name}", f"deploy it to {console.escape(there[name])}")
+                          for name in destroyed if name not in redeployed])
 
 
 def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str],
-          changes: list[tuple[Path, str, str]], pins: dict[str, dict]) -> int:
-    """Check each app in `moving` against `platform` and show the plan. Then destroy each app in
-    `moving` deployed to another place, write `changes`, give each app the shortest platform:
-    block that keeps it on `platform` (an app in `moving`) or where `pins` keeps it (any other
-    app) when pdt.yml sets `root_platform`, and deploy each app that was destroyed.
-    1 when a check, a destroy, or a deploy failed."""
+          changes: list[tuple[Path, str, str]], pins: dict[str, dict], snapshot: dict[Path, str]) -> int:
+    """Check each app in `moving` against its place on `platform` and show the plan. When no file
+    in `snapshot` changed, destroy each app in `moving` deployed to another place, write
+    `changes`, give each app the shortest platform: block that keeps it on `platform` (an app in
+    `moving`) or where `pins` keeps it (any other app) when pdt.yml sets `root_platform`, and
+    deploy each app that was destroyed. 1 when a check, a destroy, or a deploy failed."""
     target = config.find_project()
-    there = described(deploy.resolved(platform))
     names = config.app_folders()
+    rerun = f"pdt move {moving[0]}" if moving else "pdt move"
     where = {name: described(current(name)) for name in names}
     final = {name: {**root_platform, **(config.root_app_entry(root_cfg, name).get("platform") or {}),
                     **platform} for name in moving}
-    problems = [problem for name in moving for problem in config.validate_app(name, final[name])]
+    there = {name: described(deploy.resolved(final[name])) for name in moving}
+    deployed = [name for name in moving
+                if config.is_deployed(name) and deploy.moved(current(name), final[name])]
+    problems = []
+    for name in moving:
+        if name in deployed:
+            app = config.merged_app(name)
+            app["platform"] = final[name]
+            found = deploy.prerequisites(app, final[name]["provider"], final[name])[0]
+        else:
+            found = config.place_problems(name, final[name])
+        problems.extend(f"{name}: {problem}" for problem in found)
     if problems:
         for problem in problems:
             console.error(console.escape(problem))
@@ -201,12 +241,11 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
                               {**(config.load_yaml(target / name / APP_FILE).get("platform") or {}),
                                **pins.get(name, {})})
              for name in names}
-    deployed = [name for name in moving
-                if config.is_deployed(name) and deploy.moved(current(name), final[name])]
     files = [change for change in [*changes, *moves.values()] if change[1] != change[2]]
     others = [name for name in names if name not in moving and stays[name][1] != stays[name][2]]
     if not deployed and not files and not others:
-        console.say(f"{console.value(there)} is the current place. Nothing changed.")
+        console.say(f"{console.value(described(deploy.resolved({**root_platform, **platform})))} "
+                    "is the current place. Nothing changed.")
         return 0
     console.say()
     deploy.show_plan(
@@ -218,7 +257,7 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
                           + (f": {console.value(name)} stays on {console.value(where[name])}"
                              if name in pins else ""))
            for name in others]
-        + [console.Markup(f"deploy {console.value(name)} to {console.value(there)}")
+        + [console.Markup(f"deploy {console.value(name)} to {console.value(there[name])}")
            for name in deployed])
     if deployed:
         console.say("Stored data will not be deleted.")
@@ -229,45 +268,64 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
     if not answer:
         console.say("Cancelled. Nothing changed.")
         return 0
-    for path, text, changed in [*changes, *moves.values(), *stays.values()]:
-        if changed != text:
-            check_unchanged(path, text)
-    removed = []
-    for name in moving:
-        if name in deployed:
-            console.say()
-            if deploy.destroy(name, assume_yes=True) != 0:
-                console.error(f"{console.value(name)} was not removed. "
-                              f"It is still deployed to {console.value(where[name])}.")
-                break
-        removed.append(name)
-    console.say()
-    for name, (path, text, changed) in [*((name, stays[name]) for name in names if name not in removed),
-                                        *((None, change) for change in changes),
-                                        *((name, moves[name]) for name in removed)]:
-        if changed == text:
-            continue
-        shown = path.relative_to(target).as_posix()
-        with config.locked(path):
-            check_unchanged(path, text)
-            config.write_text_atomically(path, changed, newline="")
-        if name in pins and name not in removed:
-            console.say(f"{console.value(name)} stays on "
-                        f"{console.value(where[name])}. "
-                        f"Its {console.value('platform:')} settings are in "
-                        f"{console.value(shown)}.")
-        else:
-            console.done(f"Updated the {console.value('platform:')} settings in {console.value(shown)}.")
-    failed = []
-    for name in removed:
-        if name not in deployed:
-            continue
+    stale = [path.relative_to(target).as_posix() for path, text in snapshot.items()
+             if read_text(path) != text]
+    if stale:
+        for shown in stale:
+            console.error(f"{console.value(shown)} changed while pdt move was asking. Nothing changed.")
         console.say()
-        if deploy.deploy(name, assume_yes=True, run=False) != 0:
-            failed.append(name)
+        console.next_steps([(rerun, "start the move again")])
+        return 1
+    removed, redeployed, failed, written = [], [], [], False
+    try:
+        for name in moving:
+            if name in deployed:
+                console.say()
+                if deploy.destroy(name, assume_yes=True) != 0:
+                    console.error(f"{console.value(name)} was not removed. "
+                                  f"It is still deployed to {console.value(where[name])}.")
+                    break
+            removed.append(name)
+        console.say()
+        for name, (path, text, changed) in [*((name, stays[name]) for name in names if name not in removed),
+                                            *((None, change) for change in changes),
+                                            *((name, moves[name]) for name in removed)]:
+            if changed == text:
+                continue
+            shown = path.relative_to(target).as_posix()
+            with config.locked(path):
+                if read_text(path) != text:
+                    raise ConfigError(f"{shown} changed while pdt move was running.")
+                config.write_text_atomically(path, changed, newline="")
+            if name in pins and name not in removed:
+                console.say(f"{console.value(name)} stays on "
+                            f"{console.value(where[name])}. "
+                            f"Its {console.value('platform:')} settings are in "
+                            f"{console.value(shown)}.")
+            else:
+                console.done(f"Updated the {console.value('platform:')} settings in {console.value(shown)}.")
+        written = True
+        for name in removed:
+            if name not in deployed:
+                continue
+            console.say()
+            if deploy.deploy(name, assume_yes=True, run=False) != 0:
+                failed.append(name)
+            else:
+                redeployed.append(name)
+    except BaseException as e:
+        destroyed = [name for name in removed if name in deployed]
+        if not destroyed:
+            raise
+        if isinstance(e, ConfigError):
+            console.error(console.escape(str(e)))
+        stopped(rerun, destroyed, written, redeployed, where, there)
+        if isinstance(e, ConfigError):
+            return 1
+        raise
     if failed:
         console.say()
-        console.next_steps([(f"pdt deploy {name}", f"deploy it to {console.escape(there)}")
+        console.next_steps([(f"pdt deploy {name}", f"deploy it to {console.escape(there[name])}")
                             for name in failed])
     return 0 if removed == moving and not failed else 1
 
@@ -282,14 +340,22 @@ def move_app(name: str | None) -> int:
     try:
         return ask_and_move(name)
     except NoAnswer:
-        raise ConfigError(NO_TERMINAL) from None
+        return no_terminal(name)
+
+
+def no_terminal(name: str | None) -> int:
+    console.error("there is no one to answer the questions. Run this in a terminal:")
+    console.command(f"pdt move {name}" if name else "pdt move")
+    return 1
 
 
 def ask_and_move(name: str | None) -> int:
     if not deploy.can_prompt(None):
-        raise ConfigError(NO_TERMINAL)
+        return no_terminal(name)
     marker = config.find_project() / PROJECT_FILE
-    text = read_text(marker)
+    snapshot = {path: read_text(path) for path in [marker, *(config.find_project() / other / APP_FILE
+                                                             for other in config.app_folders())]}
+    text = snapshot[marker]
     root_cfg = config.load_yaml(marker)
     default = root_cfg.get("platform") or {}
     if name is None:
@@ -298,15 +364,14 @@ def ask_and_move(name: str | None) -> int:
             console.say("Cancelled. Nothing changed.")
             return 0
         return apply(root_cfg, platform, platform, [],
-                     [platform_change(marker, text, platform)], {})
-    app = config.merged_app(name)
+                     [platform_change(marker, text, platform)], {}, snapshot)
     names = config.app_folders()
     now = {other: current(other) for other in names}
     here = described(now[name])
     if config.is_deployed(name):
         console.say(f"{console.value(name)} is deployed to {console.value(here)}.")
     elif "provider" in now[name]:
-        console.say(f"{console.value(name)} is not deployed. {console.value(app['platform_from'])} "
+        console.say(f"{console.value(name)} is not deployed. {console.value(settings_in(name))} "
                     f"deploys it to {console.value(here)}.")
     else:
         console.say(f"{console.value(name)} has no provider.")
@@ -316,7 +381,7 @@ def ask_and_move(name: str | None) -> int:
         console.say()
         console.table(["", "app", "deployed", "settings in"],
                       [[str(number), other, deployed_word(other),
-                        config.merged_app(other)["platform_from"]]
+                        settings_in(other)]
                        for number, other in enumerate(group, start=1)])
         choice = _ask_choice(f"Which apps should move from {console.escape(here)}?",
                              [f"Only {name}", "Some", f"All {len(group)} apps on {here}", "Cancel"])
@@ -327,15 +392,16 @@ def ask_and_move(name: str | None) -> int:
         if choice == 4 or not moving:
             console.say("Cancelled. Nothing changed.")
             return 0
-    platform = ask_place({**config.place(app["platform"]),
-                          **{key: app["platform"][key] for key in ("profile", "timezone")
-                             if app["platform"].get(key)}})
+    configured_platform = configured(name)
+    platform = ask_place({**config.place(configured_platform),
+                          **{key: configured_platform[key] for key in ("profile", "timezone")
+                             if configured_platform.get(key)}})
     if platform is None:
         console.say("Cancelled. Nothing changed.")
         return 0
     there = described(deploy.resolved(platform))
     if all("provider" in now[other] and same(now[other], platform)
-           and same(deploy.resolved(config.merged_app(other)["platform"]), platform)
+           and same(configured(other), platform)
            for other in moving):
         console.say(f"{console.value(there)} is the current place. Nothing changed.")
         return 0
@@ -358,4 +424,4 @@ def ask_and_move(name: str | None) -> int:
             root_platform, changes = platform, [platform_change(marker, text, platform)]
         else:
             pins = {}
-    return apply(root_cfg, root_platform, platform, moving, changes, pins)
+    return apply(root_cfg, root_platform, platform, moving, changes, pins, snapshot)

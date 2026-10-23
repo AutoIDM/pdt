@@ -1148,6 +1148,24 @@ def dockerfile_problem(platform: dict) -> str:
     return f"not used by the {platform.get('provider')} provider"
 
 
+def place_problems(name: str, platform: dict) -> list[str]:
+    problems = []
+    provider = platform.get("provider")
+    if provider not in PROVIDERS:
+        problems.append(
+            f"{name}: platform.provider must be one of: {', '.join(PROVIDERS)}. "
+            f"Set it under platform: in {PROJECT_FILE}, or in {name}/{APP_FILE}.")
+    if provider == "aws":
+        problem = aws_account_problem(str(platform.get("account") or ""))
+        if problem != "":
+            problems.append(f"{name}: platform.account: {problem}")
+    if provider == "azure":
+        problem = azure_environment_problem(str(platform.get("environment") or ""))
+        if problem != "":
+            problems.append(f"{name}: platform.environment: {problem}")
+    return problems
+
+
 def validate_app(name: str, new_platform: dict | None = None) -> list[str]:
     """The app's problems; with `new_platform`, the problems it would have with that platform."""
     where = f"{name}/{APP_FILE}"
@@ -1178,18 +1196,7 @@ def validate_app(name: str, new_platform: dict | None = None) -> list[str]:
     if new_platform is not None:
         app["platform"] = new_platform
     provider = app["platform"].get("provider")
-    if provider not in PROVIDERS:
-        problems.append(
-            f"{name}: platform.provider must be one of: {', '.join(PROVIDERS)}. "
-            f"Set it under platform: in {PROJECT_FILE}, or in {name}/{APP_FILE}.")
-    if provider == "aws":
-        problem = aws_account_problem(str(app["platform"].get("account") or ""))
-        if problem != "":
-            problems.append(f"{name}: platform.account: {problem}")
-    if provider == "azure":
-        problem = azure_environment_problem(str(app["platform"].get("environment") or ""))
-        if problem != "":
-            problems.append(f"{name}: platform.environment: {problem}")
+    problems.extend(place_problems(name, app["platform"]))
     if app["schedule"] is not None:
         try:
             cron = cron_expression(app["schedule"])

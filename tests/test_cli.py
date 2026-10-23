@@ -103,6 +103,14 @@ def test_command_without_app_in_empty_project(project, monkeypatch, capsys, comm
     assert "pdt new" in out
 
 
+def test_move_takes_an_app_that_is_not_enabled(project, monkeypatch):
+    add_app(project, "report", "enabled: false\n")
+    picked = []
+    monkeypatch.setattr(move, "move_app", lambda app: picked.append(app) or 0)
+    assert run_cli(monkeypatch, "move", "report") == 0
+    assert picked == ["report"]
+
+
 def test_move_in_an_empty_project_moves_the_default_platform(project, monkeypatch):
     picked = []
     monkeypatch.setattr(move, "move_app", lambda app: picked.append(app) or 0)
@@ -916,7 +924,7 @@ def test_json_without_apps_prints_an_empty_list(project, monkeypatch, capsys, co
     assert "This project has no apps yet." in captured.err
 
 
-@pytest.mark.parametrize("argv", [[command] for command in APP_COMMANDS]
+@pytest.mark.parametrize("argv", [[command] for command in APP_COMMANDS if command != "move"]
                          + [["health"], ["deploy", "--all"]])
 def test_no_enabled_apps_says_so(project, monkeypatch, capsys, argv):
     add_app(project, "hello-world", "enabled: false\n")

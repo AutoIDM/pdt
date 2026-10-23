@@ -133,14 +133,11 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
         return _deploy(app_name, True, False, False, True)
 
 
-def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
-            plan_only: bool) -> int:
-    try:
-        app, provider = _load(app_name)
-    except ConfigError as e:
-        console.error(console.escape(str(e)))
-        return 1
-    problems = config.validate_app(app_name)
+def prerequisites(app: dict, provider: str, new_platform: dict | None = None
+                  ) -> tuple[list[str], list[str], list[str]]:
+    """What stops a deploy of `app` to `provider` (with `new_platform` in place of its own),
+    the lines that say what it runs, and the lines that name the .env files it read."""
+    problems = config.validate_app(app["name"], new_platform)
     sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
     missing = config.missing_env(app)
@@ -156,6 +153,17 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
             lines = powershell.summary_lines(scan)
         except (pwsh.PwshError, powershell.PowerShellError) as e:
             problems.append(str(e))
+    return problems, lines, sources
+
+
+def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
+            plan_only: bool) -> int:
+    try:
+        app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    problems, lines, sources = prerequisites(app, provider)
     if problems:
         for problem in problems:
             console.error(f"{console.value(app_name)}: {console.escape(problem)}")
