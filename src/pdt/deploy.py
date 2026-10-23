@@ -328,19 +328,23 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
                   rebuild: bool = False, platform: dict | None = None) -> int:
     """Run `deploy` or `destroy` through the provider script between its STEP_EVENTS, and
     record whether the app is now deployed: a deploy records its place before and after the
-    script and restores the old record when the user declines; a destroy that succeeds
-    forgets the app."""
+    script, deploys to a found key the record keeps, and restores the old record when the
+    user declines; a destroy that succeeds forgets the app."""
     started, completed, failed = STEP_EVENTS[command]
     if command == "deploy":
         was_deployed = config.is_deployed(app_name)
         before = config.deployed_platform(app_name)
         written = record_place(app_name, before)
+        if written != resolved(config.merged_app(app_name)["platform"]):
+            platform = written
     params = lifecycle.app_params(app_name, provider)
     lifecycle.emit(started, **params)
     try:
         code = dispatch(provider, command, app_name, assume_yes, rebuild=rebuild,
                         platform=platform)
     except KeyboardInterrupt:
+        if command == "deploy":
+            record_place(app_name, written)
         lifecycle.emit(failed, **params, reason="interrupted")
         raise
     if command == "deploy" and code != DECLINED:

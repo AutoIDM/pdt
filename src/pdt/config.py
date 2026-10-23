@@ -12,7 +12,7 @@ Merge order for one app, least to most specific:
   3. the app's own config.yml
   4. PDT_<APP>_<KEY> environment variables (config keys only)
 DEPLOYED_PLATFORM_ENV replaces the whole platform of the one app it names, so a
-provider script destroys an app where `.pdt/state` says it is deployed.
+provider script deploys or destroys an app where `.pdt/state` says it is deployed.
 """
 
 from __future__ import annotations

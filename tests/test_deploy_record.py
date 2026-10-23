@@ -343,3 +343,29 @@ def test_the_aws_session_uses_the_region_the_record_has(monkeypatch):
     platform = {"provider": "aws"}
     session = deploy_aws.ensure_session({"name": APP, "platform": platform})
     assert session.region_name == deploy.resolved(platform)["region"] == "us-east-1"
+
+
+def test_an_interrupted_deploy_records_the_keys_it_saved(project, monkeypatch):
+    (project / "pdt.yml").write_text(AWS.replace("  account: \"123456789012\"\n", ""))
+
+    def dispatch(*args, **kwargs):
+        config.save_platform_key(config.merged_app(APP), "account", "123456789012")
+        raise KeyboardInterrupt
+
+    Cloud(monkeypatch)
+    monkeypatch.setattr(deploy, "dispatch", dispatch)
+    with pytest.raises(KeyboardInterrupt):
+        deploy.deploy(APP, run=False)
+    assert config.deployed_places()[APP]["account"] == "123456789012"
+
+
+def test_a_deploy_goes_to_the_found_key_the_record_keeps(project, monkeypatch):
+    (project / "pdt.yml").write_text(GOOGLE.replace("  project: my-project\n", ""))
+    monkeypatch.setenv("PDT_GOOGLE_CLOUD_PROJECT", "project-a")
+    cloud = Cloud(monkeypatch)
+    assert deploy.deploy(APP, run=False) == 0
+    monkeypatch.delenv("PDT_GOOGLE_CLOUD_PROJECT")
+    assert deploy.deploy(APP, run=False) == 0
+    assert cloud.calls[0][2] is None
+    assert cloud.calls[1][2]["project"] == "project-a"
+    assert config.deployed_places()[APP]["project"] == "project-a"
