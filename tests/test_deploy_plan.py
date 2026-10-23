@@ -212,3 +212,18 @@ def test_a_plan_installs_no_powershell_and_no_google_cloud_cli(tmp_path, plan_en
             pwsh.ensure_pwsh()
         with pytest.raises(gcloud_sdk.GcloudError, match="a plan installs nothing"):
             gcloud_sdk.ensure_gcloud()
+
+
+def test_a_plan_uses_a_local_powershell_and_google_cloud_cli_of_another_version(tmp_path, plan_env,
+                                                                                monkeypatch):
+    monkeypatch.setattr(pwsh.shutil, "which", lambda name: None)
+    monkeypatch.setattr(pwsh, "install_dir", lambda windows=False: tmp_path)
+    pwsh.local_pwsh().write_text("")
+    monkeypatch.setattr(pwsh, "download_pwsh", lambda key: pytest.fail("installed"))
+    monkeypatch.setattr(gcloud_sdk.shutil, "which", lambda name: None)
+    monkeypatch.setattr(gcloud_sdk, "LOCAL_GCLOUD", tmp_path / "gcloud")
+    (tmp_path / "gcloud").write_text("")
+    monkeypatch.setattr(gcloud_sdk, "download_sdk", lambda key: pytest.fail("installed"))
+    with config.plan_only():
+        assert pwsh.ensure_pwsh() == str(pwsh.local_pwsh())
+        assert gcloud_sdk.ensure_gcloud() == str(tmp_path / "gcloud")

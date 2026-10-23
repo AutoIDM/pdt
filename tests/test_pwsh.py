@@ -63,6 +63,61 @@ def test_a_missing_pwsh_downloads_without_a_question(monkeypatch, tmp_path):
     assert downloads == [pwsh.platform_key()]
 
 
+def local_copy(monkeypatch, tmp_path, version):
+    monkeypatch.setattr(pwsh.shutil, "which", lambda name: None)
+    monkeypatch.setattr(pwsh, "install_dir", lambda windows=False: tmp_path / "pwsh")
+    (tmp_path / "pwsh").mkdir()
+    pwsh.local_pwsh().write_text("")
+    if version:
+        (tmp_path / "pwsh" / "VERSION").write_text(version)
+
+
+@pytest.mark.parametrize("version, line", [("7.6.6", f"Updating PowerShell 7.6.6 to {pwsh.VERSION}"),
+                                           (None, f"Updating PowerShell to {pwsh.VERSION}")])
+def test_a_local_pwsh_of_another_version_is_replaced(monkeypatch, tmp_path, capsys, version, line):
+    local_copy(monkeypatch, tmp_path, version)
+    downloads = []
+    monkeypatch.setattr(pwsh, "download_pwsh", downloads.append)
+    assert pwsh.ensure_pwsh() == str(pwsh.local_pwsh())
+    assert downloads == [pwsh.platform_key()]
+    assert line in capsys.readouterr().out
+
+
+def test_a_local_pwsh_of_the_pinned_version_is_kept(monkeypatch, tmp_path):
+    local_copy(monkeypatch, tmp_path, pwsh.VERSION)
+    monkeypatch.setattr(pwsh, "download_pwsh", lambda key: pytest.fail("downloaded"))
+    assert pwsh.ensure_pwsh() == str(pwsh.local_pwsh())
+
+
+def test_pwsh_on_the_path_wins_over_a_local_pwsh_of_another_version(monkeypatch, tmp_path):
+    local_copy(monkeypatch, tmp_path, "7.6.6")
+    monkeypatch.setattr(pwsh.shutil, "which", lambda name: "/usr/bin/pwsh")
+    monkeypatch.setattr(pwsh, "download_pwsh", lambda key: pytest.fail("downloaded"))
+    assert pwsh.ensure_pwsh() == "/usr/bin/pwsh"
+    assert (tmp_path / "pwsh" / "VERSION").read_text() == "7.6.6"
+
+
+def test_the_download_replaces_the_local_pwsh_only_after_it_unpacks(monkeypatch, tmp_path):
+    local_copy(monkeypatch, tmp_path, "7.6.6")
+
+    def refuse(url, sha256, stage, error):
+        raise error("checksum mismatch")
+
+    monkeypatch.setattr(pwsh, "fetch_verified", refuse)
+    with pytest.raises(pwsh.PwshError, match="checksum mismatch"):
+        pwsh.download_pwsh("osx-arm64")
+    assert (tmp_path / "pwsh" / "VERSION").read_text() == "7.6.6"
+
+    def unpack(url, sha256, stage, error):
+        stage.mkdir()
+        (stage / "pwsh").write_text(pwsh.VERSION)
+
+    monkeypatch.setattr(pwsh, "fetch_verified", unpack)
+    pwsh.download_pwsh("osx-arm64")
+    assert (tmp_path / "pwsh" / "VERSION").read_text() == pwsh.VERSION
+    assert (tmp_path / "pwsh" / "pwsh").read_text() == pwsh.VERSION
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["pwsh"]
+
 
 def test_main_prints_only_the_pwsh_path_on_stdout(tmp_path):
     env = {**os.environ, "PATH": str(tmp_path), "XDG_DATA_HOME": str(tmp_path),
@@ -77,6 +132,7 @@ def test_main_prints_only_the_pwsh_path_on_stdout(tmp_path):
     installed = tmp_path / "pdt" / "pwsh" / ("pwsh.exe" if os.name == "nt" else "pwsh")
     installed.parent.mkdir(parents=True)
     installed.write_text("")
+    (installed.parent / "VERSION").write_text(pwsh.VERSION)
     found = subprocess.run(command, env=env, capture_output=True, text=True)
     assert found.returncode == 0
     assert found.stdout == f"{installed}\n"

@@ -6,7 +6,9 @@ github.com, verify its sha256, and unpack it, with no question, the same
 way gcloud_sdk.py installs the Google Cloud CLI. On macOS and Linux the
 install lives in the user's data folder. On Windows it lives in
 %ProgramData%\\pdt\\pwsh, because the scheduled task runs as SYSTEM and
-must reach the same pwsh the deploying user installed.
+must reach the same pwsh the deploying user installed. A local install
+of another version (the VERSION file pdt writes into it) is replaced the
+same way, and the current one stays until the new one is unpacked.
 
 To bump the pin, take the new version number and the six checksums from
 the `hashes.sha256` asset of the release at
@@ -82,15 +84,24 @@ def ensure_pwsh() -> str:
     found = shutil.which("pwsh")
     if found:
         return found
-    if local_pwsh().is_file():
+    version_file = install_dir() / "VERSION"
+    current = version_file.read_text().strip() if version_file.is_file() else None
+    if local_pwsh().is_file() and (current == VERSION or unsaved() is not None):
         return str(local_pwsh())
     if unsaved() is not None:
         raise PwshError("pwsh is not installed, and a plan installs nothing; run the deploy "
                         "without --plan to install it")
     key = platform_key()
-    console.warn(f"pwsh is not installed. pdt downloads PowerShell {VERSION} "
-                 f"(~100 MB) to {console.value(install_dir())}.")
-    console.say("Deleting that folder uninstalls it again.")
+    if not local_pwsh().is_file():
+        console.warn(f"pwsh is not installed. pdt downloads PowerShell {VERSION} "
+                     f"(~100 MB) to {console.value(install_dir())}.")
+        console.say("Deleting that folder uninstalls it again.")
+    elif current:
+        console.warn(f"Updating PowerShell {console.value(current)} to {console.value(VERSION)} "
+                     f"(~100 MB) in {console.value(install_dir())}.")
+    else:
+        console.warn(f"Updating PowerShell to {console.value(VERSION)} "
+                     f"(~100 MB) in {console.value(install_dir())}.")
     download_pwsh(key)
     if not local_pwsh().is_file():
         raise PwshError(f"the unpacked archive has no {local_pwsh()}")
@@ -100,13 +111,19 @@ def ensure_pwsh() -> str:
 def download_pwsh(key: str) -> None:
     url = (f"https://github.com/PowerShell/PowerShell/releases/download/"
            f"v{VERSION}/{archive_name(key)}")
-    stage = Path(tempfile.mkdtemp(prefix="pdt-pwsh-"))
+    install_dir().parent.mkdir(parents=True, exist_ok=True)
+    # The stage sits beside the install, so each move below is a rename.
+    stage = Path(tempfile.mkdtemp(prefix="pdt-pwsh-", dir=install_dir().parent))
     try:
-        fetch_verified(url, CHECKSUMS[key], stage, PwshError)
+        fetch_verified(url, CHECKSUMS[key], stage / "new", PwshError)
+        (stage / "new" / "VERSION").write_text(VERSION)
         if install_dir().exists():
-            shutil.rmtree(install_dir())
-        install_dir().parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(stage), str(install_dir()))
+            try:
+                install_dir().rename(stage / "current")
+            except OSError as e:
+                raise PwshError(f"cannot replace {install_dir()}: {e.strerror}; close each "
+                                f"program that runs from it and try again")
+        (stage / "new").rename(install_dir())
         if os.name != "nt":
             local_pwsh().chmod(0o755)
     finally:
