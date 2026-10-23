@@ -387,6 +387,7 @@ def test_logs_list_names_the_workspace_once_and_each_execution(monkeypatch, caps
     ], marker_rows=[("job-a", "Container 'x' was terminated with exit code '0' and reason")])
     assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS, ["--list"]) == 0
     lines = capsys.readouterr().out.splitlines()
+    assert lines.pop(0) == "reading: run list"
     assert lines[0] == "Log Analytics workspace: pdt-logs, by execution name"
     assert lines[1].split() == ["#", "Execution", "Started", "Exit", "Code"]
     assert lines[2].split()[:2] == ["1", "job-b"]

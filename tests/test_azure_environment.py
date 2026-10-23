@@ -194,7 +194,7 @@ def test_destroy_with_the_project_group_already_gone_still_releases_the_environm
     monkeypatch.setattr(deploy_azure_container_apps, "destroy_group",
                         lambda settings, name: pytest.fail("deleted a group that does not exist"))
     monkeypatch.setattr(deploy_azure_container_apps, "delete_unless_locked",
-                        lambda *args: deleted.append(args[:2]) or "")
+                        lambda *args, **kwargs: deleted.append(args[:2]) or "")
     assert deploy_azure_container_apps.destroy({"name": "report", "storage": False}, True) == 0
     assert plans[0][0].startswith("delete Container Apps environment")
     assert deleted == [("containerapp", "env"), ("group", "delete")]

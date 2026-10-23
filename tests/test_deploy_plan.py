@@ -187,7 +187,7 @@ def test_a_plan_says_the_build_place_depends_on_what_docker_can_build(
     with config.plan_only():
         assert deploy_common.build_in_cloud(app, "CodeBuild", "linux/arm64") is False
     assert plain([capsys.readouterr().out.replace("\n", " ").strip()]) == [
-        "Docker found. The deploy will build the image with Docker on this computer if it can "
+        "checking: Docker on this computer Docker found. The deploy will build the image with Docker on this computer if it can "
         f"build linux/arm64 images, {otherwise}"]
 
 

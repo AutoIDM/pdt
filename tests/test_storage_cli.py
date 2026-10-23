@@ -26,7 +26,7 @@ def test_ls_lists_the_folder(store, app, capsys):
 
 def test_ls_json_lists_each_entry_with_its_type(store, app, capsys):
     assert storage_cli.run(store, app, ["ls", "--json"], False) == 0
-    entries = json.loads(capsys.readouterr().out)
+    entries = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert [(entry["name"], entry["type"]) for entry in entries] == [("a.csv", "file")]
 
 
@@ -36,7 +36,7 @@ def test_ls_recursive_lists_every_file_under_the_folder(store, app, capsys, tmp_
     (nested / "b.txt").write_text("b")
     (nested.parent / "a.csv").write_text("a")
     assert storage_cli.run(store, app, ["ls", "runs/", "--recursive", "--json"], False) == 0
-    entries = json.loads(capsys.readouterr().out)
+    entries = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert [entry["name"] for entry in entries] == ["runs/r1/a.csv", "runs/r1/more/b.txt"]
     assert all(entry["type"] == "file" for entry in entries)
 
@@ -109,15 +109,16 @@ def test_ls_counts_the_files_and_bytes_under_each_folder(store, app, capsys, tmp
     (runs / "r2" / "c.txt").write_text("f")
     (runs / "empty").mkdir()
     assert storage_cli.run(store, app, ["ls", "--json"], False) == 0
-    entries = json.loads(capsys.readouterr().out)
+    entries = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert [(entry["name"], entry["files"], entry["size"]) for entry in entries] == [
         ("a.csv", 1, 1), ("runs", 3, 6)]
     assert storage_cli.run(store, app, ["ls", "runs/", "--json"], False) == 0
-    entries = json.loads(capsys.readouterr().out)
+    entries = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert [(entry["name"], entry["files"], entry["size"]) for entry in entries] == [
         ("runs/empty", 0, 0), ("runs/r1", 2, 5), ("runs/r2", 1, 1)]
     assert storage_cli.run(store, app, ["ls", "runs"], False) == 0
     lines = capsys.readouterr().out.splitlines()
+    assert lines.pop(0) == "reading: runs"
     assert lines[0].split() == ["Path", "Files", "Size"]
     assert lines[2].split() == ["runs/r1", "2", "5", "B"]
 
@@ -166,7 +167,7 @@ def test_ls_counts_a_subfolder_of_a_backslash_path(store, app, monkeypatch, caps
         "find": lambda self, path, detail: fs.find(path.replace("\\", "/"), detail=detail),
     })())
     assert storage_cli.run(store, app, ["ls", "runs\\r1", "--json"], False) == 0
-    assert [(entry["files"], entry["size"]) for entry in json.loads(capsys.readouterr().out)] == [
+    assert [(entry["files"], entry["size"]) for entry in json.loads(capsys.readouterr().out.splitlines()[-1])] == [
         (1, 2)]
 
 

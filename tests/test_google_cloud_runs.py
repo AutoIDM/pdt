@@ -260,6 +260,7 @@ def test_logs_list_names_the_filter_once_and_each_execution(monkeypatch, capsys)
         (1, "pdt-app-b", None), (2, "pdt-app-a", 2)]
     assert deploy_google_cloud.logs({"name": "app"}, ["--list"], False) == 0
     lines = capsys.readouterr().out.splitlines()
+    assert lines.pop(0) == "reading: run list"
     assert lines[0] == "Cloud Logging: project p, by execution name"
     assert lines[2].split()[:2] == ["1", "pdt-app-b"]
     assert lines[3].split()[-1] == "2"

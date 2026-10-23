@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from contextlib import contextmanager
 from time import monotonic
 from typing import Iterator
@@ -132,9 +133,15 @@ class Wait:
 
 @contextmanager
 def waiting(message: str) -> Iterator[Wait]:
-    """On a terminal, a spinner line under the output that names the wait and counts its seconds."""
+    """On a terminal, a spinner line under the output that names the wait and counts its seconds.
+    Off a terminal, one plain line. `message` has the form `<action>: details`. A wait in
+    a worker thread shows no spinner, since the thread that started it may show one."""
     wait = Wait(message)
-    if not _console.is_terminal:
+    if not _console.is_interactive or _data is not None:
+        status(message)
+        yield wait
+        return
+    if threading.current_thread() is not threading.main_thread():
         yield wait
         return
     with _console.status(wait):
@@ -165,10 +172,13 @@ class WaitOn:
 
 
 @contextmanager
-def wait_on(name: str, end: str) -> Iterator[WaitOn]:
+def wait_on(name: str, end: str, slow: str = "") -> Iterator[WaitOn]:
     """One line for one object that pdt polls until it reaches a state, such as a queue
-    that Batch deletes."""
-    wait = WaitOn(name, end)
+    that Batch deletes. `slow`, an `<action>: details` line, shows from the start in place
+    of `name`, and no end line follows it."""
+    action, _, what = slow.partition(": ")
+    wait = WaitOn(what or name, "" if slow else end)
+    wait.now(action)
     try:
         yield wait
     finally:

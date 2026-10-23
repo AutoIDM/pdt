@@ -277,9 +277,10 @@ def runs(list_runs: Callable[[], list[Run]], app_name: str, rest: list[str],
     except ValueError as exc:
         console.error(console.escape(str(exc)))
         return 1
-    found = window(numbered(list_runs), since, span, count)
-    if resolve is not None:
-        resolve(found)
+    with console.waiting("reading: run list"):
+        found = window(numbered(list_runs), since, span, count)
+        if resolve is not None:
+            resolve(found)
     if args.json:
         console.data(json.dumps([run_json(run) for run in found]))
         return 0
@@ -346,14 +347,15 @@ def logs(list_runs: Callable[[], list[Run]],
         console.error(console.escape(str(exc)))
         return 1
     if args.list:
-        return list_logs(window(numbered(list_runs), since, span, count), place, app_name,
-                         args, since, span)
+        with console.waiting("reading: run list"):
+            found = window(numbered(list_runs), since, span, count)
+        return list_logs(found, place, app_name, args, since, span)
     chosen = []
-    with console.waiting("reading the run list") as wait:
+    with console.waiting("reading: run list") as wait:
         found = numbered(list_runs)
         for attempt in range(NEW_RUN_TRIES if new is not None else 0):
             if attempt > 0:
-                wait.now("waiting for the new run to show in the run list")
+                wait.now("waiting: new run in the run list")
                 time.sleep(FOLLOW_SECONDS)
                 found = numbered(list_runs)
             chosen = [run for run in found if new(run)][:1]
@@ -409,7 +411,7 @@ def logs(list_runs: Callable[[], list[Run]],
             console.status(f"reading {console.value(place.folder / item)}")
     lines_by_id = {}
     live = set()
-    with console.waiting("reading the log"):
+    with console.waiting("reading: log"):
         for run in chosen:
             if stream is not None and run.status == "running":
                 try:
@@ -646,7 +648,7 @@ def follow(list_runs: Callable[[], list[Run]],
     # Counts, not a set: a line the job wrote twice prints twice; a reconnected stream's replay prints once.
     seen = Counter(line_key(line) for line in shown)
     try:
-        with console.waiting("waiting for the run's next line") as wait:
+        with console.waiting("waiting: run's next line") as wait:
             streamed = (follow_stream(list_runs, resolve, run, errors, stream, store, seen,
                                       last_exit_line(shown), wait)
                         if stream is not None and run.status == "running" else None)
@@ -669,7 +671,7 @@ def follow_stream(list_runs: Callable[[], list[Run]],
     try:
         while exit_line is None:
             ended = run.status != "running"
-            wait.now("waiting for the run's next line in its live log")
+            wait.now("waiting: run's next line in its live log")
             opened = time.monotonic()
             now_seen = Counter()
             for line in stream(run, not ended):
@@ -719,8 +721,8 @@ def follow_store(list_runs: Callable[[], list[Run]],
     since = None
     first = True
     while True:
-        wait.now(f"reading {store} every {FOLLOW_SECONDS}s for the run's next line"
-                 if run.status == "running" else f"waiting for {store} to show the run's last lines")
+        wait.now(f"reading: {store} every {FOLLOW_SECONDS}s for the run's next line"
+                 if run.status == "running" else f"waiting: run's last lines in {store}")
         raw = read_lines(run, since)
         now = datetime.now(UTC)
         exit_line = last_exit_line(raw)
@@ -743,7 +745,7 @@ def follow_store(list_runs: Callable[[], list[Run]],
             print_line(line)
         if done:
             if exit_line is not None and hold and not first:
-                wait.now(f"waiting {FOLLOW_SECONDS}s for lines {store} shows late")
+                wait.now(f"waiting: {FOLLOW_SECONDS}s for lines {store} shows late")
                 time.sleep(FOLLOW_SECONDS)
                 for line in unseen(read_lines(run, since), errors, seen):
                     print_line(line)

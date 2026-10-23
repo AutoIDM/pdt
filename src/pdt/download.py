@@ -50,13 +50,13 @@ def fetch_verified(url: str, sha256: str, stage: Path, error) -> Path:
                 f"A newer release may have replaced the pinned one; update VERSION "
                 f"and CHECKSUMS in {error.__module__.replace('.', '/')}.py as its "
                 f"docstring describes")
-        console.status(f"unpacking {console.value(Path(url).name)}")
-        if url.endswith(".zip"):
-            with zipfile.ZipFile(tmp_path) as archive:
-                archive.extractall(stage)
-        else:
-            with tarfile.open(tmp_path) as tar:
-                tar.extractall(stage, filter="data")
+        with console.waiting(f"unpacking: {console.value(Path(url).name)}"):
+            if url.endswith(".zip"):
+                with zipfile.ZipFile(tmp_path) as archive:
+                    archive.extractall(stage)
+            else:
+                with tarfile.open(tmp_path) as tar:
+                    tar.extractall(stage, filter="data")
     except urllib.error.URLError as e:
         raise error(f"download failed: {e.reason}")
     finally:

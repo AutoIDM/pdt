@@ -78,6 +78,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ElementTree
+from contextlib import nullcontext
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable
@@ -333,10 +334,9 @@ def cached_price(provider: str, region: str, currency: str, query: str,
     except (OSError, ValueError, LookupError, TypeError):
         pass
     if entry is None or not 0 <= time.time() - entry[0] < PRICE_MAX_AGE_SECONDS:
-        if fetching:
-            console.status_once(fetching)
         try:
-            fresh = time.time(), read(), None
+            with console.waiting(fetching) if fetching else nullcontext():
+                fresh = time.time(), read(), None
         except LookupError as exc:
             fresh = time.time(), None, str(exc)
         except Exception as exc:
@@ -570,7 +570,8 @@ def build_in_cloud(app: dict, builder: str, image_platform: str) -> bool:
         console.status(f"{key} in {console.value(source)}, so the deploy will build "
                        f"the image in the cloud with {console.value(builder)}.")
     else:
-        problem = console.escape(docker_problem())
+        with console.waiting("checking: Docker on this computer"):
+            problem = console.escape(docker_problem())
         if problem == "" and config.unsaved() is not None:
             console.status(
                 "Docker found. The deploy will build the image with Docker on this computer if "
@@ -578,7 +579,9 @@ def build_in_cloud(app: dict, builder: str, image_platform: str) -> bool:
                 + (f"stop. {key} in {console.value(source)} allows only Docker."
                    if setting == "local" else f"in the cloud with {console.value(builder)}."))
             return False
-        problem = problem or emulate(image_platform)
+        if problem == "":
+            with console.waiting(f"checking: Docker runs {console.value(image_platform)} programs"):
+                problem = emulate(image_platform)
         if problem == "":
             console.status("Docker found, so the deploy will build the image with Docker on this "
                            "computer.")

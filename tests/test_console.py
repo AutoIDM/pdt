@@ -181,3 +181,31 @@ def test_a_wait_without_a_poll_or_with_an_error_prints_no_end_line(monkeypatch):
             wait.now("deleting")
             raise SystemExit(1)
     assert out.getvalue() == "deleting: Batch job queue pdt\n"
+
+
+def test_a_wait_names_what_it_waits_for_and_counts_its_seconds(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
+    with console.waiting("reading: run list") as wait:
+        wait.start -= 7
+        wait.now("reading: run list")
+        console._console.print("a line")
+    assert "reading: run list (7s)" in out.getvalue()
+    assert "a line" in out.getvalue()
+
+
+def test_a_wait_prints_one_plain_line_off_a_terminal(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, highlight=False))
+    with console.waiting("reading: run list") as wait:
+        wait.now("waiting: new run in the run list")
+    assert out.getvalue() == "reading: run list\n"
+
+
+def test_a_slow_wait_shows_its_line_from_the_start_and_prints_no_end_line(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, highlight=False))
+    with console.wait_on("pdt az group delete", "done", "deleting: resource group pdt") as wait:
+        wait.now("Azure returned an access error")
+    assert out.getvalue().splitlines() == ["deleting: resource group pdt",
+                                           "Azure returned an access error: resource group pdt"]

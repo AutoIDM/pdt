@@ -305,6 +305,7 @@ def test_logs_list_prints_the_folder_once_and_one_row_per_file(project, monkeypa
     app, folder = two_logs(project, monkeypatch)
     assert deploy_windows.logs(app, ["1", "--list"]) == 0
     lines = capsys.readouterr().out.splitlines()
+    assert lines.pop(0) == "reading: run list"
     assert lines[0] == f"Logs folder: {folder}"
     assert lines[1].split() == ["#", "Log", "File", "Started", "Exit", "Code", "Size"]
     assert lines[2].split()[:2] == ["1", "20260923T100000Z.log"]

@@ -263,6 +263,7 @@ def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(
                                    batch if name == "batch" else None})()
     assert deploy_aws_batch.logs({"name": "report", "platform": {}}, session, ["--list"]) == 0
     lines = capsys.readouterr().out.splitlines()
+    assert lines.pop(0) == "reading: run list"
     assert lines[0] == f"CloudWatch log group: {resource_names('report')['log_group']}"
     assert lines[2].split()[:2] == ["1", "s/job-1"]
     assert lines[3].split()[:2] == ["2", "s/job-2"]

@@ -126,7 +126,7 @@ def test_a_failed_read_of_an_old_no_price_answer_raises_it(monkeypatch):
 
 
 def test_the_fetching_line_prints_only_when_pdt_reads_from_the_network(monkeypatch, capsys):
-    fetching = "Fetching list prices from the AWS price list..."
+    fetching = "reading: prices from the AWS price list"
     deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, []), fetching)
     assert fetching in capsys.readouterr().out
     monkeypatch.setattr(console, "_warned", set())

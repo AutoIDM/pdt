@@ -2,6 +2,7 @@ import dataclasses
 import io
 import json
 import time
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -15,6 +16,12 @@ pytestmark = pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.t
 T0 = datetime(2026, 9, 23, 10, 0, 12, tzinfo=UTC)
 T1 = datetime(2026, 9, 23, 10, 0, 24, tzinfo=UTC)
 EARLIER = datetime(2026, 9, 22, 10, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def quiet_waits(monkeypatch):
+    # These tests read a command's output; test_console covers the wait line.
+    monkeypatch.setattr(console, "waiting", lambda message: nullcontext(console.Wait(message)))
 
 
 @pytest.fixture(autouse=True)
@@ -998,17 +1005,6 @@ def test_a_new_run_the_list_never_shows_ends_with_the_command_to_follow_it(monke
     out = capsys.readouterr().out
     assert "the run list does not show the new run yet" in out
     assert "pdt logs report --follow" in out
-
-
-def test_a_wait_names_what_it_waits_for_and_counts_its_seconds(monkeypatch):
-    out = io.StringIO()
-    monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
-    with console.waiting("reading the run list") as wait:
-        wait.start -= 7
-        wait.now("reading the run list")
-        console._console.print("a line")
-    assert "reading the run list (7s)" in out.getvalue()
-    assert "a line" in out.getvalue()
 
 
 PLACE = runs_cli.LogPlace("Log group", "/pdt/my-report", "Stream",

@@ -153,9 +153,10 @@ TRANSIENT = re.compile(r"SERVICE_DISABLED|ABORTED|Service account \S+ does not e
 RETRY_WAITS = (10, 20, 40, 60, 60, 60)
 
 
-def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
+def gcloud(*args: str, data: str | None = None, slow: str = "") -> subprocess.CompletedProcess:
     stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
-    with console.wait_on(console.value("pdt gcloud " + " ".join(args[:4])), "done") as wait:
+    with console.wait_on(console.value("pdt gcloud " + " ".join(args[:4])), "done",
+                         slow) as wait:
         for seconds in (*RETRY_WAITS, None):
             proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
             if proc.returncode == 0:
@@ -169,8 +170,8 @@ def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
             time.sleep(seconds)
 
 
-def run_quiet(*args: str, data: str | None = None) -> str:
-    proc = gcloud(*args, data=data)
+def run_quiet(*args: str, data: str | None = None, slow: str = "") -> str:
+    proc = gcloud(*args, data=data, slow=slow)
     if proc.returncode == 0:
         return proc.stdout
     console.say(console.escape(proc.stderr.strip()))
@@ -325,7 +326,8 @@ def choose_project(app: dict, requested: str) -> str:
 
 def create_project(project: str) -> None:
     console.step(f"creating project {console.value(project)}")
-    run_quiet("projects", "create", project, "--name", project)
+    run_quiet("projects", "create", project, "--name", project,
+              slow=f"creating: project {console.value(project)}")
     accounts = list_json("billing", "accounts", "list", "--filter=open=true")
     if not accounts:
         fail(f"project {console.value(project)} was created but your account has no open "
@@ -348,7 +350,8 @@ def create_project(project: str) -> None:
                  "run the deploy again and pick one from the list")
         account = accounts[int(answer) - 1]
     account_id = account["name"].removeprefix("billingAccounts/")
-    run_quiet("billing", "projects", "link", project, "--billing-account", account_id)
+    run_quiet("billing", "projects", "link", project, "--billing-account", account_id,
+              slow=f"linking: billing account {console.value(account_id)}")
     console.done(f"Linked billing account {console.value(account['displayName'])} to "
                  f"{console.value(project)}.")
 
@@ -386,7 +389,8 @@ def ensure_apis(project: str, assume_yes: bool,
         console.warn("Aborted; nothing was changed.")
         raise SystemExit(DECLINED)
     console.step("enabling required Google Cloud APIs")
-    run_quiet("services", "enable", *missing, "--project", project)
+    run_quiet("services", "enable", *missing, "--project", project,
+              slow=f"enabling: {', '.join(console.value(api) for api in missing)}")
     return "cloudbilling.googleapis.com" in missing
 
 
@@ -767,7 +771,7 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
 
             amount, unit = cached_price("google-cloud", region, currency,
                                         f"{service}: {description} ({prefer})", read,
-                                        "Fetching list prices from the Cloud Billing catalog...")
+                                        "reading: prices from the Cloud Billing catalog")
             return amount, unit
 
         cpu_price, _ = price("Cloud Run", "Jobs CPU")
@@ -806,7 +810,8 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                 raise SystemExit(DECLINED)
             console.step("enabling the Cloud Billing API")
             run_quiet("services", "enable", "cloudbilling.googleapis.com",
-                      "--project", project)
+                      "--project", project,
+                      slow=f"enabling: {console.value('cloudbilling.googleapis.com')}")
             billing_confirmed = True
         waits = (10, 20, 40, 60)
         if disabled and attempt < len(waits):
@@ -878,56 +883,57 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
 
     console.status(f"Checking current state in project {console.value(project)} "
                    f"({console.value(region)})...")
-    repository = read_json_or_none(
-        "artifacts", "repositories", "describe", repo,
-        "--location", region, "--project", project)
-    require_managed(repository, f"Artifact Registry repository {console.value(repo)}")
-    repo_exists = repository is not None
-    service_account = service_account_or_none(project, sa)
-    default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
-    if (service_account is not None and sa == default_sa
-            and not service_account_owned(service_account)):
-        fail(f"service account {console.value(sa)} exists but is not managed by PDT")
-    sa_exists = service_account is not None
-    builder = builder_email(project)
-    builds = build_bucket(project)
-    builder_exists = builds_exists = False
-    if cloud:
-        builder_account = service_account_or_none(project, builder)
-        if builder_account is not None and not builder_owned(builder_account):
-            fail(f"service account {console.value(builder)} exists but is not managed by PDT")
-        builder_exists = builder_account is not None
-        described = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
-        require_managed(described, f"bucket {console.value(builds)}")
-        builds_exists = described is not None
-    bucket_exists = False
-    if store:
-        described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
-        require_managed(described, f"bucket {console.value(bucket)}")
-        bucket_exists = described is not None
-    usage = (store.usage() if bucket_exists else (0, 0)) if store else None
-    run_job = read_json_or_none(
-        "run", "jobs", "describe", job, "--region", region, "--project", project)
-    require_managed(run_job, f"Cloud Run job {console.value(job)}")
-    job_exists = run_job is not None
-    deployed = (((run_job or {}).get("metadata") or {}).get("labels") or {}).get(BUILD_TAG)
-    scheduler = read_json_or_none(
-        "scheduler", "jobs", "describe", job,
-        "--location", region, "--project", project)
-    if scheduler is not None and not scheduler_owned(scheduler, name, project, region, sa):
-        fail(f"Cloud Scheduler job {console.value(job)} exists but is not managed by PDT")
-    sched_exists = scheduler is not None
-    sid = secret_id(name)
-    secret = read_json_or_none("secrets", "describe", sid, "--project", project)
-    require_managed(secret, f"Secret Manager secret {console.value(sid)}")
-    payload = json.dumps(values, sort_keys=True)
-    secret_state = None
-    if values:
-        if secret is None:
-            secret_state = "create"
-        else:
-            current = secret_value(project, sid)
-            secret_state = "unchanged" if current == payload else "update"
+    with console.waiting("reading: resources"):
+        repository = read_json_or_none(
+            "artifacts", "repositories", "describe", repo,
+            "--location", region, "--project", project)
+        require_managed(repository, f"Artifact Registry repository {console.value(repo)}")
+        repo_exists = repository is not None
+        service_account = service_account_or_none(project, sa)
+        default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
+        if (service_account is not None and sa == default_sa
+                and not service_account_owned(service_account)):
+            fail(f"service account {console.value(sa)} exists but is not managed by PDT")
+        sa_exists = service_account is not None
+        builder = builder_email(project)
+        builds = build_bucket(project)
+        builder_exists = builds_exists = False
+        if cloud:
+            builder_account = service_account_or_none(project, builder)
+            if builder_account is not None and not builder_owned(builder_account):
+                fail(f"service account {console.value(builder)} exists but is not managed by PDT")
+            builder_exists = builder_account is not None
+            described = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+            require_managed(described, f"bucket {console.value(builds)}")
+            builds_exists = described is not None
+        bucket_exists = False
+        if store:
+            described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
+            require_managed(described, f"bucket {console.value(bucket)}")
+            bucket_exists = described is not None
+        usage = (store.usage() if bucket_exists else (0, 0)) if store else None
+        run_job = read_json_or_none(
+            "run", "jobs", "describe", job, "--region", region, "--project", project)
+        require_managed(run_job, f"Cloud Run job {console.value(job)}")
+        job_exists = run_job is not None
+        deployed = (((run_job or {}).get("metadata") or {}).get("labels") or {}).get(BUILD_TAG)
+        scheduler = read_json_or_none(
+            "scheduler", "jobs", "describe", job,
+            "--location", region, "--project", project)
+        if scheduler is not None and not scheduler_owned(scheduler, name, project, region, sa):
+            fail(f"Cloud Scheduler job {console.value(job)} exists but is not managed by PDT")
+        sched_exists = scheduler is not None
+        sid = secret_id(name)
+        secret = read_json_or_none("secrets", "describe", sid, "--project", project)
+        require_managed(secret, f"Secret Manager secret {console.value(sid)}")
+        payload = json.dumps(values, sort_keys=True)
+        secret_state = None
+        if values:
+            if secret is None:
+                secret_state = "create"
+            else:
+                current = secret_value(project, sid)
+                secret_state = "unchanged" if current == payload else "update"
 
     actions = [console.Markup(("use existing" if repo_exists else "create")
                               + f" Artifact Registry repo {console.value(repo)}")]
@@ -973,7 +979,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         console.step(f"creating Artifact Registry repo {console.value(repo)}")
         run_quiet("artifacts", "repositories", "create", repo,
                   "--repository-format", "docker", "--location", region,
-                  "--project", project, "--labels", "managed-by=pdt")
+                  "--project", project, "--labels", "managed-by=pdt",
+                  slow=f"creating: Artifact Registry repository {console.value(repo)}")
     template = ((run_job or {}).get("spec", {}).get("template", {}).get("spec", {})
                 .get("template", {}).get("spec", {}))
     pinned = (template.get("containers") or [{}])[0].get("image")
@@ -1040,7 +1047,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         env_vars.append(f"PDT_STORAGE_URL={store.url}")
     if env_vars:
         args += ["--set-env-vars", ",".join(env_vars)]
-    run_quiet(*args)
+    run_quiet(*args, slow=f"deploying: Cloud Run job {console.value(job)}")
     run_quiet("run", "jobs", "add-iam-policy-binding", job, "--region", region,
               "--project", project, "--member", f"serviceAccount:{sa}",
               "--role", "roles/run.invoker")
@@ -1075,77 +1082,78 @@ def destroy(app: dict, assume_yes: bool) -> int:
 
     console.status(f"Checking current state in project {console.value(project)} "
                    f"({console.value(region)})...")
-    scheduler = read_json_or_none(
-        "scheduler", "jobs", "describe", job,
-        "--location", region, "--project", project)
-    delete_scheduler = scheduler_owned(scheduler, name, project, region, sa)
-    if scheduler is not None and not delete_scheduler:
-        console.note(f"Cloud Scheduler job {console.value(job)} is not managed by PDT; keeping it")
-    run_job = read_json_or_none(
-        "run", "jobs", "describe", job,
-        "--region", region, "--project", project)
-    delete_job = managed_by_pdt(run_job)
-    if run_job is not None and not delete_job:
-        console.note(f"Cloud Run job {console.value(job)} is not managed by PDT; keeping it")
-    sid = secret_id(name)
-    secret = read_json_or_none("secrets", "describe", sid, "--project", project)
-    delete_secret = managed_by_pdt(secret)
-    if secret is not None and not delete_secret:
-        console.note(f"Secret Manager secret {console.value(sid)} is not managed by PDT; "
-                     "keeping it")
-    repository = read_json_or_none(
-        "artifacts", "repositories", "describe", repo,
-        "--location", region, "--project", project)
-    repository_owned = managed_by_pdt(repository)
-    if repository is not None and not repository_owned:
-        console.note(f"Artifact Registry repository {console.value(repo)} is not managed by PDT; "
-                     "keeping it")
-    images = []
-    if repository_owned:
-        images = list_json("artifacts", "docker", "images", "list",
-                           f"{region}-docker.pkg.dev/{project}/{repo}",
-                           "--include-tags", "--project", project)
-    app_images = [item for item in images if image_name(item) == name]
-    other_images = [item for item in images if image_name(item) != name]
-    regional_jobs = list_json("run", "jobs", "list", "--region", region,
-                              "--project", project)
-    other_regional_jobs = [
-        item for item in regional_jobs if run_job_identity(item)[0] != job
-    ]
-    project_jobs = list_json("run", "jobs", "list", "--project", project)
-    other_project_jobs = []
-    for item in project_jobs:
-        item_name, item_region = run_job_identity(item)
-        if item_name == job and item_region == region:
-            continue
-        other_project_jobs.append(item)
-    other_jobs = [
-        run_job_identity(item)[0]
-        for item in other_project_jobs
-        if managed_by_pdt(item) and run_job_identity(item)[0]
-    ]
-    service_account = service_account_or_none(project, sa)
-    bucket = store_bucket(project)
-    store = deployer_store(project, name) if app["storage"] else None
-    store_present = store is not None and read_json_or_none(
-        "storage", "buckets", "describe", f"gs://{bucket}") is not None
-    revoke_folder = store_present and folder_grant_exists(bucket, name, sa)
-    revoke_bucket = store_present and bucket_grant_exists(bucket, name, sa)
-    revoke_grant = revoke_folder or revoke_bucket
-    unmanaged_app_resource = ((scheduler is not None and not delete_scheduler)
-                              or (run_job is not None and not delete_job))
-    delete_repo = (repository_owned and not other_regional_jobs and not other_images
-                   and not unmanaged_app_resource)
-    delete_image = bool(app_images) and not delete_repo
-    delete_sa = (sa == default_sa and service_account_owned(service_account)
-                 and not other_project_jobs and not unmanaged_app_resource)
-    builder = builder_email(project)
-    builder_account = service_account_or_none(project, builder)
-    builds = build_bucket(project)
-    builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
-    last_app = not other_project_jobs and not unmanaged_app_resource
-    delete_builder = last_app and builder_owned(builder_account)
-    delete_builds = last_app and managed_by_pdt(builds_bucket)
+    with console.waiting("reading: resources"):
+        scheduler = read_json_or_none(
+            "scheduler", "jobs", "describe", job,
+            "--location", region, "--project", project)
+        delete_scheduler = scheduler_owned(scheduler, name, project, region, sa)
+        if scheduler is not None and not delete_scheduler:
+            console.note(f"Cloud Scheduler job {console.value(job)} is not managed by PDT; keeping it")
+        run_job = read_json_or_none(
+            "run", "jobs", "describe", job,
+            "--region", region, "--project", project)
+        delete_job = managed_by_pdt(run_job)
+        if run_job is not None and not delete_job:
+            console.note(f"Cloud Run job {console.value(job)} is not managed by PDT; keeping it")
+        sid = secret_id(name)
+        secret = read_json_or_none("secrets", "describe", sid, "--project", project)
+        delete_secret = managed_by_pdt(secret)
+        if secret is not None and not delete_secret:
+            console.note(f"Secret Manager secret {console.value(sid)} is not managed by PDT; "
+                         "keeping it")
+        repository = read_json_or_none(
+            "artifacts", "repositories", "describe", repo,
+            "--location", region, "--project", project)
+        repository_owned = managed_by_pdt(repository)
+        if repository is not None and not repository_owned:
+            console.note(f"Artifact Registry repository {console.value(repo)} is not managed by PDT; "
+                         "keeping it")
+        images = []
+        if repository_owned:
+            images = list_json("artifacts", "docker", "images", "list",
+                               f"{region}-docker.pkg.dev/{project}/{repo}",
+                               "--include-tags", "--project", project)
+        app_images = [item for item in images if image_name(item) == name]
+        other_images = [item for item in images if image_name(item) != name]
+        regional_jobs = list_json("run", "jobs", "list", "--region", region,
+                                  "--project", project)
+        other_regional_jobs = [
+            item for item in regional_jobs if run_job_identity(item)[0] != job
+        ]
+        project_jobs = list_json("run", "jobs", "list", "--project", project)
+        other_project_jobs = []
+        for item in project_jobs:
+            item_name, item_region = run_job_identity(item)
+            if item_name == job and item_region == region:
+                continue
+            other_project_jobs.append(item)
+        other_jobs = [
+            run_job_identity(item)[0]
+            for item in other_project_jobs
+            if managed_by_pdt(item) and run_job_identity(item)[0]
+        ]
+        service_account = service_account_or_none(project, sa)
+        bucket = store_bucket(project)
+        store = deployer_store(project, name) if app["storage"] else None
+        store_present = store is not None and read_json_or_none(
+            "storage", "buckets", "describe", f"gs://{bucket}") is not None
+        revoke_folder = store_present and folder_grant_exists(bucket, name, sa)
+        revoke_bucket = store_present and bucket_grant_exists(bucket, name, sa)
+        revoke_grant = revoke_folder or revoke_bucket
+        unmanaged_app_resource = ((scheduler is not None and not delete_scheduler)
+                                  or (run_job is not None and not delete_job))
+        delete_repo = (repository_owned and not other_regional_jobs and not other_images
+                       and not unmanaged_app_resource)
+        delete_image = bool(app_images) and not delete_repo
+        delete_sa = (sa == default_sa and service_account_owned(service_account)
+                     and not other_project_jobs and not unmanaged_app_resource)
+        builder = builder_email(project)
+        builder_account = service_account_or_none(project, builder)
+        builds = build_bucket(project)
+        builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+        last_app = not other_project_jobs and not unmanaged_app_resource
+        delete_builder = last_app and builder_owned(builder_account)
+        delete_builds = last_app and managed_by_pdt(builds_bucket)
 
     actions = []
     if revoke_grant:
@@ -1225,18 +1233,21 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if delete_job:
         console.step(f"deleting Cloud Run job {console.value(job)}")
         run_quiet("run", "jobs", "delete", job,
-                  "--region", region, "--project", project, "--quiet")
+                  "--region", region, "--project", project, "--quiet",
+                  slow=f"deleting: Cloud Run job {console.value(job)}")
     if delete_secret:
         console.step(f"deleting secret {console.value(sid)}")
         run_quiet("secrets", "delete", sid, "--project", project, "--quiet")
     if delete_image:
         console.step(f"deleting Artifact Registry image {console.value(image)}")
         run_quiet("artifacts", "docker", "images", "delete", image,
-                  "--delete-tags", "--project", project, "--quiet")
+                  "--delete-tags", "--project", project, "--quiet",
+                  slow=f"deleting: Artifact Registry image {console.value(image)}")
     if delete_repo:
         console.step(f"deleting Artifact Registry repository {console.value(repo)}")
         run_quiet("artifacts", "repositories", "delete", repo,
-                  "--location", region, "--project", project, "--quiet")
+                  "--location", region, "--project", project, "--quiet",
+                  slow=f"deleting: Artifact Registry repository {console.value(repo)}")
     if delete_sa:
         console.step(f"deleting service account {console.value(sa)}")
         run_quiet("iam", "service-accounts", "delete", sa,
@@ -1247,7 +1258,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
                   "--project", project, "--quiet")
     if delete_builds:
         console.step(f"deleting bucket {console.value(builds)}")
-        run_quiet("storage", "rm", "--recursive", f"gs://{builds}/", "--project", project)
+        run_quiet("storage", "rm", "--recursive", f"gs://{builds}/", "--project", project,
+                  slow=f"deleting: bucket {console.value(builds)}")
     console.done(f"Removed {console.value(name)} from project {console.value(project)}.")
     remaining = sorted(set(other_jobs))
     if remaining:
@@ -1454,7 +1466,8 @@ def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
     job = f"pdt-{app['name']}"
     output = run_quiet("run", "jobs", "execute", job, "--region", region,
                        "--project", project, "--async", "--format=json",
-                       f"--update-env-vars={lifecycle.TRIGGER_ENV}=manual")
+                       f"--update-env-vars={lifecycle.TRIGGER_ENV}=manual",
+                       slow=f"starting: Cloud Run job {console.value(job)}")
     try:
         execution = json.loads(output or "null")
     except ValueError:

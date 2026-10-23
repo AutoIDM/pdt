@@ -492,10 +492,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
         "-ErrorAction Stop | Out-Null"
     )
-    console.status(f"{'Updating' if exists else 'Creating'} Windows scheduled task "
-                   f"{console.value(name)}...")
     try:
-        _run(powershell, script, elevate=True)
+        with console.waiting(f"{'updating' if exists else 'creating'}: Windows scheduled task "
+                             f"{console.value(name)}"):
+            _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
@@ -540,10 +540,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
-    console.status(f"Removing Windows scheduled task {console.value(name)}..." if exists
-                   else f"Removing {console.value(logs)}...")
     try:
-        _run(powershell, script, elevate=True)
+        with console.waiting(f"removing: Windows scheduled task {console.value(name)}" if exists
+                             else f"removing: {console.value(logs)}"):
+            _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
