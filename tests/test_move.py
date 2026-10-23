@@ -616,3 +616,42 @@ def test_the_plan_resolves_the_place_with_the_app_env_file(project, monkeypatch,
             in capsys.readouterr().out)
     assert cloud.deployed == [("own", {"provider": "azure", "region": "eastus2",
                                        "subscription": "sub-1", "resource_group": "jobs"})]
+
+
+def test_a_region_change_keeps_the_resource_group_the_app_env_file_sets(project, monkeypatch, capsys):
+    from pdt import config
+    monkeypatch.setenv("PDT_AZURE_RESOURCE_GROUP", "unset")
+    monkeypatch.delenv("PDT_AZURE_RESOURCE_GROUP")
+    (project / PROJECT_FILE).write_text(
+        "platform:\n  provider: azure\n  region: eastus2\n  subscription: sub-1\n")
+    add_app(project, "alpha")
+    (project / "alpha" / ".env").write_text("PDT_AZURE_RESOURCE_GROUP=jobs\n")
+    config.mark_deployed("alpha", {"provider": "azure", "region": "eastus2", "subscription": "sub-1",
+                                   "resource_group": "jobs"})
+    cloud = Cloud(monkeypatch)
+    answer(monkeypatch, ["1", "westus2"], [False, True])
+    assert move.move_app("alpha") == 0
+    assert ("deploy alpha to azure, region westus2, subscription sub-1, resource group jobs"
+            in capsys.readouterr().out)
+    assert cloud.deployed == [("alpha", {"provider": "azure", "region": "westus2",
+                                         "subscription": "sub-1", "resource_group": "jobs"})]
+    assert platform_of(project, "alpha") == {"provider": "azure", "region": "westus2",
+                                             "subscription": "sub-1"}
+
+
+def test_one_app_env_file_does_not_change_where_another_app_deploys(project, monkeypatch, capsys):
+    monkeypatch.setenv("PDT_AZURE_RESOURCE_GROUP", "unset")
+    monkeypatch.delenv("PDT_AZURE_RESOURCE_GROUP")
+    (project / PROJECT_FILE).write_text(
+        "platform:\n  provider: azure\n  region: eastus2\n  subscription: sub-1\n")
+    for name in ("alpha", "beta"):
+        deployed_app(project, name, "platform:\n  provider: google-cloud\n  region: us-central1\n")
+    (project / "beta" / ".env").write_text("PDT_AZURE_RESOURCE_GROUP=jobs\n")
+    cloud = Cloud(monkeypatch)
+    answer(monkeypatch, ["3", "1", "eastus2"], [True])
+    assert move.move_app("alpha") == 0
+    out = capsys.readouterr().out
+    assert "deploy alpha to azure, region eastus2, subscription sub-1, resource group pdt" in out
+    assert "deploy beta to azure, region eastus2, subscription sub-1, resource group jobs" in out
+    assert cloud.deployed == [("alpha", AZURE_PIN), ("beta", {**AZURE_PIN, "resource_group": "jobs"})]
+    assert "PDT_AZURE_RESOURCE_GROUP" not in os.environ
