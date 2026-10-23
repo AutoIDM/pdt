@@ -1,8 +1,8 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.12,<3.15"
 # dependencies = [
-#     "azure-cli==2.89.1",
+#     "azure-cli==2.91.0",
 #     "azure-identity==1.25.3",
 #     "azure-storage-blob",
 #     "adlfs",
@@ -31,6 +31,8 @@ they stream to the terminal. No system install is
 needed. Login state lives in ~/.azure either way. azure-cli pins a few of
 its own dependencies to pre-release versions, so the header allows
 pre-releases; without that, uv before 0.12 refuses to resolve it.
+The header stops below Python 3.15, because azure-cli needs pymsalruntime
+on macOS and Windows, and pymsalruntime has no Python 3.15 wheels.
 
 Every app owns one tagged Key Vault secret holding its env vars as one
 json blob, exposed to the job as PDT_ENV_JSON. Secret values are sent to
