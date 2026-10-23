@@ -122,6 +122,8 @@ def fake_destroy(monkeypatch, answers, locked_by):
     monkeypatch.setattr(deploy_azure, "az_tsv", lambda *args: "true")
     monkeypatch.setattr(module, "run_quiet", write)
     monkeypatch.setattr(deploy_azure, "run_quiet", write)
+    monkeypatch.setattr(module, "az", lambda *args: subprocess.CompletedProcess(
+        args, 1, "", 'ERROR: Not Found({"error":{"code":"ResourceNotFound"}})'))
     monkeypatch.setattr(deploy_azure, "delete_unless_locked", delete)
     monkeypatch.setattr(module, "delete_unless_locked", delete)
     monkeypatch.setattr(module, "managed_secret", lambda *args: False)
@@ -151,7 +153,8 @@ def test_destroy_removes_its_lock_then_keeps_a_group_another_app_locked(monkeypa
     ]
     assert ("group", "delete", "--name", "pdt", "--yes") in events
     job = deploy_azure_container_apps.job_name(settings(), "report")
-    assert ("containerapp", "job", "delete", "--name", job, "--resource-group", "pdt", "--yes") in events
+    assert ("containerapp", "job", "delete", "--name", job, "--resource-group", "pdt", "--yes",
+            "--no-wait") in events
     assert not any(event[:3] == ("containerapp", "env", "delete") for event in events)
     out = capsys.readouterr().out
     assert "kept: resource group pdt" in out

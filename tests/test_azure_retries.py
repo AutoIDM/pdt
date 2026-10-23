@@ -148,3 +148,46 @@ def test_az_runs_in_process_and_keeps_each_call_output_apart(monkeypatch):
     assert (first.returncode, first.stderr) == (2, "ERROR: one\n")
     assert (second.returncode, second.stderr) == (2, "ERROR: two\n")
     assert (third.returncode, third.stdout, third.stderr) == (0, "group list", "")
+
+
+BUSY = ('ERROR: Conflict({"error":{"code":"ContainerAppOperationInProgress","message":"Cannot '
+        'modify a container app because there is an active provisioning operation in progress."}})')
+
+
+def test_a_change_azure_refuses_while_another_runs_is_retried_every_2s(monkeypatch, capsys):
+    attempts = iter([subprocess.CompletedProcess([], 1, "", BUSY)] * 3
+                    + [subprocess.CompletedProcess([], 0, "", "")])
+    sleeps = []
+    monkeypatch.setattr(deploy_azure, "az", lambda *args: next(attempts))
+    monkeypatch.setattr(deploy_azure.time, "sleep", sleeps.append)
+
+    deploy_azure.run_quiet("rest", "--method", "post", "--url", "u", retry_busy=True)
+
+    assert sleeps == [2, 2, 2]
+    assert "ContainerAppOperationInProgress" not in capsys.readouterr().out
+
+
+def test_a_change_still_refused_after_the_retries_is_printed_and_fails(monkeypatch, capsys):
+    monkeypatch.setattr(deploy_azure, "az",
+                        lambda *args: subprocess.CompletedProcess([], 1, "", BUSY))
+    sleeps = []
+    monkeypatch.setattr(deploy_azure.time, "sleep", sleeps.append)
+
+    with pytest.raises(SystemExit):
+        deploy_azure.run_quiet("rest", "--method", "post", "--url", "u", retry_busy=True)
+
+    assert sum(sleeps) == deploy_azure.BUSY_RETRY_SECONDS
+    assert "ContainerAppOperationInProgress" in capsys.readouterr().out
+
+
+def test_a_busy_job_is_not_retried_without_the_opt_in(monkeypatch):
+    calls = []
+    monkeypatch.setattr(deploy_azure, "az", lambda *args: calls.append(args)
+                        or subprocess.CompletedProcess([], 1, "", BUSY))
+    monkeypatch.setattr(deploy_azure.time, "sleep",
+                        lambda seconds: pytest.fail(f"unexpected {seconds}s sleep"))
+
+    with pytest.raises(SystemExit):
+        deploy_azure.run_quiet("rest", "--method", "post", "--url", "u")
+
+    assert len(calls) == 1

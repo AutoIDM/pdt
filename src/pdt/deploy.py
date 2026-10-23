@@ -342,29 +342,31 @@ def logs(app_name: str, rest: list[str]) -> int:
 
 
 def pause(app_name: str, paused: bool) -> int:
-    """Write `pause:` into the app's config, then apply it to the deployed schedule."""
+    """Apply `pause:` to the deployed schedule, then write it into the app's config.
+
+    The config changes only after the cloud change succeeded, so the two agree."""
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
         console.error(console.escape(str(e)))
         return 1
-    path = config.save_app_key(app, "pause", paused)
-    setting = f"pause: {'true' if paused else 'false'}"
-    console.done(f"{console.value(app_name)}: {console.value(setting)} saved in "
-                 f"{console.value(path)}")
     deployed = config.is_deployed(app_name)
     if deployed:
         config.load_env(app["dir"])
         code = dispatch(provider, "pause" if paused else "unpause", app_name, False)
-    else:
+        if code != 0:
+            return code
+    path = config.save_app_key(app, "pause", paused)
+    setting = f"pause: {'true' if paused else 'false'}"
+    console.done(f"{console.value(app_name)}: {console.value(setting)} saved in "
+                 f"{console.value(path)}")
+    if not deployed:
         state = "paused" if paused else "running"
         console.say(f"{console.value(app_name)} is not deployed; the next pdt deploy will create "
                     f"it {state}.")
-        code = 0
-    if code == 0:
-        lifecycle.emit(lifecycle.JOB_PAUSED if paused else lifecycle.JOB_UNPAUSED,
-                       **lifecycle.app_params(app_name, provider), deployed=deployed)
-    return code
+    lifecycle.emit(lifecycle.JOB_PAUSED if paused else lifecycle.JOB_UNPAUSED,
+                   **lifecycle.app_params(app_name, provider), deployed=deployed)
+    return 0
 
 
 def start(app_name: str, follow: bool = False) -> int:

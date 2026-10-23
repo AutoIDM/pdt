@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from conftest import built_image, fake_azure_reads
@@ -48,6 +50,10 @@ def deploy(monkeypatch, answers, job_after=None):
         matches = [key for key in answers if args[:len(key)] == key]
         return answers[max(matches, key=len)] if matches else None
 
+    def quiet(*args, **kwargs):
+        result = answer(args)
+        return json.dumps(result) if isinstance(result, dict) else result or ""
+
     def tsv(*args):
         calls.append(args)
         return "Registered" if args[:2] == ("provider", "show") else "value"
@@ -56,7 +62,7 @@ def deploy(monkeypatch, answers, job_after=None):
     for module in (azure, deploy_azure):
         monkeypatch.setattr(module, "az_json", lambda *args: answer(args))
         monkeypatch.setattr(module, "az_tsv", tsv)
-        monkeypatch.setattr(module, "run_quiet", lambda *args, **kwargs: answer(args) or "")
+        monkeypatch.setattr(module, "run_quiet", quiet)
     monkeypatch.setattr(azure, "preflight", lambda app, requested: settings())
     monkeypatch.setattr(azure, "azure_settings", lambda app: {})
     monkeypatch.setattr(azure, "build_in_cloud", lambda *args: False)
@@ -155,7 +161,7 @@ def test_a_paused_app_suspends_a_ready_job_from_the_state_deploy_read(monkeypatc
     calls = deploy(monkeypatch, PRESENT, job_after=JOB)
     assert [call[4].split("?")[0].rsplit("/", 1)[-1]
             for call in ran(calls, "rest", "--method", "post")] == ["suspend"]
-    assert ran(calls, "rest", "--method", "get") == []
+    assert len(ran(calls, "rest", "--method", "get")) == 1
 
 
 def test_role_checks_ask_for_one_assignment_by_object_id_and_role_id(monkeypatch):
