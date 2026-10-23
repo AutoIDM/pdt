@@ -22,9 +22,9 @@ def test_platform_key_and_archive_name(monkeypatch, system, machine, key):
     assert pwsh.platform_key() == key
     assert key in pwsh.CHECKSUMS
     if key.startswith("win-"):
-        assert pwsh.archive_name(key) == f"PowerShell-7.6.6-{key}.zip"
+        assert pwsh.archive_name(key) == f"PowerShell-7.6.8-{key}.zip"
     else:
-        assert pwsh.archive_name(key) == f"powershell-7.6.6-{key}.tar.gz"
+        assert pwsh.archive_name(key) == f"powershell-7.6.8-{key}.tar.gz"
 
 
 def test_an_unknown_platform_names_the_install_page(monkeypatch):
