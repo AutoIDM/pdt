@@ -155,13 +155,13 @@ class WaitOn:
             self.start = monotonic()
         self.state = state
         if not _console.is_interactive or _data is not None:
-            status(f"{self.name}: {state}")
+            status(f"{state}: {self.name}")
         elif self.spinner is None:
             self.spinner = _console.status(self)
             self.spinner.start()
 
     def __rich__(self) -> str:
-        return f"[dim]{self.name}: {self.state} ({round(monotonic() - self.start)}s)[/]"
+        return f"[dim]{self.state}: {self.name} ({round(monotonic() - self.start)}s)[/]"
 
 
 @contextmanager
@@ -175,7 +175,7 @@ def wait_on(name: str, end: str) -> Iterator[WaitOn]:
         if wait.spinner is not None:
             wait.spinner.stop()
     if wait.state != "" and wait.end != "":
-        status(f"{name}: {wait.end} ({round(monotonic() - wait.start)}s)")
+        status(f"{wait.end}: {name} ({round(monotonic() - wait.start)}s)")
 
 
 def field(label: str, value: str) -> None:

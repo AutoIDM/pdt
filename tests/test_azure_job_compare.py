@@ -172,8 +172,8 @@ def test_the_update_waits_until_azure_shows_it(monkeypatch, capsys):
     fake = FakeAzure(states=("InProgress", "InProgress", "Succeeded"), resource=body(cron="0 7 * * *"))
     reconcile(monkeypatch, CURRENT, fake, cron="0 7 * * *")
     assert [call[2] for call in fake.calls] == ["patch", "get", "get", "get"]
-    assert capsys.readouterr().out.splitlines() == [f"Container Apps Job {JOB}: updating",
-                                                    f"Container Apps Job {JOB}: updated (0s)"]
+    assert capsys.readouterr().out.splitlines() == [f"updating: Container Apps Job {JOB}",
+                                                    f"updated: Container Apps Job {JOB} (0s)"]
 
 
 def test_a_failed_update_stops_the_deploy(monkeypatch):
@@ -188,7 +188,7 @@ def test_an_update_azure_never_shows_stops_with_what_differs(monkeypatch, capsys
         reconcile(monkeypatch, CURRENT, fake, cron="0 7 * * *")
     out = capsys.readouterr().out
     assert "settings that differ: schedule" in out
-    assert ": updated" not in out
+    assert "updated: " not in out
 
 
 def test_a_new_job_is_created_with_the_cli(monkeypatch):

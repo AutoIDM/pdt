@@ -73,9 +73,9 @@ def test_retries_show_one_line_for_the_server_off_a_terminal(monkeypatch, capsys
     install(monkeypatch, [http_error(429), http_error(503), {"ok": True}])
     assert fetch_json(URL) == {"ok": True}
     assert capsys.readouterr().out.splitlines() == [
-        "prices.example.com: no answer (try 1 of 5)",
-        "prices.example.com: no answer (try 2 of 5)",
-        "prices.example.com: answered (0s)",
+        "no answer (try 1 of 5): prices.example.com",
+        "no answer (try 2 of 5): prices.example.com",
+        "answered: prices.example.com (0s)",
     ]
 
 

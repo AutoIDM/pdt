@@ -114,8 +114,8 @@ def test_remove_prints_one_line_for_a_state_that_lasts_several_polls(monkeypatch
 
     batch.describe_job_queues = describe_job_queues
     remove(batch, JOB_QUEUE)
-    assert capsys.readouterr().out.splitlines() == ["Batch job queue pdt: deleting",
-                                                    "Batch job queue pdt: deleted (0s)"]
+    assert capsys.readouterr().out.splitlines() == ["deleting: Batch job queue pdt",
+                                                    "deleted: Batch job queue pdt (0s)"]
 
 
 def test_a_batch_wait_shows_each_status_batch_reports(monkeypatch, capsys):
@@ -123,9 +123,9 @@ def test_a_batch_wait_shows_each_status_batch_reports(monkeypatch, capsys):
     items = iter([{"status": "UPDATING"}, {"status": "DELETING"}, None])
     with console.wait_on("Batch job queue pdt", "deleted") as wait:
         wait_for_batch(lambda: next(items), lambda item: item is None, wait, "")
-    assert capsys.readouterr().out.splitlines() == ["Batch job queue pdt: updating",
-                                                    "Batch job queue pdt: deleting",
-                                                    "Batch job queue pdt: deleted (0s)"]
+    assert capsys.readouterr().out.splitlines() == ["updating: Batch job queue pdt",
+                                                    "deleting: Batch job queue pdt",
+                                                    "deleted: Batch job queue pdt (0s)"]
 
 
 def test_a_batch_wait_that_times_out_names_the_last_status(monkeypatch, capsys):
