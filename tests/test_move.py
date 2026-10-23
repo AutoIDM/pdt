@@ -123,7 +123,8 @@ def platform_of(project, name):
 
 AZURE_PIN = {"provider": "azure", "region": "eastus2", "subscription": "sub-1",
              "resource_group": "pdt"}
-AZURE_STAY = {**AZURE_PIN, "timezone": "Etc/UTC"}
+AZURE_STAY = {"provider": "azure", "region": "eastus2", "subscription": "sub-1",
+              "timezone": "Etc/UTC"}
 AWS_PLACE = {"provider": "aws", "region": "us-east-2"}
 
 
@@ -655,3 +656,33 @@ def test_one_app_env_file_does_not_change_where_another_app_deploys(project, mon
     assert "deploy beta to azure, region eastus2, subscription sub-1, resource group jobs" in out
     assert cloud.deployed == [("alpha", AZURE_PIN), ("beta", {**AZURE_PIN, "resource_group": "jobs"})]
     assert "PDT_AZURE_RESOURCE_GROUP" not in os.environ
+
+
+def test_a_move_saves_the_account_the_deploy_finds_in_the_record(project, monkeypatch):
+    from pdt import config
+
+    def find_account(command, app_name):
+        if command == "deploy":
+            config.save_platform_key(config.merged_app(app_name), "account", "123456789012")
+
+    moving_project(project, names=("alpha",))
+    Cloud(monkeypatch, before=find_account)
+    answer(monkeypatch, TO_AWS, [False, True])
+    assert move.move_app("alpha") == 0
+    recorded = config.deployed_platform("alpha")
+    assert recorded["account"] == "123456789012"
+    assert not move.deploy.moved(recorded, config.merged_app("alpha")["platform"])
+
+
+def test_an_app_that_stays_gets_no_pin_its_env_file_sets(project, monkeypatch):
+    monkeypatch.setenv("PDT_AZURE_RESOURCE_GROUP", "unset")
+    monkeypatch.delenv("PDT_AZURE_RESOURCE_GROUP")
+    moving_project(project, names=("alpha",))
+    add_app(project, "beta")
+    (project / "beta" / ".env").write_text("PDT_AZURE_RESOURCE_GROUP=jobs\n")
+    from pdt import config
+    config.mark_deployed("beta", {**AZURE_PIN, "resource_group": "jobs"})
+    Cloud(monkeypatch)
+    answer(monkeypatch, TO_AWS, [True, True])
+    assert move.move_app("alpha") == 0
+    assert platform_of(project, "beta") == AZURE_STAY
