@@ -166,7 +166,7 @@ def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = Fal
               hints: dict[str, str] | None = None, slow: str = "") -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
     command = "pdt az " + " ".join(args[:4])
-    with console.wait_on(console.value(command), "done", slow) as wait:
+    with console.wait_on(console.value(command), "done", slow, result=False) as wait:
         for seconds in waits:
             proc = az(*args)
             if proc.returncode == 0:

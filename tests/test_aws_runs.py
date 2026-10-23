@@ -1,10 +1,9 @@
-from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import pytest
 from botocore.exceptions import ClientError
 
-from pdt import console, deploy_aws_batch
+from pdt import deploy_aws_batch
 from pdt.deploy_aws_batch import job_run, list_runs, read_lines, resource_names, stream_lines
 from pdt.runs_cli import Run, StreamError
 
@@ -250,17 +249,8 @@ def test_without_follow_the_stream_reads_the_store_only():
 
 
 def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(
-        capsys, monkeypatch, tmp_path):
+        capsys, monkeypatch, tmp_path, waits):
     monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
-    waits = []
-
-    @contextmanager
-    def waiting(message):
-        waits.append(message)
-        yield console.Wait(message)
-        waits.append("ended")
-
-    monkeypatch.setattr(console, "waiting", waiting)
 
     class Batch(FakeBatch):
         def describe_jobs(self, jobs):

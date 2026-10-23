@@ -1,4 +1,5 @@
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +30,27 @@ def price_cache(tmp_path, monkeypatch):
 def error_watch_env(monkeypatch):
     for name in ("CI", watch.OFF_ENV, *watch.AGENT_ENVS):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture
+def waits(monkeypatch):
+    """The first argument of each `console.waiting` and `console.wait_on` still open."""
+    open_waits = []
+
+    def watch(real):
+        @contextmanager
+        def wrapper(*args, **kwargs):
+            open_waits.append(args[0])
+            try:
+                with real(*args, **kwargs) as wait:
+                    yield wait
+            finally:
+                open_waits.remove(args[0])
+        return wrapper
+
+    monkeypatch.setattr(console, "waiting", watch(console.waiting))
+    monkeypatch.setattr(console, "wait_on", watch(console.wait_on))
+    return open_waits
 
 
 @pytest.fixture

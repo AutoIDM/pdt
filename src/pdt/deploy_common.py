@@ -335,7 +335,7 @@ def cached_price(provider: str, region: str, currency: str, query: str,
         pass
     if entry is None or not 0 <= time.time() - entry[0] < PRICE_MAX_AGE_SECONDS:
         try:
-            with console.waiting(fetching) if fetching else nullcontext():
+            with console.waiting(fetching, once=True) if fetching else nullcontext():
                 fresh = time.time(), read(), None
         except LookupError as exc:
             fresh = time.time(), None, str(exc)
@@ -487,7 +487,7 @@ def validate_response(response) -> None:
 def fetch_json(request: str | urllib.request.Request, timeout: int = 60,
                open_url: Callable | None = None):
     host = urllib.parse.urlsplit(getattr(request, "full_url", request)).netloc
-    with console.wait_on(console.value(host), "answered") as wait:
+    with console.wait_on(console.value(host), "answered", result=False) as wait:
         return fetch_once(request, timeout, open_url, wait=wait)
 
 

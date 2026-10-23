@@ -298,8 +298,8 @@ def role_propagation_error(exc: Exception) -> bool:
 
 
 def retry(operation, retryable, name: str, state: str, end: str, delays: tuple[int, ...],
-          sleep=time.sleep):
-    with console.wait_on(name, end) as wait:
+          sleep=time.sleep, result: bool = True):
+    with console.wait_on(name, end, result=result) as wait:
         for delay in (*delays, None):
             try:
                 return operation()
@@ -313,7 +313,7 @@ def retry(operation, retryable, name: str, state: str, end: str, delays: tuple[i
 
 def with_role_propagation_retry(operation, sleep=time.sleep):
     return retry(operation, role_propagation_error, "IAM role", "not visible yet",
-                 "visible", ROLE_PROPAGATION_DELAYS, sleep)
+                 "visible", ROLE_PROPAGATION_DELAYS, sleep, result=False)
 
 
 def adopt_account(app: dict, session) -> str:

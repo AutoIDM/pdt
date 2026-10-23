@@ -124,14 +124,14 @@ class Wait:
 
 
 @contextmanager
-def waiting(message: str) -> Iterator[Wait]:
+def waiting(message: str, once: bool = False) -> Iterator[Wait]:
     """On a terminal, a spinner line under the output that names the wait and counts its seconds.
-    Off a terminal, one plain line on stderr the first time a process waits for `message`.
-    `message` has the form `<action>: details`. A wait in a worker thread shows no spinner,
-    since the thread that started it may show one."""
+    Off a terminal, one plain line on stderr; with `once`, only the first time a process waits
+    for `message`, as for a price read. `message` has the form `<action>: details`. A wait in
+    a worker thread shows no spinner, since the thread that started it may show one."""
     wait = Wait(message)
     if not _console.is_interactive or _data is not None:
-        if message not in _warned:
+        if not once or message not in _warned:
             _warned.add(message)
             _errors.print(f"[dim]{message}[/]")
         yield wait
@@ -167,10 +167,11 @@ class WaitOn:
 
 
 @contextmanager
-def wait_on(name: str, end: str, slow: str = "") -> Iterator[WaitOn]:
+def wait_on(name: str, end: str, slow: str = "", result: bool = True) -> Iterator[WaitOn]:
     """One line for one object that pdt polls until it reaches a state, such as a queue
     that Batch deletes. `slow`, an `<action>: details` line, shows from the start in place
-    of `name`, and no end line follows it."""
+    of `name`, and no end line follows it. The end line of a wait that is not the command's
+    `result`, such as a retried read, goes to stderr."""
     action, _, what = slow.partition(": ")
     wait = WaitOn(what or name, "" if slow else end)
     wait.now(action)
@@ -180,7 +181,8 @@ def wait_on(name: str, end: str, slow: str = "") -> Iterator[WaitOn]:
         if wait.spinner is not None:
             wait.spinner.stop()
     if wait.state != "" and wait.end != "":
-        status(f"{wait.end}: {name} ({round(monotonic() - wait.start)}s)")
+        (_console if result else _errors).print(
+            f"[dim]{wait.end}: {name} ({round(monotonic() - wait.start)}s)[/]")
 
 
 def field(label: str, value: str) -> None:

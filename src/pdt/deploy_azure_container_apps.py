@@ -416,9 +416,10 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
     if normalized_job(current) == desired:
         console.done(f"Container Apps Job {console.value(job)} is unchanged; skipped the update.")
         return current
-    run_quiet("rest", "--method", "patch", "--url", job_url(settings, job),
-              "--body", json.dumps(body), retry_access=True)
     with console.wait_on(f"Container Apps Job {console.value(job)}", "updated") as wait:
+        wait.now("updating")
+        run_quiet("rest", "--method", "patch", "--url", job_url(settings, job),
+                  "--body", json.dumps(body), retry_access=True)
         for _ in range(JOB_UPDATE_POLLS):
             resource = job_resource(settings, job)
             state = (resource.get("properties") or {}).get("provisioningState")

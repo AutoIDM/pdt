@@ -184,16 +184,23 @@ def test_get_open_into_a_folder_opens_the_saved_file(store, app, monkeypatch, tm
     assert (folder / "a.csv").read_text() == "a"
 
 
-def test_destroy_shows_its_read_wait_line_before_the_question(
-        store, app, monkeypatch, capsys):
+def test_destroy_reads_inside_a_wait_that_ends_before_the_question(store, app, monkeypatch,
+                                                                   waits):
+    fs = store.fs()
     seen = []
+    monkeypatch.setattr(Store, "fs", lambda self: type("Fs", (), {
+        "find": lambda self, path: seen.append(("find", list(waits))) or fs.find(path)})())
     monkeypatch.setattr("pdt.deploy.confirm",
-                        lambda actions, assume_yes: seen.append(capsys.readouterr().err) or False)
+                        lambda actions, assume_yes: seen.append(("confirm", list(waits))) or False)
     assert storage_cli.run(store, app, ["destroy"], False) == 1
-    assert seen == ["reading: objects under my-report/\n"]
+    assert seen == [("find", ["reading: objects under [bold not dim]my-report/[/]"]),
+                    ("confirm", [])]
 
 
-def test_query_reads_the_matching_objects_inside_a_wait(store, app, monkeypatch, capsys):
+def test_query_reads_the_matching_objects_inside_a_wait(store, app, monkeypatch, waits):
     monkeypatch.setitem(sys.modules, "duckdb", type(sys)("duckdb"))
+    seen = []
+    monkeypatch.setattr(Store, "fs", lambda self: type("Fs", (), {
+        "glob": lambda self, pattern: seen.append(list(waits)) or []})())
     assert storage_cli.run(store, app, ["query", "select * from 'none.csv'"], False) == 1
-    assert capsys.readouterr().err == "reading: objects that match none.csv\n"
+    assert seen == [["reading: objects that match [bold not dim]none.csv[/]"]]

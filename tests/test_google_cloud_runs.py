@@ -92,6 +92,19 @@ def test_list_runs_sorts_newest_first_and_a_missing_job_is_empty(monkeypatch):
     assert deploy_google_cloud.list_runs("p", "us-central1", "pdt-app") == []
 
 
+def test_a_redirected_run_list_holds_no_line_of_a_retried_read(monkeypatch, capsys):
+    answers = iter([subprocess.CompletedProcess([], 1, "", "ERROR: ABORTED: try again"),
+                    subprocess.CompletedProcess([], 0, "[]", "")])
+    monkeypatch.setattr(deploy_google_cloud.subprocess, "run", lambda *a, **kw: next(answers))
+    monkeypatch.setattr(deploy_google_cloud.time, "sleep", lambda seconds: None)
+    assert runs_cli.runs(lambda: deploy_google_cloud.list_runs("p", "us-central1", "pdt-app"),
+                         "app", []) == 0
+    out, err = capsys.readouterr()
+    assert out.splitlines()[0] == "app has not run yet."
+    assert "done:" not in out
+    assert "done: pdt gcloud run jobs executions list (0s)" in err
+
+
 def test_list_runs_sorts_an_execution_with_no_start_time_by_its_creation_time(monkeypatch):
     started = {
         "metadata": {"name": "pdt-app-old", "creationTimestamp": "2026-09-23T08:59:58Z"},

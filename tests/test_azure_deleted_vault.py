@@ -1,8 +1,6 @@
-from contextlib import contextmanager
-
 import pytest
 
-from pdt import console, deploy_azure
+from pdt import deploy_azure
 
 SETTINGS = {"vault": "pdt-abc"}
 
@@ -15,22 +13,16 @@ def recorded(monkeypatch, deleted):
     return calls
 
 
-def test_one_wait_covers_the_secret_delete_the_poll_and_the_purge(monkeypatch):
-    waits = []
-
-    @contextmanager
-    def waiting(message):
-        waits.append(message)
-        yield console.Wait(message)
-        waits.append("ended")
-
-    monkeypatch.setattr(console, "waiting", waiting)
-    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: waits.append(args[2]) or {"name": "s1"})
+def test_one_wait_covers_the_secret_delete_the_poll_and_the_purge(monkeypatch, waits):
+    seen = []
+    monkeypatch.setattr(deploy_azure, "az_json",
+                        lambda *args: seen.append((args[2], list(waits))) or {"name": "s1"})
     monkeypatch.setattr(deploy_azure, "run_quiet",
-                        lambda *args, **kwargs: waits.append(args[2]) or "")
+                        lambda *args, **kwargs: seen.append((args[2], list(waits))) or "")
     deploy_azure.purge_secret(SETTINGS, "s1")
-    assert waits == ["deleting: Key Vault secret [bold not dim]s1[/]", "delete",
-                     "show-deleted", "purge", "ended"]
+    wait = ["deleting: Key Vault secret [bold not dim]s1[/]"]
+    assert seen == [("delete", wait), ("show-deleted", wait), ("purge", wait)]
+    assert waits == []
 
 
 def test_no_deleted_vault_means_nothing_to_purge(monkeypatch):

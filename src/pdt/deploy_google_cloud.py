@@ -156,7 +156,7 @@ RETRY_WAITS = (10, 20, 40, 60, 60, 60)
 def gcloud(*args: str, data: str | None = None, slow: str = "") -> subprocess.CompletedProcess:
     stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
     with console.wait_on(console.value("pdt gcloud " + " ".join(args[:4])), "done",
-                         slow) as wait:
+                         slow, result=False) as wait:
         for seconds in (*RETRY_WAITS, None):
             proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
             if proc.returncode == 0:
@@ -820,7 +820,8 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
         if disabled and attempt < len(waits):
             wait = waits[attempt]
             with (nullcontext(billing_wait) if billing_wait
-                  else console.wait_on("Cloud Billing API", "ready")) as billing_wait:
+                  else console.wait_on("Cloud Billing API", "ready", result=False)
+                  ) as billing_wait:
                 billing_wait.now("not ready yet")
                 time.sleep(wait)
                 return cost_estimate(project, region, cron, job,

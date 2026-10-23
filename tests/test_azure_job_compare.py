@@ -231,3 +231,16 @@ def test_reconcile_returns_the_job_as_azure_holds_it_so_deploy_reads_it_no_more(
     assert azure.normalized_job(updated) == azure.normalized_job(fake.resource)
     assert azure.reconcile_job(SETTINGS, JOB, IMAGE, "0 0 * * *", IDENTITY, SECRET, STORAGE,
                                None, "report", FINGERPRINT) is None
+
+
+def test_one_wait_covers_the_patch_and_the_poll(monkeypatch, waits):
+    seen = []
+
+    class Recording(FakeAzure):
+        def run_quiet(self, *args, **kwargs):
+            seen.append((args[2], list(waits)))
+            return super().run_quiet(*args, **kwargs)
+
+    reconcile(monkeypatch, CURRENT, Recording(resource=body(cron="0 7 * * *")), cron="0 7 * * *")
+    wait = [f"Container Apps Job [bold not dim]{JOB}[/]"]
+    assert seen == [("patch", wait), ("get", wait), ("get", wait)]

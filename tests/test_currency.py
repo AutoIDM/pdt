@@ -194,6 +194,28 @@ def test_google_cloud_falls_back_to_the_ecb_rate(monkeypatch):
     assert "converted from USD at the ECB rate of 2026-10-08" in estimate.prices
 
 
+def test_each_past_run_read_and_the_ecb_read_is_inside_its_own_wait(monkeypatch, capsys, waits):
+    def billing_list(path, key, project, currency=""):
+        if path == "services":
+            return [{"displayName": name, "serviceId": name}
+                    for name in ("Cloud Run", "Cloud Scheduler", "Secret Manager")]
+        if currency not in ("", "USD"):
+            raise LookupError("no GBP prices")
+        return google_skus(currency)
+
+    seen = []
+    monkeypatch.setattr(deploy_google_cloud, "billing_list", billing_list)
+    monkeypatch.setattr(deploy_google_cloud, "average_run_seconds",
+                        lambda *args: seen.append(list(waits)) or 60.0)
+    monkeypatch.setattr(deploy_common, "ecb_xml", lambda: seen.append(list(waits)) or ECB)
+    deploy_google_cloud.cost_estimate(
+        "my-project", "europe-west2", "0 6 * * *", "job", True, 0, True, currency="GBP")
+    past_runs = "reading: past runs of Cloud Run job [bold not dim]job[/]"
+    assert seen == [[past_runs], [past_runs],
+                    ["reading: exchange rate from the European Central Bank"]]
+    assert capsys.readouterr().err.count("reading: past runs of Cloud Run job job\n") == 2
+
+
 def test_aws_converts_at_the_ecb_rate(monkeypatch):
     monkeypatch.setattr(deploy_common, "ecb_xml", lambda: ECB)
     estimate = deploy_aws.cost_estimate("eu-west-2", [("job", 1.0)], "", "GBP")

@@ -198,12 +198,28 @@ def test_a_wait_names_what_it_waits_for_and_counts_its_seconds(monkeypatch):
     assert "a line" in out.getvalue()
 
 
-def test_a_wait_off_a_terminal_prints_one_plain_line_on_stderr_once_per_message(capsys):
+def test_a_wait_off_a_terminal_prints_one_plain_line_on_stderr_each_time(capsys):
     for _ in range(2):
         with console.waiting("reading: run list") as wait:
             wait.now("waiting: new run in the run list")
-            console.say("1  succeeded")
-    assert capsys.readouterr() == ("1  succeeded\n1  succeeded\n", "reading: run list\n")
+        console.say("1  succeeded")
+    assert capsys.readouterr() == ("1  succeeded\n1  succeeded\n",
+                                   "reading: run list\nreading: run list\n")
+
+
+def test_a_wait_with_once_prints_its_plain_line_only_the_first_time(capsys):
+    for _ in range(2):
+        with console.waiting("reading: prices from the AWS price list", once=True):
+            pass
+    assert capsys.readouterr().err == "reading: prices from the AWS price list\n"
+
+
+def test_the_end_line_of_a_wait_that_is_not_the_result_goes_to_stderr(capsys):
+    with console.wait_on("pdt gcloud run jobs executions list", "done", result=False) as wait:
+        wait.now("Cloud Run API is not ready yet")
+    assert capsys.readouterr() == ("", "Cloud Run API is not ready yet: pdt gcloud run jobs "
+                                       "executions list\n"
+                                       "done: pdt gcloud run jobs executions list (0s)\n")
 
 
 def test_a_poll_off_a_terminal_prints_its_state_lines_on_stderr(capsys):
