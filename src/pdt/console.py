@@ -326,11 +326,12 @@ def ask(question: str, default: str = "") -> str:
 YES_NO = {"y": True, "yes": True, "n": False, "no": False}
 
 
-def confirm(question: str = "Proceed?", default: bool = False) -> bool:
+def confirm(question: str = "Proceed?", default: bool = False, choices: str = "") -> bool:
     """Ask until the answer is y, yes, n, or no in any case; Enter takes the default.
+    `choices` replaces the [y/N] after the question.
 
     End of input raises EOFError."""
-    choices = "\\[Y/n]" if default else "\\[y/N]"
+    choices = escape(choices) or ("\\[Y/n]" if default else "\\[y/N]")
     while True:
         answer = _console.input(f"[bold]{escape(question)}[/] {choices} ").strip().lower()
         if answer == "":

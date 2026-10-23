@@ -383,15 +383,18 @@ def save_app_key(app: dict, key: str, value) -> Path:
     return path
 
 
-def save_platform_key(app: dict, key: str, value: str) -> Path:
+def save_platform_key(app: dict, key: str, value: str, path: Path | None = None) -> Path:
+    """Write one platform key into `path`, or else into pdt.yml when the app has the provider
+    of pdt.yml, and into the app's config.yml when it does not."""
     # Edit the text rather than rewrite the yaml, so the user's comments survive.
     from pdt import console
-    project_file = find_project() / PROJECT_FILE
-    root_cfg = load_yaml(project_file)
-    if (root_cfg.get("platform") or {}).get("provider") == app["platform"].get("provider"):
-        path = project_file
-    else:
-        path = app["dir"] / APP_FILE
+    if path is None:
+        project_file = find_project() / PROJECT_FILE
+        root_cfg = load_yaml(project_file)
+        if (root_cfg.get("platform") or {}).get("provider") == app["platform"].get("provider"):
+            path = project_file
+        else:
+            path = app["dir"] / APP_FILE
     shown = path.relative_to(find_project())
     if keep_unsaved(key, value, platform=True):
         console.note(f"Using {console.escape(key)} {console.value(value)}. A deploy saves it to "

@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pdt import __version__, config, console, powershell, pwsh, regions, watch
+from pdt import __version__, config, console, deploy, powershell, pwsh, regions, watch
 from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
                         merged_app, powershell_scripts)
 from pdt.utils.env_secret import private_file
@@ -358,11 +358,27 @@ def replace_platform(text: str, platform: dict) -> str:
     return "\n".join(lines)
 
 
-def provider_and_region(root_cfg: dict, root_platform: dict, app_dir: Path) -> tuple:
-    platform = {**root_platform,
-                **(config.root_app_entry(root_cfg, app_dir.name).get("platform") or {}),
-                **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
-    return platform.get("provider"), platform.get("region")
+def merged_platform(root_cfg: dict, root_platform: dict, app_dir: Path) -> dict:
+    return {**root_platform,
+            **(config.root_app_entry(root_cfg, app_dir.name).get("platform") or {}),
+            **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
+
+
+def moves(before: dict, after: dict) -> bool:
+    return ((before.get("provider"), before.get("region"))
+            != (after.get("provider"), after.get("region")))
+
+
+def ask_apps(numbered: list[str]) -> list[str]:
+    """The apps the user picks by their number in the table, or none to cancel."""
+    while True:
+        answer = _ask("Type the numbers of the apps to move, separated by spaces "
+                      "(Enter cancels)")
+        numbers = answer.replace(",", " ").split()
+        if all(number.isdigit() and 1 <= int(number) <= len(numbered) for number in numbers):
+            return [name for index, name in enumerate(numbered, start=1)
+                    if str(index) in numbers]
+        console.warn(f"Please type numbers from 1 to {console.value(len(numbered))}.")
 
 
 def change_provider(target: Path) -> int:
@@ -375,43 +391,90 @@ def change_provider(target: Path) -> int:
     console.say(f"{console.value(target)} is already a pdt project.")
     if old != "":
         console.field("Runs on", NAMES.get(old, old))
+    deployed = [name for name in config.read_state().get("deployed") or []
+                if name in config.app_folders()]
+    apps = {name: config.merged_app(name) for name in deployed}
+    numbered = [name for name in deployed if apps[name]["platform_from"] == PROJECT_FILE]
+    where = {name: deploy.describe_place(config.place(config.deployed_platform(name)
+                                                      or apps[name]["platform"]))
+             for name in deployed}
+    if deployed:
+        console.say()
+        console.table(["", "app", "where"],
+                      [[str(numbered.index(name) + 1), name, where[name]] if name in numbered
+                       else ["", name, f"{where[name]}; edit {apps[name]['platform_from']} "
+                                       "to move it"]
+                       for name in deployed])
     provider = ask_provider(old if old in config.PROVIDERS else "")
     if provider == "":
         console.say("Nothing changed.")
         return 0
     platform = ask_settings(provider, kept_settings(current, provider))
     changed = bom + replace_platform(text.removeprefix(bom), platform)
-    moved = [name for name in config.read_state().get("deployed") or []
-             if name in config.app_folders()
-             and provider_and_region(root_cfg, current, target / name)
-             != provider_and_region(root_cfg, platform, target / name)]
-    if moved:
+    there = deploy.describe_place(config.place(platform))
+    moving = []
+    if numbered and moves(current, platform):
+        here = deploy.describe_place(config.place(current))
+        choice = _ask_choice(f"What should happen to the apps deployed on {console.escape(here)}?",
+                             ["Move all", "Move some",
+                              f"Keep them on {here} (only new apps go to {there})", "Cancel"], 4)
+        if choice == 1:
+            moving = numbered
+        elif choice == 2:
+            moving = ask_apps(numbered)
+        if choice == 4 or choice == 2 and not moving:
+            console.say("Cancelled. Nothing changed.")
+            return 0
+    if moving:
         console.say()
-        console.warn("These deployed apps move to another provider or region: "
-                     + ", ".join(console.value(name) for name in moved))
-        console.say(f"{console.value('pdt destroy')} reaches an app only where "
-                    f"{console.value(PROJECT_FILE)} says it runs. After the move, it cannot "
-                    "reach the old deploy.")
+        console.say(f"pdt init runs {console.value('pdt destroy')} for "
+                    f"{', '.join(console.value(name) for name in moving)}, "
+                    f"then saves {console.value(PROJECT_FILE)}.")
+        console.say(f"{console.value('pdt destroy')} keeps each app's stored data.")
         try:
-            answer = console.confirm("Move them anyway?")
+            answer = console.confirm("Remove them?", choices="[y = remove and continue, N = cancel]")
         except EOFError:
             answer = False
         if not answer:
-            console.say()
-            console.next_steps([*((f"pdt destroy {name}", "remove the deployed app first")
-                                  for name in moved),
-                                ("pdt init", "then move the project")])
+            console.say("Cancelled. Nothing changed.")
             return 0
+    removed, pinned = [], []
+    for name in moving:
+        console.say()
+        if deploy.destroy(name, assume_yes=True) != 0:
+            console.error(f"{console.value(name)} was not removed. "
+                          f"It is still deployed on {console.value(where[name])}.")
+            break
+        removed.append(name)
+    console.say()
+    for name in deployed:
+        before = merged_platform(root_cfg, current, target / name)
+        after = merged_platform(root_cfg, platform, target / name)
+        if name in removed or not moves(before, after):
+            continue
+        for key, value in before.items():
+            if value is not None and after.get(key) != value:
+                config.save_platform_key(apps[name], key, str(value),
+                                         path=target / name / APP_FILE)
+        pinned.append(name)
+        console.say(f"{console.value(name)} stays on "
+                    f"{console.value(deploy.describe_place(config.place(before)))}. "
+                    f"Its {console.value('platform:')} settings are in "
+                    f"{console.value(f'{name}/{APP_FILE}')}.")
     with config.locked(marker):
         if marker.read_bytes().decode("utf-8") != text:
             raise ConfigError(f"{PROJECT_FILE} changed while pdt init was asking; "
                               "run pdt init again")
         config.write_text_atomically(marker, changed, newline="")
-    console.say()
     console.done(f"Saved the {console.value('platform:')} settings to {console.value(PROJECT_FILE)}.")
-    console.next_steps([("pdt validate", "check every app on the new settings"),
-                        ("pdt deploy --all", f"deploy every app to {NAMES[provider]}")])
-    return 0
+    console.say()
+    if removed:
+        console.next_steps([(f"pdt deploy {name}", f"deploy it to {console.escape(there)}")
+                            for name in removed])
+    elif not moving and not pinned:
+        console.next_steps([("pdt validate", "check every app on the new settings"),
+                            ("pdt deploy --all", f"deploy every app to {NAMES[provider]}")])
+    return 0 if removed == moving else 1
 
 
 def project_yaml(platform: dict) -> str:
