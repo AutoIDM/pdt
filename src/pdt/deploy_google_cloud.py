@@ -79,7 +79,7 @@ from pdt import console
 from pdt import gcloud_sdk
 from pdt import lifecycle
 from pdt import regions
-from pdt.deploy import DECLINED, confirm
+from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
     ensure_image, fail, fetch_json, gather_secrets, image_action, run_build,
@@ -245,7 +245,7 @@ def login_with_key_file() -> bool:
 def ensure_credentials() -> None:
     if have_credentials():
         return
-    if login_with_key_file():
+    if config.unsaved() is None and login_with_key_file():
         return
     if not can_ask():
         fail(f"no Google Cloud sign-in on this computer; set "
@@ -314,9 +314,7 @@ def choose_project(app: dict, requested: str) -> str:
             fail("no Google Cloud project selected")
         create_project(answer)
         project = answer
-    saved = config.save_platform_key(app, "project", project)
-    console.done(f"Saved project {console.value(project)} to "
-                 f"{console.value(saved.relative_to(config.find_project()))}.")
+    config.save_platform_key(app, "project", project)
     return project
 
 
@@ -848,12 +846,14 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     return run_secrets(action, app, current, write, assume_yes, name)
 
 
-def deploy(app: dict, assume_yes: bool) -> int:
+def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     cloud = build_in_cloud(app, "Cloud Build", "linux/amd64")
     name = app["name"]
     project, region = project_region(app)
     console.status("Checking your Google Cloud sign-in...")
     project = preflight(app, project, assume_yes)
+    # A plan cannot read the project, or price it, before these APIs are on, so a plan enables
+    # them the way --yes does. Enabling an API costs nothing.
     billing_confirmed = ensure_apis(project, assume_yes,
                                     (*APIS, CLOUD_BUILD_API) if cloud else APIS)
 
@@ -955,6 +955,8 @@ def deploy(app: dict, assume_yes: bool) -> int:
                          1 if values else 0, assume_yes, billing_confirmed,
                          store_usage=usage, currency=regions.local_currency())
 
+    if plan_only:
+        return show_plan(actions, cost)
     if not confirm(actions, assume_yes, cost):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
@@ -1472,6 +1474,7 @@ def main() -> int:
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--plan", action="store_true")
     args = parser.parse_intermixed_args()
     try:
         app = config.merged_app(args.app)
@@ -1493,7 +1496,7 @@ def main() -> int:
     if args.command == "secrets":
         return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
-        return deploy(app, args.yes)
+        return deploy(app, args.yes, args.plan)
     return destroy(app, args.yes)
 
 

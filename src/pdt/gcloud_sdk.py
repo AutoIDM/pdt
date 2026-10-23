@@ -32,7 +32,7 @@ import tempfile
 from pathlib import Path
 
 from pdt import console
-from pdt.config import data_home
+from pdt.config import data_home, unsaved
 from pdt.download import fetch_verified
 
 VERSION = "581.0.0"
@@ -89,6 +89,9 @@ def ensure_gcloud() -> str:
     if LOCAL_GCLOUD.is_file():
         set_sdk_python()
         return str(LOCAL_GCLOUD)
+    if unsaved() is not None:
+        raise GcloudError("the Google Cloud CLI is not installed, and a plan installs nothing; "
+                          "run the deploy without --plan to install it")
     key = sdk_platform()
     console.status(f"Installing the Google Cloud CLI {VERSION} (~150 MB) to "
                    f"{console.value(SDK_DIR)}. This happens once and can take several minutes...")

@@ -279,10 +279,12 @@ def merged_app(name: str) -> dict:
     # runs on local time and any timezone it sets does not apply.
     timezone = ("local" if platform.get("provider") == "windows" else
                 own.get("timezone", entry.get("timezone", platform.get("timezone", "Etc/UTC"))))
+    plan = unsaved() or {}
+    platform.update(plan.get("platform", {}))
     return {
         "name": name,
         "dir": app_dir,
-        "schedule": own.get("schedule", entry.get("schedule")),
+        "schedule": plan.get("schedule", own.get("schedule", entry.get("schedule"))),
         "timezone": timezone,
         "platform": platform,
         "config": {
@@ -302,6 +304,42 @@ def merged_app(name: str) -> dict:
     }
 
 
+# `pdt deploy --plan` changes no config file. A value that a deploy saves there (a schedule, a
+# region, an account id) goes in this variable as JSON instead, so the provider script that the
+# plan starts reads the same value.
+PLAN_ENV = "PDT_PLAN_VALUES"
+
+
+@contextmanager
+def plan_only():
+    previous = os.environ.get(PLAN_ENV)
+    os.environ[PLAN_ENV] = "{}"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(PLAN_ENV, None)
+        else:
+            os.environ[PLAN_ENV] = previous
+
+
+def unsaved() -> dict | None:
+    raw = os.environ.get(PLAN_ENV)
+    return None if raw is None else json.loads(raw)
+
+
+def keep_unsaved(key: str, value, platform: bool = False) -> bool:
+    plan = unsaved()
+    if plan is None:
+        return False
+    if platform:
+        plan.setdefault("platform", {})[key] = value
+    else:
+        plan[key] = value
+    os.environ[PLAN_ENV] = json.dumps(plan)
+    return True
+
+
 def save_app_key(app: dict, key: str, value) -> Path:
     """Write one top-level key into the app's config.yml, the most specific file.
 
@@ -309,6 +347,8 @@ def save_app_key(app: dict, key: str, value) -> Path:
     and holds the same lock and atomic replace as `save_platform_key`.
     """
     path = app["dir"] / APP_FILE
+    if keep_unsaved(key, value):
+        return path
     text = ("true" if value else "false") if isinstance(value, bool) else yaml_quoted(value)
     with locked(path):
         lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
@@ -325,12 +365,18 @@ def save_app_key(app: dict, key: str, value) -> Path:
 
 def save_platform_key(app: dict, key: str, value: str) -> Path:
     # Edit the text rather than rewrite the yaml, so the user's comments survive.
+    from pdt import console
     project_file = find_project() / PROJECT_FILE
     root_cfg = load_yaml(project_file)
     if (root_cfg.get("platform") or {}).get("provider") == app["platform"].get("provider"):
         path = project_file
     else:
         path = app["dir"] / APP_FILE
+    shown = path.relative_to(find_project())
+    if keep_unsaved(key, value, platform=True):
+        console.note(f"Using {console.escape(key)} {console.value(value)}. A deploy saves it to "
+                     f"{console.value(shown)}; this plan changes no file.")
+        return path
     with locked(path):
         lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
         start = next((i for i, line in enumerate(lines) if line.strip() == "platform:"), None)
@@ -350,6 +396,7 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
                 indent = _indent(lines[first]) if first is not None else "  "
                 lines.insert((first if first is not None else start) + 1, f"{indent}{key}: {yaml_quoted(value)}")
         write_text_atomically(path, "\n".join(lines) + "\n")
+    console.done(f"Saved {console.escape(key)} {console.value(value)} to {console.value(shown)}.")
     return path
 
 
@@ -468,6 +515,8 @@ def read_state() -> dict:
 
 
 def write_state(state: dict, name: str = "state") -> None:
+    if unsaved() is not None:
+        return
     path = _state_path(name)
     path.parent.mkdir(exist_ok=True)
     # Self-ignoring, so projects created before this dir existed stay clean.

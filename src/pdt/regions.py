@@ -392,8 +392,9 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
         return ""
     region, reason = region_suggestion(provider, app["platform"])
     if assume_yes:
-        console.say(f"Using {PROVIDER_NAMES[provider]} region {console.value(region)}, because "
-                    f"{console.escape(reason)}.")
+        if config.unsaved() is None:
+            console.say(f"Using {PROVIDER_NAMES[provider]} region {console.value(region)}, "
+                        f"because {console.escape(reason)}.")
     elif not can_prompt(None):
         return (f"no {PROVIDER_NAMES[provider]} region is set. Add `region: {region}` under "
                 f"platform: in {config.PROJECT_FILE}, or run again with --yes to use {region}.")
@@ -406,7 +407,5 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
         except EOFError:
             return (f"no {PROVIDER_NAMES[provider]} region is set. Add `region: {region}` under "
                     f"platform: in {config.PROJECT_FILE}.")
-    saved = config.save_platform_key(app, "region", region)
-    console.done(f"Saved region {console.value(region)} to "
-                 f"{console.value(saved.relative_to(config.find_project()))}.")
+    config.save_platform_key(app, "region", region)
     return ""

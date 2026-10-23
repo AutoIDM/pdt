@@ -75,7 +75,7 @@ def test_a_deploy_that_started_the_run_does_not_suggest_starting_one(width, caps
 
 
 def test_every_provider_gets_the_next_steps_from_the_neutral_deploy():
-    assert inspect.getsource(deploy.deploy).count("deployed_next_steps(") == 1
+    assert inspect.getsource(deploy._deploy).count("deployed_next_steps(") == 1
 
 
 @pytest.mark.parametrize("module", [deploy_aws_batch, deploy_azure_container_apps,

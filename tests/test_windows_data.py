@@ -113,6 +113,19 @@ def test_deploy_creates_the_folders_before_registering_the_task(project, monkeyp
         "Register-ScheduledTask")
 
 
+def test_a_plan_shows_the_plan_and_registers_nothing(project, monkeypatch, capsys):
+    app = windows_app(project)
+    monkeypatch.setattr(deploy_windows, "_preflight",
+                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_run", lambda *args, **kw: pytest.fail("ran a script"))
+    monkeypatch.setattr(deploy_windows, "confirm", lambda *args: pytest.fail("asked to proceed"))
+    assert deploy_windows.deploy(app, assume_yes=False, plan_only=True) == 0
+    out = capsys.readouterr().out
+    assert "Plan:" in out and "Task Scheduler on this Windows computer" in out
+
+
 def test_deploy_says_what_it_does_before_each_slow_step(project, monkeypatch, capsys):
     app = windows_app(project)
     monkeypatch.setattr(deploy_windows, "_preflight",
