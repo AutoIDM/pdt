@@ -92,8 +92,8 @@ from pdt.utils.env_secret import private_file
 
 # The multi-platform index digest, so a local and a cloud build start from the same layers.
 # To bump it, read the digest of the tag's index from ghcr.io.
-BASE_IMAGE = ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
-              "@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58")
+BASE_IMAGE = ("ghcr.io/astral-sh/uv:python3.12-trixie-slim"
+              "@sha256:9b8477a5f2e2f96fa99eaecb7680c1c4c9f527926430f3b630bfb2c3641f8f20")
 # sh as PID 1 ignores SIGTERM, so the entrypoint passes a platform's stop on to
 # lifecycle.py, which ends the run with job:run-failed, and the log still ends
 # with `pdt: exit N`.
@@ -112,7 +112,7 @@ RUN uv sync --script run.py
 COPY . /workspace
 """ + ENTRYPOINT.replace("{start}", "uv run --script run.py")
 POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu76 libssl3t64 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFFERED=1
 RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
 RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh && echo '{{"LogLevel":"Critical"}}' > "$(dirname "$pwsh")/powershell.config.json"
