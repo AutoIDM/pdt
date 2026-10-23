@@ -17,6 +17,7 @@
 | `pdt deploy --all` | deploy every enabled app, in order; skips an app whose plan you decline; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
 | `pdt destroy APP` | remove everything deploy created |
 | `pdt destroy --all` | destroy every deployed app, in order; each app shows its plan and asks; asks whether to skip an app that fails; add `--yes --skip-failures` to run unattended |
+| `pdt move APP` | move the app, and any apps you pick that share its provider, region, and account, to another provider, region, or account: destroy, update the config files, deploy |
 | `pdt pause APP` | stop the deployed schedule from starting runs; writes `pause: true` into the app's `config.yml` |
 | `pdt unpause APP` | let the schedule start runs again; writes `pause: false` |
 | `pdt secrets APP` | show which `.env` values differ from the deployed app |

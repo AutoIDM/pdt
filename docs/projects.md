@@ -12,7 +12,9 @@ pdt init my-jobs
 
 Region is the only place setting it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it.
 
-To move a project to another provider, run `pdt init` in the project and pick the new provider. If apps are deployed, `pdt init` lists them and asks which to move: all, some, or none. For each app you move, it runs `pdt destroy` where the app is deployed, then updates `pdt.yml` to deploy to the new provider. Stored data will not be deleted. Each app that stays gets its current place written into its `config.yml`. An app whose own `config.yml` sets its provider does not move; edit that file to move it. Then run `pdt deploy <app>` for each app you moved.
+To move a project to another provider, run `pdt init` in the project and pick the new provider. If apps are deployed, `pdt init` lists them and asks which to move: all, some, or none. It then shows a plan: `pdt destroy` for each app you move, where the app is deployed, the config files it updates, and `pdt deploy` for each app it removed. After you continue, it does each step. Stored data will not be deleted. Each app that stays gets its current place written into its `config.yml`. `pdt init` does not move an app whose own `config.yml` sets its provider.
+
+To move one app, run `pdt move <app>`. When other apps use the same provider, region, and account, it asks which apps to move: only this app, some, or all. It asks where to, and whether to make that the default platform in `pdt.yml`. Then it shows the same plan and asks before it changes anything. An app that deploys to the place in `pdt.yml` gets no `platform:` block in its `config.yml`. For an app with no provider, `pdt move` asks the same questions as `pdt init`.
 
 pdt suggests the region nearest to you from your computer's time zone. If `pdt.yml` has no region when you first deploy, the deploy suggests one the same way, asks you to confirm it or type another, and saves your answer. With `--yes` it takes the suggestion and tells you which region it used.
 
