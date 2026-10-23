@@ -15,7 +15,6 @@ def platform_lines(platform: dict) -> list[str]:
 
 
 def replace_platform(text: str, platform: dict, shown: str = PROJECT_FILE) -> str:
-    """`text` with its platform: block set to `platform`, or removed when `platform` is empty."""
     import yaml
     end_of_line = "\r" if "\r\n" in text else ""
     lines = text.split("\n")
@@ -69,7 +68,6 @@ def read_text(path: Path) -> str:
 
 
 def platform_change(path: Path, text: str, platform: dict) -> tuple[Path, str, str]:
-    """The file, its `text`, and that text with the platform: block set to `platform`."""
     bom = "﻿" if text.startswith("﻿") else ""
     shown = path.relative_to(config.find_project()).as_posix()
     return path, text, bom + replace_platform(text.removeprefix(bom), platform, shown)
@@ -100,14 +98,12 @@ def merged_platform(root_cfg: dict, root_platform: dict, app_dir: Path) -> dict:
 
 
 def configured(name: str) -> dict:
-    """Where the platform: blocks of the config deploy the app."""
     root_cfg = config.load_yaml(config.find_project() / PROJECT_FILE)
     return deploy.resolved(merged_platform(root_cfg, root_cfg.get("platform") or {},
                                            config.find_project() / name))
 
 
 def settings_in(name: str) -> str:
-    """The file whose platform: block sets the app's place."""
     if config.load_yaml(config.find_project() / name / APP_FILE).get("platform"):
         return f"{name}/{APP_FILE}"
     root_cfg = config.load_yaml(config.find_project() / PROJECT_FILE)
@@ -117,7 +113,6 @@ def settings_in(name: str) -> str:
 
 
 def current(name: str) -> dict:
-    """Where the app is deployed, or where its config deploys it when it is not deployed."""
     return config.deployed_platform(name) or configured(name)
 
 
@@ -179,7 +174,6 @@ def kept_settings(current: dict, provider: str) -> dict:
 
 
 def ask_place(current: dict) -> dict | None:
-    """The provider and its settings, starting from `current`; None when the user cancels."""
     keys = [key for key, _label in PROVIDER_CHOICES[:-1]]
     labels = [label for _key, label in PROVIDER_CHOICES[:-1]] + ["Cancel"]
     provider = str(current.get("provider") or "")
