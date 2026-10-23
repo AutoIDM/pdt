@@ -1,8 +1,9 @@
 import json
+import os
 
 import pytest
 
-from pdt import alerts_cli, cli, config, console, deploy, deploy_azure, scaffold
+from pdt import alerts_cli, cli, config, console, deploy, deploy_aws, deploy_azure, scaffold
 
 APP = scaffold.STARTER
 AWS = "platform:\n  provider: aws\n  region: us-east-1\n  account: \"123456789012\"\n"
@@ -62,7 +63,7 @@ def test_a_deploy_records_where_the_app_runs_and_a_destroy_forgets_it(project, m
     Cloud(monkeypatch)
     assert deploy.deploy(APP, run=False) == 0
     assert config.is_deployed(APP)
-    assert config.deployed_places() == {APP: config.place(config.merged_app(APP)["platform"])}
+    assert config.deployed_places() == {APP: config.place(deploy.resolved(config.merged_app(APP)["platform"]))}
     assert config.deployed_places()[APP]["provider"] == config.merged_app(APP)["platform"]["provider"]
     assert deploy.destroy(APP) == 0
     assert not config.is_deployed(APP)
@@ -106,7 +107,7 @@ def test_remove_first_destroys_at_the_recorded_place_then_deploys(project, monke
     (project / "pdt.yml").write_text(new)
     cloud = Cloud(monkeypatch, answers=["3", "1"])
     assert deploy.deploy(APP, run=False) == 0
-    current = config.merged_app(APP)["platform"]
+    current = deploy.resolved(config.merged_app(APP)["platform"])
     assert cloud.calls == [(recorded["provider"], "destroy", recorded),
                            (current["provider"], "deploy", None)]
     assert config.deployed_platform(APP) == current
@@ -265,3 +266,80 @@ def test_a_destroy_with_a_record_needs_the_recorded_azure_subscription(project, 
     out = capsys.readouterr().out
     assert "is deployed to Azure subscription sub-1" in out
     assert "\n  pdt az login" in out and f"\n  pdt destroy {APP}" in out
+
+
+def test_a_declined_deploy_keeps_a_found_key_and_restores_the_record(project, monkeypatch):
+    (project / "pdt.yml").write_text(GOOGLE.replace("  project: my-project\n", ""))
+    monkeypatch.setenv("PDT_GOOGLE_CLOUD_PROJECT", "project-a")
+    Cloud(monkeypatch)
+    assert deploy.deploy(APP, run=False) == 0
+    recorded = config.deployed_platform(APP)
+    monkeypatch.delenv("PDT_GOOGLE_CLOUD_PROJECT")
+    seen = []
+
+    def dispatch(*args, **kwargs):
+        seen.append(config.deployed_platform(APP))
+        config.save_platform_key(config.merged_app(APP), "project", "project-a")
+        return deploy.DECLINED
+
+    monkeypatch.setattr(deploy, "dispatch", dispatch)
+    assert deploy.deploy(APP, run=False) == deploy.DECLINED
+    assert seen[0]["project"] == "project-a"
+    assert config.deployed_platform(APP) == recorded
+
+
+def test_a_declined_first_deploy_is_not_deployed(project, monkeypatch):
+    (project / "pdt.yml").write_text(AWS)
+    Cloud(monkeypatch)
+    monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: deploy.DECLINED)
+    assert deploy.deploy(APP, run=False) == deploy.DECLINED
+    assert not config.is_deployed(APP)
+    assert config.deployed_platform(APP) is None
+
+
+def test_a_failed_deploy_records_the_keys_it_saved(project, monkeypatch):
+    (project / "pdt.yml").write_text(AWS.replace("  account: \"123456789012\"\n", ""))
+
+    def dispatch(*args, **kwargs):
+        config.save_platform_key(config.merged_app(APP), "account", "123456789012")
+        return 1
+
+    Cloud(monkeypatch)
+    monkeypatch.setattr(deploy, "dispatch", dispatch)
+    assert deploy.deploy(APP, run=False) == 1
+    assert config.deployed_places()[APP]["account"] == "123456789012"
+
+
+def test_destroy_goes_to_the_default_resource_group_the_app_was_deployed_to(project,
+                                                                             monkeypatch):
+    monkeypatch.delenv("PDT_AZURE_RESOURCE_GROUP", raising=False)
+    (project / "pdt.yml").write_text(AZURE)
+    cloud = Cloud(monkeypatch)
+    assert deploy.deploy(APP, run=False) == 0
+    monkeypatch.setenv("PDT_AZURE_RESOURCE_GROUP", "other-group")
+    assert deploy.destroy(APP) == 0
+    assert cloud.calls[-1][2]["resource_group"] == "pdt"
+
+
+def test_the_aws_session_uses_the_region_the_record_has(monkeypatch):
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+
+    class Session:
+        def __init__(self, region_name=None, profile_name=None):
+            self.region_name = region_name or os.environ["AWS_DEFAULT_REGION"]
+            self.profile_name = profile_name
+
+        def get_credentials(self):
+            return object()
+
+        def client(self, *args, **kwargs):
+            return self
+
+        def get_caller_identity(self):
+            return {}
+
+    monkeypatch.setattr(deploy_aws.boto3, "Session", Session)
+    platform = {"provider": "aws"}
+    session = deploy_aws.ensure_session({"name": APP, "platform": platform})
+    assert session.region_name == deploy.resolved(platform)["region"] == "us-east-1"

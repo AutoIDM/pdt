@@ -322,9 +322,12 @@ def test_a_declined_plan_or_a_failure_fails_the_step_and_a_success_completes_it(
     assert [name for name, _ in deployable] == [f"app:{command}-started", f"app:{command}-{event}"]
     assert deployable[-1][1].get("reason") == reason
     assert deployable[-1][1]["app"] == scaffold.STARTER
-    platform = {"provider": "aws", "region": "us-east-1"} if command == "deploy" else None
-    before = [(scaffold.STARTER, platform)] if command == "deploy" else []
-    assert marked == before + ([(scaffold.STARTER, platform)] if code == 0 else [])
+    platform = {"provider": "aws", "region": "us-east-1"}
+    if command == "deploy":
+        after = None if code == deploy.DECLINED else platform
+        assert marked == [(scaffold.STARTER, platform), (scaffold.STARTER, after)]
+    else:
+        assert marked == ([(scaffold.STARTER, None)] if code == 0 else [])
 
 
 @pytest.mark.parametrize(("deployed", "override", "trigger"), [

@@ -779,7 +779,7 @@ def login_error(exc: Exception) -> bool:
 
 
 def ensure_session(app: dict):
-    region = app["platform"].get("region") or None
+    region = app["platform"].get("region") or os.environ.get("AWS_REGION") or None
     profile = app["platform"].get("profile") or None
     if profile and profile not in boto3.Session().available_profiles:
         console.warn(f"AWS profile {console.value(repr(profile))} from your config is not on "

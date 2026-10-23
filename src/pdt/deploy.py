@@ -251,12 +251,15 @@ PLACE_ENV = {
               "environment": ("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT",)},
     "google-cloud": {"project": ("PDT_GOOGLE_CLOUD_PROJECT",)},
 }
+# The place key a provider script takes when neither the config nor the environment names it.
+PLACE_DEFAULTS = {"azure": {"resource_group": "pdt"}}
 
 
 def resolved(platform: dict) -> dict:
     provider = platform.get("provider")
     names = {**PLACE_ENV.get(provider, {}), "region": regions.REGION_ENV.get(provider, ())}
-    found = {key: next((os.environ[name] for name in env if os.environ.get(name)), "")
+    found = {key: next((os.environ[name] for name in env if os.environ.get(name)),
+                       PLACE_DEFAULTS.get(provider, {}).get(key, ""))
              for key, env in names.items() if not platform.get(key)}
     return {**platform, **{key: value for key, value in found.items() if value}}
 
@@ -324,10 +327,14 @@ STEP_EVENTS = {
 def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
                   rebuild: bool = False, platform: dict | None = None) -> int:
     """Run `deploy` or `destroy` through the provider script between its STEP_EVENTS, and
-    on success record whether the app is now deployed."""
+    record whether the app is now deployed: a deploy records its place before and after the
+    script and restores the old record when the user declines; a destroy that succeeds
+    forgets the app."""
     started, completed, failed = STEP_EVENTS[command]
     if command == "deploy":
-        config.mark_deployed(app_name, resolved(config.merged_app(app_name)["platform"]))
+        was_deployed = config.is_deployed(app_name)
+        before = config.deployed_platform(app_name)
+        written = record_place(app_name, before)
     params = lifecycle.app_params(app_name, provider)
     lifecycle.emit(started, **params)
     try:
@@ -336,6 +343,10 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
     except KeyboardInterrupt:
         lifecycle.emit(failed, **params, reason="interrupted")
         raise
+    if command == "deploy" and code != DECLINED:
+        record_place(app_name, written)
+    elif command == "deploy" and (before is not None or not was_deployed):
+        config.mark_deployed(app_name, before)
     if code in (DECLINED, 130, -signal.SIGINT):
         lifecycle.emit(failed, **params, exit_code=code,
                        reason="declined" if code == DECLINED else "interrupted")
@@ -343,10 +354,20 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
     if code != 0:
         lifecycle.emit(failed, **params, exit_code=code)
         return code
-    config.mark_deployed(app_name, resolved(config.merged_app(app_name)["platform"])
-                         if command == "deploy" else None)
+    if command == "destroy":
+        config.mark_deployed(app_name, None)
     lifecycle.emit(completed, **params)
     return 0
+
+
+def record_place(app_name: str, before: dict | None) -> dict:
+    """Record the place the config and the environment select, keeping each found key of
+    `before` that they leave empty, and return the record."""
+    platform = resolved(config.merged_app(app_name)["platform"])
+    record = {**platform, **{key: before[key] for key in config.FOUND_KEYS
+                             if before and before.get(key) and not platform.get(key)}}
+    config.mark_deployed(app_name, record)
+    return record
 
 
 def offer_run(app_name: str, provider: str, assume_yes: bool, run: bool | None) -> int | None:
