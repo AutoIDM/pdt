@@ -21,8 +21,8 @@ jobs:
     outputs:
       sign: ${{ (startsWith(github.ref, 'refs/tags/v') || inputs.sign) && vars.SIGNING_ENDPOINT != '' && vars.SIGNING_ACCOUNT != '' && vars.SIGNING_PROFILE != '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -36,7 +36,7 @@ jobs:
       - name: The wheel must hold the package and its examples
         run: uv run --python 3.12 python scripts/smoke.py
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/
@@ -49,11 +49,11 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   windows-launcher:
     needs: build
@@ -67,8 +67,8 @@ jobs:
       version: ${{ steps.zip.outputs.version }}
       sha256: ${{ steps.zip.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
 
       - shell: pwsh
         run: installer/build-launcher.ps1 -Version (uv version --short) -Out dist/launcher/pdt.exe
@@ -77,14 +77,14 @@ jobs:
         run: echo "::notice title=Unsigned::pdt.exe is not signed. Only a release tag or a manual run with sign set is signed, and only when the SIGNING_ENDPOINT, SIGNING_ACCOUNT, and SIGNING_PROFILE variables are set."
 
       - if: needs.build.outputs.sign == 'true'
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - if: needs.build.outputs.sign == 'true'
-        uses: azure/artifact-signing-action@v2
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ vars.SIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
@@ -111,7 +111,7 @@ jobs:
           if ($s.Status -ne 'Valid' -or -not $s.TimeStamperCertificate) { throw "pdt.exe signature: $($s.Status) $($s.StatusMessage)" }
           "pdt.exe is signed by $($s.SignerCertificate.Subject)"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: launcher
           path: dist/launcher/pdt.exe
@@ -124,7 +124,7 @@ jobs:
           "version=$(uv version --short)" >> $env:GITHUB_OUTPUT
           "sha256=$hash" >> $env:GITHUB_OUTPUT
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: winget-launcher
           path: pdt-windows-x64.zip
@@ -145,7 +145,7 @@ jobs:
           fi
 
       - if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: pdt-windows-x64.zip
           body_path: release-notes.md
@@ -162,15 +162,15 @@ jobs:
     env:
       MSI: pdt-windows-x64-${{ needs.windows-launcher.outputs.version }}.msi
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: launcher
           path: dist/launcher
 
       - id: wix
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: build/wix/bin
           key: wix-${{ hashFiles('installer/build-wix.ps1') }}
@@ -186,14 +186,14 @@ jobs:
         run: echo "::notice title=Unsigned::${{ env.MSI }} is not signed. Only a release tag or a manual run with sign set is signed, and only when the SIGNING_ENDPOINT, SIGNING_ACCOUNT, and SIGNING_PROFILE variables are set."
 
       - if: needs.build.outputs.sign == 'true'
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - if: needs.build.outputs.sign == 'true'
-        uses: azure/artifact-signing-action@v2
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
         with:
           endpoint: ${{ vars.SIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
@@ -220,13 +220,13 @@ jobs:
           if ($s.Status -ne 'Valid' -or -not $s.TimeStamperCertificate) { throw "${{ env.MSI }} signature: $($s.Status) $($s.StatusMessage)" }
           "${{ env.MSI }} is signed by $($s.SignerCertificate.Subject)"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: msi
           path: ${{ env.MSI }}
 
       - if: startsWith(github.ref, 'refs/tags/') && needs.publish.result == 'success'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: ${{ env.MSI }}
 
@@ -243,12 +243,12 @@ jobs:
       VERSION: ${{ needs.windows-launcher.outputs.version }}
       SHA256: ${{ needs.windows-launcher.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
 
       - run: uv run --no-project --python 3.12 python scripts/render_winget_manifests.py --version ${{ env.VERSION }} --sha256 ${{ env.SHA256 }} --out winget/rendered
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: winget-manifests
           path: winget/rendered/

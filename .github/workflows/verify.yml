@@ -34,10 +34,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       - run: uv build --wheel
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/
@@ -56,15 +56,15 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
       - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/*.whl
       - run: uv tool install dist/*.whl && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           role-session-name: verify-${{ github.run_id }}
@@ -72,7 +72,7 @@ jobs:
           aws-region: us-east-1
       - run: pdt aws sts get-caller-identity
       - run: uv run --no-project --with pyyaml python verify/scripts/verify.py aws --report verify-aws.xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: verify-aws
@@ -91,9 +91,9 @@ jobs:
       PDT_AZURE_CONTAINER_APPS_ENVIRONMENT: pdt-shared/pdt-eastus2
       PDT_AZURE_SUBSCRIPTION: ${{ vars.PDT_AZURE_SUBSCRIPTION }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
@@ -105,7 +105,7 @@ jobs:
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       - run: uv run --no-project --with pyyaml python verify/scripts/verify.py azure --report verify-azure.xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: verify-azure
@@ -121,9 +121,9 @@ jobs:
     env:
       PDT_GOOGLE_CLOUD_PROJECT: ${{ vars.GOOGLE_CLOUD_PROJECT }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
@@ -136,7 +136,7 @@ jobs:
         env:
           KEY: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
       - run: uv run --no-project --with pyyaml python verify/scripts/verify.py google-cloud --report verify-google-cloud.xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: verify-google-cloud
@@ -154,16 +154,16 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
       - run: uv run --no-project --with pyyaml python verify/scripts/sync_apps.py --wheel dist/*.whl
       - run: uv tool install dist/*.whl && echo "$USERPROFILE/.local/bin" >> "$GITHUB_PATH"
       - run: uv run --no-project --with pyyaml python verify/scripts/verify.py windows --report verify-windows.xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: verify-windows
