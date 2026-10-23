@@ -52,15 +52,15 @@ jobs:
       # A pull_request run would check out the PR itself, so the PR could
       # change the rules that score and merge it. The rules come from the
       # default branch instead.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.claude-cli
           key: claude-cli-${{ env.CLAUDE_CLI_VERSION }}
@@ -78,7 +78,7 @@ jobs:
         run: >
           uv run --python 3.13 python ci/claude_task.py score-prs
           ${{ env.DRY_RUN == 'true' && '--dry-run' || '' }} || [ $? -eq 2 ]
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: claude-task-report
