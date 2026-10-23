@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import add_app, started
-from pdt import cli, config, console, deploy, lifecycle, powershell, watch
+from pdt import cli, config, console, deploy, lifecycle, move, powershell, watch
 from pdt.deploy_common import REBUILD_ENV
 
 
@@ -21,7 +21,7 @@ def run_cli(monkeypatch, *argv):
 
 
 APP_COMMANDS = ["run", "deploy", "login", "destroy", "secrets", "storage", "runs", "logs",
-                "pause", "unpause"]
+                "pause", "unpause", "move"]
 
 
 def test_no_command_prints_help(monkeypatch, capsys):
@@ -108,6 +108,8 @@ def record_app(monkeypatch, command):
     if command == "run":
         monkeypatch.setattr(lifecycle.subprocess, "Popen", started(
             lambda argv, cwd, env: picked.append(cwd.name) or subprocess.CompletedProcess(argv, 0)))
+    elif command == "move":
+        monkeypatch.setattr(move, "move_app", lambda app: picked.append(app) or 0)
     else:
         target = "pause" if command == "unpause" else command
         monkeypatch.setattr(deploy, target, lambda app, *a, **k: picked.append(app) or 0)

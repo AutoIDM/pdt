@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from pdt import __version__, config, console, deploy, powershell, pwsh, regions, watch
+from pdt import __version__, console, powershell, pwsh, regions, watch
 from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
                         merged_app, powershell_scripts)
 from pdt.utils.env_secret import private_file
@@ -266,21 +266,10 @@ def choose_target(requested: str | None, assume_yes: bool) -> Path:
         console.warn(f"{console.value(folder)} already exists. Pick another name.")
 
 
-def ask_provider(current: str = "") -> str:
+def ask_provider() -> str:
     labels = [label for _key, label in PROVIDER_CHOICES]
-    keys = [key for key, _label in PROVIDER_CHOICES]
-    choice = _ask_choice("Where should your jobs run?", labels,
-                         keys.index(current) + 1 if current != "" else 1)
-    return keys[choice - 1]
-
-
-def kept_settings(current: dict, provider: str) -> dict:
-    if current.get("provider") == provider:
-        return dict(current)
-    timezone = current.get("timezone")
-    if timezone not in (None, "local") and TIMEZONE_QUESTION in PROVIDER_QUESTIONS[provider]:
-        return {"timezone": timezone}
-    return {}
+    choice = _ask_choice("Where should your jobs run?", labels)
+    return PROVIDER_CHOICES[choice - 1][0]
 
 
 def ask_settings(provider: str, kept: dict) -> dict | None:
@@ -310,210 +299,6 @@ def ask_platform(assume_yes: bool) -> dict:
     if settings is None:
         raise ConfigError("cancelled")
     return settings
-
-
-def platform_lines(platform: dict) -> list[str]:
-    return ["platform:", *(f"  {key}: {config.yaml_quoted(value)}" for key, value in platform.items()
-                           if value is not None)]
-
-
-def replace_platform(text: str, platform: dict) -> str:
-    import yaml
-    end_of_line = "\r" if "\r\n" in text else ""
-    lines = text.split("\n")
-    new = [line + end_of_line for line in platform_lines(platform)]
-    root = yaml.compose(text)
-    events = list(yaml.parse(text))
-    if isinstance(root, yaml.MappingNode) and root.flow_style:
-        raise ConfigError(f"the top level of {PROJECT_FILE} is in braces, so pdt cannot change "
-                          f"it safely. Change platform: in {PROJECT_FILE} by hand.")
-    if any(isinstance(event, yaml.DocumentEndEvent) and event.explicit for event in events):
-        raise ConfigError(f"{PROJECT_FILE} has a ... document end line, so pdt cannot change it "
-                          f"safely. Change platform: in {PROJECT_FILE} by hand.")
-    keys = [key for key, _value in (root.value if root is not None else [])]
-    found = [(key, value) for key, value in (root.value if root is not None else [])
-             if key.value == "platform"]
-    if found:
-        key, value = found[0]
-        following = [other.start_mark.line for other in keys if other.start_mark.line > key.start_mark.line]
-        bound = min(following, default=len(lines))
-        if isinstance(value, yaml.MappingNode) and not value.flow_style and value.value:
-            last = value.value[-1][1].end_mark
-        else:
-            last = value.end_mark
-        start, stop = key.start_mark.line, last.line + (last.column > 0)
-        if any(getattr(event, "anchor", None) and start <= event.start_mark.line < bound
-               for event in events):
-            raise ConfigError(f"platform: in {PROJECT_FILE} holds a YAML anchor (&) or alias (*), "
-                              f"so pdt cannot change it safely. Change platform: in {PROJECT_FILE} "
-                              "by hand.")
-        lines[start:stop] = new
-    elif PLATFORM_TEMPLATE + end_of_line in lines:
-        start = lines.index(PLATFORM_TEMPLATE + end_of_line)
-        stop = start + 1
-        while stop < len(lines) and lines[stop].startswith("#  "):
-            stop += 1
-        lines[start:stop] = new
-    else:
-        if lines[-1] != "":
-            lines[-1] += end_of_line
-            lines.append("")
-        lines[-1:] = [end_of_line, *new, ""]
-    return "\n".join(lines)
-
-
-def merged_platform(root_cfg: dict, root_platform: dict, app_dir: Path) -> dict:
-    return {**root_platform,
-            **(config.root_app_entry(root_cfg, app_dir.name).get("platform") or {}),
-            **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
-
-
-def pin_problem(path: Path, shown: str) -> str:
-    import yaml
-    text = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
-    root = yaml.compose(text)
-    if isinstance(root, yaml.MappingNode) and root.flow_style:
-        return (f"the top level of {shown} is in braces, so pdt cannot add platform: to it. "
-                f"Write each key of {shown} on its own line, or delete the {{}} when {shown} holds "
-                "nothing else.")
-    if (isinstance(root, yaml.MappingNode) and any(key.value == "platform" for key, _value in root.value)
-            and not any(line.strip() == "platform:" for line in text.splitlines())):
-        return (f"platform: in {shown} is not on a line of its own, so pdt cannot change it. "
-                f"Write platform: on its own line in {shown}, and each key under it on its own "
-                "indented line.")
-    return ""
-
-
-def ask_apps(numbered: list[str]) -> list[str]:
-    while True:
-        answer = _ask("Type the numbers of the apps to move, separated by spaces "
-                      "(Enter cancels)")
-        numbers = answer.replace(",", " ").split()
-        if all(number.isdigit() and 1 <= int(number) <= len(numbered) for number in numbers):
-            return [name for index, name in enumerate(numbered, start=1)
-                    if str(index) in numbers]
-        console.warn(f"Please type numbers from 1 to {console.value(len(numbered))}.")
-
-
-def change_provider(target: Path) -> int:
-    marker = target / PROJECT_FILE
-    text = marker.read_bytes().decode("utf-8")
-    bom = "\ufeff" if text.startswith("\ufeff") else ""
-    root_cfg = config.load_yaml(marker)
-    current = root_cfg.get("platform") or {}
-    old = str(current.get("provider") or "")
-    console.say(f"{console.value(target)} is already a pdt project.")
-    if old != "":
-        console.field("Runs on", NAMES.get(old, old))
-    deployed = [name for name in config.read_state().get("deployed") or []
-                if name in config.app_folders()]
-    apps = {name: config.merged_app(name) for name in deployed}
-    numbered = [name for name in deployed
-                if "provider" not in merged_platform(root_cfg, {}, target / name)]
-    before = {name: deploy.resolved(apps[name]["platform"]) for name in deployed}
-    recorded = {name: config.deployed_platform(name) or before[name] for name in deployed}
-    where = {name: deploy.describe_place(config.place(recorded[name])) for name in deployed}
-    if deployed:
-        console.say()
-        console.table(["", "app", "where"],
-                      [[str(numbered.index(name) + 1), name, where[name]] if name in numbered
-                       else ["", name, f"{where[name]}; edit {apps[name]['platform_from']} "
-                                       "to move it"]
-                       for name in deployed])
-    provider = ask_provider(old if old in config.PROVIDERS else "")
-    if provider == "":
-        console.say("Nothing changed.")
-        return 0
-    platform = ask_settings(provider, kept_settings(current, provider))
-    if platform is None:
-        console.say("Cancelled. Nothing changed.")
-        return 0
-    changed = bom + replace_platform(text.removeprefix(bom), platform)
-    there = deploy.describe_place(config.place(deploy.resolved(platform)))
-    after = {name: merged_platform(root_cfg, platform, target / name) for name in deployed}
-    pins = {}
-    for name in deployed:
-        extra = {"profile": (config.deployed_platform(name) or {}).get("profile")
-                            or before[name].get("profile"),
-                 "timezone": before[name].get("timezone")}
-        settings = {**config.place(recorded[name]),
-                    **{key: str(value) for key, value in extra.items() if value}}
-        pins[name] = {key: value for key, value in settings.items()
-                      if str(deploy.resolved(after[name]).get(key) or "") != value}
-        problem = pin_problem(target / name / APP_FILE, f"{name}/{APP_FILE}")
-        if pins[name].keys() - {"timezone"} and problem != "":
-            raise ConfigError(problem)
-    movable = [name for name in numbered if deploy.moved(recorded[name], after[name])]
-    moving = []
-    if movable:
-        here = deploy.describe_place(config.place(deploy.resolved(current)))
-        choice = _ask_choice(f"What should happen to the apps currently deployed to {console.escape(here)}?",
-                             ["Move all", "Move some",
-                              f"Keep them on {here} (only new apps go to {there})", "Cancel"], 4)
-        if choice == 1:
-            moving = movable
-        elif choice == 2:
-            moving = [name for name in ask_apps(numbered) if name in movable]
-        if choice == 4 or choice == 2 and not moving:
-            console.say("Cancelled. Nothing changed.")
-            return 0
-    if moving:
-        console.say()
-        console.say(f"pdt init runs {console.value('pdt destroy')} for "
-                    f"{', '.join(console.value(name) for name in moving)}, "
-                    f"then updates {console.value(PROJECT_FILE)} to deploy to {console.value(there)}.")
-        console.say("Stored data will not be deleted.")
-        try:
-            answer = console.confirm("Remove them?", choices="[y = remove and continue, N = cancel]")
-        except EOFError:
-            answer = False
-        if not answer:
-            console.say("Cancelled. Nothing changed.")
-            return 0
-    removed, pinned = [], []
-    for name in moving:
-        console.say()
-        if deploy.destroy(name, assume_yes=True) != 0:
-            console.error(f"{console.value(name)} was not removed. "
-                          f"It is still deployed to {console.value(where[name])}.")
-            break
-        removed.append(name)
-    console.say()
-    for name in deployed:
-        if name in removed or not pins[name].keys() - {"timezone"}:
-            continue
-        for key, value in pins[name].items():
-            config.save_platform_key(apps[name], key, value, path=target / name / APP_FILE)
-        pinned.append(name)
-        console.say(f"{console.value(name)} stays on "
-                    f"{console.value(where[name])}. "
-                    f"Its {console.value('platform:')} settings are in "
-                    f"{console.value(f'{name}/{APP_FILE}')}.")
-    with config.locked(marker):
-        if marker.read_bytes().decode("utf-8") != text:
-            raise ConfigError(f"{PROJECT_FILE} changed while pdt init was asking; "
-                              "run pdt init again")
-        config.write_text_atomically(marker, changed, newline="")
-    console.done(f"Saved the {console.value('platform:')} settings to {console.value(PROJECT_FILE)}.")
-    console.say()
-    for name in removed:
-        if config.place(recorded[name]).get("provider") == provider:
-            continue
-        for shown, section in ((f"{name}/{APP_FILE}", config.load_yaml(target / name / APP_FILE)),
-                               (f"{PROJECT_FILE} apps entry {name}",
-                                config.root_app_entry(root_cfg, name))):
-            region = (section.get("platform") or {}).get("region")
-            if region:
-                console.say(f"{console.value(shown)} sets {console.value('region')} "
-                            f"{console.value(region)}. Change or remove it before "
-                            f"{console.value(f'pdt deploy {name}')}.")
-    if removed:
-        console.next_steps([(f"pdt deploy {name}", f"deploy it to {console.escape(there)}")
-                            for name in removed])
-    elif not moving and not pinned:
-        console.next_steps([("pdt validate", "check every app on the new settings"),
-                            ("pdt deploy --all", f"deploy every app to {NAMES[provider]}")])
-    return 0 if removed == moving else 1
 
 
 def project_yaml(platform: dict) -> str:
@@ -565,7 +350,8 @@ def init(directory: str | None, assume_yes: bool) -> int:
         previous = os.environ.get("PDT_PROJECT")
         os.environ["PDT_PROJECT"] = str(target)
         try:
-            return change_provider(target)
+            from pdt import move
+            return move.move_project(target)
         finally:
             if previous is None:
                 del os.environ["PDT_PROJECT"]
