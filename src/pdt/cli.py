@@ -612,7 +612,7 @@ def build_parser() -> argparse.ArgumentParser:
     directory = p.add_argument("directory", nargs="?",
                                help="where to create the project (default: here)")
     directory.completer = completion.directories
-    p.add_argument("--yes", action="store_true", help="accept the defaults, ask nothing")
+    p.add_argument("-y", "--yes", action="store_true", help="accept the defaults, ask nothing")
     p.set_defaults(func=cmd_init)
     add_parser("examples", help="list the bundled example apps").set_defaults(
         func=cmd_examples)
@@ -647,7 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = add_parser("deploy", help="deploy an app")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--all", action="store_true", help="deploy every enabled app, in order")
     p.add_argument("--skip-failures", action="store_true",
                    help="with --all, go on past an app that fails to deploy instead of asking")
@@ -664,7 +664,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = add_parser("destroy", help="delete an app's deployed resources")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     p.add_argument("--all", action="store_true",
                    help="destroy every deployed app, in order; each app asks before it is "
                         "destroyed")
@@ -690,7 +690,7 @@ def build_parser() -> argparse.ArgumentParser:
                                  "set NAME puts one value, read from stdin, into the deployed app")
     action.completer = completion.secret_actions
     p.add_argument("name", nargs="?", help="the env var that set changes")
-    p.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_secrets)
     p = add_parser("storage", help="read or manage an app's data store")
     app = p.add_argument("app", nargs="?", help=APP_HELP)

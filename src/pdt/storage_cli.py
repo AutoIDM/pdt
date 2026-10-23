@@ -124,9 +124,9 @@ def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
         return 1
     as_json = "--json" in rest
     recursive = "--recursive" in rest
-    assume_yes = assume_yes or "--yes" in rest
+    assume_yes = assume_yes or "--yes" in rest or "-y" in rest
     show = "--open" in rest
-    rest = [arg for arg in rest if arg not in ("--json", "--recursive", "--yes", "--open")]
+    rest = [arg for arg in rest if arg not in ("--json", "--recursive", "--yes", "-y", "--open")]
     if show and as_json:
         console.error("--open does not print JSON; leave out --json")
         return 1

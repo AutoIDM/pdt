@@ -90,11 +90,13 @@ def test_unlock_refused_keeps_the_lock(store, app, tmp_path, capsys, monkeypatch
 
 
 @pytest.mark.parametrize("subcommand", ["unlock", "destroy"])
-def test_yes_after_the_separator_skips_the_question(store, app, tmp_path, monkeypatch, subcommand):
+@pytest.mark.parametrize("yes", ["--yes", "-y"])
+def test_yes_after_the_separator_skips_the_question(store, app, tmp_path, monkeypatch, subcommand,
+                                                    yes):
     store.pull("state/", tmp_path / "local")
     seen = []
     monkeypatch.setattr("pdt.deploy.confirm", lambda actions, assume_yes: seen.append(assume_yes))
-    storage_cli.run(store, app, [subcommand, "--yes"], False)
+    storage_cli.run(store, app, [subcommand, yes], False)
     assert seen == [True]
 
 
