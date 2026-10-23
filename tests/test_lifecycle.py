@@ -323,7 +323,8 @@ def test_a_declined_plan_or_a_failure_fails_the_step_and_a_success_completes_it(
     assert deployable[-1][1].get("reason") == reason
     assert deployable[-1][1]["app"] == scaffold.STARTER
     platform = {"provider": "aws", "region": "us-east-1"} if command == "deploy" else None
-    assert marked == ([(scaffold.STARTER, platform)] if code == 0 else [])
+    before = [(scaffold.STARTER, platform)] if command == "deploy" else []
+    assert marked == before + ([(scaffold.STARTER, platform)] if code == 0 else [])
 
 
 @pytest.mark.parametrize(("deployed", "override", "trigger"), [

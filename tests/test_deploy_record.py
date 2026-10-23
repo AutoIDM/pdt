@@ -1,10 +1,8 @@
-""".pdt/state records where each app is deployed, so no deploy or destroy leaves a copy behind."""
-
 import json
 
 import pytest
 
-from pdt import alerts_cli, config, console, deploy, scaffold
+from pdt import alerts_cli, cli, config, console, deploy, deploy_azure, scaffold
 
 APP = scaffold.STARTER
 AWS = "platform:\n  provider: aws\n  region: us-east-1\n  account: \"123456789012\"\n"
@@ -33,8 +31,6 @@ def project(tmp_path, monkeypatch):
 
 
 class Cloud:
-    """A provider that records each command, and a person who gives `answers` in order."""
-
     def __init__(self, monkeypatch, answers=(), terminal=True):
         self.calls = []
         self.answers = list(answers)
@@ -54,7 +50,6 @@ class Cloud:
 
 
 def deployed_to(project, text, app=APP):
-    """Write pdt.yml and record the app as deployed with it."""
     (project / "pdt.yml").write_text(text)
     platform = config.merged_app(app)["platform"]
     config.mark_deployed(app, platform)
@@ -101,7 +96,7 @@ def test_cancel_is_the_default_and_changes_nothing(project, monkeypatch, capsys,
     out = capsys.readouterr().out
     assert "What do you want to do with the app currently deployed to" in out
     assert "1) Remove it from " in out and ", then deploy it to " in out
-    assert "Cancel and change nothing" in out
+    assert "2) Cancel\n" in out and "Cancelled.\n" in out and "Nothing changed" not in out
 
 
 @pytest.mark.parametrize("move", MOVES)
@@ -206,3 +201,67 @@ def test_the_recorded_platform_replaces_the_config_only_for_the_app_it_names(pro
     (project / "other").mkdir()
     (project / "other" / "run.py").write_text("")
     assert config.merged_app("other")["platform"]["provider"] == "aws"
+
+
+def test_the_record_has_the_place_the_environment_selects(project, monkeypatch):
+    (project / "pdt.yml").write_text(GOOGLE.replace("  project: my-project\n", ""))
+    monkeypatch.setenv("PDT_GOOGLE_CLOUD_PROJECT", "env-project")
+    cloud = Cloud(monkeypatch)
+    assert deploy.deploy(APP, run=False) == 0
+    assert config.deployed_places()[APP]["project"] == "env-project"
+    assert deploy.deploy(APP, run=False) == 0
+    assert cloud.asked == []
+    monkeypatch.setenv("PDT_GOOGLE_CLOUD_PROJECT", "other-project")
+    Cloud(monkeypatch, answers=[""])
+    assert deploy.deploy(APP, run=False) == deploy.DECLINED
+
+
+def test_a_removed_resource_group_is_a_move(project, monkeypatch, capsys):
+    monkeypatch.delenv("PDT_AZURE_RESOURCE_GROUP", raising=False)
+    deployed_to(project, AZURE + "  resource_group: custom-group\n")
+    (project / "pdt.yml").write_text(AZURE)
+    cloud = Cloud(monkeypatch, answers=[""])
+    assert deploy.deploy(APP, run=False) == deploy.DECLINED
+    assert cloud.asked == ["Which one?"]
+    assert "resource group custom-group" in capsys.readouterr().out
+
+
+def test_a_first_deploy_records_the_place_before_the_provider_runs(project, monkeypatch):
+    (project / "pdt.yml").write_text(AWS)
+    recorded = []
+
+    def dispatch(*args, **kwargs):
+        recorded.append(config.deployed_platform(APP))
+        return 1
+
+    Cloud(monkeypatch)
+    monkeypatch.setattr(deploy, "dispatch", dispatch)
+    assert deploy.deploy(APP, run=False) == 1
+    assert recorded == [config.merged_app(APP)["platform"]]
+    assert config.deployed_platform(APP) == recorded[0]
+
+
+def test_destroy_offers_a_disabled_app_that_is_deployed(project, monkeypatch):
+    deployed_to(project, AWS)
+    config.set_app_enabled(APP, False)
+    assert APP not in config.find_apps()
+    cloud = Cloud(monkeypatch)
+    assert cli.choose_app(APP, "destroy") == APP
+    assert cli.destroy_all(assume_yes=True, skip_failures=False) == 0
+    assert [command for _, command, _ in cloud.calls] == ["destroy"]
+    assert not config.is_deployed(APP)
+
+
+def test_a_destroy_with_a_record_needs_the_recorded_azure_subscription(project, monkeypatch,
+                                                                       capsys):
+    monkeypatch.setenv(config.DEPLOYED_PLATFORM_ENV, json.dumps(
+        {"app": APP, "platform": {"provider": "azure", "subscription": "sub-1"}}))
+    monkeypatch.setattr(deploy_azure, "az_json",
+                        lambda *args: [{"id": "sub-2", "name": "Other"}])
+    monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+    with pytest.raises(SystemExit) as stopped:
+        deploy_azure.choose_subscription(config.merged_app(APP), "sub-1", True)
+    assert stopped.value.code == 1
+    out = capsys.readouterr().out
+    assert "is deployed to Azure subscription sub-1" in out
+    assert "\n  pdt az login" in out and f"\n  pdt destroy {APP}" in out

@@ -65,6 +65,9 @@ ENV_KEYS = {"required", "one_of", "optional"}
 # credentials that reach an account, and `timezone` is when the app runs.
 PLACE_KEYS = ("provider", "region", "account", "project", "subscription", "resource_group",
               "environment")
+# The place keys a deploy finds and saves when the config leaves them empty. Every other
+# place key that the config leaves empty takes the provider's default place.
+FOUND_KEYS = ("account", "project", "subscription")
 DEPLOYED_PLATFORM_ENV = "PDT_DEPLOYED_PLATFORM"
 # Where each known key belongs, so a key in the wrong section gets told
 # where to move instead of "unknown key".
@@ -210,6 +213,10 @@ def is_enabled(name: str) -> bool:
 def find_apps() -> list[str]:
     """The apps every command acts on. `enabled: false` takes an app out."""
     return [name for name in app_folders() if is_enabled(name)]
+
+
+def destroyable_apps() -> list[str]:
+    return [name for name in app_folders() if is_enabled(name) or is_deployed(name)]
 
 
 def current_app() -> str | None:
@@ -537,21 +544,28 @@ def write_state(state: dict, name: str = "state") -> None:
     write_text_atomically(path, json.dumps(state, indent=2) + "\n")
 
 
+@contextmanager
+def state_locked():
+    path = _state_path()
+    path.parent.mkdir(exist_ok=True)
+    with locked(path):
+        yield
+
+
 def mark_deployed(name: str, platform: dict | None) -> None:
-    """Record that the app is deployed with this merged platform section, or with None that
-    it is not deployed."""
-    state = read_state()
-    apps = set(state.get("deployed") or [])
-    platforms = state.get("platforms") or {}
-    if platform is None:
-        apps.discard(name)
-        platforms.pop(name, None)
-    else:
-        apps.add(name)
-        platforms[name] = platform
-    state["deployed"] = sorted(apps)
-    state["platforms"] = platforms
-    write_state(state)
+    with state_locked():
+        state = read_state()
+        apps = set(state.get("deployed") or [])
+        platforms = state.get("platforms") or {}
+        if platform is None:
+            apps.discard(name)
+            platforms.pop(name, None)
+        else:
+            apps.add(name)
+            platforms[name] = platform
+        state["deployed"] = sorted(apps)
+        state["platforms"] = platforms
+        write_state(state)
 
 
 def deployed_platform(name: str) -> dict | None:
@@ -562,13 +576,10 @@ def deployed_platform(name: str) -> dict | None:
 
 
 def place(platform: dict) -> dict[str, str]:
-    """The PLACE_KEYS a platform section sets, in that order."""
     return {key: str(platform[key]) for key in PLACE_KEYS if str(platform.get(key) or "") != ""}
 
 
 def deployed_places() -> dict[str, dict[str, str]]:
-    """The place of each deployed app that has a record: its provider, region, and the keys
-    that name its account."""
     return {name: place(platform)
             for name, platform in sorted((read_state().get("platforms") or {}).items())}
 

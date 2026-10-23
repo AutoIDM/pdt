@@ -15,8 +15,7 @@ PDT_CLI_VERSION does the same for pdt's version: from a clone, the script
 imports pdt from src/, where no package metadata says which version it is,
 and the image a PowerShell app builds pins pdt-cli at that version.
 PDT_JSON_OUTPUT tells a script given `--json` to print every line but the
-JSON on stderr; see `pdt.console.json_output`. `config.DEPLOYED_PLATFORM_ENV`
-gives a destroy the platform the app was deployed with.
+JSON on stderr; see `pdt.console.json_output`.
 """
 
 from __future__ import annotations
@@ -100,7 +99,6 @@ def provider_env(extra: list[str] | None = None, rebuild: bool = False) -> dict[
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
              extra: list[str] | None = None, rebuild: bool = False,
              platform: dict | None = None) -> int:
-    """Run the provider script; `platform` replaces the app's platform section in it."""
     args = provider_command(provider, command, app_name, assume_yes, extra)
     env = provider_env(extra, rebuild)
     if platform is not None:
@@ -246,34 +244,48 @@ def describe_place(place: dict[str, str]) -> str:
                                            for key, value in place.items() if key != "provider")])
 
 
+# The environment variables a provider script reads for a place key the config leaves empty.
+PLACE_ENV = {
+    "azure": {"subscription": ("PDT_AZURE_SUBSCRIPTION",),
+              "resource_group": ("PDT_AZURE_RESOURCE_GROUP",),
+              "environment": ("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT",)},
+    "google-cloud": {"project": ("PDT_GOOGLE_CLOUD_PROJECT",)},
+}
+
+
+def resolved(platform: dict) -> dict:
+    provider = platform.get("provider")
+    names = {**PLACE_ENV.get(provider, {}), "region": regions.REGION_ENV.get(provider, ())}
+    found = {key: next((os.environ[name] for name in env if os.environ.get(name)), "")
+             for key, env in names.items() if not platform.get(key)}
+    return {**platform, **{key: value for key, value in found.items() if value}}
+
+
 def moved(recorded: dict, platform: dict) -> bool:
-    """Whether `platform` deploys somewhere other than the recorded platform did. A place key
-    the config leaves empty is not a difference, because the deploy finds it."""
-    old = config.place(recorded)
-    return any(old.get(key) != value for key, value in config.place(platform).items())
+    old, new = config.place(recorded), config.place(resolved(platform))
+    return any(old.get(key) != value for key, value in new.items()) or any(
+        key not in new for key in old if key not in config.FOUND_KEYS)
 
 
 def say_places(app: dict, recorded: dict) -> None:
-    """Where the app is deployed, and where its config now deploys it, one line each."""
     console.say(f"{console.value(app['name'])} is deployed to "
                 f"{console.value(describe_place(config.place(recorded)))},")
     console.say(f"but {console.value(app['platform_from'])} now deploys it to "
-                f"{console.value(describe_place(config.place(app['platform'])))}.")
+                f"{console.value(describe_place(config.place(resolved(app['platform']))))}.")
 
 
 def leave_old_place(app_name: str, assume_yes: bool) -> int:
     """Before a deploy to another provider, region, or account, ask whether to destroy the app
     where it runs now. 0 goes on with the deploy; any other code is the deploy's exit code.
 
-    An app with no record (deployed by an older pdt) gets no question. With --yes or no one
-    to ask, nothing is destroyed, because only a person decides that."""
+    An app with no record (deployed by an older pdt) gets no question."""
     recorded = config.deployed_platform(app_name)
     app = config.merged_app(app_name)
     platform = app["platform"]
     if recorded is None or not moved(recorded, platform):
         return 0
     current = describe_place(config.place(recorded))
-    target = describe_place(config.place(platform))
+    target = describe_place(config.place(resolved(platform)))
     console.say()
     say_places(app, recorded)
     if assume_yes or not can_prompt(None):
@@ -285,7 +297,7 @@ def leave_old_place(app_name: str, assume_yes: bool) -> int:
     console.say(f"What do you want to do with the app currently deployed to "
                 f"{console.value(current)}?")
     console.choice(1, f"Remove it from {current}, then deploy it to {target}")
-    console.choice(2, "Cancel and change nothing")
+    console.choice(2, "Cancel")
     while True:
         try:
             answer = console.ask("Which one?", "2") or "2"
@@ -295,7 +307,7 @@ def leave_old_place(app_name: str, assume_yes: bool) -> int:
             break
         console.say("Please answer 1 or 2.")
     if answer == "2":
-        console.say("Cancelled. Nothing changed.")
+        console.say("Cancelled.")
         return DECLINED
     return provider_step("destroy", recorded["provider"], app_name, False, platform=recorded)
 
@@ -312,8 +324,10 @@ STEP_EVENTS = {
 def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
                   rebuild: bool = False, platform: dict | None = None) -> int:
     """Run `deploy` or `destroy` through the provider script between its STEP_EVENTS, and
-    on success record where the app is now deployed, or that it is not."""
+    on success record whether the app is now deployed."""
     started, completed, failed = STEP_EVENTS[command]
+    if command == "deploy":
+        config.mark_deployed(app_name, resolved(config.merged_app(app_name)["platform"]))
     params = lifecycle.app_params(app_name, provider)
     lifecycle.emit(started, **params)
     try:
@@ -329,8 +343,8 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
     if code != 0:
         lifecycle.emit(failed, **params, exit_code=code)
         return code
-    config.mark_deployed(app_name,
-                         config.merged_app(app_name)["platform"] if command == "deploy" else None)
+    config.mark_deployed(app_name, resolved(config.merged_app(app_name)["platform"])
+                         if command == "deploy" else None)
     lifecycle.emit(completed, **params)
     return 0
 

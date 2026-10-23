@@ -824,9 +824,10 @@ def denied_actions(iam, source_arn: str, requests: list[dict]) -> set[str]:
 
 
 def forget_preflight_passes() -> None:
-    state = config.read_state()
-    if state.pop(PREFLIGHT_PASSES, None) is not None:
-        config.write_state(state)
+    with config.state_locked():
+        state = config.read_state()
+        if state.pop(PREFLIGHT_PASSES, None) is not None:
+            config.write_state(state)
 
 
 def preflight(sts, iam, expected_account: str, region: str,
@@ -877,13 +878,14 @@ def preflight(sts, iam, expected_account: str, region: str,
             print_permission_help(identity_arn, "These required actions are not allowed: "
                                   + ", ".join(sorted(denied)), actions, account, region)
             raise SystemExit(1)
-        state = config.read_state()
-        now = time.time()
-        state[PREFLIGHT_PASSES] = {
-            **{other: at for other, at in state.get(PREFLIGHT_PASSES, {}).items()
-               if now - at < PREFLIGHT_VALID_SECONDS},
-            key: now}
-        config.write_state(state)
+        with config.state_locked():
+            state = config.read_state()
+            now = time.time()
+            state[PREFLIGHT_PASSES] = {
+                **{other: at for other, at in state.get(PREFLIGHT_PASSES, {}).items()
+                   if now - at < PREFLIGHT_VALID_SECONDS},
+                key: now}
+            config.write_state(state)
 
     return account, wait_for_permissions
 

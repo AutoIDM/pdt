@@ -96,7 +96,7 @@ def choose_app(name: str | None, command: str, quiet: bool = False) -> str | Non
     exact command to run next. `quiet` keeps --json output free of the line
     that names the app pdt picked.
     """
-    apps = config.find_apps()
+    apps = config.destroyable_apps() if command == "destroy" else config.find_apps()
     if not apps:
         say_no_apps()
         return None
@@ -317,7 +317,7 @@ def deploy_all(assume_yes: bool, skip_failures: bool, run: bool = False,
 
 
 def destroy_all(assume_yes: bool, skip_failures: bool) -> int:
-    names = config.find_apps()
+    names = config.destroyable_apps()
     if not names:
         say_no_apps()
         return 1
@@ -364,7 +364,6 @@ def each_app(command: str, names: list[str], act: Callable[[str], int],
                 console.say(f"Fix the problem above and run pdt {command} --all again, "
                             "or add --skip-failures to go on past it.")
                 return code
-            # Disabling an app hides it from pdt destroy, so its resources would stay.
             if command == "deploy" and ask and not assume_yes and console.confirm(
                     f"Disable the failing app {name}?"):
                 path = config.set_app_enabled(name, False)

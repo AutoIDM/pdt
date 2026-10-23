@@ -24,11 +24,27 @@ def test_a_successful_deploy_records_the_app(tmp_path, monkeypatch):
     assert config.is_deployed(scaffold.STARTER)
 
 
-def test_a_failed_or_declined_deploy_records_nothing(tmp_path, monkeypatch):
+def test_a_failed_deploy_keeps_its_record_until_a_destroy_succeeds(tmp_path, monkeypatch):
     project_with_starter(tmp_path, monkeypatch)
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: 1)
     assert deploy.deploy(scaffold.STARTER) == 1
+    assert config.deployed_platform(scaffold.STARTER) == {"provider": "aws",
+                                                          "region": "us-east-1"}
+    assert deploy.destroy(scaffold.STARTER) == 1
+    assert config.is_deployed(scaffold.STARTER)
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: 0)
+    assert deploy.destroy(scaffold.STARTER) == 0
     assert not config.is_deployed(scaffold.STARTER)
+
+
+def test_concurrent_records_keep_every_app(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    project_with_starter(tmp_path, monkeypatch)
+    names = [f"app-{index}" for index in range(40)]
+    with ThreadPoolExecutor(8) as pool:
+        list(pool.map(lambda name: config.mark_deployed(name, {"provider": "aws"}), names))
+    assert sorted(config.deployed_places()) == sorted(names)
 
 
 def test_destroy_clears_the_record(tmp_path, monkeypatch):
@@ -113,7 +129,7 @@ def test_a_failed_state_write_keeps_the_old_file(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         config.mark_deployed("another-app", True)
     assert (project / ".pdt" / "state").read_text() == before
-    assert sorted(p.name for p in (project / ".pdt").iterdir()) == [".gitignore", "state"]
+    assert sorted(p.name for p in (project / ".pdt").iterdir()) == [".gitignore", "state", "state.lock"]
 
 
 def test_deploy_refuses_a_powershell_app_whose_scripts_certainly_fail(tmp_path, monkeypatch, capsys):
