@@ -151,7 +151,6 @@ def pins_for(names: list[str], root_platform: dict) -> dict[str, dict]:
     sets `root_platform`."""
     target = config.find_project()
     root_cfg = config.load_yaml(target / PROJECT_FILE)
-    root_provider = (root_cfg.get("platform") or {}).get("provider")
     pins = {}
     for name in names:
         recorded = current(name)
@@ -166,7 +165,7 @@ def pins_for(names: list[str], root_platform: dict) -> dict[str, dict]:
         after["profile"] = after.get("profile") or env_profile
         pinned["profile"] = pinned.get("profile") or env_profile
         profile = recorded.get("profile") or before.get("profile") or env_profile
-        extra = {"profile": profile if recorded.get("provider") == root_provider else None}
+        extra = {"profile": profile if recorded.get("provider") == "aws" else None}
         settings = {**config.place(recorded), **{key: str(value) for key, value in extra.items() if value}}
         pin = {key: value for key, value in settings.items() if str(after.get(key) or "") != value
                and (key == "provider" or str(pinned.get(key) or "") != value)}

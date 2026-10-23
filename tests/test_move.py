@@ -717,3 +717,18 @@ def test_an_app_that_stays_pins_the_aws_profile_its_environment_sets(project, mo
     assert platform_of(project, "beta")["profile"] == "dev"
     assert move.configured("beta")["profile"] == "dev"
 
+
+def test_an_aws_app_that_stays_keeps_its_profile_when_pdt_yml_sets_another_provider(project, monkeypatch):
+    monkeypatch.setenv("AWS_PROFILE", "dev")
+    (project / PROJECT_FILE).write_text(
+        "platform:\n  provider: azure\n  region: eastus2\n  subscription: sub-1\n")
+    aws = "platform:\n  provider: aws\n  region: us-east-1\n  account: \"111111111111\"\n"
+    deployed_app(project, "alpha", aws + "  profile: prod\n")
+    deployed_app(project, "beta", aws)
+    Cloud(monkeypatch)
+    answer(monkeypatch, ["2", "us-east-2", "UTC"], [True, True])
+    assert move.move_app("alpha") == 0
+    assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"]["profile"] == "prod"
+    assert platform_of(project, "beta")["profile"] == "dev"
+    assert move.configured("beta")["profile"] == "dev"
+
