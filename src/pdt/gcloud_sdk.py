@@ -35,13 +35,13 @@ from pdt import console
 from pdt.config import data_home, unsaved
 from pdt.download import fetch_verified
 
-VERSION = "581.0.0"
+VERSION = "590.0.1"
 CHECKSUMS = {
-    "linux-x86_64": "deffdbe82ca6e3d19ffb291d063a651488e04e1b33799b5a238e4b5c6784e3c6",
-    "linux-arm": "22cfc09888525c6daadb8764388ce14e6c26baf80ab07938eacb08c2b4ae64c9",
-    "darwin-x86_64": "af6082b38fb34603c88c93c7d1a7b222d8d202c5412413232f4a7e46db97728d",
-    "darwin-arm": "8b5d7b14439ce51dc63aaacb2f7f18e5765db437f7b6b177cbc7260889a91e56",
-    "windows-x86_64": "4ba8775a6fef8e09f9013c711e5a816fd6ce68c8f17da642141f24fd92891530",
+    "linux-x86_64": "d1ae7be7e12c4e7d8286fab4774f5441020aca89dc7793ddacbace8d11d20f06",
+    "linux-arm": "fd760d8b1c2c4c484d7b659964994b07aaefddc6ac4350e681940477dbdbb22c",
+    "darwin-x86_64": "32e41cdb54d3946bcd5d29bd2bd9f3d8923bf1578e8ecc94d0999f2f18f2f0f1",
+    "darwin-arm": "02f20618f43b9147e049a73fec37ab71b586b0dc6a242fa6ca835229cb5e542f",
+    "windows-x86_64": "38dad2c60c8507a2042e419ac9293e66b9f96156226c6cda92dcb1c4e8c65cf2",
 }
 
 SDK_DIR = data_home() / "pdt" / "gcloud"
