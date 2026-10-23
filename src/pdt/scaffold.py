@@ -433,9 +433,11 @@ def change_provider(target: Path) -> int:
     after = {name: merged_platform(root_cfg, platform, target / name) for name in deployed}
     pins = {}
     for name in deployed:
-        settings = {**config.place(before[name]),
-                    **{key: str(before[name][key]) for key in ("profile", "timezone")
-                       if before[name].get(key)}}
+        extra = {"profile": (config.deployed_platform(name) or {}).get("profile")
+                            or before[name].get("profile"),
+                 "timezone": before[name].get("timezone")}
+        settings = {**config.place(recorded[name]),
+                    **{key: str(value) for key, value in extra.items() if value}}
         pins[name] = {key: value for key, value in settings.items()
                       if str(deploy.resolved(after[name]).get(key) or "") != value}
         problem = pin_problem(target / name / APP_FILE, f"{name}/{APP_FILE}")
@@ -484,7 +486,7 @@ def change_provider(target: Path) -> int:
             config.save_platform_key(apps[name], key, value, path=target / name / APP_FILE)
         pinned.append(name)
         console.say(f"{console.value(name)} stays on "
-                    f"{console.value(deploy.describe_place(config.place(before[name])))}. "
+                    f"{console.value(where[name])}. "
                     f"Its {console.value('platform:')} settings are in "
                     f"{console.value(f'{name}/{APP_FILE}')}.")
     with config.locked(marker):
@@ -494,6 +496,17 @@ def change_provider(target: Path) -> int:
         config.write_text_atomically(marker, changed, newline="")
     console.done(f"Saved the {console.value('platform:')} settings to {console.value(PROJECT_FILE)}.")
     console.say()
+    for name in removed:
+        if config.place(recorded[name]).get("provider") == provider:
+            continue
+        for shown, section in ((f"{name}/{APP_FILE}", config.load_yaml(target / name / APP_FILE)),
+                               (f"{PROJECT_FILE} apps entry {name}",
+                                config.root_app_entry(root_cfg, name))):
+            region = (section.get("platform") or {}).get("region")
+            if region:
+                console.say(f"{console.value(shown)} sets {console.value('region')} "
+                            f"{console.value(region)}. Change or remove it before "
+                            f"{console.value(f'pdt deploy {name}')}.")
     if removed:
         console.next_steps([(f"pdt deploy {name}", f"deploy it to {console.escape(there)}")
                             for name in removed])

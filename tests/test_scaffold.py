@@ -679,6 +679,34 @@ def test_a_subscription_change_with_the_same_region_asks_too(project, monkeypatc
     assert "What should happen to the apps deployed on" in capsys.readouterr().out
 
 
+def test_keep_pins_the_recorded_place_after_an_edit_to_pdt_yml(project, monkeypatch, capsys):
+    moving_project(project, names=("alpha",))
+    (project / PROJECT_FILE).write_text(
+        "platform:\n  provider: azure\n  region: eastus2\n  subscription: sub-2\n")
+    answer(monkeypatch, ["2", "us-east-2", "UTC", "3"])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert platform_of(project, "alpha") == AZURE_PIN
+    assert "alpha stays on azure, region eastus2, subscription sub-1, resource group pdt." in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("own,entry,shown", [
+    ("platform:\n  region: westus2\n", "", "report/config.yml"),
+    ("", "apps:\n  - name: report\n    platform:\n      region: westus2\n",
+     "pdt.yml apps entry report"),
+])
+def test_a_moved_app_that_sets_its_own_region_names_the_file_and_the_key(project, monkeypatch, capsys,
+                                                                         own, entry, shown):
+    moving_project(project, names=())
+    with (project / PROJECT_FILE).open("a") as file:
+        file.write(entry)
+    deployed_app(project, "report", own)
+    Cloud(monkeypatch)
+    answer(monkeypatch, ["2", "us-east-2", "UTC", "1"], [True])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert (f"{shown} sets region westus2. Change or remove it before pdt deploy report."
+            in capsys.readouterr().out)
+
+
 @pytest.mark.parametrize("replies", [["2", "cancel"], ["2", "us-east-2", "Cancel"]])
 def test_cancel_at_the_region_or_time_zone_question_changes_nothing(project, monkeypatch, capsys,
                                                                      replies):
