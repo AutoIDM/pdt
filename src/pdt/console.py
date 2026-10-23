@@ -80,8 +80,7 @@ def data(text: str) -> None:
 
 
 def say(message: str = "", stderr: bool = False) -> None:
-    """A line with no colour. With `stderr`, it goes to stderr, as for the error of a call
-    that pdt tries again."""
+    """A line with no colour. `stderr` is for the error of a call that pdt tries again."""
     (_errors if stderr else _console).print(message)
 
 
@@ -126,8 +125,8 @@ class Wait:
 
 @contextmanager
 def waiting(message: str, once: bool = False) -> Iterator[Wait]:
-    """On a terminal, a spinner line under the output that names the wait and counts its seconds.
-    Off a terminal, one plain line on stderr; with `once`, only the first time a process waits
+    """On a terminal that can animate, a spinner line under the output that names the wait and
+    counts its seconds. Otherwise, or with JSON output, one plain line on stderr; with `once`, only the first time a process waits
     for `message`, as for a price read. `message` has the form `<action>: details`. A wait in
     a worker thread shows no spinner, since the thread that started it may show one."""
     wait = Wait(message)
