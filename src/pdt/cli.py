@@ -25,7 +25,7 @@ from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold
+    from pdt import alerts_cli, console, deploy, gui_cli, lifecycle, move, powershell, pwsh, scaffold
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -70,6 +70,7 @@ APP_QUESTIONS = {
     "deploy": "Which app do you want to deploy?",
     "login": "Which app's platform do you want to sign in to?",
     "destroy": "Which app do you want to destroy?",
+    "move": "Which app do you want to move?",
     "secrets": "Which app's secrets?",
     "storage": "Which app's files do you want to manage?",
     "runs": "Which app's runs do you want to see?",
@@ -96,7 +97,8 @@ def choose_app(name: str | None, command: str, quiet: bool = False) -> str | Non
     exact command to run next. `quiet` keeps --json output free of the line
     that names the app pdt picked.
     """
-    apps = config.destroyable_apps() if command == "destroy" else config.find_apps()
+    apps = (config.destroyable_apps() if command == "destroy" else
+            config.app_folders() if command == "move" else config.find_apps())
     if not apps:
         say_no_apps()
         return None
@@ -428,6 +430,15 @@ def use_app_folder(args) -> None:
     args.app = None
 
 
+def cmd_move(args) -> int:
+    if not config.app_folders():
+        return move.move_app(None)
+    name = choose_app(args.app, "move")
+    if name is None:
+        return 1
+    return move.move_app(name)
+
+
 def cmd_pause(args) -> int:
     name = choose_app(args.app, "pause")
     if name is None:
@@ -588,7 +599,7 @@ rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
 COMMAND_GROUPS = {
     "Get started": ["init", "examples", "new", "completion"],
     "Run and validate": ["list", "validate", "run"],
-    "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
+    "Deploy": ["deploy", "destroy", "move", "login", "pause", "unpause"],
     "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
@@ -678,6 +689,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-failures", action="store_true",
                    help="with --all, go on past an app that fails to destroy instead of asking")
     p.set_defaults(func=cmd_destroy)
+    p = add_parser("move", help="move an app, or several apps, to another provider, region, or account")
+    app = p.add_argument("app", nargs="?", help=APP_HELP)
+    app.completer = completion.apps
+    p.set_defaults(func=cmd_move)
     p = add_parser("pause", help="stop an app's schedule from starting runs")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
