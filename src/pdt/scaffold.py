@@ -198,11 +198,15 @@ CLAUDE_TEXT = """\
 """
 
 
+class NoAnswer(ConfigError):
+    pass
+
+
 def _ask(question: str, default: str = "") -> str:
     try:
         answer = console.ask(question, default)
     except EOFError:
-        raise ConfigError(
+        raise NoAnswer(
             "there is no one to answer the questions. "
             "Run `pdt init` in a terminal, or add --yes to take the defaults.")
     return answer or default
@@ -344,19 +348,10 @@ def init(directory: str | None, assume_yes: bool) -> int:
         target = choose_target(directory, assume_yes)
     marker = target / PROJECT_FILE
     if marker.is_file():
-        if assume_yes:
-            console.say(f"{console.value(target)} is already a pdt project.")
-            return 0
-        previous = os.environ.get("PDT_PROJECT")
-        os.environ["PDT_PROJECT"] = str(target)
-        try:
-            from pdt import move
-            return move.move_project(target)
-        finally:
-            if previous is None:
-                del os.environ["PDT_PROJECT"]
-            else:
-                os.environ["PDT_PROJECT"] = previous
+        console.say(f"{console.value(target)} is already a pdt project.")
+        console.say()
+        console.next_steps([("pdt move APP", "move an app to another provider or region")])
+        return 0
     starting_fresh = has_nothing_in_it(target)
 
     platform = ask_platform(assume_yes)

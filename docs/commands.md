@@ -2,7 +2,7 @@
 
 | Command | What it does |
 | --- | --- |
-| `pdt init [DIR]` | create a project here, or in DIR |
+| `pdt init [DIR]` | create a project here, or in DIR; in a project, it changes nothing |
 | `pdt examples` | list the example apps bundled with pdt |
 | `pdt new APP` | add an empty app to the project |
 | `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
@@ -17,7 +17,7 @@
 | `pdt deploy --all` | deploy every enabled app, in order; skips an app whose plan you decline; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
 | `pdt destroy APP` | remove everything deploy created |
 | `pdt destroy --all` | destroy every deployed app, in order; each app shows its plan and asks; asks whether to skip an app that fails; add `--yes --skip-failures` to run unattended |
-| `pdt move APP` | move the app, and any apps you pick that share its provider, region, and account, to another provider, region, or account: destroy, update the config files, deploy |
+| `pdt move APP` | move the app, and any apps you pick that share its provider, region, and account, to another provider, region, or account: destroy, update the config files, deploy; with no apps, set where apps run in `pdt.yml` |
 | `pdt pause APP` | stop the deployed schedule from starting runs; writes `pause: true` into the app's `config.yml` |
 | `pdt unpause APP` | let the schedule start runs again; writes `pause: false` |
 | `pdt secrets APP` | show which `.env` values differ from the deployed app |
