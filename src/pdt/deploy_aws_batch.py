@@ -1199,8 +1199,10 @@ def stream_lines(batch, logs, log_group: str, run: runs_cli.Run,
     if group is None or stream is None:
         return
     try:
+        # CloudWatch creates the stream at the container's first line, and a live tail by
+        # name fails until then. The prefix is the whole unique name, so it matches only it.
         events = logs.start_live_tail(logGroupIdentifiers=[group["logGroupArn"]],
-                                      logStreamNames=[stream])["responseStream"]
+                                      logStreamNamePrefixes=[stream])["responseStream"]
     except (BotoCoreError, ClientError) as exc:
         if error_code(exc) == "AccessDeniedException":
             raise runs_cli.StreamError(f"your AWS login may not perform logs:StartLiveTail on "
