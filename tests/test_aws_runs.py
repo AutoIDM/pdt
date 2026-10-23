@@ -60,8 +60,12 @@ class FakeLogs:
     def describe_log_groups(self, logGroupNamePrefix):
         return {"logGroups": [{"logGroupName": NAMES["log_group"], "logGroupArn": GROUP_ARN}]}
 
-    def start_live_tail(self, logGroupIdentifiers, logStreamNames):
-        self.calls.append(("start_live_tail", logGroupIdentifiers, logStreamNames))
+    def start_live_tail(self, logGroupIdentifiers, logStreamNames=None,
+                        logStreamNamePrefixes=None):
+        if logStreamNames is not None:
+            # As CloudWatch does before the container writes its first line.
+            raise client_error("ResourceNotFoundException")
+        self.calls.append(("start_live_tail", logGroupIdentifiers, logStreamNamePrefixes))
         if isinstance(self.tail, Exception):
             raise self.tail
         return {"responseStream": self.tail}
@@ -190,7 +194,7 @@ def live(events):
     return FakeLogs(pages, stream, calls), stream
 
 
-def test_follow_streams_the_store_then_each_new_line_of_the_live_tail():
+def test_follow_tails_the_stream_before_it_exists_then_streams_each_new_line():
     logs, stream = live([{"sessionStart": {}}, update(),
                          update(STARTED, (1_700_000_001_000, "row")),
                          update((1_700_000_002_000, "pdt: exit 0")), update((0, "never"))])
