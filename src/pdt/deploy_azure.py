@@ -177,9 +177,10 @@ def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = Fal
                 "does not have authorization",
             ))
             internal_error = retry_internal and "internalservererror" in output
+            retried = seconds != 0 and (access_error or internal_error)
             if proc.stderr.strip():
-                console.say(console.escape(proc.stderr.strip()))
-            if seconds == 0 or not (access_error or internal_error):
+                console.say(console.escape(proc.stderr.strip()), stderr=retried)
+            if not retried:
                 break
             wait.now("Azure returned an access error" if access_error
                      else "Azure returned InternalServerError")

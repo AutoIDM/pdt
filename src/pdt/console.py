@@ -79,9 +79,10 @@ def data(text: str) -> None:
     out.flush()
 
 
-def say(message: str = "") -> None:
-    """A line with no colour."""
-    _console.print(message)
+def say(message: str = "", stderr: bool = False) -> None:
+    """A line with no colour. With `stderr`, it goes to stderr, as for the error of a call
+    that pdt tries again."""
+    (_errors if stderr else _console).print(message)
 
 
 def art(text: str) -> None:

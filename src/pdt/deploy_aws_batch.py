@@ -1277,12 +1277,14 @@ def start(app: dict, session, follow: bool = False) -> int:
     """Submit the job the schedule would submit, with the same input."""
     scheduler, batch = session.client("scheduler", config=RETRIES), session.client("batch", config=RETRIES)
     names = resource_names(app["name"])
-    target = current_schedule(scheduler, names["schedule"], app["name"])["Target"]
-    request = json.loads(target["Input"])
-    response = batch.submit_job(
-        jobName=request["JobName"], jobQueue=request["JobQueue"],
-        jobDefinition=request["JobDefinition"], tags=dict(MANAGED_TAGS),
-        containerOverrides={"environment": [{"name": lifecycle.TRIGGER_ENV, "value": "manual"}]})
+    with console.waiting(f"starting: Batch job {console.value(names['job_definition'])}"):
+        target = current_schedule(scheduler, names["schedule"], app["name"])["Target"]
+        request = json.loads(target["Input"])
+        response = batch.submit_job(
+            jobName=request["JobName"], jobQueue=request["JobQueue"],
+            jobDefinition=request["JobDefinition"], tags=dict(MANAGED_TAGS),
+            containerOverrides={"environment": [{"name": lifecycle.TRIGGER_ENV,
+                                                 "value": "manual"}]})
     console.done(f"Started {console.value(app['name'])}: Batch job "
                  f"{console.value(response['jobId'])}.")
     if not follow:

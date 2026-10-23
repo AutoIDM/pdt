@@ -172,8 +172,7 @@ def test_the_update_waits_until_azure_shows_it(monkeypatch, capsys):
     fake = FakeAzure(states=("InProgress", "InProgress", "Succeeded"), resource=body(cron="0 7 * * *"))
     reconcile(monkeypatch, CURRENT, fake, cron="0 7 * * *")
     assert [call[2] for call in fake.calls] == ["patch", "get", "get", "get"]
-    assert capsys.readouterr() == (f"updated: Container Apps Job {JOB} (0s)\n",
-                                   f"updating: Container Apps Job {JOB}\n")
+    assert capsys.readouterr() == ("", f"updating: Container Apps Job {JOB}\n")
 
 
 def test_a_failed_update_stops_the_deploy(monkeypatch):
@@ -233,14 +232,15 @@ def test_reconcile_returns_the_job_as_azure_holds_it_so_deploy_reads_it_no_more(
                                None, "report", FINGERPRINT) is None
 
 
-def test_one_wait_covers_the_patch_and_the_poll(monkeypatch, waits):
+def test_one_wait_line_shows_from_the_patch_through_the_poll(monkeypatch, capsys, waits):
     seen = []
 
     class Recording(FakeAzure):
         def run_quiet(self, *args, **kwargs):
-            seen.append((args[2], list(waits)))
+            seen.append((args[2], list(waits), capsys.readouterr().err))
             return super().run_quiet(*args, **kwargs)
 
     reconcile(monkeypatch, CURRENT, Recording(resource=body(cron="0 7 * * *")), cron="0 7 * * *")
-    wait = [f"Container Apps Job [bold not dim]{JOB}[/]"]
-    assert seen == [("patch", wait), ("get", wait), ("get", wait)]
+    wait = [f"updating: Container Apps Job [bold not dim]{JOB}[/]"]
+    assert seen == [("patch", wait, f"updating: Container Apps Job {JOB}\n"),
+                    ("get", wait, ""), ("get", wait, "")]
