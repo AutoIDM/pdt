@@ -246,6 +246,11 @@ def test_a_cloud_build_never_runs_docker_on_this_computer(deploy):
     assert len(fakes["codebuild"].started) == 1
 
 
+def test_a_cloud_build_shows_its_wait_line_from_the_first_read(deploy, capsys):
+    deploy(cloud=True)
+    assert "reading: CodeBuild build pdt:1" in capsys.readouterr().err
+
+
 def test_the_upload_holds_only_the_staged_files(deploy):
     _code, fakes, _commands, _roles, _logs = deploy(cloud=True)
     [upload] = fakes["s3"].uploaded.values()

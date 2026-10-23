@@ -750,7 +750,10 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                         billing_wait: console.WaitOn | None = None) -> CostEstimate:
     try:
         runs = config.runs_per_month(cron)
-        seconds = average_run_seconds(job, region, project) if job_exists else None
+        seconds = None
+        if job_exists:
+            with console.waiting(f"reading: past runs of Cloud Run job {console.value(job)}"):
+                seconds = average_run_seconds(job, region, project)
         if seconds is None:
             seconds = ASSUMED_RUN_MINUTES * 60
             basis = f"{ASSUMED_RUN_MINUTES:g} min assumed"

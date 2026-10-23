@@ -43,7 +43,7 @@ _errors = Console(stderr=True, highlight=False, soft_wrap=True, emoji=False)
 # The real stdout, for `data`, once `json_output` has moved stdout to stderr.
 _data = None
 
-# Each message `warn_once` or `status_once` has printed in this process.
+# Each message `warn_once` or `waiting` has printed in this process.
 _warned: set[str] = set()
 
 INDENT = 6
@@ -109,14 +109,6 @@ def status(message: str) -> None:
     _console.print(f"[dim]{message}[/]")
 
 
-def status_once(message: str) -> None:
-    """A status line that several reads may each start, such as a price fetch: only its
-    first time prints."""
-    if message not in _warned:
-        _warned.add(message)
-        status(message)
-
-
 class Wait:
     """What pdt waits for, and the seconds since it started waiting for it."""
 
@@ -134,11 +126,14 @@ class Wait:
 @contextmanager
 def waiting(message: str) -> Iterator[Wait]:
     """On a terminal, a spinner line under the output that names the wait and counts its seconds.
-    Off a terminal, one plain line. `message` has the form `<action>: details`. A wait in
-    a worker thread shows no spinner, since the thread that started it may show one."""
+    Off a terminal, one plain line on stderr the first time a process waits for `message`.
+    `message` has the form `<action>: details`. A wait in a worker thread shows no spinner,
+    since the thread that started it may show one."""
     wait = Wait(message)
     if not _console.is_interactive or _data is not None:
-        status(message)
+        if message not in _warned:
+            _warned.add(message)
+            _errors.print(f"[dim]{message}[/]")
         yield wait
         return
     if threading.current_thread() is not threading.main_thread():
@@ -162,7 +157,7 @@ class WaitOn:
             self.start = monotonic()
         self.state = state
         if not _console.is_interactive or _data is not None:
-            status(f"{state}: {self.name}")
+            _errors.print(f"[dim]{state}: {self.name}[/]")
         elif self.spinner is None:
             self.spinner = _console.status(self)
             self.spinner.start()

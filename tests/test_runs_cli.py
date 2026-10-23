@@ -2,7 +2,6 @@ import dataclasses
 import io
 import json
 import time
-from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -16,12 +15,6 @@ pytestmark = pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.t
 T0 = datetime(2026, 9, 23, 10, 0, 12, tzinfo=UTC)
 T1 = datetime(2026, 9, 23, 10, 0, 24, tzinfo=UTC)
 EARLIER = datetime(2026, 9, 22, 10, 0, 0, tzinfo=UTC)
-
-
-@pytest.fixture(autouse=True)
-def quiet_waits(monkeypatch):
-    # These tests read a command's output; test_console covers the wait line.
-    monkeypatch.setattr(console, "waiting", lambda message: nullcontext(console.Wait(message)))
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +97,9 @@ def test_marker_status():
 
 def test_runs_prints_a_table_newest_first(capsys):
     assert runs_cli.runs(list_two, "my-report", []) == 0
-    lines = capsys.readouterr().out.splitlines()
+    out, err = capsys.readouterr()
+    assert err == "reading: run list\n"
+    lines = out.splitlines()
     assert lines[0].split() == ["#", "Started", "Duration", "Status", "Exit", "Code", "Id"]
     assert lines[1].split() == ["1", "2026-09-23", "10:00:12", "12s", "succeeded", "0",
                                 "stream-2"]

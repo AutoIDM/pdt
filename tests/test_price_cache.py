@@ -128,10 +128,17 @@ def test_a_failed_read_of_an_old_no_price_answer_raises_it(monkeypatch):
 def test_the_fetching_line_prints_only_when_pdt_reads_from_the_network(monkeypatch, capsys):
     fetching = "reading: prices from the AWS price list"
     deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, []), fetching)
-    assert fetching in capsys.readouterr().out
+    assert fetching in capsys.readouterr().err
     monkeypatch.setattr(console, "_warned", set())
     deploy_common.cached_price("aws", "us-east-1", "USD", "q", reader(1.0, []), fetching)
-    assert fetching not in capsys.readouterr().out
+    assert fetching not in capsys.readouterr().err
+
+
+def test_off_a_terminal_the_fetching_line_prints_once_for_several_reads(capsys):
+    fetching = "reading: prices from the AWS price list"
+    for query in ("q1", "q2"):
+        deploy_common.cached_price("aws", "us-east-1", "USD", query, reader(1.0, []), fetching)
+    assert capsys.readouterr().err == f"{fetching}\n"
 
 
 def test_a_failed_read_with_no_entry_raises():

@@ -653,7 +653,8 @@ def show_build_log(logs, where: dict, token: str | None) -> str | None:
 def follow_build(codebuild, logs, build_id: str) -> dict:
     """Wait for the build, printing its log as it arrives; return the finished build."""
     token = None
-    with console.wait_on(f"CodeBuild build {console.value(build_id)}", "") as wait:
+    with console.wait_on(f"CodeBuild build {console.value(build_id)}", "",
+                         f"reading: CodeBuild build {console.value(build_id)}") as wait:
         while True:
             build = codebuild.batch_get_builds(ids=[build_id])["builds"][0]
             if build.get("buildComplete") or (build.get("logs") or {}).get("streamName"):
@@ -746,8 +747,12 @@ def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
                       local_currency: str) -> CostEstimate:
     try:
         runs = config.runs_per_month(cron)
-        seconds, basis = run_basis(
-            recent_stream_seconds(logs, names["log_group"]) if schedule_exists else None)
+        recent = None
+        if schedule_exists:
+            with console.waiting(f"reading: past runs in CloudWatch log group "
+                                 f"{console.value(names['log_group'])}"):
+                recent = recent_stream_seconds(logs, names["log_group"])
+        seconds, basis = run_basis(recent)
         seconds = max(seconds, FARGATE_MIN_SECONDS)
         vcpu = float(JOB_VCPU)
         gib = int(JOB_MEMORY) / 1024

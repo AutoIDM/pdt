@@ -72,11 +72,9 @@ def test_retries_rate_limit_then_succeeds(monkeypatch):
 def test_retries_show_one_line_for_the_server_off_a_terminal(monkeypatch, capsys):
     install(monkeypatch, [http_error(429), http_error(503), {"ok": True}])
     assert fetch_json(URL) == {"ok": True}
-    assert capsys.readouterr().out.splitlines() == [
-        "no answer (try 1 of 5): prices.example.com",
-        "no answer (try 2 of 5): prices.example.com",
-        "answered: prices.example.com (0s)",
-    ]
+    assert capsys.readouterr() == ("answered: prices.example.com (0s)\n",
+                                   "no answer (try 1 of 5): prices.example.com\n"
+                                   "no answer (try 2 of 5): prices.example.com\n")
 
 
 def test_retries_server_error(monkeypatch):

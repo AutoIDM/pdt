@@ -975,15 +975,15 @@ def group_can_be_deleted(settings: dict[str, str], others: list[str]) -> bool:
 
 def purge_secret(settings: dict[str, str], sid: str) -> None:
     # No recovery windows: purge right after the soft delete lands.
-    delete_secret(settings, sid)
     with console.waiting(f"deleting: Key Vault secret {console.value(sid)}"):
+        delete_secret(settings, sid)
         for _ in range(30):
             if az_json("keyvault", "secret", "show-deleted", "--vault-name",
                        settings["vault"], "--name", sid):
                 break
             time.sleep(2)
-    run_quiet("keyvault", "secret", "purge", "--vault-name",
-              settings["vault"], "--name", sid, retry_access=True)
+        run_quiet("keyvault", "secret", "purge", "--vault-name",
+                  settings["vault"], "--name", sid, retry_access=True)
 
 
 def destroy_group(settings: dict[str, str], app_name: str) -> bool:

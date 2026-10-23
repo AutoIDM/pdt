@@ -388,7 +388,8 @@ def ecb_rate(currency: str) -> tuple[float, str]:
             raise LookupError(f"the ECB publishes no {currency} rate")
         return [rates[currency] / rates["USD"], date]
 
-    rate, date = cached_price("ecb", "", currency, ECB_RATES, read)
+    rate, date = cached_price("ecb", "", currency, ECB_RATES, read,
+                              "reading: exchange rate from the European Central Bank")
     return rate, date
 
 

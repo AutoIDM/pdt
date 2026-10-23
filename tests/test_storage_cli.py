@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 
@@ -26,7 +27,7 @@ def test_ls_lists_the_folder(store, app, capsys):
 
 def test_ls_json_lists_each_entry_with_its_type(store, app, capsys):
     assert storage_cli.run(store, app, ["ls", "--json"], False) == 0
-    entries = json.loads(capsys.readouterr().out.splitlines()[-1])
+    entries = json.loads(capsys.readouterr().out)
     assert [(entry["name"], entry["type"]) for entry in entries] == [("a.csv", "file")]
 
 
@@ -36,7 +37,7 @@ def test_ls_recursive_lists_every_file_under_the_folder(store, app, capsys, tmp_
     (nested / "b.txt").write_text("b")
     (nested.parent / "a.csv").write_text("a")
     assert storage_cli.run(store, app, ["ls", "runs/", "--recursive", "--json"], False) == 0
-    entries = json.loads(capsys.readouterr().out.splitlines()[-1])
+    entries = json.loads(capsys.readouterr().out)
     assert [entry["name"] for entry in entries] == ["runs/r1/a.csv", "runs/r1/more/b.txt"]
     assert all(entry["type"] == "file" for entry in entries)
 
@@ -109,16 +110,17 @@ def test_ls_counts_the_files_and_bytes_under_each_folder(store, app, capsys, tmp
     (runs / "r2" / "c.txt").write_text("f")
     (runs / "empty").mkdir()
     assert storage_cli.run(store, app, ["ls", "--json"], False) == 0
-    entries = json.loads(capsys.readouterr().out.splitlines()[-1])
+    entries = json.loads(capsys.readouterr().out)
     assert [(entry["name"], entry["files"], entry["size"]) for entry in entries] == [
         ("a.csv", 1, 1), ("runs", 3, 6)]
     assert storage_cli.run(store, app, ["ls", "runs/", "--json"], False) == 0
-    entries = json.loads(capsys.readouterr().out.splitlines()[-1])
+    entries = json.loads(capsys.readouterr().out)
     assert [(entry["name"], entry["files"], entry["size"]) for entry in entries] == [
         ("runs/empty", 0, 0), ("runs/r1", 2, 5), ("runs/r2", 1, 1)]
     assert storage_cli.run(store, app, ["ls", "runs"], False) == 0
-    lines = capsys.readouterr().out.splitlines()
-    assert lines.pop(0) == "reading: runs"
+    out, err = capsys.readouterr()
+    assert err == "reading: runs\n"
+    lines = out.splitlines()
     assert lines[0].split() == ["Path", "Files", "Size"]
     assert lines[2].split() == ["runs/r1", "2", "5", "B"]
 
@@ -167,7 +169,7 @@ def test_ls_counts_a_subfolder_of_a_backslash_path(store, app, monkeypatch, caps
         "find": lambda self, path, detail: fs.find(path.replace("\\", "/"), detail=detail),
     })())
     assert storage_cli.run(store, app, ["ls", "runs\\r1", "--json"], False) == 0
-    assert [(entry["files"], entry["size"]) for entry in json.loads(capsys.readouterr().out.splitlines()[-1])] == [
+    assert [(entry["files"], entry["size"]) for entry in json.loads(capsys.readouterr().out)] == [
         (1, 2)]
 
 
@@ -180,3 +182,18 @@ def test_get_open_into_a_folder_opens_the_saved_file(store, app, monkeypatch, tm
     assert storage_cli.run(store, app, ["get", "a.csv", str(folder), "--open"], False) == 0
     assert opened == [str((folder / "a.csv").resolve())]
     assert (folder / "a.csv").read_text() == "a"
+
+
+def test_destroy_shows_its_read_wait_line_before_the_question(
+        store, app, monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr("pdt.deploy.confirm",
+                        lambda actions, assume_yes: seen.append(capsys.readouterr().err) or False)
+    assert storage_cli.run(store, app, ["destroy"], False) == 1
+    assert seen == ["reading: objects under my-report/\n"]
+
+
+def test_query_reads_the_matching_objects_inside_a_wait(store, app, monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "duckdb", type(sys)("duckdb"))
+    assert storage_cli.run(store, app, ["query", "select * from 'none.csv'"], False) == 1
+    assert capsys.readouterr().err == "reading: objects that match none.csv\n"

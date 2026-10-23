@@ -348,8 +348,8 @@ def logs(list_runs: Callable[[], list[Run]],
         return 1
     if args.list:
         with console.waiting("reading: run list"):
-            found = window(numbered(list_runs), since, span, count)
-        return list_logs(found, place, app_name, args, since, span)
+            return list_logs(window(numbered(list_runs), since, span, count), place, app_name,
+                             args, since, span)
     chosen = []
     with console.waiting("reading: run list") as wait:
         found = numbered(list_runs)

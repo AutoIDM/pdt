@@ -745,7 +745,7 @@ def test_health_keeps_the_app_order_when_apps_finish_in_another_order(project, m
     assert finished == names[::-1]
     captured = capsys.readouterr()
     assert [line.split()[0] for line in captured.out.splitlines() if "app-" in line] == names
-    assert captured.err == "".join(f"line from {name}\n" for name in names)
+    assert captured.err == "checking: 4 apps\n" + "".join(f"line from {name}\n" for name in names)
 
 
 def test_health_runs_at_most_health_parallel_apps_at_once(project, monkeypatch, capsys):
@@ -786,7 +786,7 @@ def test_health_shows_every_app_when_one_fails(project, monkeypatch, capsys):
     captured = capsys.readouterr()
     rows = [line.split()[:2] for line in captured.out.splitlines() if "app-" in line]
     assert rows == [["app-a", "ok"], ["app-b", "unknown"], ["app-c", "ok"]]
-    assert captured.err == "error: not signed in\n"
+    assert captured.err == "checking: 3 apps\nerror: not signed in\n"
 
 
 def test_health_runs_a_failed_app_again_alone_when_it_can_ask_for_a_login(project, monkeypatch,

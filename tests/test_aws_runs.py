@@ -1,9 +1,10 @@
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import pytest
 from botocore.exceptions import ClientError
 
-from pdt import deploy_aws_batch
+from pdt import console, deploy_aws_batch
 from pdt.deploy_aws_batch import job_run, list_runs, read_lines, resource_names, stream_lines
 from pdt.runs_cli import Run, StreamError
 
@@ -251,9 +252,20 @@ def test_without_follow_the_stream_reads_the_store_only():
 def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(
         capsys, monkeypatch, tmp_path):
     monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
+    waits = []
+
+    @contextmanager
+    def waiting(message):
+        waits.append(message)
+        yield console.Wait(message)
+        waits.append("ended")
+
+    monkeypatch.setattr(console, "waiting", waiting)
+
     class Batch(FakeBatch):
         def describe_jobs(self, jobs):
             self.described = getattr(self, "described", []) + [jobs]
+            self.waits = list(waits)
             return {"jobs": [{"jobId": job_id, "container": {"logStreamName": f"s/{job_id}"}}
                              for job_id in jobs]}
 
@@ -263,8 +275,8 @@ def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(
                                    batch if name == "batch" else None})()
     assert deploy_aws_batch.logs({"name": "report", "platform": {}}, session, ["--list"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines.pop(0) == "reading: run list"
     assert lines[0] == f"CloudWatch log group: {resource_names('report')['log_group']}"
     assert lines[2].split()[:2] == ["1", "s/job-1"]
     assert lines[3].split()[:2] == ["2", "s/job-2"]
     assert batch.described == [["job-1", "job-2"]]
+    assert batch.waits == ["reading: run list"]

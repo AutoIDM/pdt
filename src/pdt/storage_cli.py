@@ -68,7 +68,8 @@ def query(store, sql) -> int:
     with tempfile.TemporaryDirectory(prefix="pdt-storage-") as tmp:
         rewritten = sql
         for pattern in set(re.findall(r"'([^']+)'", sql)):
-            matches = fs.glob(pattern)
+            with console.waiting(f"reading: objects that match {console.value(pattern)}"):
+                matches = fs.glob(pattern)
             if not matches:
                 console.error(f"no objects match {console.value(repr(pattern))}")
                 return 1
@@ -106,7 +107,8 @@ def destroy(store, app, assume_yes) -> int:
     from pdt import deploy
 
     fs = store.fs()
-    objects = fs.find("")
+    with console.waiting(f"reading: objects under {console.value(f'{app}/')}"):
+        objects = fs.find("")
     if not objects:
         console.say(f"no objects under {console.value(f'{app}/')}")
         return 0
