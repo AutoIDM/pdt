@@ -63,7 +63,6 @@ class FakeLogs:
     def start_live_tail(self, logGroupIdentifiers, logStreamNames=None,
                         logStreamNamePrefixes=None):
         if logStreamNames is not None:
-            # As CloudWatch does before the container writes its first line.
             raise client_error("ResourceNotFoundException")
         self.calls.append(("start_live_tail", logGroupIdentifiers, logStreamNamePrefixes))
         if isinstance(self.tail, Exception):
