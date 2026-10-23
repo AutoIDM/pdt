@@ -686,3 +686,17 @@ def test_an_app_that_stays_gets_no_pin_its_env_file_sets(project, monkeypatch):
     answer(monkeypatch, TO_AWS, [True, True])
     assert move.move_app("alpha") == 0
     assert platform_of(project, "beta") == AZURE_STAY
+
+
+def test_an_app_that_stays_pins_the_default_that_the_new_pdt_yml_changes(project, monkeypatch):
+    (project / PROJECT_FILE).write_text(
+        "platform:\n  provider: azure\n  region: eastus2\n  subscription: sub-1\n")
+    deployed_app(project, "alpha", "platform:\n  resource_group: jobs\n")
+    deployed_app(project, "beta")
+    Cloud(monkeypatch)
+    answer(monkeypatch, ["1", "westus2"], [True, True])
+    assert move.move_app("alpha") == 0
+    assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"]["resource_group"] == "jobs"
+    assert platform_of(project, "beta") == {"region": "eastus2", "resource_group": "pdt"}
+    assert move.configured("beta")["resource_group"] == "pdt"
+

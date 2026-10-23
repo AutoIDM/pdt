@@ -157,13 +157,15 @@ def pins_for(names: list[str], root_platform: dict) -> dict[str, dict]:
         recorded = current(name)
         before = configured(name)
         with app_env(name):
-            after = deploy.resolved(merged_platform(root_cfg, root_platform, target / name))
-            filled = deploy.resolved({"provider": recorded.get("provider")})
+            after_platform = merged_platform(root_cfg, root_platform, target / name)
+            after = deploy.resolved(after_platform)
+            pinned = deploy.resolved({**after_platform, "provider": recorded.get("provider")
+                                      or after_platform.get("provider")})
         profile = recorded.get("profile") or before.get("profile")
         extra = {"profile": profile if recorded.get("provider") == root_provider else None}
         settings = {**config.place(recorded), **{key: str(value) for key, value in extra.items() if value}}
         pin = {key: value for key, value in settings.items() if str(after.get(key) or "") != value
-               and (key == "provider" or str(filled.get(key) or "") != value)}
+               and (key == "provider" or str(pinned.get(key) or "") != value)}
         # An app with no time zone runs on Etc/UTC; a time zone outside platform: wins over it.
         timezone = str(before.get("timezone") or "Etc/UTC")
         if (str(after.get("timezone") or "Etc/UTC") != timezone and recorded.get("provider") != "windows"
