@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import add_app
+from conftest import add_app, plain
 from pdt import (
     cli, config, deploy, deploy_aws, deploy_azure, deploy_common, deploy_google_cloud, gcloud_sdk,
     pwsh, regions,
@@ -172,6 +172,23 @@ def test_a_plan_runs_no_container_to_choose_the_build(project, plan_env, monkeyp
            "docker_build_from": ""}
     with config.plan_only():
         assert deploy_common.build_in_cloud(app, "Cloud Build", "linux/amd64") is False
+
+
+@pytest.mark.parametrize("setting, otherwise", [
+    ("auto", "else in the cloud with CodeBuild."),
+    ("local", "else stop. docker-build: local in pdt.yml allows only Docker."),
+])
+def test_a_plan_says_the_build_place_depends_on_what_docker_can_build(
+        project, plan_env, monkeypatch, capsys, setting, otherwise):
+    monkeypatch.setattr(deploy_common, "docker_problem", lambda: "")
+    monkeypatch.setattr(deploy_common, "emulate", lambda image_platform: pytest.fail("ran"))
+    app = {"name": "report", "dir": add_app(project, "report"), "docker_build": setting,
+           "docker_build_from": "pdt.yml"}
+    with config.plan_only():
+        assert deploy_common.build_in_cloud(app, "CodeBuild", "linux/arm64") is False
+    assert plain([capsys.readouterr().out.replace("\n", " ").strip()]) == [
+        "Docker found. The deploy will build the image with Docker on this computer if it can "
+        f"build linux/arm64 images, {otherwise}"]
 
 
 def test_an_azure_plan_does_not_change_the_active_subscription(project, plan_env, monkeypatch):
