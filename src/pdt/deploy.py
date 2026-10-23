@@ -167,15 +167,15 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     if problem != "":
         console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
+    code = leave_old_place(app_name, assume_yes)
+    if code != 0:
+        return code
     if plan_only:
         code = dispatch(provider, "deploy", app_name, True, ["--plan"])
         if code == 0:
             console.say()
             console.done("Plan only; nothing was deployed. To deploy this plan, run:")
             console.command(f"pdt deploy {app_name} --yes")
-        return code
-    code = leave_old_place(app_name, assume_yes)
-    if code != 0:
         return code
     if config.uses_email(app):
         prepare_email_auth(auth_env_file(app["dir"]))
@@ -281,7 +281,8 @@ def leave_old_place(app_name: str, assume_yes: bool) -> int:
     """Before a deploy to another provider, region, or account, ask whether to destroy the app
     where it runs now. 0 goes on with the deploy; any other code is the deploy's exit code.
 
-    An app with no record (deployed by an older pdt) gets no question."""
+    An app with no record (deployed by an older pdt) gets no question, and a plan
+    (`config.plan_only`) shows the two places and asks nothing."""
     recorded = config.deployed_platform(app_name)
     app = config.merged_app(app_name)
     platform = app["platform"]
@@ -291,6 +292,10 @@ def leave_old_place(app_name: str, assume_yes: bool) -> int:
     target = describe_place(config.place(resolved(platform)))
     console.say()
     say_places(app, recorded)
+    if config.unsaved() is not None:
+        console.note(f"A deploy asks what to do with the app currently deployed to "
+                     f"{console.value(current)}.")
+        return 0
     if assume_yes or not can_prompt(None):
         console.error(f"{console.value(app_name)} was not deployed.")
         console.next_steps([(f"pdt deploy {app_name}", "")],

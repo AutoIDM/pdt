@@ -127,6 +127,18 @@ def test_with_yes_or_no_one_to_ask_it_stops_and_destroys_nothing(project, monkey
     assert f"\n  pdt deploy {APP}\n" in out
 
 
+def test_a_plan_shows_the_move_and_asks_destroys_and_records_nothing(project, monkeypatch, capsys):
+    recorded = deployed_to(project, AWS)
+    (project / "pdt.yml").write_text(AZURE)
+    cloud = Cloud(monkeypatch)
+    assert deploy.deploy(APP, plan_only=True) == 0
+    assert cloud.calls == [("azure", "deploy", None)] and cloud.asked == []
+    assert config.deployed_platform(APP) == recorded
+    out = capsys.readouterr().out
+    assert "now deploys it to" in out and "A deploy asks what to do" in out
+    assert "Plan only; nothing was deployed" in out
+
+
 @pytest.mark.parametrize("new", [
     AWS.replace("  account: \"123456789012\"\n", ""),
     AWS + "  profile: other-profile\n  timezone: Europe/Paris\n",
