@@ -212,11 +212,14 @@ def test_a_new_default_pins_each_app_that_stays(project, monkeypatch, capsys):
     assert cloud.events[-1] == ("deploy", "alpha", AWS_PLACE)
 
 
-def test_move_some_moves_the_chosen_apps(project, monkeypatch):
+def test_move_some_moves_the_chosen_apps(project, monkeypatch, capsys):
     moving_project(project)
     cloud = Cloud(monkeypatch)
     answer(monkeypatch, ["2", "1 3", *TO_AWS], [False, True])
     assert move.move_app("alpha") == 0
+    table = "1  alpha  yes       pdt.yml\n2  beta   yes       pdt.yml\n3  gamma  yes       pdt.yml\n"
+    out = capsys.readouterr().out
+    assert out.index(table, out.index("4) Cancel")) < out.index("Where should your jobs run?")
     assert [name for name, *_ in cloud.destroyed] == ["alpha", "gamma"]
     assert [name for name, *_ in cloud.deployed] == ["alpha", "gamma"]
     assert platform_of(project, "alpha") == AWS
@@ -699,4 +702,18 @@ def test_an_app_that_stays_pins_the_default_that_the_new_pdt_yml_changes(project
     assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"]["resource_group"] == "jobs"
     assert platform_of(project, "beta") == {"region": "eastus2", "resource_group": "pdt"}
     assert move.configured("beta")["resource_group"] == "pdt"
+
+
+def test_an_app_that_stays_pins_the_aws_profile_its_environment_sets(project, monkeypatch):
+    monkeypatch.setenv("AWS_PROFILE", "dev")
+    (project / PROJECT_FILE).write_text(
+        "platform:\n  provider: aws\n  region: us-east-1\n  account: \"111111111111\"\n  timezone: UTC\n")
+    deployed_app(project, "alpha", "platform:\n  account: \"222222222222\"\n  profile: prod\n")
+    deployed_app(project, "beta")
+    Cloud(monkeypatch)
+    answer(monkeypatch, ["2", "us-east-2", "UTC"], [True, True])
+    assert move.move_app("alpha") == 0
+    assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"]["profile"] == "prod"
+    assert platform_of(project, "beta")["profile"] == "dev"
+    assert move.configured("beta")["profile"] == "dev"
 

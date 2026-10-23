@@ -161,7 +161,11 @@ def pins_for(names: list[str], root_platform: dict) -> dict[str, dict]:
             after = deploy.resolved(after_platform)
             pinned = deploy.resolved({**after_platform, "provider": recorded.get("provider")
                                       or after_platform.get("provider")})
-        profile = recorded.get("profile") or before.get("profile")
+            # deploy_aws takes AWS_PROFILE when the config sets no profile.
+            env_profile = os.environ.get("AWS_PROFILE") if recorded.get("provider") == "aws" else None
+        after["profile"] = after.get("profile") or env_profile
+        pinned["profile"] = pinned.get("profile") or env_profile
+        profile = recorded.get("profile") or before.get("profile") or env_profile
         extra = {"profile": profile if recorded.get("provider") == root_provider else None}
         settings = {**config.place(recorded), **{key: str(value) for key, value in extra.items() if value}}
         pin = {key: value for key, value in settings.items() if str(after.get(key) or "") != value
@@ -177,7 +181,16 @@ def pins_for(names: list[str], root_platform: dict) -> dict[str, dict]:
     return pins
 
 
+def app_table(numbered: list[str]) -> None:
+    console.say()
+    console.table(["", "app", "deployed", "settings in"],
+                  [[str(number), name, deployed_word(name), settings_in(name)]
+                   for number, name in enumerate(numbered, start=1)])
+
+
 def ask_apps(numbered: list[str]) -> list[str]:
+    app_table(numbered)
+    console.say()
     while True:
         answer = _ask("Type the numbers of the apps to move, separated by spaces "
                       "(Enter cancels)")
@@ -412,11 +425,7 @@ def ask_and_move(name: str | None) -> int:
     group = [other for other in names if "provider" in now[name] and same(now[name], now[other])] or [name]
     moving = [name]
     if len(group) > 1:
-        console.say()
-        console.table(["", "app", "deployed", "settings in"],
-                      [[str(number), other, deployed_word(other),
-                        settings_in(other)]
-                       for number, other in enumerate(group, start=1)])
+        app_table(group)
         choice = _ask_choice(f"Which apps should move from {console.escape(here)}?",
                              [f"Only {name}", "Some", f"All {len(group)} apps on {here}", "Cancel"])
         if choice == 2:
