@@ -95,12 +95,19 @@ def test_command_without_app_caps_the_list_at_five(project, monkeypatch, capsys,
     assert "pdt list" in out
 
 
-@pytest.mark.parametrize("command", APP_COMMANDS)
+@pytest.mark.parametrize("command", [command for command in APP_COMMANDS if command != "move"])
 def test_command_without_app_in_empty_project(project, monkeypatch, capsys, command):
     assert run_cli(monkeypatch, command) == 1
     out = capsys.readouterr().out
     assert "no apps yet" in out
     assert "pdt new" in out
+
+
+def test_move_in_an_empty_project_moves_the_default_platform(project, monkeypatch):
+    picked = []
+    monkeypatch.setattr(move, "move_app", lambda app: picked.append(app) or 0)
+    assert run_cli(monkeypatch, "move") == 0
+    assert picked == [None]
 
 
 def record_app(monkeypatch, command):

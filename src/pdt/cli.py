@@ -430,6 +430,8 @@ def use_app_folder(args) -> None:
 
 
 def cmd_move(args) -> int:
+    if not config.app_folders():
+        return move.move_app(None)
     name = choose_app(args.app, "move")
     if name is None:
         return 1

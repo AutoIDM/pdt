@@ -1148,7 +1148,8 @@ def dockerfile_problem(platform: dict) -> str:
     return f"not used by the {platform.get('provider')} provider"
 
 
-def validate_app(name: str) -> list[str]:
+def validate_app(name: str, new_platform: dict | None = None) -> list[str]:
+    """The app's problems; with `new_platform`, the problems it would have with that platform."""
     where = f"{name}/{APP_FILE}"
     try:
         root_cfg = load_yaml(find_project() / PROJECT_FILE)
@@ -1174,6 +1175,8 @@ def validate_app(name: str) -> list[str]:
         if str(e) not in problems:
             problems.append(str(e))
         return problems
+    if new_platform is not None:
+        app["platform"] = new_platform
     provider = app["platform"].get("provider")
     if provider not in PROVIDERS:
         problems.append(
