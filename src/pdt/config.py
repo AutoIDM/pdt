@@ -62,8 +62,6 @@ PLATFORM_KEYS = {
 }
 ENV_KEYS = {"required", "one_of", "optional"}
 # The platform keys besides provider that say where an app of each provider runs.
-# `profile` is only the credentials that reach an account, and `timezone` is when
-# the app runs.
 PLACE_KEYS = {"aws": ("region", "account"), "google-cloud": ("region", "project"),
               "azure": ("region", "subscription", "resource_group", "environment"),
               "windows": ()}
