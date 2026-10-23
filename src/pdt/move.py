@@ -190,20 +190,24 @@ def ask_place(current: dict) -> dict | None:
     return ask_settings(keys[choice - 1], kept_settings(current, keys[choice - 1]))
 
 
-def stopped(rerun: str, destroyed: list[str], written: bool, redeployed: list[str],
+def stopped(moving: list[str], destroyed: list[str], updated: set[str], redeployed: list[str],
             where: dict[str, str], there: dict[str, str]) -> None:
-    """Say what a move that stopped after its first destroy did, and what is left to run."""
+    """Say what a move that did not finish did, and the command left for each app in `moving`:
+    none for an app in `updated` that was not deployed, `pdt deploy` for one that was removed,
+    and `pdt move` for each other app."""
     console.say()
     for name in destroyed:
         console.say(f"{console.value(name)} was removed from {console.value(where[name])}.")
-    if written:
-        console.say(f"The {console.value('platform:')} settings are updated.")
+    for name in sorted(updated):
+        console.say(f"The {console.value('platform:')} settings of {console.value(name)} are updated.")
     for name in redeployed:
         console.say(f"{console.value(name)} is deployed to {console.value(there[name])}.")
     console.say()
-    console.next_steps(([] if written else [(rerun, "update the platform: settings")])
-                       + [(f"pdt deploy {name}", f"deploy it to {console.escape(there[name])}")
-                          for name in destroyed if name not in redeployed])
+    console.next_steps([(f"pdt deploy {name}", f"deploy it to {console.escape(there[name])}")
+                        if name in updated
+                        else (f"pdt move {name}", f"move it to {console.escape(there[name])}")
+                        for name in moving if name not in redeployed
+                        and (name in destroyed or name not in updated)])
 
 
 def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str],
@@ -216,10 +220,14 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
     target = config.find_project()
     names = config.app_folders()
     rerun = f"pdt move {moving[0]}" if moving else "pdt move"
+    final = {}
+    for name in moving:
+        config.load_env(target / name)
+        final[name] = deploy.resolved({**root_platform,
+                                       **(config.root_app_entry(root_cfg, name).get("platform") or {}),
+                                       **platform})
     where = {name: described(current(name)) for name in names}
-    final = {name: {**root_platform, **(config.root_app_entry(root_cfg, name).get("platform") or {}),
-                    **platform} for name in moving}
-    there = {name: described(deploy.resolved(final[name])) for name in moving}
+    there = {name: described(final[name]) for name in moving}
     deployed = [name for name in moving
                 if config.is_deployed(name) and deploy.moved(current(name), final[name])]
     problems = []
@@ -276,7 +284,7 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
         console.say()
         console.next_steps([(rerun, "start the move again")])
         return 1
-    removed, redeployed, failed, written = [], [], [], False
+    removed, updated, redeployed, failed = [], set(), [], []
     try:
         for name in moving:
             if name in deployed:
@@ -291,6 +299,7 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
                                             *((None, change) for change in changes),
                                             *((name, moves[name]) for name in removed)]:
             if changed == text:
+                updated.add(name)
                 continue
             shown = path.relative_to(target).as_posix()
             with config.locked(path):
@@ -304,7 +313,7 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
                             f"{console.value(shown)}.")
             else:
                 console.done(f"Updated the {console.value('platform:')} settings in {console.value(shown)}.")
-        written = True
+            updated.add(name)
         for name in removed:
             if name not in deployed:
                 continue
@@ -319,15 +328,15 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
             raise
         if isinstance(e, ConfigError):
             console.error(console.escape(str(e)))
-        stopped(rerun, destroyed, written, redeployed, where, there)
+        stopped(moving, destroyed, updated & set(removed), redeployed, where, there)
         if isinstance(e, ConfigError):
             return 1
         raise
-    if failed:
-        console.say()
-        console.next_steps([(f"pdt deploy {name}", f"deploy it to {console.escape(there[name])}")
-                            for name in failed])
-    return 0 if removed == moving and not failed else 1
+    if failed or removed != moving:
+        stopped(moving, [name for name in removed if name in deployed], updated & set(removed),
+                redeployed, where, there)
+        return 1
+    return 0
 
 
 def deployed_word(name: str) -> str:

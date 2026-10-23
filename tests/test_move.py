@@ -470,7 +470,11 @@ def test_a_failed_destroy_pins_each_app_still_deployed(project, monkeypatch, cap
     cloud = Cloud(monkeypatch, failing=("beta",))
     answer(monkeypatch, ["3", *TO_AWS], [True, True])
     assert move.move_app("alpha") == 1
-    assert "beta was not removed. It is still deployed to azure, region eastus2, subscription sub-1, resource group pdt." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "beta was not removed. It is still deployed to azure, region eastus2, subscription sub-1, resource group pdt." in out
+    assert "alpha is deployed to aws, region us-east-2." in out
+    assert ("Next steps:\n  pdt move beta   move it to aws, region us-east-2\n"
+            "  pdt move gamma  move it to aws, region us-east-2\n") in out
     assert cloud.destroyed == [("alpha", AZURE_PIN)]
     assert cloud.deployed == [("alpha", AWS_PLACE)]
     assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"] == AWS
@@ -539,7 +543,8 @@ def test_an_edit_during_the_destroy_names_the_commands_left(project, monkeypatch
     assert move.move_app("alpha") == 1
     out = capsys.readouterr().out
     assert "alpha/config.yml changed while pdt move was running." in out
-    assert "  pdt move alpha    update the platform: settings\n  pdt deploy alpha" in out
+    assert "Next steps:\n  pdt move alpha  move it to aws, region us-east-2\n" in out
+    assert "pdt deploy alpha" not in out
     assert [event[:2] for event in cloud.events] == [("destroy", "alpha")]
 
 
@@ -572,3 +577,43 @@ def test_init_in_an_app_folder_finds_the_project(project, monkeypatch, capsys):
     assert scaffold.init(None, assume_yes=True) == 0
     assert f"{project} is already a pdt project." in capsys.readouterr().out
     assert not (project / "alpha" / PROJECT_FILE).exists()
+
+
+def test_a_stop_during_the_config_writes_names_the_command_for_each_app(project, monkeypatch, capsys):
+    (project / PROJECT_FILE).write_text("platform:\n  provider: aws\n  region: us-east-2\n  timezone: UTC\n")
+    azure = "platform:\n  provider: azure\n  region: eastus2\n  subscription: sub-1\n"
+    deployed_app(project, "alpha", azure)
+    deployed_app(project, "beta", azure)
+    Cloud(monkeypatch)
+    write = move.config.write_text_atomically
+
+    def interrupt(path, text, newline=None):
+        if path == project / "beta" / APP_FILE:
+            raise KeyboardInterrupt
+        write(path, text, newline)
+
+    monkeypatch.setattr(move.config, "write_text_atomically", interrupt)
+    answer(monkeypatch, ["3", "2", "us-east-2", "UTC"], [True])
+    with pytest.raises(KeyboardInterrupt):
+        move.move_app("alpha")
+    out = capsys.readouterr().out
+    assert ("Next steps:\n  pdt deploy alpha  deploy it to aws, region us-east-2\n"
+            "  pdt move beta     move it to aws, region us-east-2\n") in out
+    assert "pdt deploy beta" not in out
+    assert "pdt move alpha" not in out
+
+
+def test_the_plan_resolves_the_place_with_the_app_env_file(project, monkeypatch, capsys):
+    monkeypatch.setenv("PDT_AZURE_RESOURCE_GROUP", "unset")
+    monkeypatch.delenv("PDT_AZURE_RESOURCE_GROUP")
+    (project / PROJECT_FILE).write_text(
+        "platform:\n  provider: azure\n  region: eastus2\n  subscription: sub-1\n")
+    deployed_app(project, "own", "platform:\n  provider: google-cloud\n  region: us-central1\n")
+    (project / "own" / ".env").write_text("PDT_AZURE_RESOURCE_GROUP=jobs\n")
+    cloud = Cloud(monkeypatch)
+    answer(monkeypatch, ["1", "eastus2"], [True])
+    assert move.move_app("own") == 0
+    assert ("deploy own to azure, region eastus2, subscription sub-1, resource group jobs"
+            in capsys.readouterr().out)
+    assert cloud.deployed == [("own", {"provider": "azure", "region": "eastus2",
+                                       "subscription": "sub-1", "resource_group": "jobs"})]
