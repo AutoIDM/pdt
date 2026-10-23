@@ -202,10 +202,11 @@ def test_an_azure_plan_does_not_change_the_active_subscription(project, plan_env
 
 def test_a_plan_installs_no_powershell_and_no_google_cloud_cli(tmp_path, plan_env, monkeypatch):
     monkeypatch.setattr(pwsh.shutil, "which", lambda name: None)
-    monkeypatch.setattr(pwsh, "local_pwsh", lambda: tmp_path / "pwsh")
+    monkeypatch.setattr(pwsh, "install_dir", lambda windows=False: tmp_path / "pwsh")
     monkeypatch.setattr(pwsh, "download_pwsh", lambda key: pytest.fail("installed"))
     monkeypatch.setattr(gcloud_sdk.shutil, "which", lambda name: None)
-    monkeypatch.setattr(gcloud_sdk, "LOCAL_GCLOUD", tmp_path / "gcloud")
+    monkeypatch.setattr(gcloud_sdk, "SDK_DIR", tmp_path / "gcloud")
+    monkeypatch.setattr(gcloud_sdk, "LOCAL_GCLOUD", tmp_path / "gcloud" / "gcloud")
     monkeypatch.setattr(gcloud_sdk, "download_sdk", lambda key: pytest.fail("installed"))
     with config.plan_only():
         with pytest.raises(pwsh.PwshError, match="a plan installs nothing"):
@@ -214,16 +215,24 @@ def test_a_plan_installs_no_powershell_and_no_google_cloud_cli(tmp_path, plan_en
             gcloud_sdk.ensure_gcloud()
 
 
+@pytest.mark.parametrize("suffix", ["", ".previous"])
 def test_a_plan_uses_a_local_powershell_and_google_cloud_cli_of_another_version(tmp_path, plan_env,
-                                                                                monkeypatch):
+                                                                                monkeypatch, suffix):
     monkeypatch.setattr(pwsh.shutil, "which", lambda name: None)
-    monkeypatch.setattr(pwsh, "install_dir", lambda windows=False: tmp_path)
-    pwsh.local_pwsh().write_text("")
+    monkeypatch.setattr(pwsh, "install_dir", lambda windows=False: tmp_path / "pwsh")
     monkeypatch.setattr(pwsh, "download_pwsh", lambda key: pytest.fail("installed"))
     monkeypatch.setattr(gcloud_sdk.shutil, "which", lambda name: None)
-    monkeypatch.setattr(gcloud_sdk, "LOCAL_GCLOUD", tmp_path / "gcloud")
-    (tmp_path / "gcloud").write_text("")
+    monkeypatch.setattr(gcloud_sdk, "SDK_DIR", tmp_path / "gcloud")
+    monkeypatch.setattr(gcloud_sdk, "LOCAL_GCLOUD", tmp_path / "gcloud" / "google-cloud-sdk" / "bin" / "gcloud")
+    monkeypatch.setattr(gcloud_sdk, "GCLOUD_BIN", "gcloud")
     monkeypatch.setattr(gcloud_sdk, "download_sdk", lambda key: pytest.fail("installed"))
+    local_pwsh = tmp_path / f"pwsh{suffix}" / pwsh.local_pwsh().name
+    local_gcloud = tmp_path / f"gcloud{suffix}" / "google-cloud-sdk" / "bin" / "gcloud"
+    for path in (local_pwsh, local_gcloud):
+        path.parent.mkdir(parents=True)
+        path.write_text("")
+    before = sorted(tmp_path.rglob("*"))
     with config.plan_only():
-        assert pwsh.ensure_pwsh() == str(pwsh.local_pwsh())
-        assert gcloud_sdk.ensure_gcloud() == str(tmp_path / "gcloud")
+        assert pwsh.ensure_pwsh() == str(local_pwsh)
+        assert gcloud_sdk.ensure_gcloud() == str(local_gcloud)
+    assert sorted(tmp_path.rglob("*")) == before

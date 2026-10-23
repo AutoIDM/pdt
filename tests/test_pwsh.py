@@ -1,3 +1,4 @@
+import contextlib
 import os
 import subprocess
 import sys
@@ -108,15 +109,70 @@ def test_the_download_replaces_the_local_pwsh_only_after_it_unpacks(monkeypatch,
         pwsh.download_pwsh("osx-arm64")
     assert (tmp_path / "pwsh" / "VERSION").read_text() == "7.6.6"
 
-    def unpack(url, sha256, stage, error):
-        stage.mkdir()
-        (stage / "pwsh").write_text(pwsh.VERSION)
-
+    (tmp_path / "pwsh.new").mkdir()
+    (tmp_path / "pwsh.new" / "leftover").write_text("")
     monkeypatch.setattr(pwsh, "fetch_verified", unpack)
     pwsh.download_pwsh("osx-arm64")
     assert (tmp_path / "pwsh" / "VERSION").read_text() == pwsh.VERSION
-    assert (tmp_path / "pwsh" / "pwsh").read_text() == pwsh.VERSION
+    assert pwsh.local_pwsh().read_text() == pwsh.VERSION
     assert sorted(path.name for path in tmp_path.iterdir()) == ["pwsh"]
+
+
+def unpack(url, sha256, stage, error):
+    stage.mkdir()
+    (stage / pwsh.local_pwsh().name).write_text(pwsh.VERSION)
+
+
+def refuse_renames(monkeypatch, *names):
+    rename = Path.rename
+
+    def fake(self, target):
+        if self.name in names:
+            raise PermissionError(13, "Access is denied")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", fake)
+
+
+def test_a_failed_install_puts_the_current_pwsh_back(monkeypatch, tmp_path):
+    local_copy(monkeypatch, tmp_path, "7.6.6")
+    monkeypatch.setattr(pwsh, "fetch_verified", unpack)
+    refuse_renames(monkeypatch, "pwsh.new")
+    with pytest.raises(pwsh.PwshError, match="cannot install to .*: Access is denied$"):
+        pwsh.download_pwsh("osx-arm64")
+    assert (tmp_path / "pwsh" / "VERSION").read_text() == "7.6.6"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["pwsh"]
+
+
+def test_a_failed_install_and_restore_names_the_current_pwsh(monkeypatch, tmp_path):
+    local_copy(monkeypatch, tmp_path, "7.6.6")
+    monkeypatch.setattr(pwsh, "fetch_verified", unpack)
+    refuse_renames(monkeypatch, "pwsh.new", "pwsh.previous")
+    with pytest.raises(pwsh.PwshError, match="the current copy is in .*pwsh.previous"):
+        pwsh.download_pwsh("osx-arm64")
+    assert (tmp_path / "pwsh.previous" / "VERSION").read_text() == "7.6.6"
+
+
+def test_an_interrupted_update_restores_the_current_pwsh(monkeypatch, tmp_path):
+    local_copy(monkeypatch, tmp_path, pwsh.VERSION)
+    (tmp_path / "pwsh").rename(tmp_path / "pwsh.previous")
+    monkeypatch.setattr(pwsh, "download_pwsh", lambda key: pytest.fail("downloaded"))
+    assert pwsh.ensure_pwsh() == str(pwsh.local_pwsh())
+    assert (tmp_path / "pwsh" / "VERSION").read_text() == pwsh.VERSION
+    assert not (tmp_path / "pwsh.previous").exists()
+
+
+def test_an_update_that_another_process_finished_downloads_nothing(monkeypatch, tmp_path):
+    local_copy(monkeypatch, tmp_path, "7.6.6")
+
+    @contextlib.contextmanager
+    def other_process_updated(path):
+        (path / "VERSION").write_text(pwsh.VERSION)
+        yield
+
+    monkeypatch.setattr(pwsh, "locked", other_process_updated)
+    monkeypatch.setattr(pwsh, "download_pwsh", lambda key: pytest.fail("downloaded"))
+    assert pwsh.ensure_pwsh() == str(pwsh.local_pwsh())
 
 
 def test_main_prints_only_the_pwsh_path_on_stdout(tmp_path):
