@@ -454,6 +454,26 @@ def test_keep_pins_every_deployed_app_and_destroys_nothing(project, monkeypatch,
     assert "alpha stays on azure, region eastus2, subscription sub-1." in capsys.readouterr().out
 
 
+def test_move_all_destroys_a_disabled_app_that_is_deployed(project, monkeypatch):
+    (project / PROJECT_FILE).write_text(
+        "platform:\n  provider: azure\n  region: eastus2\n  subscription: sub-1\n")
+    deployed_app(project, "alpha", "enabled: false\n")
+    cloud = Cloud(monkeypatch)
+    answer(monkeypatch, ["2", "us-east-2", "UTC", "1"], [True])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert [name for name, *_ in cloud.destroyed] == ["alpha"]
+
+
+def test_keep_pins_the_region_an_environment_variable_selects(project, monkeypatch, capsys):
+    monkeypatch.setenv("PDT_AZURE_REGION", "eastus2")
+    (project / PROJECT_FILE).write_text("platform:\n  provider: azure\n  subscription: sub-1\n")
+    deployed_app(project, "alpha")
+    answer(monkeypatch, ["2", "us-east-2", "UTC", "3"])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert platform_of(project, "alpha") == AZURE_PIN
+    assert "deployed on azure, region eastus2, subscription sub-1?" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("replies,confirms", [
     (["4"], []),
     (["2", ""], []),

@@ -365,6 +365,7 @@ def merged_platform(root_cfg: dict, root_platform: dict, app_dir: Path) -> dict:
 
 
 def moves(before: dict, after: dict) -> bool:
+    before, after = deploy.resolved(before), deploy.resolved(after)
     return ((before.get("provider"), before.get("region"))
             != (after.get("provider"), after.get("region")))
 
@@ -396,7 +397,7 @@ def change_provider(target: Path) -> int:
     apps = {name: config.merged_app(name) for name in deployed}
     numbered = [name for name in deployed if apps[name]["platform_from"] == PROJECT_FILE]
     where = {name: deploy.describe_place(config.place(config.deployed_platform(name)
-                                                      or apps[name]["platform"]))
+                                                      or deploy.resolved(apps[name]["platform"])))
              for name in deployed}
     if deployed:
         console.say()
@@ -411,10 +412,10 @@ def change_provider(target: Path) -> int:
         return 0
     platform = ask_settings(provider, kept_settings(current, provider))
     changed = bom + replace_platform(text.removeprefix(bom), platform)
-    there = deploy.describe_place(config.place(platform))
+    there = deploy.describe_place(config.place(deploy.resolved(platform)))
     moving = []
     if numbered and moves(current, platform):
-        here = deploy.describe_place(config.place(current))
+        here = deploy.describe_place(config.place(deploy.resolved(current)))
         choice = _ask_choice(f"What should happen to the apps deployed on {console.escape(here)}?",
                              ["Move all", "Move some",
                               f"Keep them on {here} (only new apps go to {there})", "Cancel"], 4)
@@ -448,8 +449,8 @@ def change_provider(target: Path) -> int:
         removed.append(name)
     console.say()
     for name in deployed:
-        before = merged_platform(root_cfg, current, target / name)
-        after = merged_platform(root_cfg, platform, target / name)
+        before = deploy.resolved(merged_platform(root_cfg, current, target / name))
+        after = deploy.resolved(merged_platform(root_cfg, platform, target / name))
         if name in removed or not moves(before, after):
             continue
         for key, value in before.items():
