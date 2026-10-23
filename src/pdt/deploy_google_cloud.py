@@ -5,7 +5,6 @@
 #     "pyyaml",
 #     "rich",
 #     "python-dotenv",
-#     "backoff",
 #     "gcsfs",
 #     "fsspec",
 #     "google-cloud-storage",

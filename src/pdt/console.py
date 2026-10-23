@@ -23,6 +23,7 @@ Import the module, not its functions: `from pdt import console`, then
 
 from __future__ import annotations
 
+import atexit
 import os
 import sys
 from contextlib import contextmanager
@@ -68,6 +69,7 @@ def json_output() -> None:
     if not os.environ.get("PDT_JSON_OUTPUT") or _data is not None:
         return
     _data = os.fdopen(os.dup(1), "w")
+    atexit.register(_data.close)
     os.dup2(2, 1)
 
 

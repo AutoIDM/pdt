@@ -7,7 +7,6 @@
 #     "pyyaml",
 #     "rich",
 #     "python-dotenv",
-#     "backoff",
 #     "fsspec",
 #     "s3fs>=2024",
 #     "duckdb",

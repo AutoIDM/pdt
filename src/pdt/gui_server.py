@@ -8,7 +8,6 @@
 #     "msal",
 #     "google-auth",
 #     "google-auth-oauthlib",
-#     "backoff",
 #     "rich-argparse>=1.8.0",
 #     "argcomplete",
 #     "shellingham",
