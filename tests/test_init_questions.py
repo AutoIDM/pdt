@@ -27,8 +27,8 @@ def test_azure_does_not_ask_for_the_subscription():
 
 
 @pytest.mark.parametrize("provider,expected", [
-    ("aws", ["region"]),
-    ("google-cloud", ["region"]),
+    ("aws", ["region", "timezone"]),
+    ("google-cloud", ["region", "timezone"]),
     ("windows", []),
     ("", []),
 ])

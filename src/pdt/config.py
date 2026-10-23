@@ -61,10 +61,10 @@ PLATFORM_KEYS = {
     "timezone",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
-# The platform keys that say where a deployed app runs. `profile` is only the
-# credentials that reach an account, and `timezone` is when the app runs.
-PLACE_KEYS = ("provider", "region", "account", "project", "subscription", "resource_group",
-              "environment")
+# The platform keys besides provider that say where an app of each provider runs.
+PLACE_KEYS = {"aws": ("region", "account"), "google-cloud": ("region", "project"),
+              "azure": ("region", "subscription", "resource_group", "environment"),
+              "windows": ()}
 # The place keys a deploy finds and saves when the config leaves them empty. Every other
 # place key that the config leaves empty takes the provider's default place.
 FOUND_KEYS = ("account", "project", "subscription")
@@ -383,15 +383,18 @@ def save_app_key(app: dict, key: str, value) -> Path:
     return path
 
 
-def save_platform_key(app: dict, key: str, value: str) -> Path:
+def save_platform_key(app: dict, key: str, value: str, path: Path | None = None) -> Path:
+    """Write one platform key into `path`, or else into pdt.yml when the app has the provider
+    of pdt.yml, and into the app's config.yml when it does not."""
     # Edit the text rather than rewrite the yaml, so the user's comments survive.
     from pdt import console
-    project_file = find_project() / PROJECT_FILE
-    root_cfg = load_yaml(project_file)
-    if (root_cfg.get("platform") or {}).get("provider") == app["platform"].get("provider"):
-        path = project_file
-    else:
-        path = app["dir"] / APP_FILE
+    if path is None:
+        project_file = find_project() / PROJECT_FILE
+        root_cfg = load_yaml(project_file)
+        if (root_cfg.get("platform") or {}).get("provider") == app["platform"].get("provider"):
+            path = project_file
+        else:
+            path = app["dir"] / APP_FILE
     shown = path.relative_to(find_project())
     if keep_unsaved(key, value, platform=True):
         console.note(f"Using {console.escape(key)} {console.value(value)}. A deploy saves it to "
@@ -474,10 +477,10 @@ def yaml_quoted(value: str) -> str:
     return f'"{escaped}"'
 
 
-def write_text_atomically(path: Path, text: str) -> None:
+def write_text_atomically(path: Path, text: str, newline: str | None = None) -> None:
     # The temporary file sits in the same folder because a rename is atomic only
     # within one filesystem.
-    tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+    tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, newline=newline,
                                       prefix=path.name + ".", suffix=".tmp", delete=False)
     try:
         with tmp:
@@ -576,7 +579,8 @@ def deployed_platform(name: str) -> dict | None:
 
 
 def place(platform: dict) -> dict[str, str]:
-    return {key: str(platform[key]) for key in PLACE_KEYS if str(platform.get(key) or "") != ""}
+    keys = ("provider", *PLACE_KEYS.get(platform.get("provider"), ()))
+    return {key: str(platform[key]) for key in keys if str(platform.get(key) or "") != ""}
 
 
 def deployed_places() -> dict[str, dict[str, str]]:

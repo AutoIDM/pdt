@@ -17,7 +17,7 @@ Ease of use and simplification of the process is the top guiding principle. Ever
 - The simplest behavior is the default. A convenience is on for every app, and a user turns it off with one key. A user never has to opt in.
 - A shared resource follows one pattern on every provider: the same name prefix, the same tag, and the same lifecycle scope. If one provider keeps a resource in its own group, bucket, or account scope, every provider does.
 - Fewer config keys beat more. A key exists only when the user must choose a value. Names for shared resources get stable defaults; they are not config.
-- `pdt init` asks only what pdt cannot find out for itself. If a provider's CLI or SDK can name the account, subscription, project, or AWS profile, deploy discovers it, writes it back with `config.save_platform_key`, and checks against it every time after that. Region is the only setting a cloud provider asks for, because it decides where the data lives.
+- `pdt init` asks only what pdt cannot find out for itself. If a provider's CLI or SDK can name the account, subscription, project, or AWS profile, deploy discovers it, writes it back with `config.save_platform_key`, and checks against it every time after that. Region is the only place setting a cloud provider asks for, because it decides where the data lives. `pdt init` in an existing project asks these questions again and replaces only the `platform:` block of `pdt.yml`, so a project can move to another provider.
 - `pdt init` in a folder holding nothing also creates the `hello-world` starter app, so a new user has something that runs before they write anything. A folder that already holds the user's files gets no starter.
 
 ## The repo is not a project
