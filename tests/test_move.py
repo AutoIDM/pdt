@@ -72,7 +72,6 @@ def deployed_app(project, name, config_text=""):
 
 
 class Cloud:
-    """Each destroy and deploy with the place it runs at, and each write of a config file, in order."""
 
     def __init__(self, monkeypatch, failing=(), before=lambda command, app_name: None):
         self.events = []

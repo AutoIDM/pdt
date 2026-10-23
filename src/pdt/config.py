@@ -1167,7 +1167,6 @@ def place_problems(name: str, platform: dict) -> list[str]:
 
 
 def validate_app(name: str, new_platform: dict | None = None) -> list[str]:
-    """The app's problems; with `new_platform`, the problems it would have with that platform."""
     where = f"{name}/{APP_FILE}"
     try:
         root_cfg = load_yaml(find_project() / PROJECT_FILE)
