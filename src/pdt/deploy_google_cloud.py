@@ -161,7 +161,7 @@ def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
             if proc.returncode == 0:
                 return proc
             if seconds is None or not TRANSIENT.search(proc.stderr):
-                wait.state = ""
+                wait.end = ""
                 return proc
             title = re.search(r"serviceTitle: (.+)", proc.stderr)
             what = title.group(1).strip() if title else "Google Cloud"

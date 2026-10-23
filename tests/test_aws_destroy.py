@@ -1,10 +1,10 @@
 import pytest
 
 from conftest import plain
-from pdt import deploy_aws_batch
+from pdt import console, deploy_aws_batch
 from pdt.deploy_aws_batch import (
     COMPUTE_ENVIRONMENT, JOB_QUEUE, ensure_shared, legacy_fargate_cleanup, remove,
-    other_job_definitions, resource_names, shared_present,
+    other_job_definitions, resource_names, shared_present, wait_for_batch,
 )
 
 NAMES = resource_names("my-app")
@@ -116,6 +116,24 @@ def test_remove_prints_one_line_for_a_state_that_lasts_several_polls(monkeypatch
     remove(batch, JOB_QUEUE)
     assert capsys.readouterr().out.splitlines() == ["Batch job queue pdt: deleting",
                                                     "Batch job queue pdt: deleted (0s)"]
+
+
+def test_a_batch_wait_shows_each_status_batch_reports(monkeypatch, capsys):
+    monkeypatch.setattr(deploy_aws_batch, "BATCH_WAIT_DELAYS", (0, 0, 0))
+    items = iter([{"status": "UPDATING"}, {"status": "DELETING"}, None])
+    with console.wait_on("Batch job queue pdt", "deleted") as wait:
+        wait_for_batch(lambda: next(items), lambda item: item is None, wait, "")
+    assert capsys.readouterr().out.splitlines() == ["Batch job queue pdt: updating",
+                                                    "Batch job queue pdt: deleting",
+                                                    "Batch job queue pdt: deleted (0s)"]
+
+
+def test_a_batch_wait_that_times_out_names_the_last_status(monkeypatch, capsys):
+    monkeypatch.setattr(deploy_aws_batch, "BATCH_WAIT_DELAYS", (0,))
+    items = iter([{"status": "UPDATING"}, {"status": "DELETING"}])
+    with pytest.raises(SystemExit), console.wait_on("Batch job queue pdt", "deleted") as wait:
+        wait_for_batch(lambda: next(items), lambda item: item is None, wait, "")
+    assert "gave up waiting for Batch job queue pdt; it is still deleting" in capsys.readouterr().out
 
 
 def test_remove_of_an_absent_queue_does_nothing():

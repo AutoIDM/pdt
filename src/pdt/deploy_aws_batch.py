@@ -290,10 +290,10 @@ def wait_for_batch(describe: Callable[[], dict | None], ready: Callable[[dict | 
         current = describe()
         if ready(current):
             return current
-        state = state or current["status"].lower()
+        shown = state or current["status"].lower()
         if delay is None:
-            fail(f"gave up waiting for {wait.name}; it is still {state}")
-        wait.now(state)
+            fail(f"gave up waiting for {wait.name}; it is still {shown}")
+        wait.now(shown)
         sleep(delay)
     raise AssertionError("unreachable")
 

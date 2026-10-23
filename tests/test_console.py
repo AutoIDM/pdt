@@ -150,6 +150,16 @@ def test_a_wait_on_a_terminal_shows_one_spinner_line_and_the_end_line(monkeypatc
     assert re.sub(r"\x1b\[[0-9;]*m", "", last).strip() == "Batch job queue pdt: deleted (7s)"
 
 
+def test_a_wait_prints_plain_lines_on_a_terminal_that_cannot_animate(monkeypatch):
+    monkeypatch.setenv("TERM", "dumb")
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
+    with console.wait_on("Batch job queue pdt", "deleted") as wait:
+        poll(wait)
+    assert "\x1b[2K" not in out.getvalue()
+    assert out.getvalue().count("Batch job queue pdt: ") == 3
+
+
 def test_a_wait_prints_plain_lines_on_a_terminal_when_the_output_is_json(monkeypatch):
     out = io.StringIO()
     monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
