@@ -100,7 +100,9 @@ ENTRYPOINT = ('ENTRYPOINT ["sh", "-c", "stop() {{ kill -s $1 $pid; wait $pid; fi
               'trap \\"stop TERM\\" TERM; trap \\"stop INT\\" INT; '
               'uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- {start} & pid=$!; '
               'wait $pid; finish $?"]\n')
-DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
+# The base image's pip 25.0.1 has CVE-2026-13346. Drop the pip line when the digest holds pip 26.2.
+FROM_BASE = f"FROM {BASE_IMAGE}\nRUN uv pip install --system --no-cache pip==26.2.2\n"
+DOCKERFILE = FROM_BASE + """\
 COPY .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 WORKDIR /workspace/{app}
@@ -109,7 +111,7 @@ COPY .pdt-script .
 RUN uv sync --script run.py
 COPY . /workspace
 """ + ENTRYPOINT.replace("{start}", "uv run --script run.py")
-POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
+POWERSHELL_DOCKERFILE = FROM_BASE + """\
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu76 libssl3t64 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFFERED=1
 RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
