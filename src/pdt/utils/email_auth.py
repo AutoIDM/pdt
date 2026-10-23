@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from pdt import console
+from pdt import config, console
 
 GOOGLE_HOSTS = {"smtp.gmail.com"}
 MICROSOFT_HOSTS = {"smtp.office365.com", "smtp-mail.outlook.com"}
@@ -208,7 +208,7 @@ def _save_cloud_cache(value: str, cache_env: str = CACHE_ENV) -> None:
 def can_prompt(interactive: bool | None) -> bool:
     if interactive is not None:
         return interactive
-    if os.environ.get("CLOUD_RUN_JOB", "").strip() != "":
+    if os.environ.get("CLOUD_RUN_JOB", "").strip() != "" or config.unsaved() is not None:
         return False
     # A build server can give the job a terminal, so isatty alone is not enough.
     if os.environ.get("CI", "").strip() != "":

@@ -24,7 +24,7 @@ import tempfile
 from pathlib import Path
 
 from pdt import console
-from pdt.config import data_home, machine_data_home
+from pdt.config import data_home, machine_data_home, unsaved
 from pdt.download import fetch_verified
 
 VERSION = "7.6.6"
@@ -84,6 +84,9 @@ def ensure_pwsh() -> str:
         return found
     if local_pwsh().is_file():
         return str(local_pwsh())
+    if unsaved() is not None:
+        raise PwshError("pwsh is not installed, and a plan installs nothing; run the deploy "
+                        "without --plan to install it")
     key = platform_key()
     console.warn(f"pwsh is not installed. pdt downloads PowerShell {VERSION} "
                  f"(~100 MB) to {console.value(install_dir())}.")

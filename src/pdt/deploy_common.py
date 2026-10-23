@@ -566,7 +566,8 @@ def build_in_cloud(app: dict, builder: str, image_platform: str) -> bool:
         console.status(f"{key} in {console.value(source)}, so the deploy will build "
                        f"the image in the cloud with {console.value(builder)}.")
     else:
-        problem = console.escape(docker_problem()) or emulate(image_platform)
+        problem = (console.escape(docker_problem())
+                   or ("" if config.unsaved() is not None else emulate(image_platform)))
         if problem == "":
             console.status("Docker found, so the deploy will build the image with Docker on this "
                            "computer.")

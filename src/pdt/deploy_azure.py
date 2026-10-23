@@ -400,6 +400,10 @@ def preflight(app: dict, settings: dict) -> dict:
             fail("Azure login failed")
     if requested and requested not in (account.get("id"), account.get("name")):
         account = choose_subscription(app, requested, can_ask)
+        if config.unsaved() is not None:
+            fail(f"the Azure CLI uses another subscription, and a plan does not change it; run "
+                 f"`{console.value('pdt az account set --subscription ' + account['id'])}`, "
+                 "then run the plan again")
         run_quiet("account", "set", "--subscription", account["id"])
     elif not requested and can_ask:
         save_subscription(app, account)

@@ -120,11 +120,16 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
     False never offers it (`pdt deploy --all`). The exit code is the deploy's,
     or the run's when pdt followed one.
 
-    `plan_only` prints the plan and the cost estimate and changes nothing: it asks
-    no question, takes each default that --yes takes, and saves no config file
-    (`config.plan_only`)."""
-    if plan_only:
-        config.plan_only()
+    `plan_only` prints the plan and the cost estimate, asks no question, and saves no
+    config file (`config.plan_only`)."""
+    if not plan_only:
+        return _deploy(app_name, assume_yes, run, rebuild, False)
+    with config.plan_only():
+        return _deploy(app_name, True, False, False, True)
+
+
+def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
+            plan_only: bool) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
@@ -153,13 +158,12 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
     console.name(app_name)
     for line in [*lines, *config.found_env_lines(app), *sources]:
         console.detail(line)
-    problem = (choose_schedule(app, assume_yes or plan_only)
-               or regions.choose_region(app, provider, assume_yes or plan_only))
+    problem = choose_schedule(app, assume_yes) or regions.choose_region(app, provider, assume_yes)
     if problem != "":
         console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
     if plan_only:
-        code = dispatch(provider, "deploy", app_name, False, ["--plan"])
+        code = dispatch(provider, "deploy", app_name, True, ["--plan"])
         if code == 0:
             console.say()
             console.done("Plan only; nothing was deployed. To deploy this plan, run:")
@@ -195,8 +199,9 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
     words = config.describe_schedule(DEFAULT_SCHEDULE)
     schedule = DEFAULT_SCHEDULE
     if assume_yes:
-        console.say(f"{console.value(name)} has no schedule, so it runs "
-                    f"{console.value(DEFAULT_SCHEDULE)} ({console.escape(words)}).")
+        if config.unsaved() is None:
+            console.say(f"{console.value(name)} has no schedule, so it runs "
+                        f"{console.value(DEFAULT_SCHEDULE)} ({console.escape(words)}).")
     elif not can_prompt(None):
         return (f"no schedule is set. Add `schedule: {DEFAULT_SCHEDULE}` to {where}, or run "
                 f"again with --yes to run it {DEFAULT_SCHEDULE} ({words}).")
@@ -492,8 +497,6 @@ def confirm(actions: list[str], assume_yes: bool,
 
 
 def show_plan(actions: list[str], cost: CostEstimate | None = None) -> int:
-    """Print the plan and the cost estimate. A provider's `deploy --plan` returns this and
-    changes nothing."""
     console.heading("Plan:")
     for action in actions:
         console.bullet(action if isinstance(action, console.Markup) else console.escape(action))

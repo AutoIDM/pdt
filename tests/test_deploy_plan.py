@@ -1,20 +1,20 @@
-"""`pdt deploy APP --plan` prints the plan and the cost estimate, then changes nothing."""
-
 import json
-import os
+import sys
 from pathlib import Path
 
 import pytest
 
 from conftest import add_app
-from pdt import cli, config, deploy, deploy_google_cloud, regions
+from pdt import (
+    cli, config, deploy, deploy_aws, deploy_azure, deploy_common, deploy_google_cloud, gcloud_sdk,
+    pwsh, regions,
+)
+from pdt.utils import email_auth
 
 
 @pytest.fixture
 def plan_env(monkeypatch):
     monkeypatch.delenv(config.PLAN_ENV, raising=False)
-    yield
-    os.environ.pop(config.PLAN_ENV, None)
 
 
 @pytest.fixture
@@ -25,18 +25,18 @@ def aws_project(project, plan_env):
 
 def test_a_plan_keeps_a_platform_value_out_of_the_file_and_in_the_merged_app(aws_project):
     add_app(aws_project, "report", "schedule: daily\n")
-    config.plan_only()
-    config.save_platform_key(config.merged_app("report"), "account", "000000000000")
-    assert (aws_project / "pdt.yml").read_text() == "platform:\n  provider: aws\n"
-    assert config.merged_app("report")["platform"]["account"] == "000000000000"
+    with config.plan_only():
+        config.save_platform_key(config.merged_app("report"), "account", "000000000000")
+        assert (aws_project / "pdt.yml").read_text() == "platform:\n  provider: aws\n"
+        assert config.merged_app("report")["platform"]["account"] == "000000000000"
 
 
 def test_a_plan_keeps_the_schedule_out_of_the_app_file(aws_project):
     folder = add_app(aws_project, "report")
-    config.plan_only()
-    assert deploy.choose_schedule(config.merged_app("report"), True) == ""
-    assert not (folder / "config.yml").exists()
-    assert config.merged_app("report")["schedule"] == "daily"
+    with config.plan_only():
+        assert deploy.choose_schedule(config.merged_app("report"), True) == ""
+        assert not (folder / "config.yml").exists()
+        assert config.merged_app("report")["schedule"] == "daily"
 
 
 def test_the_plan_asks_nothing_saves_nothing_and_starts_the_provider_with_plan(
@@ -55,19 +55,22 @@ def test_the_plan_asks_nothing_saves_nothing_and_starts_the_provider_with_plan(
 
     assert deploy.deploy("report", plan_only=True) == 0
 
-    assert seen == [(("aws", "deploy", "report", False, ["--plan"]),
+    assert seen == [(("aws", "deploy", "report", True, ["--plan"]),
                      {"schedule": "daily", "platform": {"region": "us-east-1"}})]
     assert sorted(str(path) for path in Path(aws_project).rglob("*")) == before
     assert (aws_project / "pdt.yml").read_text() == "platform:\n  provider: aws\n"
     assert not config.is_deployed("report")
+    assert config.unsaved() is None
     out = capsys.readouterr().out
     assert "nothing was deployed" in out and "pdt deploy report --yes" in out
+    assert "because" not in out and "has no schedule" not in out
+    assert out.count("this plan changes no file") == 2
 
 
 def test_the_plan_values_reach_the_provider_script(aws_project, monkeypatch):
-    config.plan_only()
-    config.keep_unsaved("region", "us-east-1", platform=True)
-    env = deploy.provider_env()
+    with config.plan_only():
+        config.keep_unsaved("region", "us-east-1", platform=True)
+        env = deploy.provider_env()
     assert json.loads(env[config.PLAN_ENV]) == {"platform": {"region": "us-east-1"}}
 
 
@@ -105,8 +108,90 @@ def test_a_google_cloud_plan_shows_the_plan_and_changes_nothing(project, monkeyp
            "storage": False, "pause": False,
            "platform": {"project": "demo-project", "region": "us-central1"}}
 
-    assert module.deploy(app, False, plan_only=True) == 0
+    assert module.deploy(app, True, plan_only=True) == 0
 
     assert enabled == [True]
     out = capsys.readouterr().out
     assert "Plan:" in out and "create Cloud Run job pdt-report" in out
+
+
+def test_each_plan_starts_with_no_values_and_restores_the_previous_ones(plan_env, monkeypatch):
+    monkeypatch.setenv(config.PLAN_ENV, '{"schedule": "hourly"}')
+    with config.plan_only():
+        assert config.unsaved() == {}
+    assert config.unsaved() == {"schedule": "hourly"}
+
+
+def test_a_plan_writes_no_state(project, plan_env):
+    with config.plan_only():
+        config.write_state({"preflight": 1})
+    assert not (project / config.STATE_DIR).exists()
+
+
+@pytest.fixture
+def terminal(monkeypatch):
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("CLOUD_RUN_JOB", raising=False)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+
+def test_a_plan_asks_nothing(plan_env, terminal):
+    assert email_auth.can_prompt(None)
+    with config.plan_only():
+        assert not email_auth.can_prompt(None)
+
+
+class Profiles:
+    available_profiles = ["one", "two"]
+
+
+def test_an_aws_plan_picks_no_profile(aws_project, terminal, monkeypatch):
+    monkeypatch.setattr(deploy_aws, "ask", lambda prompt: pytest.fail("asked"))
+    with config.plan_only(), pytest.raises(SystemExit):
+        deploy_aws.choose_profile({"name": "report"}, Profiles())
+
+
+def test_a_google_cloud_plan_creates_no_project_and_runs_no_login(project, plan_env, terminal,
+                                                                  monkeypatch):
+    module = deploy_google_cloud
+    monkeypatch.setattr(module, "have_credentials", lambda: False)
+    monkeypatch.setattr(module, "login_with_key_file", lambda: pytest.fail("logged in"))
+    monkeypatch.setattr(module, "run_quiet", lambda *args: pytest.fail("listed projects"))
+    with config.plan_only():
+        with pytest.raises(SystemExit):
+            module.ensure_credentials()
+        with pytest.raises(SystemExit):
+            module.choose_project({"name": "report"}, "")
+
+
+def test_a_plan_runs_no_container_to_choose_the_build(project, plan_env, monkeypatch):
+    monkeypatch.setattr(deploy_common, "docker_problem", lambda: "")
+    monkeypatch.setattr(deploy_common, "emulate", lambda image_platform: pytest.fail("ran"))
+    app = {"name": "report", "dir": add_app(project, "report"), "docker_build": "auto",
+           "docker_build_from": ""}
+    with config.plan_only():
+        assert deploy_common.build_in_cloud(app, "Cloud Build", "linux/amd64") is False
+
+
+def test_an_azure_plan_does_not_change_the_active_subscription(project, plan_env, monkeypatch):
+    reads = {("account", "show"): {"id": "sub-a", "name": "a"},
+             ("account", "list", "--all"): [{"id": "sub-b", "name": "b"}]}
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: reads[args])
+    monkeypatch.setattr(deploy_azure, "run_quiet", lambda *args, **kwargs: pytest.fail("changed"))
+    with config.plan_only(), pytest.raises(SystemExit):
+        deploy_azure.preflight({"name": "report"}, {"subscription": "sub-b"})
+
+
+def test_a_plan_installs_no_powershell_and_no_google_cloud_cli(tmp_path, plan_env, monkeypatch):
+    monkeypatch.setattr(pwsh.shutil, "which", lambda name: None)
+    monkeypatch.setattr(pwsh, "local_pwsh", lambda: tmp_path / "pwsh")
+    monkeypatch.setattr(pwsh, "download_pwsh", lambda key: pytest.fail("installed"))
+    monkeypatch.setattr(gcloud_sdk.shutil, "which", lambda name: None)
+    monkeypatch.setattr(gcloud_sdk, "LOCAL_GCLOUD", tmp_path / "gcloud")
+    monkeypatch.setattr(gcloud_sdk, "download_sdk", lambda key: pytest.fail("installed"))
+    with config.plan_only():
+        with pytest.raises(pwsh.PwshError, match="a plan installs nothing"):
+            pwsh.ensure_pwsh()
+        with pytest.raises(gcloud_sdk.GcloudError, match="a plan installs nothing"):
+            gcloud_sdk.ensure_gcloud()

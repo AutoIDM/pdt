@@ -310,19 +310,25 @@ def merged_app(name: str) -> dict:
 PLAN_ENV = "PDT_PLAN_VALUES"
 
 
-def plan_only() -> None:
-    """Keep each later config save of this process, and of the processes it starts, in PLAN_ENV."""
-    os.environ.setdefault(PLAN_ENV, "{}")
+@contextmanager
+def plan_only():
+    previous = os.environ.get(PLAN_ENV)
+    os.environ[PLAN_ENV] = "{}"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(PLAN_ENV, None)
+        else:
+            os.environ[PLAN_ENV] = previous
 
 
 def unsaved() -> dict | None:
-    """The values a plan kept out of the config files, or None when this is no plan."""
     raw = os.environ.get(PLAN_ENV)
     return None if raw is None else json.loads(raw)
 
 
 def keep_unsaved(key: str, value, platform: bool = False) -> bool:
-    """In a plan, keep the value in PLAN_ENV and return True; otherwise return False."""
     plan = unsaved()
     if plan is None:
         return False
@@ -509,6 +515,8 @@ def read_state() -> dict:
 
 
 def write_state(state: dict, name: str = "state") -> None:
+    if unsaved() is not None:
+        return
     path = _state_path(name)
     path.parent.mkdir(exist_ok=True)
     # Self-ignoring, so projects created before this dir existed stay clean.

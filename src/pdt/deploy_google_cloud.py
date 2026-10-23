@@ -245,7 +245,7 @@ def login_with_key_file() -> bool:
 def ensure_credentials() -> None:
     if have_credentials():
         return
-    if login_with_key_file():
+    if config.unsaved() is None and login_with_key_file():
         return
     if not can_ask():
         fail(f"no Google Cloud sign-in on this computer; set "
@@ -854,7 +854,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     project = preflight(app, project, assume_yes)
     # A plan cannot read the project, or price it, before these APIs are on, so a plan enables
     # them the way --yes does. Enabling an API costs nothing.
-    billing_confirmed = ensure_apis(project, assume_yes or plan_only,
+    billing_confirmed = ensure_apis(project, assume_yes,
                                     (*APIS, CLOUD_BUILD_API) if cloud else APIS)
 
     cron = config.cron_expression(app["schedule"])
@@ -952,7 +952,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                                   f'"{console.value(cron)}" ({console.value(timezone)})'
                                   + (" (paused)" if app["pause"] else "")))
     cost = cost_estimate(project, region, cron, job, job_exists,
-                         1 if values else 0, assume_yes or plan_only, billing_confirmed,
+                         1 if values else 0, assume_yes, billing_confirmed,
                          store_usage=usage, currency=regions.local_currency())
 
     if plan_only:
