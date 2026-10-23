@@ -7,8 +7,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$UvVersion = '0.13.1'
-$UvSha256 = '3b2661a463a5baea7f5076ea2b25ab71d77f36a6c0d809e5350651792f80a672'
+$UvVersion = '0.13.5'
+$UvSha256 = 'a38b8d1902b7cfbc76b423ba1bb456f623f42064cdc72628b6075b89afd1019a'
 
 $work = Join-Path ([IO.Path]::GetTempPath()) "pdt-msi-$([guid]::NewGuid())"
 $payload = Join-Path $work 'payload'
