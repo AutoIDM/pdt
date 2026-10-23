@@ -1,4 +1,5 @@
 import io
+import re
 
 import pytest
 from rich.console import Console
@@ -121,3 +122,62 @@ def test_a_sign_in_prompt_treats_end_of_input_as_no(monkeypatch):
     answering(monkeypatch)
     with pytest.raises(email_auth.OAuthError):
         email_auth._confirm("google", "a@example.com")
+
+
+def poll(wait):
+    for state in ["disabling"] * 3 + ["deleting"] * 5:
+        wait.now(state)
+
+
+def test_a_wait_prints_one_line_for_each_state_change_off_a_terminal(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, highlight=False))
+    with console.wait_on("Batch job queue pdt", "deleted") as wait:
+        poll(wait)
+    assert out.getvalue().splitlines() == ["disabling: Batch job queue pdt",
+                                           "deleting: Batch job queue pdt",
+                                           "deleted: Batch job queue pdt (0s)"]
+
+
+def test_a_wait_on_a_terminal_shows_one_spinner_line_and_the_end_line(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
+    with console.wait_on("Batch job queue pdt", "deleted") as wait:
+        poll(wait)
+        wait.start -= 7
+    assert out.getvalue().count("\n") < 5
+    last = out.getvalue().rsplit("\x1b[2K", 1)[-1]
+    assert re.sub(r"\x1b\[[0-9;]*m", "", last).strip() == "deleted: Batch job queue pdt (7s)"
+
+
+def test_a_wait_prints_plain_lines_on_a_terminal_that_cannot_animate(monkeypatch):
+    monkeypatch.setenv("TERM", "dumb")
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
+    with console.wait_on("Batch job queue pdt", "deleted") as wait:
+        poll(wait)
+    assert "\x1b[2K" not in out.getvalue()
+    assert out.getvalue().count(": Batch job queue pdt") == 3
+
+
+def test_a_wait_prints_plain_lines_on_a_terminal_when_the_output_is_json(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
+    monkeypatch.setattr(console, "_data", {})
+    with console.wait_on("Batch job queue pdt", "deleted") as wait:
+        poll(wait)
+    assert "\x1b[2K" not in out.getvalue()
+    assert out.getvalue().count(": Batch job queue pdt") == 3
+
+
+def test_a_wait_without_a_poll_or_with_an_error_prints_no_end_line(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, highlight=False))
+    with console.wait_on("Batch job queue pdt", "deleted"):
+        pass
+    assert out.getvalue() == ""
+    with pytest.raises(SystemExit):
+        with console.wait_on("Batch job queue pdt", "deleted") as wait:
+            wait.now("deleting")
+            raise SystemExit(1)
+    assert out.getvalue() == "deleting: Batch job queue pdt\n"

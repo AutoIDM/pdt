@@ -264,7 +264,8 @@ def delete_security_group(ec2, group_id: str) -> bool:
     """
     return retry(lambda: delete_if_present(ec2.delete_security_group, GroupId=group_id),
                  lambda exc: error_code(exc) == "DependencyViolation",
-                 f"security group {SECURITY_GROUP} is still in use", BATCH_WAIT_DELAYS)
+                 f"security group {console.value(SECURITY_GROUP)}", "in use", "deleted",
+                 BATCH_WAIT_DELAYS)
 
 
 def ensure_repository(ecr) -> str:
@@ -284,14 +285,15 @@ def ensure_repository(ecr) -> str:
 
 
 def wait_for_batch(describe: Callable[[], dict | None], ready: Callable[[dict | None], bool],
-                   what: str, sleep=time.sleep) -> dict | None:
+                   wait: console.WaitOn, state: str, sleep=time.sleep) -> dict | None:
     for delay in (*BATCH_WAIT_DELAYS, None):
         current = describe()
         if ready(current):
             return current
+        shown = state or current["status"].lower()
         if delay is None:
-            fail(f"gave up waiting for {what}")
-        console.bullet(f"waiting for {what}...", indent=4)
+            fail(f"gave up waiting for {wait.name}; it is still {shown}")
+        wait.now(shown)
         sleep(delay)
     raise AssertionError("unreachable")
 
@@ -306,52 +308,57 @@ def resting(item: dict | None) -> bool:
     return item is None or item["status"] in ("VALID", "INVALID")
 
 
-def settled(batch, resource: SharedResource) -> dict | None:
+def settled(batch, resource: SharedResource, wait: console.WaitOn) -> dict | None:
     """The shared resource once Batch has finished changing it, or None when it is gone."""
-    return wait_for_batch(lambda: describe(batch, resource), resting,
-                          f"Batch {resource.label} {console.value(resource.name)}")
+    return wait_for_batch(lambda: describe(batch, resource), resting, wait, "")
 
 
 def ensure_shared(batch, resource: SharedResource, create: Callable[[], None]) -> str:
-    current = settled(batch, resource)
-    if current is None:
-        create()
-    elif not managed(current):
-        fail(f"Batch {resource.label} {console.value(resource.name)} exists but is not managed "
-             "by PDT")
-    elif current["state"] != "ENABLED":
-        getattr(batch, resource.update)(**{resource.param: resource.name}, state="ENABLED")
-    elif current["status"] == "VALID":
-        return current[resource.arn]
-    ready = wait_for_batch(lambda: describe(batch, resource),
-                           lambda item: item is not None and resting(item),
-                           f"Batch {resource.label} {console.value(resource.name)}")
-    if ready["status"] == "INVALID":
-        fail(f"Batch {resource.label} {console.value(resource.name)} is invalid: "
-             f"{console.escape(ready.get('statusReason', ''))}")
-    return ready[resource.arn]
+    with console.wait_on(f"Batch {resource.label} {console.value(resource.name)}",
+                         "ready") as wait:
+        current = settled(batch, resource, wait)
+        if current is None:
+            create()
+        elif not managed(current):
+            fail(f"Batch {resource.label} {console.value(resource.name)} exists but is not "
+                 "managed by PDT")
+        elif current["state"] != "ENABLED":
+            getattr(batch, resource.update)(**{resource.param: resource.name}, state="ENABLED")
+        elif current["status"] == "VALID":
+            return current[resource.arn]
+        ready = wait_for_batch(lambda: describe(batch, resource),
+                               lambda item: item is not None and resting(item),
+                               wait, "creating" if current is None else "enabling")
+        if ready["status"] == "INVALID":
+            fail(f"Batch {resource.label} {console.value(resource.name)} is invalid: "
+                 f"{console.escape(ready.get('statusReason', ''))}")
+        return ready[resource.arn]
 
 
 def remove(batch, resource: SharedResource) -> bool:
     """Disable, then delete; False when a sibling destroy already removed the resource."""
     # Batch refuses to delete an enabled queue or compute environment, and
     # deletion is asynchronous, so each step waits for the one before it.
-    try:
-        if settled(batch, resource) is None:
+    with console.wait_on(f"Batch {resource.label} {console.value(resource.name)}",
+                         "deleted") as wait:
+        try:
+            if settled(batch, resource, wait) is None:
+                return False
+            getattr(batch, resource.update)(**{resource.param: resource.name}, state="DISABLED")
+            wait_for_batch(lambda: describe(batch, resource),
+                           lambda item: item is None or (item["state"] == "DISABLED"
+                                                         and resting(item)),
+                           wait, "disabling")
+        except Exception as exc:
+            if not not_found(exc):
+                raise
             return False
-        getattr(batch, resource.update)(**{resource.param: resource.name}, state="DISABLED")
-        wait_for_batch(lambda: describe(batch, resource),
-                       lambda item: item is None or (item["state"] == "DISABLED" and resting(item)),
-                       f"Batch {resource.label} {console.value(resource.name)} to be disabled")
-    except Exception as exc:
-        if not not_found(exc):
-            raise
-        return False
-    if not delete_if_present(getattr(batch, resource.delete), **{resource.param: resource.name}):
-        return False
-    wait_for_batch(lambda: describe(batch, resource), lambda item: item is None,
-                   f"Batch {resource.label} {console.value(resource.name)} to be deleted")
-    return True
+        if not delete_if_present(getattr(batch, resource.delete),
+                                 **{resource.param: resource.name}):
+            return False
+        wait_for_batch(lambda: describe(batch, resource), lambda item: item is None,
+                       wait, "deleting")
+        return True
 
 
 def environment_security_groups(item: dict | None) -> list[str]:

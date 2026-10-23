@@ -67,6 +67,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -154,14 +155,18 @@ RETRY_WAITS = (10, 20, 40, 60, 60, 60)
 
 def gcloud(*args: str, data: str | None = None) -> subprocess.CompletedProcess:
     stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
-    for wait in (*RETRY_WAITS, None):
-        proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
-        if proc.returncode == 0 or wait is None or not TRANSIENT.search(proc.stderr):
-            return proc
-        title = re.search(r"serviceTitle: (.+)", proc.stderr)
-        what = title.group(1).strip() if title else "Google Cloud"
-        console.bullet(f"{console.escape(what)} is not ready yet; retrying in {wait}s...", indent=4)
-        time.sleep(wait)
+    with console.wait_on(console.value("pdt gcloud " + " ".join(args[:4])), "done") as wait:
+        for seconds in (*RETRY_WAITS, None):
+            proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
+            if proc.returncode == 0:
+                return proc
+            if seconds is None or not TRANSIENT.search(proc.stderr):
+                wait.end = ""
+                return proc
+            title = re.search(r"serviceTitle: (.+)", proc.stderr)
+            what = title.group(1).strip() if title else "Google Cloud"
+            wait.now(f"{console.escape(what)} is not ready yet")
+            time.sleep(seconds)
 
 
 def run_quiet(*args: str, data: str | None = None) -> str:
@@ -737,7 +742,8 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                         job_exists: bool, num_secrets: int,
                         assume_yes: bool, billing_confirmed: bool = False,
                         attempt: int = 0, store_usage: tuple[int, int] | None = None,
-                        currency: str = "USD") -> CostEstimate:
+                        currency: str = "USD",
+                        billing_wait: console.WaitOn | None = None) -> CostEstimate:
     try:
         runs = config.runs_per_month(cron)
         seconds = average_run_seconds(job, region, project) if job_exists else None
@@ -805,12 +811,14 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
         waits = (10, 20, 40, 60)
         if disabled and attempt < len(waits):
             wait = waits[attempt]
-            console.bullet(f"Cloud Billing API is not ready; retrying in {wait}s...", indent=4)
-            time.sleep(wait)
-            return cost_estimate(project, region, cron, job,
-                                 job_exists, num_secrets, assume_yes,
-                                 billing_confirmed,
-                                 attempt + 1, store_usage, currency)
+            with (nullcontext(billing_wait) if billing_wait
+                  else console.wait_on("Cloud Billing API", "ready")) as billing_wait:
+                billing_wait.now("not ready yet")
+                time.sleep(wait)
+                return cost_estimate(project, region, cron, job,
+                                     job_exists, num_secrets, assume_yes,
+                                     billing_confirmed,
+                                     attempt + 1, store_usage, currency, billing_wait)
         fail(f"could not calculate the required monthly cost estimate: "
              f"{console.escape(detail or str(exc))}")
     converted = "" if currency == "USD" else ", converted from USD by Google Cloud"

@@ -75,6 +75,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ElementTree
 from http import HTTPStatus
@@ -482,9 +483,11 @@ def validate_response(response) -> None:
         raise FatalAPIError(response_error_message(response), response)
 
 
-def backoff_handler(details) -> None:
-    console.bullet(f"the server did not answer (try {details['tries']} of "
-                   f"{BACKOFF_MAX_TRIES}); backing off {details['wait']:.1f}s...", indent=4)
+def fetch_json(request: str | urllib.request.Request, timeout: int = 60,
+               open_url: Callable | None = None):
+    host = urllib.parse.urlsplit(getattr(request, "full_url", request)).netloc
+    with console.wait_on(console.value(host), "answered") as wait:
+        return fetch_once(request, timeout, open_url, wait=wait)
 
 
 @backoff.on_exception(
@@ -492,10 +495,11 @@ def backoff_handler(details) -> None:
     (RetriableAPIError, ConnectionError, TimeoutError, urllib.error.URLError),
     max_tries=BACKOFF_MAX_TRIES,
     factor=2,
-    on_backoff=backoff_handler,
+    on_backoff=lambda details: details["kwargs"]["wait"].now(
+        f"no answer (try {details['tries']} of {BACKOFF_MAX_TRIES})"),
 )
-def fetch_json(request: str | urllib.request.Request, timeout: int = 60,
-               open_url: Callable | None = None):
+def fetch_once(request: str | urllib.request.Request, timeout: int,
+               open_url: Callable | None, wait: console.WaitOn):
     try:
         with (open_url or urllib.request.urlopen)(request, timeout=timeout) as response:
             return json.load(response)

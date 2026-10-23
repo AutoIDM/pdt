@@ -417,19 +417,22 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
         return current
     run_quiet("rest", "--method", "patch", "--url", job_url(settings, job),
               "--body", json.dumps(body), retry_access=True)
-    for _ in range(JOB_UPDATE_POLLS):
-        resource = job_resource(settings, job)
-        state = (resource.get("properties") or {}).get("provisioningState")
-        if state in ("Failed", "Canceled"):
-            fail(f"Azure could not update Container Apps Job {console.value(job)} "
-                 f"(provisioning state {console.value(state)})")
-        if state == "Succeeded" and normalized_job(resource) == desired:
-            return resource
-        time.sleep(JOB_UPDATE_POLL_SECONDS)
-    differ = [key for key, value in normalized_job(resource).items() if value != desired[key]]
-    fail(f"Container Apps Job {console.value(job)} did not show the update after "
-         f"{console.value(JOB_UPDATE_POLLS * JOB_UPDATE_POLL_SECONDS)} seconds: provisioning state "
-         f"{console.value(state)}, settings that differ: {console.value(', '.join(differ))}")
+    with console.wait_on(f"Container Apps Job {console.value(job)}", "updated") as wait:
+        for _ in range(JOB_UPDATE_POLLS):
+            resource = job_resource(settings, job)
+            state = (resource.get("properties") or {}).get("provisioningState")
+            if state in ("Failed", "Canceled"):
+                fail(f"Azure could not update Container Apps Job {console.value(job)} "
+                     f"(provisioning state {console.value(state)})")
+            if state == "Succeeded" and normalized_job(resource) == desired:
+                return resource
+            wait.now("updating")
+            time.sleep(JOB_UPDATE_POLL_SECONDS)
+        differ = [key for key, value in normalized_job(resource).items() if value != desired[key]]
+        fail(f"Container Apps Job {console.value(job)} did not show the update after "
+             f"{console.value(JOB_UPDATE_POLLS * JOB_UPDATE_POLL_SECONDS)} seconds: provisioning "
+             f"state {console.value(state)}, settings that differ: "
+             f"{console.value(', '.join(differ))}")
 
 
 def job_principal_id(job: str, rg: str) -> str:

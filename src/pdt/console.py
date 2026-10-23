@@ -141,6 +141,43 @@ def waiting(message: str) -> Iterator[Wait]:
         yield wait
 
 
+class WaitOn:
+    """One object pdt polls, its state at the last poll, and the seconds since the first
+    poll that found it not ready. An empty `end` prints no end line."""
+
+    def __init__(self, name: str, end: str) -> None:
+        self.name, self.end, self.state, self.start, self.spinner = name, end, "", 0.0, None
+
+    def now(self, state: str) -> None:
+        if state == self.state:
+            return
+        if self.state == "":
+            self.start = monotonic()
+        self.state = state
+        if not _console.is_interactive or _data is not None:
+            status(f"{state}: {self.name}")
+        elif self.spinner is None:
+            self.spinner = _console.status(self)
+            self.spinner.start()
+
+    def __rich__(self) -> str:
+        return f"[dim]{self.state}: {self.name} ({round(monotonic() - self.start)}s)[/]"
+
+
+@contextmanager
+def wait_on(name: str, end: str) -> Iterator[WaitOn]:
+    """One line for one object that pdt polls until it reaches a state, such as a queue
+    that Batch deletes."""
+    wait = WaitOn(name, end)
+    try:
+        yield wait
+    finally:
+        if wait.spinner is not None:
+            wait.spinner.stop()
+    if wait.state != "" and wait.end != "":
+        status(f"{wait.end}: {name} ({round(monotonic() - wait.start)}s)")
+
+
 def field(label: str, value: str) -> None:
     """A label and the value pdt found for it: an account, a URL, a path."""
     _console.print(f"{escape(label)}: [bold]{escape(value)}[/]")

@@ -297,21 +297,23 @@ def role_propagation_error(exc: Exception) -> bool:
     )
 
 
-def retry(operation, retryable, reason: str, delays: tuple[int, ...], sleep=time.sleep):
-    for delay in (*delays, None):
-        try:
-            return operation()
-        except Exception as exc:
-            if delay is None or not retryable(exc):
-                raise
-            console.bullet(f"{console.escape(reason)}; retrying in {delay}s...", indent=4)
-            sleep(delay)
+def retry(operation, retryable, name: str, state: str, end: str, delays: tuple[int, ...],
+          sleep=time.sleep):
+    with console.wait_on(name, end) as wait:
+        for delay in (*delays, None):
+            try:
+                return operation()
+            except Exception as exc:
+                if delay is None or not retryable(exc):
+                    raise
+                wait.now(state)
+                sleep(delay)
     raise AssertionError("unreachable")
 
 
 def with_role_propagation_retry(operation, sleep=time.sleep):
-    return retry(operation, role_propagation_error, "IAM role is not visible yet",
-                 ROLE_PROPAGATION_DELAYS, sleep)
+    return retry(operation, role_propagation_error, "IAM role", "not visible yet",
+                 "visible", ROLE_PROPAGATION_DELAYS, sleep)
 
 
 def adopt_account(app: dict, session) -> str:
