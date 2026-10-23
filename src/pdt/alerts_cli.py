@@ -259,9 +259,10 @@ def setup() -> int:
     if not can_prompt(None):
         console.error("pdt alerts setup asks questions; run it in a terminal")
         return 1
-    state = config.read_state()
-    state[OFFERED] = True
-    config.write_state(state)
+    with config.state_locked():
+        state = config.read_state()
+        state[OFFERED] = True
+        config.write_state(state)
     alerts = config.load_yaml(project / config.PROJECT_FILE).get("alerts")
     current = first_valid_not_unhandled(alerts) if isinstance(alerts, list) else {}
     types = checkboxes("Where should pdt send alerts?",
@@ -410,7 +411,8 @@ def offer(app_name: str, assume_yes: bool) -> None:
         setup()
         console.say()
         return
-    state = config.read_state()
-    state[OFFERED] = True
-    config.write_state(state)
+    with config.state_locked():
+        state = config.read_state()
+        state[OFFERED] = True
+        config.write_state(state)
     console.say(f"Set them up later with {console.value('pdt alerts setup')}.")

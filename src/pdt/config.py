@@ -11,6 +11,8 @@ Merge order for one app, least to most specific:
   2. the app's entry under `apps:` in pdt.yml
   3. the app's own config.yml
   4. PDT_<APP>_<KEY> environment variables (config keys only)
+DEPLOYED_PLATFORM_ENV replaces the whole platform of the one app it names, so a
+provider script deploys or destroys an app where `.pdt/state` says it is deployed.
 """
 
 from __future__ import annotations
@@ -59,6 +61,14 @@ PLATFORM_KEYS = {
     "timezone",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
+# The platform keys that say where a deployed app runs. `profile` is only the
+# credentials that reach an account, and `timezone` is when the app runs.
+PLACE_KEYS = ("provider", "region", "account", "project", "subscription", "resource_group",
+              "environment")
+# The place keys a deploy finds and saves when the config leaves them empty. Every other
+# place key that the config leaves empty takes the provider's default place.
+FOUND_KEYS = ("account", "project", "subscription")
+DEPLOYED_PLATFORM_ENV = "PDT_DEPLOYED_PLATFORM"
 # Where each known key belongs, so a key in the wrong section gets told
 # where to move instead of "unknown key".
 APP_LEVEL = f"the top level of the app's {APP_FILE}, or its apps: entry in {PROJECT_FILE}"
@@ -205,6 +215,10 @@ def find_apps() -> list[str]:
     return [name for name in app_folders() if is_enabled(name)]
 
 
+def destroyable_apps() -> list[str]:
+    return [name for name in app_folders() if is_enabled(name) or is_deployed(name)]
+
+
 def current_app() -> str | None:
     """The enabled app whose folder holds the working folder, or None."""
     try:
@@ -267,6 +281,11 @@ def merged_app(name: str) -> dict:
         **mapping(entry, "platform", entry_where),
         **mapping(own, "platform", own_where),
     }
+    platform_from = next((where for section, where in ((own, own_where), (entry, entry_where))
+                          if section.get("platform")), PROJECT_FILE)
+    deployed = json.loads(os.environ.get(DEPLOYED_PLATFORM_ENV) or "{}")
+    if deployed.get("app") == name:
+        platform = deployed["platform"]
     from pdt import lifecycle
     docker_build, docker_build_from = "auto", ""
     alerts, alerts_from = [], PROJECT_FILE
@@ -287,6 +306,7 @@ def merged_app(name: str) -> dict:
         "schedule": plan.get("schedule", own.get("schedule", entry.get("schedule"))),
         "timezone": timezone,
         "platform": platform,
+        "platform_from": platform_from,
         "config": {
             **mapping(entry, "config", entry_where),
             **mapping(own, "config", own_where),
@@ -524,15 +544,44 @@ def write_state(state: dict, name: str = "state") -> None:
     write_text_atomically(path, json.dumps(state, indent=2) + "\n")
 
 
-def mark_deployed(name: str, deployed: bool) -> None:
-    state = read_state()
-    apps = set(state.get("deployed") or [])
-    if deployed:
-        apps.add(name)
-    else:
-        apps.discard(name)
-    state["deployed"] = sorted(apps)
-    write_state(state)
+@contextmanager
+def state_locked():
+    path = _state_path()
+    path.parent.mkdir(exist_ok=True)
+    with locked(path):
+        yield
+
+
+def mark_deployed(name: str, platform: dict | None) -> None:
+    with state_locked():
+        state = read_state()
+        apps = set(state.get("deployed") or [])
+        platforms = state.get("platforms") or {}
+        if platform is None:
+            apps.discard(name)
+            platforms.pop(name, None)
+        else:
+            apps.add(name)
+            platforms[name] = platform
+        state["deployed"] = sorted(apps)
+        state["platforms"] = platforms
+        write_state(state)
+
+
+def deployed_platform(name: str) -> dict | None:
+    """The platform section the app was last deployed with, or None when pdt has no record:
+    the app is not deployed, a pdt older than the record deployed it, or the record is not valid."""
+    platform = (read_state().get("platforms") or {}).get(name)
+    return platform if isinstance(platform, dict) else None
+
+
+def place(platform: dict) -> dict[str, str]:
+    return {key: str(platform[key]) for key in PLACE_KEYS if str(platform.get(key) or "") != ""}
+
+
+def deployed_places() -> dict[str, dict[str, str]]:
+    return {name: place(platform)
+            for name, platform in sorted((read_state().get("platforms") or {}).items())}
 
 
 def is_deployed(name: str) -> bool:

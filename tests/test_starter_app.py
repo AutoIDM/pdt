@@ -98,6 +98,6 @@ def test_an_already_deployed_starter_gets_no_nudge(tmp_path, monkeypatch, capsys
 def test_a_destroyed_starter_gets_the_nudge_again(tmp_path, monkeypatch, capsys):
     init_into(tmp_path, monkeypatch)
     config.mark_deployed(scaffold.STARTER, True)
-    config.mark_deployed(scaffold.STARTER, False)
+    config.mark_deployed(scaffold.STARTER, None)
     assert run_app(monkeypatch, scaffold.STARTER) == 0
     assert f"pdt deploy {scaffold.STARTER}" in capsys.readouterr().out

@@ -486,6 +486,12 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
     for sub in available:
         if requested in (sub.get("id"), sub.get("name")):
             return sub
+    if os.environ.get(config.DEPLOYED_PLATFORM_ENV):
+        console.error(f"{console.value(app['name'])} is deployed to Azure subscription "
+                      f"{console.value(requested)}. This Azure login cannot use it.")
+        console.next_steps([("pdt az login", "log in with an account that can use it"),
+                            (f"pdt destroy {app['name']}", "")])
+        raise SystemExit(1)
     console.warn(f"platform.subscription {console.value(repr(requested))} in "
                  f"{console.value('pdt.yml')} is not one of your subscriptions.")
     if not can_ask:

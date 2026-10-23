@@ -20,6 +20,7 @@ JSON on stderr; see `pdt.console.json_output`.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -96,9 +97,13 @@ def provider_env(extra: list[str] | None = None, rebuild: bool = False) -> dict[
 
 
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
-             extra: list[str] | None = None, rebuild: bool = False) -> int:
+             extra: list[str] | None = None, rebuild: bool = False,
+             platform: dict | None = None) -> int:
     args = provider_command(provider, command, app_name, assume_yes, extra)
-    return subprocess.run(args, check=False, env=provider_env(extra, rebuild)).returncode
+    env = provider_env(extra, rebuild)
+    if platform is not None:
+        env[config.DEPLOYED_PLATFORM_ENV] = json.dumps({"app": app_name, "platform": platform})
+    return subprocess.run(args, check=False, env=env).returncode
 
 
 def dispatch_output(provider: str, command: str, app_name: str,
@@ -162,6 +167,9 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     if problem != "":
         console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
+    code = leave_old_place(app_name, assume_yes)
+    if code != 0:
+        return code
     if plan_only:
         code = dispatch(provider, "deploy", app_name, True, ["--plan"])
         if code == 0:
@@ -231,6 +239,87 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
     return ""
 
 
+def describe_place(place: dict[str, str]) -> str:
+    return ", ".join([place["provider"], *(f"{key.replace('_', ' ')} {value}"
+                                           for key, value in place.items() if key != "provider")])
+
+
+# The environment variables a provider script reads for a place key the config leaves empty.
+PLACE_ENV = {
+    "azure": {"subscription": ("PDT_AZURE_SUBSCRIPTION",),
+              "resource_group": ("PDT_AZURE_RESOURCE_GROUP",),
+              "environment": ("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT",)},
+    "google-cloud": {"project": ("PDT_GOOGLE_CLOUD_PROJECT",)},
+}
+# The place key a provider script takes when neither the config nor the environment names it.
+PLACE_DEFAULTS = {"azure": {"resource_group": "pdt"}}
+
+
+def resolved(platform: dict) -> dict:
+    provider = platform.get("provider")
+    names = {**PLACE_ENV.get(provider, {}), "region": regions.REGION_ENV.get(provider, ())}
+    found = {key: next((os.environ[name] for name in env if os.environ.get(name)),
+                       PLACE_DEFAULTS.get(provider, {}).get(key, ""))
+             for key, env in names.items() if not platform.get(key)}
+    return {**platform, **{key: value for key, value in found.items() if value}}
+
+
+def moved(recorded: dict, platform: dict) -> bool:
+    old, new = config.place(recorded), config.place(resolved(platform))
+    return any(old.get(key) != value for key, value in new.items()) or any(
+        key not in new for key in old if key not in config.FOUND_KEYS)
+
+
+def say_places(app: dict, recorded: dict) -> None:
+    console.say(f"{console.value(app['name'])} is deployed to "
+                f"{console.value(describe_place(config.place(recorded)))},")
+    console.say(f"but {console.value(app['platform_from'])} now deploys it to "
+                f"{console.value(describe_place(config.place(resolved(app['platform']))))}.")
+
+
+def leave_old_place(app_name: str, assume_yes: bool) -> int:
+    """Before a deploy to another provider, region, or account, ask whether to destroy the app
+    where it runs now. 0 goes on with the deploy; any other code is the deploy's exit code.
+
+    An app with no record (deployed by an older pdt) gets no question, and a plan
+    (`config.plan_only`) shows the two places and asks nothing."""
+    recorded = config.deployed_platform(app_name)
+    app = config.merged_app(app_name)
+    platform = app["platform"]
+    if recorded is None or not moved(recorded, platform):
+        return 0
+    current = describe_place(config.place(recorded))
+    target = describe_place(config.place(resolved(platform)))
+    console.say()
+    say_places(app, recorded)
+    if config.unsaved() is not None:
+        console.note(f"A deploy asks what to do with the app currently deployed to "
+                     f"{console.value(current)}.")
+        return 0
+    if assume_yes or not can_prompt(None):
+        console.error(f"{console.value(app_name)} was not deployed.")
+        console.next_steps([(f"pdt deploy {app_name}", "")],
+                           f"To choose what to do with the app currently deployed to {current}, "
+                           f"deploy without --yes:")
+        return 1
+    console.say(f"What do you want to do with the app currently deployed to "
+                f"{console.value(current)}?")
+    console.choice(1, f"Remove it from {current}, then deploy it to {target}")
+    console.choice(2, "Cancel")
+    while True:
+        try:
+            answer = console.ask("Which one?", "2") or "2"
+        except EOFError:
+            answer = "2"
+        if answer in ("1", "2"):
+            break
+        console.say("Please answer 1 or 2.")
+    if answer == "2":
+        console.say("Cancelled.")
+        return DECLINED
+    return provider_step("destroy", recorded["provider"], app_name, False, platform=recorded)
+
+
 # The started, completed, and failed events of each provider_step command.
 STEP_EVENTS = {
     "deploy": (lifecycle.APP_DEPLOY_STARTED, lifecycle.APP_DEPLOY_COMPLETED,
@@ -241,17 +330,32 @@ STEP_EVENTS = {
 
 
 def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
-                  rebuild: bool = False) -> int:
+                  rebuild: bool = False, platform: dict | None = None) -> int:
     """Run `deploy` or `destroy` through the provider script between its STEP_EVENTS, and
-    on success record whether the app is now deployed."""
+    record whether the app is now deployed: a deploy records its place before and after the
+    script, deploys to a found key the record keeps, and restores the old record when the
+    user declines; a destroy that succeeds forgets the app."""
     started, completed, failed = STEP_EVENTS[command]
+    if command == "deploy":
+        was_deployed = config.is_deployed(app_name)
+        before = config.deployed_platform(app_name)
+        written = record_place(app_name, before)
+        if written != resolved(config.merged_app(app_name)["platform"]):
+            platform = written
     params = lifecycle.app_params(app_name, provider)
     lifecycle.emit(started, **params)
     try:
-        code = dispatch(provider, command, app_name, assume_yes, rebuild=rebuild)
+        code = dispatch(provider, command, app_name, assume_yes, rebuild=rebuild,
+                        platform=platform)
     except KeyboardInterrupt:
+        if command == "deploy":
+            record_place(app_name, written)
         lifecycle.emit(failed, **params, reason="interrupted")
         raise
+    if command == "deploy" and code != DECLINED:
+        record_place(app_name, written)
+    elif command == "deploy" and (before is not None or not was_deployed):
+        config.mark_deployed(app_name, before)
     if code in (DECLINED, 130, -signal.SIGINT):
         lifecycle.emit(failed, **params, exit_code=code,
                        reason="declined" if code == DECLINED else "interrupted")
@@ -259,9 +363,20 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
     if code != 0:
         lifecycle.emit(failed, **params, exit_code=code)
         return code
-    config.mark_deployed(app_name, command == "deploy")
+    if command == "destroy":
+        config.mark_deployed(app_name, None)
     lifecycle.emit(completed, **params)
     return 0
+
+
+def record_place(app_name: str, before: dict | None) -> dict:
+    """Record the place the config and the environment select, keeping each found key of
+    `before` that they leave empty, and return the record."""
+    platform = resolved(config.merged_app(app_name)["platform"])
+    record = {**platform, **{key: before[key] for key in config.FOUND_KEYS
+                             if before and before.get(key) and not platform.get(key)}}
+    config.mark_deployed(app_name, record)
+    return record
 
 
 def offer_run(app_name: str, provider: str, assume_yes: bool, run: bool | None) -> int | None:
@@ -477,7 +592,14 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
         console.error(console.escape(str(e)))
         return 1
     config.load_env(app["dir"])
-    return provider_step("destroy", provider, app_name, assume_yes)
+    recorded = config.deployed_platform(app_name)
+    if recorded is None:
+        return provider_step("destroy", provider, app_name, assume_yes)
+    if moved(recorded, app["platform"]):
+        say_places(app, recorded)
+        console.say(f"pdt destroys it where it is deployed: "
+                    f"{console.value(describe_place(config.place(recorded)))}.")
+    return provider_step("destroy", recorded["provider"], app_name, assume_yes, platform=recorded)
 
 
 # The exit code of a provider script whose plan the user declined, so provider_step can

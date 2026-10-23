@@ -32,7 +32,8 @@ class Cloud:
         monkeypatch.setattr(console, "confirm", self.confirm)
         self.answer = answer
 
-    def dispatch(self, provider, command, app_name, assume_yes, extra=None, rebuild=False):
+    def dispatch(self, provider, command, app_name, assume_yes, extra=None, rebuild=False,
+                 platform=None):
         self.calls.append((command, *(extra or [])))
         return self.codes.get(command, 0)
 
