@@ -33,7 +33,16 @@ def test_a_failed_or_declined_deploy_records_nothing(tmp_path, monkeypatch):
 
 def test_destroy_clears_the_record(tmp_path, monkeypatch):
     project_with_starter(tmp_path, monkeypatch)
-    config.mark_deployed(scaffold.STARTER, True)
+    config.mark_deployed(scaffold.STARTER, config.merged_app(scaffold.STARTER)["platform"])
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: 0)
+    assert deploy.destroy(scaffold.STARTER) == 0
+    assert not config.is_deployed(scaffold.STARTER)
+
+
+def test_destroy_ignores_a_record_that_is_not_a_platform(tmp_path, monkeypatch):
+    project = project_with_starter(tmp_path, monkeypatch)
+    write_raw_state(project, f'{{"deployed": ["{scaffold.STARTER}"], '
+                             f'"platforms": {{"{scaffold.STARTER}": true}}}}')
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: 0)
     assert deploy.destroy(scaffold.STARTER) == 0
     assert not config.is_deployed(scaffold.STARTER)
@@ -86,9 +95,10 @@ def test_mark_deployed_rewrites_a_corrupt_state_file(tmp_path, monkeypatch):
 
     project = project_with_starter(tmp_path, monkeypatch)
     write_raw_state(project, '{"hello":')
-    config.mark_deployed(scaffold.STARTER, True)
+    platform = config.merged_app(scaffold.STARTER)["platform"]
+    config.mark_deployed(scaffold.STARTER, platform)
     state = json.loads((project / ".pdt" / "state").read_text())
-    assert state == {"deployed": [scaffold.STARTER]}
+    assert state == {"deployed": [scaffold.STARTER], "platforms": {scaffold.STARTER: platform}}
 
 
 def test_a_failed_state_write_keeps_the_old_file(tmp_path, monkeypatch):

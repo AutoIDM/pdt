@@ -556,8 +556,9 @@ def mark_deployed(name: str, platform: dict | None) -> None:
 
 def deployed_platform(name: str) -> dict | None:
     """The platform section the app was last deployed with, or None when pdt has no record:
-    the app is not deployed, or a pdt older than the record deployed it."""
-    return (read_state().get("platforms") or {}).get(name)
+    the app is not deployed, a pdt older than the record deployed it, or the record is not valid."""
+    platform = (read_state().get("platforms") or {}).get(name)
+    return platform if isinstance(platform, dict) else None
 
 
 def place(platform: dict) -> dict[str, str]:
