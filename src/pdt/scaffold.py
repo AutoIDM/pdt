@@ -52,9 +52,7 @@ TIMEZONE_QUESTION = ("timezone", "Which time zone should the schedules use?",
 
 # Ask only what pdt cannot supply. Every provider learns its own account,
 # subscription, or project from the credentials at deploy time and writes the
-# answer back, so region is the only thing left that the user must choose.
-# Each default is a function, so the region suggested from this computer's
-# time zone is read only when the question is asked.
+# answer back.
 PROVIDER_QUESTIONS = {
     "azure": [
         ("region", regions.question("azure"), lambda: regions.suggest_region("azure"), _needed),
@@ -285,12 +283,15 @@ def kept_settings(current: dict, provider: str) -> dict:
     return {}
 
 
-def ask_settings(provider: str, kept: dict) -> dict:
+def ask_settings(provider: str, kept: dict) -> dict | None:
     console.say()
     settings = {"provider": provider, **kept}
     for key, question, default, check in PROVIDER_QUESTIONS[provider]:
         while True:
-            answer = _ask(question, str(kept.get(key) or default()))
+            answer = _ask(f"{question} (type cancel to change nothing)",
+                          str(kept.get(key) or default()))
+            if answer.strip().lower() == "cancel":
+                return None
             problem = check(answer)
             if problem == "":
                 break
@@ -305,7 +306,10 @@ def ask_platform(assume_yes: bool) -> dict:
     provider = ask_provider()
     if provider == "":
         return {}
-    return ask_settings(provider, {})
+    settings = ask_settings(provider, {})
+    if settings is None:
+        raise ConfigError("cancelled")
+    return settings
 
 
 def platform_lines(platform: dict) -> list[str]:
@@ -364,14 +368,23 @@ def merged_platform(root_cfg: dict, root_platform: dict, app_dir: Path) -> dict:
             **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
 
 
-def moves(before: dict, after: dict) -> bool:
-    before, after = deploy.resolved(before), deploy.resolved(after)
-    return ((before.get("provider"), before.get("region"))
-            != (after.get("provider"), after.get("region")))
+def pin_problem(path: Path, shown: str) -> str:
+    import yaml
+    text = path.read_text(encoding="utf-8-sig") if path.is_file() else ""
+    root = yaml.compose(text)
+    if isinstance(root, yaml.MappingNode) and root.flow_style:
+        return (f"the top level of {shown} is in braces, so pdt cannot add platform: to it. "
+                f"Write each key of {shown} on its own line, or delete the {{}} when {shown} holds "
+                "nothing else.")
+    if (isinstance(root, yaml.MappingNode) and any(key.value == "platform" for key, _value in root.value)
+            and not any(line.strip() == "platform:" for line in text.splitlines())):
+        return (f"platform: in {shown} is not on a line of its own, so pdt cannot change it. "
+                f"Write platform: on its own line in {shown}, and each key under it on its own "
+                "indented line.")
+    return ""
 
 
 def ask_apps(numbered: list[str]) -> list[str]:
-    """The apps the user picks by their number in the table, or none to cancel."""
     while True:
         answer = _ask("Type the numbers of the apps to move, separated by spaces "
                       "(Enter cancels)")
@@ -395,10 +408,11 @@ def change_provider(target: Path) -> int:
     deployed = [name for name in config.read_state().get("deployed") or []
                 if name in config.app_folders()]
     apps = {name: config.merged_app(name) for name in deployed}
-    numbered = [name for name in deployed if apps[name]["platform_from"] == PROJECT_FILE]
-    where = {name: deploy.describe_place(config.place(config.deployed_platform(name)
-                                                      or deploy.resolved(apps[name]["platform"])))
-             for name in deployed}
+    numbered = [name for name in deployed
+                if "provider" not in merged_platform(root_cfg, {}, target / name)]
+    before = {name: deploy.resolved(apps[name]["platform"]) for name in deployed}
+    recorded = {name: config.deployed_platform(name) or before[name] for name in deployed}
+    where = {name: deploy.describe_place(config.place(recorded[name])) for name in deployed}
     if deployed:
         console.say()
         console.table(["", "app", "where"],
@@ -411,18 +425,33 @@ def change_provider(target: Path) -> int:
         console.say("Nothing changed.")
         return 0
     platform = ask_settings(provider, kept_settings(current, provider))
+    if platform is None:
+        console.say("Cancelled. Nothing changed.")
+        return 0
     changed = bom + replace_platform(text.removeprefix(bom), platform)
     there = deploy.describe_place(config.place(deploy.resolved(platform)))
+    after = {name: merged_platform(root_cfg, platform, target / name) for name in deployed}
+    pins = {}
+    for name in deployed:
+        settings = {**config.place(before[name]),
+                    **{key: str(before[name][key]) for key in ("profile", "timezone")
+                       if before[name].get(key)}}
+        pins[name] = {key: value for key, value in settings.items()
+                      if str(deploy.resolved(after[name]).get(key) or "") != value}
+        problem = pin_problem(target / name / APP_FILE, f"{name}/{APP_FILE}")
+        if pins[name].keys() - {"timezone"} and problem != "":
+            raise ConfigError(problem)
+    movable = [name for name in numbered if deploy.moved(recorded[name], after[name])]
     moving = []
-    if numbered and moves(current, platform):
+    if movable:
         here = deploy.describe_place(config.place(deploy.resolved(current)))
         choice = _ask_choice(f"What should happen to the apps deployed on {console.escape(here)}?",
                              ["Move all", "Move some",
                               f"Keep them on {here} (only new apps go to {there})", "Cancel"], 4)
         if choice == 1:
-            moving = numbered
+            moving = movable
         elif choice == 2:
-            moving = ask_apps(numbered)
+            moving = [name for name in ask_apps(numbered) if name in movable]
         if choice == 4 or choice == 2 and not moving:
             console.say("Cancelled. Nothing changed.")
             return 0
@@ -449,17 +478,13 @@ def change_provider(target: Path) -> int:
         removed.append(name)
     console.say()
     for name in deployed:
-        before = deploy.resolved(merged_platform(root_cfg, current, target / name))
-        after = deploy.resolved(merged_platform(root_cfg, platform, target / name))
-        if name in removed or not moves(before, after):
+        if name in removed or not pins[name].keys() - {"timezone"}:
             continue
-        for key, value in before.items():
-            if value is not None and after.get(key) != value:
-                config.save_platform_key(apps[name], key, str(value),
-                                         path=target / name / APP_FILE)
+        for key, value in pins[name].items():
+            config.save_platform_key(apps[name], key, value, path=target / name / APP_FILE)
         pinned.append(name)
         console.say(f"{console.value(name)} stays on "
-                    f"{console.value(deploy.describe_place(config.place(before)))}. "
+                    f"{console.value(deploy.describe_place(config.place(before[name])))}. "
                     f"Its {console.value('platform:')} settings are in "
                     f"{console.value(f'{name}/{APP_FILE}')}.")
     with config.locked(marker):

@@ -61,10 +61,12 @@ PLATFORM_KEYS = {
     "timezone",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
-# The platform keys that say where a deployed app runs. `profile` is only the
-# credentials that reach an account, and `timezone` is when the app runs.
-PLACE_KEYS = ("provider", "region", "account", "project", "subscription", "resource_group",
-              "environment")
+# The platform keys besides provider that say where an app of each provider runs.
+# `profile` is only the credentials that reach an account, and `timezone` is when
+# the app runs.
+PLACE_KEYS = {"aws": ("region", "account"), "google-cloud": ("region", "project"),
+              "azure": ("region", "subscription", "resource_group", "environment"),
+              "windows": ()}
 # The place keys a deploy finds and saves when the config leaves them empty. Every other
 # place key that the config leaves empty takes the provider's default place.
 FOUND_KEYS = ("account", "project", "subscription")
@@ -579,7 +581,8 @@ def deployed_platform(name: str) -> dict | None:
 
 
 def place(platform: dict) -> dict[str, str]:
-    return {key: str(platform[key]) for key in PLACE_KEYS if str(platform.get(key) or "") != ""}
+    keys = ("provider", *PLACE_KEYS.get(platform.get("provider"), ()))
+    return {key: str(platform[key]) for key in keys if str(platform.get(key) or "") != ""}
 
 
 def deployed_places() -> dict[str, dict[str, str]]:
