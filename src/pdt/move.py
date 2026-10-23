@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from pdt import config, console, deploy
@@ -97,10 +100,26 @@ def merged_platform(root_cfg: dict, root_platform: dict, app_dir: Path) -> dict:
             **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
 
 
+@contextmanager
+def app_env(name: str, platform: dict | None = None):
+    """The environment with the app's .env files loaded, and with `platform` in place of the
+    app's own, put back as it was afterwards."""
+    saved = dict(os.environ)
+    try:
+        config.load_env(config.find_project() / name)
+        if platform is not None:
+            os.environ[config.DEPLOYED_PLATFORM_ENV] = json.dumps({"app": name, "platform": platform})
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
 def configured(name: str) -> dict:
     root_cfg = config.load_yaml(config.find_project() / PROJECT_FILE)
-    return deploy.resolved(merged_platform(root_cfg, root_cfg.get("platform") or {},
-                                           config.find_project() / name))
+    with app_env(name):
+        return deploy.resolved(merged_platform(root_cfg, root_cfg.get("platform") or {},
+                                               config.find_project() / name))
 
 
 def settings_in(name: str) -> str:
@@ -137,7 +156,8 @@ def pins_for(names: list[str], root_platform: dict) -> dict[str, dict]:
     for name in names:
         recorded = current(name)
         before = configured(name)
-        after = deploy.resolved(merged_platform(root_cfg, root_platform, target / name))
+        with app_env(name):
+            after = deploy.resolved(merged_platform(root_cfg, root_platform, target / name))
         profile = recorded.get("profile") or before.get("profile")
         extra = {"profile": profile if recorded.get("provider") == root_provider else None}
         settings = {**config.place(recorded), **{key: str(value) for key, value in extra.items() if value}}
@@ -216,10 +236,10 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
     rerun = f"pdt move {moving[0]}" if moving else "pdt move"
     final = {}
     for name in moving:
-        config.load_env(target / name)
-        final[name] = deploy.resolved({**root_platform,
-                                       **(config.root_app_entry(root_cfg, name).get("platform") or {}),
-                                       **platform})
+        with app_env(name):
+            final[name] = deploy.resolved({**root_platform,
+                                           **(config.root_app_entry(root_cfg, name).get("platform") or {}),
+                                           **platform})
     where = {name: described(current(name)) for name in names}
     there = {name: described(final[name]) for name in moving}
     deployed = [name for name in moving
@@ -227,9 +247,9 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
     problems = []
     for name in moving:
         if name in deployed:
-            app = config.merged_app(name)
-            app["platform"] = final[name]
-            found = deploy.prerequisites(app, final[name]["provider"], final[name])[0]
+            with app_env(name, final[name]):
+                found = deploy.prerequisites(config.merged_app(name), final[name]["provider"],
+                                             final[name])[0]
         else:
             found = config.place_problems(name, final[name])
         problems.extend(f"{name}: {problem}" for problem in found)
@@ -238,11 +258,14 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
             console.error(console.escape(problem))
         console.say("Nothing changed.")
         return 1
-    moves = {name: own_change(root_cfg, root_platform, name, platform) for name in moving}
-    stays = {name: own_change(root_cfg, root_platform, name,
-                              {**(config.load_yaml(target / name / APP_FILE).get("platform") or {}),
-                               **pins.get(name, {})})
-             for name in names}
+    moves, stays = {}, {}
+    for name in names:
+        with app_env(name):
+            if name in moving:
+                moves[name] = own_change(root_cfg, root_platform, name, platform)
+            stays[name] = own_change(root_cfg, root_platform, name,
+                                     {**(config.load_yaml(target / name / APP_FILE).get("platform") or {}),
+                                      **pins.get(name, {})})
     files = [change for change in [*changes, *moves.values()] if change[1] != change[2]]
     others = [name for name in names if name not in moving and stays[name][1] != stays[name][2]]
     if not deployed and not files and not others:
@@ -283,7 +306,9 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
         for name in moving:
             if name in deployed:
                 console.say()
-                if deploy.destroy(name, assume_yes=True) != 0:
+                with app_env(name):
+                    code = deploy.destroy(name, assume_yes=True)
+                if code != 0:
                     console.error(f"{console.value(name)} was not removed. "
                                   f"It is still deployed to {console.value(where[name])}.")
                     break
@@ -312,7 +337,9 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
             if name not in deployed:
                 continue
             console.say()
-            if deploy.deploy(name, assume_yes=True, run=False) != 0:
+            with app_env(name, final[name]):
+                code = deploy.deploy(name, assume_yes=True, run=False)
+            if code != 0:
                 failed.append(name)
             else:
                 redeployed.append(name)
@@ -395,7 +422,7 @@ def ask_and_move(name: str | None) -> int:
         if choice == 4 or not moving:
             console.say("Cancelled. Nothing changed.")
             return 0
-    configured_platform = configured(name)
+    configured_platform = merged_platform(root_cfg, default, config.find_project() / name)
     platform = ask_place({**config.place(configured_platform),
                           **{key: configured_platform[key] for key in ("profile", "timezone")
                              if configured_platform.get(key)}})
