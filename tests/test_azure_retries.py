@@ -26,7 +26,9 @@ def test_internal_error_retries_with_the_same_arguments(monkeypatch, capsys):
 
     assert [call[0] for call in calls] == [calls[0][0], calls[0][0]]
     assert sleeps == [10]
-    assert "correlation ID: first" in capsys.readouterr().out
+    out, err = capsys.readouterr()
+    assert "correlation ID" not in out
+    assert "correlation ID: first" in err
 
 
 def test_four_internal_errors_are_printed_and_fail(monkeypatch, capsys):
@@ -41,9 +43,9 @@ def test_four_internal_errors_are_printed_and_fail(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         deploy_azure.run_quiet("containerapp", "job", "create", retry_internal=True)
 
-    output = capsys.readouterr().out
-    assert all(f"correlation ID: {name}" in output
-               for name in ("one", "two", "three", "four"))
+    out, err = capsys.readouterr()
+    assert all(f"correlation ID: {name}" in err for name in ("one", "two", "three"))
+    assert "correlation ID: four" in out
     assert sleeps == [10, 20, 40]
 
 

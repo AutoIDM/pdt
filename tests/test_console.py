@@ -132,6 +132,7 @@ def poll(wait):
 def test_a_wait_prints_one_line_for_each_state_change_off_a_terminal(monkeypatch):
     out = io.StringIO()
     monkeypatch.setattr(console, "_console", Console(file=out, highlight=False))
+    monkeypatch.setattr(console, "_errors", console._console)
     with console.wait_on("Batch job queue pdt", "deleted") as wait:
         poll(wait)
     assert out.getvalue().splitlines() == ["disabling: Batch job queue pdt",
@@ -154,6 +155,7 @@ def test_a_wait_prints_plain_lines_on_a_terminal_that_cannot_animate(monkeypatch
     monkeypatch.setenv("TERM", "dumb")
     out = io.StringIO()
     monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
+    monkeypatch.setattr(console, "_errors", console._console)
     with console.wait_on("Batch job queue pdt", "deleted") as wait:
         poll(wait)
     assert "\x1b[2K" not in out.getvalue()
@@ -163,6 +165,7 @@ def test_a_wait_prints_plain_lines_on_a_terminal_that_cannot_animate(monkeypatch
 def test_a_wait_prints_plain_lines_on_a_terminal_when_the_output_is_json(monkeypatch):
     out = io.StringIO()
     monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
+    monkeypatch.setattr(console, "_errors", console._console)
     monkeypatch.setattr(console, "_data", {})
     with console.wait_on("Batch job queue pdt", "deleted") as wait:
         poll(wait)
@@ -173,6 +176,7 @@ def test_a_wait_prints_plain_lines_on_a_terminal_when_the_output_is_json(monkeyp
 def test_a_wait_without_a_poll_or_with_an_error_prints_no_end_line(monkeypatch):
     out = io.StringIO()
     monkeypatch.setattr(console, "_console", Console(file=out, highlight=False))
+    monkeypatch.setattr(console, "_errors", console._console)
     with console.wait_on("Batch job queue pdt", "deleted"):
         pass
     assert out.getvalue() == ""
@@ -181,3 +185,56 @@ def test_a_wait_without_a_poll_or_with_an_error_prints_no_end_line(monkeypatch):
             wait.now("deleting")
             raise SystemExit(1)
     assert out.getvalue() == "deleting: Batch job queue pdt\n"
+
+
+def test_a_wait_names_what_it_waits_for_and_counts_its_seconds(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
+    with console.waiting("reading: run list") as wait:
+        wait.start -= 7
+        wait.now("reading: run list")
+        console._console.print("a line")
+    assert "reading: run list (7s)" in out.getvalue()
+    assert "a line" in out.getvalue()
+
+
+def test_a_wait_off_a_terminal_prints_one_plain_line_on_stderr_each_time(capsys):
+    for _ in range(2):
+        with console.waiting("reading: run list") as wait:
+            wait.now("waiting: new run in the run list")
+        console.say("1  succeeded")
+    assert capsys.readouterr() == ("1  succeeded\n1  succeeded\n",
+                                   "reading: run list\nreading: run list\n")
+
+
+def test_a_wait_with_once_prints_its_plain_line_only_the_first_time(capsys):
+    for _ in range(2):
+        with console.waiting("reading: prices from the AWS price list", once=True):
+            pass
+    assert capsys.readouterr().err == "reading: prices from the AWS price list\n"
+
+
+def test_the_end_line_of_a_wait_that_is_not_the_result_goes_to_stderr(capsys):
+    with console.wait_on("pdt gcloud run jobs executions list", "done", result=False) as wait:
+        wait.now("Cloud Run API is not ready yet")
+    assert capsys.readouterr() == ("", "Cloud Run API is not ready yet: pdt gcloud run jobs "
+                                       "executions list\n"
+                                       "done: pdt gcloud run jobs executions list (0s)\n")
+
+
+def test_a_poll_off_a_terminal_prints_its_state_lines_on_stderr(capsys):
+    with console.wait_on("Batch job queue pdt", "deleted") as wait:
+        poll(wait)
+    assert capsys.readouterr() == ("deleted: Batch job queue pdt (0s)\n",
+                                   "disabling: Batch job queue pdt\n"
+                                   "deleting: Batch job queue pdt\n")
+
+
+def test_a_slow_wait_shows_its_line_from_the_start_and_prints_no_end_line(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", Console(file=out, highlight=False))
+    monkeypatch.setattr(console, "_errors", console._console)
+    with console.wait_on("pdt az group delete", "done", "deleting: resource group pdt") as wait:
+        wait.now("Azure returned an access error")
+    assert out.getvalue().splitlines() == ["deleting: resource group pdt",
+                                           "Azure returned an access error: resource group pdt"]

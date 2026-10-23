@@ -408,16 +408,17 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
             args += ["--env-vars", *(f"{var['name']}=secretref:{var['secretRef']}"
                                      if "secretRef" in var else f"{var['name']}={var['value']}"
                                      for var in env)]
-        run_quiet(*args, retry_access=True, retry_internal=True)
+        run_quiet(*args, retry_access=True, retry_internal=True,
+                  slow=f"creating: Container Apps Job {console.value(job)}")
         return None
 
     desired = normalized_job(body)
     if normalized_job(current) == desired:
         console.done(f"Container Apps Job {console.value(job)} is unchanged; skipped the update.")
         return current
-    run_quiet("rest", "--method", "patch", "--url", job_url(settings, job),
-              "--body", json.dumps(body), retry_access=True)
-    with console.wait_on(f"Container Apps Job {console.value(job)}", "updated") as wait:
+    with console.waiting(f"updating: Container Apps Job {console.value(job)}"):
+        run_quiet("rest", "--method", "patch", "--url", job_url(settings, job),
+                  "--body", json.dumps(body), retry_access=True)
         for _ in range(JOB_UPDATE_POLLS):
             resource = job_resource(settings, job)
             state = (resource.get("properties") or {}).get("provisioningState")
@@ -426,7 +427,6 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                      f"(provisioning state {console.value(state)})")
             if state == "Succeeded" and normalized_job(resource) == desired:
                 return resource
-            wait.now("updating")
             time.sleep(JOB_UPDATE_POLL_SECONDS)
         differ = [key for key, value in normalized_job(resource).items() if value != desired[key]]
         fail(f"Container Apps Job {console.value(job)} did not show the update after "
@@ -714,7 +714,8 @@ def start(app: dict, settings: dict, follow: bool = False) -> int:
                        "--container-name", container["name"], "--image", container["image"],
                        "--cpu", str(resources.get("cpu", CPU)),
                        "--memory", resources.get("memory", MEMORY),
-                       "--env-vars", *env, f"{lifecycle.TRIGGER_ENV}=manual", "--output", "json")
+                       "--env-vars", *env, f"{lifecycle.TRIGGER_ENV}=manual", "--output", "json",
+                       slow=f"starting: Container Apps Job {console.value(job)}")
     try:
         execution = json.loads(output or "null")
     except ValueError:
@@ -918,7 +919,8 @@ def ensure_environment(settings: dict, exists: bool, logs_exist: bool,
               "--location", settings["region"],
               "--logs-workspace-id", logs_id, "--logs-workspace-key", logs_key,
               "--tags", "managed-by=pdt",
-              hints={"EnvironmentsInSubExceeded": QUOTA_HINT})
+              hints={"EnvironmentsInSubExceeded": QUOTA_HINT},
+              slow=f"creating: Container Apps environment {console.value(environment)}")
 
 
 def job_name(settings: dict[str, str], app_name: str) -> str:
@@ -993,7 +995,7 @@ def read_state(settings: dict, job: str, legacy: str, sid: str, wanted_secret: b
     shared_id = (f"/subscriptions/{settings['subscription']}/resourceGroups/"
                  f"{environment.resource_group}")
     vault_token = access_token(VAULT_RESOURCE) if wanted_secret else ""
-    with console.waiting("reading resources and prices"), \
+    with console.waiting("reading: resources and prices"), \
             ThreadPoolExecutor(READ_THREADS) as pool:
         price_read = pool.submit(price_list, settings["region"], currency, wanted_secret, bool(store))
         reads = {
@@ -1031,7 +1033,8 @@ def retire_job(settings: dict[str, str], job: str, current: dict, store: dict | 
         revoke_role(secret_scope(settings, sid), principal, SECRET_ROLE)
     console.step(f"deleting Container Apps Job {console.value(job)}")
     run_quiet("containerapp", "job", "delete", "--name", job,
-              "--resource-group", settings["resource_group"], "--yes")
+              "--resource-group", settings["resource_group"], "--yes",
+              slow=f"deleting: Container Apps Job {console.value(job)}")
 
 
 def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -> int:
@@ -1179,7 +1182,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         run_quiet("acr", "create", "--name", settings["registry"],
                   "--resource-group", rg, "--location", settings["region"],
                   "--sku", "Basic", "--admin-enabled", "false",
-                  "--tags", "managed-by=pdt")
+                  "--tags", "managed-by=pdt",
+                  slow=f"creating: ACR {console.value(settings['registry'])}")
     for lock in missing_locks:
         lock.create()
     if not identity:
@@ -1323,14 +1327,17 @@ def release_environment(settings: dict, release: Release) -> None:
         console.step(f"deleting Container Apps environment {console.value(environment)}")
         locked = delete_unless_locked(
             "containerapp", "env", "delete", "--name", environment.name,
-            "--resource-group", environment.resource_group, "--yes")
+            "--resource-group", environment.resource_group, "--yes",
+            slow=f"deleting: Container Apps environment {console.value(environment)}")
         if locked:
             console.note(f"kept: Container Apps environment {console.value(environment)} "
                          f"(locked by {console.value(locked)})")
             return
     if release.group:
         console.step(f"deleting resource group {console.value(environment.resource_group)}")
-        locked = delete_unless_locked("group", "delete", "--name", environment.resource_group, "--yes")
+        locked = delete_unless_locked(
+            "group", "delete", "--name", environment.resource_group, "--yes",
+            slow=f"deleting: resource group {console.value(environment.resource_group)}")
         if locked:
             console.note(f"kept: resource group {console.value(environment.resource_group)} "
                          f"(locked by {console.value(locked)})")
@@ -1408,7 +1415,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
             revoke_role(store["container_id"], principal_id, STORE_ROLE)
         if orphan_vault:
             console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-            run_quiet("keyvault", "purge", "--name", settings["vault"])
+            run_quiet("keyvault", "purge", "--name", settings["vault"],
+                      slow=f"purging: Key Vault {console.value(settings['vault'])}")
         if group_exists and not destroy_group(settings, name):
             # Another app joined the group meanwhile, so this one leaves the
             # way it would have with a sibling: its own job, image, and secret.
@@ -1468,9 +1476,11 @@ def remove_app(settings: dict, name: str, job: str, sid: str, managed_job: bool,
         revoke_role(secret_scope(settings, sid), principal_id, SECRET_ROLE)
     if managed_job:
         run_quiet("containerapp", "job", "delete", "--name", job,
-                  "--resource-group", rg, "--yes")
+                  "--resource-group", rg, "--yes",
+                  slow=f"deleting: Container Apps Job {console.value(job)}")
     if image_exists:
         run_quiet("acr", "repository", "delete", "--name", settings["registry"],
-                  "--repository", name, "--yes")
+                  "--repository", name, "--yes",
+                  slow=f"deleting: ACR repository {console.value(name)}")
     if secret_owned:
         purge_secret(settings, sid)

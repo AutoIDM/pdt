@@ -127,7 +127,7 @@ def connect_slack() -> tuple[str, str] | None:
     console.command(authorize, "open this if no browser opens")
     try:
         webbrowser.open(authorize)
-        with console.waiting("Waiting for Slack"):
+        with console.waiting("waiting: Slack"):
             answered.wait(CONNECT_SECONDS)
     finally:
         server.shutdown()

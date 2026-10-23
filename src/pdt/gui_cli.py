@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from contextlib import nullcontext
 from pathlib import Path
 
 from pdt import config, console
@@ -107,7 +108,10 @@ def start(port: int, background: bool, open_the_browser: bool) -> int:
     (state / PID_FILE).write_text(json.dumps({"pid": proc.pid, "port": port}))
     console.status(f"starting pdt gui on port {console.value(port)} "
                    "(the first start installs Django)...")
-    if not wait_up(proc, port):
+    with (console.waiting(f"starting: pdt gui on port {console.value(port)}") if background
+          else nullcontext()):
+        started = wait_up(proc, port)
+    if not started:
         (state / PID_FILE).unlink(missing_ok=True)
         if proc.poll() is None:
             proc.terminate()

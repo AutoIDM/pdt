@@ -118,3 +118,19 @@ def test_start_submits_the_job_the_schedule_would_submit(capsys):
 def test_the_deployer_policy_allows_submitting_a_job():
     assert "batch:SubmitJob" in batch_deploy.DEPLOYER_ACTIONS
     assert "iam:PassRole" in batch_deploy.DEPLOYER_ACTIONS
+
+
+def test_start_shows_a_wait_line_that_ends_before_the_log(monkeypatch, capsys, waits):
+    seen = []
+
+    class Batch(FakeBatch):
+        def submit_job(self, **kwargs):
+            seen.append(("submit", list(waits), capsys.readouterr().err))
+            return super().submit_job(**kwargs)
+
+    monkeypatch.setattr(batch_deploy, "logs",
+                        lambda *args, **kwargs: seen.append(("log", list(waits), "")) or 0)
+    session = FakeSession(FakeScheduler(schedule("ENABLED")), Batch())
+    assert batch_deploy.start({"name": "my-app"}, session, follow=True) == 0
+    assert seen == [("submit", ["starting: Batch job [bold not dim]pdt-my-app[/]"],
+                     "starting: Batch job pdt-my-app\n"), ("log", [], "")]

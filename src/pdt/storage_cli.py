@@ -17,24 +17,25 @@ USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] | get <path>
 
 
 def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
-    fs = store.fs()
-    try:
-        if recursive:
-            entries = [dict(entry, name=name) for name, entry in
-                       sorted(fs.find(path, detail=True).items())]
-        else:
-            entries = sorted(fs.ls(path, detail=True), key=lambda entry: entry["name"])
-    except FileNotFoundError:
-        entries = []
-    totals = {entry["name"].rstrip("/"): [0, 0] for entry in entries
-              if entry.get("type") == "directory"}
-    if totals:
-        depth = len(next(iter(totals)).split("/"))
-        for name, entry in fs.find(path, detail=True).items():
-            top = totals.get("/".join(name.split("/")[:depth]))
-            if top is not None:
-                top[0] += 1
-                top[1] += entry.get("size") or 0
+    with console.waiting(f"reading: {console.value(path or '/')}"):
+        fs = store.fs()
+        try:
+            if recursive:
+                entries = [dict(entry, name=name) for name, entry in
+                           sorted(fs.find(path, detail=True).items())]
+            else:
+                entries = sorted(fs.ls(path, detail=True), key=lambda entry: entry["name"])
+        except FileNotFoundError:
+            entries = []
+        totals = {entry["name"].rstrip("/"): [0, 0] for entry in entries
+                  if entry.get("type") == "directory"}
+        if totals:
+            depth = len(next(iter(totals)).split("/"))
+            for name, entry in fs.find(path, detail=True).items():
+                top = totals.get("/".join(name.split("/")[:depth]))
+                if top is not None:
+                    top[0] += 1
+                    top[1] += entry.get("size") or 0
     rows = []
     for entry in entries:
         files, size = totals.get(entry["name"].rstrip("/"), (1, entry.get("size")))
@@ -54,7 +55,8 @@ def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
 
 def get(store, path, dest: Path, show: bool = False) -> int:
     saved = dest / Path(path).name if dest.is_dir() else dest
-    store.fs().get(path, str(dest))
+    with console.waiting(f"downloading: {console.value(path)}"):
+        store.fs().get(path, str(dest))
     console.done(f"saved {console.value(path)} to {console.value(dest)}")
     return runs_cli.open_place(str(saved.resolve())) if show else 0
 
@@ -66,14 +68,17 @@ def query(store, sql) -> int:
     with tempfile.TemporaryDirectory(prefix="pdt-storage-") as tmp:
         rewritten = sql
         for pattern in set(re.findall(r"'([^']+)'", sql)):
-            matches = fs.glob(pattern)
+            with console.waiting(f"reading: objects that match {console.value(pattern)}"):
+                matches = fs.glob(pattern)
             if not matches:
                 console.error(f"no objects match {console.value(repr(pattern))}")
                 return 1
-            for match in matches:
-                local_path = Path(tmp) / match
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                fs.get(match, str(local_path))
+            with console.waiting(f"downloading: {len(matches)} object(s) for "
+                                 f"{console.value(pattern)}"):
+                for match in matches:
+                    local_path = Path(tmp) / match
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    fs.get(match, str(local_path))
             rewritten = rewritten.replace(f"'{pattern}'", f"'{Path(tmp) / pattern}'")
         result = duckdb.sql(rewritten)
         console.table([column[0] for column in result.description], result.fetchall())
@@ -102,14 +107,16 @@ def destroy(store, app, assume_yes) -> int:
     from pdt import deploy
 
     fs = store.fs()
-    objects = fs.find("")
+    with console.waiting(f"reading: objects under {console.value(f'{app}/')}"):
+        objects = fs.find("")
     if not objects:
         console.say(f"no objects under {console.value(f'{app}/')}")
         return 0
     if not deploy.confirm([console.Markup(
             f"delete {len(objects)} object(s) under {console.value(f'{app}/')}")], assume_yes):
         return 1
-    fs.rm(objects)
+    with console.waiting(f"deleting: {len(objects)} object(s) under {console.value(f'{app}/')}"):
+        fs.rm(objects)
     console.done(f"deleted {len(objects)} object(s) under {console.value(f'{app}/')}")
     return 0
 

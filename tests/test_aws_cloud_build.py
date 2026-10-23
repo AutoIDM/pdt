@@ -246,6 +246,29 @@ def test_a_cloud_build_never_runs_docker_on_this_computer(deploy):
     assert len(fakes["codebuild"].started) == 1
 
 
+def test_the_build_wait_line_shows_at_the_first_read_and_not_during_the_build_log(
+        monkeypatch, capsys, waits):
+    monkeypatch.setattr(batch_deploy, "BUILD_POLL_SECONDS", 0)
+    monkeypatch.setattr(batch_deploy, "BUILD_LOG_SETTLE_SECONDS", 0)
+    seen = []
+
+    class CodeBuild(FakeCodeBuild):
+        def batch_get_builds(self, ids):
+            seen.append(("read", list(waits), capsys.readouterr().err))
+            return super().batch_get_builds(ids)
+
+    class Logs(FakeLogs):
+        def get_log_events(self, **kwargs):
+            seen.append(("log", list(waits), ""))
+            return super().get_log_events(**kwargs)
+
+    batch_deploy.follow_build(CodeBuild(), Logs(), "pdt:1")
+    assert seen[0] == ("read", ["CodeBuild build [bold not dim]pdt:1[/]"],
+                       "reading: CodeBuild build pdt:1\n")
+    assert ("log", [], "") in seen
+    assert all(open_waits == [] for _, open_waits, _ in seen[1:])
+
+
 def test_the_upload_holds_only_the_staged_files(deploy):
     _code, fakes, _commands, _roles, _logs = deploy(cloud=True)
     [upload] = fakes["s3"].uploaded.values()

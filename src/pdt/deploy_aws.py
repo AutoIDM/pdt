@@ -298,8 +298,8 @@ def role_propagation_error(exc: Exception) -> bool:
 
 
 def retry(operation, retryable, name: str, state: str, end: str, delays: tuple[int, ...],
-          sleep=time.sleep):
-    with console.wait_on(name, end) as wait:
+          sleep=time.sleep, result: bool = True):
+    with console.wait_on(name, end, result=result) as wait:
         for delay in (*delays, None):
             try:
                 return operation()
@@ -313,7 +313,7 @@ def retry(operation, retryable, name: str, state: str, end: str, delays: tuple[i
 
 def with_role_propagation_retry(operation, sleep=time.sleep):
     return retry(operation, role_propagation_error, "IAM role", "not visible yet",
-                 "visible", ROLE_PROPAGATION_DELAYS, sleep)
+                 "visible", ROLE_PROPAGATION_DELAYS, sleep, result=False)
 
 
 def adopt_account(app: dict, session) -> str:
@@ -681,22 +681,23 @@ def sso_finish(started: tuple, session_name: str | None, start_url: str, region:
     console.bullet(f"Check that the browser shows the code {console.value(device['userCode'])}.")
     interval = device.get("interval") or 5
     waited = 0
-    while waited < device["expiresIn"]:
-        try:
-            token = oidc.create_token(
-                grantType="urn:ietf:params:oauth:grant-type:device_code",
-                deviceCode=device["deviceCode"], clientId=client["clientId"],
-                clientSecret=client["clientSecret"])
-            break
-        except ClientError as exc:
-            if error_code(exc) == "SlowDownException":
-                interval += 5
-            elif error_code(exc) != "AuthorizationPendingException":
-                fail(f"the AWS sign-in failed: {console.escape(str(exc))}")
-        sleep(interval)
-        waited += interval
-    else:
-        fail("the AWS sign-in timed out; run the same command again and approve it in the browser")
+    with console.waiting("waiting: AWS sign-in in the browser"):
+        while waited < device["expiresIn"]:
+            try:
+                token = oidc.create_token(
+                    grantType="urn:ietf:params:oauth:grant-type:device_code",
+                    deviceCode=device["deviceCode"], clientId=client["clientId"],
+                    clientSecret=client["clientSecret"])
+                break
+            except ClientError as exc:
+                if error_code(exc) == "SlowDownException":
+                    interval += 5
+                elif error_code(exc) != "AuthorizationPendingException":
+                    fail(f"the AWS sign-in failed: {console.escape(str(exc))}")
+            sleep(interval)
+            waited += interval
+        else:
+            fail("the AWS sign-in timed out; run the same command again and approve it in the browser")
     cache = {
         "startUrl": start_url,
         "region": region,
@@ -867,7 +868,7 @@ def preflight(sts, iam, expected_account: str, region: str,
 
     def wait_for_permissions() -> None:
         if not result.done():
-            with console.waiting("Verifying AWS permissions"):
+            with console.waiting("verifying: AWS permissions"):
                 result.exception()
         try:
             denied = result.result()
@@ -1099,7 +1100,7 @@ def list_price(offer: str, region: str, usagetype_suffix: str, **attributes: str
 
     query = " ".join([offer, usagetype_suffix, *(f"{k}={v}" for k, v in sorted(attributes.items()))])
     return cached_price("aws", region, "USD", query, read,
-                        "Fetching list prices from the AWS price list...")
+                        "reading: prices from the AWS price list")
 
 
 def recent_stream_seconds(logs, log_group: str) -> float | None:

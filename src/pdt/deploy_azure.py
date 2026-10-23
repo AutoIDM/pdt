@@ -162,11 +162,11 @@ def az(*args: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args, code, out.getvalue(), err.getvalue())
 
 
-def run_quiet(*args: str, retry_access: bool = False,
-              retry_internal: bool = False, hints: dict[str, str] | None = None) -> str:
+def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = False,
+              hints: dict[str, str] | None = None, slow: str = "") -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
     command = "pdt az " + " ".join(args[:4])
-    with console.wait_on(console.value(command), "done") as wait:
+    with console.wait_on(console.value(command), "done", slow, result=False) as wait:
         for seconds in waits:
             proc = az(*args)
             if proc.returncode == 0:
@@ -177,9 +177,10 @@ def run_quiet(*args: str, retry_access: bool = False,
                 "does not have authorization",
             ))
             internal_error = retry_internal and "internalservererror" in output
+            retried = seconds != 0 and (access_error or internal_error)
             if proc.stderr.strip():
-                console.say(console.escape(proc.stderr.strip()))
-            if seconds == 0 or not (access_error or internal_error):
+                console.say(console.escape(proc.stderr.strip()), stderr=retried)
+            if not retried:
                 break
             wait.now("Azure returned an access error" if access_error
                      else "Azure returned InternalServerError")
@@ -193,9 +194,10 @@ def run_quiet(*args: str, retry_access: bool = False,
 LOCK_NAME = re.compile(r"Microsoft\.Authorization/locks/([^'\s,]+)", re.IGNORECASE)
 
 
-def delete_unless_locked(*args: str) -> str:
+def delete_unless_locked(*args: str, slow: str = "") -> str:
     """Run an az delete. Return the lock names that refused it, or "" on success."""
-    proc = az(*args)
+    with console.wait_on("", "", slow):
+        proc = az(*args)
     if proc.returncode == 0:
         return ""
     if "scopelocked" in proc.stderr.lower() or LOCK_NAME.search(proc.stderr):
@@ -520,7 +522,8 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
 
 def login(requested: str) -> None:
     console.status("Opening your browser for the Azure login...")
-    proc = subprocess.run([*AZ, "login"], capture_output=True, text=True)
+    with console.waiting("waiting: Azure login in the browser"):
+        proc = subprocess.run([*AZ, "login"], capture_output=True, text=True)
     if proc.returncode == 0:
         return
     output = proc.stdout + proc.stderr
@@ -638,7 +641,7 @@ def retail_price(region: str, service: str, meter: str, sku: str,
         return [float(items[0]["retailPrice"]), items[0].get("unitOfMeasure", "")]
 
     price, unit = cached_price("azure", region, currency, query, read,
-                               "Fetching list prices from the Azure Retail Prices API...")
+                               "reading: prices from the Azure Retail Prices API")
     return price, unit
 
 
@@ -660,7 +663,7 @@ def exchange_rate(currency: str) -> float:
         return prices[1] / prices[0]
 
     return cached_price("azure", "", currency, meter, read,
-                        "Fetching list prices from the Azure Retail Prices API...")
+                        "reading: prices from the Azure Retail Prices API")
 
 
 def owned_by(resource: dict | None, app_name: str) -> bool:
@@ -794,7 +797,8 @@ def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
         run_quiet("keyvault", "create", "--name", settings["vault"],
                   "--resource-group", rg, "--location", settings["region"],
                   "--enable-rbac-authorization", "true",
-                  "--tags", "managed-by=pdt")
+                  "--tags", "managed-by=pdt",
+                  slow=f"creating: Key Vault {console.value(settings['vault'])}")
     vault_id = resource_id(settings, "Microsoft.KeyVault", "vaults", settings["vault"])
     assign_role(vault_id, settings["deployer_object_id"], "Key Vault Secrets Officer",
                 settings["deployer_principal_type"])
@@ -811,7 +815,8 @@ def purge_deleted_vault(settings: dict[str, str]) -> None:
         fail(f"a soft-deleted Key Vault named {console.value(settings['vault'])} exists but is not "
              "managed by PDT; purge it or deploy to another subscription")
     console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-    run_quiet("keyvault", "purge", "--name", settings["vault"])
+    run_quiet("keyvault", "purge", "--name", settings["vault"],
+              slow=f"purging: Key Vault {console.value(settings['vault'])}")
 
 
 def workspace_resource(settings: dict) -> dict | None:
@@ -828,7 +833,8 @@ def ensure_workspace(settings: dict, exists: bool) -> None:
         run_quiet("monitor", "log-analytics", "workspace", "create",
                   "--resource-group", settings["environment"].resource_group,
                   "--workspace-name", settings["workspace"],
-                  "--location", settings["region"], "--tags", "managed-by=pdt")
+                  "--location", settings["region"], "--tags", "managed-by=pdt",
+                  slow=f"creating: Log Analytics workspace {console.value(settings['workspace'])}")
 
 
 def workspace_keys(settings: dict) -> tuple[str, str]:
@@ -970,14 +976,15 @@ def group_can_be_deleted(settings: dict[str, str], others: list[str]) -> bool:
 
 def purge_secret(settings: dict[str, str], sid: str) -> None:
     # No recovery windows: purge right after the soft delete lands.
-    delete_secret(settings, sid)
-    for _ in range(30):
-        if az_json("keyvault", "secret", "show-deleted", "--vault-name",
-                   settings["vault"], "--name", sid):
-            break
-        time.sleep(2)
-    run_quiet("keyvault", "secret", "purge", "--vault-name",
-              settings["vault"], "--name", sid, retry_access=True)
+    with console.waiting(f"deleting: Key Vault secret {console.value(sid)}"):
+        delete_secret(settings, sid)
+        for _ in range(30):
+            if az_json("keyvault", "secret", "show-deleted", "--vault-name",
+                       settings["vault"], "--name", sid):
+                break
+            time.sleep(2)
+        run_quiet("keyvault", "secret", "purge", "--vault-name",
+                  settings["vault"], "--name", sid, retry_access=True)
 
 
 def destroy_group(settings: dict[str, str], app_name: str) -> bool:
@@ -989,14 +996,16 @@ def destroy_group(settings: dict[str, str], app_name: str) -> bool:
                      f"{', '.join(console.value(other) for other in others)})")
         return False
     console.step(f"deleting resource group {console.value(rg)} (takes a few minutes)")
-    locked = delete_unless_locked("group", "delete", "--name", rg, "--yes")
+    locked = delete_unless_locked("group", "delete", "--name", rg, "--yes",
+                                  slow=f"deleting: resource group {console.value(rg)}")
     if locked:
         console.note(f"kept: resource group {console.value(rg)} with its ACR and Key Vault "
                      f"(locked by {console.value(locked)})")
         return False
     if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
         console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-        run_quiet("keyvault", "purge", "--name", settings["vault"])
+        run_quiet("keyvault", "purge", "--name", settings["vault"],
+                  slow=f"purging: Key Vault {console.value(settings['vault'])}")
     if az_tsv("group", "exists", "--name", rg) == "false":
         console.done(f"Nothing remains in resource group {console.value(rg)}.")
     return True
@@ -1103,7 +1112,8 @@ def ensure_store(settings: dict[str, str], store: dict[str, str], exists: bool) 
         run_quiet("storage", "account", "create", "--name", store["account"],
                   "--resource-group", store["group"], "--location", settings["region"],
                   "--sku", "Standard_LRS", "--allow-blob-public-access", "false",
-                  "--min-tls-version", "TLS1_2", "--tags", *STORE_TAG_ARGS)
+                  "--min-tls-version", "TLS1_2", "--tags", *STORE_TAG_ARGS,
+                  slow=f"creating: storage account {console.value(store['account'])}")
         container = az_json("storage", "container-rm", "show",
                             "--storage-account", store["account"],
                             "--resource-group", store["group"], "--name", store["container"])

@@ -134,9 +134,9 @@ def test_deploy_says_what_it_does_before_each_slow_step(project, monkeypatch, ca
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run", lambda powershell, script, **kw: True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
-    out = capsys.readouterr().out
+    out, err = capsys.readouterr()
     assert out.index("Checking Windows scheduled task pdt-my-report") < out.index("Plan")
-    assert out.index("Plan") < out.index("Updating Windows scheduled task pdt-my-report")
+    assert err == "updating: Windows scheduled task pdt-my-report\n"
 
 @pytest.fixture
 def powershell_deploy(project, monkeypatch):

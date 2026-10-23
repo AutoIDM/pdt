@@ -564,13 +564,13 @@ def health(app_names: list[str], as_json: bool) -> int:
             stderr.seek(0)
             lines[app_name] = stderr.read()
 
-    message = f"checking {len(providers)} apps"
+    message = f"checking: {len(providers)} apps"
     with nullcontext(console.Wait(message)) if as_json else console.waiting(message) as wait:
         with ThreadPoolExecutor(HEALTH_PARALLEL) as pool:
             futures = [pool.submit(read, app_name) for app_name in providers]
             for done, future in enumerate(as_completed(futures), 1):
                 future.result()
-                wait.now(f"{message}: {done} done")
+                wait.now(f"checking: {done} of {len(providers)} apps done")
     can_ask = child_can_ask()
     app_runs = {}
     for app_name in app_names:

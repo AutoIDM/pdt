@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from contextlib import contextmanager
 from time import monotonic
 from typing import Iterator
@@ -42,7 +43,7 @@ _errors = Console(stderr=True, highlight=False, soft_wrap=True, emoji=False)
 # The real stdout, for `data`, once `json_output` has moved stdout to stderr.
 _data = None
 
-# Each message `warn_once` or `status_once` has printed in this process.
+# Each message `warn_once` or `waiting` has printed in this process.
 _warned: set[str] = set()
 
 INDENT = 6
@@ -78,9 +79,9 @@ def data(text: str) -> None:
     out.flush()
 
 
-def say(message: str = "") -> None:
-    """A line with no colour."""
-    _console.print(message)
+def say(message: str = "", stderr: bool = False) -> None:
+    """A line with no colour. `stderr` is for the error of a call that pdt tries again."""
+    (_errors if stderr else _console).print(message)
 
 
 def art(text: str) -> None:
@@ -108,14 +109,6 @@ def status(message: str) -> None:
     _console.print(f"[dim]{message}[/]")
 
 
-def status_once(message: str) -> None:
-    """A status line that several reads may each start, such as a price fetch: only its
-    first time prints."""
-    if message not in _warned:
-        _warned.add(message)
-        status(message)
-
-
 class Wait:
     """What pdt waits for, and the seconds since it started waiting for it."""
 
@@ -131,10 +124,19 @@ class Wait:
 
 
 @contextmanager
-def waiting(message: str) -> Iterator[Wait]:
-    """On a terminal, a spinner line under the output that names the wait and counts its seconds."""
+def waiting(message: str, once: bool = False) -> Iterator[Wait]:
+    """On a terminal that can animate, a spinner line under the output that names the wait and
+    counts its seconds. Otherwise, or with JSON output, one plain line on stderr; with `once`, only the first time a process waits
+    for `message`, as for a price read. `message` has the form `<action>: details`. A wait in
+    a worker thread shows no spinner, since the thread that started it may show one."""
     wait = Wait(message)
-    if not _console.is_terminal:
+    if not _console.is_interactive or _data is not None:
+        if not once or message not in _warned:
+            _warned.add(message)
+            _errors.print(f"[dim]{message}[/]")
+        yield wait
+        return
+    if threading.current_thread() is not threading.main_thread():
         yield wait
         return
     with _console.status(wait):
@@ -155,7 +157,7 @@ class WaitOn:
             self.start = monotonic()
         self.state = state
         if not _console.is_interactive or _data is not None:
-            status(f"{state}: {self.name}")
+            _errors.print(f"[dim]{state}: {self.name}[/]")
         elif self.spinner is None:
             self.spinner = _console.status(self)
             self.spinner.start()
@@ -165,17 +167,22 @@ class WaitOn:
 
 
 @contextmanager
-def wait_on(name: str, end: str) -> Iterator[WaitOn]:
+def wait_on(name: str, end: str, slow: str = "", result: bool = True) -> Iterator[WaitOn]:
     """One line for one object that pdt polls until it reaches a state, such as a queue
-    that Batch deletes."""
-    wait = WaitOn(name, end)
+    that Batch deletes. `slow`, an `<action>: details` line, shows from the start in place
+    of `name`, and no end line follows it. The end line of a wait that is not the command's
+    `result`, such as a retried read, goes to stderr."""
+    action, _, what = slow.partition(": ")
+    wait = WaitOn(what or name, "" if slow else end)
+    wait.now(action)
     try:
         yield wait
     finally:
         if wait.spinner is not None:
             wait.spinner.stop()
     if wait.state != "" and wait.end != "":
-        status(f"{wait.end}: {name} ({round(monotonic() - wait.start)}s)")
+        (_console if result else _errors).print(
+            f"[dim]{wait.end}: {name} ({round(monotonic() - wait.start)}s)[/]")
 
 
 def field(label: str, value: str) -> None:

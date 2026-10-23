@@ -13,6 +13,18 @@ def recorded(monkeypatch, deleted):
     return calls
 
 
+def test_one_wait_covers_the_secret_delete_the_poll_and_the_purge(monkeypatch, waits):
+    seen = []
+    monkeypatch.setattr(deploy_azure, "az_json",
+                        lambda *args: seen.append((args[2], list(waits))) or {"name": "s1"})
+    monkeypatch.setattr(deploy_azure, "run_quiet",
+                        lambda *args, **kwargs: seen.append((args[2], list(waits))) or "")
+    deploy_azure.purge_secret(SETTINGS, "s1")
+    wait = ["deleting: Key Vault secret [bold not dim]s1[/]"]
+    assert seen == [("delete", wait), ("show-deleted", wait), ("purge", wait)]
+    assert waits == []
+
+
 def test_no_deleted_vault_means_nothing_to_purge(monkeypatch):
     calls = recorded(monkeypatch, None)
     deploy_azure.purge_deleted_vault(SETTINGS)
@@ -47,9 +59,9 @@ def test_destroy_does_not_purge_another_groups_legacy_vault(monkeypatch):
     monkeypatch.setattr(deploy_azure, "az_json", deleted)
     monkeypatch.setattr(deploy_azure, "az_tsv", lambda *args: "false")
     monkeypatch.setattr(deploy_azure, "run_quiet",
-                        lambda *args: calls.append(args))
+                        lambda *args, **kwargs: calls.append(args))
     monkeypatch.setattr(deploy_azure, "delete_unless_locked",
-                        lambda *args: calls.append(args) or "")
+                        lambda *args, **kwargs: calls.append(args) or "")
     assert deploy_azure.destroy_group(settings, "report") is True
     assert reads == [("keyvault", "show-deleted", "--name", "pdt-current")]
     assert calls == [

@@ -78,6 +78,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ElementTree
+from contextlib import nullcontext
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Callable
@@ -333,10 +334,9 @@ def cached_price(provider: str, region: str, currency: str, query: str,
     except (OSError, ValueError, LookupError, TypeError):
         pass
     if entry is None or not 0 <= time.time() - entry[0] < PRICE_MAX_AGE_SECONDS:
-        if fetching:
-            console.status_once(fetching)
         try:
-            fresh = time.time(), read(), None
+            with console.waiting(fetching, once=True) if fetching else nullcontext():
+                fresh = time.time(), read(), None
         except LookupError as exc:
             fresh = time.time(), None, str(exc)
         except Exception as exc:
@@ -388,7 +388,8 @@ def ecb_rate(currency: str) -> tuple[float, str]:
             raise LookupError(f"the ECB publishes no {currency} rate")
         return [rates[currency] / rates["USD"], date]
 
-    rate, date = cached_price("ecb", "", currency, ECB_RATES, read)
+    rate, date = cached_price("ecb", "", currency, ECB_RATES, read,
+                              "reading: exchange rate from the European Central Bank")
     return rate, date
 
 
@@ -486,7 +487,7 @@ def validate_response(response) -> None:
 def fetch_json(request: str | urllib.request.Request, timeout: int = 60,
                open_url: Callable | None = None):
     host = urllib.parse.urlsplit(getattr(request, "full_url", request)).netloc
-    with console.wait_on(console.value(host), "answered") as wait:
+    with console.wait_on(console.value(host), "answered", result=False) as wait:
         return fetch_once(request, timeout, open_url, wait=wait)
 
 
@@ -570,7 +571,8 @@ def build_in_cloud(app: dict, builder: str, image_platform: str) -> bool:
         console.status(f"{key} in {console.value(source)}, so the deploy will build "
                        f"the image in the cloud with {console.value(builder)}.")
     else:
-        problem = console.escape(docker_problem())
+        with console.waiting("checking: Docker on this computer"):
+            problem = console.escape(docker_problem())
         if problem == "" and config.unsaved() is not None:
             console.status(
                 "Docker found. The deploy will build the image with Docker on this computer if "
@@ -578,7 +580,9 @@ def build_in_cloud(app: dict, builder: str, image_platform: str) -> bool:
                 + (f"stop. {key} in {console.value(source)} allows only Docker."
                    if setting == "local" else f"in the cloud with {console.value(builder)}."))
             return False
-        problem = problem or emulate(image_platform)
+        if problem == "":
+            with console.waiting(f"checking: Docker runs {console.value(image_platform)} programs"):
+                problem = emulate(image_platform)
         if problem == "":
             console.status("Docker found, so the deploy will build the image with Docker on this "
                            "computer.")

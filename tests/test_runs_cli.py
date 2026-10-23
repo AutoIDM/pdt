@@ -97,7 +97,9 @@ def test_marker_status():
 
 def test_runs_prints_a_table_newest_first(capsys):
     assert runs_cli.runs(list_two, "my-report", []) == 0
-    lines = capsys.readouterr().out.splitlines()
+    out, err = capsys.readouterr()
+    assert err == "reading: run list\n"
+    lines = out.splitlines()
     assert lines[0].split() == ["#", "Started", "Duration", "Status", "Exit", "Code", "Id"]
     assert lines[1].split() == ["1", "2026-09-23", "10:00:12", "12s", "succeeded", "0",
                                 "stream-2"]
@@ -998,17 +1000,6 @@ def test_a_new_run_the_list_never_shows_ends_with_the_command_to_follow_it(monke
     out = capsys.readouterr().out
     assert "the run list does not show the new run yet" in out
     assert "pdt logs report --follow" in out
-
-
-def test_a_wait_names_what_it_waits_for_and_counts_its_seconds(monkeypatch):
-    out = io.StringIO()
-    monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))
-    with console.waiting("reading the run list") as wait:
-        wait.start -= 7
-        wait.now("reading the run list")
-        console._console.print("a line")
-    assert "reading the run list (7s)" in out.getvalue()
-    assert "a line" in out.getvalue()
 
 
 PLACE = runs_cli.LogPlace("Log group", "/pdt/my-report", "Stream",

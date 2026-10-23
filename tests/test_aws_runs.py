@@ -249,11 +249,13 @@ def test_without_follow_the_stream_reads_the_store_only():
 
 
 def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(
-        capsys, monkeypatch, tmp_path):
+        capsys, monkeypatch, tmp_path, waits):
     monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
+
     class Batch(FakeBatch):
         def describe_jobs(self, jobs):
             self.described = getattr(self, "described", []) + [jobs]
+            self.waits = list(waits)
             return {"jobs": [{"jobId": job_id, "container": {"logStreamName": f"s/{job_id}"}}
                              for job_id in jobs]}
 
@@ -267,3 +269,4 @@ def test_logs_list_names_the_log_group_once_and_each_stream_from_one_describe(
     assert lines[2].split()[:2] == ["1", "s/job-1"]
     assert lines[3].split()[:2] == ["2", "s/job-2"]
     assert batch.described == [["job-1", "job-2"]]
+    assert batch.waits == ["reading: run list"]

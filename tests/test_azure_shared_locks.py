@@ -116,7 +116,7 @@ def fake_destroy(monkeypatch, answers, locked_by):
         events.append(args)
         return ""
 
-    def delete(*args):
+    def delete(*args, **kwargs):
         events.append(args)
         return locked_by.get(args[:2], "")
 

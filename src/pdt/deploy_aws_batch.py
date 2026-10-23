@@ -653,6 +653,14 @@ def show_build_log(logs, where: dict, token: str | None) -> str | None:
 def follow_build(codebuild, logs, build_id: str) -> dict:
     """Wait for the build, printing its log as it arrives; return the finished build."""
     token = None
+    with console.wait_on(f"CodeBuild build {console.value(build_id)}", "",
+                         f"reading: CodeBuild build {console.value(build_id)}") as wait:
+        while True:
+            build = codebuild.batch_get_builds(ids=[build_id])["builds"][0]
+            if build.get("buildComplete") or (build.get("logs") or {}).get("streamName"):
+                break
+            wait.now(str(build.get("currentPhase") or "QUEUED").lower())
+            time.sleep(BUILD_POLL_SECONDS)
     while True:
         build = codebuild.batch_get_builds(ids=[build_id])["builds"][0]
         if build.get("buildComplete"):
@@ -739,8 +747,12 @@ def cost_estimate_for(logs, names: dict[str, str], region: str, cron: str,
                       local_currency: str) -> CostEstimate:
     try:
         runs = config.runs_per_month(cron)
-        seconds, basis = run_basis(
-            recent_stream_seconds(logs, names["log_group"]) if schedule_exists else None)
+        recent = None
+        if schedule_exists:
+            with console.waiting(f"reading: past runs in CloudWatch log group "
+                                 f"{console.value(names['log_group'])}"):
+                recent = recent_stream_seconds(logs, names["log_group"])
+        seconds, basis = run_basis(recent)
         seconds = max(seconds, FARGATE_MIN_SECONDS)
         vcpu = float(JOB_VCPU)
         gib = int(JOB_MEMORY) / 1024
@@ -808,30 +820,31 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
 
     console.status(f"Checking current state in account {console.value(account)} "
                    f"({console.value(region)})...")
-    store_present = store_exists(clients["s3"], bucket) if store else False
-    usage = (store.usage() if store_present else (0, 0)) if store else None
-    vpc_id, subnets = default_network(clients["ec2"])
-    group = find_security_group(clients["ec2"], vpc_id)
-    group_id = group["GroupId"] if group else None
-    # An environment made before pdt owned a group uses the VPC's default group.
-    environment_groups = environment_security_groups(
-        describe(clients["batch"], COMPUTE_ENVIRONMENT))
-    move_environment = bool(environment_groups) and environment_groups != [group_id]
-    schedule_exists = resource_exists(
-        clients["scheduler"], "get_schedule",
-        Name=names["schedule"], GroupName=SCHEDULE_GROUP)
-    secret_exists = resource_exists(
-        clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
-    uploads = build_bucket(account, region)
-    revisions = [item for item in active_job_definitions(clients["batch"], names["job_definition"])
-                 if managed(item)]
-    recorded = (revisions[0].get("tags") or {}) if revisions else {}
-    deployed = recorded.get(BUILD_TAG)
-    if cloud:
-        project = build_project(clients["codebuild"])
-        build_role_exists = resource_exists(clients["iam"], "get_role", RoleName=BUILD_ROLE)
-        uploads_present = store_exists(clients["s3"], uploads)
-        build_log_present = find_log_group(clients["logs"], BUILD_LOG_GROUP) is not None
+    with console.waiting("reading: resources"):
+        store_present = store_exists(clients["s3"], bucket) if store else False
+        usage = (store.usage() if store_present else (0, 0)) if store else None
+        vpc_id, subnets = default_network(clients["ec2"])
+        group = find_security_group(clients["ec2"], vpc_id)
+        group_id = group["GroupId"] if group else None
+        # An environment made before pdt owned a group uses the VPC's default group.
+        environment_groups = environment_security_groups(
+            describe(clients["batch"], COMPUTE_ENVIRONMENT))
+        move_environment = bool(environment_groups) and environment_groups != [group_id]
+        schedule_exists = resource_exists(
+            clients["scheduler"], "get_schedule",
+            Name=names["schedule"], GroupName=SCHEDULE_GROUP)
+        secret_exists = resource_exists(
+            clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
+        uploads = build_bucket(account, region)
+        revisions = [item for item in active_job_definitions(clients["batch"], names["job_definition"])
+                     if managed(item)]
+        recorded = (revisions[0].get("tags") or {}) if revisions else {}
+        deployed = recorded.get(BUILD_TAG)
+        if cloud:
+            project = build_project(clients["codebuild"])
+            build_role_exists = resource_exists(clients["iam"], "get_role", RoleName=BUILD_ROLE)
+            uploads_present = store_exists(clients["s3"], uploads)
+            build_log_present = find_log_group(clients["logs"], BUILD_LOG_GROUP) is not None
     actions = [
         console.Markup(f"reconcile shared ECR repository {console.value(REPOSITORY)}, Batch "
                        f"compute environment {console.value(COMPUTE_ENVIRONMENT.name)}, and job "
@@ -1010,73 +1023,74 @@ def destroy(app: dict, assume_yes: bool) -> int:
     names = resource_names(app["name"])
     batch, scheduler, iam = clients["batch"], clients["scheduler"], clients["iam"]
     plan: list[tuple[str, Callable]] = []
-    if resource_exists(scheduler, "get_schedule",
-                       Name=names["schedule"], GroupName=SCHEDULE_GROUP):
-        plan.append((console.Markup(f"delete EventBridge schedule "
-                                    f"{console.value(names['schedule'])}"),
-                     lambda: scheduler.delete_schedule(
-                         Name=names["schedule"], GroupName=SCHEDULE_GROUP)))
-    revisions = [revision for revision in active_job_definitions(batch, names["job_definition"])
-                 if managed(revision)]
-    if revisions:
-        plan.append((console.Markup(f"deregister {len(revisions)} tagged revision(s) of Batch "
-                                    f"job definition {console.value(names['job_definition'])}"),
-                     lambda: deregister_job_definitions(batch, revisions)))
-    if resource_exists(clients["secretsmanager"], "describe_secret", SecretId=names["secret"]):
-        plan.append((console.Markup(f"delete secret {console.value(names['secret'])}"),
-                     lambda: delete_secret(clients["secretsmanager"], names["secret"])))
-    plan += [
-        (console.Markup(f"delete tagged log group {console.value(names['log_group'])}"),
-         lambda: delete_log_group(clients["logs"], names["log_group"])),
-        ("delete tagged per-app IAM roles",
-         lambda: [delete_role(iam, role) for role in
-                  (names["scheduler_role"], names["job_role"], names["execution_role"])]),
-        (console.Markup(f"delete image tag {console.value(names['image_tag'])} from ECR "
-                        f"repository {console.value(REPOSITORY)}"),
-         lambda: note_if_gone(
-             f"image tag {console.value(names['image_tag'])} in ECR repository "
-             f"{console.value(REPOSITORY)}",
-             delete_if_present(clients["ecr"].batch_delete_image, repositoryName=REPOSITORY,
-                               imageIds=[{"imageTag": names["image_tag"]}]))),
-    ]
-    plan += legacy_fargate_cleanup(clients["ecs"], clients["logs"], iam, names)
-    if other_schedules(scheduler, names["schedule"]) == []:
-        plan.append((console.Markup(f"delete schedule group {console.value(SCHEDULE_GROUP)} "
-                                    "(no other apps use it)"),
-                     lambda: note_if_gone(f"schedule group {console.value(SCHEDULE_GROUP)}",
-                                          delete_schedule_group(scheduler))))
-    if not other_job_definitions(batch, names["job_definition"]):
-        for resource in shared_present(batch):
-            plan.append((console.Markup(f"delete Batch {resource.label} "
-                                        f"{console.value(resource.name)} (no other apps use it)"),
-                         lambda resource=resource: note_if_gone(
-                             f"Batch {resource.label} {console.value(resource.name)}",
-                             remove(batch, resource))))
-        vpc_id = default_vpc(clients["ec2"])
-        group = find_security_group(clients["ec2"], vpc_id) if vpc_id else None
-        if managed_group(group):
-            plan.append((console.Markup(f"delete security group {console.value(SECURITY_GROUP)} "
-                                        f"({console.value(group['GroupId'])}) "
+    with console.waiting("reading: resources"):
+        if resource_exists(scheduler, "get_schedule",
+                           Name=names["schedule"], GroupName=SCHEDULE_GROUP):
+            plan.append((console.Markup(f"delete EventBridge schedule "
+                                        f"{console.value(names['schedule'])}"),
+                         lambda: scheduler.delete_schedule(
+                             Name=names["schedule"], GroupName=SCHEDULE_GROUP)))
+        revisions = [revision for revision in active_job_definitions(batch, names["job_definition"])
+                     if managed(revision)]
+        if revisions:
+            plan.append((console.Markup(f"deregister {len(revisions)} tagged revision(s) of Batch "
+                                        f"job definition {console.value(names['job_definition'])}"),
+                         lambda: deregister_job_definitions(batch, revisions)))
+        if resource_exists(clients["secretsmanager"], "describe_secret", SecretId=names["secret"]):
+            plan.append((console.Markup(f"delete secret {console.value(names['secret'])}"),
+                         lambda: delete_secret(clients["secretsmanager"], names["secret"])))
+        plan += [
+            (console.Markup(f"delete tagged log group {console.value(names['log_group'])}"),
+             lambda: delete_log_group(clients["logs"], names["log_group"])),
+            ("delete tagged per-app IAM roles",
+             lambda: [delete_role(iam, role) for role in
+                      (names["scheduler_role"], names["job_role"], names["execution_role"])]),
+            (console.Markup(f"delete image tag {console.value(names['image_tag'])} from ECR "
+                            f"repository {console.value(REPOSITORY)}"),
+             lambda: note_if_gone(
+                 f"image tag {console.value(names['image_tag'])} in ECR repository "
+                 f"{console.value(REPOSITORY)}",
+                 delete_if_present(clients["ecr"].batch_delete_image, repositoryName=REPOSITORY,
+                                   imageIds=[{"imageTag": names["image_tag"]}]))),
+        ]
+        plan += legacy_fargate_cleanup(clients["ecs"], clients["logs"], iam, names)
+        if other_schedules(scheduler, names["schedule"]) == []:
+            plan.append((console.Markup(f"delete schedule group {console.value(SCHEDULE_GROUP)} "
                                         "(no other apps use it)"),
-                         lambda: note_if_gone(f"security group {console.value(SECURITY_GROUP)}",
-                                              delete_security_group(clients["ec2"], group["GroupId"]))))
-    repository_unused = repository_unused_after(clients["ecr"], names["image_tag"])
-    # With the repository already gone, an earlier destroy stopped before the build resources.
-    if repository_unused or not resource_exists(
-            clients["ecr"], "describe_repositories", repositoryNames=[REPOSITORY]):
-        plan += build_cleanup(clients, build_bucket(account, region))
-    if repository_unused:
-        plan.append((console.Markup(f"delete ECR repository {console.value(REPOSITORY)} "
-                                    "(no other apps use it)"),
-                     lambda: note_if_gone(f"ECR repository {console.value(REPOSITORY)}",
-                                          delete_if_present(
-                         clients["ecr"].delete_repository, repositoryName=REPOSITORY,
-                         force=True))))
-    bucket = store_name(account)
-    store = deployer_store(app, session, account) if app["storage"] else None
-    store_present = store_exists(clients["s3"], bucket) if store else False
-    if store_present:
-        warn_if_locked(store, app["name"])
+                         lambda: note_if_gone(f"schedule group {console.value(SCHEDULE_GROUP)}",
+                                              delete_schedule_group(scheduler))))
+        if not other_job_definitions(batch, names["job_definition"]):
+            for resource in shared_present(batch):
+                plan.append((console.Markup(f"delete Batch {resource.label} "
+                                            f"{console.value(resource.name)} (no other apps use it)"),
+                             lambda resource=resource: note_if_gone(
+                                 f"Batch {resource.label} {console.value(resource.name)}",
+                                 remove(batch, resource))))
+            vpc_id = default_vpc(clients["ec2"])
+            group = find_security_group(clients["ec2"], vpc_id) if vpc_id else None
+            if managed_group(group):
+                plan.append((console.Markup(f"delete security group {console.value(SECURITY_GROUP)} "
+                                            f"({console.value(group['GroupId'])}) "
+                                            "(no other apps use it)"),
+                             lambda: note_if_gone(f"security group {console.value(SECURITY_GROUP)}",
+                                                  delete_security_group(clients["ec2"], group["GroupId"]))))
+        repository_unused = repository_unused_after(clients["ecr"], names["image_tag"])
+        # With the repository already gone, an earlier destroy stopped before the build resources.
+        if repository_unused or not resource_exists(
+                clients["ecr"], "describe_repositories", repositoryNames=[REPOSITORY]):
+            plan += build_cleanup(clients, build_bucket(account, region))
+        if repository_unused:
+            plan.append((console.Markup(f"delete ECR repository {console.value(REPOSITORY)} "
+                                        "(no other apps use it)"),
+                         lambda: note_if_gone(f"ECR repository {console.value(REPOSITORY)}",
+                                              delete_if_present(
+                             clients["ecr"].delete_repository, repositoryName=REPOSITORY,
+                             force=True))))
+        bucket = store_name(account)
+        store = deployer_store(app, session, account) if app["storage"] else None
+        store_present = store_exists(clients["s3"], bucket) if store else False
+        if store_present:
+            warn_if_locked(store, app["name"])
     wait_for_permissions()
     if not confirm([line for line, _action in plan], assume_yes):
         console.warn("Aborted; nothing was changed.")
@@ -1263,12 +1277,14 @@ def start(app: dict, session, follow: bool = False) -> int:
     """Submit the job the schedule would submit, with the same input."""
     scheduler, batch = session.client("scheduler", config=RETRIES), session.client("batch", config=RETRIES)
     names = resource_names(app["name"])
-    target = current_schedule(scheduler, names["schedule"], app["name"])["Target"]
-    request = json.loads(target["Input"])
-    response = batch.submit_job(
-        jobName=request["JobName"], jobQueue=request["JobQueue"],
-        jobDefinition=request["JobDefinition"], tags=dict(MANAGED_TAGS),
-        containerOverrides={"environment": [{"name": lifecycle.TRIGGER_ENV, "value": "manual"}]})
+    with console.waiting(f"starting: Batch job {console.value(names['job_definition'])}"):
+        target = current_schedule(scheduler, names["schedule"], app["name"])["Target"]
+        request = json.loads(target["Input"])
+        response = batch.submit_job(
+            jobName=request["JobName"], jobQueue=request["JobQueue"],
+            jobDefinition=request["JobDefinition"], tags=dict(MANAGED_TAGS),
+            containerOverrides={"environment": [{"name": lifecycle.TRIGGER_ENV,
+                                                 "value": "manual"}]})
     console.done(f"Started {console.value(app['name'])}: Batch job "
                  f"{console.value(response['jobId'])}.")
     if not follow:

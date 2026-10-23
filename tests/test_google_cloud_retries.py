@@ -118,7 +118,7 @@ def test_the_waiting_message_names_the_api(monkeypatch, capsys):
     ])
 
     deploy_google_cloud.read_json_or_none("artifacts", "repositories", "describe", "pdt")
-    assert "Artifact Registry API is not ready yet" in capsys.readouterr().out
+    assert "Artifact Registry API is not ready yet" in capsys.readouterr().err
 
 
 def test_run_quiet_fails_after_every_wait_is_used(monkeypatch):
