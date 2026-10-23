@@ -160,8 +160,8 @@ def pins_for(names: list[str], root_platform: dict) -> dict[str, dict]:
             after = deploy.resolved(after_platform)
             pinned = deploy.resolved({**after_platform, "provider": recorded.get("provider")
                                       or after_platform.get("provider")})
-            # deploy_aws takes AWS_PROFILE, else the default profile, when the config sets no profile.
-            env_profile = (os.environ.get("AWS_PROFILE") or "default") if recorded.get("provider") == "aws" else None
+            # deploy_aws takes AWS_PROFILE when the config sets no profile.
+            env_profile = os.environ.get("AWS_PROFILE") if recorded.get("provider") == "aws" else None
         after["profile"] = after.get("profile") or env_profile
         pinned["profile"] = pinned.get("profile") or env_profile
         profile = recorded.get("profile") or before.get("profile") or env_profile
