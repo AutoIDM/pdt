@@ -186,7 +186,9 @@ def test_an_update_azure_never_shows_stops_with_what_differs(monkeypatch, capsys
     fake = FakeAzure(states=["Succeeded"] * azure.JOB_UPDATE_POLLS, resource=CURRENT)
     with pytest.raises(SystemExit):
         reconcile(monkeypatch, CURRENT, fake, cron="0 7 * * *")
-    assert "settings that differ: schedule" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "settings that differ: schedule" in out
+    assert ": updated" not in out
 
 
 def test_a_new_job_is_created_with_the_cli(monkeypatch):

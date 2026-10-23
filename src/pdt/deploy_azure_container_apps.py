@@ -428,10 +428,11 @@ def reconcile_job(settings: dict[str, str], job: str, image: str, cron: str,
                 return resource
             wait.now("updating")
             time.sleep(JOB_UPDATE_POLL_SECONDS)
-    differ = [key for key, value in normalized_job(resource).items() if value != desired[key]]
-    fail(f"Container Apps Job {console.value(job)} did not show the update after "
-         f"{console.value(JOB_UPDATE_POLLS * JOB_UPDATE_POLL_SECONDS)} seconds: provisioning state "
-         f"{console.value(state)}, settings that differ: {console.value(', '.join(differ))}")
+        differ = [key for key, value in normalized_job(resource).items() if value != desired[key]]
+        fail(f"Container Apps Job {console.value(job)} did not show the update after "
+             f"{console.value(JOB_UPDATE_POLLS * JOB_UPDATE_POLL_SECONDS)} seconds: provisioning "
+             f"state {console.value(state)}, settings that differ: "
+             f"{console.value(', '.join(differ))}")
 
 
 def job_principal_id(job: str, rg: str) -> str:
