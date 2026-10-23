@@ -26,6 +26,7 @@ own sha256 below.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import platform
 import shutil
@@ -97,9 +98,11 @@ def ensure_gcloud() -> str:
                 return str(gcloud)
         raise GcloudError("the Google Cloud CLI is not installed, and a plan installs nothing; "
                           "run the deploy without --plan to install it")
-    if LOCAL_GCLOUD.is_file() and SDK_VERSION.is_file() and SDK_VERSION.read_text().strip() == VERSION:
-        set_sdk_python()
-        return str(LOCAL_GCLOUD)
+    # Another process can move the install away between the check and the read.
+    with contextlib.suppress(FileNotFoundError):
+        if LOCAL_GCLOUD.is_file() and SDK_VERSION.read_text().strip() == VERSION:
+            set_sdk_python()
+            return str(LOCAL_GCLOUD)
     SDK_DIR.parent.mkdir(parents=True, exist_ok=True)
     with locked(SDK_DIR):
         if previous.is_dir() and not SDK_DIR.exists():

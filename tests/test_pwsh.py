@@ -175,6 +175,23 @@ def test_an_update_that_another_process_finished_downloads_nothing(monkeypatch, 
     assert pwsh.ensure_pwsh() == str(pwsh.local_pwsh())
 
 
+def test_an_install_moved_away_during_the_first_read_is_checked_again_under_the_lock(monkeypatch, tmp_path):
+    local_copy(monkeypatch, tmp_path, pwsh.VERSION)
+    read_text = Path.read_text
+    moves = []
+
+    def moved_by_another_process(self, *args, **kwargs):
+        if self.name == "VERSION" and not moves:
+            moves.append(self)
+            (tmp_path / "pwsh").rename(tmp_path / "pwsh.previous")
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", moved_by_another_process)
+    monkeypatch.setattr(pwsh, "download_pwsh", lambda key: pytest.fail("downloaded"))
+    assert pwsh.ensure_pwsh() == str(pwsh.local_pwsh())
+    assert moves and (tmp_path / "pwsh" / "VERSION").is_file()
+
+
 def test_main_prints_only_the_pwsh_path_on_stdout(tmp_path):
     env = {**os.environ, "PATH": str(tmp_path), "XDG_DATA_HOME": str(tmp_path),
            "ProgramData": str(tmp_path), "HTTPS_PROXY": "http://127.0.0.1:9",

@@ -91,8 +91,10 @@ def ensure_pwsh() -> str:
         raise PwshError("pwsh is not installed, and a plan installs nothing; run the deploy "
                         "without --plan to install it")
     version_file = install_dir() / "VERSION"
-    if local_pwsh().is_file() and version_file.is_file() and version_file.read_text().strip() == VERSION:
-        return str(local_pwsh())
+    # Another process can move the install away between the check and the read.
+    with contextlib.suppress(FileNotFoundError):
+        if local_pwsh().is_file() and version_file.read_text().strip() == VERSION:
+            return str(local_pwsh())
     install_dir().parent.mkdir(parents=True, exist_ok=True)
     with locked(install_dir()):
         if previous.is_dir() and not install_dir().exists():

@@ -166,3 +166,20 @@ def test_an_update_that_another_process_finished_downloads_nothing(monkeypatch, 
     monkeypatch.setattr(gcloud_sdk, "locked", other_process_updated)
     monkeypatch.setattr(gcloud_sdk, "download_sdk", lambda key: pytest.fail("downloaded"))
     assert gcloud_sdk.ensure_gcloud() == str(gcloud_sdk.LOCAL_GCLOUD)
+
+
+def test_an_install_moved_away_during_the_first_read_is_checked_again_under_the_lock(monkeypatch, tmp_path):
+    local_copy(monkeypatch, tmp_path, gcloud_sdk.VERSION)
+    read_text = Path.read_text
+    moves = []
+
+    def moved_by_another_process(self, *args, **kwargs):
+        if self.name == "VERSION" and not moves:
+            moves.append(self)
+            (tmp_path / "gcloud").rename(tmp_path / "gcloud.previous")
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", moved_by_another_process)
+    monkeypatch.setattr(gcloud_sdk, "download_sdk", lambda key: pytest.fail("downloaded"))
+    assert gcloud_sdk.ensure_gcloud() == str(gcloud_sdk.LOCAL_GCLOUD)
+    assert moves and gcloud_sdk.SDK_VERSION.is_file()
