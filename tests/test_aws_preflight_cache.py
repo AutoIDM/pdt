@@ -84,7 +84,7 @@ def test_access_denied_during_a_deploy_drops_the_cached_pass(project, monkeypatc
     check(CountingIam())
     assert config.read_state()[PREFLIGHT_PASSES]
 
-    def denied(app, assume_yes):
+    def denied(app, assume_yes, plan_only):
         raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "CreateRole")
 
     class NoLogin:

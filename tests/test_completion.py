@@ -168,7 +168,7 @@ def test_typed_dash_offers_options(project, tmp_path):
     add_app(project, "daily-report")
 
     assert _complete("pdt deploy -", tmp_path) == ["-h", "--help", "-y", "--yes", "--all", "--skip-failures", "--run",
-                                                   "--rebuild"]
+                                                   "--rebuild", "--plan"]
     assert _complete("pdt destroy -", tmp_path) == ["-h", "--help", "-y", "--yes", "--all", "--skip-failures"]
 
 

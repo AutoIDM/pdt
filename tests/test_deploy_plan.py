@@ -1,6 +1,7 @@
 """`pdt deploy APP --plan` prints the plan and the cost estimate, then changes nothing."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,8 @@ from pdt import cli, config, deploy, deploy_google_cloud, regions
 @pytest.fixture
 def plan_env(monkeypatch):
     monkeypatch.delenv(config.PLAN_ENV, raising=False)
+    yield
+    os.environ.pop(config.PLAN_ENV, None)
 
 
 @pytest.fixture

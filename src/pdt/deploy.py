@@ -215,15 +215,14 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
                 break
             except ConfigError as e:
                 console.error(console.escape(str(e)))
-    saved = console.value(config.save_app_key(app, "schedule", schedule)
-                          .relative_to(config.find_project()))
+    saved = config.save_app_key(app, "schedule", schedule).relative_to(config.find_project())
     app["schedule"] = schedule
     if config.unsaved() is None:
         console.done(f"Saved schedule {console.value(schedule)} ({console.escape(words)}) to "
-                     f"{saved}.")
+                     f"{console.value(saved)}.")
     else:
-        console.note(f"Using schedule {console.value(schedule)}. A deploy saves it to {saved}; "
-                     "this plan changes no file.")
+        console.note(f"Using schedule {console.value(schedule)}. A deploy saves it to "
+                     f"{console.value(saved)}; this plan changes no file.")
     return ""
 
 

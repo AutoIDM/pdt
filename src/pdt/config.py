@@ -366,10 +366,10 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
         path = project_file
     else:
         path = app["dir"] / APP_FILE
-    shown = console.value(path.relative_to(find_project()))
+    shown = path.relative_to(find_project())
     if keep_unsaved(key, value, platform=True):
-        console.note(f"Using {key} {console.value(value)}. A deploy saves it to {shown}; "
-                     "this plan changes no file.")
+        console.note(f"Using {console.escape(key)} {console.value(value)}. A deploy saves it to "
+                     f"{console.value(shown)}; this plan changes no file.")
         return path
     with locked(path):
         lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
@@ -390,7 +390,7 @@ def save_platform_key(app: dict, key: str, value: str) -> Path:
                 indent = _indent(lines[first]) if first is not None else "  "
                 lines.insert((first if first is not None else start) + 1, f"{indent}{key}: {yaml_quoted(value)}")
         write_text_atomically(path, "\n".join(lines) + "\n")
-    console.done(f"Saved {key} {console.value(value)} to {shown}.")
+    console.done(f"Saved {console.escape(key)} {console.value(value)} to {console.value(shown)}.")
     return path
 
 
