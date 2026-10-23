@@ -419,7 +419,7 @@ def test_move_all_destroys_each_app_then_saves_pdt_yml(project, monkeypatch, cap
     assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"]["provider"] == "aws"
     assert not (project / "alpha" / APP_FILE).exists()
     assert "1  alpha  azure, region eastus2, subscription sub-1, resource group pdt" in out
-    assert "What should happen to the apps deployed on azure, region eastus2, subscription sub-1, resource group pdt?" in out
+    assert "What should happen to the apps currently deployed to azure, region eastus2, subscription sub-1, resource group pdt?" in out
     assert "3) Keep them on azure, region eastus2, subscription sub-1, resource group pdt (only new apps go to aws, region us-east-2)" in out
     for name in ("alpha", "beta", "gamma"):
         assert f"pdt deploy {name}" in out
@@ -470,7 +470,7 @@ def test_keep_pins_the_region_an_environment_variable_selects(project, monkeypat
     answer(monkeypatch, ["2", "us-east-2", "UTC", "3"])
     assert scaffold.init(None, assume_yes=False) == 0
     assert platform_of(project, "alpha") == AZURE_PIN
-    assert "deployed on azure, region eastus2, subscription sub-1, resource group pdt?" in capsys.readouterr().out
+    assert "deployed to azure, region eastus2, subscription sub-1, resource group pdt?" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("replies,confirms", [
@@ -498,7 +498,7 @@ def test_a_failed_destroy_pins_each_app_still_deployed(project, monkeypatch, cap
     assert platform_of(project, "beta") == AZURE_PIN
     assert platform_of(project, "gamma") == AZURE_PIN
     assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"]["provider"] == "aws"
-    assert "beta was not removed. It is still deployed on azure, region eastus2, subscription sub-1, resource group pdt." in out
+    assert "beta was not removed. It is still deployed to azure, region eastus2, subscription sub-1, resource group pdt." in out
     assert "pdt deploy alpha" in out
     assert "pdt deploy gamma" not in out
 
@@ -528,7 +528,7 @@ def test_a_region_change_asks_too(project, monkeypatch, capsys):
     deployed_app(project, "report")
     answer(monkeypatch, ["1", "westeurope", "4"])
     assert scaffold.init(None, assume_yes=False) == 0
-    assert "apps deployed on azure, region eastus2, resource group pdt?" in capsys.readouterr().out
+    assert "apps currently deployed to azure, region eastus2, resource group pdt?" in capsys.readouterr().out
 
 
 def test_an_app_with_its_own_provider_is_listed_without_a_number(project, monkeypatch, capsys):
@@ -676,7 +676,7 @@ def test_a_subscription_change_with_the_same_region_asks_too(project, monkeypatc
         "platform:\n  provider: azure\n  region: eastus2\n  subscription: sub-2\n")
     answer(monkeypatch, ["1", "eastus2", "4"])
     assert scaffold.init(None, assume_yes=False) == 0
-    assert "What should happen to the apps deployed on" in capsys.readouterr().out
+    assert "What should happen to the apps currently deployed to" in capsys.readouterr().out
 
 
 def test_keep_pins_the_recorded_place_after_an_edit_to_pdt_yml(project, monkeypatch, capsys):

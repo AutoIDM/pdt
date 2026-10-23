@@ -447,7 +447,7 @@ def change_provider(target: Path) -> int:
     moving = []
     if movable:
         here = deploy.describe_place(config.place(deploy.resolved(current)))
-        choice = _ask_choice(f"What should happen to the apps deployed on {console.escape(here)}?",
+        choice = _ask_choice(f"What should happen to the apps currently deployed to {console.escape(here)}?",
                              ["Move all", "Move some",
                               f"Keep them on {here} (only new apps go to {there})", "Cancel"], 4)
         if choice == 1:
@@ -461,8 +461,8 @@ def change_provider(target: Path) -> int:
         console.say()
         console.say(f"pdt init runs {console.value('pdt destroy')} for "
                     f"{', '.join(console.value(name) for name in moving)}, "
-                    f"then saves {console.value(PROJECT_FILE)}.")
-        console.say(f"{console.value('pdt destroy')} keeps each app's stored data.")
+                    f"then updates {console.value(PROJECT_FILE)} to deploy to {console.value(there)}.")
+        console.say("Stored data will not be deleted.")
         try:
             answer = console.confirm("Remove them?", choices="[y = remove and continue, N = cancel]")
         except EOFError:
@@ -475,7 +475,7 @@ def change_provider(target: Path) -> int:
         console.say()
         if deploy.destroy(name, assume_yes=True) != 0:
             console.error(f"{console.value(name)} was not removed. "
-                          f"It is still deployed on {console.value(where[name])}.")
+                          f"It is still deployed to {console.value(where[name])}.")
             break
         removed.append(name)
     console.say()
