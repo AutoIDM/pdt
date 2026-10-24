@@ -91,8 +91,8 @@ from pdt.utils.env_secret import private_file
 
 # The multi-platform index digest, so a local and a cloud build start from the same layers.
 # To bump it, read the digest of the tag's index from ghcr.io.
-BASE_IMAGE = ("ghcr.io/astral-sh/uv:python3.12-bookworm-slim"
-              "@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58")
+BASE_IMAGE = ("ghcr.io/astral-sh/uv:python3.12-trixie-slim"
+              "@sha256:9b8477a5f2e2f96fa99eaecb7680c1c4c9f527926430f3b630bfb2c3641f8f20")
 # sh as PID 1 ignores SIGTERM, so the entrypoint passes a platform's stop on to
 # lifecycle.py, which ends the run with job:run-failed, and the log still ends
 # with `pdt: exit N`.
@@ -101,7 +101,9 @@ ENTRYPOINT = ('ENTRYPOINT ["sh", "-c", "stop() {{ kill -s $1 $pid; wait $pid; fi
               'trap \\"stop TERM\\" TERM; trap \\"stop INT\\" INT; '
               'uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- {start} & pid=$!; '
               'wait $pid; finish $?"]\n')
-DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
+# The base image's pip 25.0.1 has CVE-2026-13346. Drop the pip line when the digest holds pip 26.2.
+FROM_BASE = f"FROM {BASE_IMAGE}\nRUN uv pip install --system --no-cache pip==26.2.2\n"
+DOCKERFILE = FROM_BASE + """\
 COPY .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 WORKDIR /workspace/{app}
@@ -110,8 +112,8 @@ COPY .pdt-script .
 RUN uv sync --script run.py
 COPY . /workspace
 """ + ENTRYPOINT.replace("{start}", "uv run --script run.py")
-POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu72 libssl3 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
+POWERSHELL_DOCKERFILE = FROM_BASE + """\
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu76 libssl3t64 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFFERED=1
 RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
 RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh && echo '{{"LogLevel":"Critical"}}' > "$(dirname "$pwsh")/powershell.config.json"

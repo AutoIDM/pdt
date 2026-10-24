@@ -65,7 +65,8 @@ Every cloud provider runs a job as a container (see [Primitives](primitives.md#p
 Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
 
 ```dockerfile
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim@sha256:e5b65587bce7de595f299855d7385fe7fca39b8a74baa261ba1b7147afa78e58
+FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim@sha256:9b8477a5f2e2f96fa99eaecb7680c1c4c9f527926430f3b630bfb2c3641f8f20
+RUN uv pip install --system --no-cache pip==26.2.2
 COPY . /workspace
 WORKDIR /workspace/my-app
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
