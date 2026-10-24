@@ -39,7 +39,7 @@ ALLOWED = {
                             "len(revisions)", "state", "shown", "wait.name"},
     "deploy_azure.py": {"reason", "wait", "label", "state", "waited", "STORE_UNREADABLE"},
     "deploy_azure_container_apps.py": {"timestamp", "shared", "self.label", "lock.label",
-                                       "release.note"},
+                                       "release.note", "step"},
     "deploy_google_cloud.py": {"wait", "label", "secret_state", "resource"},
     "deploy_windows.py": {"verb", "names"},
     "duckdb_wasm.py": {"size_text(size)"},
