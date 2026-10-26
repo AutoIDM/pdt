@@ -29,7 +29,7 @@ To add an app to the project:
 
 - `pdt examples` lists the example apps. `pdt new APP --from EXAMPLE` copies one into the folder `APP`.
 - For a Python script, run `pdt new APP`. pdt runs `APP/run.py`, so put the user's code in its `main` function, or copy the user's `.py` files into `APP` and call them from `main`. Add each package that the code imports to the `dependencies` list at the top of `run.py`.
-- For PowerShell scripts, run `pdt new APP --from powershell-hello-world`. Delete `APP/hello.ps1` and copy the user's `.ps1` files into `APP`. Do not add a `run.py`, because a folder of `.ps1` files is a PowerShell app only when it has no `run.py`.
+- For PowerShell scripts, run `pdt new APP --from powershell-hello-world`. Delete `APP/hello.ps1` and copy the user's `.ps1` files into `APP`. Do not add a `run.py`. With a `run.py` and no `requirements.psd1`, pdt runs the folder as a Python app.
 
 ## 3. Check and run the app on this computer
 
