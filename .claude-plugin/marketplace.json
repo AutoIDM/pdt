@@ -1,6 +1,6 @@
 {
-  "name": "pdt",
-  "description": "The pdt agent plugin: run a working script on a schedule in your own cloud.",
+  "name": "autoidm",
+  "description": "Plugins from AutoIDM. pdt turns any script into a scheduled job in your cloud.",
   "owner": {
     "name": "AutoIDM",
     "url": "https://github.com/AutoIDM"
@@ -9,7 +9,7 @@
     {
       "name": "pdt",
       "source": "./plugins/pdt",
-      "description": "Run a Python or PowerShell script that works on your computer on a schedule in AWS, Azure, Google Cloud, or Windows Task Scheduler, with the pdt command-line tool.",
+      "description": "Turn any script into a scheduled job in your cloud. pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Windows Task Scheduler. No servers to run and nothing extra to install, and everything it makes lives in your own account.",
       "category": "productivity"
     }
   ]
