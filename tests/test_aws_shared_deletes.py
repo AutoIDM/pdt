@@ -205,3 +205,14 @@ def test_a_schedule_group_a_sibling_destroy_already_removed_counts_as_deleted(de
 def test_any_other_shared_delete_error_still_raises(destroy, raises):
     with pytest.raises(ClientError):
         destroy(fake_clients(**raises))
+
+
+def test_a_destroy_plan_shows_the_shared_deletes_and_deletes_nothing(destroy, monkeypatch, capsys):
+    monkeypatch.setattr(batch_deploy, "confirm", lambda *args: pytest.fail("asked to proceed"))
+    clients = fake_clients()
+    monkeypatch.setattr(batch_deploy, "batch_clients", lambda session: clients)
+    assert batch_deploy.destroy({"name": "my-app", "storage": False}, True, plan_only=True) == 0
+    assert all(item is not None for item in clients["batch"].items.values())
+    assert clients["ec2"].group is not None
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Plan:" in out and "delete security group pdt (sg-pdt) (no other apps use it)" in out

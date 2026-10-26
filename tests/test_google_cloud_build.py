@@ -367,3 +367,13 @@ def test_destroy_keeps_a_bucket_pdt_does_not_manage(project, monkeypatch):
     fake.found[("storage", "buckets", "describe", f"gs://{BUILDS}")] = {"labels": {}}
     google.destroy(destroy_app(project, monkeypatch, fake), True)
     assert fake.ran("storage", "rm") == []
+
+
+def test_a_destroy_plan_shows_the_deletes_and_deletes_nothing(project, monkeypatch, capsys):
+    fake = destroy_fake()
+    app = destroy_app(project, monkeypatch, fake)
+    monkeypatch.setattr(google, "confirm", lambda *args: pytest.fail("asked to proceed"))
+    assert google.destroy(app, True, plan_only=True) == 0
+    assert [call for call in fake.calls if "delete" in call or "rm" in call] == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Plan:" in out and f"delete service account {BUILDER} (no other apps use it)" in out

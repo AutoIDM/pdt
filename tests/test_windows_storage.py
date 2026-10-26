@@ -143,3 +143,12 @@ def test_destroy_without_storage_neither_warns_nor_keeps(project, monkeypatch, c
     out = capsys.readouterr().out
     assert "kept:" not in out
     assert "keep folder" not in out
+
+
+def test_a_destroy_plan_shows_the_task_and_deletes_nothing(project, monkeypatch, capsys):
+    scripts = []
+    app = destroy_with_task(project, monkeypatch, scripts)
+    monkeypatch.setattr(deploy_windows, "confirm", lambda *args: pytest.fail("asked to proceed"))
+    assert deploy_windows.destroy(app, True, plan_only=True) == 0
+    assert scripts == []
+    assert "delete Windows scheduled task pdt-my-report" in capsys.readouterr().out

@@ -1013,7 +1013,7 @@ def note_if_gone(label: str, deleted: bool) -> None:
         console.note(f"{label} was already gone")
 
 
-def destroy(app: dict, assume_yes: bool) -> int:
+def destroy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     console.status("Checking your AWS sign-in...")
     session = ensure_session(app)
     expected_account, region = aws_settings(app, session)
@@ -1092,6 +1092,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if store_present:
             warn_if_locked(store, app["name"])
     wait_for_permissions()
+    if plan_only:
+        return show_plan([line for line, _action in plan])
     if not confirm([line for line, _action in plan], assume_yes):
         console.warn("Aborted; nothing was changed.")
         return DECLINED

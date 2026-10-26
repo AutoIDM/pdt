@@ -213,3 +213,18 @@ def test_deploy_disables_old_secret_versions_only_after_it_writes_the_secret(
     monkeypatch.setattr(module, "disable_old_secret_versions", lambda settings, sid: seen.append(sid))
     assert module.deploy(APP, True) == 0
     assert seen == disabled
+
+
+@pytest.mark.parametrize("last_app", [True, False])
+def test_a_destroy_plan_shows_the_deletes_and_deletes_nothing(monkeypatch, capsys, last_app):
+    events, _plans = fake_destroy(monkeypatch, LAST_APP, {})
+    monkeypatch.setattr(deploy_azure_container_apps, "group_can_be_deleted",
+                        lambda settings, others: last_app)
+    monkeypatch.setattr(deploy_azure_container_apps, "has_image", lambda settings, name: True)
+    monkeypatch.setattr(deploy_azure_container_apps, "confirm",
+                        lambda *args: pytest.fail("asked to proceed"))
+    assert deploy_azure_container_apps.destroy(APP, True, plan_only=True) == 0
+    assert events == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Plan:" in out and "remove lock pdt-report from ACR pdtregistry" in out
+    assert ("delete resource group pdt" in out) == last_app

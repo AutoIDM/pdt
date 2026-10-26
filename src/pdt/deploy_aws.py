@@ -1308,7 +1308,7 @@ def main() -> int:
             return batch.pause(app, ensure_session(app), args.command == "pause")
         if args.command == "start":
             return batch.start(app, ensure_session(app), "--follow" in args.rest)
-        return batch.destroy(app, args.yes)
+        return batch.destroy(app, args.yes, args.plan)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",
                                "UnauthorizedOperation"}:

@@ -1351,7 +1351,7 @@ def kept_line(store: dict[str, str], deployer, name: str) -> console.Markup:
     return store_kept_line(store_description(store), usage[0], name)
 
 
-def destroy(app: dict, assume_yes: bool) -> int:
+def destroy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     name = app["name"]
@@ -1406,6 +1406,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if not actions:
             console.done(f"Nothing owned by {console.value(name)} to remove.")
             return 0
+        if plan_only:
+            return show_plan(actions)
         if not confirm(actions, assume_yes):
             console.warn("Aborted; nothing was changed.")
             return DECLINED
@@ -1443,6 +1445,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.done(f"Nothing owned by {console.value(name)} to remove in resource group "
                      f"{console.value(rg)}.")
         return 0
+    if plan_only:
+        return show_plan(actions)
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return DECLINED

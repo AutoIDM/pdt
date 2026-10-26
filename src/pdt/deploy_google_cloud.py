@@ -1071,7 +1071,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     return 0
 
 
-def destroy(app: dict, assume_yes: bool) -> int:
+def destroy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     name = app["name"]
     project, region = project_region(app)
     console.status("Checking your Google Cloud sign-in...")
@@ -1224,6 +1224,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         return 0
     if revoke_grant:
         warn_if_locked(store, name)
+    if plan_only:
+        return show_plan(actions)
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
@@ -1522,7 +1524,7 @@ def main() -> int:
         return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
         return deploy(app, args.yes, args.plan)
-    return destroy(app, args.yes)
+    return destroy(app, args.yes, args.plan)
 
 
 if __name__ == "__main__":

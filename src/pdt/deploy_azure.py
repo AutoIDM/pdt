@@ -1228,7 +1228,7 @@ def run_command(app: dict, args: argparse.Namespace) -> int:
         return module.secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
         return module.deploy(app, args.yes, args.plan)
-    return module.destroy(app, args.yes)
+    return module.destroy(app, args.yes, args.plan)
 
 
 if __name__ == "__main__":

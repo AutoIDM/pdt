@@ -88,7 +88,8 @@ def test_plan_deploys_one_app_and_takes_no_deploy_flag(aws_project, monkeypatch,
 def test_every_provider_script_takes_plan(script):
     source = (Path(deploy.__file__).with_name(script)).read_text()
     assert 'parser.add_argument("--plan", action="store_true")' in source
-    assert "args.yes, args.plan)" in source
+    assert "deploy(app, args.yes, args.plan)" in source
+    assert "destroy(app, args.yes, args.plan)" in source
 
 
 def test_a_google_cloud_plan_shows_the_plan_and_changes_nothing(project, monkeypatch, capsys):
@@ -236,3 +237,33 @@ def test_a_plan_uses_a_local_powershell_and_google_cloud_cli_of_another_version(
         assert pwsh.ensure_pwsh() == str(local_pwsh)
         assert gcloud_sdk.ensure_gcloud() == str(local_gcloud)
     assert sorted(tmp_path.rglob("*")) == before
+
+
+def test_a_destroy_plan_starts_the_provider_with_plan_where_the_app_is_recorded(
+        aws_project, monkeypatch, capsys):
+    add_app(aws_project, "report", "schedule: daily\n")
+    recorded = {"provider": "aws", "region": "us-east-1"}
+    config.mark_deployed("report", recorded)
+    seen = []
+    monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: seen.append(
+        (args, kwargs, config.unsaved())) or 0)
+    monkeypatch.setattr(deploy, "provider_step", lambda *args, **kwargs: pytest.fail("destroyed"))
+
+    assert deploy.destroy("report", plan_only=True) == 0
+
+    assert seen == [(("aws", "destroy", "report", True, ["--plan"]), {"platform": recorded}, {})]
+    assert config.deployed_platform("report") == recorded
+    assert config.unsaved() is None
+    out = capsys.readouterr().out
+    assert "nothing was deleted" in out and "pdt destroy report --yes" in out
+
+
+@pytest.mark.parametrize("flags", [["--all"], ["--yes"]])
+def test_a_destroy_plan_shows_one_app_and_takes_no_destroy_flag(aws_project, monkeypatch, capsys,
+                                                                flags):
+    add_app(aws_project, "report", "schedule: daily\n")
+    monkeypatch.setattr(deploy, "destroy", lambda *args, **kwargs: pytest.fail("destroyed"))
+    app = [] if flags == ["--all"] else ["report"]
+    monkeypatch.setattr("sys.argv", ["pdt", "destroy", *app, "--plan", *flags])
+    assert cli.main() == 1
+    assert "--plan shows what one app's destroy deletes" in capsys.readouterr().out

@@ -3,7 +3,7 @@
 Validates the app, then dispatches to one script per provider
 (pdt/deploy_<provider>.py) with `uv run --script`, so each provider
 installs its own SDK packages. Every provider script accepts
-`deploy|destroy|login <app> [--yes]` (`deploy` also takes `--plan`), and also
+`deploy|destroy|login <app> [--yes]` (`deploy` and `destroy` also take `--plan`), and also
 `pause|unpause|start <app>`,
 `storage <app> -- <ls|get|query|unlock|destroy> [args...]` and
 `runs|logs <app> -- [args...]`. The `--` keeps flags such as `--json` for
@@ -585,7 +585,18 @@ def health(app_names: list[str], as_json: bool) -> int:
     return runs_cli.health(app_runs, as_json)
 
 
-def destroy(app_name: str, assume_yes: bool = False) -> int:
+def destroy(app_name: str, assume_yes: bool = False, plan_only: bool = False) -> int:
+    """Destroy one app where `.pdt/state` records it, else where its config selects.
+
+    `plan_only` prints what the destroy deletes, asks no question, deletes nothing, and keeps
+    the `.pdt/state` record (`config.plan_only`)."""
+    if not plan_only:
+        return _destroy(app_name, assume_yes, False)
+    with config.plan_only():
+        return _destroy(app_name, True, True)
+
+
+def _destroy(app_name: str, assume_yes: bool, plan_only: bool) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
@@ -593,13 +604,20 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
         return 1
     config.load_env(app["dir"])
     recorded = config.deployed_platform(app_name)
-    if recorded is None:
-        return provider_step("destroy", provider, app_name, assume_yes)
-    if moved(recorded, app["platform"]):
-        say_places(app, recorded)
-        console.say(f"pdt destroys it where it is deployed: "
-                    f"{console.value(describe_place(config.place(recorded)))}.")
-    return provider_step("destroy", recorded["provider"], app_name, assume_yes, platform=recorded)
+    if recorded is not None:
+        provider = recorded["provider"]
+        if moved(recorded, app["platform"]):
+            say_places(app, recorded)
+            console.say(f"pdt destroys it where it is deployed: "
+                        f"{console.value(describe_place(config.place(recorded)))}.")
+    if plan_only:
+        code = dispatch(provider, "destroy", app_name, True, ["--plan"], platform=recorded)
+        if code == 0:
+            console.say()
+            console.done("Plan only; nothing was deleted. To delete these resources, run:")
+            console.command(f"pdt destroy {app_name} --yes")
+        return code
+    return provider_step("destroy", provider, app_name, assume_yes, platform=recorded)
 
 
 # The exit code of a provider script whose plan the user declined, so provider_step can

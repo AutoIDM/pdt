@@ -397,6 +397,10 @@ def cmd_destroy(args) -> int:
     if args.skip_failures and not args.all:
         console.error("--skip-failures only works with --all")
         return 1
+    if args.plan and (args.all or args.yes):
+        console.error("--plan shows what one app's destroy deletes and deletes nothing; "
+                      "leave out --all and --yes")
+        return 1
     if args.all:
         if args.app is not None:
             console.error("pick an app or --all, not both")
@@ -405,7 +409,7 @@ def cmd_destroy(args) -> int:
     name = choose_app(args.app, "destroy")
     if name is None:
         return 1
-    return deploy.destroy(name, assume_yes=args.yes)
+    return deploy.destroy(name, assume_yes=args.yes, plan_only=args.plan)
 
 
 def use_app_folder(args) -> None:
@@ -677,6 +681,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "destroyed")
     p.add_argument("--skip-failures", action="store_true",
                    help="with --all, go on past an app that fails to destroy instead of asking")
+    p.add_argument("--plan", action="store_true",
+                   help="show what destroy deletes, then stop; deletes nothing")
     p.set_defaults(func=cmd_destroy)
     p = add_parser("pause", help="stop an app's schedule from starting runs")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
