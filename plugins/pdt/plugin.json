@@ -13,10 +13,11 @@
   "keywords": ["schedule", "cron", "scheduled-job", "deploy", "aws", "azure", "google-cloud", "task-scheduler", "powershell", "python"],
   "extensions": {
     "com.openai": {
+      "requires_local_executor": true,
       "interface": {
         "displayName": "pdt",
-        "shortDescription": "Run a working script on a schedule in your own cloud",
-        "longDescription": "Checks, runs, and deploys a Python or PowerShell script as a scheduled job on AWS, Azure, Google Cloud, or Windows Task Scheduler with the pdt command-line tool. Shows the plan and a monthly cost estimate before it changes anything.",
+        "shortDescription": "Schedule scripts in your cloud",
+        "longDescription": "Checks, runs, and deploys a Python or PowerShell script as a scheduled job on AWS, Azure, Google Cloud, or Windows Task Scheduler with the pdt command-line tool. Shows the plan and a monthly cost estimate before it deploys.",
         "developerName": "AutoIDM",
         "category": "Productivity",
         "websiteURL": "https://github.com/AutoIDM/pdt",

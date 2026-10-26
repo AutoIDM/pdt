@@ -4,7 +4,7 @@ This plugin gives an AI coding agent one skill, `pdt`. The skill tells the agent
 
 The agent runs the `pdt` command-line tool in its shell. It checks and runs the script on your computer first. Then it shows you the deploy plan and the monthly cost estimate from `pdt deploy APP --plan`, and it deploys only after you agree. Sign-ins to your cloud account stay in your own terminal and browser.
 
-The plugin holds no server and no code. The skill is one file, `skills/pdt/SKILL.md`. The other files are the manifests, this README, the license, and the icon.
+The plugin holds no server and no code.
 
 ## Install
 
