@@ -20,7 +20,9 @@
         "developerName": "AutoIDM",
         "category": "Productivity",
         "websiteURL": "https://github.com/AutoIDM/pdt",
-        "defaultPrompt": "Run this script every morning in my cloud account."
+        "defaultPrompt": "Run this script every morning in my cloud account.",
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/icon.png"
       }
     }
   }

@@ -1,6 +1,6 @@
 ---
 name: pdt
-description: Use when the user has a Python or PowerShell script that works on their own computer and wants it to run on a schedule or "in production", for example "run this script every morning", "schedule this in Azure", or "put this in production" on AWS, Azure, Google Cloud, or Windows Task Scheduler. Also use in any folder that holds a pdt.yml file. The pdt command-line tool checks, runs, and deploys the script as a scheduled job in the user's own cloud account or on their Windows PC, and shows the plan and a monthly cost estimate before it changes anything. Do not use for web apps, APIs, websites, long-running services, or jobs that already deploy through a CI/CD pipeline.
+description: Use when the user has a Python or PowerShell script that works on their own computer and wants it to run on a schedule or "in production", for example "run this script every morning", "schedule this in Azure", or "put this in production" on AWS, Azure, Google Cloud, or Windows Task Scheduler. Also use when the user asks to check, run, deploy, or remove an app in a pdt project (a folder that holds a pdt.yml file). The pdt command-line tool checks, runs, and deploys the script as a scheduled job in the user's own cloud account or on their Windows PC, and shows the plan and a monthly cost estimate before it changes anything. Do not use for web apps, APIs, websites, long-running services, or jobs that already deploy through a CI/CD pipeline.
 ---
 
 # Run a script on a schedule with pdt
@@ -10,8 +10,9 @@ pdt turns a script into a scheduled job. A pdt project is a folder that holds `p
 ## Rules
 
 - Never read, print, or copy a `.env` file. It holds the user's secrets. When `pdt validate` names a missing value, ask the user to add it to the `.env` file.
-- Never run `pdt destroy`, `pdt storage APP destroy`, `pdt secrets APP set`, or `pdt secrets APP save` unless the user asks for that action.
+- Never run `pdt destroy`, `pdt pause`, `pdt unpause`, `pdt storage APP destroy`, `pdt storage APP unlock`, `pdt secrets APP set`, `pdt secrets APP save`, or `pdt secrets APP get` unless the user asks for that action.
 - Never run `pdt deploy APP --yes` before the user has seen the output of `pdt deploy APP --plan` and agreed in the chat.
+- Never run `pdt destroy APP --yes` before the user has seen the output of `pdt destroy APP` and agreed in the chat.
 - A browser sign-in is the user's step. When a command reports a missing sign-in, ask the user to run `pdt login APP` in their own terminal. Continue after they confirm.
 
 ## 1. Check that pdt is installed
@@ -50,3 +51,12 @@ When the plan stops on a missing sign-in, follow the sign-in rule above. When it
 - `pdt runs APP` lists the recent runs and their exit codes.
 - `pdt logs APP` shows the log of the newest run. `pdt logs APP 2` shows the run before it.
 - `pdt health` shows whether the last run of each deployed app succeeded.
+- Add `--json` to `pdt runs`, `pdt logs`, `pdt health`, `pdt list`, or `pdt validate` to get output that is easier to read in a script.
+
+## 6. Remove a deployed app
+
+Do this only when the user asks to remove the app from the cloud.
+
+1. Run `pdt destroy APP`. In this shell nobody can answer its question, so it prints the plan of what it removes and then stops.
+2. Show the user the plan. Ask whether to remove the app.
+3. Only after the user agrees in the chat, run `pdt destroy APP --yes`.

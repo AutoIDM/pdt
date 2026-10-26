@@ -9,5 +9,6 @@
   "homepage": "https://github.com/AutoIDM/pdt",
   "repository": "https://github.com/AutoIDM/pdt",
   "license": "MIT",
+  "icon": "./assets/icon.png",
   "keywords": ["schedule", "cron", "scheduled-job", "deploy", "aws", "azure", "google-cloud", "task-scheduler", "powershell", "python"]
 }
