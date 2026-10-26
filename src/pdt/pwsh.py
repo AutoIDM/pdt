@@ -6,7 +6,9 @@ github.com, verify its sha256, and unpack it, with no question, the same
 way gcloud_sdk.py installs the Google Cloud CLI. On macOS and Linux the
 install lives in the user's data folder. On Windows it lives in
 %ProgramData%\\pdt\\pwsh, because the scheduled task runs as SYSTEM and
-must reach the same pwsh the deploying user installed.
+must reach the same pwsh the deploying user installed. A local install
+of another version (the VERSION file pdt writes into it) is replaced the
+same way, and the current one stays until the new one is unpacked.
 
 To bump the pin, take the new version number and the six checksums from
 the `hashes.sha256` asset of the release at
@@ -20,11 +22,10 @@ import os
 import platform
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 from pdt import console
-from pdt.config import data_home, machine_data_home, unsaved
+from pdt.config import data_home, locked, machine_data_home, unsaved
 from pdt.download import fetch_verified
 
 VERSION = "7.6.8"
@@ -82,16 +83,37 @@ def ensure_pwsh() -> str:
     found = shutil.which("pwsh")
     if found:
         return found
-    if local_pwsh().is_file():
-        return str(local_pwsh())
+    previous = install_dir().with_name(f"{install_dir().name}.previous")
     if unsaved() is not None:
+        for folder in (install_dir(), previous):
+            if (folder / local_pwsh().name).is_file():
+                return str(folder / local_pwsh().name)
         raise PwshError("pwsh is not installed, and a plan installs nothing; run the deploy "
                         "without --plan to install it")
-    key = platform_key()
-    console.warn(f"pwsh is not installed. pdt downloads PowerShell {VERSION} "
-                 f"(~100 MB) to {console.value(install_dir())}.")
-    console.say("Deleting that folder uninstalls it again.")
-    download_pwsh(key)
+    version_file = install_dir() / "VERSION"
+    # Another process can move the install away between the check and the read.
+    with contextlib.suppress(FileNotFoundError):
+        if local_pwsh().is_file() and version_file.read_text().strip() == VERSION:
+            return str(local_pwsh())
+    install_dir().parent.mkdir(parents=True, exist_ok=True)
+    with locked(install_dir()):
+        if previous.is_dir() and not install_dir().exists():
+            previous.rename(install_dir())
+        current = version_file.read_text().strip() if version_file.is_file() else None
+        if local_pwsh().is_file() and current == VERSION:
+            return str(local_pwsh())
+        key = platform_key()
+        if not local_pwsh().is_file():
+            console.warn(f"pwsh is not installed. pdt downloads PowerShell {VERSION} "
+                         f"(~100 MB) to {console.value(install_dir())}.")
+            console.say("Deleting that folder uninstalls it again.")
+        elif current:
+            console.status(f"Updating PowerShell {console.value(current)} to {console.value(VERSION)} "
+                           f"(~100 MB) in {console.value(install_dir())}.")
+        else:
+            console.status(f"Updating PowerShell to {console.value(VERSION)} "
+                           f"(~100 MB) in {console.value(install_dir())}.")
+        download_pwsh(key)
     if not local_pwsh().is_file():
         raise PwshError(f"the unpacked archive has no {local_pwsh()}")
     return str(local_pwsh())
@@ -100,18 +122,35 @@ def ensure_pwsh() -> str:
 def download_pwsh(key: str) -> None:
     url = (f"https://github.com/PowerShell/PowerShell/releases/download/"
            f"v{VERSION}/{archive_name(key)}")
-    stage = Path(tempfile.mkdtemp(prefix="pdt-pwsh-"))
+    # Path.rename fails across file systems, and the default temp folder can be on another one.
+    new = install_dir().with_name(f"{install_dir().name}.new")
+    previous = install_dir().with_name(f"{install_dir().name}.previous")
+    shutil.rmtree(new, ignore_errors=True)
     try:
-        fetch_verified(url, CHECKSUMS[key], stage, PwshError)
+        fetch_verified(url, CHECKSUMS[key], new, PwshError)
+        (new / "VERSION").write_text(VERSION)
         if install_dir().exists():
-            shutil.rmtree(install_dir())
-        install_dir().parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(stage), str(install_dir()))
+            shutil.rmtree(previous, ignore_errors=True)
+            try:
+                install_dir().rename(previous)
+            except OSError as e:
+                raise PwshError(f"cannot replace {install_dir()}: {e.strerror}; close each "
+                                f"program that runs from it and try again")
+        try:
+            new.rename(install_dir())
+        except OSError as e:
+            if previous.exists():
+                try:
+                    previous.rename(install_dir())
+                except OSError:
+                    raise PwshError(f"cannot install to {install_dir()}: {e.strerror}; "
+                                    f"the current copy is in {previous}")
+            raise PwshError(f"cannot install to {install_dir()}: {e.strerror}")
         if os.name != "nt":
             local_pwsh().chmod(0o755)
+        shutil.rmtree(previous, ignore_errors=True)
     finally:
-        shutil.rmtree(stage, ignore_errors=True)
-
+        shutil.rmtree(new, ignore_errors=True)
 
 if __name__ == "__main__":
     with contextlib.redirect_stdout(sys.stderr):

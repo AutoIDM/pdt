@@ -7,6 +7,9 @@ and azure-cli for the other providers. No admin rights are needed; deleting
 SDK_DIR removes the install. The download lives in the user's data folder
 rather than beside this file, so upgrading pdt keeps it. Login state lives
 in ~/.config/gcloud either way, so a later system install keeps working.
+A local install of another version (the SDK's own VERSION file) is
+replaced the same way, and the current one stays until the new one is
+unpacked.
 
 Windows uses the bundled-python zip, so the CLI needs no Python there;
 the other platforms reuse this interpreter via CLOUDSDK_PYTHON.
@@ -23,16 +26,16 @@ own sha256 below.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import platform
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from pdt import console
-from pdt.config import data_home, unsaved
+from pdt.config import data_home, locked, unsaved
 from pdt.download import fetch_verified
 
 VERSION = "590.0.1"
@@ -47,6 +50,7 @@ CHECKSUMS = {
 SDK_DIR = data_home() / "pdt" / "gcloud"
 GCLOUD_BIN = "gcloud.cmd" if os.name == "nt" else "gcloud"
 LOCAL_GCLOUD = SDK_DIR / "google-cloud-sdk" / "bin" / GCLOUD_BIN
+SDK_VERSION = SDK_DIR / "google-cloud-sdk" / "VERSION"
 INSTALL_DOCS = "https://cloud.google.com/sdk/docs/install"
 
 
@@ -86,17 +90,39 @@ def ensure_gcloud() -> str:
     found = shutil.which("gcloud")
     if found:
         return found
-    if LOCAL_GCLOUD.is_file():
-        set_sdk_python()
-        return str(LOCAL_GCLOUD)
+    previous = SDK_DIR.with_name(f"{SDK_DIR.name}.previous")
     if unsaved() is not None:
+        for gcloud in (LOCAL_GCLOUD, previous / "google-cloud-sdk" / "bin" / GCLOUD_BIN):
+            if gcloud.is_file():
+                set_sdk_python()
+                return str(gcloud)
         raise GcloudError("the Google Cloud CLI is not installed, and a plan installs nothing; "
                           "run the deploy without --plan to install it")
-    key = sdk_platform()
-    console.status(f"Installing the Google Cloud CLI {VERSION} (~150 MB) to "
-                   f"{console.value(SDK_DIR)}. This happens once and can take several minutes...")
-    console.say("Deleting that folder uninstalls it again.")
-    download_sdk(key)
+    # Another process can move the install away between the check and the read.
+    with contextlib.suppress(FileNotFoundError):
+        if LOCAL_GCLOUD.is_file() and SDK_VERSION.read_text().strip() == VERSION:
+            set_sdk_python()
+            return str(LOCAL_GCLOUD)
+    SDK_DIR.parent.mkdir(parents=True, exist_ok=True)
+    with locked(SDK_DIR):
+        if previous.is_dir() and not SDK_DIR.exists():
+            previous.rename(SDK_DIR)
+        current = SDK_VERSION.read_text().strip() if SDK_VERSION.is_file() else None
+        if LOCAL_GCLOUD.is_file() and current == VERSION:
+            set_sdk_python()
+            return str(LOCAL_GCLOUD)
+        key = sdk_platform()
+        if not LOCAL_GCLOUD.is_file():
+            console.status(f"Installing the Google Cloud CLI {VERSION} (~150 MB) to "
+                           f"{console.value(SDK_DIR)}. This happens once and can take several minutes...")
+            console.say("Deleting that folder uninstalls it again.")
+        elif current:
+            console.status(f"Updating the Google Cloud CLI {console.value(current)} to {console.value(VERSION)} "
+                           f"(~150 MB) in {console.value(SDK_DIR)}. This can take several minutes...")
+        else:
+            console.status(f"Updating the Google Cloud CLI to {console.value(VERSION)} "
+                           f"(~150 MB) in {console.value(SDK_DIR)}. This can take several minutes...")
+        download_sdk(key)
     if not LOCAL_GCLOUD.is_file():
         raise GcloudError(f"the unpacked SDK has no {LOCAL_GCLOUD}")
     set_sdk_python()
@@ -113,16 +139,32 @@ def set_sdk_python() -> None:
 def download_sdk(key: str) -> None:
     url = (f"https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/"
            f"{archive_name(key)}")
-    stage = Path(tempfile.mkdtemp(prefix="pdt-gcloud-"))
+    # Path.rename fails across file systems, and the default temp folder can be on another one.
+    new = SDK_DIR.with_name(f"{SDK_DIR.name}.new")
+    previous = SDK_DIR.with_name(f"{SDK_DIR.name}.previous")
+    shutil.rmtree(new, ignore_errors=True)
     try:
-        fetch_verified(url, CHECKSUMS[key], stage, GcloudError)
+        fetch_verified(url, CHECKSUMS[key], new, GcloudError)
         if SDK_DIR.exists():
-            shutil.rmtree(SDK_DIR)
-        SDK_DIR.mkdir(parents=True)
-        shutil.move(str(stage / "google-cloud-sdk"), str(SDK_DIR / "google-cloud-sdk"))
+            shutil.rmtree(previous, ignore_errors=True)
+            try:
+                SDK_DIR.rename(previous)
+            except OSError as e:
+                raise GcloudError(f"cannot replace {SDK_DIR}: {e.strerror}; close each "
+                                  f"program that runs from it and try again")
+        try:
+            new.rename(SDK_DIR)
+        except OSError as e:
+            if previous.exists():
+                try:
+                    previous.rename(SDK_DIR)
+                except OSError:
+                    raise GcloudError(f"cannot install to {SDK_DIR}: {e.strerror}; "
+                                      f"the current copy is in {previous}")
+            raise GcloudError(f"cannot install to {SDK_DIR}: {e.strerror}")
+        shutil.rmtree(previous, ignore_errors=True)
     finally:
-        shutil.rmtree(stage, ignore_errors=True)
-
+        shutil.rmtree(new, ignore_errors=True)
 
 if __name__ == "__main__":
     try:

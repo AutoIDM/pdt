@@ -500,7 +500,13 @@ def locked(path: Path):
         fd = handle.fileno()
         if os.name == "nt":
             import msvcrt
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            # LK_LOCK gives up after 10 tries 1 s apart; a tool download holds the lock for minutes.
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    pass
             try:
                 yield
             finally:
