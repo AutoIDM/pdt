@@ -589,7 +589,7 @@ def destroy(app_name: str, assume_yes: bool = False, plan_only: bool = False) ->
     """Destroy one app where `.pdt/state` records it, else where its config selects.
 
     `plan_only` prints what the destroy deletes, asks no question, deletes nothing, and keeps
-    the `.pdt/state` record (`config.plan_only`)."""
+    the `.pdt/state` record."""
     if not plan_only:
         return _destroy(app_name, assume_yes, False)
     with config.plan_only():
