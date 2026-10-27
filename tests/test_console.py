@@ -116,10 +116,9 @@ def test_confirm_raises_eof_after_a_wrong_answer(monkeypatch):
 
 
 def on_terminal(monkeypatch, **options):
-    """Both consoles on one terminal, as the person who answers a question sees them."""
     out = io.StringIO()
     for name, stderr in (("_console", False), ("_errors", True)):
-        monkeypatch.setattr(console, name, console.MainThread(
+        monkeypatch.setattr(console, name, console.MainThreadConsole(
             file=out, stderr=stderr, force_terminal=True, color_system=None, highlight=False,
             soft_wrap=True, **options))
     return out
@@ -131,7 +130,6 @@ def terminal(monkeypatch):
 
 
 def in_thread(*lines):
-    """Print each line from another thread, and wait for the thread to end."""
     printer = threading.Thread(target=lambda: [console.say(line) for line in lines])
     printer.start()
     printer.join()
@@ -164,7 +162,7 @@ def test_a_line_from_another_thread_waits_until_the_question_is_answered(monkeyp
 
 def test_a_line_waits_until_the_answer_when_output_is_not_a_terminal(monkeypatch):
     out = io.StringIO()
-    monkeypatch.setattr(console, "_console", console.MainThread(file=out, highlight=False))
+    monkeypatch.setattr(console, "_console", console.MainThreadConsole(file=out, highlight=False))
 
     def fake_input(prompt=""):
         in_thread("background warning")

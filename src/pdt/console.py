@@ -40,30 +40,34 @@ from rich.text import Text
 # Each line that a thread other than the main thread printed, in order, for the main
 # thread to print.
 _queued: list[partial] = []
-_queue = threading.Lock()
+_queued_lock = threading.Lock()
 
 
-class MainThread(Console):
-    """A Console on which only the main thread writes, so a line from another thread, such
-    as an alert that could not send, never lands inside a question. Such a line waits in a
-    queue until the main thread prints its next line, reads an answer, or exits."""
+class MainThreadConsole(Console):
+    """A Console that queues each line printed from a thread other than the main thread, so
+    the line never prints inside a question. The main thread prints the queued lines before
+    its next line, after it reads an answer, and at exit."""
 
     def print(self, *objects: Any, **options: Any) -> None:
         main = threading.current_thread() is threading.main_thread()
         # A Control alone is a spinner's redraw from rich's refresh thread, not a line.
         if not main and not (objects and all(isinstance(o, Control) for o in objects)):
-            with _queue:
+            with _queued_lock:
                 _queued.append(partial(super().print, *objects, **options))
             return
         if main:
             drain()
         super().print(*objects, **options)
 
+    def end_line(self) -> None:
+        """End the current line, before any queued line prints."""
+        super().print()
+
 
 def drain() -> None:
     """Print each queued line, in order. Only the main thread calls this."""
     while True:
-        with _queue:
+        with _queued_lock:
             if not _queued:
                 return
             line = _queued.pop(0)
@@ -74,9 +78,9 @@ atexit.register(drain)
 
 # soft_wrap keeps a long path or command on one logical line: the terminal
 # wraps it at the edge, and rich never re-flows it at a word boundary.
-_console = MainThread(highlight=False, soft_wrap=True, emoji=False)
-# For a line from another thread that must reach stderr while _console prints on.
-_errors = MainThread(stderr=True, highlight=False, soft_wrap=True, emoji=False)
+_console = MainThreadConsole(highlight=False, soft_wrap=True, emoji=False)
+# For a line that goes to stderr, such as a warning or a wait line.
+_errors = MainThreadConsole(stderr=True, highlight=False, soft_wrap=True, emoji=False)
 
 # The real stdout, for `data`, once `json_output` has moved stdout to stderr.
 _data = None
@@ -401,13 +405,13 @@ def log_line(time: str, level: str, message: str) -> None:
 
 
 def _answer(prompt: str, markup: bool = True, password: bool = False) -> str:
-    """Read one answer; each line that another thread printed meanwhile prints after it. A
-    Ctrl+C or the end of input ends the question line, so a line printed next, here or by
-    the pdt process that started this provider script, starts a line of its own."""
+    """Read one answer, then print each line that another thread printed meanwhile. On Ctrl+C
+    or end of input, end the question line first, because input() and getpass print no
+    newline then."""
     try:
         return _console.input(prompt, markup=markup, password=password)
     except (EOFError, KeyboardInterrupt):
-        Console.print(_console)
+        _console.end_line()
         raise
     finally:
         drain()
