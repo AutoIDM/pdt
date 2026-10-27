@@ -124,6 +124,27 @@ def test_ctrl_c_ends_a_provider_script_at_once_with_no_traceback():
     assert (proc.returncode, proc.stderr) == (130, "")
 
 
+QUEUED_SCRIPT = """
+import threading
+from pdt import console
+from pdt.deploy_common import run_main
+
+def main():
+    worker = threading.Thread(target=console.say, args=("a line from a worker",))
+    worker.start()
+    worker.join()
+    raise KeyboardInterrupt
+
+run_main(main)
+"""
+
+
+def test_ctrl_c_prints_the_lines_that_worker_threads_queued():
+    proc = subprocess.run([sys.executable, "-c", QUEUED_SCRIPT], capture_output=True,
+                          text=True, timeout=15)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (130, "a line from a worker\n", "")
+
+
 FLUSHED_SCRIPT = """
 import signal
 import sys

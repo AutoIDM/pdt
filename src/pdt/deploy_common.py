@@ -307,6 +307,7 @@ def run_main(main: Callable[[], int]) -> None:
     except KeyboardInterrupt:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
+            console.drain_at_exit()
             sys.stdout.flush()
             sys.stderr.flush()
         finally:
