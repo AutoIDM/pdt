@@ -1,11 +1,12 @@
 import io
 import re
+import subprocess
 import threading
 
 import pytest
 from rich.console import Console
 
-from pdt import console
+from pdt import console, deploy
 from pdt.utils import email_auth
 
 
@@ -113,16 +114,36 @@ def test_confirm_raises_eof_after_a_wrong_answer(monkeypatch):
         console.confirm()
 
 
+def on_terminal(monkeypatch, **options):
+    """Both consoles on one terminal, as the person who answers a question sees them."""
+    out = io.StringIO()
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    for name, stderr in (("_console", False), ("_errors", True)):
+        monkeypatch.setattr(console, name, console.Held(
+            file=out, stderr=stderr, force_terminal=True, color_system=None, highlight=False,
+            soft_wrap=True, **options))
+    return out
+
+
+@pytest.fixture
+def terminal(monkeypatch):
+    return on_terminal(monkeypatch, force_interactive=True)
+
+
+def in_thread(*lines):
+    """Print each line from another thread, and wait for the thread to end."""
+    printer = threading.Thread(target=lambda: [console.say(line) for line in lines])
+    printer.start()
+    printer.join()
+
+
 @pytest.mark.parametrize("ask", [lambda: console.confirm("Start a run now?"),
                                  lambda: console.ask("Which region"),
                                  lambda: console.read("Deploy to which one? [1-2] "),
                                  lambda: console.secret("Secret access key (hidden): ")])
-def test_a_line_from_another_thread_waits_until_the_question_is_answered(monkeypatch, ask):
-    out = io.StringIO()
-    for name, stderr in (("_console", False), ("_errors", True)):
-        monkeypatch.setattr(console, name, console.Held(
-            file=out, stderr=stderr, force_terminal=True, force_interactive=True,
-            color_system=None, highlight=False, soft_wrap=True))
+def test_a_line_from_another_thread_waits_until_the_question_is_answered(monkeypatch, terminal,
+                                                                          ask):
+    out = terminal
 
     def fake_input(prompt="", stream=None):
         alert = threading.Thread(target=lambda: (
@@ -140,6 +161,125 @@ def test_a_line_from_another_thread_waits_until_the_question_is_answered(monkeyp
         "The slack alert could not send app:deploy-completed",
         "[alert] not delivered to slack: Deployed report"]
 
+
+
+def test_a_line_waits_until_the_answer_on_a_terminal_that_cannot_animate(monkeypatch):
+    monkeypatch.setenv("TERM", "dumb")
+    out = on_terminal(monkeypatch)
+
+    def fake_input(prompt=""):
+        in_thread("background warning")
+        out.write("y\n")
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    console.confirm()
+    assert out.getvalue().splitlines() == ["Proceed? [y/N] y", "background warning"]
+
+
+def test_a_line_waits_until_a_provider_script_has_asked_and_ended(monkeypatch, terminal):
+    def provider(args, check, env):
+        terminal.write("Provider deploy: proceed? [y/N] ")
+        in_thread("Parent alert could not send app:deploy-started")
+        terminal.write("y\n")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(deploy, "provider_env", lambda extra, rebuild: {})
+    monkeypatch.setattr(deploy.subprocess, "run", provider)
+    assert deploy.dispatch("aws", "deploy", "report", False) == 0
+    assert terminal.getvalue().splitlines() == [
+        "Provider deploy: proceed? [y/N] y", "Parent alert could not send app:deploy-started"]
+
+
+def test_a_line_that_started_before_the_question_ends_before_the_prompt(monkeypatch, terminal):
+    rendering, go = threading.Event(), threading.Event()
+
+    class Slow:
+        def __rich__(self):
+            rendering.set()
+            go.wait()
+            return "background line"
+
+    printer = threading.Thread(target=console.styled, args=(Slow(),))
+    printer.start()
+    rendering.wait()
+    threading.Timer(0.2, go.set).start()
+
+    def fake_input(prompt=""):
+        go.wait()
+        printer.join()
+        terminal.write("y\n")
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    console.confirm()
+    assert terminal.getvalue().splitlines() == ["background line", "Proceed? [y/N] y"]
+
+
+def test_held_lines_print_before_a_line_printed_while_they_print(monkeypatch, terminal):
+    class First:
+        def __rich__(self):
+            in_thread("new line 3")
+            return "old line 1"
+
+    def fake_input(prompt=""):
+        printer = threading.Thread(target=lambda: (console.styled(First()),
+                                                   console.say("old line 2")))
+        printer.start()
+        printer.join()
+        terminal.write("y\n")
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    console.confirm()
+    assert terminal.getvalue().splitlines()[1:] == ["old line 1", "old line 2", "new line 3"]
+
+
+def test_a_nested_question_keeps_the_hold_until_the_outer_answer(monkeypatch, terminal):
+    def fake_input(prompt=""):
+        if terminal.getvalue().endswith("Inner? "):
+            terminal.write("x\n")
+            return "x"
+        console.read("Inner? ")
+        in_thread("background line")
+        terminal.write("y\n")
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    console.confirm()
+    assert terminal.getvalue().splitlines()[-1] == "background line"
+
+
+def test_a_question_from_another_thread_waits_for_the_first_answer(monkeypatch, terminal):
+    second_asked = threading.Event()
+
+    def fake_input(prompt=""):
+        if "Second" in terminal.getvalue():
+            second_asked.set()
+            terminal.write("b\n")
+            return "b"
+        second.start()
+        second_asked.wait(0.5)
+        terminal.write("a\n")
+        return "a"
+
+    second = threading.Thread(target=console.read, args=("Second? ",))
+    monkeypatch.setattr("builtins.input", fake_input)
+    console.read("First? ")
+    second.join()
+    assert terminal.getvalue().splitlines() == ["First? a", "Second? b"]
+
+
+@pytest.mark.parametrize("stop", [EOFError, KeyboardInterrupt])
+def test_a_stopped_question_ends_its_line_before_the_held_lines(monkeypatch, terminal, stop):
+    def fake_input(prompt=""):
+        in_thread("Held alert warning")
+        raise stop
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    with pytest.raises(stop):
+        console.confirm()
+    assert terminal.getvalue() == "Proceed? [y/N] \nHeld alert warning\n"
 
 def test_a_sign_in_prompt_asks_again_then_takes_its_yes_default(monkeypatch, capsys):
     answering(monkeypatch, "ok", "")

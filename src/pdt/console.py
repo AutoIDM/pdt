@@ -35,10 +35,13 @@ from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
-# The thread whose question waits for an answer, and each line another thread printed since.
+# The thread whose question waits for an answer, how many of its `asking` blocks are open,
+# each line another thread printed since, and how many prints are under way.
 _asker: threading.Thread | None = None
+_asks = 0
 _held: list[partial] = []
-_hold = threading.Lock()
+_printing = 0
+_hold = threading.Condition()
 
 
 class Held(Console):
@@ -46,11 +49,20 @@ class Held(Console):
     answer, such as an alert that could not send, and prints it after the answer."""
 
     def print(self, *objects: Any, **options: Any) -> None:
+        global _printing
         with _hold:
             if _asker is not None and _asker is not threading.current_thread():
                 _held.append(partial(super().print, *objects, **options))
                 return
-        super().print(*objects, **options)
+            _printing += 1
+        # Outside _hold, since a rich Live prints while it holds its own lock, and this print
+        # can take that lock.
+        try:
+            super().print(*objects, **options)
+        finally:
+            with _hold:
+                _printing -= 1
+                _hold.notify_all()
 
 
 # soft_wrap keeps a long path or command on one logical line: the terminal
@@ -381,22 +393,46 @@ def log_line(time: str, level: str, message: str) -> None:
     _console.print(line)
 
 
-def _answer(prompt: str, markup: bool = True, password: bool = False) -> str:
-    """Read one answer. On a terminal, as for `waiting`, a line that another thread prints
-    meanwhile waits until the answer, so it does not land inside the question."""
-    global _asker
-    if not _console.is_interactive or _data is not None:
-        return _console.input(prompt, markup=markup, password=password)
+@contextmanager
+def asking() -> Iterator[None]:
+    """A block in which a question may wait for an answer: one that pdt asks, or one that a
+    provider script asks in a child process. When the user answers at a terminal, each line
+    that another thread prints in the block prints after the outermost block ends, in order.
+    A question from another thread waits until then. A block that a Ctrl+C or the end of
+    input stops ends the question line first."""
+    global _asker, _asks
+    if not (sys.stdin.isatty() and _console.is_terminal) or _data is not None:
+        yield
+        return
     with _hold:
-        _asker = threading.current_thread()
+        _hold.wait_for(lambda: _asker in (None, threading.current_thread()))
+        _asker, _asks = threading.current_thread(), _asks + 1
+        _hold.wait_for(lambda: _printing == 0)
     try:
-        return _console.input(prompt, markup=markup, password=password)
+        yield
+    except BaseException:
+        with _hold:
+            if _held and _asks == 1:
+                _held.insert(0, partial(Console.print, _console))
+        raise
     finally:
         with _hold:
-            _asker, held = None, _held.copy()
-            _held.clear()
-        for line in held:
+            _asks -= 1
+        while _asks == 0:
+            with _hold:
+                if not _held:
+                    _asker = None
+                    _hold.notify_all()
+                    break
+                line = _held.pop(0)
             line()
+
+
+def _answer(prompt: str, markup: bool = True, password: bool = False) -> str:
+    """Read one answer. On a terminal, a line that another thread prints while the question
+    waits prints after the answer, so it does not land inside the question."""
+    with asking():
+        return _console.input(prompt, markup=markup, password=password)
 
 
 def ask(question: str, default: str = "") -> str:
