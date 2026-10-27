@@ -68,7 +68,7 @@ while True:
 
 @pytest.mark.skipif(os.name == "nt", reason="sends a POSIX signal")
 @pytest.mark.parametrize("on_sigterm, returncode", [("stop", 7),
-                                                    ("signal.SIG_IGN", -signal.SIGKILL)])
+                                                    ("signal.SIG_IGN", -9)])
 def test_ctrl_c_ends_a_provider_script_that_fills_its_output_pipe(
         monkeypatch, tmp_path, on_sigterm, returncode):
     script = tmp_path / "provider.py"
