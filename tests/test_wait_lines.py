@@ -24,7 +24,6 @@ def fresh_once(monkeypatch):
 
 
 def destroy_with(monkeypatch, answers: dict) -> dict:
-    """Destroy with each read answered from `answers` after a short wait."""
     seen = {"active": 0, "most": 0, "az_threads": set(), "plans": []}
     lock = threading.Lock()
 

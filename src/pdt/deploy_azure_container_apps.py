@@ -1334,7 +1334,8 @@ def release_actions(settings: dict, release: Release) -> list[console.Markup]:
 def release_environment(settings: dict, release: Release) -> None:
     environment = settings["environment"]
     if release.environment:
-        # The group delete before this read can outlast the token preflight got.
+        # A new token: the user can wait at the confirm question for any length of time,
+        # and the token that preflight got can expire meanwhile.
         users = environment_users(settings, access_token())
         if users:
             console.note(users_note(settings, users))
