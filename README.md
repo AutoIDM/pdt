@@ -1,8 +1,8 @@
 # pdt - process deploy tool
 
-**Run a script that works on your computer every morning, in your own cloud.**
+**Turn any script into a scheduled job in your cloud.**
 
-You have a Python or PowerShell script that works on your computer, and now it must run on a schedule: every morning, every hour, or once a month. pdt puts it in production with one command. It runs the script in AWS, Azure, Google Cloud, or Windows Task Scheduler. It gives every job the same [primitives](docs/primitives.md#primitives), chosen from years of deploying scheduled jobs for businesses on each cloud. No servers to run and nothing extra to install, and everything it makes lives in your own account.
+pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Windows Task Scheduler. It gives every job the same [primitives](docs/primitives.md#primitives), chosen from years of deploying scheduled jobs for businesses on each cloud. No servers to run and nothing extra to install, and everything it makes lives in your own account.
 
 ![What pdt does: your project folder goes through pdt deploy to a schedule on AWS, GCP, Azure, or Task Scheduler, and pdt runs, logs, health, and gui read the results back.](docs/what-is-pdt.svg)
 
