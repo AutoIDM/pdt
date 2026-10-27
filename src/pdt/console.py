@@ -41,6 +41,8 @@ from rich.text import Text
 # thread to print.
 _queued: list[partial] = []
 _queued_lock = threading.Lock()
+# True once the exit drain has run. No question can wait then, so every line prints at once.
+_exited = False
 
 
 class MainThreadConsole(Console):
@@ -53,8 +55,9 @@ class MainThreadConsole(Console):
         # A Control alone is a spinner's redraw from rich's refresh thread, not a line.
         if not main and not (objects and all(isinstance(o, Control) for o in objects)):
             with _queued_lock:
-                _queued.append(partial(super().print, *objects, **options))
-            return
+                if not _exited:
+                    _queued.append(partial(super().print, *objects, **options))
+                    return
         if main:
             drain()
         super().print(*objects, **options)
@@ -65,7 +68,10 @@ class MainThreadConsole(Console):
 
 
 def drain() -> None:
-    """Print each queued line, in order. Only the main thread calls this."""
+    """Print each queued line, in order. On another thread it prints nothing, because the
+    main thread may be asking a question."""
+    if threading.current_thread() is not threading.main_thread():
+        return
     while True:
         with _queued_lock:
             if not _queued:
@@ -74,7 +80,17 @@ def drain() -> None:
         line()
 
 
-atexit.register(drain)
+def _drain_at_exit() -> None:
+    global _exited
+    while True:
+        drain()
+        with _queued_lock:
+            if not _queued:
+                _exited = True
+                return
+
+
+atexit.register(_drain_at_exit)
 
 # soft_wrap keeps a long path or command on one logical line: the terminal
 # wraps it at the edge, and rich never re-flows it at a word boundary.
@@ -116,6 +132,7 @@ def json_output() -> None:
 
 def data(text: str) -> None:
     """Output for a program to read, such as a --json document."""
+    drain()
     out = _data or sys.stdout
     out.write(text + "\n")
     out.flush()
@@ -406,10 +423,13 @@ def log_line(time: str, level: str, message: str) -> None:
 
 def _answer(prompt: str, markup: bool = True, password: bool = False) -> str:
     """Read one answer, then print each line that another thread printed meanwhile. On Ctrl+C
-    or end of input, end the question line first, because input() and getpass print no
-    newline then."""
+    or end of input, or when stdin is not a terminal and so shows no answer, end the
+    question line first, because input() and getpass print no newline then."""
     try:
-        return _console.input(prompt, markup=markup, password=password)
+        answer = _console.input(prompt, markup=markup, password=password)
+        if sys.stdin is not None and not sys.stdin.isatty():
+            _console.end_line()
+        return answer
     except (EOFError, KeyboardInterrupt):
         _console.end_line()
         raise

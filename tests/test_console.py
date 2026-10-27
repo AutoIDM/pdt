@@ -149,7 +149,6 @@ def test_a_line_from_another_thread_waits_until_the_question_is_answered(monkeyp
             console.event("Deployed report", "not delivered to slack:")))
         alert.start()
         alert.join()
-        out.write("y\n")
         return "y"
 
     monkeypatch.setattr("builtins.input", fake_input)
@@ -166,12 +165,11 @@ def test_a_line_waits_until_the_answer_when_output_is_not_a_terminal(monkeypatch
 
     def fake_input(prompt=""):
         in_thread("background warning")
-        out.write("y\n")
         return "y"
 
     monkeypatch.setattr("builtins.input", fake_input)
     console.confirm()
-    assert out.getvalue().splitlines() == ["Proceed? [y/N] y", "background warning"]
+    assert out.getvalue().splitlines() == ["Proceed? [y/N] ", "background warning"]
 
 
 def test_a_line_waits_until_a_provider_script_has_asked_and_ended(monkeypatch, terminal):
@@ -255,6 +253,46 @@ def test_a_queued_line_prints_when_the_process_exits(end):
               f"{end}\n")
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert result.stdout == "late line\n"
+
+
+def test_a_line_from_another_thread_after_the_exit_drain_prints_at_once():
+    script = ("import atexit, threading\n"
+              "def late():\n"
+              "    printer = threading.Thread(target=console.say, args=('after exit',))\n"
+              "    printer.start()\n"
+              "    printer.join()\n"
+              "atexit.register(late)\n"
+              "from pdt import console\n")
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.stdout == "after exit\n"
+
+
+def test_a_drain_on_another_thread_prints_nothing_inside_a_question(monkeypatch, terminal):
+    def fake_input(prompt=""):
+        worker = threading.Thread(target=lambda: (console.say("worker warning"), console.drain()))
+        worker.start()
+        worker.join()
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    console.confirm()
+    assert terminal.getvalue().splitlines() == ["Proceed? [y/N] ", "worker warning"]
+
+
+def test_data_prints_after_the_queued_lines(monkeypatch, terminal):
+    monkeypatch.setattr(console, "_data", terminal)
+    in_thread("queued warning")
+    console.data('{"ok": true}')
+    assert terminal.getvalue() == 'queued warning\n{"ok": true}\n'
+
+
+def test_a_piped_answer_ends_the_question_line():
+    script = ("from pdt import console\n"
+              "console.confirm()\n"
+              "console.say('background warning')\n")
+    result = subprocess.run([sys.executable, "-c", script], input="y\n", capture_output=True,
+                            text=True)
+    assert result.stdout == "Proceed? [y/N] \nbackground warning\n"
 
 
 def test_a_sign_in_prompt_asks_again_then_takes_its_yes_default(monkeypatch, capsys):
