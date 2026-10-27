@@ -385,7 +385,8 @@ def preflight(app: dict, settings: dict) -> dict:
     if requested == PLACEHOLDER_SUBSCRIPTION:
         requested = ""
     can_ask = can_prompt(None)
-    account = az_json("account", "show")
+    with console.waiting("checking: Azure sign-in", once=True):
+        account = az_json("account", "show")
     if not account:
         if not can_ask:
             login_command = "az login --service-principal -u <id> -p <secret> --tenant <tenant>"
@@ -421,7 +422,8 @@ def preflight(app: dict, settings: dict) -> dict:
     settings.update(shared_names(settings["subscription"], settings["resource_group"]))
     user = account.get("user") or {}
     is_user = str(user.get("type", "")).lower() == "user"
-    settings["token"] = access_token()
+    with console.waiting("checking: Azure sign-in", once=True):
+        settings["token"] = access_token()
     deployer_id = (os.environ.get("PDT_AZURE_DEPLOYER_OBJECT_ID", "").strip()
                    or object_id_from_token(settings["token"]))
     if not deployer_id:
@@ -724,18 +726,22 @@ def secret_reads(settings: dict[str, str], vault_token: str, sid: str,
                       missing=SECRET_MISSING_OR_NOT_GRANTED)
     if current is None:
         return vault, None, []
-    versions = arm_list(vault_token, f"{url}/versions?api-version={VAULT_API_VERSION}",
-                        ("keyvault", "secret", "list-versions", "--vault-name",
-                         settings["vault"]), missing=SECRET_MISSING_OR_NOT_GRANTED)
-    return vault, current, versions or []
+    return vault, current, secret_versions(settings, vault_token, sid)
+
+
+def secret_versions(settings: dict[str, str], vault_token: str, sid: str) -> list:
+    """Each version's tags. A read of the value fails while the latest version is disabled."""
+    url = f"https://{settings['vault']}.vault.azure.net/secrets/{sid}/versions"
+    return arm_list(vault_token, f"{url}?api-version={VAULT_API_VERSION}",
+                    ("keyvault", "secret", "list-versions", "--vault-name", settings["vault"]),
+                    missing=SECRET_MISSING_OR_NOT_GRANTED) or []
 
 
 def secret_state(settings: dict[str, str], sid: str, app_name: str,
                  reads: tuple[dict | None, dict | None, list]) -> tuple[bool, str | None]:
     vault, current, versions = reads
     require_managed(vault, f"Key Vault {console.value(settings['vault'])}")
-    # Tags belong to a version, and a version added in the portal has none.
-    if current and not any(owned_by(version, app_name) for version in versions):
+    if current and not managed_secret(versions, app_name):
         fail(f"Key Vault secret {console.value(sid)} already exists but is not owned "
              f"by PDT app {console.value(app_name)}; choose another Key Vault")
     return vault is not None, current.get("value") if current else None
@@ -803,6 +809,14 @@ def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
     assign_role(vault_id, settings["deployer_object_id"], "Key Vault Secrets Officer",
                 settings["deployer_principal_type"])
     return vault_id
+
+
+def deleted_vault(settings: dict[str, str]) -> dict | None:
+    vaults = arm_list(settings["token"], arm_url(
+        f"/subscriptions/{settings['subscription']}/providers/Microsoft.KeyVault/deletedVaults"),
+        ("keyvault", "show-deleted", "--name", settings["vault"])) or []
+    return next((vault for vault in vaults
+                 if str(vault.get("name")).lower() == settings["vault"].lower()), None)
 
 
 def purge_deleted_vault(settings: dict[str, str]) -> None:
@@ -877,10 +891,8 @@ def disable_old_secret_versions(settings: dict[str, str], sid: str) -> None:
                       "--enabled", "false", retry_access=True)
 
 
-def managed_secret(settings: dict[str, str], sid: str, app_name: str) -> bool:
+def managed_secret(versions: list, app_name: str) -> bool:
     # Tags belong to a version, and a version added in the portal has none.
-    versions = az_json("keyvault", "secret", "list-versions", "--vault-name",
-                       settings["vault"], "--name", sid) or []
     return any(owned_by(version, app_name) for version in versions)
 
 
@@ -889,8 +901,7 @@ def delete_secret(settings: dict[str, str], sid: str) -> None:
               settings["vault"], "--name", sid, retry_access=True)
 
 
-def other_pdt_apps(rg: str, exclude_app: str) -> list[str]:
-    resources = az_json("resource", "list", "--resource-group", rg) or []
+def other_pdt_apps(resources: list, exclude_app: str) -> list[str]:
     names = set()
     for resource in resources:
         tags = resource.get("tags") or {}
@@ -958,15 +969,8 @@ def platform_side_resource(resource: dict) -> bool:
             or (kind == ACTION_GROUP_TYPE.lower() and name == SMART_ACTION_GROUP))
 
 
-def group_can_be_deleted(settings: dict[str, str], others: list[str]) -> bool:
-    if others:
-        return False
-    rg = settings["resource_group"]
-    group = az_json("group", "show", "--name", rg)
-    if not managed_by_pdt(group):
-        return False
-    resources = az_json("resource", "list", "--resource-group", rg)
-    if resources is None:
+def group_can_be_deleted(group: dict | None, resources: list | None, others: list[str]) -> bool:
+    if others or not managed_by_pdt(group) or resources is None:
         return False
     # Older pdt versions left the plans, alert rules, and action group that
     # Azure creates beside a Function App untagged; they go with the group.
@@ -990,7 +994,7 @@ def purge_secret(settings: dict[str, str], sid: str) -> None:
 def destroy_group(settings: dict[str, str], app_name: str) -> bool:
     """Delete the project's group. False means another app holds it, so it stays."""
     rg = settings["resource_group"]
-    others = other_pdt_apps(rg, app_name)
+    others = other_pdt_apps(az_json("resource", "list", "--resource-group", rg) or [], app_name)
     if others:
         console.note(f"kept: resource group {console.value(rg)} (apps deployed since the plan: "
                      f"{', '.join(console.value(other) for other in others)})")

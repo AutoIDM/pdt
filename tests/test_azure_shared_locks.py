@@ -166,10 +166,10 @@ def test_destroy_removes_its_lock_then_keeps_a_group_another_app_locked(monkeypa
 
 
 def test_destroy_does_not_delete_an_environment_a_job_joined_since_the_plan(monkeypatch, capsys):
-    joined = {"resourceGroup": "pdt-other",
+    joined = {"id": f"/subscriptions/{SUBSCRIPTION}/resourceGroups/pdt-other/providers/Microsoft.App/jobs/x",
               "properties": {"environmentId": SHARED.resource_id(SUBSCRIPTION)}}
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json",
-                        lambda *args: [joined] if args[:3] == ("containerapp", "job", "list") else None)
+    fake_azure_reads(monkeypatch, lambda *args: [joined]
+                     if args[:3] == ("containerapp", "job", "list") else None)
     monkeypatch.setattr(deploy_azure_container_apps, "delete_unless_locked",
                         lambda *args: pytest.fail(f"deleted with {args}"))
     deploy_azure_container_apps.release_environment(

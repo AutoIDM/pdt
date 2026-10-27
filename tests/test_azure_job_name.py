@@ -67,10 +67,10 @@ def test_the_legacy_name_is_what_pdt_used_before_the_suffix():
 
 
 def test_find_job_falls_back_to_an_owned_legacy_job(monkeypatch):
-    settings = settings_for("pdt")
+    settings = settings_for("pdt") | {"token": "t"}
     shown = {"pdt-hello-world": {"tags": {"managed-by": "pdt", "pdt-app": "hello-world"}}}
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json",
-                        lambda *args: shown.get(args[4]))
+    monkeypatch.setattr(deploy_azure_container_apps, "arm_get",
+                        lambda token, url, az_command: shown.get(az_command[-1]))
     job, current = deploy_azure_container_apps.find_job(settings, "hello-world")
     assert job == "pdt-hello-world" and current is shown["pdt-hello-world"]
 

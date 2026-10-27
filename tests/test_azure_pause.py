@@ -6,7 +6,7 @@ from pdt import deploy_azure, deploy_azure_container_apps
 
 SETTINGS = {
     "subscription": "sub-1", "resource_group": "pdt", "suffix": "abc1234def",
-    "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
+    "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True), "token": "t",
 }
 JOB = deploy_azure_container_apps.job_name(SETTINGS, "my-app")
 JOB_URL = ("https://management.azure.com/subscriptions/sub-1/resourceGroups/pdt/providers"
@@ -26,7 +26,8 @@ def fake_az(monkeypatch, running_state: str):
 
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet", run_quiet)
     # find_job looks the job up under its current name first.
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args: {"name": args[4]})
+    monkeypatch.setattr(deploy_azure_container_apps, "arm_get",
+                        lambda token, url, az_command: {"name": az_command[-1]})
     return calls
 
 
@@ -61,8 +62,8 @@ def test_start_runs_the_job_with_its_own_container_and_a_manual_trigger(monkeypa
                  "resources": {"cpu": 0.5, "memory": "1Gi"},
                  "env": [{"name": "PDT_ENV_JSON", "secretRef": "pdt-env"},
                          {"name": "PDT_STORAGE_URL", "value": "https://store/x"}]}
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args: {
-        "name": args[4], "properties": {"template": {"containers": [container]}}})
+    monkeypatch.setattr(deploy_azure_container_apps, "arm_get", lambda token, url, az_command: {
+        "name": az_command[-1], "properties": {"template": {"containers": [container]}}})
     assert deploy_azure_container_apps.start({"name": "my-app"}, SETTINGS) == 0
     assert calls == [("containerapp", "job", "start", "--name", JOB, "--resource-group", "pdt",
                       "--container-name", JOB, "--image", "pdtabc.azurecr.io/pdt-my-app:1",

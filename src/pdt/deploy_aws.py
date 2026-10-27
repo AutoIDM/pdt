@@ -804,7 +804,8 @@ def ensure_session(app: dict):
     if credentials is None:
         session = boto3.Session(region_name=region, profile_name=choose_profile(app, session))
     try:
-        session.client("sts", config=RETRIES).get_caller_identity()
+        with console.waiting("checking: AWS sign-in", once=True):
+            session.client("sts", config=RETRIES).get_caller_identity()
     except Exception as exc:  # noqa: BLE001 - credential providers raise several types
         if not login_error(exc) or not sso_login(app, session.profile_name):
             fail(f"AWS credentials are unavailable or invalid: {console.escape(str(exc))}\n"
@@ -835,7 +836,8 @@ def forget_preflight_passes() -> None:
 def preflight(sts, iam, expected_account: str, region: str,
               actions: list[str]) -> tuple[str, Callable[[], None]]:
     try:
-        identity = sts.get_caller_identity()
+        with console.waiting("checking: AWS sign-in", once=True):
+            identity = sts.get_caller_identity()
     except Exception as exc:  # noqa: BLE001 - credential providers raise several types
         fail(f"AWS credentials are unavailable or invalid: {console.escape(str(exc))}")
     account = identity["Account"]

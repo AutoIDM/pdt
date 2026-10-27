@@ -113,7 +113,7 @@ def test_the_default_plan_creates_the_shared_group_workspace_and_environment(mon
 
 
 def job_in(group: str, environment) -> dict:
-    return {"resourceGroup": group,
+    return {"id": f"/subscriptions/{SUBSCRIPTION}/resourceGroups/{group}/providers/Microsoft.App/jobs/job",
             "properties": {"environmentId": environment.resource_id(SUBSCRIPTION)}}
 
 
@@ -124,7 +124,8 @@ def release_with(monkeypatch, jobs, other_environments=()):
         if args[:3] == ("containerapp", "job", "list"):
             return jobs
         if args[:2] == ("resource", "list"):
-            return [{"name": name} for name in other_environments]
+            return [{"name": name, "type": "Microsoft.App/managedEnvironments"}
+                    for name in other_environments] + [{"name": "pdt-logs", "type": "x"}]
         return None
 
     fake_azure_reads(monkeypatch, read)
@@ -203,16 +204,13 @@ def test_destroy_with_the_project_group_already_gone_still_releases_the_environm
 def test_destroy_with_the_project_group_already_gone_purges_its_soft_deleted_vault(monkeypatch):
     monkeypatch.setattr(deploy_azure, "az", lambda *args: subprocess.CompletedProcess(args, 1, "", ""))
     plans, purged = [], []
-    deleted_vault = {"properties": {"tags": {"managed-by": "pdt"}}}
+    deleted_vaults = [{"name": "other-vault", "properties": {"tags": {"managed-by": "pdt"}}},
+                      {"name": "pdt-vault", "properties": {"tags": {"managed-by": "pdt"}}}]
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",
                         lambda app, requested: deploy_settings(OWN))
     monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
-    monkeypatch.setattr(
-        deploy_azure_container_apps, "az_json",
-        lambda *args: deleted_vault if args[:2] == ("keyvault", "show-deleted") else None)
-    monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "false")
-    fake_azure_reads(monkeypatch, lambda *args: None)
-    monkeypatch.setattr(deploy_azure_container_apps, "managed_secret", lambda *args: False)
+    fake_azure_reads(monkeypatch, lambda *args: deleted_vaults
+                     if args[:2] == ("keyvault", "show-deleted") else None)
     monkeypatch.setattr(deploy_azure_container_apps, "confirm",
                         lambda actions, *args: plans.append(plain(actions)) or True)
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
@@ -227,12 +225,8 @@ def test_destroy_leaves_a_soft_deleted_vault_pdt_did_not_make(monkeypatch):
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",
                         lambda app, requested: deploy_settings(OWN))
     monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
-    monkeypatch.setattr(
-        deploy_azure_container_apps, "az_json",
-        lambda *args: {"properties": {"tags": {}}} if args[:2] == ("keyvault", "show-deleted") else None)
-    monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "false")
-    fake_azure_reads(monkeypatch, lambda *args: None)
-    monkeypatch.setattr(deploy_azure_container_apps, "managed_secret", lambda *args: False)
+    fake_azure_reads(monkeypatch, lambda *args: [{"name": "pdt-vault", "properties": {"tags": {}}}]
+                     if args[:2] == ("keyvault", "show-deleted") else None)
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
                         lambda *args, **kwargs: pytest.fail(f"ran {args}"))
     assert deploy_azure_container_apps.destroy({"name": "report", "storage": False}, True) == 0

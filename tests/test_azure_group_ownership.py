@@ -6,16 +6,15 @@ SMART = {"name": deploy_azure.SMART_ACTION_GROUP, "type": "microsoft.insights/ac
 STRANGER = {"name": "theirs", "type": "microsoft.insights/actiongroups", "tags": None}
 
 
-def listing(monkeypatch, resources):
-    monkeypatch.setattr(deploy_azure, "az_json",
-                        lambda *args: GROUP if args[0] == "group" else resources)
+def test_the_smart_detection_group_azure_made_does_not_block_deletion():
+    assert deploy_azure.group_can_be_deleted(GROUP, [OWNED, SMART], [])
 
 
-def test_the_smart_detection_group_azure_made_does_not_block_deletion(monkeypatch):
-    listing(monkeypatch, [OWNED, SMART])
-    assert deploy_azure.group_can_be_deleted({"resource_group": "pdt"}, [])
+def test_another_untagged_resource_still_blocks_deletion():
+    assert not deploy_azure.group_can_be_deleted(GROUP, [OWNED, STRANGER], [])
 
 
-def test_another_untagged_resource_still_blocks_deletion(monkeypatch):
-    listing(monkeypatch, [OWNED, STRANGER])
-    assert not deploy_azure.group_can_be_deleted({"resource_group": "pdt"}, [])
+def test_another_app_or_a_group_pdt_did_not_make_blocks_deletion():
+    assert not deploy_azure.group_can_be_deleted(GROUP, [OWNED], ["other-app"])
+    assert not deploy_azure.group_can_be_deleted({"name": "pdt", "tags": {}}, [OWNED], [])
+    assert not deploy_azure.group_can_be_deleted(GROUP, None, [])

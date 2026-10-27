@@ -58,13 +58,13 @@ from pdt.deploy_azure import (
     STORAGE_RESOURCE, STORE_ROLE, VAULT_RESOURCE, access_token, arm_get, arm_list, arm_url,
     assign_role, az, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cli_credential_store, cost_estimate,
-    delete_unless_locked,
+    deleted_vault, delete_unless_locked,
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
     ensure_secret, ensure_store, ensure_workspace, group_can_be_deleted, held_token_store, list_remaining,
     managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
     portal_url, purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, secret_actions, secret_name,
-    secret_reads, secret_scope, secret_state, store_condition, store_description,
+    secret_reads, secret_scope, secret_state, secret_versions, store_condition, store_description,
     store_exists, store_plan, store_reads, store_settings, store_url, store_usage, workspace_keys,
     workspace_resource,
 )
@@ -813,6 +813,17 @@ def environment_resource(settings: dict) -> dict | None:
                    ("containerapp", "env", "show", "--name", environment.name))
 
 
+def registry_resource(settings: dict) -> dict | None:
+    return arm_get(settings["token"], arm_url(resource_id(
+        settings, "Microsoft.ContainerRegistry", "registries", settings["registry"])),
+        ("acr", "show", "--name", settings["registry"]))
+
+
+def shared_group_id(settings: dict) -> str:
+    return (f"/subscriptions/{settings['subscription']}/resourceGroups/"
+            f"{settings['environment'].resource_group}")
+
+
 def check_environment(settings: dict, resource: dict | None) -> None:
     environment = settings["environment"]
     if environment.managed:
@@ -948,12 +959,12 @@ def legacy_job_name(app_name: str) -> str:
 def find_job(settings: dict[str, str], app_name: str) -> tuple[str, dict | None]:
     """The app's job under its current name, else under the name pdt used before `job_name`."""
     job = job_name(settings, app_name)
-    current = az_json("containerapp", "job", "show", "--name", job,
-                      "--resource-group", settings["resource_group"])
+    current = arm_get(settings["token"], job_url(settings, job),
+                      ("containerapp", "job", "show", "--name", job))
     if current is None:
         legacy = legacy_job_name(app_name)
-        old = az_json("containerapp", "job", "show", "--name", legacy,
-                      "--resource-group", settings["resource_group"])
+        old = arm_get(settings["token"], job_url(settings, legacy),
+                      ("containerapp", "job", "show", "--name", legacy))
         if owned_by(old, app_name):
             return legacy, old
     return job, current
@@ -992,8 +1003,6 @@ def read_state(settings: dict, job: str, legacy: str, sid: str, wanted_secret: b
     rg = settings["resource_group"]
     environment = settings["environment"]
     group_id = f"/subscriptions/{settings['subscription']}/resourceGroups/{rg}"
-    shared_id = (f"/subscriptions/{settings['subscription']}/resourceGroups/"
-                 f"{environment.resource_group}")
     vault_token = access_token(VAULT_RESOURCE) if wanted_secret else ""
     with console.waiting("reading: resources and prices"), \
             ThreadPoolExecutor(READ_THREADS) as pool:
@@ -1002,16 +1011,14 @@ def read_state(settings: dict, job: str, legacy: str, sid: str, wanted_secret: b
             "resources": pool.submit(arm_list, token, arm_url(f"{group_id}/resources"),
                                      ("resource", "list", "--resource-group", rg)),
             "group": pool.submit(arm_get, token, arm_url(group_id), ("group", "show", "--name", rg)),
-            "registry": pool.submit(arm_get, token, arm_url(resource_id(
-                settings, "Microsoft.ContainerRegistry", "registries", settings["registry"])),
-                ("acr", "show", "--name", settings["registry"])),
+            "registry": pool.submit(registry_resource, settings),
             "environment": pool.submit(environment_resource, settings),
             "identity": pool.submit(arm_get, token, arm_url(resource_id(
                 settings, "Microsoft.ManagedIdentity", "userAssignedIdentities",
                 settings["identity"])), ("identity", "show", "--name", settings["identity"])),
         }
         if environment.managed:
-            reads["shared_group"] = pool.submit(arm_get, token, arm_url(shared_id), (
+            reads["shared_group"] = pool.submit(arm_get, token, arm_url(shared_group_id(settings)), (
                 "group", "show", "--name", environment.resource_group))
             reads["workspace"] = pool.submit(workspace_resource, settings)
         reads["job"] = pool.submit(job_reads, settings, job, legacy)
@@ -1041,10 +1048,12 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     app_name = app["name"]
-    job, _current = find_job(settings, app_name)
     sid = secret_name(app_name)
-    _vault_exists, current = secret_state(settings, sid, app_name, secret_reads(
-        settings, access_token(VAULT_RESOURCE), sid, True))
+    with console.waiting("reading: resources"), ThreadPoolExecutor(READ_THREADS) as pool:
+        job_read = pool.submit(find_job, settings, app_name)
+        secret_read = pool.submit(secret_reads, settings, access_token(VAULT_RESOURCE), sid, True)
+    job, _current = job_read.result()
+    _vault_exists, current = secret_state(settings, sid, app_name, secret_read.result())
 
     def write(values: dict[str, str]) -> None:
         payload = json.dumps(values, sort_keys=True)
@@ -1248,12 +1257,15 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     return 0
 
 
-def environment_users(settings: dict) -> dict[str, int]:
+def environment_users(settings: dict, token: str) -> dict[str, int]:
     """Jobs outside this project's group that run in the environment, by group."""
     wanted = settings["environment"].resource_id(settings["subscription"]).lower()
     users: dict[str, int] = {}
-    for job in az_json("containerapp", "job", "list") or []:
-        group = str(job.get("resourceGroup") or "")
+    for job in arm_list(token, arm_url(
+            f"/subscriptions/{settings['subscription']}/providers/Microsoft.App/jobs"),
+            ("containerapp", "job", "list")) or []:
+        match = re.search(r"/resourceGroups/([^/]+)/", str(job.get("id") or ""), re.IGNORECASE)
+        group = match.group(1) if match else ""
         if group.lower() == settings["resource_group"].lower():
             continue
         if str((job.get("properties") or {}).get("environmentId") or "").lower() == wanted:
@@ -1264,10 +1276,11 @@ def environment_users(settings: dict) -> dict[str, int]:
 def other_environments(settings: dict) -> list[str]:
     environment = settings["environment"]
     return sorted(
-        str(item.get("name")) for item in az_json(
-            "resource", "list", "--resource-group", environment.resource_group,
-            "--resource-type", ENVIRONMENT_TYPE) or []
-        if str(item.get("name")) != environment.name)
+        str(item.get("name")) for item in arm_list(
+            settings["token"], arm_url(f"{shared_group_id(settings)}/resources"),
+            ("resource", "list", "--resource-group", environment.resource_group)) or []
+        if str(item.get("type")).lower() == ENVIRONMENT_TYPE.lower()
+        and str(item.get("name")) != environment.name)
 
 
 @dataclasses.dataclass
@@ -1286,11 +1299,12 @@ def environment_release(settings: dict) -> Release:
                             "own; pdt leaves it as it is")
     resource = environment_resource(settings)
     if resource is None:
-        group = az_json("group", "show", "--name", environment.resource_group)
+        group = arm_get(settings["token"], arm_url(shared_group_id(settings)),
+                        ("group", "show", "--name", environment.resource_group))
         return Release(group=managed_by_pdt(group) and not other_environments(settings))
     if not managed_by_pdt(resource):
         return Release()
-    users = environment_users(settings)
+    users = environment_users(settings, settings["token"])
     if users:
         return Release(note=users_note(settings, users))
     return Release(environment=True, group=not other_environments(settings))
@@ -1320,7 +1334,9 @@ def release_actions(settings: dict, release: Release) -> list[console.Markup]:
 def release_environment(settings: dict, release: Release) -> None:
     environment = settings["environment"]
     if release.environment:
-        users = environment_users(settings)
+        # A new token: the user can wait at the confirm question for any length of time,
+        # and the token that preflight got can expire meanwhile.
+        users = environment_users(settings, access_token())
         if users:
             console.note(users_note(settings, users))
             return
@@ -1355,37 +1371,64 @@ def destroy(app: dict, assume_yes: bool) -> int:
     console.status("Checking your Azure sign-in...")
     settings = preflight(app, azure_settings(app))
     name = app["name"]
-    job, current_job = find_job(settings, name)
     sid = secret_name(name)
     rg = settings["resource_group"]
-    managed_job = owned_by(current_job, name)
-    secret_owned = managed_secret(settings, sid, name)
-    if current_job and not managed_job:
-        console.note(f"Container Apps Job {console.value(job)} is not owned by this app; "
-                     "keeping it")
+    token = settings["token"]
+    group_id = f"/subscriptions/{settings['subscription']}/resourceGroups/{rg}"
+    locks = shared_locks(settings, lock_owner(name))
     store = store_settings(settings) if app["storage"] else None
-    store_present = store_exists(store, store_reads(settings["token"], store)) if store else False
-    deployer = cli_credential_store(settings, name) if store_present else None
-    principal_id = ((current_job or {}).get("identity") or {}).get("principalId")
-    grant = ""
-    if deployer and managed_job and principal_id:
-        grant = console.Markup(f"revoke {console.value(job)}'s write access to "
-                               f"{console.value(f'{name}/')} in {store_description(store)}")
-        warn_if_locked(deployer, name)
-    others = other_pdt_apps(rg, name)
-    # A run that stopped after the project group went may still owe the
-    # environment, so a missing group takes the same path as a deletable one.
-    group_exists = az_tsv("group", "exists", "--name", rg) == "true"
-    held = [lock for lock in shared_locks(settings, lock_owner(name))
-            if lock.exists(settings["token"])]
+    console.status("Checking current state in Azure subscription "
+                   f"{console.value(settings['subscription'])} "
+                   f"({console.value(settings['region'])})...")
+    release_read = vault_read = None
+    image_exists = False
+    with console.waiting("reading: resources"), ThreadPoolExecutor(READ_THREADS) as pool:
+        job_read = pool.submit(find_job, settings, name)
+        group_read = pool.submit(arm_get, token, arm_url(group_id), ("group", "show", "--name", rg))
+        resources_read = pool.submit(arm_list, token, arm_url(f"{group_id}/resources"),
+                                     ("resource", "list", "--resource-group", rg))
+        registry_read = pool.submit(registry_resource, settings)
+        held_read = pool.submit(lambda: [lock for lock in locks if lock.exists(token)])
+        store_read = pool.submit(store_reads, token, store) if store else None
+        vault_token = access_token(VAULT_RESOURCE)
+        vault, _secret, _versions = secret_reads(settings, vault_token, sid, False)
+        versions_read = pool.submit(secret_versions, settings, vault_token, sid) if vault else None
+        group_exists = group_read.result() is not None
+        others = other_pdt_apps(resources_read.result() or [], name)
+        # A run that stopped after the project group went may still owe the
+        # environment, so a missing group takes the same path as a deletable one.
+        deletable = not group_exists or group_can_be_deleted(
+            group_read.result(), resources_read.result(), others)
+        if deletable:
+            release_read = pool.submit(environment_release, settings)
+            if not group_exists:
+                vault_read = pool.submit(deleted_vault, settings)
+        else:
+            # The Azure CLI runs in this process, so its one read here stays on this thread.
+            image_exists = has_image(settings, name, registry_read.result())
+        job, current_job = job_read.result()
+        managed_job = owned_by(current_job, name)
+        secret_owned = managed_secret(versions_read.result() if versions_read else [], name)
+        if current_job and not managed_job:
+            console.note(f"Container Apps Job {console.value(job)} is not owned by this app; "
+                         "keeping it")
+        store_present = store_exists(store, store_read.result()) if store else False
+        deployer = cli_credential_store(settings, name) if store_present else None
+        principal_id = ((current_job or {}).get("identity") or {}).get("principalId")
+        grant = ""
+        if deployer and managed_job and principal_id:
+            grant = console.Markup(f"revoke {console.value(job)}'s write access to "
+                                   f"{console.value(f'{name}/')} in {store_description(store)}")
+            warn_if_locked(deployer, name)
+    held = held_read.result()
     unlock = [console.Markup(f"remove lock {console.value(lock.name)} from {lock.label}")
               for lock in held]
     # A run stopped between the group delete and the purge leaves the vault
     # soft-deleted, still holding its global name.
-    orphan_vault = not group_exists and managed_by_pdt((az_json(
-        "keyvault", "show-deleted", "--name", settings["vault"]) or {}).get("properties"))
-    if not group_exists or group_can_be_deleted(settings, others):
-        release = environment_release(settings)
+    orphan_vault = vault_read is not None and managed_by_pdt(
+        (vault_read.result() or {}).get("properties"))
+    if deletable:
+        release = release_read.result()
         actions = unlock[:]
         if grant:
             actions.append(grant)
@@ -1420,15 +1463,16 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if group_exists and not destroy_group(settings, name):
             # Another app joined the group meanwhile, so this one leaves the
             # way it would have with a sibling: its own job, image, and secret.
+            # The token preflight read can expire while the user reads the question.
+            settings["token"] = access_token()
             remove_app(settings, name, job, sid, managed_job, secret_owned, principal_id,
-                       has_image(settings, name))
+                       has_image(settings, name, registry_resource(settings)))
             list_remaining(rg)
         else:
             release_environment(settings, release)
         if deployer:
             console.say(kept_line(store, deployer, name))
         return 0
-    image_exists = has_image(settings, name)
     actions = unlock[:]
     if grant:
         actions.append(grant)
@@ -1457,9 +1501,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     return 0
 
 
-def has_image(settings: dict, name: str) -> bool:
-    registry = az_json("acr", "show", "--name", settings["registry"],
-                       "--resource-group", settings["resource_group"])
+def has_image(settings: dict, name: str, registry: dict | None) -> bool:
     registry_owned = managed_by_pdt(registry)
     if registry is not None and not registry_owned:
         console.note(f"ACR {console.value(settings['registry'])} is not managed by PDT; "

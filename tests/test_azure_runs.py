@@ -11,6 +11,7 @@ from pdt import deploy_azure, deploy_azure_container_apps, runs_cli
 SETTINGS = {
     "subscription": "123456789012", "resource_group": "pdt", "workspace": "pdt-logs",
     "suffix": "abc1234def", "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
+    "token": "t",
 }
 
 
@@ -34,6 +35,8 @@ def fake_az(monkeypatch, execs, marker_rows=()):
         return subprocess.CompletedProcess(args, 0, json.dumps(rows), "")
 
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", az_json)
+    monkeypatch.setattr(deploy_azure_container_apps, "arm_get",
+                        lambda token, url, az_command: {"name": az_command[-1]})
     monkeypatch.setattr(deploy_azure_container_apps, "az", az)
     monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "workspace-id")
     return calls
@@ -393,6 +396,5 @@ def test_logs_list_names_the_workspace_once_and_each_execution(monkeypatch, caps
     assert lines[2].split()[-1] == "running"
     assert lines[3].split()[:2] == ["2", "job-a"]
     assert lines[3].split()[-1] == "0"
-    assert [call[:3] for call in calls] == [("containerapp", "job", "show"),
-                                            ("containerapp", "job", "execution"),
+    assert [call[:3] for call in calls] == [("containerapp", "job", "execution"),
                                             ("rest", "--method", "post")]
