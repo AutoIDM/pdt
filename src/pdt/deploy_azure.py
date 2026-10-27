@@ -506,7 +506,7 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
     for index, sub in enumerate(available, 1):
         console.choice(index, str(sub.get("name")), str(sub.get("id")))
     try:
-        answer = input(f"Deploy to which one? [1-{len(available)}, or a subscription id] ").strip()
+        answer = console.read(f"Deploy to which one? [1-{len(available)}, or a subscription id] ")
     except EOFError:
         answer = ""
     typed = [sub for sub in available if answer in (sub.get("id"), sub.get("name"))]

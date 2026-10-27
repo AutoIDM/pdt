@@ -1,10 +1,13 @@
 import io
 import re
+import subprocess
+import sys
+import threading
 
 import pytest
 from rich.console import Console
 
-from pdt import console
+from pdt import console, deploy, lifecycle
 from pdt.utils import email_auth
 
 
@@ -110,6 +113,186 @@ def test_confirm_raises_eof_after_a_wrong_answer(monkeypatch):
     answering(monkeypatch, "maybe")
     with pytest.raises(EOFError):
         console.confirm()
+
+
+def on_terminal(monkeypatch, **options):
+    out = io.StringIO()
+    for name, stderr in (("_console", False), ("_errors", True)):
+        monkeypatch.setattr(console, name, console.MainThreadConsole(
+            file=out, stderr=stderr, force_terminal=True, color_system=None, highlight=False,
+            soft_wrap=True, **options))
+    return out
+
+
+@pytest.fixture
+def terminal(monkeypatch):
+    return on_terminal(monkeypatch, force_interactive=True)
+
+
+def in_thread(*lines):
+    printer = threading.Thread(target=lambda: [console.say(line) for line in lines])
+    printer.start()
+    printer.join()
+
+
+@pytest.mark.parametrize("ask", [lambda: console.confirm("Start a run now?"),
+                                 lambda: console.ask("Which region"),
+                                 lambda: console.read("Deploy to which one? [1-2] "),
+                                 lambda: console.secret("Secret access key (hidden): ")])
+def test_a_line_from_another_thread_waits_until_the_question_is_answered(monkeypatch, terminal,
+                                                                          ask):
+    out = terminal
+
+    def fake_input(prompt="", stream=None):
+        alert = threading.Thread(target=lambda: (
+            console.event_failed("The slack alert could not send app:deploy-completed"),
+            console.event("Deployed report", "not delivered to slack:")))
+        alert.start()
+        alert.join()
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr("getpass.getpass", fake_input)
+    ask()
+    assert out.getvalue().splitlines()[1:] == [
+        "The slack alert could not send app:deploy-completed",
+        "[alert] not delivered to slack: Deployed report"]
+
+
+def test_a_line_waits_until_the_answer_when_output_is_not_a_terminal(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", console.MainThreadConsole(file=out, highlight=False))
+
+    def fake_input(prompt=""):
+        in_thread("background warning")
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    console.confirm()
+    assert out.getvalue().splitlines() == ["Proceed? [y/N] ", "background warning"]
+
+
+def test_a_line_waits_until_a_provider_script_has_asked_and_ended(monkeypatch, terminal):
+    def provider(args, check, env):
+        terminal.write("Provider deploy: proceed? [y/N] ")
+        in_thread("Parent alert could not send app:deploy-started")
+        terminal.write("y\n")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(deploy, "provider_env", lambda extra, rebuild: {})
+    monkeypatch.setattr(deploy.subprocess, "run", provider)
+    assert deploy.dispatch("aws", "deploy", "report", False) == 0
+    console.say("Deployed.")
+    assert terminal.getvalue().splitlines() == [
+        "Provider deploy: proceed? [y/N] y", "Parent alert could not send app:deploy-started",
+        "Deployed."]
+
+
+def test_a_line_from_before_the_question_prints_before_the_prompt(monkeypatch, terminal):
+    answering(monkeypatch, "y")
+    in_thread("background line")
+    console.confirm()
+    assert terminal.getvalue().splitlines() == ["background line", "Proceed? [y/N] "]
+
+
+def test_queued_lines_print_before_a_line_queued_while_they_print(monkeypatch, terminal):
+    class First:
+        def __rich__(self):
+            in_thread("new line 3")
+            return "old line 1"
+
+    printer = threading.Thread(target=lambda: (console.styled(First()),
+                                               console.say("old line 2")))
+    printer.start()
+    printer.join()
+    console.drain()
+    assert terminal.getvalue().splitlines() == ["old line 1", "old line 2", "new line 3"]
+
+
+def test_a_spinner_redraws_while_the_main_thread_waits(terminal):
+    with console.waiting("waiting: Slack"):
+        for _ in range(50):
+            if "waiting: Slack" in terminal.getvalue():
+                break
+            threading.Event().wait(0.05)
+        assert "waiting: Slack" in terminal.getvalue()
+
+
+@pytest.mark.parametrize("stop", [EOFError, KeyboardInterrupt])
+def test_a_stopped_question_ends_its_line_before_the_queued_lines(monkeypatch, terminal, stop):
+    def fake_input(prompt=""):
+        in_thread("Queued alert warning")
+        raise stop
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    with pytest.raises(stop):
+        console.confirm()
+    assert terminal.getvalue() == "Proceed? [y/N] \nQueued alert warning\n"
+
+
+def test_a_stopped_question_ends_its_line_with_nothing_queued(monkeypatch, terminal):
+    answering(monkeypatch)
+    with pytest.raises(EOFError):
+        console.confirm()
+    assert terminal.getvalue() == "Proceed? [y/N] \n"
+
+
+def test_lifecycle_flush_prints_the_queued_lines(terminal):
+    in_thread("The slack alert could not send app:deploy-completed")
+    lifecycle.flush()
+    assert terminal.getvalue() == "The slack alert could not send app:deploy-completed\n"
+
+
+@pytest.mark.parametrize("end", ["pass", "raise SystemExit(3)", "raise KeyboardInterrupt"])
+def test_a_queued_line_prints_when_the_process_exits(end):
+    script = ("import threading\n"
+              "from pdt import console\n"
+              "printer = threading.Thread(target=console.say, args=('late line',))\n"
+              "printer.start()\n"
+              "printer.join()\n"
+              f"{end}\n")
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.stdout == "late line\n"
+
+
+def test_a_line_from_another_thread_after_the_exit_drain_prints_at_once():
+    script = ("import atexit, threading\n"
+              "def late():\n"
+              "    printer = threading.Thread(target=console.say, args=('after exit',))\n"
+              "    printer.start()\n"
+              "    printer.join()\n"
+              "atexit.register(late)\n"
+              "from pdt import console\n")
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.stdout == "after exit\n"
+
+
+def test_a_drain_on_another_thread_prints_nothing_inside_a_question(monkeypatch, terminal):
+    def fake_input(prompt=""):
+        worker = threading.Thread(target=lambda: (console.say("worker warning"), console.drain()))
+        worker.start()
+        worker.join()
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    console.confirm()
+    assert terminal.getvalue().splitlines() == ["Proceed? [y/N] ", "worker warning"]
+
+
+def test_data_prints_after_the_queued_lines(monkeypatch, terminal):
+    monkeypatch.setattr(console, "_data", terminal)
+    in_thread("queued warning")
+    console.data('{"ok": true}')
+    assert terminal.getvalue() == 'queued warning\n{"ok": true}\n'
+
+
+def test_a_piped_answer_ends_the_question_line():
+    script = ("from pdt import console\n"
+              "console.confirm()\n"
+              "console.say('background warning')\n")
+    result = subprocess.run([sys.executable, "-c", script], input="y\n", capture_output=True,
+                            text=True)
+    assert result.stdout == "Proceed? [y/N] \nbackground warning\n"
 
 
 def test_a_sign_in_prompt_asks_again_then_takes_its_yes_default(monkeypatch, capsys):
