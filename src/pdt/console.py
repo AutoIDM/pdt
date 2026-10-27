@@ -27,18 +27,37 @@ import os
 import sys
 import threading
 from contextlib import contextmanager
+from functools import partial
 from time import monotonic
-from typing import Iterator
+from typing import Any, Iterator
 
 from rich.console import Console
 from rich.markup import escape
 from rich.text import Text
 
+# The thread whose question waits for an answer, and each line another thread printed since.
+_asker: threading.Thread | None = None
+_held: list[partial] = []
+_hold = threading.Lock()
+
+
+class Held(Console):
+    """A Console that holds each line another thread prints while a question waits for its
+    answer, such as an alert that could not send, and prints it after the answer."""
+
+    def print(self, *objects: Any, **options: Any) -> None:
+        with _hold:
+            if _asker is not None and _asker is not threading.current_thread():
+                _held.append(partial(super().print, *objects, **options))
+                return
+        super().print(*objects, **options)
+
+
 # soft_wrap keeps a long path or command on one logical line: the terminal
 # wraps it at the edge, and rich never re-flows it at a word boundary.
-_console = Console(highlight=False, soft_wrap=True, emoji=False)
+_console = Held(highlight=False, soft_wrap=True, emoji=False)
 # For a line from another thread that must reach stderr while _console prints on.
-_errors = Console(stderr=True, highlight=False, soft_wrap=True, emoji=False)
+_errors = Held(stderr=True, highlight=False, soft_wrap=True, emoji=False)
 
 # The real stdout, for `data`, once `json_output` has moved stdout to stderr.
 _data = None
@@ -362,9 +381,37 @@ def log_line(time: str, level: str, message: str) -> None:
     _console.print(line)
 
 
+def _answer(prompt: str, markup: bool = True, password: bool = False) -> str:
+    """Read one answer. On a terminal, as for `waiting`, a line that another thread prints
+    meanwhile waits until the answer, so it does not land inside the question."""
+    global _asker
+    if not _console.is_interactive or _data is not None:
+        return _console.input(prompt, markup=markup, password=password)
+    with _hold:
+        _asker = threading.current_thread()
+    try:
+        return _console.input(prompt, markup=markup, password=password)
+    finally:
+        with _hold:
+            _asker, held = None, _held.copy()
+            _held.clear()
+        for line in held:
+            line()
+
+
 def ask(question: str, default: str = "") -> str:
     suffix = f" [{default}]" if default != "" else ""
-    return _console.input(f"{question}{suffix}: ", markup=False).strip()
+    return _answer(f"{question}{suffix}: ", markup=False).strip()
+
+
+def read(prompt: str) -> str:
+    """The line the user types after `prompt`, which prints as is."""
+    return _answer(prompt, markup=False).strip()
+
+
+def secret(prompt: str) -> str:
+    """The line the user types after `prompt`, which does not show as it is typed."""
+    return _answer(prompt, markup=False, password=True).strip()
 
 
 YES_NO = {"y": True, "yes": True, "n": False, "no": False}
@@ -377,7 +424,7 @@ def confirm(question: str = "Proceed?", default: bool = False, choices: str = ""
     End of input raises EOFError."""
     choices = escape(choices) or ("\\[Y/n]" if default else "\\[y/N]")
     while True:
-        answer = _console.input(f"[bold]{escape(question)}[/] {choices} ").strip().lower()
+        answer = _answer(f"[bold]{escape(question)}[/] {choices} ").strip().lower()
         if answer == "":
             return default
         if answer in YES_NO:

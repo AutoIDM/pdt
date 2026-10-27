@@ -112,7 +112,7 @@ def oauth_setup_help(host: str, configured_auth: str,
 
 def _ask(prompt: str) -> str:
     try:
-        return input(prompt).strip()
+        return console.read(prompt)
     except EOFError:
         return ""
 

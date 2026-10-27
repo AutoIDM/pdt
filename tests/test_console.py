@@ -1,5 +1,6 @@
 import io
 import re
+import threading
 
 import pytest
 from rich.console import Console
@@ -110,6 +111,34 @@ def test_confirm_raises_eof_after_a_wrong_answer(monkeypatch):
     answering(monkeypatch, "maybe")
     with pytest.raises(EOFError):
         console.confirm()
+
+
+@pytest.mark.parametrize("ask", [lambda: console.confirm("Start a run now?"),
+                                 lambda: console.ask("Which region"),
+                                 lambda: console.read("Deploy to which one? [1-2] "),
+                                 lambda: console.secret("Secret access key (hidden): ")])
+def test_a_line_from_another_thread_waits_until_the_question_is_answered(monkeypatch, ask):
+    out = io.StringIO()
+    for name, stderr in (("_console", False), ("_errors", True)):
+        monkeypatch.setattr(console, name, console.Held(
+            file=out, stderr=stderr, force_terminal=True, force_interactive=True,
+            color_system=None, highlight=False, soft_wrap=True))
+
+    def fake_input(prompt="", stream=None):
+        alert = threading.Thread(target=lambda: (
+            console.event_failed("The slack alert could not send app:deploy-completed"),
+            console.event("Deployed report", "not delivered to slack:")))
+        alert.start()
+        alert.join()
+        out.write("y\n")
+        return "y"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr("getpass.getpass", fake_input)
+    ask()
+    assert out.getvalue().splitlines()[1:] == [
+        "The slack alert could not send app:deploy-completed",
+        "[alert] not delivered to slack: Deployed report"]
 
 
 def test_a_sign_in_prompt_asks_again_then_takes_its_yes_default(monkeypatch, capsys):

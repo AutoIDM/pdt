@@ -301,7 +301,7 @@ def choose_project(app: dict, requested: str) -> str:
         console.note("Your Google account has no Google Cloud project yet.")
         choices = "type a new project id to create it"
     try:
-        answer = input(f"Deploy to which one? [{choices}] ").strip()
+        answer = console.read(f"Deploy to which one? [{choices}] ")
     except EOFError:
         answer = ""
     ids = [entry[0] for entry in available]
@@ -340,8 +340,8 @@ def create_project(project: str) -> None:
         for index, entry in enumerate(accounts, 1):
             console.choice(index, entry["displayName"], entry["name"].removeprefix("billingAccounts/"))
         try:
-            answer = input(f"Which billing account should pay for this project? "
-                           f"[1-{len(accounts)}] ").strip()
+            answer = console.read(f"Which billing account should pay for this project? "
+                                  f"[1-{len(accounts)}] ")
         except EOFError:
             answer = ""
         if not (answer.isdigit() and 1 <= int(answer) <= len(accounts)):
