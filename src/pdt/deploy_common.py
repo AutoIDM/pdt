@@ -297,6 +297,18 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def run_main(main: Callable[[], int]) -> None:
+    """Exit with main's code, or with 130 at once after a Ctrl+C. A normal exit waits for
+    every worker thread, and a worker that waits on the network keeps the script running."""
+    try:
+        code = main()
+    except KeyboardInterrupt:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(130)
+    sys.exit(code)
+
+
 @dataclasses.dataclass
 class CostEstimate:
     """What a deploy will cost per month, shown before the user agrees.

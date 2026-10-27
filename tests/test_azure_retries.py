@@ -118,17 +118,21 @@ def test_job_create_retries_an_internal_error(monkeypatch):
 
 
 class FakeCli:
-    """Sets up its log handler once, on sys.stderr as it is then, and turns Ctrl+C during a
-    `rest` call into exit code 1, as knack does."""
+    """Sets up its log handler once, on sys.stderr as it is then, as knack does. A Ctrl+C
+    during a `rest` call becomes exit code 1, as knack does, and during an `acr build` it
+    becomes success, as the build's log stream does."""
 
     def invoke(self, args, out_file):
         import logging
+        import signal
         import types
         self.result = types.SimpleNamespace(error=None)
-        if args[0] == "rest":
+        if args[0] in ("rest", "acr"):
             try:
-                raise KeyboardInterrupt
+                signal.raise_signal(signal.SIGINT)
             except KeyboardInterrupt as exc:
+                if args[0] == "acr":
+                    return 0
                 self.result.error = exc
                 return 1
         logger = logging.getLogger("cli")
@@ -173,6 +177,11 @@ SETTINGS = {"subscription": "123456789012", "resource_group": "pdt", "workspace"
 def test_ctrl_c_during_an_az_call_stops_pdt(fake_cli):
     with pytest.raises(KeyboardInterrupt):
         deploy_azure.az("rest", "--method", "get", "--url", "https://management.azure.com/")
+
+
+def test_ctrl_c_during_a_cloud_build_stops_pdt(fake_cli):
+    with pytest.raises(KeyboardInterrupt):
+        deploy_azure.az("acr", "build", "--registry", "pdtreport", "stage")
 
 
 def test_ctrl_c_during_a_log_analytics_query_is_not_an_azure_error(fake_cli, monkeypatch, capsys):

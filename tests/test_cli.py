@@ -1131,7 +1131,7 @@ def test_rebuild_reaches_the_provider_script_as_pdt_rebuild(project, monkeypatch
     monkeypatch.delenv(REBUILD_ENV, raising=False)
     envs = []
     monkeypatch.setattr(deploy, "announce_install", lambda script: None)
-    monkeypatch.setattr(deploy.subprocess, "run", lambda args, **kwargs: envs.append(
+    monkeypatch.setattr(deploy, "run_provider", lambda args, **kwargs: envs.append(
         kwargs["env"]) or SimpleNamespace(returncode=0))
     assert run_cli(monkeypatch, "deploy", "hello-world", "--yes", *argv) == 0
     assert [env.get(REBUILD_ENV) for env in envs] == [rebuild]
@@ -1145,3 +1145,15 @@ def test_run_deployed_follow_starts_the_job_and_follows_its_log(project, monkeyp
     assert run_cli(monkeypatch, "run", "hello-world", "--deployed", "--follow") == 1
     assert calls == [("azure", "start", "hello-world", False, ["--", "--follow"])]
     assert "pdt runs hello-world" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("tool, script", [("az", "deploy_azure.py"), ("aws", "deploy_aws.py"),
+                                          ("gcloud", "deploy_google_cloud.py")])
+def test_a_cloud_cli_passthrough_runs_its_provider_script(monkeypatch, tool, script):
+    calls = []
+    monkeypatch.setattr(deploy, "announce_install", lambda script: None)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: pytest.fail("subprocess.run"))
+    monkeypatch.setattr(deploy, "run_provider", lambda args, **kwargs: calls.append(
+        args) or SimpleNamespace(returncode=3))
+    assert run_cli(monkeypatch, tool, "version") == 3
+    assert calls[0][-3:] == [str(Path(cli.__file__).with_name(script)), tool, "version"]

@@ -63,7 +63,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm, show_plan
-from pdt.deploy_common import CostEstimate, warn_if_locked
+from pdt.deploy_common import CostEstimate, run_main, warn_if_locked
 from pdt.pwsh import ensure_pwsh
 from pdt.run_windows_task import EVENT_SOURCE, LINE_TIME, MANUAL_START
 
@@ -764,4 +764,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     console.json_output()
-    sys.exit(main())
+    run_main(main)
