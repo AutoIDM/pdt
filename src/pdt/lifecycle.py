@@ -242,7 +242,8 @@ def _fall_back(item: list) -> None:
 
 def flush() -> None:
     """Wait at most FLUSH_SECONDS for every open delivery, then print each one still open
-    on the console. A Ctrl+C ends the wait early."""
+    on the console, after each line that a delivery thread printed. A Ctrl+C ends the wait
+    early."""
     deadline = time.monotonic() + FLUSH_SECONDS
     with _lock:
         try:
@@ -254,6 +255,7 @@ def flush() -> None:
             if item[3] == "open":
                 _fall_back(item)
         _open.clear()
+    console.drain()
 
 
 def emit(name: str, **params: object) -> Event:

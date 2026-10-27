@@ -28,7 +28,6 @@ from __future__ import annotations
 import argparse
 import configparser
 import functools
-import getpass
 import hashlib
 import json
 import os
@@ -408,7 +407,7 @@ def can_ask() -> bool:
 
 def ask(prompt: str) -> str:
     try:
-        return input(prompt).strip()
+        return console.read(prompt)
     except EOFError:
         return ""
 
@@ -544,7 +543,7 @@ def create_sso_profile(app: dict) -> str:
 
 def create_key_profile() -> str:
     key_id = console.ask("Access key ID")
-    secret = getpass.getpass("Secret access key (hidden): ").strip()
+    secret = console.secret("Secret access key (hidden): ")
     if not key_id or not secret:
         fail("no access key given; run the same command again and paste the access key ID "
              "and the secret access key")

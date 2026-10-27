@@ -195,7 +195,7 @@ def test_a_refused_sign_in_fails_plainly(aws, monkeypatch, capsys):
 
 def test_access_key_setup_writes_a_private_default_profile(aws, project, monkeypatch):
     answers(monkeypatch, "2", "AKIAEXAMPLE")
-    monkeypatch.setattr(deploy_aws.getpass, "getpass", lambda prompt: "hidden-secret")
+    monkeypatch.setattr("getpass.getpass", lambda prompt="", stream=None: "hidden-secret")
     profile = deploy_aws.choose_profile(app(project), boto3.Session())
     assert profile == "default"
     credentials = aws / ".aws" / "credentials"
