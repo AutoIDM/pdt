@@ -103,8 +103,7 @@ def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
     env = provider_env(extra, rebuild)
     if platform is not None:
         env[config.DEPLOYED_PLATFORM_ENV] = json.dumps({"app": app_name, "platform": platform})
-    with console.asking():
-        return subprocess.run(args, check=False, env=env).returncode
+    return subprocess.run(args, check=False, env=env).returncode
 
 
 def dispatch_output(provider: str, command: str, app_name: str,

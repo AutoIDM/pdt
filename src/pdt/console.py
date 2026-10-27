@@ -23,6 +23,7 @@ Import the module, not its functions: `from pdt import console`, then
 
 from __future__ import annotations
 
+import atexit
 import os
 import sys
 import threading
@@ -32,44 +33,50 @@ from time import monotonic
 from typing import Any, Iterator
 
 from rich.console import Console
+from rich.control import Control
 from rich.markup import escape
 from rich.text import Text
 
-# The thread whose question waits for an answer, how many of its `asking` blocks are open,
-# each line another thread printed since, and how many prints are under way.
-_asker: threading.Thread | None = None
-_asks = 0
-_held: list[partial] = []
-_printing = 0
-_hold = threading.Condition()
+# Each line that a thread other than the main thread printed, in order, for the main
+# thread to print.
+_queued: list[partial] = []
+_queue = threading.Lock()
 
 
-class Held(Console):
-    """A Console that holds each line another thread prints while a question waits for its
-    answer, such as an alert that could not send, and prints it after the answer."""
+class MainThread(Console):
+    """A Console on which only the main thread writes, so a line from another thread, such
+    as an alert that could not send, never lands inside a question. Such a line waits in a
+    queue until the main thread prints its next line, reads an answer, or exits."""
 
     def print(self, *objects: Any, **options: Any) -> None:
-        global _printing
-        with _hold:
-            if _asker is not None and _asker is not threading.current_thread():
-                _held.append(partial(super().print, *objects, **options))
-                return
-            _printing += 1
-        # Outside _hold, since a rich Live prints while it holds its own lock, and this print
-        # can take that lock.
-        try:
-            super().print(*objects, **options)
-        finally:
-            with _hold:
-                _printing -= 1
-                _hold.notify_all()
+        main = threading.current_thread() is threading.main_thread()
+        # A Control alone is a spinner's redraw from rich's refresh thread, not a line.
+        if not main and not (objects and all(isinstance(o, Control) for o in objects)):
+            with _queue:
+                _queued.append(partial(super().print, *objects, **options))
+            return
+        if main:
+            drain()
+        super().print(*objects, **options)
 
+
+def drain() -> None:
+    """Print each queued line, in order. Only the main thread calls this."""
+    while True:
+        with _queue:
+            if not _queued:
+                return
+            line = _queued.pop(0)
+        line()
+
+
+atexit.register(drain)
 
 # soft_wrap keeps a long path or command on one logical line: the terminal
 # wraps it at the edge, and rich never re-flows it at a word boundary.
-_console = Held(highlight=False, soft_wrap=True, emoji=False)
+_console = MainThread(highlight=False, soft_wrap=True, emoji=False)
 # For a line from another thread that must reach stderr while _console prints on.
-_errors = Held(stderr=True, highlight=False, soft_wrap=True, emoji=False)
+_errors = MainThread(stderr=True, highlight=False, soft_wrap=True, emoji=False)
 
 # The real stdout, for `data`, once `json_output` has moved stdout to stderr.
 _data = None
@@ -393,46 +400,17 @@ def log_line(time: str, level: str, message: str) -> None:
     _console.print(line)
 
 
-@contextmanager
-def asking() -> Iterator[None]:
-    """A block in which a question may wait for an answer: one that pdt asks, or one that a
-    provider script asks in a child process. When the user answers at a terminal, each line
-    that another thread prints in the block prints after the outermost block ends, in order.
-    A question from another thread waits until then. A block that a Ctrl+C or the end of
-    input stops ends the question line first."""
-    global _asker, _asks
-    if not (sys.stdin.isatty() and _console.is_terminal) or _data is not None:
-        yield
-        return
-    with _hold:
-        _hold.wait_for(lambda: _asker in (None, threading.current_thread()))
-        _asker, _asks = threading.current_thread(), _asks + 1
-        _hold.wait_for(lambda: _printing == 0)
+def _answer(prompt: str, markup: bool = True, password: bool = False) -> str:
+    """Read one answer; each line that another thread printed meanwhile prints after it. A
+    Ctrl+C or the end of input ends the question line, so a line printed next, here or by
+    the pdt process that started this provider script, starts a line of its own."""
     try:
-        yield
-    except BaseException:
-        with _hold:
-            if _held and _asks == 1:
-                _held.insert(0, partial(Console.print, _console))
+        return _console.input(prompt, markup=markup, password=password)
+    except (EOFError, KeyboardInterrupt):
+        Console.print(_console)
         raise
     finally:
-        with _hold:
-            _asks -= 1
-        while _asks == 0:
-            with _hold:
-                if not _held:
-                    _asker = None
-                    _hold.notify_all()
-                    break
-                line = _held.pop(0)
-            line()
-
-
-def _answer(prompt: str, markup: bool = True, password: bool = False) -> str:
-    """Read one answer. On a terminal, a line that another thread prints while the question
-    waits prints after the answer, so it does not land inside the question."""
-    with asking():
-        return _console.input(prompt, markup=markup, password=password)
+        drain()
 
 
 def ask(question: str, default: str = "") -> str:

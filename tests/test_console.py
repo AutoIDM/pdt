@@ -1,12 +1,13 @@
 import io
 import re
 import subprocess
+import sys
 import threading
 
 import pytest
 from rich.console import Console
 
-from pdt import console, deploy
+from pdt import console, deploy, lifecycle
 from pdt.utils import email_auth
 
 
@@ -117,9 +118,8 @@ def test_confirm_raises_eof_after_a_wrong_answer(monkeypatch):
 def on_terminal(monkeypatch, **options):
     """Both consoles on one terminal, as the person who answers a question sees them."""
     out = io.StringIO()
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     for name, stderr in (("_console", False), ("_errors", True)):
-        monkeypatch.setattr(console, name, console.Held(
+        monkeypatch.setattr(console, name, console.MainThread(
             file=out, stderr=stderr, force_terminal=True, color_system=None, highlight=False,
             soft_wrap=True, **options))
     return out
@@ -162,10 +162,9 @@ def test_a_line_from_another_thread_waits_until_the_question_is_answered(monkeyp
         "[alert] not delivered to slack: Deployed report"]
 
 
-
-def test_a_line_waits_until_the_answer_on_a_terminal_that_cannot_animate(monkeypatch):
-    monkeypatch.setenv("TERM", "dumb")
-    out = on_terminal(monkeypatch)
+def test_a_line_waits_until_the_answer_when_output_is_not_a_terminal(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", console.MainThread(file=out, highlight=False))
 
     def fake_input(prompt=""):
         in_thread("background warning")
@@ -187,99 +186,78 @@ def test_a_line_waits_until_a_provider_script_has_asked_and_ended(monkeypatch, t
     monkeypatch.setattr(deploy, "provider_env", lambda extra, rebuild: {})
     monkeypatch.setattr(deploy.subprocess, "run", provider)
     assert deploy.dispatch("aws", "deploy", "report", False) == 0
+    console.say("Deployed.")
     assert terminal.getvalue().splitlines() == [
-        "Provider deploy: proceed? [y/N] y", "Parent alert could not send app:deploy-started"]
+        "Provider deploy: proceed? [y/N] y", "Parent alert could not send app:deploy-started",
+        "Deployed."]
 
 
-def test_a_line_that_started_before_the_question_ends_before_the_prompt(monkeypatch, terminal):
-    rendering, go = threading.Event(), threading.Event()
-
-    class Slow:
-        def __rich__(self):
-            rendering.set()
-            go.wait()
-            return "background line"
-
-    printer = threading.Thread(target=console.styled, args=(Slow(),))
-    printer.start()
-    rendering.wait()
-    threading.Timer(0.2, go.set).start()
-
-    def fake_input(prompt=""):
-        go.wait()
-        printer.join()
-        terminal.write("y\n")
-        return "y"
-
-    monkeypatch.setattr("builtins.input", fake_input)
+def test_a_line_from_before_the_question_prints_before_the_prompt(monkeypatch, terminal):
+    answering(monkeypatch, "y")
+    in_thread("background line")
     console.confirm()
-    assert terminal.getvalue().splitlines() == ["background line", "Proceed? [y/N] y"]
+    assert terminal.getvalue().splitlines() == ["background line", "Proceed? [y/N] "]
 
 
-def test_held_lines_print_before_a_line_printed_while_they_print(monkeypatch, terminal):
+def test_queued_lines_print_before_a_line_queued_while_they_print(monkeypatch, terminal):
     class First:
         def __rich__(self):
             in_thread("new line 3")
             return "old line 1"
 
-    def fake_input(prompt=""):
-        printer = threading.Thread(target=lambda: (console.styled(First()),
-                                                   console.say("old line 2")))
-        printer.start()
-        printer.join()
-        terminal.write("y\n")
-        return "y"
-
-    monkeypatch.setattr("builtins.input", fake_input)
-    console.confirm()
-    assert terminal.getvalue().splitlines()[1:] == ["old line 1", "old line 2", "new line 3"]
+    printer = threading.Thread(target=lambda: (console.styled(First()),
+                                               console.say("old line 2")))
+    printer.start()
+    printer.join()
+    console.drain()
+    assert terminal.getvalue().splitlines() == ["old line 1", "old line 2", "new line 3"]
 
 
-def test_a_nested_question_keeps_the_hold_until_the_outer_answer(monkeypatch, terminal):
-    def fake_input(prompt=""):
-        if terminal.getvalue().endswith("Inner? "):
-            terminal.write("x\n")
-            return "x"
-        console.read("Inner? ")
-        in_thread("background line")
-        terminal.write("y\n")
-        return "y"
-
-    monkeypatch.setattr("builtins.input", fake_input)
-    console.confirm()
-    assert terminal.getvalue().splitlines()[-1] == "background line"
-
-
-def test_a_question_from_another_thread_waits_for_the_first_answer(monkeypatch, terminal):
-    second_asked = threading.Event()
-
-    def fake_input(prompt=""):
-        if "Second" in terminal.getvalue():
-            second_asked.set()
-            terminal.write("b\n")
-            return "b"
-        second.start()
-        second_asked.wait(0.5)
-        terminal.write("a\n")
-        return "a"
-
-    second = threading.Thread(target=console.read, args=("Second? ",))
-    monkeypatch.setattr("builtins.input", fake_input)
-    console.read("First? ")
-    second.join()
-    assert terminal.getvalue().splitlines() == ["First? a", "Second? b"]
+def test_a_spinner_redraws_while_the_main_thread_waits(terminal):
+    with console.waiting("waiting: Slack"):
+        for _ in range(50):
+            if "waiting: Slack" in terminal.getvalue():
+                break
+            threading.Event().wait(0.05)
+        assert "waiting: Slack" in terminal.getvalue()
 
 
 @pytest.mark.parametrize("stop", [EOFError, KeyboardInterrupt])
-def test_a_stopped_question_ends_its_line_before_the_held_lines(monkeypatch, terminal, stop):
+def test_a_stopped_question_ends_its_line_before_the_queued_lines(monkeypatch, terminal, stop):
     def fake_input(prompt=""):
-        in_thread("Held alert warning")
+        in_thread("Queued alert warning")
         raise stop
 
     monkeypatch.setattr("builtins.input", fake_input)
     with pytest.raises(stop):
         console.confirm()
-    assert terminal.getvalue() == "Proceed? [y/N] \nHeld alert warning\n"
+    assert terminal.getvalue() == "Proceed? [y/N] \nQueued alert warning\n"
+
+
+def test_a_stopped_question_ends_its_line_with_nothing_queued(monkeypatch, terminal):
+    answering(monkeypatch)
+    with pytest.raises(EOFError):
+        console.confirm()
+    assert terminal.getvalue() == "Proceed? [y/N] \n"
+
+
+def test_lifecycle_flush_prints_the_queued_lines(terminal):
+    in_thread("The slack alert could not send app:deploy-completed")
+    lifecycle.flush()
+    assert terminal.getvalue() == "The slack alert could not send app:deploy-completed\n"
+
+
+@pytest.mark.parametrize("end", ["pass", "raise SystemExit(3)", "raise KeyboardInterrupt"])
+def test_a_queued_line_prints_when_the_process_exits(end):
+    script = ("import threading\n"
+              "from pdt import console\n"
+              "printer = threading.Thread(target=console.say, args=('late line',))\n"
+              "printer.start()\n"
+              "printer.join()\n"
+              f"{end}\n")
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.stdout == "late line\n"
+
 
 def test_a_sign_in_prompt_asks_again_then_takes_its_yes_default(monkeypatch, capsys):
     answering(monkeypatch, "ok", "")
