@@ -9,6 +9,7 @@ import urllib.response
 
 import pytest
 
+from conftest import plain
 from pdt import deploy_azure
 from pdt import deploy_azure_container_apps as azure
 
@@ -175,6 +176,52 @@ def test_an_app_with_no_secret_reads_no_secret_and_asks_for_no_vault_token(monke
     assert read(secret=False)["secret"] == (MANAGED, None, [])
     assert tokens == []
     assert not any(end.startswith("/secrets/") for end, _ in requests)
+
+
+def destroy(monkeypatch, confirmed: bool) -> list:
+    plans = []
+    monkeypatch.setattr(azure, "preflight", lambda app, requested: dict(SETTINGS))
+    monkeypatch.setattr(azure, "azure_settings", lambda app: {})
+    monkeypatch.setattr(azure, "az_json", lambda *args: None)
+    monkeypatch.setattr(azure, "confirm",
+                        lambda actions, *args: plans.append(plain(actions)) or confirmed)
+    assert azure.destroy({"name": "report", "storage": False}, True) == (0 if confirmed else azure.DECLINED)
+    return plans
+
+
+def test_destroy_in_a_shared_group_finds_its_secret_when_the_latest_version_is_disabled(
+        monkeypatch):
+    monkeypatch.setitem(FOUND, "/resourceGroups/pdt/resources", {"value": [
+        {"tags": {"managed-by": "pdt", "pdt-app": "other"}}]})
+    monkeypatch.setitem(FOUND, f"/secrets/{SID}/versions", {"value": [
+        {**MANAGED, "attributes": {"enabled": True}}, {"attributes": {"enabled": False}}]})
+    opener(monkeypatch, {f"/secrets/{SID}": 403})
+    plans = destroy(monkeypatch, confirmed=False)
+    assert f"delete and purge Key Vault secret {SID}" in plans[0]
+
+
+def test_destroy_reads_with_a_new_token_when_another_app_takes_the_group_after_the_question(
+        monkeypatch):
+    monkeypatch.setitem(FOUND, "/resourceGroups/pdt/resources", {"value": [MANAGED]})
+    opener(monkeypatch)
+    expired = []
+    open_url = deploy_azure.READ_OPENER.open
+
+    def expiring(request, timeout):
+        if expired and request.get_header("Authorization") == "Bearer arm-token":
+            raise urllib.error.HTTPError(request.full_url, 401, "expired", {}, io.BytesIO(b"{}"))
+        return open_url(request, timeout)
+
+    monkeypatch.setattr(deploy_azure.READ_OPENER, "open", expiring)
+    monkeypatch.setattr(azure, "environment_release", lambda settings: azure.Release())
+    monkeypatch.setattr(azure, "destroy_group", lambda settings, name: expired.append(name) and False)
+    removed = []
+    monkeypatch.setattr(azure, "run_quiet", lambda *args, **kwargs: removed.append(args[:3]))
+    monkeypatch.setattr(azure, "purge_secret", lambda settings, sid: removed.append(sid))
+    monkeypatch.setattr(azure, "list_remaining", lambda rg: None)
+    destroy(monkeypatch, confirmed=True)
+    assert ("containerapp", "job", "delete") in removed
+    assert SID in removed
 
 
 def test_preflight_keeps_the_token_it_reads_the_principal_from(monkeypatch):

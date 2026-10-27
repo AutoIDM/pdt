@@ -64,7 +64,7 @@ from pdt.deploy_azure import (
     managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
     portal_url, purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, secret_actions, secret_name,
-    secret_reads, secret_scope, secret_state, store_condition, store_description,
+    secret_reads, secret_scope, secret_state, secret_versions, store_condition, store_description,
     store_exists, store_plan, store_reads, store_settings, store_url, store_usage, workspace_keys,
     workspace_resource,
 )
@@ -1390,7 +1390,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
         registry_read = pool.submit(registry_resource, settings)
         held_read = pool.submit(lambda: [lock for lock in locks if lock.exists(token)])
         store_read = pool.submit(store_reads, token, store) if store else None
-        secret_read = pool.submit(secret_reads, settings, access_token(VAULT_RESOURCE), sid, True)
+        vault_token = access_token(VAULT_RESOURCE)
+        vault, _secret, _versions = secret_reads(settings, vault_token, sid, False)
+        versions_read = pool.submit(secret_versions, settings, vault_token, sid) if vault else None
         group_exists = group_read.result() is not None
         others = other_pdt_apps(resources_read.result() or [], name)
         # A run that stopped after the project group went may still owe the
@@ -1406,8 +1408,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             image_exists = has_image(settings, name, registry_read.result())
         job, current_job = job_read.result()
         managed_job = owned_by(current_job, name)
-        _vault, _secret, versions = secret_read.result()
-        secret_owned = managed_secret(versions, name)
+        secret_owned = managed_secret(versions_read.result() if versions_read else [], name)
         if current_job and not managed_job:
             console.note(f"Container Apps Job {console.value(job)} is not owned by this app; "
                          "keeping it")
@@ -1462,6 +1463,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if group_exists and not destroy_group(settings, name):
             # Another app joined the group meanwhile, so this one leaves the
             # way it would have with a sibling: its own job, image, and secret.
+            # The token preflight read can expire while the user reads the question.
+            settings["token"] = access_token()
             remove_app(settings, name, job, sid, managed_job, secret_owned, principal_id,
                        has_image(settings, name, registry_resource(settings)))
             list_remaining(rg)

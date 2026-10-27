@@ -726,10 +726,15 @@ def secret_reads(settings: dict[str, str], vault_token: str, sid: str,
                       missing=SECRET_MISSING_OR_NOT_GRANTED)
     if current is None:
         return vault, None, []
-    versions = arm_list(vault_token, f"{url}/versions?api-version={VAULT_API_VERSION}",
-                        ("keyvault", "secret", "list-versions", "--vault-name",
-                         settings["vault"]), missing=SECRET_MISSING_OR_NOT_GRANTED)
-    return vault, current, versions or []
+    return vault, current, secret_versions(settings, vault_token, sid)
+
+
+def secret_versions(settings: dict[str, str], vault_token: str, sid: str) -> list:
+    """Each version's tags. A read of the value fails while the latest version is disabled."""
+    url = f"https://{settings['vault']}.vault.azure.net/secrets/{sid}/versions"
+    return arm_list(vault_token, f"{url}?api-version={VAULT_API_VERSION}",
+                    ("keyvault", "secret", "list-versions", "--vault-name", settings["vault"]),
+                    missing=SECRET_MISSING_OR_NOT_GRANTED) or []
 
 
 def secret_state(settings: dict[str, str], sid: str, app_name: str,
