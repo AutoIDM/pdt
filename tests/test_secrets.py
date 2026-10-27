@@ -46,12 +46,11 @@ def test_every_azure_version_but_the_latest_is_disabled(monkeypatch):
                       "--enabled", "false")]
 
 
-def test_a_version_added_in_the_portal_keeps_the_secret_owned(monkeypatch):
+def test_a_version_added_in_the_portal_keeps_the_secret_owned():
     versions = [version("portal", "2026-03-01"),
                 version("pdt", "2026-01-01", tags={"managed-by": "pdt", "pdt-app": "demo"})]
-    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: versions)
-    assert deploy_azure.managed_secret(SETTINGS, "pdt-demo-env", "demo")
-    assert not deploy_azure.managed_secret(SETTINGS, "pdt-demo-env", "other")
+    assert deploy_azure.managed_secret(versions, "demo")
+    assert not deploy_azure.managed_secret(versions, "other")
 
 
 def test_every_google_version_but_the_latest_is_destroyed(monkeypatch):

@@ -791,8 +791,9 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     client = clients["secretsmanager"]
     name = resource_names(app["name"])["secret"]
     current = None
-    if resource_exists(client, "describe_secret", SecretId=name):
-        current = client.get_secret_value(SecretId=name).get("SecretString", "")
+    with console.waiting("reading: resources"):
+        if resource_exists(client, "describe_secret", SecretId=name):
+            current = client.get_secret_value(SecretId=name).get("SecretString", "")
 
     def write(values: dict[str, str]) -> None:
         console.step(f"updating secret {console.value(name)}")
@@ -1023,6 +1024,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
     names = resource_names(app["name"])
     batch, scheduler, iam = clients["batch"], clients["scheduler"], clients["iam"]
     plan: list[tuple[str, Callable]] = []
+    console.status(f"Checking current state in account {console.value(account)} "
+                   f"({console.value(region)})...")
     with console.waiting("reading: resources"):
         if resource_exists(scheduler, "get_schedule",
                            Name=names["schedule"], GroupName=SCHEDULE_GROUP):

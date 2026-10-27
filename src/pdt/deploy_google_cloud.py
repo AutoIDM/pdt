@@ -249,7 +249,9 @@ def login_with_key_file() -> bool:
 
 
 def ensure_credentials() -> None:
-    if have_credentials():
+    with console.waiting("checking: Google Cloud sign-in"):
+        signed_in = have_credentials()
+    if signed_in:
         return
     if config.unsaved() is None and login_with_key_file():
         return
@@ -378,7 +380,7 @@ def ensure_apis(project: str, assume_yes: bool,
                 required: tuple[str, ...] = APIS) -> bool:
     output = run_quiet(
         "services", "list", "--enabled", "--project", project,
-        "--format=value(config.name)")
+        "--format=value(config.name)", slow="reading: enabled Google Cloud APIs")
     enabled = set(output.splitlines())
     missing = [api for api in required if api not in enabled]
     if not missing:
@@ -850,9 +852,10 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     console.status("Checking your Google Cloud sign-in...")
     project = preflight(app, project, assume_yes)
     sid = secret_id(app["name"])
-    secret = read_json_or_none("secrets", "describe", sid, "--project", project)
-    require_managed(secret, f"Secret Manager secret {console.value(sid)}")
-    current = secret_value(project, sid) if secret else None
+    with console.waiting("reading: resources"):
+        secret = read_json_or_none("secrets", "describe", sid, "--project", project)
+        require_managed(secret, f"Secret Manager secret {console.value(sid)}")
+        current = secret_value(project, sid) if secret else None
 
     def write(values: dict[str, str]) -> None:
         console.step(f"updating secret {console.value(sid)}")
