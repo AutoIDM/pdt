@@ -69,6 +69,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import ssl
 import subprocess
 import sys
@@ -299,13 +300,17 @@ def fail(message: str) -> None:
 
 def run_main(main: Callable[[], int]) -> None:
     """Exit with main's code, or with 130 at once after a Ctrl+C. A normal exit waits for
-    every worker thread, and a worker that waits on the network keeps the script running."""
+    every worker thread, and a worker that waits on the network keeps the script running.
+    uv passes on each Ctrl+C, so the script ignores the next ones while it stops."""
     try:
         code = main()
     except KeyboardInterrupt:
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(130)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        finally:
+            os._exit(130)
     sys.exit(code)
 
 

@@ -1157,3 +1157,13 @@ def test_a_cloud_cli_passthrough_runs_its_provider_script(monkeypatch, tool, scr
         args) or SimpleNamespace(returncode=3))
     assert run_cli(monkeypatch, tool, "version") == 3
     assert calls[0][-3:] == [str(Path(cli.__file__).with_name(script)), tool, "version"]
+
+
+def test_ctrl_c_in_a_cloud_cli_passthrough_exits_130(monkeypatch):
+    monkeypatch.setattr(deploy, "announce_install", lambda script: None)
+
+    def ctrl_c(args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(deploy, "run_provider", ctrl_c)
+    assert run_cli(monkeypatch, "az", "version") == 130

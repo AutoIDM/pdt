@@ -102,22 +102,27 @@ STOP_SECONDS = 2
 
 def run_provider(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     """subprocess.run for a provider script. After a Ctrl+C the script gets STOP_SECONDS to
-    stop by itself, and then pdt ends it and every process it started. subprocess.run would
-    kill uv alone, and the script would go on without it."""
+    stop by itself. Then pdt sends uv SIGTERM, which uv passes on to the script; on Windows,
+    taskkill ends uv and every process under it. After STOP_SECONDS more, pdt kills uv.
+    pdt reads the script's output the whole time, so a full pipe cannot stop the script.
+    subprocess.run would kill uv alone, and the script would go on without it."""
     with subprocess.Popen(args, **kwargs) as proc:
         try:
             stdout, _ = proc.communicate()
         except KeyboardInterrupt:
             try:
-                proc.wait(STOP_SECONDS)
+                proc.communicate(timeout=STOP_SECONDS)
             except (subprocess.TimeoutExpired, KeyboardInterrupt):
                 if os.name == "nt":
                     subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                                    capture_output=True, check=False)
                 else:
-                    # uv passes SIGTERM on to the script.
                     proc.terminate()
-                proc.wait()
+                try:
+                    proc.communicate(timeout=STOP_SECONDS)
+                except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                    proc.kill()
+                    proc.wait()
             raise
     return subprocess.CompletedProcess(args, proc.returncode, stdout)
 
