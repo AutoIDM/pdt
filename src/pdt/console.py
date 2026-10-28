@@ -80,7 +80,9 @@ def drain() -> None:
         line()
 
 
-def _drain_at_exit() -> None:
+def drain_at_exit() -> None:
+    """Print each queued line, and print each later line at once. An exit through os._exit
+    skips atexit, so it calls this first."""
     global _exited
     while True:
         drain()
@@ -90,7 +92,7 @@ def _drain_at_exit() -> None:
                 return
 
 
-atexit.register(_drain_at_exit)
+atexit.register(drain_at_exit)
 
 # soft_wrap keeps a long path or command on one logical line: the terminal
 # wraps it at the edge, and rich never re-flows it at a word boundary.

@@ -1,9 +1,11 @@
+import datetime
 import subprocess
 
 import pytest
 
 from pdt import deploy_azure
 from pdt import deploy_azure_container_apps
+from pdt import runs_cli
 
 
 def test_internal_error_retries_with_the_same_arguments(monkeypatch, capsys):
@@ -116,10 +118,23 @@ def test_job_create_retries_an_internal_error(monkeypatch):
 
 
 class FakeCli:
-    """Sets up its log handler once, on sys.stderr as it is then, as knack does."""
+    """Sets up its log handler once, on sys.stderr as it is then, as knack does. A Ctrl+C
+    during a `rest` call becomes exit code 1, as knack does, and during an `acr build` it
+    becomes success, as the build's log stream does."""
 
     def invoke(self, args, out_file):
         import logging
+        import signal
+        import types
+        self.result = types.SimpleNamespace(error=None)
+        if args[0] in ("rest", "acr"):
+            try:
+                signal.raise_signal(signal.SIGINT)
+            except KeyboardInterrupt as exc:
+                if args[0] == "acr":
+                    return 0
+                self.result.error = exc
+                return 1
         logger = logging.getLogger("cli")
         logger.propagate = False
         if not logger.handlers:
@@ -131,7 +146,8 @@ class FakeCli:
         return 0
 
 
-def test_az_runs_in_process_and_keeps_each_call_output_apart(monkeypatch):
+@pytest.fixture
+def fake_cli(monkeypatch):
     import sys
     import types
     core = types.ModuleType("azure.cli.core")
@@ -143,6 +159,8 @@ def test_az_runs_in_process_and_keeps_each_call_output_apart(monkeypatch):
                          "knack.log": knack_log}.items():
         monkeypatch.setitem(sys.modules, name, module)
 
+
+def test_az_runs_in_process_and_keeps_each_call_output_apart(fake_cli):
     first = deploy_azure.az("fail", "one")
     second = deploy_azure.az("fail", "two")
     third = deploy_azure.az("group", "list")
@@ -150,3 +168,45 @@ def test_az_runs_in_process_and_keeps_each_call_output_apart(monkeypatch):
     assert (first.returncode, first.stderr) == (2, "ERROR: one\n")
     assert (second.returncode, second.stderr) == (2, "ERROR: two\n")
     assert (third.returncode, third.stdout, third.stderr) == (0, "group list", "")
+
+
+SETTINGS = {"subscription": "123456789012", "resource_group": "pdt", "workspace": "pdt-logs",
+            "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True)}
+
+
+def test_ctrl_c_during_an_az_call_stops_pdt(fake_cli):
+    with pytest.raises(KeyboardInterrupt):
+        deploy_azure.az("rest", "--method", "get", "--url", "https://management.azure.com/")
+
+
+def test_ctrl_c_during_a_cloud_build_stops_pdt(fake_cli):
+    with pytest.raises(KeyboardInterrupt):
+        deploy_azure.az("acr", "build", "--registry", "pdtreport", "stage")
+
+
+def test_ctrl_c_during_a_log_analytics_query_is_not_an_azure_error(fake_cli, monkeypatch, capsys):
+    monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "workspace-id")
+    with pytest.raises(KeyboardInterrupt):
+        deploy_azure_container_apps.log_query(SETTINGS, "ContainerAppConsoleLogs_CL")
+    assert "did not answer" not in capsys.readouterr().out
+
+
+def test_ctrl_c_while_following_the_live_log_stops_the_follow(fake_cli, monkeypatch, capsys):
+    started = datetime.datetime(2026, 10, 27, 9, 0, tzinfo=datetime.UTC)
+    running = runs_cli.Run("pdt-report-x1", started, None, "running")
+    ended = runs_cli.Run("pdt-report-x1", started, started, "succeeded", 0)
+    monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "workspace-id")
+    monkeypatch.setattr(runs_cli.time, "sleep", lambda seconds: None)
+
+    code = runs_cli.follow(
+        lambda: [ended],
+        lambda run, since: deploy_azure_container_apps.read_lines(SETTINGS, "pdt-report", run.id,
+                                                                  since),
+        None, running, False, runs_cli.LOG_DELAY, [], store="Azure Log Analytics",
+        stream=lambda run, follow: deploy_azure_container_apps.stream_lines(
+            SETTINGS, "pdt-report", run, follow))
+
+    assert code == 130
+    out = capsys.readouterr().out
+    assert "cannot read the run's live log" not in out
+    assert "did not answer" not in out

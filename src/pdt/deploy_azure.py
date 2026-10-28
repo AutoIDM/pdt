@@ -68,10 +68,12 @@ import json
 import logging
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -82,7 +84,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,
-    secret_contents, store_plan_lines, store_suffix)
+    run_main, secret_contents, store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
@@ -146,12 +148,27 @@ def az(*args: str) -> subprocess.CompletedProcess:
     out, err = io.StringIO(), io.StringIO()
     saved = sys.stdin, sys.stderr
     sys.stdin, sys.stderr = io.StringIO(), err
+    # The CLI turns Ctrl+C into exit code 1, or into success while it streams a cloud
+    # build's log, so the handler records it. Only the main thread can set a handler, and
+    # only the main thread gets the KeyboardInterrupt.
+    interrupted = []
+    on_main = threading.current_thread() is threading.main_thread()
+
+    def interrupt(signum, frame):
+        interrupted.append(signum)
+        raise KeyboardInterrupt
+
+    previous = signal.signal(signal.SIGINT, interrupt) if on_main else None
     try:
         try:
             code = get_default_cli().invoke(list(args), out_file=out)
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else 1
+        if interrupted:
+            raise KeyboardInterrupt
     finally:
+        if on_main:
+            signal.signal(signal.SIGINT, previous)
         sys.stdin, sys.stderr = saved
         # The CLI adds its log handlers once, on sys.stderr as it is then.
         # Removing them makes the next call write its errors to its own buffer.
@@ -1237,4 +1254,4 @@ def run_command(app: dict, args: argparse.Namespace) -> int:
 
 if __name__ == "__main__":
     console.json_output()
-    sys.exit(main())
+    run_main(main)

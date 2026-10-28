@@ -173,14 +173,14 @@ def test_a_line_waits_until_the_answer_when_output_is_not_a_terminal(monkeypatch
 
 
 def test_a_line_waits_until_a_provider_script_has_asked_and_ended(monkeypatch, terminal):
-    def provider(args, check, env):
+    def provider(args, env):
         terminal.write("Provider deploy: proceed? [y/N] ")
         in_thread("Parent alert could not send app:deploy-started")
         terminal.write("y\n")
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(deploy, "provider_env", lambda extra, rebuild: {})
-    monkeypatch.setattr(deploy.subprocess, "run", provider)
+    monkeypatch.setattr(deploy, "run_provider", provider)
     assert deploy.dispatch("aws", "deploy", "report", False) == 0
     console.say("Deployed.")
     assert terminal.getvalue().splitlines() == [

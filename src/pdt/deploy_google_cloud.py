@@ -84,7 +84,7 @@ from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
     ensure_image, fail, fetch_json, gather_secrets, image_action, run_build,
-    run_secrets, secret_contents, ssh_build_args, store_cost_label, store_kept_line,
+    run_main, run_secrets, secret_contents, ssh_build_args, store_cost_label, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
 from pdt import storage_cli
@@ -1530,4 +1530,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     console.json_output()
-    sys.exit(main())
+    run_main(main)

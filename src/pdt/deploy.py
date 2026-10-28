@@ -96,6 +96,37 @@ def provider_env(extra: list[str] | None = None, rebuild: bool = False) -> dict[
     return env
 
 
+# How long a provider script has to stop by itself after a Ctrl+C.
+STOP_SECONDS = 2
+
+
+def run_provider(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """subprocess.run for a provider script. After a Ctrl+C the script gets STOP_SECONDS to
+    stop by itself. Then pdt sends uv SIGTERM, which uv passes on to the script; on Windows,
+    taskkill ends uv and every process under it. After STOP_SECONDS more, pdt kills uv.
+    pdt reads the script's output the whole time, so a full pipe cannot stop the script.
+    subprocess.run would kill uv alone, and the script would go on without it."""
+    with subprocess.Popen(args, **kwargs) as proc:
+        try:
+            stdout, _ = proc.communicate()
+        except KeyboardInterrupt:
+            try:
+                proc.communicate(timeout=STOP_SECONDS)
+            except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                                   capture_output=True, check=False)
+                else:
+                    proc.terminate()
+                try:
+                    proc.communicate(timeout=STOP_SECONDS)
+                except (subprocess.TimeoutExpired, KeyboardInterrupt):
+                    proc.kill()
+                    proc.wait()
+            raise
+    return subprocess.CompletedProcess(args, proc.returncode, stdout)
+
+
 def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
              extra: list[str] | None = None, rebuild: bool = False,
              platform: dict | None = None) -> int:
@@ -103,16 +134,15 @@ def dispatch(provider: str, command: str, app_name: str, assume_yes: bool,
     env = provider_env(extra, rebuild)
     if platform is not None:
         env[config.DEPLOYED_PLATFORM_ENV] = json.dumps({"app": app_name, "platform": platform})
-    return subprocess.run(args, check=False, env=env).returncode
+    return run_provider(args, env=env).returncode
 
 
 def dispatch_output(provider: str, command: str, app_name: str,
                     extra: list[str], stderr=None) -> tuple[int, str]:
     """Like dispatch, but return what the provider script prints on stdout. `stderr` is a file
     for the script's other lines, or None for this process's stderr."""
-    proc = subprocess.run(provider_command(provider, command, app_name, False, extra),
-                          check=False, env=provider_env(extra), stdout=subprocess.PIPE,
-                          stderr=stderr, text=True)
+    proc = run_provider(provider_command(provider, command, app_name, False, extra),
+                        env=provider_env(extra), stdout=subprocess.PIPE, stderr=stderr, text=True)
     return proc.returncode, proc.stdout
 
 
