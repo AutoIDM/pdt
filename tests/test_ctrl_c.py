@@ -82,7 +82,7 @@ def test_ctrl_c_ends_a_provider_script_that_fills_its_output_pipe(
     def ctrl_c_once(self, *args, **kwargs):
         if not procs:
             procs.append(self)
-            time.sleep(0.5)
+            self.stdout.read(1)
             raise KeyboardInterrupt
         return communicate(self, *args, **kwargs)
 
