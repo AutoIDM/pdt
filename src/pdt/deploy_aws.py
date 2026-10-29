@@ -12,6 +12,8 @@
 #     "s3fs>=2024",
 #     "duckdb",
 #     "certifi",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Deploy an app to AWS.

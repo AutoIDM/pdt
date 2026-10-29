@@ -123,8 +123,9 @@ WORKDIR /workspace/{app}
 """ + ENTRYPOINT
 # The PEP 723 script block, with the reference regex of the PEP.
 SCRIPT_HEADER = re.compile(r"(?m)^# /// script$\s(?:^#(?:| .*)$\s)+^# ///$")
-LIFECYCLE_MODULES = ("__init__.py", "alert_message.py", "config.py", "console.py", "lifecycle.py",
-                     "slack.py", "teams.py", "utils/__init__.py", "utils/storage.py")
+LIFECYCLE_MODULES = ("__init__.py", "alert_message.py", "autoidm_alerts.py", "config.py",
+                     "console.py", "lifecycle.py", "slack.py", "teams.py", "utils/__init__.py",
+                     "utils/autoidm.py", "utils/storage.py")
 # Secret shapes and local state that never belong in an image. The version-control names are
 # the ones `az acr build` always leaves out, so every build place gets the same context.
 BUILD_EXCLUDES = (
