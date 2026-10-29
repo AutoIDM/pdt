@@ -230,10 +230,13 @@ def replica(name="r", **state):
 
 
 def fake_stream_api(monkeypatch, replicas, body=b"", calls=None, job=JOB):
+    """`replicas` is one answer, or a list of answers that each replica read takes in turn."""
+    answers = replicas if isinstance(replicas, list) else [replicas]
+
     def az(*args):
         url = args[args.index("--url") + 1]
         if "/replicas?" in url:
-            answer = replicas
+            answer = answers.pop(0) if len(answers) > 1 else answers[0]
         elif "/getAuthToken?" in url:
             answer = {"properties": {"token": "stream-token"}}
         else:
@@ -289,7 +292,7 @@ def test_stream_lines_of_a_container_still_pulling_its_image_is_empty(monkeypatc
     calls = []
     fake_stream_api(monkeypatch, {"value": [listed]}, calls=calls)
     assert list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
-                                                         RUNNING_RUN, True)) == []
+                                                         RUNNING_RUN, False)) == []
     assert calls == []
 
 
@@ -300,6 +303,26 @@ def test_stream_lines_of_a_container_that_ended_reads_its_log(monkeypatch):
                     body)
     assert [line.message for line in deploy_azure_container_apps.stream_lines(
         STREAM_SETTINGS, "pdt-report", RUNNING_RUN, False)] == ["pdt: exit 0"]
+
+
+def test_follow_waits_for_the_container_to_start_and_says_why(monkeypatch):
+    calls, sleeps, said = [], [], []
+    body = b"2026-10-09T21:15:44.4795058Z stdout F line 1\n"
+    pulling = replica(runningState="Waiting", started=False,
+                      runningStateDetails="Container is waiting with reason: PullingImage on n1.")
+    fake_stream_api(monkeypatch, [
+        {"value": [{"name": "r", "properties": {"containers": []}}]},
+        {"value": [pulling]}, {"value": [pulling]}, {"value": [replica()]}], body, calls)
+    monkeypatch.setattr(deploy_azure_container_apps.time, "sleep", sleeps.append)
+    monkeypatch.setattr(deploy_azure_container_apps.console, "status", said.append)
+    lines = list(deploy_azure_container_apps.stream_lines(STREAM_SETTINGS, "pdt-report",
+                                                          RUNNING_RUN, True))
+    assert [line.message for line in lines] == ["line 1"]
+    assert len(calls) == 1
+    assert sleeps == [deploy_azure_container_apps.CONTAINER_POLL_SECONDS] * 3
+    assert said == ["Azure is creating the run's container",
+                    "Azure is starting the run's container: "
+                    f"{deploy_azure_container_apps.console.value('PullingImage')}"]
 
 
 def test_a_quiet_stream_ends_so_follow_opens_it_again(monkeypatch):

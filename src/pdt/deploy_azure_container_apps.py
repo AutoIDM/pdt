@@ -468,6 +468,9 @@ LOG_STREAM_API_VERSION = "2023-11-02-preview"
 STREAM_LINE = re.compile(r"(\S+Z) (stdout|stderr) ([FP]) ?(.*)")
 # A quiet container sends nothing; after this many seconds pdt opens the stream again.
 STREAM_TIMEOUT = 60
+# While the container has not started, follow reads its replica again after this many seconds.
+CONTAINER_POLL_SECONDS = 2
+WAIT_REASON = re.compile(r"reason: (\w+)")
 # The actions the log stream needs. The built-in roles that hold getAuthToken also hold
 # listSecrets, which reads the job's secrets
 # (https://learn.microsoft.com/en-us/azure/container-apps/jobs#permissions).
@@ -609,6 +612,34 @@ def container_started(replica: dict, container: str) -> bool:
     return False
 
 
+def started_replica(job: str, replicas_url: str, container: str, follow: bool) -> dict | None:
+    """The execution's replica once its container has started, else None.
+
+    With `follow`, it reads the replica again every CONTAINER_POLL_SECONDS, for at most
+    STREAM_TIMEOUT seconds, and says each step Azure is at."""
+    deadline = time.monotonic() + STREAM_TIMEOUT
+    said = ""
+    while True:
+        replicas = stream_json(job, "rest", "--method", "get", "--url", replicas_url).get("value")
+        if not replicas:
+            return None
+        if container_started(replicas[0], container):
+            return replicas[0]
+        if not follow or time.monotonic() >= deadline:
+            return None
+        states = [state for state in (replicas[0].get("properties") or {}).get("containers") or []
+                  if state.get("name") == container]
+        step = "Azure is creating the run's container"
+        if states:
+            reason = WAIT_REASON.search(states[0].get("runningStateDetails") or "")
+            step = ("Azure is starting the run's container: "
+                    f"{console.value(reason.group(1) if reason else 'Waiting')}")
+        if step != said:
+            console.status(step)
+            said = step
+        time.sleep(CONTAINER_POLL_SECONDS)
+
+
 def stream_lines(settings: dict, job: str, run: runs_cli.Run,
                  follow: bool) -> Iterator[runs_cli.Line]:
     """The lines a running execution's container has written, from the job's live log stream.
@@ -620,20 +651,18 @@ def stream_lines(settings: dict, job: str, run: runs_cli.Run,
     url = f"{MANAGEMENT_API}{resource_id(settings, 'Microsoft.App', 'jobs', job)}"
     version = f"api-version={LOG_STREAM_API_VERSION}"
     try:
-        replicas = stream_json(job, "rest", "--method", "get",
-                               "--url", f"{url}/executions/{run.id}/replicas?{version}")
-        if not replicas.get("value"):
-            return
         token = stream_json(job, "rest", "--method", "post", "--url", f"{url}/getAuthToken?{version}")
         current = stream_json(job, "rest", "--method", "get", "--url", job_url(settings, job))
         endpoint = current["properties"]["eventStreamEndpoint"]
         container = current["properties"]["template"]["containers"][0]["name"]
-        if not container_started(replicas["value"][0], container):
+        replica = started_replica(job, f"{url}/executions/{run.id}/replicas?{version}",
+                                  container, follow)
+        if replica is None:
             return
         stream_url = (f"{endpoint[:endpoint.index('/subscriptions/')]}"
                       f"/subscriptions/{settings['subscription']}"
                       f"/resourceGroups/{settings['resource_group']}/jobs/{job}"
-                      f"/executions/{run.id}/replicas/{replicas['value'][0]['name']}"
+                      f"/executions/{run.id}/replicas/{replica['name']}"
                       f"/containers/{container}/logstream?follow={str(follow).lower()}&output=text")
         request = urllib.request.Request(
             stream_url, headers={"Authorization": f"Bearer {token['properties']['token']}"})
