@@ -66,6 +66,7 @@ Put a `Dockerfile` in the app folder to build the image your own way, for exampl
 
 ```dockerfile
 FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7071aec78f02c5587c76c5011159cd76b3d6f1255f40e48e850abc
+RUN pip uninstall -y --root-user-action=ignore pip
 COPY . /workspace
 WORKDIR /workspace/my-app
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
