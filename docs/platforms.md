@@ -60,7 +60,7 @@ platform:
 
 ## Bringing your own Dockerfile
 
-Every cloud provider runs a job as a container (see [Primitives](primitives.md#primitives)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the entrypoint. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
+Every cloud provider runs a job as a container (see [Primitives](primitives.md#primitives)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the entrypoint. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies. The image has Python 3.13. When the `requires-python` of the script header excludes 3.13, `uv sync` downloads a matching Python during the build.
 
 Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
 
