@@ -24,6 +24,14 @@ Download and run the [pdt installer](https://github.com/AutoIDM/pdt/releases/lat
 
 Install [uv](https://docs.astral.sh/uv/), then pdt:
 
+On macOS or Linux, paste this line into a terminal. It installs `uv` if you do not have it, then installs pdt. Run it again to update pdt.
+
+```
+curl -LsSf https://github.com/AutoIDM/pdt/releases/latest/download/install.sh | sh
+```
+
+If you already have `uv`, you can run these lines instead:
+
 ```
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.local/bin/env
