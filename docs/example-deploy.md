@@ -47,16 +47,17 @@ Proceed? [y/N] y
  => [internal] load metadata for ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256    0.0s
  => [internal] load .dockerignore                                                      0.0s
  => => transferring context: 2B                                                        0.0s
- => CACHED [1/7] FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7  0.0s
+ => CACHED [1/8] FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7  0.0s
  => => resolve ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7071aec7  0.0s
  => [internal] load build context                                                      0.0s
  => => transferring context: 115.45kB                                                  0.0s
- => [2/7] COPY .pdt-lifecycle /opt/pdt-lifecycle                                       0.0s
- => [3/7] RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py                     0.9s
- => [4/7] WORKDIR /workspace/hello-world-example                                       0.0s
- => [5/7] COPY .pdt-script .                                                           0.0s
- => [6/7] RUN uv sync --script run.py                                                  2.6s
- => [7/7] COPY . /workspace                                                            0.1s
+ => [2/8] RUN pip uninstall -y --root-user-action=ignore pip                           0.9s
+ => [3/8] COPY .pdt-lifecycle /opt/pdt-lifecycle                                       0.0s
+ => [4/8] RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py                     0.9s
+ => [5/8] WORKDIR /workspace/hello-world-example                                       0.0s
+ => [6/8] COPY .pdt-script .                                                           0.0s
+ => [7/8] RUN uv sync --script run.py                                                  2.6s
+ => [8/8] COPY . /workspace                                                            0.1s
  => exporting to image                                                                 2.8s
  => => exporting layers                                                                1.6s
  => => exporting manifest sha256:f624ef6118df5202e94732f52d151264008454455cacf9414e53  0.0s

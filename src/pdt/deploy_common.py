@@ -103,6 +103,7 @@ ENTRYPOINT = ('ENTRYPOINT ["sh", "-c", "stop() {{ kill -s $1 $pid; wait $pid; fi
               'uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- {start} & pid=$!; '
               'wait $pid; finish $?"]\n')
 DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
+RUN pip uninstall -y --root-user-action=ignore pip
 COPY .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 WORKDIR /workspace/{app}
@@ -112,6 +113,7 @@ RUN uv sync --script run.py
 COPY . /workspace
 """ + ENTRYPOINT.replace("{start}", "uv run --script run.py")
 POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
+RUN pip uninstall -y --root-user-action=ignore pip
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu76 libssl3t64 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFFERED=1
 RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
