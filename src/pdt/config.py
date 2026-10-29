@@ -36,6 +36,8 @@ SECRET_ACTIONS = ("diff", "save", "get", "set")
 STORAGE_COMMANDS = ("ls", "get", "query", "unlock", "destroy")
 # The local port `pdt gui` serves on unless --port names another.
 GUI_PORT = 8765
+# The AutoIDM backend `pdt register` talks to unless --api-url names another.
+AUTOIDM_API_URL = "https://app.autoidm.com"
 # Every cloud provider runs a job as a container image built from the app
 # folder: AWS on Fargate, Azure on Container Apps Jobs, Google Cloud on
 # Cloud Run Jobs. The windows provider runs the app directly.

@@ -12,6 +12,8 @@
 #     "rich",
 #     "python-dotenv",
 #     "backoff",
+#     "cryptography",
+#     "pyjwt",
 # ]
 #
 # [tool.uv]
