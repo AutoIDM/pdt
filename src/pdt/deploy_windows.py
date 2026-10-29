@@ -8,6 +8,8 @@
 #     "backoff",
 #     "fsspec",
 #     "duckdb",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Deploy an app locally as a Windows Task Scheduler task.

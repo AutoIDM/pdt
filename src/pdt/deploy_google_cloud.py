@@ -12,6 +12,8 @@
 #     "google-auth",
 #     "google-cloud-logging==3.17.0",
 #     "duckdb",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Deploy an app to Google Cloud as a scheduled Cloud Run job.

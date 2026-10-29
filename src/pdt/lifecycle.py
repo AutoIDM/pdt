@@ -5,6 +5,8 @@
 #     "pyyaml",
 #     "python-dotenv",
 #     "rich",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Lifecycle events: a name, the UTC time, and a few parameters.
@@ -28,7 +30,8 @@ A Transport is a name, the extra entry keys it allows, and
 event through `unhandled`. The console type prints one `[alert]` line with
 the sentence of pdt.alert_message.event_sentence, the same line for a handled
 and an unhandled event. The slack type (pdt.slack) posts to a Slack channel,
-and the teams type (pdt.teams) posts to a Teams channel.
+the teams type (pdt.teams) posts to a Teams channel, and the autoidm type
+(pdt.autoidm_alerts) posts to the AutoIDM backend.
 `deliver` must not change the event. The console prints at once; every
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the
@@ -80,7 +83,7 @@ if "pdt" not in sys.modules:
                                                    submodule_search_locations=[str(_package)])
     sys.modules["pdt"] = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(sys.modules["pdt"])
-from pdt import alert_message, config, console, slack, teams
+from pdt import alert_message, autoidm_alerts, config, console, slack, teams
 from pdt.utils import storage
 
 JOB_RUN_STARTED = "job:run-started"
@@ -129,6 +132,7 @@ TRANSPORTS: dict[str, Transport] = {
     "console": Transport("console", frozenset(), print_event),
     "slack": Transport("slack", slack.KEYS, slack.deliver, slack.ONE_OF, slack.secrets),
     "teams": Transport("teams", teams.KEYS, teams.deliver, teams.ONE_OF, teams.secrets),
+    "autoidm": Transport("autoidm", autoidm_alerts.KEYS, autoidm_alerts.deliver),
 }
 
 
