@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from pdt.gui.models import Timing
 
-UNTIMED_PAGES = ("static_file", "duckdb_file", "stats")
+UNTIMED_PAGES = ("static_file", "duckdb_file", "stats", "up")
 WORKER_THREAD = "pdt-gui-worker"
 
 

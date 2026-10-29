@@ -87,16 +87,23 @@ def grid_params(request) -> dict:
             "page": page, "app_name": request.GET.get("app") or None}
 
 
+def up(request):
+    return HttpResponse("ok", content_type="text/plain")
+
+
 def index(request):
+    """The rows the database holds, at once; the worker fetches what is missing or stale."""
     project = sync.project_row()
-    rows = []
-    for app in sync.app_rows(project):
-        sync.sync_runs(app)
-        rows.append({"app": app, "config": app_config(app.name), "health": health_row(app)})
+    rows = [{"app": app, "config": app_config(app.name), "health": health_row(app),
+             "updating": sync.is_updating(app)} for app in sync.app_rows(project)]
+    updating = any(row["updating"] for row in rows)
+    if updating:
+        worker.WAKE.set()
     return render(request, "gui/apps.html", {
         "project": project, "project_name": Path(project.path).name, "rows": rows,
         "grid": health.build_grid(project, **grid_params(request)),
         "running": any(row["health"]["status"] == "running" for row in rows),
+        "updating": updating,
     })
 
 
