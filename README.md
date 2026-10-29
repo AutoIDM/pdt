@@ -2,7 +2,7 @@
 
 **Turn any script into a scheduled job in your cloud.**
 
-pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Windows Task Scheduler. It gives every job the same [primitives](docs/primitives.md#primitives), chosen from years of deploying scheduled jobs for businesses on each cloud. No servers to run and nothing extra to install, and everything it makes lives in your own account.
+pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Windows Task Scheduler. It gives every job the same [primitives](#primitives), chosen from years of deploying scheduled jobs for businesses on each cloud. No servers to run and nothing extra to install, and everything it makes lives in your own account.
 
 ![What pdt does: your project folder goes through pdt deploy to a schedule on AWS, GCP, Azure, or Task Scheduler, and pdt runs, logs, health, and gui read the results back.](docs/what-is-pdt.svg)
 
@@ -13,6 +13,29 @@ pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Win
 3. **Any cloud** - Move a job between AWS, Azure, Google Cloud, and Windows by changing one line.
 4. **Know the cost first** - See the plan and a monthly cost estimate before anything changes.
 5. **Know when it breaks** - Health checks, logs, a dashboard, and alerts to Slack, Teams, or email.
+
+## Primitives
+
+Every job gets the same building blocks. pdt picks the service on each cloud for you.
+
+| | AWS | Azure | Google Cloud | Windows |
+| --- | --- | --- | --- | --- |
+| **Compute** | AWS Batch (Fargate) | Container Apps Jobs | Cloud Run Jobs | Task Scheduler |
+| **Schedule** | EventBridge Scheduler | Container Apps Jobs | Cloud Scheduler | Task Scheduler |
+| **Secrets** | Secrets Manager | Key Vault | Secret Manager | `.env` file, read at each run |
+| **Storage** (job files and state) | S3 | Blob Storage | Cloud Storage | `%ProgramData%\pdt` |
+| **Logs** | CloudWatch Logs | Log Analytics | Cloud Logging | Log files |
+| **Alerts** | Slack, Teams, email | Slack, Teams, email | Slack, Teams, email | Slack, Teams, email |
+
+### Practices
+
+1. **One folder per job** - Each job is built, deployed, and destroyed on its own.
+2. **Run it locally first** - `pdt run` runs the job the same way the cloud does, with the same config and storage.
+3. **You own everything** - Your jobs live in your own git repo, and they run in your own cloud account. There is no pdt server.
+4. **Secrets stay secret** - Kept in `.env` on your computer and in the cloud's secret store, never in git or the image.
+5. **Nothing left behind** - Everything pdt makes is tagged `managed-by=pdt`, and `pdt destroy` removes all of it.
+6. **Cheapest by default** - Jobs run only when scheduled, on the lowest-cost option that works (for example arm64 on AWS).
+7. **One run at a time** - A job's saved state is locked during a run, so two runs never overwrite each other.
 
 ## Quick Start
 
@@ -102,7 +125,6 @@ PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in th
 
 ## Documentation
 
-- [How pdt works](docs/primitives.md): the building blocks every job gets on each cloud, and the practices behind them
 - [Projects and apps](docs/projects.md): set up a project, add an app, and where pdt keeps its files
 - [Deploying](docs/deploy.md): deploy, run, pause, and destroy a job, and run pdt from CI
 - [Commands](docs/commands.md): every `pdt` command and its options
