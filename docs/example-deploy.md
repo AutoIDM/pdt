@@ -44,11 +44,11 @@ Proceed? [y/N] y
 [+] Building 6.8s (12/12) FINISHED                                           docker:default
  => [internal] load build definition from Dockerfile                                   0.0s
  => => transferring dockerfile: 721B                                                   0.0s
- => [internal] load metadata for ghcr.io/astral-sh/uv:python3.12-trixie-slim@sha256    0.0s
+ => [internal] load metadata for ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256    0.0s
  => [internal] load .dockerignore                                                      0.0s
  => => transferring context: 2B                                                        0.0s
- => CACHED [1/7] FROM ghcr.io/astral-sh/uv:python3.12-trixie-slim@sha256:9b8477a5f2e  0.0s
- => => resolve ghcr.io/astral-sh/uv:python3.12-trixie-slim@sha256:9b8477a5f2e2f96fa9  0.0s
+ => CACHED [1/7] FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7  0.0s
+ => => resolve ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7071aec7  0.0s
  => [internal] load build context                                                      0.0s
  => => transferring context: 115.45kB                                                  0.0s
  => [2/7] COPY .pdt-lifecycle /opt/pdt-lifecycle                                       0.0s
