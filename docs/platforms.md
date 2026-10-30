@@ -94,7 +94,17 @@ apps:
 
 The Windows provider runs each job on the PC's local time. It needs no `timezone`, and ignores one that is set.
 
-The job runs as the SYSTEM account.
+The job runs as the SYSTEM account. Set `run_as` to run it as a group managed service account instead, for example so the job reads and changes Active Directory with the same account as your other tools:
+
+```yaml
+platform:
+  provider: windows
+  run_as: EXAMPLE\svc-pdt$
+```
+
+Put `run_as` in the `platform:` block of `pdt.yml` for every app, or in an app's own `config.yml` for one app. The name ends in `$`, because pdt supports only a group managed service account: Task Scheduler gets its password from the domain, so pdt stores no password. Write the name without quotes, or in single quotes, because YAML reads a backslash in double quotes as an escape. `pdt validate` reports a name that does not end in `$`, and `pdt deploy` stops when Windows cannot find the account.
+
+The account needs the **Log on as a batch job** right on the PC, in Local Security Policy or a group policy. pdt does not grant that right, and the deploy says so. The deploy gives the account everything else it needs: full control of the app's folder (described below), and read access to the project folder, to pdt, to uv when uv is not on the system PATH, and to the AutoIDM installation key `%ProgramData%\pdt\installation.key` when it exists. A deploy after you change or remove `run_as` registers the task again with the new account. When you upgrade pdt or uv, deploy again, so the account can read the new files.
 
 Each run writes one event to the Windows Application log, source `pdt`: event 1000 when it succeeds, event 1001 when it fails.
 
@@ -108,4 +118,4 @@ Windows accepts these schedules:
 
 Other cron forms are rejected, because they do not translate to Windows Task Scheduler.
 
-Each app keeps its run data in `%ProgramData%\pdt\<app>\`. The task writes one log file per run to the `logs\` folder in it, named by the run's UTC start time, and `pdt runs <app>` and `pdt logs <app>` read those files. The app's own files (see [Keeping files between runs](storage.md)) live in the `storage\` folder next to it. Deploy creates the folder and gives the SYSTEM account full control and you modify rights, so `pdt storage <app> destroy` works without an administrator. `pdt destroy <app>` removes the task and the `logs\` folder and keeps `storage\`. A run is stopped after 30 minutes, the same limit as the cloud providers, and a run that is still going when the next one is due is left alone; the new start is skipped.
+Each app keeps its run data in `%ProgramData%\pdt\<app>\`. The task writes one log file per run to the `logs\` folder in it, named by the run's UTC start time, and `pdt runs <app>` and `pdt logs <app>` read those files. The app's own files (see [Keeping files between runs](storage.md)) live in the `storage\` folder next to it. Deploy creates the folder and gives the SYSTEM account (and the `run_as` account) full control and you modify rights, so `pdt storage <app> destroy` works without an administrator. `pdt destroy <app>` removes the task and the `logs\` folder and keeps `storage\`. A run is stopped after 30 minutes, the same limit as the cloud providers, and a run that is still going when the next one is due is left alone; the new start is skipped.

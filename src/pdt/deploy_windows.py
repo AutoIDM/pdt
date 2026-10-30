@@ -28,12 +28,18 @@ the absolute path deploy found. Either way `uv run` hands the runner the uv
 that started it in `UV`, so the runner never looks uv up again.
 
 The task runs as the SYSTEM account, so it does not depend on a user being
-logged on. Registering or removing it needs administrator rights; a
+logged on. `platform.run_as` names a group managed service account to run it
+as instead (LogonType Password: Task Scheduler gets the password from the
+domain). Registering or removing it needs administrator rights; a
 non-elevated shell gets one UAC prompt. The same elevated script creates the
-app folder and gives SYSTEM full control and the deploying user modify
-rights, so that user can delete what the task wrote. Deploy always registers
-the complete desired task definition with -Force, so rerunning it safely
-reconciles changes to the schedule or repository path.
+app folder and gives SYSTEM (and the run_as account) full control and the
+deploying user modify rights, so that user can delete what the task wrote.
+SYSTEM reads every file on the PC, and the run_as account does not, so the
+script also lets that account read the project folder, pdt, uv when it is not
+on the machine PATH, and the AutoIDM installation key when it exists. Deploy
+always registers the complete desired task definition with -Force, so
+rerunning it safely reconciles changes to the schedule, the repository path,
+or the account.
 
 A PowerShell app (.ps1 files, no run.py) runs through run_powershell.py
 instead of run.py, unless `pdt new APP --from-scripts` wrote it one. Before
@@ -41,7 +47,7 @@ the plan, deploy finds pwsh (`pdt.pwsh` installs the pinned version under
 %ProgramData%\\pdt\\pwsh when none is on the PATH), scans the scripts, and
 stops with the Windows feature to add when a module that comes with Windows
 (`powershell.WINDOWS_IN_BOX_MODULES`) is missing. The
-elevated script installs the other modules for all users, so SYSTEM sees them.
+elevated script installs the other modules for all users, so the task sees them.
 """
 
 from __future__ import annotations
@@ -80,6 +86,9 @@ DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday",
         "Thursday", "Friday", "Saturday")
 FORBIDDEN_TASK_NAME_CHARS = set('\\/:*?"<>|')
 RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
+# The key `pdt register` writes in machine_data_home(), readable only by SYSTEM and
+# Administrators.
+INSTALLATION_KEY = "installation.key"
 # The same limit as --replica-timeout on Azure Container Apps.
 RUN_TIME_LIMIT = "PT30M"
 FOLLOW_POLL_SECONDS = 0.25
@@ -193,6 +202,26 @@ def task_arguments(app: dict) -> str:
         str(logs_folder(app["name"])), storage_url(app["name"])])
 
 
+def run_as(app: dict) -> str:
+    """The group managed service account the task runs as, or "" for SYSTEM."""
+    return str(app["platform"].get("run_as") or "").strip()
+
+
+def account_reads(app: dict, uv: str, on_machine_path: bool) -> list[tuple[str, Path, str]]:
+    """(what, path, icacls rights) that the run_as account must read and SYSTEM reads
+    already; empty for SYSTEM. The scripts put RUNNER's parent's parent on sys.path."""
+    if run_as(app) == "":
+        return []
+    reads = [("the project folder", config.find_project(), "(OI)(CI)RX"),
+             ("pdt", RUNNER.parent.parent, "(OI)(CI)RX")]
+    if not on_machine_path:
+        reads.append(("uv", Path(uv).resolve().parent, "(OI)(CI)RX"))
+    key = config.machine_data_home() / INSTALLATION_KEY
+    if key.is_file():
+        reads.append(("the AutoIDM installation key", key, "R"))
+    return reads
+
+
 def uv_on_machine_path() -> bool:
     """Whether the machine PATH, the only PATH the SYSTEM account sees, holds uv.exe."""
     if os.name != "nt":
@@ -218,13 +247,16 @@ def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
     task_description = html.escape(
         f"Managed by pdt; runs {app['name']} from "
         f"{Path(app['dir']).resolve()}")
+    account = run_as(app)
+    user = (f"<UserId>{html.escape(account)}</UserId>\n      <LogonType>Password</LogonType>"
+            if account else "<UserId>S-1-5-18</UserId>")
     xml = f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>{task_description}</Description></RegistrationInfo>
   <Triggers>{trigger}</Triggers>
   <Principals>
     <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
+      {user}
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>
@@ -323,20 +355,45 @@ def _deploying_user() -> str:
     return user
 
 
-def _folder_script(app: dict, user: str) -> str:
-    """Create the app folder with the two rules its files need: SYSTEM (the task) has full
-    control, and the deploying user can change and delete what SYSTEM writes."""
+def _folder_script(app: dict, user: str, reads: list[tuple[str, Path, str]] = ()) -> str:
+    """Create the app folder with the rules its files need: SYSTEM and the run_as account
+    (the task) have full control, and the deploying user can change and delete what the
+    task writes. Then let the run_as account read each of `reads` (account_reads)."""
     folders = [app_folder(app["name"]), logs_folder(app["name"])]
     if app["storage"]:
         folders.append(storage_folder(app["name"]))
     paths = ", ".join(_ps_string(str(folder)) for folder in folders)
-    return (
+    account = run_as(app)
+    task_rules = "'*S-1-5-18:(OI)(CI)F'"
+    if account:
+        task_rules += f" {_ps_string(account + ':(OI)(CI)F')}"
+    script = (
         f"$folder = {_ps_string(str(app_folder(app['name'])))}; "
         f"New-Item -ItemType Directory -Force -Path {paths} | Out-Null; "
-        f"icacls $folder /grant '*S-1-5-18:(OI)(CI)F' {_ps_string(user + ':(OI)(CI)M')} "
+        f"icacls $folder /grant {task_rules} {_ps_string(user + ':(OI)(CI)M')} "
         "| Out-Null; "
         "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
     )
+    for _what, path, rights in reads:
+        script += (
+            f"icacls {_ps_string(str(path))} /grant {_ps_string(f'{account}:{rights}')} "
+            "| Out-Null; "
+            "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+        )
+    return script
+
+
+def _account_problem(powershell: str, account: str) -> str:
+    """Why Windows cannot run a task as `account`, or "" when it finds the account."""
+    script = (f"([Security.Principal.NTAccount]{_ps_string(account)}).Translate("
+              "[Security.Principal.SecurityIdentifier]).Value")
+    try:
+        _run_output(powershell, script)
+    except WindowsDeployError:
+        return (f"Windows on this computer cannot find the account {account}. Set "
+                "platform.run_as to a group managed service account of this computer's "
+                "domain, or remove it to run the task as SYSTEM.")
+    return ""
 
 
 def _task_state(powershell: str, name: str) -> str:
@@ -414,21 +471,26 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
          on_machine_path: bool, pwsh: str | None = None,
          modules: list = ()) -> list[console.Markup]:
     name = app["name"]
+    account = run_as(app)
+    owners = f"SYSTEM and {console.value(account)}" if account else "SYSTEM"
     actions = [
         console.Markup(f"{verb} Windows scheduled task {console.value(_task_name(name))} "
-                       "(runs as SYSTEM)"),
+                       f"(runs as {console.value(account) if account else 'SYSTEM'})"),
         console.Markup(f"run {console.value(name)} {console.escape(description)} "
                        "(machine local time)" + (" (paused)" if app.get("pause") else "")),
         console.Markup(f"working directory: {console.value(app['dir'])}"),
         console.Markup("run uv from the system PATH" if on_machine_path else
                        f"run uv from {console.value(Path(uv).resolve())}"),
         console.Markup(f"keep the app's run data in {console.value(app_folder(name))} "
-                       f"(SYSTEM: full control; {console.value(user)}: modify)"),
+                       f"({owners}: full control; {console.value(user)}: modify)"),
         console.Markup(f"write one log per run under {console.value(logs_folder(name))} "
                        "(removed on destroy)"),
         console.Markup("write each run's result to the Windows Application log, source "
                        f"{console.value(EVENT_SOURCE)}"),
     ]
+    for what, path, _rights in account_reads(app, uv, on_machine_path):
+        actions.append(console.Markup(f"let {console.value(account)} read {what} "
+                                      f"{console.value(path)}"))
     dockerfile = Path(app["dir"]) / "Dockerfile"
     if dockerfile.is_file():
         actions.append(console.Markup(
@@ -454,6 +516,11 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         name = _task_name(app["name"])
         console.status(f"Checking Windows scheduled task {console.value(name)}...")
         user = _deploying_user()
+        account = run_as(app)
+        if account:
+            problem = _account_problem(powershell, account)
+            if problem != "":
+                raise WindowsDeployError(problem)
         description, xml = task_xml(app, uv, on_machine_path)
         state = _task_state(powershell, name)
         if state == "unmanaged":
@@ -469,6 +536,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                    on_machine_path, pwsh, modules)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges", currency=regions.local_currency())
+    if account:
+        console.note(f"the task starts only when {console.value(account)} has the "
+                     f"{console.value('Log on as a batch job')} right on this computer. "
+                     "pdt does not grant this right.")
     if plan_only:
         return show_plan(actions, cost)
     if not confirm(actions, assume_yes, cost):
@@ -483,7 +554,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                    "if ($LASTEXITCODE -ne 0) { throw \"PowerShell module install failed "
                    "with exit $LASTEXITCODE\" }; ")
     script = (
-        f"{_folder_script(app, user)}"
+        f"{_folder_script(app, user, account_reads(app, uv, on_machine_path))}"
         f"{install}"
         f"if (-not [Diagnostics.EventLog]::SourceExists({_ps_string(EVENT_SOURCE)})) {{ "
         f"New-EventLog -LogName Application -Source {_ps_string(EVENT_SOURCE)} }}; "
