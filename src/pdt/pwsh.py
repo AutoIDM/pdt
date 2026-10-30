@@ -5,7 +5,7 @@ download the pinned version below (~70 MB, ~110 MB on Windows) from
 github.com, verify its sha256, and unpack it, with no question, the same
 way gcloud_sdk.py installs the Google Cloud CLI. On macOS and Linux the
 install lives in the user's data folder. On Windows it lives in
-%ProgramData%\\pdt\\pwsh, because the scheduled task runs as SYSTEM and
+%ProgramData%\\pdt\\pwsh, because the scheduled task (SYSTEM, or its run_as account)
 must reach the same pwsh the deploying user installed. A local install
 of another version (the VERSION file pdt writes into it) is replaced the
 same way, and the current one stays until the new one is unpacked.
