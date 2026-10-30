@@ -765,7 +765,8 @@ def build_parser() -> argparse.ArgumentParser:
         "test", help="send a test message to every alert that is set up",
         formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
     p.set_defaults(func=cmd_alerts)
-    p = add_parser("register", help="connect this computer to AutoIDM with an enrollment code")
+    p = add_parser("register",
+                   help="connect this computer to one AutoIDM customer with an enrollment code")
     p.add_argument("--code", required=True,
                    help="the one-time enrollment code from AutoIDM, such as KQ7M-2RTX")
     p.add_argument("--api-url", default=config.AUTOIDM_API_URL,
