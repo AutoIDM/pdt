@@ -31,7 +31,9 @@ provider and for a `pdt run` on this computer:
   a warning.
 
 `deploy.provider_step` sends app:deployed after each deploy that send_run_history
-covers, with the schedule, its time zone, the provider, and the place.
+covers, with the schedule, its time zone, the provider, the place, and the
+repository: the project's git remote `origin` as `<host>/<path>`, with no
+credentials, or null.
 
 A network error or an HTTP 5xx is a warning, and the run goes on. A 401 means
 AutoIDM refused the registration: the sender sends nothing more, the run's
@@ -46,11 +48,13 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pdt import config, console
 
@@ -137,6 +141,28 @@ def place(platform: dict) -> str | None:
     return f"{provider}:{scope}:{platform.get('region') or ''}"
 
 
+def repository(folder: Path) -> str | None:
+    """The `origin` remote of the git repository at `folder` as `<host>/<path>`, with no
+    scheme, user, credentials, port, or `.git`; None when there is no repository, no git, no
+    `origin`, or no host in its URL."""
+    try:
+        found = subprocess.run(["git", "-C", str(folder), "remote", "get-url", "origin"],
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        url = found.stdout.strip()
+        if found.returncode != 0:
+            return None
+        if "://" in url:
+            parts = urlsplit(url)
+            host, path = parts.hostname, parts.path
+        else:
+            scp = re.fullmatch(r"(?:[^@/]+@)?([^:/]+):(.+)", url)
+            host, path = (scp.group(1), scp.group(2)) if scp else (None, "")
+    except (OSError, ValueError):
+        return None
+    path = path.strip("/").removesuffix(".git").strip("/")
+    return f"{host}/{path}" if host and path else None
+
+
 def now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -209,14 +235,16 @@ class Sender:
         return self.refused
 
     def deployed(self, params: dict, app: dict, platform: dict) -> None:
-        """Send app:deployed with the schedule and the place the app now runs."""
+        """Send app:deployed with the schedule, the place the app now runs, and the project's
+        repository."""
         from pdt import regions
         if not self.wants("send_run_history"):
             return
         zone = regions.local_timezone() if app["timezone"] == "local" else app["timezone"]
         schedule = config.cron_expression(app["schedule"]) if app["schedule"] else None
         self.event(APP_DEPLOYED, now(), {**params, "schedule": schedule, "timezone": zone,
-                                         "place": place(platform)})
+                                         "place": place(platform),
+                                         "repository": repository(config.find_project())})
 
     def refusal(self) -> str:
         """The message after a 401, naming the registration AutoIDM refused."""

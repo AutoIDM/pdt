@@ -1,5 +1,6 @@
 import io
 import json
+import subprocess
 import sys
 import zipfile
 
@@ -252,12 +253,45 @@ def test_a_deploy_sends_app_deployed_with_the_schedule_and_the_place(project, ba
     monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: 0)
     monkeypatch.setattr(config, "deployed_platform", lambda name: {
         "provider": "aws", "region": "us-east-2", "account": "123456789012"})
+    asked = []
+    monkeypatch.setattr(managed_services.subprocess, "run", lambda command, **kwargs: (
+        asked.append(command) or subprocess.CompletedProcess(
+            command, 0, "https://user:glpat-secret@gitlab.com/example/project.git\n", "")))
     assert deploy.provider_step("deploy", "aws", "report", True) == 0
     event = seen[0]["body"]["event"]
     assert event["name"] == "app:deployed"
     assert event["params"] == {"project": project.name, "app": "report", "provider": "aws",
                                "schedule": "0 0 * * *", "timezone": "America/New_York",
-                               "place": "aws:123456789012:us-east-2"}
+                               "place": "aws:123456789012:us-east-2",
+                               "repository": "gitlab.com/example/project"}
+    assert asked == [["git", "-C", str(project), "remote", "get-url", "origin"]]
+    assert "glpat-secret" not in str(seen)
+
+
+@pytest.mark.parametrize(("url", "found"), [
+    ("git@gitlab.com:example/project.git", "gitlab.com/example/project"),
+    ("https://user:token@gitlab.com/example/project.git", "gitlab.com/example/project"),
+    ("ssh://git@gitlab.com:22/example/project.git", "gitlab.com/example/project"),
+    ("https://github.com/example/project/", "github.com/example/project"),
+    ("gitlab.com:group/sub/project", "gitlab.com/group/sub/project"),
+    ("/srv/git/project.git", None),
+    ("file:///srv/git/project.git", None),
+])
+def test_the_repository_is_the_origin_host_and_path_with_no_credentials(project, monkeypatch,
+                                                                         url, found):
+    monkeypatch.setattr(managed_services.subprocess, "run", lambda command, **kwargs: (
+        subprocess.CompletedProcess(command, 0, url + "\n", "")))
+    assert managed_services.repository(project) == found
+
+
+def test_no_git_no_repository_or_no_origin_means_no_repository(project, monkeypatch):
+    def no_git(command, **kwargs):
+        raise FileNotFoundError("git")
+    monkeypatch.setattr(managed_services.subprocess, "run", no_git)
+    assert managed_services.repository(project) is None
+    monkeypatch.setattr(managed_services.subprocess, "run", lambda command, **kwargs: (
+        subprocess.CompletedProcess(command, 2, "", "error: No such remote 'origin'\n")))
+    assert managed_services.repository(project) is None
 
 
 def test_a_windows_app_has_no_place_and_its_time_zone_is_the_computers(project, monkeypatch):
@@ -267,9 +301,10 @@ def test_a_windows_app_has_no_place_and_its_time_zone_is_the_computers(project, 
         {"customer": CUSTOMER}, "pdt.yml"), None)
     monkeypatch.setattr(sender, "event", lambda name, at, params: sent.append(params))
     monkeypatch.setattr("pdt.regions.local_timezone", lambda: "Europe/Berlin")
+    monkeypatch.setattr(managed_services, "repository", lambda folder: None)
     sender.deployed({"app": "report"}, config.merged_app("report"), {"provider": "windows"})
     assert sent == [{"app": "report", "schedule": None, "timezone": "Europe/Berlin",
-                     "place": None}]
+                     "place": None, "repository": None}]
 
 
 def test_a_cloud_job_in_workspace_reports_the_name_of_the_deploying_project(
