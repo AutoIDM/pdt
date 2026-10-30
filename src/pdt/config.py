@@ -472,6 +472,19 @@ def save_root_alerts(alerts: list[dict]) -> Path:
     return path
 
 
+def save_managed_customer(customer: str) -> Path:
+    """Add `managed_services:` with `customer:` to pdt.yml, after the last line, when pdt.yml
+    has no `managed_services:` yet."""
+    path = find_project() / PROJECT_FILE
+    with locked(path):
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+        if not any(line.split("#")[0].rstrip() == "managed_services:" for line in lines):
+            lines += ([""] if lines and lines[-1].strip() else []) + [
+                "managed_services:", f"  customer: {_yaml_scalar(customer)}"]
+            write_text_atomically(path, "\n".join(lines) + "\n")
+    return path
+
+
 def _yaml_scalar(value) -> str:
     import yaml
     if (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][\w:.-]*", value)

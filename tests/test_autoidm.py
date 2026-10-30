@@ -203,6 +203,45 @@ def test_register_for_a_second_customer_keeps_the_first(backend):
     assert autoidm.registration("cus_0000000002").installation_id == "ins_0000000009"
 
 
+def test_register_in_a_project_adds_managed_services_to_pdt_yml(backend, tmp_path, monkeypatch,
+                                                                capsys):
+    url, _seen, answers = backend
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pdt.yml").write_text("# keep\nplatform:\n  provider: windows\n")
+    monkeypatch.chdir(project)
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+    assert register_cli.register("KQ7M-2RTX", url) == 0
+    assert (project / "pdt.yml").read_text() == (
+        f"# keep\nplatform:\n  provider: windows\n\nmanaged_services:\n  customer: {CUSTOMER}\n")
+    assert "Saved managed_services: with customer: " in " ".join(capsys.readouterr().out.split())
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+    assert register_cli.register("KQ7M-2RTX", url) == 1
+    assert (project / "pdt.yml").read_text().count("managed_services:") == 1
+
+
+def test_register_keeps_a_pdt_yml_that_names_another_customer(backend, tmp_path, monkeypatch,
+                                                              capsys):
+    url, _seen, answers = backend
+    project = tmp_path / "project"
+    project.mkdir()
+    text = "managed_services:\n  customer: cus_0000000002\n"
+    (project / "pdt.yml").write_text(text)
+    monkeypatch.chdir(project)
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+    assert register_cli.register("KQ7M-2RTX", url) == 0
+    assert (project / "pdt.yml").read_text() == text
+    assert "names another customer" in " ".join(capsys.readouterr().out.split())
+
+
+def test_register_outside_a_project_says_what_to_add(backend, tmp_path, monkeypatch, capsys):
+    url, _seen, answers = backend
+    monkeypatch.chdir(tmp_path)
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+    assert register_cli.register("KQ7M-2RTX", url) == 0
+    assert f"customer: {CUSTOMER}" in capsys.readouterr().out
+
+
 def test_pdt_register_needs_a_code_and_defaults_the_api_url():
     args = cli.build_parser().parse_args(["register", "--code", "KQ7M-2RTX"])
     assert (args.code, args.api_url) == ("KQ7M-2RTX", config.AUTOIDM_API_URL)

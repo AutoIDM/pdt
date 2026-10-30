@@ -86,7 +86,7 @@ managed_services:
 
 A list sends only for the apps it names. pdt sends the same things for a scheduled run on every provider and for a `pdt run` on your computer. It sends nothing when the env var `CI` is set, so a CI job sends nothing. Without `managed_services`, pdt sends nothing.
 
-Each computer that runs or deploys the project needs a registration for the customer. Run `pdt register --code CODE` once on it, with the code AutoIDM gives you; on Windows, run it in a terminal opened with Run as administrator. A computer can hold one registration for each customer. Until the computer has one, each pdt command prints one warning and sends nothing.
+Each computer that runs or deploys the project needs a registration for the customer. Run `pdt register --code CODE` once on it, with the code AutoIDM gives you; on Windows, run it in a terminal opened with Run as administrator. Run in a project folder whose `pdt.yml` has no `managed_services`, it adds `managed_services:` with the customer of the code. A computer can hold one registration for each customer. Until the computer has one, each pdt command prints one warning and sends nothing.
 
 A cloud job cannot use the registration of your computer. The first deploy of an app to AWS, Azure, or Google Cloud makes a registration for the job and keeps it in the app's secret as `PDT_INSTALLATION_ID`, `PDT_INSTALLATION_KEY`, and `PDT_API_URL`. Later deploys keep it. `pdt secrets` never shows, copies, or changes these three values.
 
