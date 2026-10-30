@@ -3,8 +3,8 @@ revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "(python_full_version >= '3.14' and platform_machine != 'ARM64') or (python_full_version >= '3.14' and sys_platform != 'win32')",
-    "(python_full_version < '3.14' and platform_machine != 'ARM64') or (python_full_version < '3.14' and sys_platform != 'win32')",
     "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
+    "(python_full_version < '3.14' and platform_machine != 'ARM64') or (python_full_version < '3.14' and sys_platform != 'win32')",
     "python_full_version < '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
 ]
 
@@ -1344,9 +1344,11 @@ source = { editable = "." }
 dependencies = [
     { name = "argcomplete" },
     { name = "backoff" },
+    { name = "cryptography" },
     { name = "google-auth" },
     { name = "google-auth-oauthlib" },
     { name = "msal" },
+    { name = "pyjwt" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -1392,6 +1394,7 @@ requires-dist = [
     { name = "backoff" },
     { name = "boto3", marker = "extra == 'apps'" },
     { name = "boto3", extras = ["crt"], marker = "(platform_machine != 'ARM64' and extra == 'apps') or (sys_platform != 'win32' and extra == 'apps')" },
+    { name = "cryptography" },
     { name = "cryptography", marker = "extra == 'apps'" },
     { name = "fsspec", marker = "extra == 'apps'" },
     { name = "gcsfs", marker = "extra == 'apps'" },
@@ -1400,6 +1403,7 @@ requires-dist = [
     { name = "google-cloud-secret-manager", marker = "extra == 'apps'" },
     { name = "google-cloud-storage", marker = "extra == 'apps'" },
     { name = "msal" },
+    { name = "pyjwt" },
     { name = "pyjwt", marker = "extra == 'apps'" },
     { name = "python-dotenv" },
     { name = "pyyaml" },

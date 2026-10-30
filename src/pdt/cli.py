@@ -3,7 +3,7 @@
 Inside an app folder, leave <app> off any command that takes one and pdt uses that app.
 Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
-Every command except init, examples, completion, aws, az, and gcloud needs a project.
+Every command except init, examples, completion, register, aws, az, and gcloud needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
 """
 
@@ -25,7 +25,8 @@ from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold
+    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh,
+                     register_cli, scaffold)
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -533,6 +534,10 @@ def cmd_alerts(args) -> int:
     return alerts_cli.setup() if args.action == "setup" else alerts_cli.test()
 
 
+def cmd_register(args) -> int:
+    return register_cli.register(args.code, args.api_url)
+
+
 def cmd_gui(args) -> int:
     return gui_cli.main(args.port, args.background, args.no_browser, args.stop)
 
@@ -589,7 +594,7 @@ COMMAND_GROUPS = {
     "Get started": ["init", "examples", "new", "completion"],
     "Run and validate": ["list", "validate", "run"],
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
-    "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
+    "Check a deployed app": ["health", "runs", "logs", "alerts", "register", "gui"],
     "Manage app data": ["secrets", "storage"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
@@ -760,6 +765,13 @@ def build_parser() -> argparse.ArgumentParser:
         "test", help="send a test message to every alert that is set up",
         formatter_class=rich_argparse.RawDescriptionRichHelpFormatter)
     p.set_defaults(func=cmd_alerts)
+    p = add_parser("register",
+                   help="authenticate this computer for AutoIDM managed services")
+    p.add_argument("--code", required=True,
+                   help="the one-time enrollment code from AutoIDM, such as KQ7M-2RTX")
+    p.add_argument("--api-url", default=config.AUTOIDM_API_URL,
+                   help=f"the AutoIDM address (default: {config.AUTOIDM_API_URL})")
+    p.set_defaults(func=cmd_register)
     p = add_parser("gui", help="open the project's dashboard in your web browser")
     p.add_argument("--port", type=int, default=config.GUI_PORT,
                    help=f"the local port to serve on (default: {config.GUI_PORT})")

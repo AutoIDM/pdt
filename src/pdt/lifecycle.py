@@ -5,6 +5,8 @@
 #     "pyyaml",
 #     "python-dotenv",
 #     "rich",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Lifecycle events: a name, the UTC time, and a few parameters.
@@ -56,6 +58,11 @@ it, and the Windows task and every cloud image (a copy at
 script around the app's command, from the app folder, so the events land in
 the run's log. A SIGKILL, a Windows task that Task Scheduler ends, or a
 power loss stops pdt at once, so no event fires.
+
+When the project sets `managed_services`, `run_job` also gives the run to
+pdt.managed_services, the same way on every provider: the start and end
+events, the command's output (which it then also writes to a file as it
+prints it), and the run's storage output folder.
 """
 
 from __future__ import annotations
@@ -65,6 +72,7 @@ import queue
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -74,7 +82,7 @@ from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import alert_message, config, console, slack, teams
+from pdt import alert_message, config, console, managed_services, slack, teams
 from pdt.utils import storage
 
 JOB_RUN_STARTED = "job:run-started"
@@ -287,7 +295,7 @@ def emit(name: str, **params: object) -> Event:
 
 
 def app_params(app: str, provider: str) -> dict[str, object]:
-    return {"project": config.find_project().name, "app": app, "provider": provider}
+    return {"project": config.project_name(), "app": app, "provider": provider}
 
 
 def run_job(app: str, provider: str, command: list[str], cwd: Path,
@@ -298,7 +306,16 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     trigger = "manual" if not deployed or os.environ.get(TRIGGER_ENV) == "manual" else "schedule"
     params = {**app_params(app, provider), "run_id": storage.RUN_ID, "deployed": deployed,
               "trigger": trigger}
-    emit(JOB_RUN_STARTED, **params)
+    sender = managed_services.sender(app)
+    event = emit(JOB_RUN_STARTED, **params)
+    if sender is not None:
+        sender.run_started(event.at, event.name, params)
+    log = None
+    if sender is not None and sender.wants("send_logs"):
+        handle, name = tempfile.mkstemp(prefix=f"pdt-{storage.RUN_ID}-", suffix=".log")
+        os.close(handle)
+        log = Path(name)
+    began = time.monotonic()
     stopped: list[int] = []
     child: subprocess.Popen | None = None
 
@@ -311,23 +328,70 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     # Before Popen, so the command does not inherit a SIGINT that a cloud image's sh ignores.
     previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
     try:
-        child = subprocess.Popen(command, cwd=cwd, env={**(env or os.environ),
-                                                        "PDT_RUN_ID": storage.RUN_ID})
+        child_env = {**(env or os.environ), "PDT_RUN_ID": storage.RUN_ID}
+        copier = None
+        if log is None:
+            child = subprocess.Popen(command, cwd=cwd, env=child_env)
+        else:
+            # Python holds output to a pipe until a buffer fills, so a print() line would
+            # land after a later stderr line. The cloud images and the Windows task set the same.
+            child = subprocess.Popen(command, cwd=cwd, env={"PYTHONUNBUFFERED": "1", **child_env},
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            copier = copy_output(child, log)
         code = child.wait()
+        if copier is not None:
+            copier.join(DRAIN_SECONDS)
         if code < 0:
             code = 128 - code
         state = f"runs/*-{storage.RUN_ID}/"
         if stopped:
-            emit(JOB_RUN_FAILED, **params, exit_code=code, reason="interrupted",
-                 signal=signal.Signals(stopped[0]).name, state=state)
+            name = JOB_RUN_FAILED
+            details = {"exit_code": code, "reason": "interrupted",
+                       "signal": signal.Signals(stopped[0]).name}
         else:
-            emit(JOB_RUN_COMPLETED if code == 0 else JOB_RUN_FAILED, **params, exit_code=code,
-                 state=state)
+            name = JOB_RUN_COMPLETED if code == 0 else JOB_RUN_FAILED
+            details = {"exit_code": code}
+        if sender is not None and sender.run_ended(
+                name, {**params, **details, "state": state}, time.monotonic() - began, log,
+                managed_services.output_folder(cwd, storage.RUN_ID)):
+            console.error(sender.refusal())
+            if code == 0:
+                code = managed_services.UNAUTHORIZED_EXIT
+                name, details = JOB_RUN_FAILED, {"exit_code": code, "reason": "unauthorized"}
+        emit(name, **params, **details, state=state)
         flush()
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+        if log is not None:
+            log.unlink(missing_ok=True)
     return code
+
+
+# How long a run waits for the rest of the command's output after the command exits. A
+# process the command started in the background can hold the pipe open.
+DRAIN_SECONDS = 2
+
+
+def copy_output(child: subprocess.Popen, log: Path) -> threading.Thread:
+    """Print the command's output as it arrives, and write it to `log` too."""
+    sys.stdout.flush()
+    out = sys.stdout.buffer
+
+    def copy() -> None:
+        with log.open("wb") as kept:
+            while True:
+                chunk = child.stdout.read1()
+                if chunk == b"":
+                    return
+                out.write(chunk)
+                out.flush()
+                kept.write(chunk)
+                kept.flush()
+
+    copier = threading.Thread(target=copy, daemon=True)
+    copier.start()
+    return copier
 
 
 def main(argv: list[str]) -> int:

@@ -70,8 +70,8 @@ from pdt.deploy_azure import (
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, gather_secrets,
-    image_action, run_build, run_secrets, ssh_build_args, store_cost_label, store_kept_line,
-    warn_if_locked)
+    image_action, make_registration, reads_registration, registration_secrets, run_build,
+    run_secrets, ssh_build_args, store_cost_label, store_kept_line, warn_if_locked)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -1074,7 +1074,6 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     job = job_name(settings, name)
     cron = config.cron_expression(app["schedule"])
     values = gather_secrets(app)
-    payload = json.dumps(values, sort_keys=True)
     sid = secret_name(name)
     rg = settings["resource_group"]
 
@@ -1084,7 +1083,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     locks = shared_locks(settings, lock_owner(name))
     legacy = legacy_job_name(name)
     store = store_settings(settings) if app["storage"] else None
-    state = read_state(settings, job, legacy, sid, bool(values), locks, store,
+    state = read_state(settings, job, legacy, sid, bool(values) or reads_registration(), locks,
+                       store,
                        held_token_store(settings, name, access_token(STORAGE_RESOURCE))
                        if store else None, regions.local_currency())
     check_shared_names(settings, state["resources"])
@@ -1120,6 +1120,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     if not owned_by(legacy_job, name):
         legacy_job = None
     vault_exists, current_secret = secret_state(settings, sid, name, state["secret"])
+    values.update(registration_secrets(current_secret))
+    payload = json.dumps(values, sort_keys=True)
     store_present = False
     usage = None
     if store:
@@ -1232,6 +1234,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
 
     fingerprint = ensure_image(app, image, "linux/amd64", "ACR Tasks" if cloud else "",
                                deployed, current, build)
+    values = make_registration(values, {"provider": "azure",
+                                        "subscription": settings["subscription"],
+                                        "region": settings["region"]})
+    payload = json.dumps(values, sort_keys=True)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
     if legacy_job:
         retire_job(settings, legacy, legacy_job, store, sid)

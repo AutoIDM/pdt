@@ -16,6 +16,8 @@ dependencies = [
     "rich-argparse>=1.8.0",
     "argcomplete",
     "shellingham",
+    "cryptography",
+    "pyjwt",
 ]
 
 [project.urls]

@@ -8,9 +8,14 @@ cloud job gets no files, only string secrets. One that names no file is
 a run-time location the app sets itself and goes through as is.
 
 PDT_ENV_SECRET_RESOURCE names that secret. The job's identity may update
-it and no other, through `pdt.utils.env_secret`.
+it and no other, through `pdt.utils.env_secret`. When the project sets
+`managed_services`, the secret also holds the job's AutoIDM cloud
+registration (registration_secrets, make_registration), which every later
+deploy keeps and `pdt secrets` never shows, copies, or replaces.
 
-A build context holds the app directory, pdt.yml, and in .pdt-lifecycle
+A build context holds the app directory, pdt.yml, config.PROJECT_NAME_FILE
+(the name of the project folder, since the image's project folder is
+/workspace, so every event names the project as a local run does), and in .pdt-lifecycle
 this pdt's lifecycle.py with the pdt modules it imports (LIFECYCLE_MODULES).
 Every generated image copies that folder to /opt/pdt-lifecycle and starts
 the app through it, so the job prints the lifecycle events of the pdt that
@@ -123,8 +128,9 @@ WORKDIR /workspace/{app}
 """ + ENTRYPOINT
 # The PEP 723 script block, with the reference regex of the PEP.
 SCRIPT_HEADER = re.compile(r"(?m)^# /// script$\s(?:^#(?:| .*)$\s)+^# ///$")
-LIFECYCLE_MODULES = ("__init__.py", "alert_message.py", "config.py", "console.py", "lifecycle.py",
-                     "slack.py", "teams.py", "utils/__init__.py", "utils/storage.py")
+LIFECYCLE_MODULES = ("__init__.py", "alert_message.py", "config.py", "console.py",
+                     "lifecycle.py", "managed_services.py", "slack.py", "teams.py",
+                     "utils/__init__.py", "utils/autoidm.py", "utils/storage.py")
 # Secret shapes and local state that never belong in an image. The version-control names are
 # the ones `az acr build` always leaves out, so every build place gets the same context.
 BUILD_EXCLUDES = (
@@ -698,6 +704,85 @@ def gather_secrets(app: dict) -> dict[str, str]:
     return values
 
 
+def split_registration(current: str | None) -> tuple[dict[str, str], str | None]:
+    """The AutoIDM cloud registration in a deployed secret, and the secret without it. pdt
+    keeps the registration itself, so `pdt secrets` never shows, copies, or replaces it."""
+    from pdt.utils import autoidm
+    try:
+        values = json.loads(current or "")
+    except ValueError:
+        return {}, current
+    if not isinstance(values, dict):
+        return {}, current
+    kept = {name: values.pop(name) for name in autoidm.SECRET_NAMES if name in values}
+    return kept, json.dumps(values, sort_keys=True) if kept else current
+
+
+def reads_registration() -> bool:
+    """Whether a deploy reads the app's secret for an AutoIDM cloud registration even when
+    the app has no env vars: the project sets `managed_services`."""
+    from pdt import managed_services
+    try:
+        return managed_services.settings() is not None
+    except config.ConfigError:
+        return False
+
+
+def registration_secrets(current: str | None) -> dict[str, str]:
+    """The AutoIDM cloud registration a deploy puts in the app's secret beside gather_secrets.
+    It is the one the deployed secret (`current`) holds, which pdt leaves as it is. Else, when
+    the project sets `managed_services` and this computer is registered for its customer, it
+    is one empty value per name, which make_registration fills after the plan. Else it is {}:
+    the job sends nothing."""
+    from pdt import managed_services
+    from pdt.utils import autoidm
+    kept, _rest = split_registration(current)
+    if kept.get(autoidm.ID_ENV):
+        return kept
+    try:
+        found = managed_services.settings()
+    except config.ConfigError:
+        return {}
+    if found is None or managed_services.in_ci():
+        return {}
+    if managed_services.find_registration(found["customer"], machine=True) is None:
+        return {}
+    return dict.fromkeys(autoidm.SECRET_NAMES, "")
+
+
+def make_registration(values: dict[str, str], platform: dict) -> dict[str, str]:
+    """`values` with a new AutoIDM cloud registration in place of the empty values of
+    registration_secrets: a new key pair, and POST /v1/installations signed by this computer's
+    registration. The private key goes only into the secret, never to a file. When AutoIDM
+    makes none, a warning, and `values` without the empty names."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from pdt import managed_services
+    from pdt.utils import autoidm
+    if values.get(autoidm.ID_ENV) != "":
+        return values
+    rest = {name: value for name, value in values.items() if name not in autoidm.SECRET_NAMES}
+    place = managed_services.place(platform)
+    machine = autoidm.machine_registration(managed_services.settings()["customer"])
+    key = Ed25519PrivateKey.generate()
+    try:
+        answer = autoidm.post(machine, "/v1/installations", {
+            "version": 1, "public_key": autoidm.public_key(key), "place": place,
+            "hostname": None})
+    except autoidm.AutoidmError as e:
+        console.warn(f"AutoIDM did not make a cloud registration for {console.value(place)}: "
+                     f"{console.escape(str(e))}. The job sends nothing to AutoIDM until a "
+                     "deploy makes one.")
+        if e.status == 401:
+            console.warn(f"AutoIDM refused the registration in {console.value(machine.source)}. "
+                         "Ask AutoIDM whether it was revoked.")
+        return rest
+    console.step(f"made AutoIDM cloud registration {console.value(answer['installation_id'])} "
+                 f"for {console.value(place)}")
+    return {**rest, autoidm.ID_ENV: answer["installation_id"],
+            autoidm.KEY_ENV: autoidm.private_pem(key).decode(), autoidm.URL_ENV: machine.api_url}
+
+
 MASK_BOTH_ENDS_FROM = 12
 
 
@@ -735,12 +820,18 @@ def secret_changes(current: str | None, values: dict[str, str]) -> list[tuple[st
 def run_secrets(action: str, app: dict, current: str | None,
                 write: Callable[[dict[str, str]], None], assume_yes: bool,
                 name: str | None = None) -> int:
-    """`pdt secrets <app> diff|save|get|set`, once the provider has read the deployed secret."""
+    """`pdt secrets <app> diff|save|get|set`, once the provider has read the deployed secret.
+    The AutoIDM cloud registration in it (split_registration) stays as it is."""
     from pdt.deploy import proceed
+    from pdt.utils import autoidm
+    kept, current = split_registration(current)
+    if action == "set" and name in autoidm.SECRET_NAMES:
+        fail(f"pdt keeps {console.value(name)} in the secret itself, so "
+             f"{console.value('pdt secrets ' + app['name'] + ' set')} does not change it.")
 
     def update(values: dict[str, str]) -> None:
         count = sum(kind != "unchanged" for kind, *_rest in secret_changes(current, values))
-        write(values)
+        write({**values, **kept})
         lifecycle.emit(lifecycle.APP_SECRETS_UPDATED,
                        **lifecycle.app_params(app["name"], app["platform"]["provider"]),
                        action=action, count=count)
@@ -854,6 +945,8 @@ def stage_build_context(app: dict) -> Path:
         project_file = config.find_project() / config.PROJECT_FILE
         if project_file.is_file():
             shutil.copy(project_file, stage / config.PROJECT_FILE)
+        (stage / config.PROJECT_NAME_FILE).write_text(config.project_name() + "\n",
+                                                      encoding="utf-8")
         for module in LIFECYCLE_MODULES:
             target = stage / ".pdt-lifecycle" / "pdt" / module
             target.parent.mkdir(parents=True, exist_ok=True)

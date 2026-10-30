@@ -30,6 +30,7 @@
 | `pdt logs APP --list` | list each run log, for the same runs as `pdt runs` (`--since`, `--span`, `--count`, and `--json` work the same way) |
 | `pdt health [APP] [--all]` | show whether each app's last run succeeded; exits 1 when one failed; inside an app folder it checks only that app, and `--all` checks every app |
 | `pdt gui` | open the project's dashboard in your browser: every app's health, each app's run history, and each run's log and files, with buttons for pause, unpause, and run now; `--background` keeps the server up after the command returns and `pdt gui --stop` ends it; `--port N` and `--no-browser` are there for the rare case |
+| `pdt register --code CODE` | authenticate this computer for AutoIDM managed services with a one-time enrollment code from AutoIDM; writes `<customer id>.json` and `<customer id>.key` in `%ProgramData%\pdt\registrations` on Windows (in an administrator terminal) or `~/.local/share/pdt/registrations` elsewhere; in a project folder whose `pdt.yml` has no `managed_services`, it adds `managed_services:` with that customer; each project whose `managed_services` names that customer sends to AutoIDM (see [Managed services from AutoIDM](projects.md#managed-services-from-autoidm)); run it once for each customer; stops and names the file when the computer is already registered for that customer; `--api-url URL` names another AutoIDM address |
 | `pdt aws ...` | run the AWS CLI that pdt installs |
 | `pdt az ...` | run the Azure CLI that pdt installs |
 | `pdt gcloud ...` | run the Google Cloud CLI that pdt installs |

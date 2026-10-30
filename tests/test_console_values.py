@@ -20,7 +20,7 @@ MARKUP = {"say", "status", "error", "note", "warn", "step", "done", "failed", "h
 WRAPPERS = {"value", "escape"}
 # Functions that return markup built with console.value().
 BUILDERS = {"project_line", "secret_contents", "store_description", "store_kept_line",
-            "kept_line", "_kept_storage_line", "users_note"}
+            "kept_line", "_kept_storage_line", "users_note", "refusal"}
 
 # Text that pdt wrote and that is not a value, so it prints unstyled: a count, a
 # time, a state word, a fixed phrase, or a variable that holds markup built with
@@ -45,6 +45,8 @@ ALLOWED = {
     "duckdb_wasm.py": {"size_text(size)"},
     "email_auth.py": {"_provider_name(provider)", "name"},
     "gcloud_sdk.py": {"VERSION"},
+    "managed_services.py": {"message", "what", "console.size(size)",
+                            "console.size(MAX_UPLOAD_BYTES)"},
     "powershell.py": {"found"},
     "pwsh.py": {"VERSION"},
     "regions.py": {"PROVIDER_NAMES[provider]"},

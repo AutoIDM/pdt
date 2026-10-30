@@ -20,7 +20,8 @@ runner, and the container image start it there; it also runs as
 It loads the app's config and env (PDT_ENV_JSON secrets become env vars),
 stops when an env var that config.yml lists as required, or that a script
 reads and config.yml does not list, is not set,
-exports an empty folder as PDT_OUTPUT_DIR and the app's merged `config:`
+exports an empty folder as PDT_OUTPUT_DIR (.pdt/runs/<run id>/output in the
+app folder, the folder `storage.sync` gives a Python app) and the app's merged `config:`
 section as JSON in PDT_CONFIG_JSON, then runs each entry script in
 order through pwsh. It stops at the first failure unless `continue_on_error`
 is true. The entry scripts are
@@ -49,7 +50,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, powershell
+from pdt import config, managed_services, powershell
 from pdt.pwsh import ensure_pwsh
 from pdt.utils import storage
 from pdt.utils.log import die, log
@@ -113,8 +114,9 @@ def main(argv: list[str]) -> int:
         die(1, str(exc))
     store = storage.store() if app["storage"] else None
     with tempfile.TemporaryDirectory(prefix="pdt-run-") as local:
-        output, state = Path(local) / "output", Path(local) / "state"
-        output.mkdir()
+        output = managed_services.output_folder(app_dir, storage.RUN_ID)
+        state = Path(local) / "state"
+        output.mkdir(parents=True, exist_ok=True)
         state.mkdir()
         lease = None
         if store is not None and reads_state(files):

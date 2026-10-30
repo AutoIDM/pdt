@@ -30,8 +30,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 from pathlib import Path
 
-from pdt import (__version__, alerts_cli, config, console, lifecycle, powershell, pwsh, regions,
-                 runs_cli)
+from pdt import (__version__, alerts_cli, config, console, lifecycle, managed_services, powershell,
+                 pwsh, regions, runs_cli)
 from pdt.config import ConfigError
 from pdt.deploy_common import REBUILD_ENV, CostEstimate
 from pdt.utils.email_auth import can_prompt
@@ -366,7 +366,10 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
     script, deploys to a found key the record keeps, and restores the old record when the
     user declines; a destroy that succeeds forgets the app."""
     started, completed, failed = STEP_EVENTS[command]
+    sender = None
     if command == "deploy":
+        # Before the provider script, so a missing registration warns here once, not again in it.
+        sender = managed_services.sender(app_name)
         was_deployed = config.is_deployed(app_name)
         before = config.deployed_platform(app_name)
         written = record_place(app_name, before)
@@ -396,6 +399,10 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
     if command == "destroy":
         config.mark_deployed(app_name, None)
     lifecycle.emit(completed, **params)
+    if sender is not None:
+        sender.deployed(params, config.merged_app(app_name), config.deployed_platform(app_name))
+        if sender.refused:
+            console.warn(sender.refusal())
     return 0
 
 

@@ -63,6 +63,31 @@ my-jobs/
 | the DuckDB files of the `pdt gui` SQL workbench | `~/.local/share/pdt/duckdb-wasm`, or `%LOCALAPPDATA%\pdt\duckdb-wasm` |
 | what `pdt gui` fetched | `.pdt/gui.sqlite3` in your project folder |
 | a Windows scheduled task's run logs and files | `%ProgramData%\pdt\<app>\logs` and `%ProgramData%\pdt\<app>\storage` |
+| the AutoIDM registrations of this computer, from `pdt register` | `~/.local/share/pdt/registrations`, or `%ProgramData%\pdt\registrations` |
 | cloud sign-in state | `~/.aws`, `~/.azure`, and `~/.config/gcloud`, as usual |
 
 Set `PDT_PROJECT` to name the project folder directly, instead of letting pdt search upward. Deployed jobs get it set for them.
+
+## Managed services from AutoIDM
+
+When AutoIDM manages your project, `pdt.yml` names your customer ID and what pdt sends to AutoIDM:
+
+```yaml
+managed_services:
+  customer: cus_7a1c09e4b2
+  send_run_history: true    # or a list of app names; true when you leave it out
+  send_logs: [my-report]    # or true; false when you leave it out
+  send_artifacts: false     # or a list of app names, or true; false when you leave it out
+```
+
+- `send_run_history` sends the start and the end of each run, with its exit code and how long it took, and the schedule of each app at each deploy.
+- `send_logs` sends the full output of each run when the run ends.
+- `send_artifacts` sends the files the run left in its storage output folder, as one zip file, when the run ends. pdt skips a zip over 100 MiB and prints a warning.
+
+A list sends only for the apps it names. pdt sends the same things for a scheduled run on every provider and for a `pdt run` on your computer. It sends nothing when the env var `CI` is set, so a CI job sends nothing. Without `managed_services`, pdt sends nothing.
+
+Each computer that runs or deploys the project needs a registration for the customer. Run `pdt register --code CODE` once on it, with the code AutoIDM gives you; on Windows, run it in a terminal opened with Run as administrator. Run in a project folder whose `pdt.yml` has no `managed_services`, it adds `managed_services:` with the customer of the code. A computer can hold one registration for each customer. Until the computer has one, each pdt command prints one warning and sends nothing.
+
+A cloud job cannot use the registration of your computer. The first deploy of an app to AWS, Azure, or Google Cloud makes a registration for the job and keeps it in the app's secret as `PDT_INSTALLATION_ID`, `PDT_INSTALLATION_KEY`, and `PDT_API_URL`. Later deploys keep it. `pdt secrets` never shows, copies, or changes these three values.
+
+When AutoIDM cannot be reached, or answers with an error, pdt prints a warning and the run goes on. When AutoIDM refuses the registration, the run still does its work, then ends with exit code 77 and a message that names the registration, so your alerts report the run as failed. A run that failed for its own reason keeps its own exit code.
