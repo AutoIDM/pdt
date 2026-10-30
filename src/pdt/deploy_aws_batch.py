@@ -59,7 +59,8 @@ from pdt.deploy_aws import (
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, ensure_image, fail, gather_secrets, image_action,
-    run_build, run_secrets, secret_contents, ssh_build_args, store_kept_line,
+    make_registration, registration_secrets, run_build, run_secrets, secret_contents,
+    ssh_build_args, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked,
 )
 
@@ -814,7 +815,6 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     cron = config.cron_expression(app["schedule"])
     expression = aws_schedule_expression(cron)
     secrets = gather_secrets(app)
-    payload = json.dumps(secrets, sort_keys=True)
     image = f"{account}.dkr.ecr.{region}.amazonaws.com/{REPOSITORY}:{names['image_tag']}"
     bucket = store_name(account)
     store = deployer_store(app, session, account) if app["storage"] else None
@@ -836,6 +836,14 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             Name=names["schedule"], GroupName=SCHEDULE_GROUP)
         secret_exists = resource_exists(
             clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
+        current_secret = None
+        if secret_exists:
+            try:
+                current_secret = clients["secretsmanager"].get_secret_value(
+                    SecretId=names["secret"]).get("SecretString")
+            except Exception:  # noqa: BLE001 - a deleted or unreadable value holds no registration
+                current_secret = None
+        secrets.update(registration_secrets(current_secret))
         uploads = build_bucket(account, region)
         revisions = [item for item in active_job_definitions(clients["batch"], names["job_definition"])
                      if managed(item)]
@@ -910,7 +918,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         clients["batch"], subnets, security_group, move_environment)
     ensure_job_queue(clients["batch"], environment_arn)
     ensure_log_group(clients["logs"], names["log_group"])
-    secret_arn = ensure_secret(clients["secretsmanager"], names["secret"], payload)
+    secrets = make_registration(secrets, {"provider": "aws", "account": account,
+                                          "region": region})
+    secret_arn = ensure_secret(clients["secretsmanager"], names["secret"],
+                               json.dumps(secrets, sort_keys=True))
     environment = {"PDT_ENV_SECRET_RESOURCE": secret_arn}
     grants = []
     if store:

@@ -28,6 +28,9 @@ from pathlib import Path
 
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
+# A cloud image holds the project in /workspace, so a deploy writes the project's name in this
+# file next to the image's pdt.yml (deploy_common.stage_build_context).
+PROJECT_NAME_FILE = ".pdt-project-name"
 
 PROVIDERS = ("google-cloud", "azure", "aws", "windows")
 # The words after `pdt secrets <app>` and `pdt storage <app>`. They live here, so tab
@@ -49,7 +52,7 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
-ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch"}
+ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch", "managed_services"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
             "run_scripts", "continue_on_error", "pause", "docker-build", "alerts"}
 # Where a cloud provider builds the image: with Docker on this computer when
@@ -89,6 +92,7 @@ KEY_HOME = {
     "docker-build": f"the top level of {PROJECT_FILE}, or {APP_LEVEL}",
     "alerts": f"the top level of {PROJECT_FILE}, or {APP_LEVEL}",
     "error-watch": f"the top level of {PROJECT_FILE}",
+    "managed_services": f"the top level of {PROJECT_FILE}",
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -164,6 +168,16 @@ def find_project(start: Path | None = None) -> Path:
                 f"this is not a pdt project: no {PROJECT_FILE} here or in any "
                 "parent folder. Run `pdt init` to set one up.")
         folder = folder.parent
+
+
+def project_name() -> str:
+    """The name the project's events give it: its folder's name, or in a cloud job the name
+    in PROJECT_NAME_FILE, which is the name of the folder the deploy ran in."""
+    project = find_project()
+    saved = project / PROJECT_NAME_FILE
+    if saved.is_file():
+        return saved.read_text(encoding="utf-8").strip() or project.name
+    return project.name
 
 
 def project_line() -> str:
@@ -1125,6 +1139,9 @@ def validate_by_app() -> list[tuple[str | None, str]]:
         except ConfigError as e:
             problems.append(str(e))
     apps = find_apps()
+    if "managed_services" in root_cfg:
+        from pdt import managed_services
+        problems.extend(managed_services.problems(root_cfg["managed_services"], apps))
     entries = root_cfg.get("apps")
     if entries is not None and not isinstance(entries, list):
         problems.append(f"{PROJECT_FILE}: apps must be a list, one `- name: <app>` per app")

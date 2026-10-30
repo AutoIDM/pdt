@@ -78,7 +78,7 @@ def test_a_chat_entry_sets_exactly_one_of_its_webhook_keys(entry, error):
 
 def test_validate_names_an_unknown_alerts_type_and_the_known_types(project):
     add_app(project, "report", "alerts:\n  - type: slack-webhook\n    channel: pdt\n")
-    assert ("report/config.yml: alerts type 'slack-webhook' is not known; use one of: console, slack, teams, autoidm"
+    assert ("report/config.yml: alerts type 'slack-webhook' is not known; use one of: console, slack, teams"
             in config.validate())
 
 
