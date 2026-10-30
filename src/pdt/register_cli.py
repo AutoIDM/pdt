@@ -1,4 +1,4 @@
-"""`pdt register`: connect this computer to one AutoIDM customer with a one-time enrollment code.
+"""`pdt register`: authenticate this computer for AutoIDM managed services with a one-time code.
 
 The code names the customer, so pdt learns the customer only from the answer.
 It makes the key and writes it as pending-<hash of the code>.key before it
@@ -8,7 +8,8 @@ becomes <customer_id>.key next to <customer_id>.json. On Windows the folder is
 %ProgramData%\\pdt\\registrations, and only SYSTEM (the scheduled task) and
 Administrators can read a key, so the command needs an administrator terminal.
 A computer that already holds a registration for the customer keeps it; the
-command stops and names the file.
+command stops and names the file. Either way, in a project whose pdt.yml has no
+`managed_services`, it adds `managed_services:` with the customer.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from pdt import __version__, console
+from pdt import __version__, config, console, managed_services
 from pdt.utils import autoidm
 from pdt.utils.env_secret import private_file
 
@@ -81,6 +82,7 @@ def register(code: str, api_url: str) -> int:
                       f"in {console.value(info)}. To register it again, delete "
                       f"{console.value(info)} and {console.value(key_path)}, then run this "
                       "command again with the same code.")
+        save_customer(customer)
         return 1
     pending.replace(key_path)
     info.write_text(json.dumps({"installation_id": answer["installation_id"],
@@ -89,7 +91,26 @@ def register(code: str, api_url: str) -> int:
     console.done(f"Registered this computer to AutoIDM for {console.value(customer)} as "
                  f"{console.value(answer['installation_id'])}.")
     console.field("Saved in", str(info))
-    console.next_steps([("pdt.yml", f"add {console.value('managed_services:')} with "
-                                    f"{console.value('customer: ' + customer)} to send the "
-                                    "run history of a project to AutoIDM")])
+    save_customer(customer)
     return 0
+
+
+def save_customer(customer: str) -> None:
+    """Name the customer in the pdt.yml of the project this command runs in, so the project
+    sends to AutoIDM with this registration."""
+    try:
+        path = config.find_project() / config.PROJECT_FILE
+    except config.ConfigError:
+        console.next_steps([("pdt.yml", f"add {console.value('managed_services:')} with "
+                                        f"{console.value('customer: ' + customer)} to send the "
+                                        "run history of a project to AutoIDM")])
+        return
+    found = config.load_yaml(path).get(managed_services.KEY)
+    if found is None:
+        config.save_managed_customer(customer)
+        console.done(f"Saved {console.value('managed_services:')} with "
+                     f"{console.value('customer: ' + customer)} to {console.value(path)}.")
+    elif not isinstance(found, dict) or found.get("customer") != customer:
+        console.warn(f"{console.value(path)} names another customer in "
+                     f"{console.value('managed_services:')}, so this project does not send to "
+                     f"AutoIDM for {console.value(customer)}.")
