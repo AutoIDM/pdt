@@ -35,8 +35,11 @@ non-elevated shell gets one UAC prompt. The same elevated script creates the
 app folder and gives SYSTEM (and the run_as account) full control and the
 deploying user modify rights, so that user can delete what the task wrote.
 SYSTEM reads every file on the PC, and the run_as account does not, so the
-script also lets that account read the project folder, pdt, uv when it is not
-on the machine PATH, and the AutoIDM installation key when it exists. Deploy
+script also lets that account read the app's folder, the project files that
+pdt and uv read (not the other apps' folders), pdt, uv when it is not on the machine
+PATH, and the AutoIDM installation key when it exists. Before any of this,
+deploy checks in Active Directory that the account is a group managed service
+account. Deploy
 always registers the complete desired task definition with -Force, so
 rerunning it safely reconciles changes to the schedule, the repository path,
 or the account.
@@ -44,7 +47,8 @@ or the account.
 A PowerShell app (.ps1 files, no run.py) runs through run_powershell.py
 instead of run.py, unless `pdt new APP --from-scripts` wrote it one. Before
 the plan, deploy finds pwsh (`pdt.pwsh` installs the pinned version under
-%ProgramData%\\pdt\\pwsh when none is on the PATH), scans the scripts, and
+%ProgramData%\\pdt\\pwsh when none is on the PATH, or, for a run_as app, when
+none is on the machine PATH), scans the scripts, and
 stops with the Windows feature to add when a module that comes with Windows
 (`powershell.WINDOWS_IN_BOX_MODULES`) is missing. The
 elevated script installs the other modules for all users, so the task sees them.
@@ -70,7 +74,8 @@ from pdt import config, console, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import CostEstimate, run_main, warn_if_locked
-from pdt.pwsh import ensure_pwsh
+from pdt.pwsh import PwshError, ensure_pwsh
+from pdt.pwsh import install_dir as pwsh_install_dir
 from pdt.run_windows_task import EVENT_SOURCE, LINE_TIME, MANUAL_START
 
 
@@ -206,21 +211,32 @@ def run_as(app: dict) -> str:
     return str(app["platform"].get("run_as") or "").strip()
 
 
-def account_reads(app: dict, uv: str, on_machine_path: bool) -> list[tuple[str, Path, str]]:
+def account_reads(app: dict, uv: str, on_machine_path: bool,
+                  pwsh: str | None = None) -> list[tuple[str, Path, str]]:
     if run_as(app) == "":
         return []
-    reads = [("the project folder", config.find_project(), "(OI)(CI)RX"),
-             ("pdt", RUNNER.parent.parent, "(OI)(CI)RX")]
+    # The folder entry alone (no inheritance) lets the run find these files by name without
+    # reading the other apps' folders. uv stops with "Access is denied" on a settings file
+    # above the app folder that it cannot read.
+    project = config.find_project()
+    reads = [("the app folder", Path(app["dir"]).resolve(), "(OI)(CI)RX"),
+             ("the project folder entry", project, "RX")]
+    for file in (config.PROJECT_FILE, ".env", "pyproject.toml", "uv.toml", ".python-version"):
+        if (project / file).is_file():
+            reads.append((f"the project file {file}", project / file, "R"))
+    reads.append(("pdt", RUNNER.parent.parent, "(OI)(CI)RX"))
     if not on_machine_path:
         reads.append(("uv", Path(uv).resolve().parent, "(OI)(CI)RX"))
+    if pwsh is not None and Path(pwsh).parent == pwsh_install_dir(windows=True):
+        reads.append(("PowerShell", pwsh_install_dir(windows=True), "(OI)(CI)RX"))
     key = config.machine_data_home() / INSTALLATION_KEY
     if key.is_file():
         reads.append(("the AutoIDM installation key", key, "R"))
     return reads
 
 
-def uv_on_machine_path() -> bool:
-    """Whether the machine PATH, the only PATH the SYSTEM account sees, holds uv.exe."""
+def machine_path_has(program: str) -> bool:
+    """Whether the machine PATH, the only PATH the SYSTEM account sees, holds the program."""
     if os.name != "nt":
         return False
     import winreg
@@ -231,7 +247,7 @@ def uv_on_machine_path() -> bool:
             path, _type = winreg.QueryValueEx(key, "Path")
     except OSError:
         return False
-    return any((Path(folder) / "uv.exe").is_file()
+    return any((Path(folder) / program).is_file()
                for folder in os.path.expandvars(path).split(";") if folder)
 
 
@@ -377,15 +393,28 @@ def _folder_script(app: dict, user: str, reads: list[tuple[str, Path, str]] = ()
     return script
 
 
-def _account_problem(powershell: str, account: str) -> str:
-    script = (f"([Security.Principal.NTAccount]{_ps_string(account)}).Translate("
-              "[Security.Principal.SecurityIdentifier]).Value")
-    try:
-        _run_output(powershell, script)
-    except WindowsDeployError:
-        return (f"Windows on this computer cannot find the account {account}. Set "
-                "platform.run_as to a group managed service account of this computer's "
-                "domain, or remove it to run the task as SYSTEM.")
+def _account_problem(powershell: str, account: str, where: str) -> str:
+    # A name ending in $ can be a user's; only the objectClass says gMSA. [adsisearcher]
+    # needs no RSAT module.
+    script = (
+        f"try {{ $sid = ([Security.Principal.NTAccount]{_ps_string(account)}).Translate("
+        "[Security.Principal.SecurityIdentifier]).Value } catch { 'missing'; exit }; "
+        "try { $found = ([adsisearcher]\"(&(objectClass=msDS-GroupManagedServiceAccount)"
+        "(objectSid=$sid))\").FindOne() } catch { 'no-domain'; exit }; "
+        "if ($found) { 'gmsa' } else { 'not-gmsa' }"
+    )
+    answer = _run_output(powershell, script).strip()
+    fix = (f"Set platform.run_as in {where} to a group managed service account of this "
+           "computer's domain, or remove it to run the task as SYSTEM.")
+    if answer == "missing":
+        return f"Windows on this computer cannot find the account {account}. {fix}"
+    if answer == "no-domain":
+        return (f"pdt cannot ask the domain whether {account} is a group managed service "
+                "account, because this computer cannot reach a domain controller. Connect "
+                f"it to the domain network and deploy again, or remove platform.run_as "
+                f"from {where} to run the task as SYSTEM.")
+    if answer != "gmsa":
+        return f"{account} is not a group managed service account. {fix}"
     return ""
 
 
@@ -452,7 +481,10 @@ def _prepare_powershell(app: dict) -> tuple[str | None, list]:
     for a Python app."""
     if not config.powershell_scripts(app["dir"]):
         return None, []
-    pwsh = ensure_pwsh()
+    # The run_as account sees only the machine PATH, and it cannot write the shared
+    # install, so the deploy puts the pinned pwsh there and account_reads opens it.
+    on_path = run_as(app) == "" or machine_path_has("pwsh.exe")
+    pwsh = ensure_pwsh(on_path)
     scan = ps.scan(app, "windows")
     missing = _missing_host_modules(pwsh, scan.host_modules)
     if missing:
@@ -481,7 +513,7 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
         console.Markup("write each run's result to the Windows Application log, source "
                        f"{console.value(EVENT_SOURCE)}"),
     ]
-    for what, path, _rights in account_reads(app, uv, on_machine_path):
+    for what, path, _rights in account_reads(app, uv, on_machine_path, pwsh):
         actions.append(console.Markup(f"let {console.value(account)} read {what} "
                                       f"{console.value(path)}"))
     dockerfile = Path(app["dir"]) / "Dockerfile"
@@ -505,13 +537,13 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     try:
         powershell, uv = _preflight()
         assert uv is not None
-        on_machine_path = uv_on_machine_path()
+        on_machine_path = machine_path_has("uv.exe")
         name = _task_name(app["name"])
         console.status(f"Checking Windows scheduled task {console.value(name)}...")
         user = _deploying_user()
         account = run_as(app)
         if account:
-            problem = _account_problem(powershell, account)
+            problem = _account_problem(powershell, account, app["run_as_from"])
             if problem != "":
                 raise WindowsDeployError(problem)
         description, xml = task_xml(app, uv, on_machine_path)
@@ -521,7 +553,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                 f"Windows scheduled task {name} exists but is not managed by PDT")
         exists = state == "managed"
         pwsh, modules = _prepare_powershell(app)
-    except (config.ConfigError, WindowsDeployError) as exc:
+    except (config.ConfigError, WindowsDeployError, PwshError) as exc:
         console.error(console.escape(str(exc)))
         return 1
 
@@ -547,7 +579,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                    "if ($LASTEXITCODE -ne 0) { throw \"PowerShell module install failed "
                    "with exit $LASTEXITCODE\" }; ")
     script = (
-        f"{_folder_script(app, user, account_reads(app, uv, on_machine_path))}"
+        f"{_folder_script(app, user, account_reads(app, uv, on_machine_path, pwsh))}"
         f"{install}"
         f"if (-not [Diagnostics.EventLog]::SourceExists({_ps_string(EVENT_SOURCE)})) {{ "
         f"New-EventLog -LogName Application -Source {_ps_string(EVENT_SOURCE)} }}; "

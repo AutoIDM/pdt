@@ -150,7 +150,7 @@ def powershell_deploy(project, monkeypatch):
     checked = []
     scripts = []
     runs = []
-    monkeypatch.setattr(deploy_windows, "ensure_pwsh", lambda: r"C:\ProgramData\pdt\pwsh\pwsh.exe")
+    monkeypatch.setattr(deploy_windows, "ensure_pwsh", lambda on_path: r"C:\ProgramData\pdt\pwsh\pwsh.exe")
     monkeypatch.setattr(powershell, "scan", lambda app, provider: powershell.ScriptScan(
         ["report.ps1"], [], list(needs), [], list(host))
         if provider == "windows" else pytest.fail(provider))

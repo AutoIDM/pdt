@@ -22,14 +22,36 @@ def windows_app(project, config_text="schedule: hourly\n"):
     return config.merged_app("my-report")
 
 
-@pytest.mark.parametrize("value", ["", ACCOUNT, "svc-pdt$", " EXAMPLE\\svc-pdt$ "])
+@pytest.mark.parametrize("value", [None, "", ACCOUNT, "svc-pdt$", " EXAMPLE\\svc-pdt$ "])
 def test_a_group_managed_service_account_passes(value):
     assert config.run_as_problem(value) == ""
 
 
-@pytest.mark.parametrize("value", ["EXAMPLE\\svc-pdt", "jon", "$", "EXAMPLE\\$", "svc-pdt$@example.com"])
-def test_a_name_without_the_trailing_dollar_is_reported(value):
+@pytest.mark.parametrize("value", ["EXAMPLE\\svc-pdt", "jon", "$", "EXAMPLE\\$", "svc-pdt$@example.com",
+                                   False, 0, [], {}, True])
+def test_a_value_that_is_not_a_name_ending_in_dollar_is_reported(value):
     assert "group managed service account" in config.run_as_problem(value)
+
+
+@pytest.mark.parametrize("value", ["false", "0", "[]", "{}"])
+def test_validate_reports_a_run_as_that_is_not_text(project, value):
+    add_app(project, "my-report", f"schedule: daily\nplatform:\n  run_as: {value}\n")
+    assert any(p.startswith("my-report/config.yml: platform.run_as: That is not a group managed "
+                            "service account") for p in config.validate_app("my-report"))
+
+
+@pytest.mark.parametrize("name", ["pwsh", "PWSH", "versions", "wheels", "installation.key",
+                                  "pwsh.previous", "pwsh."])
+def test_validate_reports_a_windows_app_named_like_a_pdt_folder(project, name):
+    add_app(project, name, "schedule: daily\n")
+    assert any(p.startswith(f"{name}/: a Windows app keeps its run data in ")
+               and f"rename the folder {name}/" in p for p in config.validate_app(name))
+
+
+def test_an_app_named_like_a_pdt_folder_is_fine_on_a_cloud_provider(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: aws\n")
+    add_app(project, "pwsh", "schedule: daily\n")
+    assert not any("run data" in p for p in config.validate_app("pwsh"))
 
 
 def test_pdt_yml_sets_run_as_for_every_app_and_an_app_overrides_it(project):
@@ -42,15 +64,21 @@ def test_validate_names_the_key_for_an_account_with_a_password(project):
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n  run_as: EXAMPLE\\jon\n")
     add_app(project, "my-report", "schedule: daily\n")
     problems = config.validate_app("my-report")
-    assert any(p.startswith("my-report: platform.run_as: That is not a group managed service "
+    assert any(p.startswith("pdt.yml: platform.run_as: That is not a group managed service "
                             "account") for p in problems)
 
 
 def test_validate_reports_run_as_on_a_cloud_provider(project):
     (project / "pdt.yml").write_text("platform:\n  provider: aws\n  run_as: EXAMPLE\\svc-pdt$\n")
     add_app(project, "my-report", "schedule: daily\n")
-    assert ("my-report: platform.run_as: only the windows provider uses it; remove the key"
+    assert ("pdt.yml: platform.run_as: only the windows provider uses it; remove the key"
             in config.validate_app("my-report"))
+
+
+def test_run_as_from_names_the_most_specific_file_that_sets_it(project):
+    assert windows_app(project)["run_as_from"] == "pdt.yml"
+    add_app(project, "other", "schedule: hourly\nplatform:\n  run_as: EXAMPLE\\svc-other$\n")
+    assert config.merged_app("other")["run_as_from"] == "other/config.yml"
 
 
 def test_validate_accepts_a_group_managed_service_account(project):
@@ -79,27 +107,100 @@ def test_the_account_gets_full_control_of_the_app_folder(project):
             "'PC\\jon:(OI)(CI)M'") in script
 
 
-def test_the_account_reads_the_project_pdt_uv_and_the_installation_key(project):
+def test_the_account_reads_its_app_the_project_files_pdt_uv_and_the_installation_key(project):
     app = windows_app(project)
+    add_app(project, "other", "schedule: hourly\n")
+    (project / ".env").write_text("")
+    (project / "pyproject.toml").write_text("")
     key = project / "ProgramData" / "pdt" / "installation.key"
     key.parent.mkdir(parents=True)
     key.write_text("")
     reads = deploy_windows.account_reads(app, "uv.exe", False)
     assert reads == [
-        ("the project folder", project, "(OI)(CI)RX"),
+        ("the app folder", project / "my-report", "(OI)(CI)RX"),
+        ("the project folder entry", project, "RX"),
+        ("the project file pdt.yml", project / "pdt.yml", "R"),
+        ("the project file .env", project / ".env", "R"),
+        ("the project file pyproject.toml", project / "pyproject.toml", "R"),
         ("pdt", deploy_windows.RUNNER.parent.parent, "(OI)(CI)RX"),
         ("uv", Path("uv.exe").resolve().parent, "(OI)(CI)RX"),
         ("the AutoIDM installation key", key, "R"),
     ]
+    assert not any(path == project / "other" for _what, path, _rights in reads)
     script = deploy_windows._folder_script(app, r"PC\jon", reads)
-    assert f"icacls '{project}' /grant 'EXAMPLE\\svc-pdt$:(OI)(CI)RX' | Out-Null" in script
+    assert f"icacls '{project}' /grant 'EXAMPLE\\svc-pdt$:RX' | Out-Null" in script
     assert f"icacls '{key}' /grant 'EXAMPLE\\svc-pdt$:R' | Out-Null" in script
-    assert script.count("throw") == 5
+    assert script.count("throw") == 9
 
 
-def test_the_account_reads_no_uv_on_the_machine_path_and_no_missing_key(project):
+def test_the_account_reads_no_uv_on_the_machine_path_and_no_missing_file(project):
     reads = deploy_windows.account_reads(windows_app(project), "uv.exe", True)
-    assert [what for what, _path, _rights in reads] == ["the project folder", "pdt"]
+    assert [what for what, _path, _rights in reads] == [
+        "the app folder", "the project folder entry", "the project file pdt.yml", "pdt"]
+
+
+def test_the_account_reads_the_shared_pwsh_install_and_no_other_pwsh(project):
+    app = windows_app(project)
+    shared = str(project / "ProgramData" / "pdt" / "pwsh" / "pwsh.exe")
+    reads = deploy_windows.account_reads(app, "uv.exe", True, shared)
+    assert ("PowerShell", project / "ProgramData" / "pdt" / "pwsh", "(OI)(CI)RX") in reads
+    reads = deploy_windows.account_reads(app, "uv.exe", True, r"C:\Program Files\PowerShell\7\pwsh.exe")
+    assert "PowerShell" not in [what for what, _path, _rights in reads]
+
+
+@pytest.mark.parametrize("on_machine_path, account, expected", [
+    (False, "", True), (True, ACCOUNT, True), (False, ACCOUNT, False)])
+def test_a_run_as_powershell_app_uses_pwsh_from_the_machine_path_or_the_shared_install(
+        project, monkeypatch, on_machine_path, account, expected):
+    platform = f"platform:\n  run_as: {account}\n" if account else "platform:\n  run_as:\n"
+    windows_app(project, "schedule: hourly\n" + platform)
+    (project / "my-report" / "run.py").unlink()
+    (project / "my-report" / "run.ps1").write_text("Write-Output hi\n")
+    asked = []
+    monkeypatch.setattr(deploy_windows, "machine_path_has", lambda program: on_machine_path)
+    monkeypatch.setattr(deploy_windows, "ensure_pwsh", lambda on_path: asked.append(on_path) or "pwsh")
+    monkeypatch.setattr(deploy_windows.ps, "scan", lambda app, target: type("Scan", (), {
+        "host_modules": [], "modules": []})())
+    monkeypatch.setattr(deploy_windows, "_missing_host_modules", lambda pwsh, modules: [])
+    assert deploy_windows._prepare_powershell(config.merged_app("my-report")) == ("pwsh", [])
+    assert asked == [expected]
+
+
+def test_pwsh_off_path_skips_the_path_and_takes_the_shared_install(tmp_path, monkeypatch):
+    from pdt import pwsh
+    monkeypatch.setattr(pwsh.shutil, "which", lambda name: "/usr/bin/pwsh")
+    monkeypatch.setattr(pwsh, "install_dir", lambda windows=False: tmp_path)
+    (tmp_path / "pwsh").write_text("")
+    (tmp_path / "VERSION").write_text(pwsh.VERSION)
+    assert pwsh.ensure_pwsh() == "/usr/bin/pwsh"
+    assert pwsh.ensure_pwsh(on_path=False) == str(tmp_path / "pwsh")
+
+
+def account_check(monkeypatch, answer):
+    scripts = []
+    monkeypatch.setattr(deploy_windows, "_run_output",
+                        lambda powershell, script: scripts.append(script) or f"{answer}\r\n")
+    problem = deploy_windows._account_problem("powershell.exe", ACCOUNT, "pdt.yml")
+    return problem, scripts[0]
+
+
+def test_the_account_check_asks_active_directory_for_the_gmsa_class(monkeypatch):
+    problem, script = account_check(monkeypatch, "gmsa")
+    assert problem == ""
+    assert "[Security.Principal.NTAccount]'EXAMPLE\\svc-pdt$'" in script
+    assert ("[adsisearcher]\"(&(objectClass=msDS-GroupManagedServiceAccount)(objectSid=$sid))\""
+            in script)
+
+
+@pytest.mark.parametrize("answer, start", [
+    ("missing", f"Windows on this computer cannot find the account {ACCOUNT}."),
+    ("not-gmsa", f"{ACCOUNT} is not a group managed service account."),
+    ("no-domain", f"pdt cannot ask the domain whether {ACCOUNT}"),
+])
+def test_the_account_check_names_the_file_that_sets_run_as(monkeypatch, answer, start):
+    problem, _script = account_check(monkeypatch, answer)
+    assert problem.startswith(start)
+    assert "platform.run_as" in problem and "pdt.yml" in problem
 
 
 def test_system_needs_no_read_grants(project):
@@ -115,8 +216,9 @@ def deploy(project, monkeypatch, problem=""):
     monkeypatch.setattr(deploy_windows, "_preflight", lambda: ("powershell.exe", "uv.exe"))
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
-    monkeypatch.setattr(deploy_windows, "uv_on_machine_path", lambda: True)
-    monkeypatch.setattr(deploy_windows, "_account_problem", lambda powershell, account: problem)
+    monkeypatch.setattr(deploy_windows, "machine_path_has", lambda program: True)
+    monkeypatch.setattr(deploy_windows, "_account_problem",
+                        lambda powershell, account, where: problem)
     monkeypatch.setattr(deploy_windows.regions, "local_currency", lambda: "USD")
     monkeypatch.setattr(deploy_windows, "confirm",
                         lambda actions, assume_yes, cost: shown.extend(plain(actions)) or True)
@@ -132,7 +234,8 @@ def test_deploy_plans_the_account_and_states_the_batch_right(project, monkeypatc
     assert shown[0] == f"update Windows scheduled task pdt-my-report (runs as {ACCOUNT})"
     assert (f"keep the app's run data in {folder} (SYSTEM and {ACCOUNT}: full control; "
             "PC\\jon: modify)") in shown
-    assert f"let {ACCOUNT} read the project folder {project}" in shown
+    assert f"let {ACCOUNT} read the app folder {project / 'my-report'}" in shown
+    assert f"let {ACCOUNT} read the project file pdt.yml {project / 'pdt.yml'}" in shown
     assert f"let {ACCOUNT} read pdt {deploy_windows.RUNNER.parent.parent}" in shown
     out = capsys.readouterr().out
     assert (f"note: the task starts only when {ACCOUNT} has the Log on as a batch job right on "

@@ -63,7 +63,7 @@ def deploy_plan(project, monkeypatch, on_machine_path: bool) -> list[str]:
     monkeypatch.setattr(deploy_windows, "_preflight", lambda: ("powershell.exe", "uv.exe"))
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
-    monkeypatch.setattr(deploy_windows, "uv_on_machine_path", lambda: on_machine_path)
+    monkeypatch.setattr(deploy_windows, "machine_path_has", lambda program: on_machine_path)
     monkeypatch.setattr(deploy_windows, "confirm",
                         lambda actions, assume_yes, cost: shown.extend(plain(actions)))
     assert deploy_windows.deploy(app, assume_yes=False) == DECLINED
@@ -84,7 +84,7 @@ def test_plan_names_the_saved_path_when_uv_is_not_on_the_system_path(project, mo
 
 
 def test_uv_is_never_on_the_machine_path_off_windows():
-    assert deploy_windows.uv_on_machine_path() is False
+    assert deploy_windows.machine_path_has("uv.exe") is False
 
 
 def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch):

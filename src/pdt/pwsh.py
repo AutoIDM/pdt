@@ -79,8 +79,8 @@ def local_pwsh(windows: bool = os.name == "nt") -> Path:
     return install_dir(windows) / ("pwsh.exe" if windows else "pwsh")
 
 
-def ensure_pwsh() -> str:
-    found = shutil.which("pwsh")
+def ensure_pwsh(on_path: bool = True) -> str:
+    found = shutil.which("pwsh") if on_path else None
     if found:
         return found
     previous = install_dir().with_name(f"{install_dir().name}.previous")
