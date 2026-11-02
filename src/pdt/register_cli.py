@@ -36,21 +36,23 @@ from pdt.utils import autoidm
 
 # Owner Administrators, and an access list that inherits nothing and gives the folder and each
 # file and folder made in it full control to SYSTEM and Administrators, and read to {user}, the
-# SID of the account that runs pdt register.
+# SID of the account that runs pdt register. SYSTEM (S-1-5-18) already has full control, so it
+# gets no read entry.
 FOLDER_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;{user})"
+SYSTEM_READ = "(A;OICI;FR;;;S-1-5-18)"
 FOLDER_ENV = "PDT_REGISTRATIONS_FOLDER"
-# .NET calls, not Get-Acl and Set-Acl: Windows PowerShell started under PowerShell 7 inherits its
-# PSModulePath and cannot load the module that holds those two commands. It prints the access
-# list it asks for, then the one it reads back, both as Windows prints them, because Windows
-# writes some SIDs in two letters (the built-in Administrator account as LA).
+# .NET calls only, not Get-Acl, Set-Acl, or New-Object: Windows PowerShell started under
+# PowerShell 7 inherits its PSModulePath and cannot load the modules that hold those commands.
+# It prints the access list as .NET holds it before it saves it, then as it reads it back, so
+# both pass through the same .NET form (two-letter SIDs such as LA, merged entries).
 SET_FOLDER_SDDL = (f"$folder = [IO.DirectoryInfo]$env:{FOLDER_ENV}; "
                    f"$sddl = '{FOLDER_SDDL}'.Replace('{{user}}', "
-                   "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value); "
+                   "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+                   f".Replace('{SYSTEM_READ}', ''); "
                    "$acl = $folder.GetAccessControl(); "
                    "$acl.SetSecurityDescriptorSddlForm($sddl); "
+                   "$acl.GetSecurityDescriptorSddlForm('Owner, Access'); "
                    "$folder.SetAccessControl($acl); "
-                   "(New-Object Security.AccessControl.RawSecurityDescriptor $sddl)"
-                   ".GetSddlForm('Owner, Access'); "
                    "$folder.GetAccessControl().GetSecurityDescriptorSddlForm('Owner, Access')")
 
 
@@ -65,9 +67,11 @@ def restrict_folder(folder: Path) -> None:
                             SET_FOLDER_SDDL], env={**os.environ, FOLDER_ENV: str(folder)},
                            stdin=subprocess.DEVNULL, capture_output=True, text=True,
                            check=True).stdout.split()
-    if len(shown) != 2 or shown[0] != shown[1]:
-        raise RuntimeError(f"its owner and access list are {shown[-1] if shown else 'unknown'}, "
-                           f"not {shown[0] if len(shown) == 2 else FOLDER_SDDL}")
+    if len(shown) != 2:
+        raise RuntimeError(f"PowerShell printed {' '.join(shown) or 'nothing'}, not the access "
+                           "list pdt set and the one it read back")
+    if shown[0] != shown[1]:
+        raise RuntimeError(f"its owner and access list are {shown[1]}, not {shown[0]}")
 
 
 def write_key(path: Path, key: Ed25519PrivateKey) -> None:
