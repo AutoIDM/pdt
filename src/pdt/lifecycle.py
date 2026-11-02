@@ -288,8 +288,13 @@ def accept_alerts(event: Event) -> None:
             _open.append(item)
             key = repr(sorted(alert.items()))
             if key not in _queues:
-                _queues[key] = queue.Queue()
-                threading.Thread(target=_deliver_each, args=(_queues[key],), daemon=True).start()
+                items: queue.Queue = queue.Queue()
+                if managed_services.started(_deliver_each, items, message=(
+                        f"The {console.value(alert['type'])} alert could not send "
+                        f"{console.value(name)}")) is None:
+                    _fall_back(item)
+                    continue
+                _queues[key] = items
             _queues[key].put(item)
 
 
@@ -312,11 +317,12 @@ SINKS = (Sink("alerts", accept_alerts, wait_alerts),
 def flush() -> None:
     """On Windows before Python 3.14, a join with no timeout does not see a Ctrl+C, so each
     join is short."""
-    waits = [threading.Thread(target=sink.wait, args=(None,), daemon=True) for sink in SINKS]
-    for waiting in waits:
-        waiting.start()
     try:
-        for waiting in waits:
+        waits = [(sink, managed_services.started(sink.wait, None)) for sink in SINKS]
+        for sink, waiting in waits:
+            if waiting is None:
+                sink.wait(None)
+                continue
             while waiting.is_alive():
                 waiting.join(managed_services.WAIT_STEP_SECONDS)
     except KeyboardInterrupt:
@@ -459,14 +465,8 @@ def copy_output(children: queue.Queue[subprocess.Popen], log: Path) -> threading
         if kept is not None:
             kept.close()
 
-    copier = threading.Thread(target=copy, daemon=True)
-    try:
-        copier.start()
-    except RuntimeError as e:
-        console.warn(f"pdt cannot keep the output of this run for AutoIDM: "
-                     f"{console.escape(str(e))}")
-        return None
-    return copier
+    return managed_services.started(
+        copy, message="pdt cannot keep the output of this run for AutoIDM")
 
 
 def main(argv: list[str]) -> int:

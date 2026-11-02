@@ -237,6 +237,32 @@ def test_a_failing_transport_warns_falls_back_to_the_console_and_the_run_goes_on
     assert out.count("[alert] not delivered to boom: Run of report failed (exit code 3)\n") == 1
 
 
+def test_a_delivery_thread_pdt_cannot_start_falls_back_to_the_console_and_keeps_the_exit_code(
+        project, monkeypatch, capsys):
+    delivered = []
+    seen = record(monkeypatch, boom=lifecycle.Transport(
+        "boom", frozenset(), lambda event, entry, unhandled: delivered.append(event.name)))
+    two_entries(project, "boom")
+    monkeypatch.setattr(lifecycle, "_queues", {})
+    real_start = threading.Thread.start
+
+    def at_the_limit(self):
+        if self._target is lifecycle._deliver_each:
+            raise RuntimeError("can't start new thread")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", at_the_limit)
+    code = lifecycle.run_job("report", "local", [sys.executable, "-c", "raise SystemExit(3)"],
+                             project)
+    assert code == 3
+    assert delivered == []
+    assert seen == [("job:run-started", False), ("job:run-failed", False)]
+    out, err = capsys.readouterr()
+    assert ("The boom alert could not send job:run-failed: can't start new thread"
+            in " ".join((out + err).split()))
+    assert out.count("[alert] not delivered to boom: Run of report failed (exit code 3)\n") == 1
+
+
 def test_a_delivery_past_the_time_limit_falls_back_to_the_console(project, monkeypatch, capsys):
     monkeypatch.setattr(lifecycle, "FLUSH_SECONDS", 0.2)
     release = threading.Event()

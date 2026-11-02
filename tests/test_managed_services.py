@@ -863,6 +863,60 @@ def test_a_reader_thread_pdt_cannot_start_leaves_the_output_unpiped_and_keeps_th
     assert ("pdt cannot keep the output of this run for AutoIDM: can't start new thread"
             in " ".join((out + err).split()))
     assert [kwargs.get("stdout") for kwargs in started] == [None]
+    assert "Run of report failed (exit code 3)" in out
+    end = seen[1]["body"]["event"]
+    assert (end["name"], end["params"]["exit_code"]) == ("job:run-failed", 3)
+
+
+def failing_start(monkeypatch, *names, times=None):
+    """Make Thread.start raise for a thread whose target has one of `names`, at most `times`
+    times."""
+    real_start = threading.Thread.start
+    failed = []
+
+    def at_the_limit(self):
+        if (getattr(self._target, "__name__", "") in names
+                and (times is None or len(failed) < times)):
+            failed.append(self._target.__name__)
+            raise RuntimeError("can't start new thread")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", at_the_limit)
+    return failed
+
+
+def test_a_sender_thread_pdt_cannot_start_skips_that_send_and_starts_for_the_next(
+        project, backend, warned, monkeypatch, capfd):
+    url, seen, _answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
+    registered(url)
+    monkeypatch.setattr(managed_services, "_thread", None)
+    monkeypatch.setattr(managed_services, "_queue", queue.Queue())
+    failed = failing_start(monkeypatch, "_send_each", times=1)
+    began = time.monotonic()
+    assert run(project, 3) == 3
+    assert time.monotonic() - began < managed_services.EXIT_WAIT_SECONDS
+    console.drain()
+    out, err = capfd.readouterr()
+    said = " ".join((out + err).split())
+    assert failed == ["_send_each"]
+    assert "AutoIDM did not get the job:run-started event: can't start new thread" in said
+    assert "Run of report failed (exit code 3)" in out
+    assert [(request["body"]["event"]["name"], request["body"]["event"]["params"]["exit_code"])
+            for request in seen] == [("job:run-failed", 3)]
+
+
+def test_a_wait_thread_pdt_cannot_start_waits_on_the_calling_thread_and_keeps_the_exit_code(
+        project, backend, warned, monkeypatch, capfd):
+    url, seen, _answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
+    registered(url)
+    failed = failing_start(monkeypatch, "wait", "wait_alerts")
+    assert run(project, 3) == 3
+    console.drain()
+    out, _err = capfd.readouterr()
+    assert sorted(failed) == ["wait", "wait_alerts"]
+    assert "Run of report failed (exit code 3)" in out
     end = seen[1]["body"]["event"]
     assert (end["name"], end["params"]["exit_code"]) == ("job:run-failed", 3)
 
