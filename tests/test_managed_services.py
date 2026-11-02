@@ -413,19 +413,31 @@ def test_a_link_out_of_the_output_folder_is_not_uploaded(project, backend, warne
     assert "creds: it links to a place outside" in out.replace(str(output) + "/", "")
 
 
-def test_a_file_that_cannot_be_zipped_is_a_warning_and_keeps_the_exit_code(
-        project, backend, warned, monkeypatch, capsys):
+@pytest.mark.parametrize(("method", "error", "said"), [
+    ("write", PermissionError(13, "Permission denied", "report.csv"), "[Errno 13]"),
+    ("write", UnicodeEncodeError("utf-8", "\udc80", 0, 1, "surrogates not allowed"),
+     "surrogates not allowed"),
+    ("write", zipfile.LargeZipFile("Filesize would require ZIP64 extensions"), "ZIP64"),
+    ("is_dir", PermissionError(13, "Permission denied", "output"), "[Errno 13]"),
+])
+def test_artifacts_that_cannot_be_zipped_are_a_warning_and_keep_the_exit_code(
+        project, backend, warned, monkeypatch, capsys, method, error, said):
     url, _seen, _answers = backend
     project_with(project, ALL_ON)
     registered(url)
+    owner = zipfile.ZipFile if method == "write" else type(project)
+    real = getattr(owner, method)
 
-    def unreadable(self, *args, **kwargs):
-        raise PermissionError(13, "Permission denied", "report.csv")
+    def refused(self, *args, **kwargs):
+        if method == "write" or self.name == "output":
+            raise error
+        return real(self, *args, **kwargs)
 
-    monkeypatch.setattr(zipfile.ZipFile, "write", unreadable)
+    monkeypatch.setattr(owner, method, refused)
     assert run(project, 3) == 3
     out = " ".join(capsys.readouterr().out.split())
-    assert f"AutoIDM did not get the artifacts {storage.RUN_ID}.zip: [Errno 13]" in out
+    assert f"AutoIDM did not get the artifacts {storage.RUN_ID}.zip: " in out
+    assert said in out
 
 
 def test_a_full_disk_stops_only_the_log_and_the_command_keeps_printing(tmp_path, monkeypatch,
@@ -464,6 +476,19 @@ def test_an_output_folder_that_is_a_link_sends_nothing(project, backend, warned,
     (elsewhere / "credentials").write_text("key")
     output = tmp_path / "output"
     output.symlink_to(elsewhere)
+    sender.upload_artifacts(output, "r1.zip", PARAMS)
+    assert seen == []
+    assert "links to another place" in " ".join(capsys.readouterr().out.split())
+
+
+def test_an_output_folder_that_is_a_junction_sends_nothing(project, backend, warned, tmp_path,
+                                                           monkeypatch, capsys):
+    url, seen, _answers = backend
+    sender = sender_for(project, url)
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "credentials").write_text("key")
+    monkeypatch.setattr(type(output), "is_junction", lambda self: self == output)
     sender.upload_artifacts(output, "r1.zip", PARAMS)
     assert seen == []
     assert "links to another place" in " ".join(capsys.readouterr().out.split())
