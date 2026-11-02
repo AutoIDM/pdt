@@ -64,7 +64,8 @@ pdt.managed_services, the same way on every provider: the start and end
 events, the command's output (which it then also writes to a file as it
 prints it), and the run's storage output folder, which it names to the
 command in PDT_OUTPUT_DIR (managed_services.output_folder). A log or
-folder pdt cannot make costs only what AutoIDM gets, never the run.
+folder pdt cannot make, or any other error in a call to managed_services
+(`monitored`), costs only what AutoIDM gets, never the run.
 """
 
 from __future__ import annotations
@@ -301,6 +302,16 @@ def app_params(app: str, provider: str) -> dict[str, object]:
     return {"project": config.project_name(), "app": app, "provider": provider}
 
 
+def monitored(what: str, call: Callable[[], object], default: object = None):
+    """`call()`, or `default` after one warning when it raises: a failure in what pdt sends to
+    AutoIDM never changes the run or its exit code."""
+    try:
+        return call()
+    except Exception as e:
+        console.warn(f"AutoIDM did not get {what}: {console.escape(f'{type(e).__name__}: {e}')}")
+        return default
+
+
 def run_job(app: str, provider: str, command: list[str], cwd: Path,
             env: dict[str, str] | None = None, deployed: bool = False) -> int:
     """Run `command` as one run of the job. `deployed` is True for the deployed job (a cloud
@@ -309,10 +320,11 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     trigger = "manual" if not deployed or os.environ.get(TRIGGER_ENV) == "manual" else "schedule"
     params = {**app_params(app, provider), "run_id": storage.RUN_ID, "deployed": deployed,
               "trigger": trigger}
-    sender = managed_services.sender(app)
+    sender = monitored("this run", lambda: managed_services.sender(app))
     event = emit(JOB_RUN_STARTED, **params)
     if sender is not None:
-        sender.run_started(event.at, event.name, params)
+        monitored(f"the {console.value(event.name)} event",
+                  lambda: sender.run_started(event.at, event.name, params))
     scratch = log = output = None
     if sender is not None and (sender.wants("send_logs") or sender.wants("send_artifacts")):
         try:
@@ -323,7 +335,8 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     if scratch is not None and sender.wants("send_logs"):
         log = scratch / f"{storage.RUN_ID}.log"
     if scratch is not None and sender.wants("send_artifacts"):
-        output = managed_services.output_folder(cwd, storage.RUN_ID, scratch / "output")
+        output = monitored("the artifacts of this run", lambda: managed_services.output_folder(
+            cwd, storage.RUN_ID, scratch / "output"))
     began = time.monotonic()
     stopped: list[int] = []
     child: subprocess.Popen | None = None
@@ -362,9 +375,9 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
         else:
             name = JOB_RUN_COMPLETED if code == 0 else JOB_RUN_FAILED
             details = {"exit_code": code}
-        if sender is not None and sender.run_ended(
+        if sender is not None and monitored("the end of this run", lambda: sender.run_ended(
                 name, {**params, **details, "state": state}, time.monotonic() - began, log,
-                output):
+                output), False):
             console.error(sender.refusal())
             if code == 0:
                 code = managed_services.UNAUTHORIZED_EXIT
@@ -384,13 +397,11 @@ DRAIN_SECONDS = 2
 
 
 def copy_output(child: subprocess.Popen, log: Path) -> threading.Thread:
-    sys.stdout.flush()
-    out = sys.stdout.buffer
-
     def copy() -> None:
         """Print the command's output and keep it in `log`, up to one byte over
         MAX_UPLOAD_BYTES so the upload skips a longer log. A failed write to stdout or to `log`
         stops only that write, so the command never waits on a pipe that no one reads."""
+        out = None
         try:
             kept = log.open("wb", buffering=0)
         except OSError as e:
@@ -405,9 +416,12 @@ def copy_output(child: subprocess.Popen, log: Path) -> threading.Thread:
                 break
             if printing:
                 try:
+                    if out is None:
+                        sys.stdout.flush()
+                        out = sys.stdout.buffer
                     out.write(chunk)
                     out.flush()
-                except (OSError, ValueError) as e:
+                except (OSError, ValueError, AttributeError) as e:
                     console.say(f"pdt stopped printing the output of this run: "
                                 f"{console.escape(str(e))}", stderr=True)
                     printing = False
