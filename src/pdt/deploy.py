@@ -460,12 +460,16 @@ def secrets(app_name: str, action: str, assume_yes: bool = False,
     except ConfigError as e:
         console.error(console.escape(str(e)))
         return 1
+    sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
     if action in ("diff", "save"):
         missing = config.missing_env(app)
         if missing != "":
             console.error(f"{console.value(app_name)}: {console.escape(missing)}")
             return 1
+        console.name(app_name)
+        for line in sources:
+            console.detail(line)
     return dispatch(provider, "secrets", app_name, assume_yes, [action, *([name] if name else [])])
 
 

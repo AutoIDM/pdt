@@ -378,3 +378,16 @@ def test_run_reports_a_missing_env_var_before_the_app_starts(project, monkeypatc
     out = capsys.readouterr().out
     assert "my-report: missing required env var PDT_TOKEN; set one of" in out
     assert "To fix it, add each one as NAME=value to" in out
+
+
+@pytest.mark.parametrize("action", ["diff", "save"])
+def test_secrets_says_the_terminal_value_hides_the_dot_env_value(project, monkeypatch, capsys,
+                                                                 action):
+    folder = add_app(project, "my-report", APP_YAML)
+    clear(monkeypatch)
+    (folder / ".env").write_text("PDT_TOKEN=new\nPDT_SECRET=s-1\n")
+    monkeypatch.setenv("PDT_TOKEN", "old")
+    monkeypatch.setattr(deploy, "dispatch", lambda *args: 0)
+    assert deploy.secrets("my-report", action) == 0
+    assert ("this terminal already sets PDT_TOKEN, so pdt uses that value and not the one "
+            "in .env") in " ".join(capsys.readouterr().out.split())
