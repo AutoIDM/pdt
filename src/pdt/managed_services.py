@@ -25,10 +25,11 @@ provider and for a `pdt run` on this computer:
   command's output to a file as it prints it, because a cloud job's output goes
   from the container to the cloud's log service, and the run cannot read it
   back from there.
-- send_artifacts: the run's storage output folder (OUTPUT_FOLDER in the app
-  folder, the folder pdt.utils.storage.sync and pdt.run_powershell upload),
-  zipped as one upload, <run_id>.zip. A link to a place outside the folder is
-  skipped with a warning.
+- send_artifacts: the run's storage output folder (`output_folder`, the folder
+  pdt.utils.storage.sync and pdt.run_powershell upload), zipped as one upload,
+  <run_id>.zip. A link to a place outside the folder, or into a loop, is
+  skipped with a warning, and an output folder that is itself a link sends
+  nothing.
 
 A log or zip over MAX_UPLOAD_BYTES is skipped with a warning.
 
@@ -83,8 +84,17 @@ def backend_name(name: str) -> str:
     return f"{readable}-{hashlib.sha256(name.encode()).hexdigest()[:8]}"
 
 
-def output_folder(app_dir: Path, run_id: str) -> Path:
-    return app_dir / ".pdt" / "runs" / run_id / "output"
+def output_folder(app_dir: Path, run_id: str, fallback: Path) -> Path:
+    """The run's output folder: .pdt/runs/<run_id>/output in the app folder, the one
+    storage.sync gives a Python app, or `fallback` when pdt cannot write in the app folder. It
+    makes the folder that holds it."""
+    folder = app_dir / ".pdt" / "runs" / run_id / "output"
+    try:
+        folder.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        return fallback
+    return folder
 
 
 def parse(raw: object, where: str) -> dict:
@@ -204,7 +214,7 @@ class Sender:
             self.event(name, at.strftime("%Y-%m-%dT%H:%M:%SZ"), params)
 
     def run_ended(self, name: str, params: dict, duration: float, log: Path | None,
-                  output: Path) -> bool:
+                  output: Path | None) -> bool:
         """Send the end event, the log, and the artifacts of a run; True when AutoIDM refused
         the registration."""
         if self.wants("send_run_history"):
@@ -212,10 +222,10 @@ class Sender:
         run_id = str(params["run_id"])
         if log is not None:
             self.upload_log(log, f"{run_id}.log", params)
-        if self.wants("send_artifacts") and output.is_dir() and not self.refused:
+        if output is not None and output.is_dir() and not self.refused:
             try:
                 self.upload_artifacts(output, f"{run_id}.zip", params)
-            except OSError as e:
+            except (OSError, RuntimeError) as e:
                 console.warn(f"AutoIDM did not get the artifacts {console.value(run_id + '.zip')}: "
                              f"{console.escape(str(e))}")
         return self.refused
@@ -239,13 +249,22 @@ class Sender:
 
     def upload_artifacts(self, output: Path, filename: str, params: dict) -> None:
         """Zip the files under `output` and upload the zip. A link that leads out of `output`
-        is skipped with a warning, so a run cannot send a file from elsewhere on the computer."""
+        is skipped with a warning, so a run cannot send a file from elsewhere on the computer.
+        When `output` itself is a link, nothing is sent."""
+        if output.is_symlink():
+            console.warn(f"AutoIDM did not get the artifacts {console.value(filename)}: "
+                         f"{console.value(output)} links to another place.")
+            return
         root = output.resolve()
         files = []
         for path in sorted(output.rglob("*")):
-            if not path.resolve().is_relative_to(root):
+            try:
+                inside = path.resolve().is_relative_to(root)
+            except (OSError, RuntimeError):
+                inside = False
+            if not inside:
                 console.warn(f"AutoIDM did not get {console.value(path)}: it links to a place "
-                             f"outside {console.value(output)}.")
+                             f"outside {console.value(output)}, or into a loop.")
             elif path.is_file():
                 files.append(path)
         if not files:
