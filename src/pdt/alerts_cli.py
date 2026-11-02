@@ -284,7 +284,7 @@ def save(project, alerts: list, old: dict | None, new: dict | None,
 
 def setup() -> int:
     """Take each chosen type in turn through events, connect, save, and test. The entries
-    of types the user unchecks go last, so a stop part way removes nothing."""
+    of types the user unchecks go last, so a stop part way keeps them."""
     project = config.find_project()
     if not can_prompt(None):
         console.error("pdt alerts setup asks questions; run it in a terminal")

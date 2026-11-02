@@ -252,8 +252,6 @@ TEAMS_ID = teams.webhook_id(TEAMS_URL)
 
 
 def asked_in_order(monkeypatch, *replies):
-    """Scripted answers; returns each heading, question, and done line in the order setup
-    shows them. A KeyboardInterrupt in `replies` is raised in the place of an answer."""
     shown = []
     queue = list(replies)
 
