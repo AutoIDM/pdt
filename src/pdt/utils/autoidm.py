@@ -101,7 +101,7 @@ def environment_values() -> dict[str, str]:
         return values
     try:
         blob = json.loads(os.environ.get("PDT_ENV_JSON") or "{}")
-    except ValueError:
+    except (ValueError, RecursionError):
         return {}
     if not isinstance(blob, dict):
         return {}
@@ -132,6 +132,11 @@ def machine_registration(customer: str) -> Registration | None:
         pem = key.read_bytes()
     except OSError as e:
         raise AutoidmError(f"pdt cannot read {e.filename}: {e.strerror}") from None
+    except (ValueError, RecursionError):
+        raise AutoidmError(f"{info} does not hold JSON") from None
+    if not (isinstance(saved, dict) and all(isinstance(saved.get(name), str) and saved[name]
+                                            for name in ("installation_id", "api_url"))):
+        raise AutoidmError(f"{info} does not name an installation_id and an api_url as text")
     return Registration(saved["installation_id"], saved["api_url"].rstrip("/"), load_key(pem),
                         str(info))
 
@@ -154,7 +159,7 @@ def send(url: str, data: bytes, headers: dict[str, str],
     except urllib.error.HTTPError as e:
         try:
             answer = json.loads(e.read())
-        except (ValueError, OSError, http.client.HTTPException):
+        except (ValueError, RecursionError, OSError, http.client.HTTPException):
             answer = {}
         answer = answer if isinstance(answer, dict) else {}
         code = str(answer.get("error") or "")
@@ -167,7 +172,7 @@ def send(url: str, data: bytes, headers: dict[str, str],
         return {}
     try:
         return json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         raise AutoidmError(f"AutoIDM answered {url} with JSON that does not parse") from None
 
 

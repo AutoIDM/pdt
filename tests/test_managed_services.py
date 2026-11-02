@@ -168,6 +168,38 @@ def test_an_unregistered_computer_warns_once_per_command(project, folder, warned
     assert "pdt register --code CODE" in out
 
 
+@pytest.mark.parametrize("saved", ["[]", '{"installation_id": 1, "api_url": "x"}',
+                                   '{"installation_id": "ins_4f8a1c2e9b", "api_url": 5}',
+                                   '{"installation_id": "ins_4f8a1c2e9b"}', "[" * 100000],
+                         ids=["list", "number id", "number url", "no url", "nested too deep"])
+def test_registration_metadata_of_the_wrong_shape_is_a_warning(project, folder, warned, capsys,
+                                                               saved):
+    project_with(project, ALL_ON)
+    registered("https://api.example")
+    autoidm.files(CUSTOMER)[0].write_text(saved)
+    assert managed_services.sender("report") is None
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"pdt cannot use the AutoIDM registration for {CUSTOMER}" in out
+
+
+@pytest.mark.parametrize("target", ["sender", "run_started", "output_folder", "run_ended"])
+def test_an_unexpected_error_in_monitoring_is_a_warning_and_keeps_the_exit_code(
+        project, backend, warned, monkeypatch, capfd, target):
+    url, _seen, _answers = backend
+    project_with(project, ALL_ON)
+    registered(url)
+
+    def broken(*args, **kwargs):
+        raise TypeError("an error no handler expects")
+
+    owner = managed_services if target in ("sender", "output_folder") else managed_services.Sender
+    monkeypatch.setattr(owner, target, broken)
+    assert run(project, 3) == 3
+    out, err = capfd.readouterr()
+    assert "hello from the app" in out
+    assert "TypeError: an error no handler expects" in " ".join((out + err).split())
+
+
 def test_a_refused_registration_completes_the_work_then_exits_with_its_own_code(
         project, backend, warned, capsys):
     url, seen, answers = backend
@@ -507,6 +539,28 @@ def test_a_broken_stdout_stops_only_the_printing_and_the_log_keeps_everything(
     _out, err = capfd.readouterr()
     assert b"line 19999" in log.read_bytes()
     assert " ".join(err.split()).count("pdt stopped printing the output of this run") == 1
+
+
+def test_a_closed_stdout_stops_only_the_printing_and_the_command_never_blocks(
+        tmp_path, monkeypatch, capfd):
+    script = "import sys\nfor i in range(20000):\n    print('line', i)\nsys.exit(0)\n"
+    child = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+    log = tmp_path / "run.log"
+    closed = io.TextIOWrapper(io.BytesIO())
+    closed.close()
+    monkeypatch.setattr(sys, "stdout", closed)
+    try:
+        copier = lifecycle.copy_output(child, log)
+        assert child.wait(timeout=20) == 0
+    finally:
+        child.kill()
+    copier.join(10)
+    console.drain()
+    monkeypatch.undo()
+    _out, err = capfd.readouterr()
+    assert b"line 19999" in log.read_bytes()
+    assert "pdt stopped printing the output of this run" in " ".join(err.split())
 
 
 def test_the_log_stops_one_byte_over_the_upload_limit_and_the_output_goes_on(

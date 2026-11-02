@@ -145,6 +145,8 @@ def test_a_cloud_registration_for_another_customer_is_an_error(folder, monkeypat
 
 @pytest.mark.parametrize(("path", "answer", "said"), [
     ("/v1/events", b"{not json", "with JSON that does not parse"),
+    pytest.param("/v1/events", b'{"a": ' + b"[" * 100000, "with JSON that does not parse",
+                 id="nested too deep"),
     ("/v1/uploads", b'{"url": "x"}', "answered /v1/uploads without key"),
     ("/v1/uploads", b'{"url": "x", "key": "k", "fields": []}', "/v1/uploads without fields"),
     ("/v1/uploads", b'{"url": "x", "key": "k", "fields": {}}', "'x', which is not https"),
