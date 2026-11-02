@@ -71,7 +71,7 @@ AutoIDM refuses the registration. A log or folder pdt cannot make, or any other
 error in a call to managed_services, costs only what AutoIDM gets, never the run.
 
 The usage sink (pdt.usage) gets each name in EVENTS and CLI_COMMAND, the one event at the
-end of each pdt command. It never gets a name that an app emits itself.
+end of each pdt command.
 """
 
 from __future__ import annotations

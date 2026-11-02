@@ -45,11 +45,15 @@ def off() -> bool:
         return False
 
 
-def can_offer() -> bool:
+def person_at_terminal() -> bool:
     from pdt.utils.email_auth import can_prompt
     return (can_prompt(None) and sys.stderr.isatty()
-            and not any(len(token) > 2 and "--json".startswith(token) for token in sys.argv)
             and not any(name in os.environ for name in AGENT_ENVS))
+
+
+def can_offer() -> bool:
+    return (person_at_terminal()
+            and not any(len(token) > 2 and "--json".startswith(token) for token in sys.argv))
 
 
 def watched(main: Callable[[], int], commands: set[str] = frozenset()) -> int:

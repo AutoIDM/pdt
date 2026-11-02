@@ -37,8 +37,10 @@ def usage_off(monkeypatch):
     monkeypatch.setenv(usage.OFF_ENV, "false")
     monkeypatch.setattr(usage, "_resolved", False)
     monkeypatch.setattr(usage, "_identity", None)
-    monkeypatch.setattr(usage, "_job", False)
+    monkeypatch.setenv(usage.JOB_ENV, "")
+    monkeypatch.delenv(usage.JOB_ENV)
     monkeypatch.setattr(usage, "_gave_up", False)
+    monkeypatch.setattr(usage, "_process_deadline", None)
 
 
 @pytest.fixture(autouse=True)
