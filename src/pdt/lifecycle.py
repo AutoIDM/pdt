@@ -388,27 +388,42 @@ def copy_output(child: subprocess.Popen, log: Path) -> threading.Thread:
     out = sys.stdout.buffer
 
     def copy() -> None:
-        """Print the command's output and keep it in `log`. A failed write to `log` stops only
-        the keeping, so the command never waits on a pipe that no one reads."""
+        """Print the command's output and keep it in `log`, up to one byte over
+        MAX_UPLOAD_BYTES so the upload skips a longer log. A failed write to stdout or to `log`
+        stops only that write, so the command never waits on a pipe that no one reads."""
         try:
             kept = log.open("wb", buffering=0)
         except OSError as e:
             console.warn(f"pdt cannot keep the output of this run for AutoIDM: "
                          f"{console.escape(str(e))}")
             kept = None
+        printing = True
+        size = 0
         while True:
             chunk = child.stdout.read1()
             if chunk == b"":
                 break
-            out.write(chunk)
-            out.flush()
+            if printing:
+                try:
+                    out.write(chunk)
+                    out.flush()
+                except (OSError, ValueError) as e:
+                    console.say(f"pdt stopped printing the output of this run: "
+                                f"{console.escape(str(e))}", stderr=True)
+                    printing = False
             if kept is None:
                 continue
+            piece = chunk[:managed_services.MAX_UPLOAD_BYTES + 1 - size]
             try:
-                kept.write(chunk)
+                kept.write(piece)
             except OSError as e:
                 console.warn(f"pdt stopped keeping the output of this run for AutoIDM: "
                              f"{console.escape(str(e))}")
+                kept.close()
+                kept = None
+                continue
+            size += len(piece)
+            if size > managed_services.MAX_UPLOAD_BYTES:
                 kept.close()
                 kept = None
         if kept is not None:
