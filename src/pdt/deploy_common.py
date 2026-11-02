@@ -109,7 +109,7 @@ RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 WORKDIR /workspace/{app}
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false PYTHONUNBUFFERED=1
 COPY .pdt-script .
-RUN uv sync --script run.py
+RUN uv sync --script run.py && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*
 COPY . /workspace
 """ + ENTRYPOINT.replace("{start}", "uv run --script run.py")
 POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
@@ -164,7 +164,9 @@ def powershell_dockerfile(app: dict) -> str:
     command = json.dumps(["pwsh", "-NoProfile", "-Command", powershell.install_command(modules)])
     sync, start = "", "/opt/pdt/bin/python -m pdt.run_powershell ."
     if (Path(app["dir"]) / "run.py").is_file():
-        sync, start = "COPY .pdt-script .\nRUN uv sync --script run.py\n", "uv run --script run.py"
+        sync = ('COPY .pdt-script .\nRUN uv sync --script run.py'
+                ' && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*\n')
+        start = "uv run --script run.py"
     return POWERSHELL_DOCKERFILE.format(
         app=app["name"], version=__version__, modules=f"RUN {command}\n" if modules else "",
         sync=sync, start=start)

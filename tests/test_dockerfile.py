@@ -46,7 +46,8 @@ def test_the_generated_dockerfile_installs_from_the_script_header_before_the_res
     assert (stage / ".pdt-script" / "pdt_cli-0.1.11-py3-none-any.whl").read_text() == "wheel\n"
     text = (stage / "Dockerfile").read_text()
     assert (text.index("WORKDIR /workspace/my-report\n") < text.index("COPY .pdt-script .\n")
-            < text.index("RUN uv sync --script run.py\n") < text.index("COPY . /workspace\n"))
+            < text.index('RUN uv sync --script run.py && rm -rf "$(uv python dir)"/*/lib/python*/'
+                         'site-packages/pip*\n') < text.index("COPY . /workspace\n"))
 
 
 def test_a_run_py_without_a_script_header_is_staged_whole(tmp_path):
@@ -194,8 +195,8 @@ def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modul
     (app["dir"] / "requirements.psd1").write_text("@{ 'ImportExcel' = '7.8.6' }\n")
     write_dockerfile(stage, app)
     text = (stage / "Dockerfile").read_text()
-    tail = ("WORKDIR /workspace/my-report\nCOPY .pdt-script .\nRUN uv sync --script run.py\n"
-            "COPY . /workspace\n" + ENTRYPOINT.replace("{start}", "uv run --script run.py").format())
+    tail = ("WORKDIR /workspace/my-report\nCOPY .pdt-script .\nRUN uv sync --script run.py"
+            ' && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*\nCOPY . /workspace\n' + ENTRYPOINT.replace("{start}", "uv run --script run.py").format())
     assert text.endswith(tail)
     assert text.index("Install-PSResource") < text.index("RUN uv sync")
     assert "pdt.run_powershell" not in text
