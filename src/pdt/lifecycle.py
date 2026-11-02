@@ -13,13 +13,19 @@
 
 usage: lifecycle.py -- <command...>
 
-`emit` gives each event to every entry of the app's `alerts:` list that
+`emit` builds one Event and gives it to each row of SINKS, one row per sender.
+A Sink is a name, `accept(event)`, which selects and queues the event and returns
+at once, and `wait(seconds)`, which waits for the sink's queue, up to `seconds` or
+by default the sink's own time limit. Inside one sink, events stay in order.
+
+The alerts sink gives each event to every entry of the app's `alerts:` list that
 receives it, once per entry and in config order, through the entry's type
 in TRANSPORTS. An entry receives an event that matches at least one name in
 its `events` and no name in its `exclude-events`; a name may hold a `*`
-glob, and `all` is every event. An event that no entry receives this way is
-unhandled, and goes to each entry with `unhandled` in its `events` (its
-`exclude-events` still apply). When no entry names `unhandled` in `events`
+glob, and `all` is every event except a `cli:` event. An event that no entry
+receives this way is unhandled, and goes to each entry with `unhandled` in its
+`events` (its `exclude-events` still apply); a `cli:` event is never unhandled,
+so only a name that matches it receives it. When no entry names `unhandled` in `events`
 or `exclude-events`, the list ends with the implicit entry
 {type: console, events: [unhandled]}, so with no `alerts:` the console
 prints every event. `alerts: false` is an empty list with no
@@ -34,7 +40,9 @@ and the teams type (pdt.teams) posts to a Teams channel.
 `deliver` must not change the event. The console prints at once; every
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the
-end of every pdt command call, waits for every open delivery for at most
+end of every pdt command call, waits for all sinks in parallel: every limit starts
+at the same time, so the wait is the longest unfinished sink. The alerts sink
+waits for every open delivery for at most
 FLUSH_SECONDS in total. An event that a transport did not deliver in that
 time, or whose `deliver` raised (with a warning on stderr that names the
 error), prints on the console marked `not delivered to <type>`. A
@@ -59,13 +67,16 @@ script around the app's command, from the app folder, so the events land in
 the run's log. A SIGKILL, a Windows task that Task Scheduler ends, or a
 power loss stops pdt at once, so no event fires.
 
-When the project sets `managed_services`, `run_job` also gives the run to
-pdt.managed_services, the same way on every provider: the start and end
-events, the command's output (which it then also writes to a file as it
-prints it), and the run's storage output folder, which it names to the
-command in PDT_OUTPUT_DIR (managed_services.output_folder). A log or
-folder pdt cannot make, or any other error in a call to managed_services
-(`monitored`), costs only what AutoIDM gets, never the run.
+When the project sets `managed_services`, the managed sink gets
+job:run-started and app:deploy-completed, and `run_job` also gives the run to
+pdt.managed_services, the same way on every provider: the end event, the
+command's output (which it then also writes to a file as it prints it), and the
+run's storage output folder, which it names to the command in PDT_OUTPUT_DIR
+(managed_services.output_folder). `run_job` sends these and waits for them before it
+emits the end event, so the alert and the exit code say the same when AutoIDM refuses
+the registration. A log or folder pdt cannot make, or any other error in a call to
+managed_services (`managed_services.monitored`), costs only what AutoIDM gets, never the
+run.
 """
 
 from __future__ import annotations
@@ -76,7 +87,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -131,6 +141,7 @@ class Transport:
 ENTRY_KEYS = ("type", "events", "exclude-events")
 ALL = "all"
 UNHANDLED = "unhandled"
+CLI_PREFIX = "cli:"
 TRANSPORTS: dict[str, Transport] = {
     "console": Transport("console", frozenset(), print_event),
     "slack": Transport("slack", slack.KEYS, slack.deliver, slack.ONE_OF, slack.secrets),
@@ -190,7 +201,9 @@ def event_patterns(alert: dict, key: str, where: str) -> list[str]:
 
 
 def matches(pattern: str, name: str) -> bool:
-    return pattern == ALL or fnmatchcase(name, pattern)
+    if pattern == ALL:
+        return not name.startswith(CLI_PREFIX)
+    return fnmatchcase(name, pattern)
 
 
 def excludes(alert: dict, name: str) -> bool:
@@ -252,30 +265,23 @@ def _fall_back(item: list) -> None:
     console.event(alert_message.event_sentence(event), f"not delivered to {entry['type']}:")
 
 
-def flush() -> None:
-    """Wait at most FLUSH_SECONDS for every open delivery, then print each one still open
-    on the console, after each line that a delivery thread printed. A Ctrl+C ends the wait
-    early."""
-    deadline = time.monotonic() + FLUSH_SECONDS
+def wait_alerts(seconds: float | None = None) -> None:
+    """Wait at most `seconds`, by default FLUSH_SECONDS, for every open delivery, then print
+    each one still open on the console, after each line that a delivery thread printed."""
+    limit = FLUSH_SECONDS if seconds is None else seconds
     with _lock:
-        try:
-            _lock.wait_for(lambda: all(item[3] != "open" for item in _open),
-                           max(0.0, deadline - time.monotonic()))
-        except KeyboardInterrupt:
-            pass
+        _lock.wait_for(lambda: all(item[3] != "open" for item in _open), limit)
         for item in _open:
             if item[3] == "open":
                 _fall_back(item)
         _open.clear()
-    console.drain()
 
 
-def emit(name: str, **params: object) -> Event:
-    if name in (ALL, UNHANDLED):
-        raise ValueError(f"{name!r} is a reserved word in alerts, not an event name")
-    event = Event(name, datetime.now(timezone.utc), params)
-    alerts = alerts_for(params.get("app"))
-    unhandled = not any(receives(alert, name) for alert in alerts)
+def accept_alerts(event: Event) -> None:
+    name = event.name
+    alerts = alerts_for(event.params.get("app"))
+    unhandled = (not name.startswith(CLI_PREFIX)
+                 and not any(receives(alert, name) for alert in alerts))
     for alert in alerts:
         if receives(alert, name):
             through_unhandled = False
@@ -295,21 +301,50 @@ def emit(name: str, **params: object) -> Event:
                 _queues[key] = queue.Queue()
                 threading.Thread(target=_deliver_each, args=(_queues[key],), daemon=True).start()
             _queues[key].put(item)
+
+
+@dataclass(frozen=True)
+class Sink:
+    name: str
+    accept: Callable[[Event], None]
+    wait: Callable[[float | None], None]
+
+
+def accept_managed(event: Event) -> None:
+    managed_services.monitored(f"the {console.value(event.name)} event",
+                               lambda: managed_services.accept(event))
+
+
+SINKS = (Sink("alerts", accept_alerts, wait_alerts),
+         Sink("managed", accept_managed, managed_services.wait))
+
+
+def flush() -> None:
+    """Wait for all sinks in parallel, each up to its own time limit. A Ctrl+C ends the wait
+    early."""
+    waits = [threading.Thread(target=sink.wait, args=(None,), daemon=True) for sink in SINKS]
+    for waiting in waits:
+        waiting.start()
+    try:
+        for waiting in waits:
+            waiting.join()
+    except KeyboardInterrupt:
+        for sink in SINKS:
+            sink.wait(0)
+    console.drain()
+
+
+def emit(name: str, **params: object) -> Event:
+    if name in (ALL, UNHANDLED):
+        raise ValueError(f"{name!r} is a reserved word in alerts, not an event name")
+    event = Event(name, datetime.now(timezone.utc), params)
+    for sink in SINKS:
+        sink.accept(event)
     return event
 
 
 def app_params(app: str, provider: str) -> dict[str, object]:
     return {"project": config.project_name(), "app": app, "provider": provider}
-
-
-def monitored(what: str, call: Callable[[], object], default: object = None):
-    """`call()`, or `default` after one warning when it raises: a failure in what pdt sends to
-    AutoIDM never changes the run or its exit code."""
-    try:
-        return call()
-    except Exception as e:
-        console.warn(f"AutoIDM did not get {what}: {console.escape(f'{type(e).__name__}: {e}')}")
-        return default
 
 
 def run_job(app: str, provider: str, command: list[str], cwd: Path,
@@ -320,23 +355,10 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     trigger = "manual" if not deployed or os.environ.get(TRIGGER_ENV) == "manual" else "schedule"
     params = {**app_params(app, provider), "run_id": storage.RUN_ID, "deployed": deployed,
               "trigger": trigger}
-    sender = monitored("this run", lambda: managed_services.sender(app))
-    event = emit(JOB_RUN_STARTED, **params)
-    if sender is not None:
-        monitored(f"the {console.value(event.name)} event",
-                  lambda: sender.run_started(event.at, event.name, params))
-    scratch = log = output = None
-    if sender is not None and (sender.wants("send_logs") or sender.wants("send_artifacts")):
-        try:
-            scratch = Path(tempfile.mkdtemp(prefix=f"pdt-{storage.RUN_ID}-"))
-        except OSError as e:
-            console.warn(f"pdt cannot keep the output or the artifacts of this run for AutoIDM: "
-                         f"{console.escape(str(e))}")
-    if scratch is not None and sender.wants("send_logs"):
-        log = scratch / f"{storage.RUN_ID}.log"
-    if scratch is not None and sender.wants("send_artifacts"):
-        output = monitored("the artifacts of this run", lambda: managed_services.output_folder(
-            cwd, storage.RUN_ID, scratch / "output"))
+    run = managed_services.monitored(
+        "this run", lambda: managed_services.start_run(app, storage.RUN_ID, cwd),
+        managed_services.Run())
+    emit(JOB_RUN_STARTED, **params)
     began = time.monotonic()
     stopped: list[int] = []
     child: subprocess.Popen | None = None
@@ -351,10 +373,10 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
     try:
         child_env = {**(env or os.environ), "PDT_RUN_ID": storage.RUN_ID}
-        if output is not None:
-            child_env["PDT_OUTPUT_DIR"] = str(output)
+        if run.output is not None:
+            child_env["PDT_OUTPUT_DIR"] = str(run.output)
         children: queue.Queue[subprocess.Popen] = queue.Queue(1)
-        copier = None if log is None else copy_output(children, log)
+        copier = None if run.log is None else copy_output(children, run.log)
         if copier is None:
             child = subprocess.Popen(command, cwd=cwd, env=child_env)
         else:
@@ -376,10 +398,10 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
         else:
             name = JOB_RUN_COMPLETED if code == 0 else JOB_RUN_FAILED
             details = {"exit_code": code}
-        if sender is not None and monitored("the end of this run", lambda: sender.run_ended(
-                name, {**params, **details, "state": state}, time.monotonic() - began, log,
-                output), False):
-            console.error(sender.refusal())
+        if managed_services.monitored("the end of this run", lambda: managed_services.end_run(
+                run, name, {**params, **details, "state": state}, time.monotonic() - began),
+                False):
+            console.error(run.sender.refusal())
             if code == 0:
                 code = managed_services.UNAUTHORIZED_EXIT
                 name, details = JOB_RUN_FAILED, {"exit_code": code, "reason": "unauthorized"}
@@ -388,8 +410,8 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
-        if scratch is not None:
-            shutil.rmtree(scratch, ignore_errors=True)
+        if run.scratch is not None:
+            shutil.rmtree(run.scratch, ignore_errors=True)
     return code
 
 

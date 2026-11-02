@@ -400,7 +400,7 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
         config.mark_deployed(app_name, None)
     lifecycle.emit(completed, **params)
     if sender is not None:
-        sender.deployed(params, config.merged_app(app_name), config.deployed_platform(app_name))
+        managed_services.wait()
         if sender.refused:
             console.warn(sender.refusal())
     return 0
