@@ -1,4 +1,5 @@
 import base64
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -105,9 +106,12 @@ def test_with_run_as_the_task_logs_on_with_the_domain_password(project):
 
 
 def test_the_account_gets_full_control_of_the_app_folder(project):
-    script = deploy_windows._folder_script(windows_app(project), r"PC\jon")
-    assert ("icacls $folder /grant '*S-1-5-18:(OI)(CI)F' 'EXAMPLE\\svc-pdt$:(OI)(CI)F' "
-            "'PC\\jon:(OI)(CI)M'") in script
+    app = windows_app(project)
+    script = deploy_windows._folder_script(app, r"PC\jon")
+    assert "icacls $folder /grant '*S-1-5-18:(OI)(CI)F' 'PC\\jon:(OI)(CI)M'" in script
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    assert (f"$want = @(@{{p = '{folder}'; r = '(OI)(CI)F'}}); "
+            in deploy_windows._grants_script(app, ACCOUNT))
 
 
 def test_the_account_reads_its_app_the_project_files_pdt_uv_and_the_installation_key(project):
@@ -130,10 +134,9 @@ def test_the_account_reads_its_app_the_project_files_pdt_uv_and_the_installation
         ("the AutoIDM installation key", key, "R"),
     ]
     assert not any(path == project / "other" for _what, path, _rights in reads)
-    script = deploy_windows._folder_script(app, r"PC\jon", reads)
-    assert f"icacls '{project}' /grant 'EXAMPLE\\svc-pdt$:RX' | Out-Null" in script
-    assert f"icacls '{key}' /grant 'EXAMPLE\\svc-pdt$:R' | Out-Null" in script
-    assert script.count("throw") == 9
+    script = deploy_windows._grants_script(app, ACCOUNT, reads)
+    assert f"@{{p = '{project}'; r = 'RX'}}" in script
+    assert f"@{{p = '{key}'; r = 'R'}}" in script
 
 
 def test_the_account_reads_no_uv_on_the_machine_path_and_no_missing_file(project):
@@ -173,10 +176,10 @@ def test_pwsh_off_path_skips_the_path_and_takes_the_shared_install(tmp_path, mon
     from pdt import pwsh
     monkeypatch.setattr(pwsh.shutil, "which", lambda name: "/usr/bin/pwsh")
     monkeypatch.setattr(pwsh, "install_dir", lambda windows=False: tmp_path)
-    (tmp_path / "pwsh").write_text("")
+    pwsh.local_pwsh().write_text("")
     (tmp_path / "VERSION").write_text(pwsh.VERSION)
     assert pwsh.ensure_pwsh() == "/usr/bin/pwsh"
-    assert pwsh.ensure_pwsh(on_path=False) == str(tmp_path / "pwsh")
+    assert pwsh.ensure_pwsh(on_path=False) == str(pwsh.local_pwsh())
 
 
 def account_check(monkeypatch, answer):
@@ -209,8 +212,7 @@ def test_the_account_check_names_the_file_that_sets_run_as(monkeypatch, answer, 
 def test_system_needs_no_read_grants(project, monkeypatch):
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
     _code, shown, (script,) = deploy(project, monkeypatch)
-    assert script.count("/grant") == 1
-    assert "/remove" not in script
+    assert "$sid = ''; " in script and "$want = @(); " in script
     assert not any(line.startswith("let ") for line in shown)
 
 
@@ -247,8 +249,8 @@ def test_deploy_plans_the_account_and_states_the_batch_right(project, monkeypatc
     assert (f"note: the task starts only when {ACCOUNT} has the Log on as a batch job right on "
             "this computer. pdt does not grant this right.") in " ".join(out.split())
     (script,) = scripts
-    assert script.index(f"icacls '{project}'") < script.index("Register-ScheduledTask -TaskName "
-                                                              "$name -Xml $xml -Force")
+    assert script.index(f"@{{p = '{project}'") < script.index("Register-ScheduledTask -TaskName "
+                                                               "$name -Xml $xml -Force")
 
 
 def test_deploy_stops_when_windows_cannot_find_the_account(project, monkeypatch, capsys):
@@ -278,32 +280,82 @@ def test_the_previous_account_is_neither_system_nor_the_new_account(monkeypatch,
     assert f"if ($sid -ne 'S-1-5-18' -and $sid -ne {new}" in scripts[0]
 
 
-def test_deploy_removes_the_rights_of_the_account_the_task_ran_as_before(project, monkeypatch):
+def test_deploy_without_run_as_names_the_account_the_task_ran_as_before(project, monkeypatch):
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
-    folder = project / "ProgramData" / "pdt" / "my-report"
-    folder.mkdir(parents=True)
     code, shown, (script,) = deploy(project, monkeypatch, previous="EXAMPLE\\svc-old$")
     assert code == 0
     assert ("remove the rights pdt gave EXAMPLE\\svc-old$, the account the task ran as until now"
             in shown)
-    for path in (folder, project / "my-report", project, project / "pdt.yml",
-                 deploy_windows.RUNNER.parent.parent):
-        assert f"icacls '{path}' /remove:g 'EXAMPLE\\svc-old$' | Out-Null" in script
-    assert script.rindex("/remove:g") < script.index("/grant")
+    assert "$want = @(); " in script
 
 
-def test_the_shared_paths_keep_the_grant_while_another_pdt_task_runs_as_the_account(project):
-    folder = project / "ProgramData" / "pdt" / "my-report"
-    folder.mkdir(parents=True)
-    script = deploy_windows._revoke_script(windows_app(project), None, ACCOUNT)
-    check = script.index("if ($others.Count -eq 0) {")
-    for path in (folder, project / "my-report"):
-        assert script.index(f"icacls '{path}' /remove:g") < check
-    for path in (project, project / "pdt.yml", deploy_windows.RUNNER.parent.parent):
-        assert script.index(f"icacls '{path}' /remove:g") > check
-    assert "$_.TaskName -ne 'pdt-my-report' -and $_.Description -like 'Managed by pdt;*'" in script
-    assert (".Principal.UserId).Translate([Security.Principal.SecurityIdentifier]).Value -eq $sid"
-            in script)
+LOCAL_SERVICE, NETWORK_SERVICE = "NT AUTHORITY\\LOCAL SERVICE", "NT AUTHORITY\\NETWORK SERVICE"
+needs_admin = pytest.mark.skipif(os.name != "nt" or not deploy_windows._is_admin(),
+                                 reason="changes Windows ACLs as an administrator")
+
+
+def grants(app_name, account, project=None):
+    reads = [("app", project / app_name, "(OI)(CI)RX"), ("project", project, "RX"),
+             ("pdt", project.parent / "pdt", "(OI)(CI)RX")] if project else []
+    deploy_windows._run("powershell.exe", deploy_windows._grants_script(
+        {"name": app_name}, account, reads))
+
+
+def held(path, account):
+    """The rights of the account's explicit grants on the path, like 'ReadAndExecute'."""
+    return deploy_windows._run_output("powershell.exe", (
+        f"$sid = ([Security.Principal.NTAccount]{deploy_windows._ps_string(account)}).Translate("
+        "[Security.Principal.SecurityIdentifier]).Value; "
+        f"(Get-Acl -LiteralPath {deploy_windows._ps_string(str(path))}).GetAccessRules("
+        "$true, $false, [Security.Principal.SecurityIdentifier]) | Where-Object { "
+        "$_.IdentityReference.Value -eq $sid } | ForEach-Object { \"$($_.FileSystemRights)\" }"
+    )).split()
+
+
+@pytest.fixture
+def machine(tmp_path, monkeypatch):
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+    for folder in ("ProgramData/pdt/one", "ProgramData/pdt/two", "pdt", "p1/one", "p2/two",
+                   "moved/one"):
+        (tmp_path / folder).mkdir(parents=True)
+    return tmp_path
+
+
+@needs_admin
+def test_destroy_keeps_a_grant_the_account_held_before_pdt(machine):
+    deploy_windows._run("powershell.exe",
+                        f"icacls '{machine / 'p1'}' /grant '{LOCAL_SERVICE}:(OI)(CI)M' | Out-Null")
+    grants("one", LOCAL_SERVICE, machine / "p1")
+    assert "ReadAndExecute,Synchronize" in "".join(held(machine / "p1" / "one", LOCAL_SERVICE))
+    grants("one", "")
+    assert "Modify,Synchronize" in "".join(held(machine / "p1", LOCAL_SERVICE))
+    assert held(machine / "p1" / "one", LOCAL_SERVICE) == []
+    assert held(machine / "pdt", LOCAL_SERVICE) == []
+    assert not (machine / "ProgramData" / "pdt" / "one" / deploy_windows.GRANTS).exists()
+
+
+@needs_admin
+def test_two_projects_on_one_account_keep_only_their_own_grants(machine):
+    grants("one", LOCAL_SERVICE, machine / "p1")
+    grants("two", LOCAL_SERVICE, machine / "p2")
+    grants("one", "")
+    assert held(machine / "p1" / "one", LOCAL_SERVICE) == []
+    assert held(machine / "p2" / "two", LOCAL_SERVICE) != []
+    assert held(machine / "pdt", LOCAL_SERVICE) != []
+    grants("two", NETWORK_SERVICE, machine / "p2")
+    assert held(machine / "p2" / "two", LOCAL_SERVICE) == []
+    assert held(machine / "pdt", LOCAL_SERVICE) == []
+    assert held(machine / "pdt", NETWORK_SERVICE) != []
+
+
+@needs_admin
+def test_a_moved_project_loses_the_grants_on_its_old_path(machine):
+    grants("one", LOCAL_SERVICE, machine / "p1")
+    grants("one", LOCAL_SERVICE, machine / "moved")
+    assert held(machine / "p1" / "one", LOCAL_SERVICE) == []
+    assert held(machine / "p1", LOCAL_SERVICE) == []
+    assert held(machine / "moved" / "one", LOCAL_SERVICE) != []
+    assert held(machine / "pdt", LOCAL_SERVICE) != []
 
 
 def test_destroy_removes_the_rights_of_the_account_the_task_runs_as(project, monkeypatch):
@@ -324,7 +376,7 @@ def test_destroy_removes_the_rights_of_the_account_the_task_runs_as(project, mon
     assert asked == [""]
     assert f"remove the rights pdt gave {ACCOUNT}, the account the task runs as" in shown
     (script,) = scripts
-    assert f"icacls '{folder}' /remove:g '{ACCOUNT}' | Out-Null" in script
+    assert f"$record = '{folder / deploy_windows.GRANTS}'; $sid = ''; " in script
     assert script.index("Unregister-ScheduledTask") < script.index("/remove:g")
 
 

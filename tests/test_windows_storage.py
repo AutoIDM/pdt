@@ -98,7 +98,7 @@ def test_destroy_without_a_logs_folder_deletes_only_the_task(project, monkeypatc
     assert "delete run logs folder" not in out
     assert "removed: run logs folder" not in out
     (script,) = scripts
-    assert "Remove-Item" not in script
+    assert "Remove-Item -Recurse" not in script
 
 
 def test_destroy_removes_a_leftover_logs_folder_when_the_task_is_gone(

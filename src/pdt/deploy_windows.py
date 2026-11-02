@@ -37,11 +37,11 @@ deploying user modify rights, so that user can delete what the task wrote.
 SYSTEM reads every file on the PC, and the run_as account does not, so the
 script also lets that account read the app's folder, the project files that
 pdt and uv read (not the other apps' folders), pdt, uv when it is not on the machine
-PATH, and the AutoIDM installation key when it exists. When the registered task
-runs as another account than SYSTEM or the new run_as, deploy first removes that
-account's rights from the same paths; destroy removes them for the task's account. The paths
-other apps share (the project files, pdt, uv, pwsh, the key) keep that account's rights while
-another pdt task on this PC runs as it.
+PATH, and the AutoIDM installation key when it exists. The app folder's `grants.json`
+records each of these grants that the account did not hold before. Deploy removes the
+recorded grants that the new account and paths do not need (another account, or a moved
+project), and destroy removes all of them, except a grant that another app's record lists
+for the same account.
 Before any of this, deploy checks in Active Directory that the account is a group managed service
 account. Deploy
 always registers the complete desired task definition with -Force, so
@@ -99,6 +99,9 @@ RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
 # The key `pdt register` writes in machine_data_home(), readable only by SYSTEM and
 # Administrators.
 INSTALLATION_KEY = "installation.key"
+# In the app folder: the account and the paths pdt granted it, readable only by SYSTEM and
+# Administrators.
+GRANTS = "grants.json"
 # The same limit as --replica-timeout on Azure Container Apps.
 RUN_TIME_LIMIT = "PT30M"
 FOLLOW_POLL_SECONDS = 0.25
@@ -380,29 +383,62 @@ def _deploying_user() -> str:
     return user
 
 
-def _folder_script(app: dict, user: str, reads: list[tuple[str, Path, str]] = ()) -> str:
+def _folder_script(app: dict, user: str) -> str:
     folders = [app_folder(app["name"]), logs_folder(app["name"])]
     if app["storage"]:
         folders.append(storage_folder(app["name"]))
     paths = ", ".join(_ps_string(str(folder)) for folder in folders)
-    account = run_as(app)
-    task_rules = "'*S-1-5-18:(OI)(CI)F'"
-    if account:
-        task_rules += f" {_ps_string(account + ':(OI)(CI)F')}"
-    script = (
+    return (
         f"$folder = {_ps_string(str(app_folder(app['name'])))}; "
         f"New-Item -ItemType Directory -Force -Path {paths} | Out-Null; "
-        f"icacls $folder /grant {task_rules} {_ps_string(user + ':(OI)(CI)M')} "
+        f"icacls $folder /grant '*S-1-5-18:(OI)(CI)F' {_ps_string(user + ':(OI)(CI)M')} "
         "| Out-Null; "
         "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
     )
-    for _what, path, rights in reads:
-        script += (
-            f"icacls {_ps_string(str(path))} /grant {_ps_string(f'{account}:{rights}')} "
-            "| Out-Null; "
-            "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
-        )
-    return script
+
+
+def _grants_script(app: dict, account: str, reads: list[tuple[str, Path, str]] = ()) -> str:
+    """Give the account full control of the app folder and the reads, and take back each
+    grant the app's GRANTS record lists that the account and paths no longer need. The
+    record lists only the grants pdt added: an explicit grant the account held before
+    stays. A grant that another app's record lists for the same account stays too."""
+    folder = app_folder(app["name"])
+    grants = [(folder, "(OI)(CI)F"), *((path, rights) for _what, path, rights in reads)]
+    want = ", ".join(f"@{{p = {_ps_string(str(path))}; r = {_ps_string(rights)}}}"
+                     for path, rights in (grants if account else []))
+    sid = (f"([Security.Principal.NTAccount]{_ps_string(account)}).Translate("
+           "[Security.Principal.SecurityIdentifier]).Value" if account else "''")
+    check = "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+    # The account has full control of the app folder, so it can put a record there, but
+    # not one that Administrators own.
+    return (
+        f"$record = {_ps_string(str(folder / GRANTS))}; $sid = {sid}; "
+        "function Read-Grants($file) { if ((Test-Path -LiteralPath $file) -and "
+        "(Get-Acl -LiteralPath $file).GetOwner([Security.Principal.SecurityIdentifier]).Value "
+        "-eq 'S-1-5-32-544') { Get-Content -Raw -LiteralPath $file | ConvertFrom-Json } }; "
+        f"$others = @(Get-ChildItem -LiteralPath {_ps_string(str(config.machine_data_home()))} "
+        f"-Directory | Where-Object {{ $_.Name -ne {_ps_string(app['name'])} }} | "
+        f"ForEach-Object {{ Read-Grants (Join-Path $_.FullName {_ps_string(GRANTS)}) }}); "
+        "function Shared($s) { @($others | Where-Object { $_.sid -eq $s } | "
+        "ForEach-Object { $_.paths }) }; "
+        f"$old = Read-Grants $record; $want = @({want}); "
+        "$wanted = @($want | ForEach-Object { $_.p }); "
+        "if ($old) { foreach ($p in $old.paths) { if (($old.sid -ne $sid -or $wanted -notcontains "
+        "$p) -and (Shared $old.sid) -notcontains $p -and (Test-Path -LiteralPath $p)) { "
+        f"icacls $p /remove:g \"*$($old.sid)\" | Out-Null; {check}}} }} }}; "
+        "$paths = @(); foreach ($g in $want) { "
+        "$held = @((Get-Acl -LiteralPath $g.p).GetAccessRules($true, $false, "
+        "[Security.Principal.SecurityIdentifier]) | Where-Object { "
+        "$_.IdentityReference.Value -eq $sid }); "
+        "if ($held.Count -eq 0 -or ($old.sid -eq $sid -and $old.paths -contains $g.p) -or "
+        "(Shared $sid) -contains $g.p) { $paths += $g.p }; "
+        f"icacls $g.p /grant \"*${{sid}}:$($g.r)\" | Out-Null; {check}}}; "
+        "Remove-Item -LiteralPath $record -Force -ErrorAction SilentlyContinue; "
+        "if ($paths.Count -gt 0) { ConvertTo-Json @{ sid = $sid; paths = $paths } | "
+        "Set-Content -LiteralPath $record -Encoding UTF8; "
+        f"icacls $record /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null; "
+        f"{check}icacls $record /setowner '*S-1-5-32-544' | Out-Null; {check}}}; "
+    )
 
 
 def _previous_account(powershell: str, name: str, account: str) -> str:
@@ -419,33 +455,6 @@ def _previous_account(powershell: str, name: str, account: str) -> str:
         f"if ($sid -ne 'S-1-5-18' -and $sid -ne {new}) {{ $old }}"
     )
     return _run_output(powershell, script).strip()
-
-
-def _revoke_script(app: dict, uv: str | None, account: str) -> str:
-    """Remove what deploy granted the account, from each path it may have granted. The
-    paths other apps share keep the grant while another pdt task runs as the account."""
-    shared_pwsh = str(pwsh_install_dir(windows=True) / "pwsh.exe")
-    reads = account_reads(app, uv or "", uv is None, shared_pwsh)
-    own = [app_folder(app["name"]), Path(app["dir"]).resolve()]
-    shared = [path for _what, path, _rights in reads if path not in own]
-
-    def remove(paths: list[Path]) -> str:
-        return "".join(
-            f"icacls {_ps_string(str(path))} /remove:g {_ps_string(account)} | Out-Null; "
-            "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
-            for path in paths if path.exists())
-
-    sid = "Translate([Security.Principal.SecurityIdentifier]).Value"
-    return (
-        remove(own)
-        + f"$sid = ([Security.Principal.NTAccount]{_ps_string(account)}).{sid}; "
-        "$others = @(Get-ScheduledTask -TaskPath '\\' | Where-Object { "
-        f"$_.TaskName -ne {_ps_string(_task_name(app['name']))} -and "
-        "$_.Description -like 'Managed by pdt;*' -and "
-        f"$(try {{ ([Security.Principal.NTAccount]$_.Principal.UserId).{sid} -eq $sid }} "
-        "catch { $false }) }); "
-        f"if ($others.Count -eq 0) {{ {remove(shared)}}}; "
-    )
 
 
 def _account_problem(powershell: str, account: str, where: str) -> str:
@@ -639,8 +648,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                    "with exit $LASTEXITCODE\" }; ")
     reads = account_reads(app, uv, on_machine_path, pwsh) if account else []
     script = (
-        f"{_revoke_script(app, uv, previous) if previous else ''}"
-        f"{_folder_script(app, user, reads)}"
+        f"{_folder_script(app, user)}"
+        f"{_grants_script(app, account, reads)}"
         f"{install}"
         f"if (-not [Diagnostics.EventLog]::SourceExists({_ps_string(EVENT_SOURCE)})) {{ "
         f"New-EventLog -LogName Application -Source {_ps_string(EVENT_SOURCE)} }}; "
@@ -662,7 +671,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
 
 def destroy(app: dict, assume_yes: bool) -> int:
     try:
-        powershell, uv = _preflight(require_uv=False)
+        powershell, _uv = _preflight(require_uv=False)
         name = _task_name(app["name"])
         console.status(f"Checking Windows scheduled task {console.value(name)}...")
         state = _task_state(powershell, name)
@@ -694,7 +703,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if previous:
         actions.append(console.Markup(f"remove the rights pdt gave {console.value(previous)}, "
                                       "the account the task runs as"))
-        script += _revoke_script(app, uv, previous)
+    script += _grants_script(app, "")
     if app["storage"]:
         actions.append(console.Markup(f"keep folder {console.value(storage_folder(app['name']))} "
                                       "(the app's files)"))
