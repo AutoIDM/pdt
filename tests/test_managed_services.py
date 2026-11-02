@@ -226,6 +226,20 @@ def test_artifacts_over_the_limit_are_skipped_with_a_warning(project, backend, w
     assert f"AutoIDM did not get the artifacts {storage.RUN_ID}.zip" in out
 
 
+@pytest.mark.parametrize("fields", [{"policy": "\ud800"}, {"policy": 1}, ["policy"]])
+def test_upload_fields_pdt_cannot_send_are_a_warning_and_keep_the_exit_code(
+        project, backend, warned, capsys, fields):
+    url, seen, answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n"
+                          "  send_run_history: false\n  send_logs: true\n")
+    registered(url)
+    answers.append((200, {"url": url + "/bucket", "fields": fields, "key": "uploads/x"}))
+    assert run(project, 3) == 3
+    assert paths(seen) == ["/v1/uploads"]
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"AutoIDM did not get the log {storage.RUN_ID}.log: AutoIDM answered /v1/uploads" in out
+
+
 def test_a_cloud_job_sends_with_the_registration_in_its_secret(project, backend, warned,
                                                                monkeypatch, capsys):
     url, seen, answers = backend
@@ -465,6 +479,53 @@ def test_a_full_disk_stops_only_the_log_and_the_command_keeps_printing(tmp_path,
     out, err = capfd.readouterr()
     assert "line 1999" in out
     assert (out + err).count("pdt stopped keeping the output of this run for AutoIDM") == 1
+
+
+def test_a_broken_stdout_stops_only_the_printing_and_the_log_keeps_everything(
+        tmp_path, monkeypatch, capfd):
+    script = "import sys\nfor i in range(20000):\n    print('line', i)\nsys.exit(0)\n"
+    child = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+    log = tmp_path / "run.log"
+
+    class Broken(io.RawIOBase):
+        def writable(self):
+            return True
+
+        def write(self, chunk):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(Broken()))
+    copier = lifecycle.copy_output(child, log)
+    try:
+        assert child.wait(timeout=20) == 0
+    finally:
+        child.kill()
+    copier.join(10)
+    console.drain()
+    monkeypatch.undo()
+    _out, err = capfd.readouterr()
+    assert b"line 19999" in log.read_bytes()
+    assert " ".join(err.split()).count("pdt stopped printing the output of this run") == 1
+
+
+def test_the_log_stops_one_byte_over_the_upload_limit_and_the_output_goes_on(
+        tmp_path, monkeypatch, capfd):
+    script = "import sys\nfor i in range(20000):\n    print('line', i)\nsys.exit(0)\n"
+    child = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+    log = tmp_path / "run.log"
+    monkeypatch.setattr(managed_services, "MAX_UPLOAD_BYTES", 100)
+    copier = lifecycle.copy_output(child, log)
+    try:
+        assert child.wait(timeout=20) == 0
+    finally:
+        child.kill()
+    copier.join(10)
+    assert not copier.is_alive()
+    out, _err = capfd.readouterr()
+    assert "line 19999" in out
+    assert log.stat().st_size == 101
 
 
 def test_an_output_folder_that_is_a_link_sends_nothing(project, backend, warned, tmp_path,
