@@ -377,15 +377,26 @@ def copy_output(child: subprocess.Popen, log: Path) -> threading.Thread:
     out = sys.stdout.buffer
 
     def copy() -> None:
-        with log.open("wb") as kept:
-            while True:
-                chunk = child.stdout.read1()
-                if chunk == b"":
-                    return
-                out.write(chunk)
-                out.flush()
+        """Print the command's output and keep it in `log`. A failed write to `log` stops only
+        the keeping, so the command never waits on a pipe that no one reads."""
+        kept = log.open("wb", buffering=0)
+        while True:
+            chunk = child.stdout.read1()
+            if chunk == b"":
+                break
+            out.write(chunk)
+            out.flush()
+            if kept is None:
+                continue
+            try:
                 kept.write(chunk)
-                kept.flush()
+            except OSError as e:
+                console.warn(f"pdt stopped keeping the output of this run for AutoIDM: "
+                             f"{console.escape(str(e))}")
+                kept.close()
+                kept = None
+        if kept is not None:
+            kept.close()
 
     copier = threading.Thread(target=copy, daemon=True)
     copier.start()

@@ -734,20 +734,27 @@ def reads_registration() -> bool:
 
 def registration_secrets(current: str | None) -> dict[str, str]:
     """The AutoIDM cloud registration a deploy puts in the app's secret beside gather_secrets.
-    It is the one the deployed secret (`current`) holds, which pdt leaves as it is. Else, when
-    the project sets `managed_services` and this computer is registered for its customer, it
-    is one empty value per name, which make_registration fills after the plan. Else it is {}:
-    the job sends nothing."""
+    It is the one the deployed secret (`current`) holds, which pdt leaves as it is while it is
+    for the customer that `managed_services` names. Else, when the project sets
+    `managed_services` and this computer is registered for its customer, it is one empty value
+    per name, which make_registration fills after the plan. Else it is {}: the job sends
+    nothing."""
     from pdt import managed_services
     from pdt.utils import autoidm
     kept, _rest = split_registration(current)
-    if kept.get(autoidm.ID_ENV):
-        return kept
     try:
         found = managed_services.settings()
     except config.ConfigError:
-        return {}
-    if found is None or managed_services.in_ci():
+        found = None
+    if found is None:
+        return kept if kept.get(autoidm.ID_ENV) else {}
+    if kept.get(autoidm.ID_ENV):
+        if kept.get(autoidm.CUSTOMER_ENV) == found["customer"]:
+            return kept
+        console.note(f"the app's secret holds the AutoIDM cloud registration "
+                     f"{console.value(kept[autoidm.ID_ENV])} of another customer, so this "
+                     f"deploy replaces it with one for {console.value(found['customer'])}")
+    if managed_services.in_ci():
         return {}
     if managed_services.find_registration(found["customer"], machine=True) is None:
         return {}
@@ -767,12 +774,13 @@ def make_registration(values: dict[str, str], platform: dict) -> dict[str, str]:
         return values
     rest = {name: value for name, value in values.items() if name not in autoidm.SECRET_NAMES}
     place = managed_services.place(platform)
-    machine = autoidm.machine_registration(managed_services.settings()["customer"])
+    customer = managed_services.settings()["customer"]
+    machine = autoidm.machine_registration(customer)
     key = Ed25519PrivateKey.generate()
     try:
-        answer = autoidm.post(machine, "/v1/installations", {
+        answer = autoidm.answered(autoidm.post(machine, "/v1/installations", {
             "version": 1, "public_key": autoidm.public_key(key), "place": place,
-            "hostname": None})
+            "hostname": None}), "/v1/installations", "installation_id")
     except autoidm.AutoidmError as e:
         console.warn(f"AutoIDM did not make a cloud registration for {console.value(place)}: "
                      f"{console.escape(str(e))}. The job sends nothing to AutoIDM until a "
@@ -784,7 +792,8 @@ def make_registration(values: dict[str, str], platform: dict) -> dict[str, str]:
     console.step(f"made AutoIDM cloud registration {console.value(answer['installation_id'])} "
                  f"for {console.value(place)}")
     return {**rest, autoidm.ID_ENV: answer["installation_id"],
-            autoidm.KEY_ENV: autoidm.private_pem(key).decode(), autoidm.URL_ENV: machine.api_url}
+            autoidm.KEY_ENV: autoidm.private_pem(key).decode(), autoidm.URL_ENV: machine.api_url,
+            autoidm.CUSTOMER_ENV: customer}
 
 
 MASK_BOTH_ENDS_FROM = 12

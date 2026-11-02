@@ -552,13 +552,20 @@ def run_job_identity(run_job: dict) -> tuple[str, str]:
 
 
 def secret_value(project: str, sid: str) -> str | None:
+    """The latest value of the secret, or None when it has none. A read that fails for another
+    reason stops the command, so a deploy never replaces a value it could not read."""
     proc = subprocess.run(
         [GCLOUD, "secrets", "versions", "access", "latest",
          "--secret", sid, "--project", project],
         stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    if proc.returncode != 0:
+    if proc.returncode == 0:
+        return proc.stdout
+    if not_found(proc.stderr):
         return None
-    return proc.stdout
+    console.say(console.escape(proc.stderr.strip()))
+    fail(f"pdt could not read Secret Manager secret {console.value(sid)}. The current login "
+         f"needs {console.value('secretmanager.versions.access')} on it, for example through "
+         f"the role {console.value('roles/secretmanager.secretAccessor')}.")
 
 
 def build_image(stage: Path, image: str, region: str) -> None:

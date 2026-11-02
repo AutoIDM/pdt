@@ -3,8 +3,10 @@
 The code names the customer, so pdt learns the customer only from the answer.
 It makes the key and writes it as pending-<hash of the code>.key before it
 sends the code, so a retry after a lost answer sends the same public key and
-AutoIDM answers with the same installation. When the answer comes, the key
-becomes <customer_id>.key next to <customer_id>.json. On Windows the folder is
+AutoIDM answers with the same installation. When the answer comes, it writes
+<customer_id>.key, then <customer_id>.json, and only then deletes the pending
+key, so a retry after a crash at any point sends the same key. A lock on the
+folder keeps two registers on one computer apart. On Windows the folder is
 %ProgramData%\\pdt\\registrations, and only SYSTEM (the scheduled task) and
 Administrators can read a key, so the command needs an administrator terminal.
 A computer that already holds a registration for the customer keeps it; the
@@ -33,11 +35,20 @@ KEY_READERS = ("*S-1-5-18:F", "*S-1-5-32-544:F")
 
 
 def write_key(path: Path, key: Ed25519PrivateKey) -> None:
+    """Write the key into an empty file that only its readers can open. On Windows the file
+    takes its access list from the folder, so icacls replaces that list before the key goes
+    in, and a file icacls could not restrict is deleted with nothing in it."""
     private_file(path)
-    path.write_bytes(autoidm.private_pem(key))
     if os.name == "nt":
-        subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", *KEY_READERS],
-                       stdin=subprocess.DEVNULL, capture_output=True, check=True)
+        try:
+            subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", *KEY_READERS],
+                           stdin=subprocess.DEVNULL, capture_output=True, check=True)
+        except (OSError, subprocess.CalledProcessError):
+            path.unlink(missing_ok=True)
+            raise
+    with path.open("r+b") as kept:
+        kept.truncate()
+        kept.write(autoidm.private_pem(key))
 
 
 def register(code: str, api_url: str) -> int:
@@ -52,42 +63,45 @@ def register(code: str, api_url: str) -> int:
     folder.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(code.replace("-", "").encode()).hexdigest()
     pending = folder / f"pending-{digest[:16]}.key"
-    if pending.is_file():
-        key = autoidm.load_key(pending.read_bytes())
-    else:
-        key = Ed25519PrivateKey.generate()
-        write_key(pending, key)
-    try:
-        answer = autoidm.register(api_url, {
-            "code": code, "public_key": autoidm.public_key(key), "hostname": socket.gethostname(),
-            "pdt_version": __version__})
-    except autoidm.AutoidmError as e:
-        if e.code in ("unknown_code", "code_used"):
-            pending.unlink()
-        if e.code == "unknown_code":
-            console.error(f"AutoIDM does not know the code {console.value(code)}, or it expired. "
-                          "Ask AutoIDM for a new code.")
-        elif e.code == "code_used":
-            console.error(f"Another computer already used the code {console.value(code)}. "
-                          "Ask AutoIDM for a new code.")
+    with config.locked(folder):
+        if pending.is_file():
+            key = autoidm.load_key(pending.read_bytes())
         else:
-            console.error(console.escape(str(e)))
-        return 1
-    customer = answer["customer_id"]
-    info, key_path = autoidm.files(customer)
-    if info.is_file():
-        found = json.loads(info.read_text(encoding="utf-8"))
-        console.error(f"This computer is already registered to AutoIDM for "
-                      f"{console.value(customer)} as {console.value(found.get('installation_id'))} "
-                      f"in {console.value(info)}. To register it again, delete "
-                      f"{console.value(info)} and {console.value(key_path)}, then run this "
-                      "command again with the same code.")
-        save_customer(customer)
-        return 1
-    pending.replace(key_path)
-    info.write_text(json.dumps({"installation_id": answer["installation_id"],
-                                "customer_id": customer, "api_url": api_url}) + "\n",
-                    encoding="utf-8")
+            key = Ed25519PrivateKey.generate()
+            write_key(pending, key)
+        try:
+            answer = autoidm.register(api_url, {
+                "code": code, "public_key": autoidm.public_key(key),
+                "hostname": socket.gethostname(), "pdt_version": __version__})
+        except autoidm.AutoidmError as e:
+            if e.code in ("unknown_code", "code_used"):
+                pending.unlink()
+            if e.code == "unknown_code":
+                console.error(f"AutoIDM does not know the code {console.value(code)}, or it "
+                              "expired. Ask AutoIDM for a new code.")
+            elif e.code == "code_used":
+                console.error(f"Another computer already used the code {console.value(code)}. "
+                              "Ask AutoIDM for a new code.")
+            else:
+                console.error(console.escape(str(e)))
+            return 1
+        customer = answer["customer_id"]
+        info, key_path = autoidm.files(customer)
+        if info.is_file():
+            found = json.loads(info.read_text(encoding="utf-8"))
+            console.error(f"This computer is already registered to AutoIDM for "
+                          f"{console.value(customer)} as "
+                          f"{console.value(found.get('installation_id'))} in "
+                          f"{console.value(info)}. To register it again, delete "
+                          f"{console.value(info)} and {console.value(key_path)}, then run this "
+                          "command again with the same code.")
+            save_customer(customer)
+            return 1
+        write_key(key_path, key)
+        config.write_text_atomically(info, json.dumps({
+            "installation_id": answer["installation_id"], "customer_id": customer,
+            "api_url": api_url}) + "\n")
+        pending.unlink()
     console.done(f"Registered this computer to AutoIDM for {console.value(customer)} as "
                  f"{console.value(answer['installation_id'])}.")
     console.field("Saved in", str(info))
