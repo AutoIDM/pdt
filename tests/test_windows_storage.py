@@ -59,6 +59,7 @@ def test_storage_ls_lists_the_folder_contents(project, monkeypatch, capsys):
 def destroy_with_task(project, monkeypatch, scripts):
     app = windows_app(project, monkeypatch)
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_previous_account", lambda powershell, name, account: "")
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append(script) or True)
     return app

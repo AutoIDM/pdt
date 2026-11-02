@@ -1,3 +1,6 @@
+import base64
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -203,18 +206,21 @@ def test_the_account_check_names_the_file_that_sets_run_as(monkeypatch, answer, 
     assert "platform.run_as" in problem and "pdt.yml" in problem
 
 
-def test_system_needs_no_read_grants(project):
+def test_system_needs_no_read_grants(project, monkeypatch):
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
-    app = windows_app(project)
-    assert deploy_windows.account_reads(app, "uv.exe", False) == []
-    assert deploy_windows._folder_script(app, r"PC\jon").count("/grant") == 1
+    _code, shown, (script,) = deploy(project, monkeypatch)
+    assert script.count("/grant") == 1
+    assert "/remove" not in script
+    assert not any(line.startswith("let ") for line in shown)
 
 
-def deploy(project, monkeypatch, problem=""):
+def deploy(project, monkeypatch, problem="", previous=""):
     app = windows_app(project)
     shown, scripts = [], []
     monkeypatch.setattr(deploy_windows, "_preflight", lambda: ("powershell.exe", "uv.exe"))
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_previous_account",
+                        lambda powershell, name, account: previous)
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "machine_path_has", lambda program: True)
     monkeypatch.setattr(deploy_windows, "_account_problem",
@@ -257,3 +263,81 @@ def test_deploy_without_run_as_says_nothing_about_the_batch_right(project, monke
     assert code == 0
     assert shown[0] == "update Windows scheduled task pdt-my-report (runs as SYSTEM)"
     assert "batch" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("account, new", [
+    (ACCOUNT, "([Security.Principal.NTAccount]'EXAMPLE\\svc-pdt$').Translate("),
+    ("", "'S-1-5-18'")])
+def test_the_previous_account_is_neither_system_nor_the_new_account(monkeypatch, account, new):
+    scripts = []
+    monkeypatch.setattr(deploy_windows, "_run_output",
+                        lambda powershell, script: scripts.append(script) or "EXAMPLE\\svc-old$\r\n")
+    assert deploy_windows._previous_account("powershell.exe", "pdt-my-report",
+                                            account) == "EXAMPLE\\svc-old$"
+    assert "$old = $task.Principal.UserId; " in scripts[0]
+    assert f"if ($sid -ne 'S-1-5-18' -and $sid -ne {new}" in scripts[0]
+
+
+def test_deploy_removes_the_rights_of_the_account_the_task_ran_as_before(project, monkeypatch):
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder.mkdir(parents=True)
+    code, shown, (script,) = deploy(project, monkeypatch, previous="EXAMPLE\\svc-old$")
+    assert code == 0
+    assert ("remove the rights pdt gave EXAMPLE\\svc-old$, the account the task ran as until now"
+            in shown)
+    for path in (folder, project / "my-report", project, project / "pdt.yml",
+                 deploy_windows.RUNNER.parent.parent):
+        assert f"icacls '{path}' /remove:g 'EXAMPLE\\svc-old$' | Out-Null" in script
+    assert script.rindex("/remove:g") < script.index("/grant")
+
+
+def test_destroy_removes_the_rights_of_the_account_the_task_runs_as(project, monkeypatch):
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder.mkdir(parents=True)
+    app = windows_app(project)
+    shown, scripts, asked = [], [], []
+    monkeypatch.setattr(deploy_windows, "_preflight",
+                        lambda require_uv=True: ("powershell.exe", None))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_previous_account",
+                        lambda powershell, name, account: asked.append(account) or ACCOUNT)
+    monkeypatch.setattr(deploy_windows, "confirm",
+                        lambda actions, assume_yes: shown.extend(plain(actions)) or True)
+    monkeypatch.setattr(deploy_windows, "_run",
+                        lambda powershell, script, **kw: scripts.append(script) or True)
+    assert deploy_windows.destroy(app, assume_yes=True) == 0
+    assert asked == [""]
+    assert f"remove the rights pdt gave {ACCOUNT}, the account the task runs as" in shown
+    (script,) = scripts
+    assert f"icacls '{folder}' /remove:g '{ACCOUNT}' | Out-Null" in script
+    assert script.index("Unregister-ScheduledTask") < script.index("/remove:g")
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_an_elevated_script_passes_as_a_file_that_is_deleted_afterwards(tmp_path, monkeypatch,
+                                                                        returncode):
+    temp = tmp_path / "Temp Folder"
+    temp.mkdir()
+    monkeypatch.setattr(deploy_windows.tempfile, "tempdir", str(temp))
+    monkeypatch.setattr(deploy_windows, "_is_admin", lambda: False)
+    script = f"icacls '{'C:\\long folder\\' * 2000}' /grant 'EXAMPLE\\svc-pdt$:R'"
+    passed = []
+
+    def run(command, **kwargs):
+        outer = base64.b64decode(command[-1]).decode("utf-16-le")
+        file = Path(re.search(r"'-File','\"(.+)\"'; exit \$p\.ExitCode$", outer).group(1))
+        passed.append((file, file.read_text(encoding="utf-8-sig"),
+                       len(subprocess.list2cmdline(command))))
+        return subprocess.CompletedProcess(command, returncode, "", "")
+
+    monkeypatch.setattr(deploy_windows.subprocess, "run", run)
+    if returncode == 0:
+        assert deploy_windows._run("powershell.exe", script, elevate=True)
+    else:
+        with pytest.raises(deploy_windows.WindowsDeployError):
+            deploy_windows._run("powershell.exe", script, elevate=True)
+    ((file, text, length),) = passed
+    assert text == script
+    assert length < 2000 < len(script)
+    assert list(temp.iterdir()) == []

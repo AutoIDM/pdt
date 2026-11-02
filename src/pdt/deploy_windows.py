@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.12.4"
 # dependencies = [
 #     "pyyaml",
 #     "rich",
@@ -37,8 +37,10 @@ deploying user modify rights, so that user can delete what the task wrote.
 SYSTEM reads every file on the PC, and the run_as account does not, so the
 script also lets that account read the app's folder, the project files that
 pdt and uv read (not the other apps' folders), pdt, uv when it is not on the machine
-PATH, and the AutoIDM installation key when it exists. Before any of this,
-deploy checks in Active Directory that the account is a group managed service
+PATH, and the AutoIDM installation key when it exists. When the registered task
+runs as another account than SYSTEM or the new run_as, deploy first removes that
+account's rights from the same paths; destroy removes them for the task's account.
+Before any of this, deploy checks in Active Directory that the account is a group managed service
 account. Deploy
 always registers the complete desired task definition with -Force, so
 rerunning it safely reconciles changes to the schedule, the repository path,
@@ -64,6 +66,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -213,8 +216,7 @@ def run_as(app: dict) -> str:
 
 def account_reads(app: dict, uv: str, on_machine_path: bool,
                   pwsh: str | None = None) -> list[tuple[str, Path, str]]:
-    if run_as(app) == "":
-        return []
+    """What a run_as account must read, whether or not the app sets one."""
     # The folder entry alone (no inheritance) lets the run find these files by name without
     # reading the other apps' folders. uv stops with "Access is denied" on a settings file
     # above the app folder that it cannot read.
@@ -320,17 +322,25 @@ def _is_admin() -> bool:
 
 def _run(powershell: str, script: str, *, not_found_ok: bool = False,
          elevate: bool = False) -> bool:
-    if elevate and not _is_admin():
-        script = (
-            "$p = Start-Process powershell -Verb RunAs -Wait -PassThru "
-            "-WindowStyle Hidden -ArgumentList '-NoLogo','-NoProfile',"
-            "'-NonInteractive','-ExecutionPolicy','Bypass',"
-            f"'-EncodedCommand','{_encoded(script)}'; exit $p.ExitCode"
-        )
-    proc = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
-         "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    # Encoded twice, a long script passes the 32,767 character command line limit, so the
+    # elevated process reads it from a file. Since Python 3.12.4 (the script header's minimum),
+    # mkdtemp lets only this user, SYSTEM, and Administrators open the folder, so no other
+    # user can change the script.
+    with tempfile.TemporaryDirectory(prefix="pdt-") as folder:
+        if elevate and not _is_admin():
+            file = Path(folder) / "elevated.ps1"
+            file.write_text(script, encoding="utf-8-sig")
+            script = (
+                "$p = Start-Process powershell -Verb RunAs -Wait -PassThru "
+                "-WindowStyle Hidden -ArgumentList '-NoLogo','-NoProfile',"
+                "'-NonInteractive','-ExecutionPolicy','Bypass',"
+                f"'-File',{_ps_string(subprocess.list2cmdline([str(file)]))}; "
+                "exit $p.ExitCode"
+            )
+        proc = subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if proc.returncode == 0:
         return True
     if not_found_ok and proc.returncode == 3:
@@ -391,6 +401,33 @@ def _folder_script(app: dict, user: str, reads: list[tuple[str, Path, str]] = ()
             "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
         )
     return script
+
+
+def _previous_account(powershell: str, name: str, account: str) -> str:
+    """The account the registered task runs as, when it is neither SYSTEM nor `account`."""
+    new = (f"([Security.Principal.NTAccount]{_ps_string(account)}).Translate("
+           "[Security.Principal.SecurityIdentifier]).Value" if account else "'S-1-5-18'")
+    # An account that no longer resolves cannot log on, so its grants do no harm.
+    script = (
+        f"$task = Get-ScheduledTask -TaskName {_ps_string(name)} -TaskPath '\\' "
+        "-ErrorAction SilentlyContinue; if ($null -eq $task) { exit }; "
+        "$old = $task.Principal.UserId; "
+        "try { $sid = ([Security.Principal.NTAccount]$old).Translate("
+        "[Security.Principal.SecurityIdentifier]).Value } catch { exit }; "
+        f"if ($sid -ne 'S-1-5-18' -and $sid -ne {new}) {{ $old }}"
+    )
+    return _run_output(powershell, script).strip()
+
+
+def _revoke_script(app: dict, uv: str | None, account: str) -> str:
+    """Remove what deploy granted the account, from each path it may have granted."""
+    shared_pwsh = str(pwsh_install_dir(windows=True) / "pwsh.exe")
+    reads = account_reads(app, uv or "", uv is None, shared_pwsh)
+    paths = [app_folder(app["name"])] + [path for _what, path, _rights in reads]
+    return "".join(
+        f"icacls {_ps_string(str(path))} /remove:g {_ps_string(account)} | Out-Null; "
+        "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+        for path in paths if path.exists())
 
 
 def _account_problem(powershell: str, account: str, where: str) -> str:
@@ -494,7 +531,7 @@ def _prepare_powershell(app: dict) -> tuple[str | None, list]:
 
 def plan(app: dict, verb: str, description: str, user: str, uv: str,
          on_machine_path: bool, pwsh: str | None = None,
-         modules: list = ()) -> list[console.Markup]:
+         modules: list = (), previous: str = "") -> list[console.Markup]:
     name = app["name"]
     account = run_as(app)
     owners = f"SYSTEM and {console.value(account)}" if account else "SYSTEM"
@@ -513,7 +550,10 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
         console.Markup("write each run's result to the Windows Application log, source "
                        f"{console.value(EVENT_SOURCE)}"),
     ]
-    for what, path, _rights in account_reads(app, uv, on_machine_path, pwsh):
+    if previous:
+        actions.append(console.Markup(f"remove the rights pdt gave {console.value(previous)}, "
+                                      "the account the task ran as until now"))
+    for what, path, _rights in account_reads(app, uv, on_machine_path, pwsh) if account else []:
         actions.append(console.Markup(f"let {console.value(account)} read {what} "
                                       f"{console.value(path)}"))
     dockerfile = Path(app["dir"]) / "Dockerfile"
@@ -552,13 +592,14 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             raise WindowsDeployError(
                 f"Windows scheduled task {name} exists but is not managed by PDT")
         exists = state == "managed"
+        previous = _previous_account(powershell, name, account) if exists else ""
         pwsh, modules = _prepare_powershell(app)
     except (config.ConfigError, WindowsDeployError, PwshError) as exc:
         console.error(console.escape(str(exc)))
         return 1
 
     actions = plan(app, "update" if exists else "create", description, user, uv,
-                   on_machine_path, pwsh, modules)
+                   on_machine_path, pwsh, modules, previous)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges", currency=regions.local_currency())
     if account:
@@ -578,8 +619,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         install = (f"& {_ps_string(pwsh)} -NoProfile -NonInteractive -EncodedCommand {command}; "
                    "if ($LASTEXITCODE -ne 0) { throw \"PowerShell module install failed "
                    "with exit $LASTEXITCODE\" }; ")
+    reads = account_reads(app, uv, on_machine_path, pwsh) if account else []
     script = (
-        f"{_folder_script(app, user, account_reads(app, uv, on_machine_path, pwsh))}"
+        f"{_revoke_script(app, uv, previous) if previous else ''}"
+        f"{_folder_script(app, user, reads)}"
         f"{install}"
         f"if (-not [Diagnostics.EventLog]::SourceExists({_ps_string(EVENT_SOURCE)})) {{ "
         f"New-EventLog -LogName Application -Source {_ps_string(EVENT_SOURCE)} }}; "
@@ -601,7 +644,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
 
 def destroy(app: dict, assume_yes: bool) -> int:
     try:
-        powershell, _uv = _preflight(require_uv=False)
+        powershell, uv = _preflight(require_uv=False)
         name = _task_name(app["name"])
         console.status(f"Checking Windows scheduled task {console.value(name)}...")
         state = _task_state(powershell, name)
@@ -609,6 +652,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             raise WindowsDeployError(
                 f"Windows scheduled task {name} exists but is not managed by PDT")
         exists = state == "managed"
+        previous = _previous_account(powershell, name, "") if exists else ""
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
@@ -629,6 +673,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if logs_exist:
         actions.append(console.Markup(f"delete run logs folder {console.value(logs)}"))
         script += f"Remove-Item -Recurse -Force -Path {_ps_string(str(logs))} -ErrorAction Stop; "
+    if previous:
+        actions.append(console.Markup(f"remove the rights pdt gave {console.value(previous)}, "
+                                      "the account the task runs as"))
+        script += _revoke_script(app, uv, previous)
     if app["storage"]:
         actions.append(console.Markup(f"keep folder {console.value(storage_folder(app['name']))} "
                                       "(the app's files)"))
