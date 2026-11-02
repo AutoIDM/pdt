@@ -1,8 +1,10 @@
+import ast
 import io
 import re
 import subprocess
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 from rich.console import Console
@@ -421,3 +423,16 @@ def test_a_slow_wait_shows_its_line_from_the_start_and_prints_no_end_line(monkey
         wait.now("Azure returned an access error")
     assert out.getvalue().splitlines() == ["deleting: resource group pdt",
                                            "Azure returned an access error: resource group pdt"]
+
+
+def test_only_console_reads_an_answer_from_the_user():
+    # input() writes its prompt to stderr when stdin and stdout are a terminal,
+    # and `meltano invoke` shows stderr only one whole line at a time.
+    src = Path(console.__file__).parent
+    calls = [(str(path.relative_to(src)), ast.unparse(node.func))
+             for path in sorted(src.rglob("*.py")) if "examples" not in path.relative_to(src).parts
+             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+             if isinstance(node, ast.Call) and "input" in (getattr(node.func, "id", ""),
+                                                           getattr(node.func, "attr", ""))]
+    assert calls == [("console.py", "_console.input")], \
+        "ask with console.ask, console.read, console.secret or console.confirm"
