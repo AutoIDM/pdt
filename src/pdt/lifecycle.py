@@ -396,7 +396,7 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
 DRAIN_SECONDS = 2
 
 
-def copy_output(child: subprocess.Popen, log: Path) -> threading.Thread:
+def copy_output(child: subprocess.Popen, log: Path) -> threading.Thread | None:
     def copy() -> None:
         """Print the command's output and keep it in `log`, up to one byte over
         MAX_UPLOAD_BYTES so the upload skips a longer log. A failed write to stdout or to `log`
@@ -444,7 +444,12 @@ def copy_output(child: subprocess.Popen, log: Path) -> threading.Thread:
             kept.close()
 
     copier = threading.Thread(target=copy, daemon=True)
-    copier.start()
+    try:
+        copier.start()
+    except RuntimeError:
+        # Copy on this thread at the OS thread limit, so the command never waits on a full pipe.
+        copy()
+        return None
     return copier
 
 
