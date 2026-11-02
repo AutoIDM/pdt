@@ -1,4 +1,5 @@
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -146,6 +147,10 @@ def test_a_cloud_registration_for_another_customer_is_an_error(folder, monkeypat
     ("/v1/events", b"{not json", "with JSON that does not parse"),
     ("/v1/uploads", b'{"url": "x"}', "answered /v1/uploads without key"),
     ("/v1/uploads", b'{"url": "x", "key": "k", "fields": []}', "/v1/uploads without fields"),
+    ("/v1/uploads", b'{"url": "x", "key": "k", "fields": {}}', "'x', which is not https"),
+    ("/v1/uploads", b'{"url": "http://example.com/b", "key": "k", "fields": {}}',
+     "which is not https"),
+    ("/v1/events", http.client.IncompleteRead(b'{"key"', 10), "could not be reached"),
 ])
 def test_a_malformed_answer_is_an_autoidm_error(folder, monkeypatch, path, answer, said):
     registered("https://api.example")
@@ -159,6 +164,8 @@ def test_a_malformed_answer_is_an_autoidm_error(folder, monkeypatch, path, answe
             return False
 
         def read(self):
+            if isinstance(answer, Exception):
+                raise answer
             return answer
 
     monkeypatch.setattr(autoidm.urllib.request, "urlopen", lambda request, timeout: Answer())
@@ -184,10 +191,10 @@ def test_a_retry_after_a_crash_before_the_metadata_sends_the_same_key(backend, m
     write = config.write_text_atomically
     crashes = [KeyboardInterrupt]
 
-    def crash_once(path, text):
-        if crashes:
+    def crash_once(path, text, newline=None):
+        if crashes and path.suffix == ".json":
             raise crashes.pop()
-        write(path, text)
+        write(path, text, newline)
 
     monkeypatch.setattr(config, "write_text_atomically", crash_once)
     with pytest.raises(KeyboardInterrupt):
@@ -201,20 +208,57 @@ def test_a_retry_after_a_crash_before_the_metadata_sends_the_same_key(backend, m
 
 
 @pytest.mark.skipif(os.name == "nt", reason="icacls is real on Windows")
-def test_a_key_file_icacls_cannot_restrict_is_deleted_before_the_key_goes_in(tmp_path,
-                                                                            monkeypatch):
+def test_the_folder_is_limited_to_system_and_administrators_with_nothing_inherited(
+        tmp_path, monkeypatch):
     calls = []
-
-    def icacls(command, **kwargs):
-        calls.append((command[1], (tmp_path / "k.key").read_bytes()))
-        raise register_cli.subprocess.CalledProcessError(5, command)
-
     monkeypatch.setattr(register_cli.os, "name", "nt")
-    monkeypatch.setattr(register_cli.subprocess, "run", icacls)
-    with pytest.raises(register_cli.subprocess.CalledProcessError):
+    monkeypatch.setattr(register_cli.subprocess, "run",
+                        lambda command, **kwargs: calls.append(command))
+    register_cli.restrict_folder(tmp_path)
+    assert calls == [["icacls", str(tmp_path), "/inheritance:r", "/grant:r",
+                      "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"]]
+
+
+def test_register_limits_the_folder_before_it_makes_any_key(backend, monkeypatch):
+    url, _seen, answers = backend
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+    found = []
+    monkeypatch.setattr(register_cli, "restrict_folder",
+                        lambda folder: found.append(sorted(p.name for p in folder.iterdir())))
+    assert register_cli.register("KQ7M-2RTX", url) == 0
+    assert found == [[]]
+
+
+def test_a_folder_pdt_cannot_limit_gets_no_key(backend, monkeypatch, capsys):
+    url, seen, _answers = backend
+
+    def refused(folder):
+        raise register_cli.subprocess.CalledProcessError(5, ["icacls"])
+
+    monkeypatch.setattr(register_cli, "restrict_folder", refused)
+    assert register_cli.register("KQ7M-2RTX", url) == 1
+    assert seen == [] and list(autoidm.folder().iterdir()) == []
+    assert "so it wrote no key" in " ".join(capsys.readouterr().out.split())
+
+
+def test_an_interrupted_key_write_leaves_no_file(tmp_path, monkeypatch):
+    def interrupted(fd):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(config.os, "fsync", interrupted)
+    with pytest.raises(KeyboardInterrupt):
         register_cli.write_key(tmp_path / "k.key", Ed25519PrivateKey.generate())
-    assert calls == [(str(tmp_path / "k.key"), b"")]
-    assert not (tmp_path / "k.key").exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_pending_key_pdt_cannot_read_is_replaced_by_a_new_one(backend):
+    url, seen, answers = backend
+    autoidm.folder().mkdir(parents=True)
+    digest = hashlib.sha256(b"KQ7M2RTX").hexdigest()
+    (autoidm.folder() / f"pending-{digest[:16]}.key").write_bytes(b"-----BEGIN PRIV")
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+    assert register_cli.register("KQ7M-2RTX", url) == 0
+    assert autoidm.public_key(autoidm.registration(CUSTOMER).key) == seen[0]["body"]["public_key"]
 
 
 def test_register_writes_a_pending_key_before_the_request_then_the_customer_files(backend,

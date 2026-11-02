@@ -62,13 +62,16 @@ power loss stops pdt at once, so no event fires.
 When the project sets `managed_services`, `run_job` also gives the run to
 pdt.managed_services, the same way on every provider: the start and end
 events, the command's output (which it then also writes to a file as it
-prints it), and the run's storage output folder.
+prints it), and the run's storage output folder, which it names to the
+command in PDT_OUTPUT_DIR (managed_services.output_folder). A log or
+folder pdt cannot make costs only what AutoIDM gets, never the run.
 """
 
 from __future__ import annotations
 
 import os
 import queue
+import shutil
 import signal
 import subprocess
 import sys
@@ -310,11 +313,17 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     event = emit(JOB_RUN_STARTED, **params)
     if sender is not None:
         sender.run_started(event.at, event.name, params)
-    log = None
-    if sender is not None and sender.wants("send_logs"):
-        handle, name = tempfile.mkstemp(prefix=f"pdt-{storage.RUN_ID}-", suffix=".log")
-        os.close(handle)
-        log = Path(name)
+    scratch = log = output = None
+    if sender is not None and (sender.wants("send_logs") or sender.wants("send_artifacts")):
+        try:
+            scratch = Path(tempfile.mkdtemp(prefix=f"pdt-{storage.RUN_ID}-"))
+        except OSError as e:
+            console.warn(f"pdt cannot keep the output or the artifacts of this run for AutoIDM: "
+                         f"{console.escape(str(e))}")
+    if scratch is not None and sender.wants("send_logs"):
+        log = scratch / f"{storage.RUN_ID}.log"
+    if scratch is not None and sender.wants("send_artifacts"):
+        output = managed_services.output_folder(cwd, storage.RUN_ID, scratch / "output")
     began = time.monotonic()
     stopped: list[int] = []
     child: subprocess.Popen | None = None
@@ -329,6 +338,8 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
     try:
         child_env = {**(env or os.environ), "PDT_RUN_ID": storage.RUN_ID}
+        if output is not None:
+            child_env["PDT_OUTPUT_DIR"] = str(output)
         copier = None
         if log is None:
             child = subprocess.Popen(command, cwd=cwd, env=child_env)
@@ -353,7 +364,7 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
             details = {"exit_code": code}
         if sender is not None and sender.run_ended(
                 name, {**params, **details, "state": state}, time.monotonic() - began, log,
-                managed_services.output_folder(cwd, storage.RUN_ID)):
+                output):
             console.error(sender.refusal())
             if code == 0:
                 code = managed_services.UNAUTHORIZED_EXIT
@@ -363,8 +374,8 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
-        if log is not None:
-            log.unlink(missing_ok=True)
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
     return code
 
 
@@ -379,7 +390,12 @@ def copy_output(child: subprocess.Popen, log: Path) -> threading.Thread:
     def copy() -> None:
         """Print the command's output and keep it in `log`. A failed write to `log` stops only
         the keeping, so the command never waits on a pipe that no one reads."""
-        kept = log.open("wb", buffering=0)
+        try:
+            kept = log.open("wb", buffering=0)
+        except OSError as e:
+            console.warn(f"pdt cannot keep the output of this run for AutoIDM: "
+                         f"{console.escape(str(e))}")
+            kept = None
         while True:
             chunk = child.stdout.read1()
             if chunk == b"":

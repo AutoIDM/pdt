@@ -5,10 +5,12 @@ It makes the key and writes it as pending-<hash of the code>.key before it
 sends the code, so a retry after a lost answer sends the same public key and
 AutoIDM answers with the same installation. When the answer comes, it writes
 <customer_id>.key, then <customer_id>.json, and only then deletes the pending
-key, so a retry after a crash at any point sends the same key. A lock on the
+key, so a retry after a crash at any point sends the same key. Each key file is
+written whole or not at all, and a pending key pdt cannot read counts as none. A lock on the
 folder keeps two registers on one computer apart. On Windows the folder is
-%ProgramData%\\pdt\\registrations, and only SYSTEM (the scheduled task) and
-Administrators can read a key, so the command needs an administrator terminal.
+%ProgramData%\\pdt\\registrations, and before it writes a key, pdt limits the folder,
+and so each file made in it, to SYSTEM (the scheduled task) and
+Administrators, so the command needs an administrator terminal.
 A computer that already holds a registration for the customer keeps it; the
 command stops and names the file. Either way, in a project whose pdt.yml has no
 `managed_services`, it adds `managed_services:` with the customer.
@@ -28,27 +30,25 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from pdt import __version__, config, console, managed_services
 from pdt.utils import autoidm
-from pdt.utils.env_secret import private_file
 
-# The well-known SIDs of SYSTEM and of the Administrators group.
-KEY_READERS = ("*S-1-5-18:F", "*S-1-5-32-544:F")
+# The well-known SIDs of SYSTEM and of the Administrators group, for the folder and for each
+# file and folder made in it.
+KEY_READERS = ("*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F")
+
+
+def restrict_folder(folder: Path) -> None:
+    """On Windows, replace the access list of `folder` with KEY_READERS and nothing inherited,
+    so each file made in it can be opened only by them from the moment it exists."""
+    if os.name == "nt":
+        subprocess.run(["icacls", str(folder), "/inheritance:r", "/grant:r", *KEY_READERS],
+                       stdin=subprocess.DEVNULL, capture_output=True, check=True)
 
 
 def write_key(path: Path, key: Ed25519PrivateKey) -> None:
-    """Write the key into an empty file that only its readers can open. On Windows the file
-    takes its access list from the folder, so icacls replaces that list before the key goes
-    in, and a file icacls could not restrict is deleted with nothing in it."""
-    private_file(path)
-    if os.name == "nt":
-        try:
-            subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", *KEY_READERS],
-                           stdin=subprocess.DEVNULL, capture_output=True, check=True)
-        except (OSError, subprocess.CalledProcessError):
-            path.unlink(missing_ok=True)
-            raise
-    with path.open("r+b") as kept:
-        kept.truncate()
-        kept.write(autoidm.private_pem(key))
+    """Write the key through a temporary file in the same folder, so `path` holds a whole key
+    or nothing. The temporary file is readable by its owner alone on POSIX, and takes the
+    access list of the folder (`restrict_folder`) on Windows."""
+    config.write_text_atomically(path, autoidm.private_pem(key).decode(), newline="\n")
 
 
 def register(code: str, api_url: str) -> int:
@@ -61,12 +61,18 @@ def register(code: str, api_url: str) -> int:
     code = code.strip().upper()
     api_url = api_url.rstrip("/")
     folder.mkdir(parents=True, exist_ok=True)
+    try:
+        restrict_folder(folder)
+    except (OSError, subprocess.CalledProcessError) as e:
+        console.error(f"pdt could not limit {console.value(folder)} to SYSTEM and "
+                      f"Administrators, so it wrote no key: {console.escape(str(e))}")
+        return 1
     digest = hashlib.sha256(code.replace("-", "").encode()).hexdigest()
     pending = folder / f"pending-{digest[:16]}.key"
     with config.locked(folder):
-        if pending.is_file():
+        try:
             key = autoidm.load_key(pending.read_bytes())
-        else:
+        except (OSError, ValueError, autoidm.AutoidmError):
             key = Ed25519PrivateKey.generate()
             write_key(pending, key)
         try:

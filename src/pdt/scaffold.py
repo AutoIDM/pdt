@@ -138,7 +138,7 @@ from pathlib import Path
 
 from pdt import config, powershell
 from pdt.pwsh import ensure_pwsh
-from pdt.run_powershell import pwsh_command, reads_state
+from pdt.run_powershell import output_folder, pwsh_command, reads_state
 from pdt.utils import storage
 from pdt.utils.log import die, log
 
@@ -156,8 +156,7 @@ def main() -> int:
     store = storage.store() if app["storage"] else None
     code = 0
     with tempfile.TemporaryDirectory(prefix="pdt-run-") as local:
-        output, state = Path(local) / "output", Path(local) / "state"
-        output.mkdir()
+        output, state = output_folder(app_dir, Path(local)), Path(local) / "state"
         state.mkdir()
         lease = store.pull("state/", state) if store is not None and reads_state(files) else None
         env = {**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
