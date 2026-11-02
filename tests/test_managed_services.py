@@ -453,3 +453,106 @@ def test_a_full_disk_stops_only_the_log_and_the_command_keeps_printing(tmp_path,
     out, err = capfd.readouterr()
     assert "line 1999" in out
     assert (out + err).count("pdt stopped keeping the output of this run for AutoIDM") == 1
+
+
+def test_an_output_folder_that_is_a_link_sends_nothing(project, backend, warned, tmp_path,
+                                                       capsys):
+    url, seen, _answers = backend
+    sender = sender_for(project, url)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "credentials").write_text("key")
+    output = tmp_path / "output"
+    output.symlink_to(elsewhere)
+    sender.upload_artifacts(output, "r1.zip", PARAMS)
+    assert seen == []
+    assert "links to another place" in " ".join(capsys.readouterr().out.split())
+
+
+def test_an_entry_pdt_cannot_resolve_is_skipped_and_the_rest_is_sent(project, backend, warned,
+                                                                      tmp_path, monkeypatch,
+                                                                      capsys):
+    url, seen, _answers = backend
+    sender = sender_for(project, url)
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "report.csv").write_text("a,b\n")
+    (output / "loop").symlink_to(output / "loop")
+    real_resolve = type(output).resolve
+
+    def resolve(self, *args, **kwargs):
+        if self.name == "loop":
+            raise RuntimeError(f"Symlink loop from {self!r}")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(output), "resolve", resolve)
+    sender.upload_artifacts(output, "r1.zip", PARAMS)
+    raw = seen[1]["raw"]
+    data = raw[raw.index(b"PK\x03\x04"):raw.rindex(b"\r\n--")]
+    assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["report.csv"]
+    assert "or into a loop" in " ".join(capsys.readouterr().out.split())
+
+
+def test_a_log_pdt_cannot_make_leaves_the_output_unpiped_and_the_run_goes_on(
+        project, backend, warned, monkeypatch, capfd):
+    url, seen, _answers = backend
+    project_with(project, ALL_ON)
+    registered(url)
+
+    def full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(lifecycle.tempfile, "mkstemp", full)
+    monkeypatch.setattr(lifecycle.tempfile, "mkdtemp", full)
+    assert run(project) == 0
+    out, err = capfd.readouterr()
+    assert "hello from the app" in out
+    assert "pdt cannot keep the output" in " ".join((out + err).split())
+    assert "/bucket" not in paths(seen)
+
+
+def test_a_log_pdt_cannot_open_stops_only_the_log_and_the_command_never_blocks(
+        tmp_path, monkeypatch, capfd):
+    script = "import sys\nfor i in range(20000):\n    print('line', i)\nsys.exit(0)\n"
+    child = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+    log = tmp_path / "run.log"
+    real_open = type(log).open
+
+    def refused(self, *args, **kwargs):
+        if self == log:
+            raise PermissionError(13, "Permission denied", str(log))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(log), "open", refused)
+    copier = lifecycle.copy_output(child, log)
+    try:
+        assert child.wait(timeout=20) == 0
+    finally:
+        child.kill()
+    copier.join(10)
+    console.drain()
+    out, err = capfd.readouterr()
+    assert "line 19999" in out
+    assert "pdt cannot keep the output of this run for AutoIDM" in " ".join((out + err).split())
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="chmod does not refuse writes on Windows")
+def test_an_app_folder_pdt_cannot_write_in_sends_the_output_folder_it_names(
+        project, backend, warned, capfd):
+    url, seen, _answers = backend
+    project_with(project, ALL_ON)
+    registered(url)
+    work = ("import os, pathlib\n"
+            "out = pathlib.Path(os.environ['PDT_OUTPUT_DIR'])\n"
+            "out.mkdir(parents=True, exist_ok=True)\n"
+            "(out / 'report.csv').write_text('a,b\\n')\n")
+    app = project / "report"
+    app.chmod(0o555)
+    try:
+        assert lifecycle.run_job("report", "windows", [sys.executable, "-c", work], app) == 0
+    finally:
+        app.chmod(0o755)
+    raw = seen[-1]["raw"]
+    data = raw[raw.index(b"PK\x03\x04"):raw.rindex(b"\r\n--")]
+    assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["report.csv"]

@@ -15,10 +15,12 @@ whose `body_sha256` claim holds the SHA-256 of the exact body bytes.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import secrets
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from base64 import urlsafe_b64encode
@@ -144,21 +146,21 @@ def token(found: Registration, data: bytes) -> str:
 
 def send(url: str, data: bytes, headers: dict[str, str],
          timeout: int = TIMEOUT_SECONDS) -> dict:
-    request = urllib.request.Request(url, data=data, method="POST",
-                                     headers={"Content-Type": "application/json", **headers})
     try:
+        request = urllib.request.Request(url, data=data, method="POST",
+                                         headers={"Content-Type": "application/json", **headers})
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as e:
         try:
             answer = json.loads(e.read())
-        except ValueError:
+        except (ValueError, OSError, http.client.HTTPException):
             answer = {}
         answer = answer if isinstance(answer, dict) else {}
         code = str(answer.get("error") or "")
         raise AutoidmError(f"AutoIDM answered HTTP {e.code}: "
                            f"{answer.get('message') or code or e.reason}", e.code, code) from None
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
         raise AutoidmError(f"AutoIDM could not be reached at {url}: "
                            f"{getattr(e, 'reason', e)}") from None
     if not raw.strip().startswith(b"{"):
@@ -199,6 +201,11 @@ def upload(found: Registration, body: dict, data: bytes) -> str:
                      "/v1/uploads", "url", "key")
     if not isinstance(place.get("fields"), dict):
         raise AutoidmError("AutoIDM answered /v1/uploads without fields")
+    target = urllib.parse.urlsplit(place["url"])
+    if not (target.scheme == "https" or (target.scheme == "http"
+                                         and target.hostname in ("127.0.0.1", "localhost"))):
+        raise AutoidmError(f"AutoIDM answered /v1/uploads with the URL {place['url']!r}, which "
+                           "is not https")
     boundary = uuid.uuid4().hex
     parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
              .encode() for name, value in place["fields"].items()]

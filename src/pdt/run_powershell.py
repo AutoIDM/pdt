@@ -20,8 +20,10 @@ runner, and the container image start it there; it also runs as
 It loads the app's config and env (PDT_ENV_JSON secrets become env vars),
 stops when an env var that config.yml lists as required, or that a script
 reads and config.yml does not list, is not set,
-exports an empty folder as PDT_OUTPUT_DIR (.pdt/runs/<run id>/output in the
-app folder, the folder `storage.sync` gives a Python app) and the app's merged `config:`
+exports an empty folder as PDT_OUTPUT_DIR (`output_folder`: the one
+`lifecycle.run_job` names, else .pdt/runs/<run id>/output in the app folder,
+the folder `storage.sync` gives a Python app, else a temporary folder when pdt
+cannot write in the app folder) and the app's merged `config:`
 section as JSON in PDT_CONFIG_JSON, then runs each entry script in
 order through pwsh. It stops at the first failure unless `continue_on_error`
 is true. The entry scripts are
@@ -74,6 +76,17 @@ def reads_state(files: list[dict]) -> bool:
     return any(read["name"].upper() == "PDT_STATE_DIR" for f in files for read in f["envReads"])
 
 
+def output_folder(app_dir: Path, local: Path) -> Path:
+    """PDT_OUTPUT_DIR when `lifecycle.run_job` named it for AutoIDM, else the run's output
+    folder that managed_services.output_folder picks, with `local`/output in place of a folder
+    pdt cannot write in."""
+    named = os.environ.get("PDT_OUTPUT_DIR", "").strip()
+    folder = (Path(named) if named
+              else managed_services.output_folder(app_dir, storage.RUN_ID, local / "output"))
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
 def run_entries(pwsh: str, app_dir: Path, entries: list[str], continue_on_error: bool,
                 env: dict[str, str]) -> int:
     """Run each entry script through pwsh; the first failing script's exit code, else 0."""
@@ -114,9 +127,8 @@ def main(argv: list[str]) -> int:
         die(1, str(exc))
     store = storage.store() if app["storage"] else None
     with tempfile.TemporaryDirectory(prefix="pdt-run-") as local:
-        output = managed_services.output_folder(app_dir, storage.RUN_ID)
+        output = output_folder(app_dir, Path(local))
         state = Path(local) / "state"
-        output.mkdir(parents=True, exist_ok=True)
         state.mkdir()
         lease = None
         if store is not None and reads_state(files):

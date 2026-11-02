@@ -104,3 +104,24 @@ def test_azure_stops_when_the_secret_stays_refused_and_names_the_role(monkeypatc
         deploy_azure.granted_secret_value(SETTINGS, "pdt-report")
     out = " ".join(capsys.readouterr().out.split())
     assert "needs the role Key Vault Secrets Officer on Key Vault pdtvault" in out
+
+
+def test_azure_reads_a_refused_secret_again_without_managed_services(monkeypatch, tmp_path):
+    from test_azure_shared_locks import APP, EXISTING, fake_deploy
+
+    from pdt import deploy_azure_container_apps
+    module = deploy_azure_container_apps
+    fake_deploy(monkeypatch, EXISTING)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    written = []
+    deployed = ('{"A": "0", "PDT_API_URL": "u", "PDT_CUSTOMER_ID": "cus_7a1c09e4b2", '
+                '"PDT_INSTALLATION_ID": "i", "PDT_INSTALLATION_KEY": "k"}')
+    monkeypatch.setattr(module, "gather_secrets", lambda app: {"A": "1"})
+    monkeypatch.setattr(module, "secret_state", lambda *args: (True, None))
+    monkeypatch.setattr(module, "granted_secret_value", lambda settings, sid: deployed)
+    monkeypatch.setattr(module, "ensure_secret",
+                        lambda settings, sid, values, *args: written.append(values))
+    assert module.deploy(APP, True) == 0
+    assert written[0]["PDT_INSTALLATION_ID"] == "i"
+    assert written[0]["A"] == "1"

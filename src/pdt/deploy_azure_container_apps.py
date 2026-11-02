@@ -1084,8 +1084,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     locks = shared_locks(settings, lock_owner(name))
     legacy = legacy_job_name(name)
     store = store_settings(settings) if app["storage"] else None
-    state = read_state(settings, job, legacy, sid, bool(values) or reads_registration(), locks,
-                       store,
+    wanted_secret = bool(values) or reads_registration()
+    state = read_state(settings, job, legacy, sid, wanted_secret, locks, store,
                        held_token_store(settings, name, access_token(STORAGE_RESOURCE))
                        if store else None, regions.local_currency())
     check_shared_names(settings, state["resources"])
@@ -1189,7 +1189,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     vault_id = ensure_group_and_vault(
         settings, tuple(name for name in (*COMMON_PROVIDERS, *PROVIDERS) if not found[name]),
         vault_exists, group)
-    if vault_exists and current_secret is None and reads_registration():
+    if vault_exists and current_secret is None and wanted_secret:
         current_secret = granted_secret_value(settings, sid)
         values.update(registration_secrets(current_secret))
     if not registry_exists:
