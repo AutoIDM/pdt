@@ -96,8 +96,6 @@ def register(code: str, api_url: str) -> int:
 
 
 def save_customer(customer: str) -> None:
-    """Name the customer in the pdt.yml of the project this command runs in, so the project
-    sends to AutoIDM with this registration."""
     try:
         path = config.find_project() / config.PROJECT_FILE
     except config.ConfigError:

@@ -35,7 +35,6 @@ DIR_ENV = "PDT_INSTALLATION_DIR"
 ID_ENV = "PDT_INSTALLATION_ID"
 KEY_ENV = "PDT_INSTALLATION_KEY"
 URL_ENV = "PDT_API_URL"
-# The names of a cloud registration in an app's secret. pdt keeps them there itself.
 SECRET_NAMES = (ID_ENV, KEY_ENV, URL_ENV)
 AUDIENCE = "pdt-backend"
 TOKEN_SECONDS = 300
@@ -58,7 +57,6 @@ class Registration:
     installation_id: str
     api_url: str
     key: Ed25519PrivateKey
-    # Where the registration came from: its file, or the env var that holds it.
     source: str
 
 
@@ -70,7 +68,6 @@ def folder() -> Path:
 
 
 def files(customer: str) -> tuple[Path, Path]:
-    """The registration file and the key file of `customer` on this computer."""
     return folder() / f"{customer}.json", folder() / f"{customer}.key"
 
 
@@ -161,12 +158,10 @@ def send(url: str, data: bytes, headers: dict[str, str],
 
 
 def register(api_url: str, body: dict) -> dict:
-    """POST /v1/register, the one request with no token."""
     return send(f"{api_url.rstrip('/')}/v1/register", json.dumps(body).encode(), {})
 
 
 def post(found: Registration, path: str, body: dict) -> dict:
-    """POST `body` as JSON to `path`, such as /v1/events, signed by `found`."""
     data = json.dumps(body).encode()
     return send(found.api_url + path, data, {"Authorization": f"Bearer {token(found, data)}"})
 
