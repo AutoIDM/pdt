@@ -240,13 +240,20 @@ def test_a_retry_after_a_crash_before_pdt_yml_is_saved_finishes_with_the_same_ke
     assert not list(autoidm.folder().glob("pending-*.key"))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Set-Acl is real on Windows")
+USER_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;S-1-5-21-1-2-3-1001)"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the access list is real on Windows")
 @pytest.mark.parametrize(("found", "limited"), [
-    ("O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\r\n", True),
-    ("O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)\r\n", False),
-    ("O:S-1-5-21-1-2-3-1001D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\r\n", False),
+    (f"{USER_SDDL}\r\n{USER_SDDL}\r\n", True),
+    ("O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LA)\r\n"
+     "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LA)\r\n", True),
+    (f"{USER_SDDL}\r\n{USER_SDDL}(A;OICI;FR;;;BU)\r\n", False),
+    (f"{USER_SDDL}\r\nO:S-1-5-21-1-2-3-1001D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\r\n", False),
+    (f"{USER_SDDL}\r\n", False),
+    ("", False),
 ])
-def test_the_folder_gets_only_system_and_administrators_and_is_read_back(
+def test_the_folder_gets_system_administrators_and_the_user_and_is_read_back(
         tmp_path, monkeypatch, found, limited):
     calls = []
 
@@ -263,9 +270,33 @@ def test_the_folder_gets_only_system_and_administrators_and_is_read_back(
             register_cli.restrict_folder(tmp_path)
     [(command, folder)] = calls
     assert command[:4] == ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
-    assert "SetSecurityDescriptorSddlForm('O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')" in (
-        command[4])
+    assert ("$sddl = 'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;{user})'"
+            ".Replace('{user}', [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+            in command[4])
+    assert "SetSecurityDescriptorSddlForm($sddl)" in command[4]
     assert folder == str(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="reads a Windows access list")
+def test_after_register_the_registering_account_can_read_the_key(backend):
+    url, _seen, answers = backend
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+    assert register_cli.register("KQ7M-2RTX", url) == 0
+    key = autoidm.files(CUSTOMER)[1]
+    shown = register_cli.subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; "
+         f"([IO.FileInfo]'{key}').GetAccessControl().GetAccessRules($true, $true, "
+         "[Security.Principal.SecurityIdentifier]) | "
+         "ForEach-Object { \"$($_.IdentityReference) $($_.FileSystemRights.value__) "
+         "$($_.AccessControlType) $($_.IsInherited)\" }"],
+        stdin=register_cli.subprocess.DEVNULL, capture_output=True, text=True,
+        check=True).stdout.splitlines()
+    user = shown[0]
+    assert sorted(shown[1:]) == sorted([
+        f"S-1-5-18 {0x1F01FF} Allow True", f"S-1-5-32-544 {0x1F01FF} Allow True",
+        f"{user} {0x120089} Allow True"])
+    assert autoidm.registration(CUSTOMER).installation_id == "ins_4f8a1c2e9b"
 
 
 def test_register_limits_the_folder_before_it_makes_any_key(backend, monkeypatch):
