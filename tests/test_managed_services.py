@@ -2,6 +2,7 @@ import io
 import json
 import subprocess
 import sys
+import threading
 import zipfile
 
 import pytest
@@ -675,6 +676,28 @@ def test_a_log_pdt_cannot_open_stops_only_the_log_and_the_command_never_blocks(
     out, err = capfd.readouterr()
     assert "line 19999" in out
     assert "pdt cannot keep the output of this run for AutoIDM" in " ".join((out + err).split())
+
+
+def test_a_reader_thread_pdt_cannot_start_copies_the_output_and_keeps_the_exit_code(
+        project, backend, warned, monkeypatch, capfd):
+    url, seen, _answers = backend
+    project_with(project, ALL_ON)
+    registered(url)
+    real_start = threading.Thread.start
+
+    def at_the_limit(self):
+        if self._target.__qualname__ == "copy_output.<locals>.copy":
+            raise RuntimeError("can't start new thread")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", at_the_limit)
+    script = "import sys\nfor i in range(20000):\n    print('line', i)\nsys.exit(3)\n"
+    assert lifecycle.run_job("report", "windows", [sys.executable, "-c", script],
+                             project / "report") == 3
+    assert "line 19999" in capfd.readouterr().out
+    end = seen[1]["body"]["event"]
+    assert (end["name"], end["params"]["exit_code"]) == ("job:run-failed", 3)
+    assert b"line 19999" in seen[3]["raw"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="chmod does not refuse writes on Windows")
