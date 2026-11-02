@@ -915,7 +915,7 @@ def test_a_wait_thread_pdt_cannot_start_waits_on_the_calling_thread_and_keeps_th
     assert run(project, 3) == 3
     console.drain()
     out, _err = capfd.readouterr()
-    assert sorted(failed) == ["wait", "wait_alerts"]
+    assert sorted(failed) == ["wait", "wait", "wait_alerts"]
     assert "Run of report failed (exit code 3)" in out
     end = seen[1]["body"]["event"]
     assert (end["name"], end["params"]["exit_code"]) == ("job:run-failed", 3)
