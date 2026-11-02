@@ -430,8 +430,8 @@ def test_only_console_reads_an_answer_from_the_user():
     # and `meltano invoke` shows stderr only one whole line at a time.
     src = Path(console.__file__).parent
     calls = [(str(path.relative_to(src)), ast.unparse(node.func))
-             for path in sorted(src.rglob("*.py")) if "examples" not in path.parts
-             for node in ast.walk(ast.parse(path.read_text()))
+             for path in sorted(src.rglob("*.py")) if "examples" not in path.relative_to(src).parts
+             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
              if isinstance(node, ast.Call) and "input" in (getattr(node.func, "id", ""),
                                                            getattr(node.func, "attr", ""))]
     assert calls == [("console.py", "_console.input")], \
