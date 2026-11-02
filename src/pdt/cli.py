@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -27,7 +28,7 @@ from pdt.config import ConfigError
 
 if not completion.COMPLETING:
     from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh,
-                     register_cli, scaffold, upgrade)
+                     register_cli, scaffold, upgrade, usage)
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -39,7 +40,7 @@ CLOUD_CLIS = {
 
 
 def cmd_init(args) -> int:
-    return scaffold.init(args.directory, args.yes)
+    return scaffold.init(args.directory, args.yes, usage_stats=args.usage_stats)
 
 
 def cmd_examples(_args) -> int:
@@ -627,6 +628,8 @@ def build_parser() -> argparse.ArgumentParser:
                                help="where to create the project (default: here)")
     directory.completer = completion.directories
     p.add_argument("-y", "--yes", action="store_true", help="accept the defaults, ask nothing")
+    p.add_argument("--no-usage-stats", dest="usage_stats", action="store_false",
+                   help="turn off anonymous usage statistics for this project")
     p.set_defaults(func=cmd_init)
     add_parser("examples", help="list the bundled example apps").set_defaults(
         func=cmd_examples)
@@ -812,34 +815,56 @@ def build_parser() -> argparse.ArgumentParser:
 def run() -> int:
     parser = build_parser()
     completion.configure(parser)
+    began = time.monotonic()
+    code = 1
+    exception = {}
     try:
+        usage.start(sys.argv)
         if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
             # Before argparse, so the cloud CLI parses its own flags. --project keeps
             # `uvx pdt aws` working; deploy.provider_command explains why.
             script = Path(__file__).with_name(CLOUD_CLIS[sys.argv[1]])
             deploy.announce_install(script)
-            return deploy.run_provider(
+            code = deploy.run_provider(
                 ["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
                  *sys.argv[1:]]).returncode
+            return code
         args = parser.parse_args()
         if args.welcome:
             scaffold.welcome()
             if args.command is not None:
                 parser.error("--welcome takes no command")
-            return 0
+            code = 0
+            return code
         if args.command is None:
             parser.print_help()
-            return 0
+            code = 0
+            return code
         if getattr(args, "json", False):
             console.to_stderr()
-        return args.func(args)
+        code = args.func(args)
+        return code
     except ConfigError as e:
+        exception = {"exception": usage.exception_fields(e)}
         console.error(console.escape(str(e)))
         return 1
     except KeyboardInterrupt:
         console.say()
-        return 130
+        code = 130
+        return code
+    except SystemExit as e:
+        code = watch.exit_code(e.code)
+        raise
+    except Exception as e:
+        exception = {"exception": usage.exception_fields(e)}
+        raise
     finally:
+        try:
+            lifecycle.emit(lifecycle.CLI_COMMAND, exit_code=code,
+                           duration_seconds=round(time.monotonic() - began, 3),
+                           command_line=usage.command_line(sys.argv), **exception)
+        except Exception:
+            pass
         lifecycle.flush()
 
 

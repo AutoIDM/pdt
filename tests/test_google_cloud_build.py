@@ -285,6 +285,7 @@ def test_the_job_runs_the_pushed_digest_and_records_the_fingerprint(project, mon
     assert deploy[deploy.index("--image") + 1] == pinned("sha256:new")
     labels = deploy[deploy.index("--labels") + 1]
     assert re.fullmatch(f"managed-by=pdt,{BUILD_TAG}=[0-9a-f]{{32}}", labels)
+    assert "PDT_ANONYMOUS_USAGE_STATS=false" in deploy[deploy.index("--set-env-vars") + 1]
 
 
 @pytest.mark.parametrize("cloud", [True, False])

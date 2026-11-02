@@ -5,10 +5,11 @@
 # ///
 """Run an app once for its Windows scheduled task and keep the output.
 
-usage: uv run --script run_windows_task.py <app dir> <logs folder> <storage url>
+usage: uv run --script run_windows_task.py <app dir> <logs folder> <storage url> [NAME=VALUE ...]
 
 Task Scheduler discards stdout and stderr, so the task `pdt-<app>` runs this
-script instead of run.py. It sets PDT_STORAGE_URL and PDT_RUN_ID (the UTC start,
+script instead of run.py. It sets each NAME=VALUE (pdt.usage.job_env),
+PDT_STORAGE_URL, and PDT_RUN_ID (the UTC start,
 so the app's `runs/` folder is named after the run `pdt runs` lists), runs
 `uv run --script run.py` in the app folder with the uv that started it (or, for
 an app with no run.py, `uv run --script run_powershell.py <app dir>`) inside
@@ -37,7 +38,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-USAGE = "usage: run_windows_task.py <app dir> <logs folder> <storage url>"
+USAGE = "usage: run_windows_task.py <app dir> <logs folder> <storage url> [NAME=VALUE ...]"
 EXIT_MARKER = "pdt: exit "
 MISSING_UV = 127
 # `pdt run APP --deployed` writes this file in the logs folder before it starts the task,
@@ -83,15 +84,16 @@ def report(app: str, log: Path, code: int) -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
+    if len(argv) < 3:
         sys.stderr.write(USAGE + "\n")
         return 2
-    app_dir, logs, storage_url = argv
+    app_dir, logs, storage_url, *job_env = argv
     folder = Path(logs)
     folder.mkdir(parents=True, exist_ok=True)
     stamp = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
     log = folder / f"{stamp}.log"
-    env = {**os.environ, "PDT_STORAGE_URL": storage_url, "PDT_RUN_ID": stamp}
+    env = {**os.environ, **dict(item.split("=", 1) for item in job_env),
+           "PDT_STORAGE_URL": storage_url, "PDT_RUN_ID": stamp}
     marker = folder / MANUAL_START
     if marker.is_file():
         if time.time() - marker.stat().st_mtime < MANUAL_START_SECONDS:

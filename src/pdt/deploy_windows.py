@@ -63,6 +63,7 @@ from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, regions, runs_cli
+from pdt.usage import job_env
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import CostEstimate, run_main, warn_if_locked
@@ -189,10 +190,12 @@ def storage_url(app_name: str) -> str:
 
 def task_arguments(app: dict) -> str:
     """The uv arguments the task runs: the runner, then the app folder, its log folder,
-    and its storage url. Quoted the way CreateProcess splits them."""
+    its storage url, and usage.job_env as NAME=VALUE, because a task has no env vars of its
+    own. Quoted the way CreateProcess splits them."""
     return subprocess.list2cmdline([
         "run", "--script", str(RUNNER), str(Path(app["dir"]).resolve()),
-        str(logs_folder(app["name"])), storage_url(app["name"])])
+        str(logs_folder(app["name"])), storage_url(app["name"]),
+        *(f"{name}={value}" for name, value in job_env().items())])
 
 
 def uv_on_machine_path() -> bool:

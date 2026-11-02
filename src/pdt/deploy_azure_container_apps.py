@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from pdt import config, console, lifecycle, regions, runs_cli
+from pdt.usage import job_env
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_azure import (
     COMMON_PROVIDERS, ENVIRONMENT_TYPE, JOBS_API_VERSION, MANAGEMENT_API, RECENT_RUNS, SECRET_ROLE,
@@ -315,6 +316,7 @@ def job_body(registry: str, job: str, image: str, cron: str, identity_id: str,
         env.append({"name": "PDT_ENV_SECRET_RESOURCE", "value": secret_uri})
     if storage_url:
         env.append({"name": "PDT_STORAGE_URL", "value": storage_url})
+    env.extend({"name": name, "value": value} for name, value in job_env().items())
     secrets = [{"name": "pdt-env", "keyVaultUrl": secret_uri, "identity": identity_id}]
     return {
         "identity": {"type": "SystemAssigned,UserAssigned",

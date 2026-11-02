@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from rich.text import Text
 
-from pdt import console, deploy_common, managed_services, watch
+from pdt import console, deploy_common, managed_services, usage, watch
 
 # verify/scripts holds the live verification framework. It ships with the
 # user's project, not with the wheel, so it is not importable as a package.
@@ -29,6 +29,16 @@ def managed_senders(monkeypatch):
 def price_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "PRICE_CACHE", tmp_path / "prices")
     return tmp_path / "prices"
+
+
+@pytest.fixture(autouse=True)
+def usage_off(monkeypatch):
+    # Tests need no network. The tests that cover usage turn it on.
+    monkeypatch.setenv(usage.OFF_ENV, "false")
+    monkeypatch.setattr(usage, "_resolved", False)
+    monkeypatch.setattr(usage, "_identity", None)
+    monkeypatch.setattr(usage, "_job", False)
+    monkeypatch.setattr(usage, "_gave_up", False)
 
 
 @pytest.fixture(autouse=True)

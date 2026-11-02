@@ -69,6 +69,9 @@ run's storage output folder, which it names to the command in PDT_OUTPUT_DIR
 before it emits the end event, so the alert and the exit code say the same when
 AutoIDM refuses the registration. A log or folder pdt cannot make, or any other
 error in a call to managed_services, costs only what AutoIDM gets, never the run.
+
+The usage sink (pdt.usage) gets each name in EVENTS and CLI_COMMAND, the one event at the
+end of each pdt command. It never gets a name that an app emits itself.
 """
 
 from __future__ import annotations
@@ -88,7 +91,7 @@ from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import alert_message, config, console, managed_services, slack, teams
+from pdt import alert_message, config, console, managed_services, slack, teams, usage
 from pdt.utils import storage
 
 JOB_RUN_STARTED = "job:run-started"
@@ -106,6 +109,7 @@ APP_SECRETS_UPDATED = "app:secrets-updated"
 EVENTS = (APP_DEPLOY_STARTED, APP_DEPLOY_COMPLETED, APP_DEPLOY_FAILED, JOB_RUN_STARTED,
           JOB_RUN_COMPLETED, JOB_RUN_FAILED, JOB_PAUSED, JOB_UNPAUSED, APP_DESTROY_STARTED,
           APP_DESTROY_COMPLETED, APP_DESTROY_FAILED, APP_SECRETS_UPDATED)
+CLI_COMMAND = "cli:command"
 # Set to `manual` for one execution by the pdt command that starts a deployed run.
 TRIGGER_ENV = "PDT_TRIGGER"
 
@@ -310,8 +314,14 @@ def accept_managed(event: Event) -> None:
                                lambda: managed_services.accept(event))
 
 
+def accept_usage(event: Event) -> None:
+    if event.name in EVENTS or event.name == CLI_COMMAND:
+        usage.accept(event)
+
+
 SINKS = (Sink("alerts", accept_alerts, wait_alerts),
-         Sink("managed", accept_managed, managed_services.wait))
+         Sink("managed", accept_managed, managed_services.wait),
+         Sink("usage", accept_usage, usage.wait))
 
 
 def flush() -> None:
@@ -473,6 +483,7 @@ def main(argv: list[str]) -> int:
     if argv[:1] != ["--"] or len(argv) < 2:
         sys.stderr.write("usage: lifecycle.py -- <command...>\n")
         return 2
+    usage.as_job()
     app = Path.cwd().name
     try:
         provider = config.merged_app(app)["platform"].get("provider", "")

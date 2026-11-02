@@ -378,6 +378,13 @@ def recorded(fingerprint, digest="sha256:abc"):
                                      BUILD_TAG: fingerprint}}]
 
 
+def test_the_job_gets_the_usage_env(deploy):
+    _code, fakes, _commands, _roles, _logs = deploy(cloud=False)
+    [(_batch, desired, _digest, _fingerprint)] = fakes["definitions"]
+    assert {"name": "PDT_ANONYMOUS_USAGE_STATS", "value": "false"} in (
+        desired["containerProperties"]["environment"])
+
+
 @pytest.mark.parametrize("cloud", [True, False])
 def test_an_unchanged_app_skips_the_build_and_the_build_resources(deploy, capsys, cloud):
     _code, fakes, _commands, _roles, _logs = deploy(cloud=False)

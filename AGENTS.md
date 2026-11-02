@@ -100,6 +100,8 @@ Both install routes must keep working, and a change is not done until both do:
 
 The tool downloads the Google Cloud CLI, the PowerShell modules a local run needs, and the DuckDB-WASM files of the `pdt gui` SQL workbench (`src/pdt/duckdb_wasm.py`) to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). A deploy keeps the list prices and exchange rates of its cost estimate there too (`deploy_common.PRICE_CACHE`). Never write them beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
 
+`src/pdt/usage.py` keeps one client UUID file and one project UUID for each project path there too, under `pdt/usage`. A deployed job never writes these files: `usage.job_env` puts the UUIDs and the opt-out state in the job's environment on every provider, and a job with any of them absent sends nothing.
+
 ## verify/
 
 `verify/` is a pdt project used as a live test. It deploys to real cloud accounts, so it is the one directory in this repo that holds a `pdt.yml`.
