@@ -222,10 +222,12 @@ class Sender:
         run_id = str(params["run_id"])
         if log is not None:
             self.upload_log(log, f"{run_id}.log", params)
-        if output is not None and output.is_dir() and not self.refused:
+        if output is not None and not self.refused:
             try:
-                self.upload_artifacts(output, f"{run_id}.zip", params)
-            except (OSError, RuntimeError) as e:
+                if output.is_dir():
+                    self.upload_artifacts(output, f"{run_id}.zip", params)
+            except (OSError, RuntimeError, ValueError, zipfile.BadZipFile,
+                    zipfile.LargeZipFile) as e:
                 console.warn(f"AutoIDM did not get the artifacts {console.value(run_id + '.zip')}: "
                              f"{console.escape(str(e))}")
         return self.refused
@@ -250,8 +252,8 @@ class Sender:
     def upload_artifacts(self, output: Path, filename: str, params: dict) -> None:
         """Zip the files under `output` and upload the zip. A link that leads out of `output`
         is skipped with a warning, so a run cannot send a file from elsewhere on the computer.
-        When `output` itself is a link, nothing is sent."""
-        if output.is_symlink():
+        When `output` itself is a link or a Windows junction, nothing is sent."""
+        if output.is_symlink() or output.is_junction():
             console.warn(f"AutoIDM did not get the artifacts {console.value(filename)}: "
                          f"{console.value(output)} links to another place.")
             return
