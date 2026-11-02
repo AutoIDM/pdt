@@ -255,7 +255,17 @@ jobs:
 
       - shell: pwsh
         env:
-          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
-          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
-          .\wingetcreate.exe update AutoIDM.pdt --urls "https://github.com/AutoIDM/pdt/releases/download/v$env:VERSION/pdt-windows-x64.zip" --version $env:VERSION --submit --token $env:WINGET_TOKEN
+          $PSNativeCommandUseErrorActionPreference = $true
+          $title = "Update: AutoIDM.pdt to $env:VERSION"
+          $branch = "AutoIDM.pdt-$env:VERSION"
+          $owner = gh api user --jq .login
+          gh api repos/microsoft/winget-pkgs/contents/manifests/a/AutoIDM/pdt --silent
+          gh api "repos/$owner/winget-pkgs/merge-upstream" -f branch=master --silent
+          $base = gh api "repos/$owner/winget-pkgs/commits/master" --jq .sha
+          $files = Get-ChildItem winget/rendered | ForEach-Object { @{ path = "manifests/a/AutoIDM/pdt/$env:VERSION/$($_.Name)"; mode = '100644'; type = 'blob'; content = Get-Content $_.FullName -Raw } }
+          $tree = @{ base_tree = $base; tree = @($files) } | ConvertTo-Json -Depth 3 | gh api "repos/$owner/winget-pkgs/git/trees" --input - --jq .sha
+          $commit = gh api "repos/$owner/winget-pkgs/git/commits" -f "message=$title" -f "tree=$tree" -f "parents[]=$base" --jq .sha
+          gh api "repos/$owner/winget-pkgs/git/refs" -f "ref=refs/heads/$branch" -f "sha=$commit" --silent
+          gh api repos/microsoft/winget-pkgs/pulls -f "title=$title" -f "head=${owner}:$branch" -f base=master -f "body=Release: https://github.com/AutoIDM/pdt/releases/tag/v$env:VERSION" --jq .html_url
