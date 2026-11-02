@@ -26,7 +26,7 @@ def test_renders_three_manifests_with_no_placeholder_left(tmp_path):
     for manifest in manifests.values():
         assert manifest["PackageIdentifier"] == "AutoIDM.pdt"
         assert manifest["PackageVersion"] == "9.8.7"
-        assert manifest["ManifestVersion"] == "1.10.0"
+        assert manifest["ManifestVersion"] == "1.28.0"
 
     installer = manifests["AutoIDM.pdt.installer.yaml"]
     assert installer["InstallerType"] == "zip"
