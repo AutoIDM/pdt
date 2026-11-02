@@ -209,7 +209,6 @@ class Sender:
         return self.refused
 
     def deployed(self, params: dict, app: dict, platform: dict) -> None:
-        """Send app:deployed with the schedule and the place the app now runs."""
         from pdt import regions
         if not self.wants("send_run_history"):
             return
@@ -219,7 +218,6 @@ class Sender:
                                          "place": place(platform)})
 
     def refusal(self) -> str:
-        """The message after a 401, naming the registration AutoIDM refused."""
         from pdt.utils import autoidm
         found = self.registration
         if found.source == autoidm.ID_ENV:
