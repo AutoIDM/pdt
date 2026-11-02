@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -23,15 +24,18 @@ PYPI_URL = "https://pypi.org/pypi/pdt-cli/json"
 PIN = re.compile(r'^(#[^\n]*"pdt-cli(?:\[[^\]]*\])?==)([^"]+)"', re.M)
 
 
-def upgrade_in_new_window(latest: str, environment: dict[str, str], entry: Path) -> None:
+def upgrade_in_new_window(uv: str, latest: str, environment: dict[str, str], entry: Path) -> None:
     # Windows cannot replace a running program, so the new window waits for this pdt and every
     # program that runs from its folders, such as the venv's python.exe and uv's pdt.exe.
     prefix = quoted(sys.prefix + "\\")
     script = (
         f"Wait-Process -Id {os.getpid()} -ErrorAction SilentlyContinue; "
-        f"Get-Process | Where-Object {{ $_.Path -eq {quoted(str(entry))} -or "
-        f"($_.Path -and $_.Path.StartsWith({prefix}, 'OrdinalIgnoreCase')) }} | Wait-Process; "
-        f"uv tool install 'pdt-cli>={latest}'; "
+        f"$running = @(Get-Process | Where-Object {{ $_.Path -eq {quoted(str(entry))} -or "
+        f"($_.Path -and $_.Path.StartsWith({prefix}, 'OrdinalIgnoreCase')) }}); "
+        "if ($running) { Write-Host 'pdt upgrade waits for these programs to end. Close them to "
+        "continue:'; $running | ForEach-Object { Write-Host \"  $($_.Id) $($_.Path)\" }; "
+        "$running | Wait-Process }; "
+        f"$global:LASTEXITCODE = 1; & {quoted(uv)} tool install 'pdt-cli>={latest}'; "
         "if ($LASTEXITCODE) { Write-Host \"pdt upgrade failed: uv exited with code "
         "$LASTEXITCODE. pdt and the app pins stay as they are.\" } "
         f"else {{ & {quoted(str(entry))} upgrade }}; "
@@ -86,12 +90,16 @@ def main() -> int:
         entry = Path(next(e["install-path"] for e in tool["entrypoints"] if e["name"] == "pdt"))
         environment = {**os.environ, "UV_TOOL_DIR": str(receipt.parent.parent),
                        "UV_TOOL_BIN_DIR": str(entry.parent)}
+        uv = shutil.which("uv")
+        if uv is None:
+            console.error("could not find uv on the PATH, so pdt and the app pins stay as they are.")
+            return 1
         if sys.platform == "win32":
-            upgrade_in_new_window(latest, environment, entry)
+            upgrade_in_new_window(uv, latest, environment, entry)
             console.done(f"pdt {console.value(__version__)} moves to {console.value(latest)} in a "
                          "new window once this command ends. That window then raises the app pins.")
             return 0
-        command = ["uv", "tool", "install", f"pdt-cli>={latest}"]
+        command = [uv, "tool", "install", f"pdt-cli>={latest}"]
         console.step(f"Upgrading pdt {console.value(__version__)} to {console.value(latest)}: "
                      f"{console.value(' '.join(command))}")
         code = subprocess.run(command, env=environment).returncode

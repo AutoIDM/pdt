@@ -18,7 +18,7 @@ HEADER = '''#!/usr/bin/env -S uv run --script
 
 @pytest.fixture
 def pypi(monkeypatch):
-    """PyPI names 0.2.0 as the newest release, and this pdt is 0.1.9 run from a clone."""
+    """PyPI names 0.2.0 as the newest release, and this pdt is 0.1.9."""
     body = json.dumps({"info": {"version": "0.2.0"}}).encode()
     monkeypatch.setattr(upgrade.urllib.request, "urlopen", lambda url, timeout: io.BytesIO(body))
     monkeypatch.setattr("pdt.__version__", "0.1.9", raising=False)
@@ -67,14 +67,14 @@ def test_upgrade_fails_plainly_when_pypi_cannot_be_read(project, monkeypatch, ca
 
 @pytest.fixture
 def uv_tool(tmp_path_factory, monkeypatch):
-    """This pdt is a uv tool in its own folders, as the MSI and the winget zip install it."""
     home = tmp_path_factory.mktemp("home")
     prefix = home / "tools" / "pdt-cli"
     prefix.mkdir(parents=True)
     entry = home / "bin" / "pdt"
     (prefix / "uv-receipt.toml").write_text(
-        f'[tool]\nentrypoints = [{{ name = "pdt", install-path = "{entry}", from = "pdt-cli" }}]\n')
+        f'[tool]\nentrypoints = [{{ name = "pdt", install-path = "{entry.as_posix()}", from = "pdt-cli" }}]\n')
     monkeypatch.setattr(upgrade.sys, "prefix", str(prefix))
+    monkeypatch.setattr(upgrade.shutil, "which", lambda name: "/opt/uv/uv")
     return home
 
 
@@ -90,7 +90,7 @@ def test_a_uv_tool_upgrades_in_its_own_folders_then_raises_the_pins(project, pyp
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(upgrade.subprocess, "run", run)
     assert upgrade.main() == 0
-    assert ran == [(["uv", "tool", "install", "pdt-cli>=0.2.0"],
+    assert ran == [(["/opt/uv/uv", "tool", "install", "pdt-cli>=0.2.0"],
                     str(uv_tool / "tools"), str(uv_tool / "bin"))]
     assert '==0.2.0"' in (project / "report" / "run.py").read_text()
 
@@ -121,11 +121,23 @@ def test_windows_upgrades_in_a_new_window_that_then_raises_the_pins(project, pyp
     assert "Wait-Process -Id 41" in script
     assert f"$_.Path -eq '{entry}'" in script
     assert f"StartsWith('{uv_tool / 'tools' / 'pdt-cli'}\\', 'OrdinalIgnoreCase')" in script
-    assert "uv tool install 'pdt-cli>=0.2.0'; if ($LASTEXITCODE)" in script
+    assert "$running | Wait-Process" in script
+    assert ("$global:LASTEXITCODE = 1; & '/opt/uv/uv' tool install 'pdt-cli>=0.2.0'; "
+            "if ($LASTEXITCODE)") in script
     assert f"else {{ & '{entry}' upgrade }}" in script
     assert env["UV_TOOL_DIR"] == str(uv_tool / "tools")
     assert '==0.1.8"' in (project / "report" / "run.py").read_text()
     assert "That window then raises the app pins." in capsys.readouterr().out
+
+
+def test_no_uv_on_the_path_leaves_pdt_and_the_pins(project, pypi, uv_tool, monkeypatch,
+                                                   capsys):
+    add_app(project, "report", run_body=HEADER.format(pin="0.1.8"))
+    monkeypatch.setattr(upgrade.shutil, "which", lambda name: None)
+    monkeypatch.setattr(upgrade.subprocess, "Popen", None)
+    assert upgrade.main() == 1
+    assert '==0.1.8"' in (project / "report" / "run.py").read_text()
+    assert "could not find uv on the PATH" in capsys.readouterr().out
 
 
 def test_the_newest_pdt_is_left_alone(project, pypi, uv_tool, monkeypatch, capsys):
