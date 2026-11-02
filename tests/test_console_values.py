@@ -45,6 +45,7 @@ ALLOWED = {
     "duckdb_wasm.py": {"size_text(size)"},
     "email_auth.py": {"_provider_name(provider)", "name"},
     "gcloud_sdk.py": {"VERSION"},
+    "lifecycle.py": {"what"},
     "managed_services.py": {"message", "what", "console.size(size)",
                             "console.size(MAX_UPLOAD_BYTES)"},
     "powershell.py": {"found"},
