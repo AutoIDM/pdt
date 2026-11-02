@@ -292,6 +292,20 @@ def test_deploy_removes_the_rights_of_the_account_the_task_ran_as_before(project
     assert script.rindex("/remove:g") < script.index("/grant")
 
 
+def test_the_shared_paths_keep_the_grant_while_another_pdt_task_runs_as_the_account(project):
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder.mkdir(parents=True)
+    script = deploy_windows._revoke_script(windows_app(project), None, ACCOUNT)
+    check = script.index("if ($others.Count -eq 0) {")
+    for path in (folder, project / "my-report"):
+        assert script.index(f"icacls '{path}' /remove:g") < check
+    for path in (project, project / "pdt.yml", deploy_windows.RUNNER.parent.parent):
+        assert script.index(f"icacls '{path}' /remove:g") > check
+    assert "$_.TaskName -ne 'pdt-my-report' -and $_.Description -like 'Managed by pdt;*'" in script
+    assert (".Principal.UserId).Translate([Security.Principal.SecurityIdentifier]).Value -eq $sid"
+            in script)
+
+
 def test_destroy_removes_the_rights_of_the_account_the_task_runs_as(project, monkeypatch):
     folder = project / "ProgramData" / "pdt" / "my-report"
     folder.mkdir(parents=True)
@@ -340,4 +354,25 @@ def test_an_elevated_script_passes_as_a_file_that_is_deleted_afterwards(tmp_path
     ((file, text, length),) = passed
     assert text == script
     assert length < 2000 < len(script)
+    assert list(temp.iterdir()) == []
+
+
+def test_an_already_elevated_shell_runs_a_long_script_from_a_file(tmp_path, monkeypatch):
+    temp = tmp_path / "Temp Folder"
+    temp.mkdir()
+    monkeypatch.setattr(deploy_windows.tempfile, "tempdir", str(temp))
+    monkeypatch.setattr(deploy_windows, "_is_admin", lambda: True)
+    script = f"icacls '{'C:\\long folder\\' * 3000}' /grant 'EXAMPLE\\svc-pdt$:R'"
+    passed = []
+
+    def run(command, **kwargs):
+        passed.append((command, Path(command[-1]).read_text(encoding="utf-8-sig")))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(deploy_windows.subprocess, "run", run)
+    assert deploy_windows._run("powershell.exe", script, elevate=True)
+    ((command, text),) = passed
+    assert command[-2] == "-File" and "-EncodedCommand" not in command
+    assert text == script
+    assert len(subprocess.list2cmdline(command)) < 2000 < 32_767 < len(script)
     assert list(temp.iterdir()) == []

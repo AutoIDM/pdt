@@ -39,7 +39,9 @@ script also lets that account read the app's folder, the project files that
 pdt and uv read (not the other apps' folders), pdt, uv when it is not on the machine
 PATH, and the AutoIDM installation key when it exists. When the registered task
 runs as another account than SYSTEM or the new run_as, deploy first removes that
-account's rights from the same paths; destroy removes them for the task's account.
+account's rights from the same paths; destroy removes them for the task's account. The paths
+other apps share (the project files, pdt, uv, pwsh, the key) keep that account's rights while
+another pdt task on this PC runs as it.
 Before any of this, deploy checks in Active Directory that the account is a group managed service
 account. Deploy
 always registers the complete desired task definition with -Force, so
@@ -322,25 +324,25 @@ def _is_admin() -> bool:
 
 def _run(powershell: str, script: str, *, not_found_ok: bool = False,
          elevate: bool = False) -> bool:
-    # Encoded twice, a long script passes the 32,767 character command line limit, so the
-    # elevated process reads it from a file. Since Python 3.12.4 (the script header's minimum),
-    # mkdtemp lets only this user, SYSTEM, and Administrators open the folder, so no other
-    # user can change the script.
+    # Encoded, a long script passes the 32,767 character command line limit, so PowerShell
+    # reads it from a file. Since Python 3.12.4 (the script header's minimum), mkdtemp lets
+    # only this user, SYSTEM, and Administrators open the folder, so no other user can change
+    # the script.
     with tempfile.TemporaryDirectory(prefix="pdt-") as folder:
+        file = Path(folder) / "script.ps1"
+        file.write_text(script, encoding="utf-8-sig")
+        options = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
         if elevate and not _is_admin():
-            file = Path(folder) / "elevated.ps1"
-            file.write_text(script, encoding="utf-8-sig")
-            script = (
+            outer = (
                 "$p = Start-Process powershell -Verb RunAs -Wait -PassThru "
-                "-WindowStyle Hidden -ArgumentList '-NoLogo','-NoProfile',"
-                "'-NonInteractive','-ExecutionPolicy','Bypass',"
+                f"-WindowStyle Hidden -ArgumentList {','.join(map(_ps_string, options))},"
                 f"'-File',{_ps_string(subprocess.list2cmdline([str(file)]))}; "
                 "exit $p.ExitCode"
             )
-        proc = subprocess.run(
-            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
-             "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            command = [powershell, *options, "-EncodedCommand", _encoded(outer)]
+        else:
+            command = [powershell, *options, "-File", str(file)]
+        proc = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if proc.returncode == 0:
         return True
     if not_found_ok and proc.returncode == 3:
@@ -420,14 +422,30 @@ def _previous_account(powershell: str, name: str, account: str) -> str:
 
 
 def _revoke_script(app: dict, uv: str | None, account: str) -> str:
-    """Remove what deploy granted the account, from each path it may have granted."""
+    """Remove what deploy granted the account, from each path it may have granted. The
+    paths other apps share keep the grant while another pdt task runs as the account."""
     shared_pwsh = str(pwsh_install_dir(windows=True) / "pwsh.exe")
     reads = account_reads(app, uv or "", uv is None, shared_pwsh)
-    paths = [app_folder(app["name"])] + [path for _what, path, _rights in reads]
-    return "".join(
-        f"icacls {_ps_string(str(path))} /remove:g {_ps_string(account)} | Out-Null; "
-        "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
-        for path in paths if path.exists())
+    own = [app_folder(app["name"]), Path(app["dir"]).resolve()]
+    shared = [path for _what, path, _rights in reads if path not in own]
+
+    def remove(paths: list[Path]) -> str:
+        return "".join(
+            f"icacls {_ps_string(str(path))} /remove:g {_ps_string(account)} | Out-Null; "
+            "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+            for path in paths if path.exists())
+
+    sid = "Translate([Security.Principal.SecurityIdentifier]).Value"
+    return (
+        remove(own)
+        + f"$sid = ([Security.Principal.NTAccount]{_ps_string(account)}).{sid}; "
+        "$others = @(Get-ScheduledTask -TaskPath '\\' | Where-Object { "
+        f"$_.TaskName -ne {_ps_string(_task_name(app['name']))} -and "
+        "$_.Description -like 'Managed by pdt;*' -and "
+        f"$(try {{ ([Security.Principal.NTAccount]$_.Principal.UserId).{sid} -eq $sid }} "
+        "catch { $false }) }); "
+        f"if ($others.Count -eq 0) {{ {remove(shared)}}}; "
+    )
 
 
 def _account_problem(powershell: str, account: str, where: str) -> str:
