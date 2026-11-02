@@ -243,18 +243,36 @@ def test_a_retry_after_a_crash_before_pdt_yml_is_saved_finishes_with_the_same_ke
 USER_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;S-1-5-21-1-2-3-1001)"
 
 
+SYSTEM_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+
+
+@pytest.mark.parametrize(("user", "sddl"), [
+    ("S-1-5-21-1-2-3-1001", USER_SDDL),
+    ("S-1-5-18", SYSTEM_SDDL),
+])
+def test_the_registering_account_gets_read_unless_it_is_system(user, sddl):
+    rule = (register_cli.FOLDER_SDDL.replace("{user}", user)
+            .replace(register_cli.SYSTEM_READ, ""))
+    assert rule == sddl
+    assert (f"$sddl = '{register_cli.FOLDER_SDDL}'.Replace('{{user}}', "
+            "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+            f".Replace('{register_cli.SYSTEM_READ}', '');" in register_cli.SET_FOLDER_SDDL)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="the access list is real on Windows")
-@pytest.mark.parametrize(("found", "limited"), [
-    (f"{USER_SDDL}\r\n{USER_SDDL}\r\n", True),
+@pytest.mark.parametrize(("found", "error"), [
+    (f"{USER_SDDL}\r\n{USER_SDDL}\r\n", None),
+    (f"{SYSTEM_SDDL}\r\n{SYSTEM_SDDL}\r\n", None),
     ("O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LA)\r\n"
-     "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LA)\r\n", True),
-    (f"{USER_SDDL}\r\n{USER_SDDL}(A;OICI;FR;;;BU)\r\n", False),
-    (f"{USER_SDDL}\r\nO:S-1-5-21-1-2-3-1001D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\r\n", False),
-    (f"{USER_SDDL}\r\n", False),
-    ("", False),
+     "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;LA)\r\n", None),
+    (f"{USER_SDDL}\r\n{USER_SDDL}(A;OICI;FR;;;BU)\r\n", f"BU\\), not {re.escape(USER_SDDL)}$"),
+    (f"{USER_SDDL}\r\nO:S-1-5-21-1-2-3-1001D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\r\n",
+     f"not {re.escape(USER_SDDL)}$"),
+    (f"{USER_SDDL}\r\n", "PowerShell printed O:BAD:PAI.*1001\\), not the access list"),
+    ("", "PowerShell printed nothing"),
 ])
 def test_the_folder_gets_system_administrators_and_the_user_and_is_read_back(
-        tmp_path, monkeypatch, found, limited):
+        tmp_path, monkeypatch, found, error):
     calls = []
 
     def run(command, **kwargs):
@@ -263,17 +281,17 @@ def test_the_folder_gets_system_administrators_and_the_user_and_is_read_back(
 
     monkeypatch.setattr(register_cli.os, "name", "nt")
     monkeypatch.setattr(register_cli.subprocess, "run", run)
-    if limited:
+    if error is None:
         register_cli.restrict_folder(tmp_path)
     else:
-        with pytest.raises(RuntimeError, match="not O:BAD:PAI"):
+        with pytest.raises(RuntimeError, match=error):
             register_cli.restrict_folder(tmp_path)
     [(command, folder)] = calls
     assert command[:4] == ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
-    assert ("$sddl = 'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;{user})'"
-            ".Replace('{user}', [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
-            in command[4])
-    assert "SetSecurityDescriptorSddlForm($sddl)" in command[4]
+    assert ("$acl.SetSecurityDescriptorSddlForm($sddl); "
+            "$acl.GetSecurityDescriptorSddlForm('Owner, Access'); "
+            "$folder.SetAccessControl($acl); " in command[4])
+    assert "New-Object" not in command[4]
     assert folder == str(tmp_path)
 
 
