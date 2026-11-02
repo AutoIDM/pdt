@@ -45,7 +45,8 @@ FOLDER_ENV = "PDT_REGISTRATIONS_FOLDER"
 # PowerShell 7 inherits its PSModulePath and cannot load the modules that hold those commands.
 # It prints the access list as .NET holds it before it saves it, then as it reads it back, so
 # both pass through the same .NET form (two-letter SIDs such as LA, merged entries).
-SET_FOLDER_SDDL = (f"$folder = [IO.DirectoryInfo]$env:{FOLDER_ENV}; "
+SET_FOLDER_SDDL = ("$ErrorActionPreference = 'Stop'; "
+                   f"$folder = [IO.DirectoryInfo]$env:{FOLDER_ENV}; "
                    f"$sddl = '{FOLDER_SDDL}'.Replace('{{user}}', "
                    "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
                    f".Replace('{SYSTEM_READ}', ''); "

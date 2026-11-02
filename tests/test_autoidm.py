@@ -292,6 +292,7 @@ def test_the_folder_gets_system_administrators_and_the_user_and_is_read_back(
             "$acl.GetSecurityDescriptorSddlForm('Owner, Access'); "
             "$folder.SetAccessControl($acl); " in command[4])
     assert "New-Object" not in command[4]
+    assert command[4].startswith("$ErrorActionPreference = 'Stop'; ")
     assert folder == str(tmp_path)
 
 
