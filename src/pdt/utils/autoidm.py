@@ -201,9 +201,13 @@ def upload(found: Registration, body: dict, data: bytes) -> str:
                      "/v1/uploads", "url", "key")
     if not isinstance(place.get("fields"), dict):
         raise AutoidmError("AutoIDM answered /v1/uploads without fields")
-    target = urllib.parse.urlsplit(place["url"])
-    if not (target.scheme == "https" or (target.scheme == "http"
-                                         and target.hostname in ("127.0.0.1", "localhost"))):
+    try:
+        target = urllib.parse.urlsplit(place["url"])
+        local = target.hostname in ("127.0.0.1", "localhost")
+    except ValueError:
+        raise AutoidmError(f"AutoIDM answered /v1/uploads with the URL {place['url']!r}, which "
+                           "does not parse") from None
+    if not (target.scheme == "https" or (target.scheme == "http" and local)):
         raise AutoidmError(f"AutoIDM answered /v1/uploads with the URL {place['url']!r}, which "
                            "is not https")
     boundary = uuid.uuid4().hex

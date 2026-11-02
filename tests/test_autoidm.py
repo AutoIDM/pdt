@@ -150,6 +150,8 @@ def test_a_cloud_registration_for_another_customer_is_an_error(folder, monkeypat
     ("/v1/uploads", b'{"url": "x", "key": "k", "fields": {}}', "'x', which is not https"),
     ("/v1/uploads", b'{"url": "http://example.com/b", "key": "k", "fields": {}}',
      "which is not https"),
+    ("/v1/uploads", b'{"url": "https://[broken", "key": "k", "fields": {}}',
+     "which does not parse"),
     ("/v1/events", http.client.IncompleteRead(b'{"key"', 10), "could not be reached"),
 ])
 def test_a_malformed_answer_is_an_autoidm_error(folder, monkeypatch, path, answer, said):
@@ -207,16 +209,61 @@ def test_a_retry_after_a_crash_before_the_metadata_sends_the_same_key(backend, m
     assert not list(autoidm.folder().glob("pending-*.key"))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="icacls is real on Windows")
-def test_the_folder_is_limited_to_system_and_administrators_with_nothing_inherited(
-        tmp_path, monkeypatch):
+def test_a_retry_after_a_crash_before_pdt_yml_is_saved_finishes_with_the_same_key(
+        backend, tmp_path, monkeypatch):
+    url, seen, answers = backend
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    monkeypatch.chdir(project)
+    save = config.save_managed_customer
+    crashes = [KeyboardInterrupt]
+
+    def crash_once(customer):
+        if crashes:
+            raise crashes.pop()
+        save(customer)
+
+    monkeypatch.setattr(config, "save_managed_customer", crash_once)
+    for _ in range(2):
+        answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+    with pytest.raises(KeyboardInterrupt):
+        register_cli.register("KQ7M-2RTX", url)
+    assert list(autoidm.folder().glob("pending-*.key"))
+    key = autoidm.files(CUSTOMER)[1].read_bytes()
+    assert register_cli.register("KQ7M-2RTX", url) == 0
+    assert seen[0]["body"]["public_key"] == seen[1]["body"]["public_key"]
+    assert autoidm.files(CUSTOMER)[1].read_bytes() == key
+    assert f"customer: {CUSTOMER}" in (project / "pdt.yml").read_text()
+    assert not list(autoidm.folder().glob("pending-*.key"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Set-Acl is real on Windows")
+@pytest.mark.parametrize(("found", "limited"), [
+    ("O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\r\n", True),
+    ("O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)\r\n", False),
+    ("O:S-1-5-21-1-2-3-1001D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\r\n", False),
+])
+def test_the_folder_gets_only_system_and_administrators_and_is_read_back(
+        tmp_path, monkeypatch, found, limited):
     calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["env"][register_cli.FOLDER_ENV]))
+        return register_cli.subprocess.CompletedProcess(command, 0, found, "")
+
     monkeypatch.setattr(register_cli.os, "name", "nt")
-    monkeypatch.setattr(register_cli.subprocess, "run",
-                        lambda command, **kwargs: calls.append(command))
-    register_cli.restrict_folder(tmp_path)
-    assert calls == [["icacls", str(tmp_path), "/inheritance:r", "/grant:r",
-                      "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F"]]
+    monkeypatch.setattr(register_cli.subprocess, "run", run)
+    if limited:
+        register_cli.restrict_folder(tmp_path)
+    else:
+        with pytest.raises(RuntimeError, match="not O:BAD:PAI"):
+            register_cli.restrict_folder(tmp_path)
+    [(command, folder)] = calls
+    assert command[:4] == ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
+    assert "SetSecurityDescriptorSddlForm('O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')" in (
+        command[4])
+    assert folder == str(tmp_path)
 
 
 def test_register_limits_the_folder_before_it_makes_any_key(backend, monkeypatch):
@@ -229,11 +276,13 @@ def test_register_limits_the_folder_before_it_makes_any_key(backend, monkeypatch
     assert found == [[]]
 
 
-def test_a_folder_pdt_cannot_limit_gets_no_key(backend, monkeypatch, capsys):
+@pytest.mark.parametrize("error", [register_cli.subprocess.CalledProcessError(5, ["powershell"]),
+                                   RuntimeError("its owner and access list are O:BAD:PAI")])
+def test_a_folder_pdt_cannot_limit_gets_no_key(backend, monkeypatch, capsys, error):
     url, seen, _answers = backend
 
     def refused(folder):
-        raise register_cli.subprocess.CalledProcessError(5, ["icacls"])
+        raise error
 
     monkeypatch.setattr(register_cli, "restrict_folder", refused)
     assert register_cli.register("KQ7M-2RTX", url) == 1

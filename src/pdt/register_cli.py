@@ -4,14 +4,15 @@ The code names the customer, so pdt learns the customer only from the answer.
 It makes the key and writes it as pending-<hash of the code>.key before it
 sends the code, so a retry after a lost answer sends the same public key and
 AutoIDM answers with the same installation. When the answer comes, it writes
-<customer_id>.key, then <customer_id>.json, and only then deletes the pending
-key, so a retry after a crash at any point sends the same key. Each key file is
-written whole or not at all, and a pending key pdt cannot read counts as none. A lock on the
+<customer_id>.key, then <customer_id>.json, then the project's pdt.yml, and only
+then deletes the pending key, so a retry after a crash at any point sends the same
+key, and a retry that finds that key and installation already saved finishes pdt.yml.
+Each key file is written whole or not at all, and a pending key pdt cannot read counts as none. A lock on the
 folder keeps two registers on one computer apart. On Windows the folder is
 %ProgramData%\\pdt\\registrations, and before it writes a key, pdt limits the folder,
 and so each file made in it, to SYSTEM (the scheduled task) and
 Administrators, so the command needs an administrator terminal.
-A computer that already holds a registration for the customer keeps it; the
+A computer that already holds another registration for the customer keeps it; the
 command stops and names the file. Either way, in a project whose pdt.yml has no
 `managed_services`, it adds `managed_services:` with the customer.
 """
@@ -31,17 +32,30 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pdt import __version__, config, console, managed_services
 from pdt.utils import autoidm
 
-# The well-known SIDs of SYSTEM and of the Administrators group, for the folder and for each
-# file and folder made in it.
-KEY_READERS = ("*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F")
+# Owner Administrators, and an access list that inherits nothing and gives full control of the
+# folder and of each file and folder made in it to SYSTEM and Administrators alone.
+FOLDER_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+FOLDER_ENV = "PDT_REGISTRATIONS_FOLDER"
+SET_FOLDER_SDDL = (f"$acl = Get-Acl -LiteralPath $env:{FOLDER_ENV}; "
+                   f"$acl.SetSecurityDescriptorSddlForm('{FOLDER_SDDL}'); "
+                   f"Set-Acl -LiteralPath $env:{FOLDER_ENV} -AclObject $acl; "
+                   f"(Get-Acl -LiteralPath $env:{FOLDER_ENV})"
+                   ".GetSecurityDescriptorSddlForm('Owner, Access')")
 
 
 def restrict_folder(folder: Path) -> None:
-    """On Windows, replace the access list of `folder` with KEY_READERS and nothing inherited,
-    so each file made in it can be opened only by them from the moment it exists."""
-    if os.name == "nt":
-        subprocess.run(["icacls", str(folder), "/inheritance:r", "/grant:r", *KEY_READERS],
-                       stdin=subprocess.DEVNULL, capture_output=True, check=True)
+    """On Windows, replace the owner and the whole access list of `folder` with FOLDER_SDDL,
+    so each file made in it can be opened only by SYSTEM and Administrators from the moment it
+    exists. It reads the folder back and raises RuntimeError when it does not match."""
+    if os.name != "nt":
+        return
+    found = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                            SET_FOLDER_SDDL], env={**os.environ, FOLDER_ENV: str(folder)},
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           check=True).stdout.strip()
+    if found != FOLDER_SDDL:
+        raise RuntimeError(f"its owner and access list are {found or 'unknown'}, "
+                           f"not {FOLDER_SDDL}")
 
 
 def write_key(path: Path, key: Ed25519PrivateKey) -> None:
@@ -63,7 +77,7 @@ def register(code: str, api_url: str) -> int:
     folder.mkdir(parents=True, exist_ok=True)
     try:
         restrict_folder(folder)
-    except (OSError, subprocess.CalledProcessError) as e:
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as e:
         console.error(f"pdt could not limit {console.value(folder)} to SYSTEM and "
                       f"Administrators, so it wrote no key: {console.escape(str(e))}")
         return 1
@@ -95,23 +109,30 @@ def register(code: str, api_url: str) -> int:
         info, key_path = autoidm.files(customer)
         if info.is_file():
             found = json.loads(info.read_text(encoding="utf-8"))
-            console.error(f"This computer is already registered to AutoIDM for "
-                          f"{console.value(customer)} as "
-                          f"{console.value(found.get('installation_id'))} in "
-                          f"{console.value(info)}. To register it again, delete "
-                          f"{console.value(info)} and {console.value(key_path)}, then run this "
-                          "command again with the same code.")
-            save_customer(customer)
-            return 1
-        write_key(key_path, key)
-        config.write_text_atomically(info, json.dumps({
-            "installation_id": answer["installation_id"], "customer_id": customer,
-            "api_url": api_url}) + "\n")
+            try:
+                kept = autoidm.public_key(autoidm.load_key(key_path.read_bytes()))
+            except (OSError, ValueError, autoidm.AutoidmError):
+                kept = None
+            if not (kept == autoidm.public_key(key)
+                    and found.get("installation_id") == answer["installation_id"]):
+                console.error(f"This computer is already registered to AutoIDM for "
+                              f"{console.value(customer)} as "
+                              f"{console.value(found.get('installation_id'))} in "
+                              f"{console.value(info)}. To register it again, delete "
+                              f"{console.value(info)} and {console.value(key_path)}, then run "
+                              "this command again with the same code.")
+                save_customer(customer)
+                return 1
+        else:
+            write_key(key_path, key)
+            config.write_text_atomically(info, json.dumps({
+                "installation_id": answer["installation_id"], "customer_id": customer,
+                "api_url": api_url}) + "\n")
+        console.done(f"Registered this computer to AutoIDM for {console.value(customer)} as "
+                     f"{console.value(answer['installation_id'])}.")
+        console.field("Saved in", str(info))
+        save_customer(customer)
         pending.unlink()
-    console.done(f"Registered this computer to AutoIDM for {console.value(customer)} as "
-                 f"{console.value(answer['installation_id'])}.")
-    console.field("Saved in", str(info))
-    save_customer(customer)
     return 0
 
 
