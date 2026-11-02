@@ -1,5 +1,6 @@
 import io
 import json
+import queue
 import subprocess
 import sys
 import threading
@@ -354,6 +355,7 @@ class Started:
     """A subprocess.Popen for run_job that records how it started the command."""
 
     calls: list[dict] = []
+    stdout = io.BytesIO()
 
     def __init__(self, command, **kwargs):
         Started.calls.append(kwargs)
@@ -374,7 +376,6 @@ def test_the_output_goes_through_a_pipe_only_when_a_sender_sends_logs(
     if case == "ci":
         monkeypatch.setenv("CI", "true")
     monkeypatch.setattr(lifecycle.subprocess, "Popen", Started)
-    monkeypatch.setattr(lifecycle, "copy_output", lambda child, log: None)
     Started.calls = []
     assert lifecycle.run_job("report", "windows", ["app"], project / "report") == 0
     piped = "stdout" in Started.calls[0]
@@ -504,7 +505,9 @@ def test_a_full_disk_stops_only_the_log_and_the_command_keeps_printing(tmp_path,
 
     monkeypatch.setattr(type(log), "open", lambda self, *args, **kwargs: (
         Full() if self == log else real_open(self, *args, **kwargs)))
-    copier = lifecycle.copy_output(child, log)
+    children = queue.Queue(1)
+    children.put(child)
+    copier = lifecycle.copy_output(children, log)
     assert child.wait(timeout=30) == 0
     copier.join(10)
     assert not copier.is_alive()
@@ -529,7 +532,9 @@ def test_a_broken_stdout_stops_only_the_printing_and_the_log_keeps_everything(
             raise BrokenPipeError(32, "Broken pipe")
 
     monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(Broken()))
-    copier = lifecycle.copy_output(child, log)
+    children = queue.Queue(1)
+    children.put(child)
+    copier = lifecycle.copy_output(children, log)
     try:
         assert child.wait(timeout=20) == 0
     finally:
@@ -552,7 +557,9 @@ def test_a_closed_stdout_stops_only_the_printing_and_the_command_never_blocks(
     closed.close()
     monkeypatch.setattr(sys, "stdout", closed)
     try:
-        copier = lifecycle.copy_output(child, log)
+        children = queue.Queue(1)
+        children.put(child)
+        copier = lifecycle.copy_output(children, log)
         assert child.wait(timeout=20) == 0
     finally:
         child.kill()
@@ -571,7 +578,9 @@ def test_the_log_stops_one_byte_over_the_upload_limit_and_the_output_goes_on(
                              stderr=subprocess.STDOUT)
     log = tmp_path / "run.log"
     monkeypatch.setattr(managed_services, "MAX_UPLOAD_BYTES", 100)
-    copier = lifecycle.copy_output(child, log)
+    children = queue.Queue(1)
+    children.put(child)
+    copier = lifecycle.copy_output(children, log)
     try:
         assert child.wait(timeout=20) == 0
     finally:
@@ -666,7 +675,9 @@ def test_a_log_pdt_cannot_open_stops_only_the_log_and_the_command_never_blocks(
         return real_open(self, *args, **kwargs)
 
     monkeypatch.setattr(type(log), "open", refused)
-    copier = lifecycle.copy_output(child, log)
+    children = queue.Queue(1)
+    children.put(child)
+    copier = lifecycle.copy_output(children, log)
     try:
         assert child.wait(timeout=20) == 0
     finally:
@@ -678,7 +689,7 @@ def test_a_log_pdt_cannot_open_stops_only_the_log_and_the_command_never_blocks(
     assert "pdt cannot keep the output of this run for AutoIDM" in " ".join((out + err).split())
 
 
-def test_a_reader_thread_pdt_cannot_start_copies_the_output_and_keeps_the_exit_code(
+def test_a_reader_thread_pdt_cannot_start_leaves_the_output_unpiped_and_keeps_the_exit_code(
         project, backend, warned, monkeypatch, capfd):
     url, seen, _answers = backend
     project_with(project, ALL_ON)
@@ -690,14 +701,26 @@ def test_a_reader_thread_pdt_cannot_start_copies_the_output_and_keeps_the_exit_c
             raise RuntimeError("can't start new thread")
         real_start(self)
 
+    real_popen = subprocess.Popen
+    started = []
+
+    def recorded(command, **kwargs):
+        started.append(kwargs)
+        return real_popen(command, **kwargs)
+
     monkeypatch.setattr(threading.Thread, "start", at_the_limit)
+    monkeypatch.setattr(lifecycle.subprocess, "Popen", recorded)
     script = "import sys\nfor i in range(20000):\n    print('line', i)\nsys.exit(3)\n"
     assert lifecycle.run_job("report", "windows", [sys.executable, "-c", script],
                              project / "report") == 3
-    assert "line 19999" in capfd.readouterr().out
+    console.drain()
+    out, err = capfd.readouterr()
+    assert "line 19999" in out
+    assert ("pdt cannot keep the output of this run for AutoIDM: can't start new thread"
+            in " ".join((out + err).split()))
+    assert [kwargs.get("stdout") for kwargs in started] == [None]
     end = seen[1]["body"]["event"]
     assert (end["name"], end["params"]["exit_code"]) == ("job:run-failed", 3)
-    assert b"line 19999" in seen[3]["raw"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="chmod does not refuse writes on Windows")
