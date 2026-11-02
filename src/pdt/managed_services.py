@@ -170,6 +170,21 @@ def monitored(what: str, call: Callable[[], object], default: object = None):
         return default
 
 
+def started(target: Callable[..., object], *args: object,
+            message: str = "") -> threading.Thread | None:
+    """A daemon thread that runs `target(*args)`, or None when the OS cannot start one (with
+    `message`, when given), so the caller does the work another way and the run keeps its
+    exit code."""
+    thread = threading.Thread(target=target, args=args, daemon=True)
+    try:
+        thread.start()
+    except RuntimeError as e:
+        if message:
+            console.warn(f"{message}: {console.escape(str(e))}")
+        return None
+    return thread
+
+
 def place(platform: dict) -> str | None:
     """`<provider>:<account, subscription, or project>:<region>` of a cloud provider, or None
     for the windows provider."""
@@ -310,8 +325,8 @@ _senders: dict[str, Sender | None] = {}
 
 
 def sender(app: str) -> Sender | None:
-    """The sender for `app`, or None when pdt sends nothing: no `managed_services`, the env
-    var CI is set, or no registration (with a warning)."""
+    """The find_sender result for `app`, kept for the whole process, so a refusal of one send
+    stops every later send of that app."""
     if app not in _senders:
         _senders[app] = monitored("this run", lambda: find_sender(app))
     return _senders[app]
@@ -362,10 +377,11 @@ def queue_send(found: Sender, what: str, call: Callable[[], None]) -> None:
     global _thread
     item = [found, what, call, "open"]
     with _lock:
-        _open.append(item)
         if _thread is None:
-            _thread = threading.Thread(target=_send_each, daemon=True)
-            _thread.start()
+            _thread = started(_send_each, message=f"AutoIDM did not get {what}")
+            if _thread is None:
+                return
+        _open.append(item)
         _queue.put(item)
 
 
