@@ -291,10 +291,7 @@ jobs:
           name: wingetcreate
           path: wingetcreate/WingetCreateCLI.exe
 
-  # Submit the first version by hand: `wingetcreate submit` on the
-  # winget-manifests artifact. Until it merges, this job stops before submit,
-  # so it does not open a second new-package PR. WINGET_TOKEN is a classic
-  # token with public_repo scope:
+  # WINGET_TOKEN is a classic token with public_repo scope:
   # https://github.com/microsoft/winget-create/blob/main/doc/token.md
   winget:
     needs: [windows-launcher, publish, wingetcreate]
@@ -324,6 +321,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
+          if (-not $env:WINGET_CREATE_GITHUB_TOKEN) { Write-Error 'WINGET_TOKEN is empty.' }
           gh api repos/microsoft/winget-pkgs/contents/manifests/a/AutoIDM/pdt --silent
-          if ($LASTEXITCODE -or -not $env:WINGET_CREATE_GITHUB_TOKEN) { exit 1 }
-          .\WingetCreateCLI.exe submit winget/rendered
+          if ($LASTEXITCODE) { Write-Error 'AutoIDM.pdt is not in microsoft/winget-pkgs. Submit the first version by hand from the winget-manifests artifact.' }
+          gh api "repos/microsoft/winget-pkgs/contents/manifests/a/AutoIDM/pdt/$env:VERSION" --silent
+          if (-not $LASTEXITCODE) { Write-Host "AutoIDM.pdt $env:VERSION is already in microsoft/winget-pkgs."; exit 0 }
+          .\WingetCreateCLI.exe submit --no-open winget/rendered
