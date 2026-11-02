@@ -22,7 +22,6 @@ def console_on_stdout(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def managed_senders(monkeypatch):
-    # A sender lasts for a process, and each test has its own project and registration.
     monkeypatch.setattr(managed_services, "_senders", {})
 
 
