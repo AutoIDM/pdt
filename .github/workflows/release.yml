@@ -230,12 +230,71 @@ jobs:
         with:
           files: ${{ env.MSI }}
 
+  wingetcreate:
+    if: startsWith(github.ref, 'refs/tags/')
+    continue-on-error: true
+    runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
+    env:
+      COMMIT: fb3522c2b5a5556ffe0ac70339b7e45b7c616878
+    steps:
+      - id: find
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $artifacts = (gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts?name=wingetcreate-$env:COMMIT" | ConvertFrom-Json).artifacts
+          $found = $artifacts | Where-Object { -not $_.expired -and $_.workflow_run.head_repository_id -eq $env:GITHUB_REPOSITORY_ID -and $_.workflow_run.head_branch -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+$' } | Select-Object -First 1
+          "run-id=$($found.workflow_run.id)" >> $env:GITHUB_OUTPUT
+
+      - id: reuse
+        if: steps.find.outputs.run-id
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wingetcreate-${{ env.COMMIT }}
+          path: wingetcreate
+          run-id: ${{ steps.find.outputs.run-id }}
+          github-token: ${{ github.token }}
+
+      - if: steps.reuse.outcome != 'success'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: microsoft/winget-create
+          ref: ${{ env.COMMIT }}
+          path: src
+          persist-credentials: false
+
+      - if: steps.reuse.outcome != 'success'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: src/global.json
+
+      - if: steps.reuse.outcome != 'success'
+        working-directory: src
+        run: dotnet publish src/WingetCreateCLI/WingetCreateCLI.csproj -c Release -r win-x64 --self-contained -o ../wingetcreate -p:DebugType=None -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+
+      - if: steps.reuse.outcome != 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wingetcreate-${{ env.COMMIT }}
+          path: wingetcreate/WingetCreateCLI.exe
+          retention-days: 7
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wingetcreate
+          path: wingetcreate/WingetCreateCLI.exe
+
   # The first submission of AutoIDM.pdt is a manual `wingetcreate new` from
   # the rendered manifests in the winget-manifests artifact. WINGET_TOKEN is a
   # GitHub personal access token with public_repo scope on a fork of
   # microsoft/winget-pkgs. A missing token fails only this job.
   winget:
-    needs: [windows-launcher, publish]
+    needs: [windows-launcher, publish, wingetcreate]
     if: startsWith(github.ref, 'refs/tags/')
     continue-on-error: true
     runs-on: windows-latest
@@ -253,19 +312,12 @@ jobs:
           name: winget-manifests
           path: winget/rendered/
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wingetcreate
+
       - shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
-          $PSNativeCommandUseErrorActionPreference = $true
-          $title = "Update: AutoIDM.pdt to $env:VERSION"
-          $branch = "AutoIDM.pdt-$env:VERSION"
-          $owner = gh api user --jq .login
-          gh api repos/microsoft/winget-pkgs/contents/manifests/a/AutoIDM/pdt --silent
-          gh api "repos/$owner/winget-pkgs/merge-upstream" -f branch=master --silent
-          $base = gh api "repos/$owner/winget-pkgs/commits/master" --jq .sha
-          $files = Get-ChildItem winget/rendered | ForEach-Object { @{ path = "manifests/a/AutoIDM/pdt/$env:VERSION/$($_.Name)"; mode = '100644'; type = 'blob'; content = Get-Content $_.FullName -Raw } }
-          $tree = @{ base_tree = $base; tree = @($files) } | ConvertTo-Json -Depth 3 | gh api "repos/$owner/winget-pkgs/git/trees" --input - --jq .sha
-          $commit = gh api "repos/$owner/winget-pkgs/git/commits" -f "message=$title" -f "tree=$tree" -f "parents[]=$base" --jq .sha
-          gh api "repos/$owner/winget-pkgs/git/refs" -f "ref=refs/heads/$branch" -f "sha=$commit" --silent
-          gh api repos/microsoft/winget-pkgs/pulls -f "title=$title" -f "head=${owner}:$branch" -f base=master -f "body=Release: https://github.com/AutoIDM/pdt/releases/tag/v$env:VERSION" --jq .html_url
+          .\WingetCreateCLI.exe update AutoIDM.pdt --urls "https://github.com/AutoIDM/pdt/releases/download/v$env:VERSION/pdt-windows-x64.zip" --version $env:VERSION --submit --token $env:WINGET_TOKEN
