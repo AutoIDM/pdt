@@ -112,13 +112,14 @@ def test_each_customer_has_its_own_files_in_the_registrations_folder(folder):
     assert autoidm.registration("cus_0000000003") is None
 
 
-def test_the_environment_wins_over_the_files_only_when_all_three_are_set(folder, monkeypatch):
+def test_the_environment_wins_over_the_files_only_when_all_four_are_set(folder, monkeypatch):
     registered("https://files.example")
     env_key = Ed25519PrivateKey.generate()
     monkeypatch.setenv(autoidm.ID_ENV, "ins_0000000000")
     monkeypatch.setenv(autoidm.KEY_ENV, pem(env_key).decode())
-    assert autoidm.registration(CUSTOMER).installation_id == "ins_4f8a1c2e9b"
     monkeypatch.setenv(autoidm.URL_ENV, "https://env.example/")
+    assert autoidm.registration(CUSTOMER).installation_id == "ins_4f8a1c2e9b"
+    monkeypatch.setenv(autoidm.CUSTOMER_ENV, CUSTOMER)
     found = autoidm.registration(CUSTOMER)
     assert (found.installation_id, found.api_url, found.source) == (
         "ins_0000000000", "https://env.example", autoidm.ID_ENV)
@@ -129,8 +130,91 @@ def test_a_cloud_job_finds_the_registration_in_its_env_json_secret(folder, monke
     env_key = Ed25519PrivateKey.generate()
     monkeypatch.setenv("PDT_ENV_JSON", json.dumps({
         "OTHER": "x", autoidm.ID_ENV: "ins_0000000000", autoidm.KEY_ENV: pem(env_key).decode(),
-        autoidm.URL_ENV: "https://env.example"}))
+        autoidm.URL_ENV: "https://env.example", autoidm.CUSTOMER_ENV: CUSTOMER}))
     assert autoidm.registration(CUSTOMER).installation_id == "ins_0000000000"
+
+
+def test_a_cloud_registration_for_another_customer_is_an_error(folder, monkeypatch):
+    monkeypatch.setenv("PDT_ENV_JSON", json.dumps({
+        autoidm.ID_ENV: "ins_0000000000", autoidm.KEY_ENV: pem(Ed25519PrivateKey.generate()).decode(),
+        autoidm.URL_ENV: "https://env.example", autoidm.CUSTOMER_ENV: "cus_0000000002"}))
+    with pytest.raises(autoidm.AutoidmError, match="is for cus_0000000002, and pdt.yml names"):
+        autoidm.registration(CUSTOMER)
+
+
+@pytest.mark.parametrize(("path", "answer", "said"), [
+    ("/v1/events", b"{not json", "with JSON that does not parse"),
+    ("/v1/uploads", b'{"url": "x"}', "answered /v1/uploads without key"),
+    ("/v1/uploads", b'{"url": "x", "key": "k", "fields": []}', "/v1/uploads without fields"),
+])
+def test_a_malformed_answer_is_an_autoidm_error(folder, monkeypatch, path, answer, said):
+    registered("https://api.example")
+    found = autoidm.registration(CUSTOMER)
+
+    class Answer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return answer
+
+    monkeypatch.setattr(autoidm.urllib.request, "urlopen", lambda request, timeout: Answer())
+    with pytest.raises(autoidm.AutoidmError, match=said):
+        if path == "/v1/events":
+            autoidm.post(found, path, {})
+        else:
+            autoidm.upload(found, {"filename": "a.log"}, b"x")
+
+
+def test_register_with_an_answer_missing_the_customer_writes_nothing(backend, capsys):
+    url, _seen, answers = backend
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b"}))
+    assert register_cli.register("KQ7M-2RTX", url) == 1
+    assert "AutoIDM answered /v1/register without customer_id" in capsys.readouterr().out
+    assert [p.name.startswith("pending-") for p in autoidm.folder().iterdir()] == [True]
+
+
+def test_a_retry_after_a_crash_before_the_metadata_sends_the_same_key(backend, monkeypatch):
+    url, seen, answers = backend
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+
+    write = config.write_text_atomically
+    crashes = [KeyboardInterrupt]
+
+    def crash_once(path, text):
+        if crashes:
+            raise crashes.pop()
+        write(path, text)
+
+    monkeypatch.setattr(config, "write_text_atomically", crash_once)
+    with pytest.raises(KeyboardInterrupt):
+        register_cli.register("KQ7M-2RTX", url)
+    assert not autoidm.files(CUSTOMER)[0].exists()
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+    assert register_cli.register("KQ7M-2RTX", url) == 0
+    assert seen[0]["body"]["public_key"] == seen[1]["body"]["public_key"]
+    assert autoidm.public_key(autoidm.registration(CUSTOMER).key) == seen[0]["body"]["public_key"]
+    assert not list(autoidm.folder().glob("pending-*.key"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="icacls is real on Windows")
+def test_a_key_file_icacls_cannot_restrict_is_deleted_before_the_key_goes_in(tmp_path,
+                                                                            monkeypatch):
+    calls = []
+
+    def icacls(command, **kwargs):
+        calls.append((command[1], (tmp_path / "k.key").read_bytes()))
+        raise register_cli.subprocess.CalledProcessError(5, command)
+
+    monkeypatch.setattr(register_cli.os, "name", "nt")
+    monkeypatch.setattr(register_cli.subprocess, "run", icacls)
+    with pytest.raises(register_cli.subprocess.CalledProcessError):
+        register_cli.write_key(tmp_path / "k.key", Ed25519PrivateKey.generate())
+    assert calls == [(str(tmp_path / "k.key"), b"")]
+    assert not (tmp_path / "k.key").exists()
 
 
 def test_register_writes_a_pending_key_before_the_request_then_the_customer_files(backend,

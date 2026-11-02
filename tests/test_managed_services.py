@@ -1,5 +1,6 @@
 import io
 import json
+import subprocess
 import sys
 import zipfile
 
@@ -8,7 +9,7 @@ from conftest import add_app
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from test_autoidm import backend, folder, pem, registered  # noqa: F401
 
-from pdt import cli, config, deploy, lifecycle, managed_services
+from pdt import cli, config, console, deploy, lifecycle, managed_services
 from pdt.utils import autoidm, storage
 
 CUSTOMER = "cus_7a1c09e4b2"
@@ -230,7 +231,7 @@ def test_a_cloud_job_sends_with_the_registration_in_its_secret(project, backend,
     url, seen, answers = backend
     project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
     monkeypatch.setenv("PDT_ENV_JSON", json.dumps({
-        autoidm.ID_ENV: "ins_0000000007", autoidm.URL_ENV: url,
+        autoidm.ID_ENV: "ins_0000000007", autoidm.URL_ENV: url, autoidm.CUSTOMER_ENV: CUSTOMER,
         autoidm.KEY_ENV: pem(Ed25519PrivateKey.generate()).decode()}))
     answers.append((401, {"error": "unauthorized"}))
     assert lifecycle.run_job("report", "aws", [sys.executable, "-c", WORK, "0"],
@@ -337,3 +338,118 @@ def test_autoidm_is_not_an_alerts_type():
     assert "autoidm" not in lifecycle.TRANSPORTS
     with pytest.raises(config.ConfigError, match="alerts type 'autoidm' is not known"):
         lifecycle.parse_entry({"type": "autoidm", "events": ["all"]}, "pdt.yml")
+
+
+@pytest.mark.parametrize(("name", "sent"), [
+    ("jobs", "jobs"),
+    ("My Jobs", "My-Jobs-"),
+    ("Lønn", "L-nn-"),
+    ("..", "..-"),
+    ("a" * 129, "a" * 119 + "-"),
+])
+def test_a_name_autoidm_does_not_take_becomes_one_it_does(name, sent):
+    encoded = managed_services.backend_name(name)
+    assert encoded.startswith(sent)
+    assert managed_services.BACKEND_NAME.fullmatch(encoded)
+    assert encoded == managed_services.backend_name(name)
+
+
+def test_two_names_that_differ_only_in_the_replaced_characters_stay_apart():
+    assert managed_services.backend_name("My Jobs") != managed_services.backend_name("My-Jobs")
+
+
+def test_events_and_uploads_name_a_project_with_spaces_the_same_way(tmp_path, backend, warned,
+                                                                     monkeypatch):
+    url, seen, _answers = backend
+    spaced = tmp_path / "My Jobs"
+    spaced.mkdir()
+    monkeypatch.setenv("PDT_PROJECT", str(spaced))
+    project_with(spaced, ALL_ON)
+    registered(url)
+    assert run(spaced) == 0
+    names = {request["body"]["event"]["params"]["project"] for request in seen
+             if request["path"] == "/v1/events"}
+    names |= {request["body"]["project"] for request in seen if request["path"] == "/v1/uploads"}
+    assert names == {managed_services.backend_name("My Jobs")}
+
+
+def sender_for(project, url, text=ALL_ON):
+    project_with(project, text)
+    registered(url)
+    return managed_services.sender("report")
+
+
+PARAMS = {"project": "example", "app": "report", "run_id": "r1"}
+
+
+def test_a_log_over_the_limit_is_skipped_without_reading_it(project, backend, warned,
+                                                            monkeypatch, tmp_path, capsys):
+    url, seen, _answers = backend
+    sender = sender_for(project, url)
+    log = tmp_path / "r1.log"
+    log.write_bytes(b"x" * 11)
+    monkeypatch.setattr(managed_services, "MAX_UPLOAD_BYTES", 10)
+    monkeypatch.setattr(type(log), "read_bytes", lambda self: pytest.fail("read the whole log"))
+    sender.upload_log(log, "r1.log", PARAMS)
+    assert seen == []
+    assert "AutoIDM did not get the log r1.log" in " ".join(capsys.readouterr().out.split())
+
+
+def test_a_link_out_of_the_output_folder_is_not_uploaded(project, backend, warned, tmp_path,
+                                                         capsys):
+    url, seen, _answers = backend
+    sender = sender_for(project, url)
+    secret = tmp_path / "credentials"
+    secret.write_text("key")
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "report.csv").write_text("a,b\n")
+    (output / "creds").symlink_to(secret)
+    sender.upload_artifacts(output, "r1.zip", PARAMS)
+    raw = seen[1]["raw"]
+    data = raw[raw.index(b"PK\x03\x04"):raw.rindex(b"\r\n--")]
+    assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["report.csv"]
+    out = " ".join(capsys.readouterr().out.split())
+    assert "creds: it links to a place outside" in out.replace(str(output) + "/", "")
+
+
+def test_a_file_that_cannot_be_zipped_is_a_warning_and_keeps_the_exit_code(
+        project, backend, warned, monkeypatch, capsys):
+    url, _seen, _answers = backend
+    project_with(project, ALL_ON)
+    registered(url)
+
+    def unreadable(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", "report.csv")
+
+    monkeypatch.setattr(zipfile.ZipFile, "write", unreadable)
+    assert run(project, 3) == 3
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"AutoIDM did not get the artifacts {storage.RUN_ID}.zip: [Errno 13]" in out
+
+
+def test_a_full_disk_stops_only_the_log_and_the_command_keeps_printing(tmp_path, monkeypatch,
+                                                                       capfd):
+    script = "import sys\nfor i in range(2000):\n    print('line', i)\nsys.exit(0)\n"
+    child = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+    log = tmp_path / "run.log"
+    real_open = type(log).open
+
+    class Full(io.RawIOBase):
+        def writable(self):
+            return True
+
+        def write(self, chunk):
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(type(log), "open", lambda self, *args, **kwargs: (
+        Full() if self == log else real_open(self, *args, **kwargs)))
+    copier = lifecycle.copy_output(child, log)
+    assert child.wait(timeout=30) == 0
+    copier.join(10)
+    assert not copier.is_alive()
+    console.drain()
+    out, err = capfd.readouterr()
+    assert "line 1999" in out
+    assert (out + err).count("pdt stopped keeping the output of this run for AutoIDM") == 1

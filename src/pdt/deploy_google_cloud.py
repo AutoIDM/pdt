@@ -792,9 +792,21 @@ def run_job_identity(run_job: dict) -> tuple[str, str]:
 
 
 def secret_value(project: str, sid: str) -> str | None:
+    """The latest value of the secret, or None when it has none. A read that fails for another
+    reason stops the command, so a deploy never replaces a value it could not read."""
+    def gcloud_read():
+        proc = gcloud("secrets", "versions", "access", "latest",
+                      "--secret", sid, "--project", project, "--format=json")
+        if proc.returncode == 0:
+            return json.loads(proc.stdout or "null")
+        if not_found(proc.stderr):
+            return None
+        console.say(console.escape(proc.stderr.strip()))
+        fail(f"pdt could not read Secret Manager secret {console.value(sid)}. The current login "
+             f"needs {console.value('secretmanager.versions.access')} on it, for example through "
+             f"the role {console.value('roles/secretmanager.secretAccessor')}.")
     answer = rest_json(f"{SECRET_API}/projects/{project}/secrets/{sid}/versions/latest:access",
-                       lambda: describe_json("secrets", "versions", "access", "latest",
-                                             "--secret", sid, "--project", project))
+                       gcloud_read)
     if answer is None:
         return None
     # The API answers in standard base64 and gcloud's JSON in URL-safe base64.

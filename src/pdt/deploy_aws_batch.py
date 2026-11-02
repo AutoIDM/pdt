@@ -841,8 +841,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             try:
                 current_secret = clients["secretsmanager"].get_secret_value(
                     SecretId=names["secret"]).get("SecretString")
-            except Exception:  # noqa: BLE001 - a deleted or unreadable value holds no registration
-                current_secret = None
+            except Exception as exc:
+                if not not_found(exc):
+                    raise
         secrets.update(registration_secrets(current_secret))
         uploads = build_bucket(account, region)
         revisions = [item for item in active_job_definitions(clients["batch"], names["job_definition"])
