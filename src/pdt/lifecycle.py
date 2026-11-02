@@ -334,7 +334,7 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
             child = subprocess.Popen(command, cwd=cwd, env=child_env)
         else:
             # Python holds output to a pipe until a buffer fills, so a print() line would
-            # land after a later stderr line. The cloud images and the Windows task set the same.
+            # land after a later stderr line.
             child = subprocess.Popen(command, cwd=cwd, env={"PYTHONUNBUFFERED": "1", **child_env},
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             copier = copy_output(child, log)
@@ -368,13 +368,11 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     return code
 
 
-# How long a run waits for the rest of the command's output after the command exits. A
-# process the command started in the background can hold the pipe open.
+# A process the command started in the background can hold the pipe open.
 DRAIN_SECONDS = 2
 
 
 def copy_output(child: subprocess.Popen, log: Path) -> threading.Thread:
-    """Print the command's output as it arrives, and write it to `log` too."""
     sys.stdout.flush()
     out = sys.stdout.buffer
 

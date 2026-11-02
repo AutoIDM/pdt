@@ -39,7 +39,6 @@ SECRET_ACTIONS = ("diff", "save", "get", "set")
 STORAGE_COMMANDS = ("ls", "get", "query", "unlock", "destroy")
 # The local port `pdt gui` serves on unless --port names another.
 GUI_PORT = 8765
-# The AutoIDM backend `pdt register` talks to unless --api-url names another.
 AUTOIDM_API_URL = "https://app.autoidm.com"
 # Every cloud provider runs a job as a container image built from the app
 # folder: AWS on Fargate, Azure on Container Apps Jobs, Google Cloud on
@@ -473,8 +472,6 @@ def save_root_alerts(alerts: list[dict]) -> Path:
 
 
 def save_managed_customer(customer: str) -> Path:
-    """Add `managed_services:` with `customer:` to pdt.yml, after the last line, when pdt.yml
-    has no `managed_services:` yet."""
     path = find_project() / PROJECT_FILE
     with locked(path):
         lines = path.read_text(encoding="utf-8-sig").splitlines()
