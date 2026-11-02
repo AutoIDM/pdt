@@ -10,7 +10,7 @@ from pdt.utils import autoidm
 
 CUSTOMER = "cus_7a1c09e4b2"
 REGISTRATION = {autoidm.ID_ENV: "ins_0000000007", autoidm.KEY_ENV: "-----PEM-----",
-                autoidm.URL_ENV: "https://api.example"}
+                autoidm.URL_ENV: "https://api.example", autoidm.CUSTOMER_ENV: CUSTOMER}
 AWS = {"provider": "aws", "account": "123456789012", "region": "us-east-2"}
 
 
@@ -79,6 +79,40 @@ def test_a_deploy_keeps_the_registration_the_secret_holds(project, folder, warne
         "A": "1", **REGISTRATION}
 
 
+def test_a_deploy_replaces_a_registration_of_another_customer(project, backend, warned, capsys):
+    url, seen, answers = backend
+    managed(project)
+    registered(url)
+    other = {**REGISTRATION, autoidm.CUSTOMER_ENV: "cus_0000000002"}
+    values = {"A": "1", **deploy_common.registration_secrets(json.dumps({"A": "1", **other}))}
+    assert values == {"A": "1", **dict.fromkeys(autoidm.SECRET_NAMES, "")}
+    assert "ins_0000000007 of another customer" in " ".join(capsys.readouterr().out.split())
+    answers.append((200, {"installation_id": "ins_0000000008"}))
+    made = deploy_common.make_registration(values, AWS)
+    assert (made[autoidm.ID_ENV], made[autoidm.CUSTOMER_ENV]) == ("ins_0000000008", CUSTOMER)
+    assert seen[0]["path"] == "/v1/installations"
+
+
+def test_in_ci_a_registration_of_another_customer_is_dropped(project, folder, warned,
+                                                              monkeypatch):
+    managed(project)
+    monkeypatch.setenv("CI", "true")
+    other = {**REGISTRATION, autoidm.CUSTOMER_ENV: "cus_0000000002"}
+    assert deploy_common.registration_secrets(json.dumps({"A": "1", **other})) == {}
+    assert deploy_common.make_registration({"A": "1"}, AWS) == {"A": "1"}
+
+
+def test_an_installation_answer_without_an_id_is_a_warning(project, backend, warned, capsys):
+    url, _seen, answers = backend
+    managed(project)
+    registered(url)
+    answers.append((200, {"customer_id": CUSTOMER}))
+    assert deploy_common.make_registration(
+        {"A": "1", **dict.fromkeys(autoidm.SECRET_NAMES, "")}, AWS) == {"A": "1"}
+    assert "/v1/installations without installation_id" in " ".join(
+        capsys.readouterr().out.split())
+
+
 def test_a_deploy_without_managed_services_or_in_ci_adds_nothing(project, backend, warned,
                                                                   monkeypatch):
     url, seen, _answers = backend
@@ -112,8 +146,8 @@ def test_a_deploy_makes_a_cloud_registration_signed_by_this_computer(project, ba
     assert seen[0]["path"] == "/v1/installations"
     assert body["version"] == 1 and body["hostname"] is None
     assert body["place"] == "aws:123456789012:us-east-2"
-    assert (made["A"], made[autoidm.ID_ENV], made[autoidm.URL_ENV]) == (
-        "1", "ins_0000000008", url)
+    assert (made["A"], made[autoidm.ID_ENV], made[autoidm.URL_ENV],
+            made[autoidm.CUSTOMER_ENV]) == ("1", "ins_0000000008", url, CUSTOMER)
     key = load_pem_private_key(made[autoidm.KEY_ENV].encode(), password=None)
     assert autoidm.public_key(key) == body["public_key"]
     assert "made AutoIDM cloud registration ins_0000000008" in capsys.readouterr().out

@@ -60,7 +60,8 @@ from pdt.deploy_azure import (
     azure_settings, check_shared_names, clean_name, cli_credential_store, cost_estimate,
     deleted_vault, delete_unless_locked,
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
-    ensure_secret, ensure_store, ensure_workspace, group_can_be_deleted, held_token_store, list_remaining,
+    ensure_secret, ensure_store, ensure_workspace, granted_secret_value, group_can_be_deleted,
+    held_token_store, list_remaining,
     managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
     portal_url, purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, secret_actions, secret_name,
@@ -1188,6 +1189,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     vault_id = ensure_group_and_vault(
         settings, tuple(name for name in (*COMMON_PROVIDERS, *PROVIDERS) if not found[name]),
         vault_exists, group)
+    if vault_exists and current_secret is None and reads_registration():
+        current_secret = granted_secret_value(settings, sid)
+        values.update(registration_secrets(current_secret))
     if not registry_exists:
         console.step(f"creating ACR {console.value(settings['registry'])}")
         run_quiet("acr", "create", "--name", settings["registry"],

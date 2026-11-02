@@ -766,6 +766,27 @@ def secret_state(settings: dict[str, str], sid: str, app_name: str,
     return vault is not None, current.get("value") if current else None
 
 
+def granted_secret_value(settings: dict[str, str], sid: str) -> str | None:
+    """The secret's value, read after ensure_group_and_vault gave this login Key Vault Secrets
+    Officer, or None when the vault holds no such secret. A plan reads a secret that refuses
+    this login as none, and only a secret that is not there may lose the AutoIDM cloud
+    registration in it."""
+    url = (f"https://{settings['vault']}.vault.azure.net/secrets/{sid}"
+           f"?api-version={VAULT_API_VERSION}")
+    command = ("keyvault", "secret", "show", "--vault-name", settings["vault"])
+    for seconds in (10, 20, 40, 0):
+        try:
+            current = arm_get(access_token(VAULT_RESOURCE), url, command)
+            return current.get("value") if current else None
+        except ReadError as exc:
+            if not seconds:
+                console.say(console.escape(str(exc)))
+                fail(f"pdt could not read Key Vault secret {console.value(sid)}. The current "
+                     f"login needs the role {console.value(SECRET_ROLE)} on Key Vault "
+                     f"{console.value(settings['vault'])}.")
+            time.sleep(seconds)
+
+
 def secret_actions(sid: str, values: dict, current: str | None,
                    payload: str) -> list[console.Markup]:
     if not values:

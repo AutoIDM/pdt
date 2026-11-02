@@ -27,13 +27,18 @@ provider and for a `pdt run` on this computer:
   back from there.
 - send_artifacts: the run's storage output folder (OUTPUT_FOLDER in the app
   folder, the folder pdt.utils.storage.sync and pdt.run_powershell upload),
-  zipped as one upload, <run_id>.zip. Over MAX_UPLOAD_BYTES it is skipped with
-  a warning.
+  zipped as one upload, <run_id>.zip. A link to a place outside the folder is
+  skipped with a warning.
+
+A log or zip over MAX_UPLOAD_BYTES is skipped with a warning.
 
 `deploy.provider_step` sends app:deployed after each deploy that send_run_history
 covers, with the schedule, its time zone, the provider, and the place.
 
-A network error or an HTTP 5xx is a warning, and the run goes on. A 401 means
+Every event and upload names the project and the app by `backend_name`.
+
+A network error, an HTTP 5xx, or a file pdt cannot read or zip is a warning,
+and the run goes on with its own exit code. A 401 means
 AutoIDM refused the registration: the sender sends nothing more, the run's
 work still completes, and run_job ends the run with UNAUTHORIZED_EXIT and a
 message that names the registration (`refusal`).
@@ -44,6 +49,7 @@ lifecycle.py's script header installs.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import tempfile
@@ -63,6 +69,18 @@ UNAUTHORIZED_EXIT = 77
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 WARNED_ENV = "PDT_MANAGED_SERVICES_WARNED"
 APP_DEPLOYED = "app:deployed"
+# The project, app, run, and file names that AutoIDM takes.
+BACKEND_NAME = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9._-]{1,128}")
+
+
+def backend_name(name: str) -> str:
+    """`name` when BACKEND_NAME takes it. Else each run of other characters becomes `-`, and
+    the first 8 hex digits of the SHA-256 of `name` follow, so `My Jobs` is
+    `My-Jobs-<hash>` in every event and upload, and differs from `My-Jobs`."""
+    if BACKEND_NAME.fullmatch(name):
+        return name
+    readable = re.sub(r"[^A-Za-z0-9._-]+", "-", name)[:119]
+    return f"{readable}-{hashlib.sha256(name.encode()).hexdigest()[:8]}"
 
 
 def output_folder(app_dir: Path, run_id: str) -> Path:
@@ -167,13 +185,16 @@ class Sender:
 
     def event(self, name: str, at: str, params: dict) -> None:
         from pdt.utils import autoidm
+        params = {**params, "project": backend_name(params["project"]),
+                  "app": backend_name(params["app"])}
         body = {"version": 1, "event": {"name": name, "at": at, "params": params}}
         self.send(f"the {console.value(name)} event",
                   lambda: autoidm.post(self.registration, "/v1/events", body))
 
     def upload(self, kind: str, data: bytes, filename: str, params: dict) -> None:
         from pdt.utils import autoidm
-        body = {"kind": kind, "project": params["project"], "app": params["app"],
+        body = {"kind": kind, "project": backend_name(params["project"]),
+                "app": backend_name(params["app"]),
                 "run_id": params["run_id"], "filename": filename}
         self.send(f"the {kind} {console.value(filename)}",
                   lambda: autoidm.upload(self.registration, body, data))
@@ -189,24 +210,59 @@ class Sender:
         if self.wants("send_run_history"):
             self.event(name, now(), {**params, "duration_seconds": round(duration, 1)})
         run_id = str(params["run_id"])
-        if log is not None and log.is_file() and log.stat().st_size > 0:
-            self.upload("log", log.read_bytes(), f"{run_id}.log", params)
-        files = sorted(path for path in output.rglob("*") if path.is_file())
-        if self.wants("send_artifacts") and files and not self.refused:
-            with tempfile.TemporaryDirectory(prefix="pdt-artifacts-") as folder:
-                archive = Path(folder) / f"{run_id}.zip"
-                with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
-                    for path in files:
-                        zipped.write(path, path.relative_to(output).as_posix())
-                size = archive.stat().st_size
-                if size > MAX_UPLOAD_BYTES:
-                    console.warn(f"AutoIDM did not get the artifacts "
-                                 f"{console.value(archive.name)}: the zip is "
-                                 f"{console.size(size)}, over the "
-                                 f"{console.size(MAX_UPLOAD_BYTES)} limit.")
-                else:
-                    self.upload("artifact", archive.read_bytes(), archive.name, params)
+        if log is not None:
+            self.upload_log(log, f"{run_id}.log", params)
+        if self.wants("send_artifacts") and output.is_dir() and not self.refused:
+            try:
+                self.upload_artifacts(output, f"{run_id}.zip", params)
+            except OSError as e:
+                console.warn(f"AutoIDM did not get the artifacts {console.value(run_id + '.zip')}: "
+                             f"{console.escape(str(e))}")
         return self.refused
+
+    def upload_log(self, log: Path, filename: str, params: dict) -> None:
+        try:
+            size = log.stat().st_size
+            if size > MAX_UPLOAD_BYTES:
+                console.warn(f"AutoIDM did not get the log {console.value(filename)}: it is "
+                             f"{console.size(size)}, over the {console.size(MAX_UPLOAD_BYTES)} "
+                             "limit.")
+                return
+            with log.open("rb") as kept:
+                data = kept.read(size)
+        except OSError as e:
+            console.warn(f"AutoIDM did not get the log {console.value(filename)}: "
+                         f"{console.escape(str(e))}")
+            return
+        if data:
+            self.upload("log", data, filename, params)
+
+    def upload_artifacts(self, output: Path, filename: str, params: dict) -> None:
+        """Zip the files under `output` and upload the zip. A link that leads out of `output`
+        is skipped with a warning, so a run cannot send a file from elsewhere on the computer."""
+        root = output.resolve()
+        files = []
+        for path in sorted(output.rglob("*")):
+            if not path.resolve().is_relative_to(root):
+                console.warn(f"AutoIDM did not get {console.value(path)}: it links to a place "
+                             f"outside {console.value(output)}.")
+            elif path.is_file():
+                files.append(path)
+        if not files:
+            return
+        with tempfile.TemporaryDirectory(prefix="pdt-artifacts-") as folder:
+            archive = Path(folder) / filename
+            with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED,
+                                 strict_timestamps=False) as zipped:
+                for path in files:
+                    zipped.write(path, path.relative_to(output).as_posix())
+            size = archive.stat().st_size
+            if size > MAX_UPLOAD_BYTES:
+                console.warn(f"AutoIDM did not get the artifacts {console.value(filename)}: the "
+                             f"zip is {console.size(size)}, over the "
+                             f"{console.size(MAX_UPLOAD_BYTES)} limit.")
+                return
+            self.upload("artifact", archive.read_bytes(), filename, params)
 
     def deployed(self, params: dict, app: dict, platform: dict) -> None:
         from pdt import regions
