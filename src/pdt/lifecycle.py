@@ -36,10 +36,11 @@ and the teams type (pdt.teams) posts to a Teams channel.
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the
 end of every pdt command call, waits for all rows of SINKS at the same time: the
-alerts row waits for every open delivery for at most FLUSH_SECONDS in total, and
-the managed row for at most managed_services.EXIT_WAIT_SECONDS. An event that a
-transport did not deliver in its time, or whose `deliver` raised (with a warning
-on stderr that names the error), prints on the console marked `not delivered to <type>`. A
+alerts row waits for every open delivery for at most FLUSH_SECONDS in total, the
+managed row for at most managed_services.EXIT_WAIT_SECONDS, and the usage row for
+at most usage.EXIT_WAIT_SECONDS. An event that a transport did not deliver in its
+time, or whose `deliver` raised (with a warning on stderr that names the error),
+prints on the console marked `not delivered to <type>`. A
 transport never changes the exit code of a run, a deploy, or a destroy, and pdt emits
 no event about a failed delivery.
 
