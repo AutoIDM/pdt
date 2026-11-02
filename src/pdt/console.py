@@ -423,17 +423,19 @@ def log_line(time: str, level: str, message: str) -> None:
     _console.print(line)
 
 
-def _answer(prompt: str, markup: bool = True, password: bool = False) -> str:
+def _answer(prompt: str, markup: bool = True, password: bool = False,
+            stderr: bool = False) -> str:
     """Read one answer, then print each line that another thread printed meanwhile. On Ctrl+C
     or end of input, or when stdin is not a terminal and so shows no answer, end the
     question line first, because input() and getpass print no newline then."""
+    out = _errors if stderr else _console
     try:
-        answer = _console.input(prompt, markup=markup, password=password)
+        answer = out.input(prompt, markup=markup, password=password)
         if sys.stdin is not None and not sys.stdin.isatty():
-            _console.end_line()
+            out.end_line()
         return answer
     except (EOFError, KeyboardInterrupt):
-        _console.end_line()
+        out.end_line()
         raise
     finally:
         drain()
@@ -457,19 +459,21 @@ def secret(prompt: str) -> str:
 YES_NO = {"y": True, "yes": True, "n": False, "no": False}
 
 
-def confirm(question: str = "Proceed?", default: bool = False, choices: str = "") -> bool:
+def confirm(question: str = "Proceed?", default: bool = False, choices: str = "",
+            stderr: bool = False) -> bool:
     """Ask until the answer is y, yes, n, or no in any case; Enter takes the default.
-    `choices` replaces the [y/N] after the question.
+    `choices` replaces the [y/N] after the question. `stderr` asks on stderr, for a question
+    that a person must see when stdout goes to a pipe.
 
     End of input raises EOFError."""
     choices = escape(choices) or ("\\[Y/n]" if default else "\\[y/N]")
     while True:
-        answer = _answer(f"[bold]{escape(question)}[/] {choices} ").strip().lower()
+        answer = _answer(f"[bold]{escape(question)}[/] {choices} ", stderr=stderr).strip().lower()
         if answer == "":
             return default
         if answer in YES_NO:
             return YES_NO[answer]
-        _console.print("Please answer y or n.")
+        say("Please answer y or n.", stderr=stderr)
 
 
 def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:

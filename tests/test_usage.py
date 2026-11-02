@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pdt import cli, config, console, deploy_common, lifecycle, scaffold, usage
+from pdt import cli, config, console, deploy_common, lifecycle, scaffold, usage, watch
 
 UUID = "11111111-1111-4111-8111-111111111111"
 PROJECT = "22222222-2222-4222-8222-222222222222"
@@ -172,7 +172,7 @@ def test_do_not_track_zero_or_empty_is_not_an_opt_out(usage_on, monkeypatch, val
 
 def test_a_person_is_asked_once_and_enter_means_yes(usage_on, at_terminal, monkeypatch):
     asked = []
-    monkeypatch.setattr(console, "confirm", lambda question, default: asked.append(
+    monkeypatch.setattr(console, "confirm", lambda question, default, stderr=False: asked.append(
         (question, default)) or default)
     usage.start(["pdt", "validate"])
     monkeypatch.setattr(usage, "_resolved", False)
@@ -185,7 +185,7 @@ def test_a_person_is_asked_once_and_enter_means_yes(usage_on, at_terminal, monke
 
 
 def test_no_records_the_answer_with_no_uuid(usage_on, at_terminal, posts, monkeypatch):
-    monkeypatch.setattr(console, "confirm", lambda question, default: False)
+    monkeypatch.setattr(console, "confirm", lambda question, default, stderr=False: False)
     usage.start(["pdt", "validate"])
     assert json.loads((usage_on / "client.json").read_text()) == {"client_uuid": None,
                                                                   "asked": True}
@@ -219,6 +219,127 @@ def test_a_quiet_command_at_a_terminal_sends_nothing_through_the_real_cli(
     assert not usage_on.exists()
 
 
+def test_with_no_one_to_ask_a_refusal_saved_after_the_read_stays(usage_on, monkeypatch):
+    refusal = json.dumps({"client_uuid": None, "asked": True})
+    real_read = usage._read_client
+    reads = []
+
+    def read():
+        found = real_read()
+        if not reads:
+            usage_on.mkdir(parents=True)
+            (usage_on / "client.json").write_text(refusal)
+        reads.append(found)
+        return found
+
+    monkeypatch.setattr(usage, "_read_client", read)
+    assert usage.identity() is None
+    assert (usage_on / "client.json").read_text() == refusal
+    assert [path.name for path in usage_on.iterdir()] == ["client.json"]
+
+
+def test_with_no_one_to_ask_a_record_saved_after_the_read_is_used(usage_on, monkeypatch):
+    real_read = usage._read_client
+    reads = []
+
+    def read():
+        found = real_read()
+        if not reads:
+            usage_on.mkdir(parents=True)
+            (usage_on / "client.json").write_text(
+                json.dumps({"client_uuid": UUID, "asked": False}))
+        reads.append(found)
+        return found
+
+    monkeypatch.setattr(usage, "_read_client", read)
+    assert usage.identity().client_uuid == UUID
+
+
+def test_with_no_one_to_ask_a_bad_file_gets_a_new_record(usage_on):
+    usage_on.mkdir(parents=True)
+    (usage_on / "client.json").write_text("not json")
+    found = usage.identity().client_uuid
+    assert json.loads((usage_on / "client.json").read_text()) == {"client_uuid": found,
+                                                                  "asked": False}
+
+
+@pytest.fixture
+def stdout_piped(at_terminal, monkeypatch):
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+
+
+@pytest.mark.parametrize("argv", [["pdt", "list", "--json"], ["pdt", "list", "--js"],
+                                  ["pdt", "list", "--names"]])
+def test_a_person_with_piped_stdout_in_a_quiet_command_sends_nothing(
+        usage_on, stdout_piped, monkeypatch, argv):
+    monkeypatch.setattr("sys.argv", argv)
+    monkeypatch.setattr(console, "confirm", lambda *a, **k: pytest.fail("asked"))
+    usage.start(argv)
+    assert usage.identity() is None
+    assert not usage_on.exists()
+
+
+def test_a_person_with_piped_stdout_is_asked_on_stderr(usage_on, monkeypatch, capsys):
+    for stream, value in (("stdin", True), ("stdout", False), ("stderr", True)):
+        monkeypatch.setattr(f"sys.{stream}.isatty", lambda value=value: value)
+    monkeypatch.setattr("builtins.input", lambda *args: "n")
+    usage.start(["pdt", "list"])
+    out, err = capsys.readouterr()
+    assert usage.QUESTION in err
+    assert out == ""
+    assert json.loads((usage_on / "client.json").read_text()) == {"client_uuid": None,
+                                                                  "asked": True}
+
+
+def test_a_wrong_answer_repeats_on_stderr(usage_on, monkeypatch, capsys):
+    for stream, value in (("stdin", True), ("stdout", False), ("stderr", True)):
+        monkeypatch.setattr(f"sys.{stream}.isatty", lambda value=value: value)
+    answers = iter(("x", "y"))
+    monkeypatch.setattr("builtins.input", lambda *args: next(answers))
+    usage.start(["pdt", "list"])
+    out, err = capsys.readouterr()
+    assert "Please answer y or n." in err
+    assert out == ""
+
+
+@pytest.mark.parametrize("name", ["CI", "CLOUD_RUN_JOB", *watch.AGENT_ENVS])
+def test_ci_and_an_agent_are_not_a_person(usage_on, at_terminal, monkeypatch, name):
+    monkeypatch.setenv(name, "1")
+    assert not watch.person_at_terminal()
+
+
+def test_a_terminal_is_stdin_and_stderr(usage_on, at_terminal, monkeypatch):
+    assert watch.person_at_terminal()
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    assert watch.person_at_terminal()
+    monkeypatch.setattr("sys.stderr.isatty", lambda: False)
+    assert not watch.person_at_terminal()
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert not watch.person_at_terminal()
+
+
+def test_the_help_line_still_needs_stdout_at_a_terminal(usage_on, at_terminal, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["pdt", "validate"])
+    assert watch.can_offer()
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+    assert not watch.can_offer()
+
+
+def test_each_generated_text_field_has_the_maximum_length(usage_on, monkeypatch):
+    who = usage.Identity(UUID, None, PROJECT)
+    long_word = "x" * 200
+    monkeypatch.setattr("pdt.__version__", long_word)
+    monkeypatch.setattr(usage.os, "uname", lambda: SimpleNamespace(machine=long_word))
+    with monkeypatch.context() as patched:
+        patched.setattr(sys, "platform", long_word)
+        patched.setattr(sys, "version_info", (3, 12, long_word))
+        row = usage._row(event(), who)
+    assert {field: len(row[field]) for field in ("pdt_version", "python_version", "os",
+                                                 "architecture")} == dict.fromkeys(
+        ("pdt_version", "python_version", "os", "architecture"), usage.MAX_TEXT)
+
+
 def test_with_no_one_to_ask_it_sends_and_a_person_is_still_asked_later(usage_on, monkeypatch):
     usage.start(["pdt", "validate"])
     first = usage.identity().client_uuid
@@ -227,7 +348,7 @@ def test_with_no_one_to_ask_it_sends_and_a_person_is_still_asked_later(usage_on,
     monkeypatch.setattr(usage, "_resolved", False)
     for stream in ("stdin", "stdout", "stderr"):
         monkeypatch.setattr(f"sys.{stream}.isatty", lambda: True)
-    monkeypatch.setattr(console, "confirm", lambda question, default: True)
+    monkeypatch.setattr(console, "confirm", lambda question, default, stderr=False: True)
     usage.start(["pdt", "validate"])
     assert usage.identity().client_uuid == first
     assert json.loads((usage_on / "client.json").read_text())["asked"] is True
@@ -300,7 +421,7 @@ def test_a_bad_client_file_counts_as_no_file(usage_on, at_terminal, monkeypatch,
     usage_on.mkdir(parents=True)
     (usage_on / "client.json").write_text(record)
     asked = []
-    monkeypatch.setattr(console, "confirm", lambda question, default: asked.append(question) or True)
+    monkeypatch.setattr(console, "confirm", lambda question, default, stderr=False: asked.append(question) or True)
     usage.start(["pdt", "validate"])
     assert len(asked) == 1
     kept = json.loads((usage_on / "client.json").read_text())
@@ -425,19 +546,34 @@ def test_wait_gives_up_once_for_the_whole_process(usage_on, monkeypatch, posts):
     release.set()
 
 
-def test_every_wait_in_a_process_shares_one_deadline(usage_on, monkeypatch, posts):
+def test_a_wait_with_no_unfinished_send_uses_no_allowance(usage_on, monkeypatch, posts):
     monkeypatch.setattr(usage, "EXIT_WAIT_SECONDS", 0.5)
     usage.wait()
     time.sleep(0.55)
-    release = threading.Event()
-    monkeypatch.setattr(usage, "_post", lambda rows: release.wait(5))
+    release = threading.Timer(0.05, lambda: None)
+    release.start()
+    monkeypatch.setattr(usage, "_post", lambda rows: release.join(5))
+    usage.accept(event())
+    usage.wait()
+    assert not usage._gave_up
+
+
+def test_the_allowance_adds_up_over_each_real_wait(usage_on, monkeypatch, posts):
+    monkeypatch.setattr(usage, "EXIT_WAIT_SECONDS", 0.5)
+    first = threading.Timer(0.3, lambda: None)
+    first.start()
+    never = threading.Event()
+    monkeypatch.setattr(usage, "_post", lambda rows: first.join(5))
+    usage.accept(event())
+    usage.wait()
+    monkeypatch.setattr(usage, "_post", lambda rows: never.wait(5))
     usage.accept(event())
     began = time.monotonic()
     usage.wait()
     waited = time.monotonic() - began
-    release.set()
-    assert waited < 0.4
+    never.set()
     assert usage._gave_up
+    assert waited < 0.45
 
 
 def test_a_wait_does_not_depend_on_identity_file_work(usage_on, monkeypatch, posts):
@@ -602,6 +738,36 @@ def test_any_exception_in_job_env_means_off(usage_on, monkeypatch):
 
     monkeypatch.setattr(usage, "_resolve", fail)
     assert usage.job_env() == {usage.OFF_ENV: "false"}
+
+
+def test_a_waiter_that_does_not_start_keeps_the_result(usage_on, monkeypatch):
+    real_start = threading.Thread.start
+    tried = []
+
+    def start(thread):
+        if thread._target is usage.wait:
+            tried.append(thread)
+            raise RuntimeError("can't start new thread")
+        real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr("sys.argv", ["pdt", "--version"])
+    with pytest.raises(SystemExit) as stopped:
+        cli.main()
+    assert stopped.value.code == 0
+    assert tried != []
+
+
+def test_a_waiter_that_does_not_start_still_waits_for_its_sink(monkeypatch):
+    waited = []
+
+    def fail(thread):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", fail)
+    monkeypatch.setattr(lifecycle, "SINKS", (lifecycle.Sink("one", lambda e: None, waited.append),))
+    lifecycle.flush()
+    assert waited == [None]
 
 
 def test_a_failure_to_emit_never_changes_the_result(usage_on, monkeypatch, capsys):

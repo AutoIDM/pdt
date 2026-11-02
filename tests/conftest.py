@@ -40,7 +40,7 @@ def usage_off(monkeypatch):
     monkeypatch.setenv(usage.JOB_ENV, "")
     monkeypatch.delenv(usage.JOB_ENV)
     monkeypatch.setattr(usage, "_gave_up", False)
-    monkeypatch.setattr(usage, "_process_deadline", None)
+    monkeypatch.setattr(usage, "_waited_seconds", 0.0)
 
 
 @pytest.fixture(autouse=True)

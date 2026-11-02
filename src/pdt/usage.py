@@ -124,7 +124,7 @@ _queued: list[dict] = []
 _sending = False
 _sender: threading.Thread | None = None
 _gave_up = False
-_process_deadline: float | None = None
+_waited_seconds = 0.0
 
 
 def _is_int(value: object) -> bool:
@@ -181,6 +181,20 @@ def _replace(path: Path, text: str) -> None:
     os.replace(temporary, path)
 
 
+def _create(path: Path, text: str) -> bool:
+    """Write a new file, whole, and return False when the file exists."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}")
+    temporary.write_text(text, encoding="utf-8")
+    try:
+        os.link(temporary, path)
+        return True
+    except FileExistsError:
+        return False
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _read_client() -> dict | None:
     try:
         client = json.loads((folder() / "client.json").read_text(encoding="utf-8"))
@@ -233,7 +247,12 @@ def _resolve() -> Identity | None:
     if record is None:
         record = {"client_uuid": str(uuid.uuid4()), "asked": False}
         try:
-            _replace(folder() / "client.json", json.dumps(record))
+            if not _create(folder() / "client.json", json.dumps(record)):
+                saved = _read_client()
+                if saved is None:
+                    _replace(folder() / "client.json", json.dumps(record))
+                else:
+                    record = saved
         except OSError:
             return None
     if record["client_uuid"] is None:
@@ -276,7 +295,7 @@ def start(argv: list[str]) -> None:
                       for token in tokens for flag in NO_QUESTION_FLAGS)
         if (not skipped and not record.get("asked") and JOB_ENV not in os.environ
                 and CLIENT_ENV not in os.environ and not off() and watch.person_at_terminal()):
-            send = console.confirm(QUESTION, default=True)
+            send = console.confirm(QUESTION, default=True, stderr=True)
             client_uuid = (record.get("client_uuid") or str(uuid.uuid4())) if send else None
             _replace(folder() / "client.json",
                      json.dumps({"client_uuid": client_uuid, "asked": True}))
@@ -312,11 +331,11 @@ def _row(event, who: Identity) -> dict:
         "client_uuid": who.client_uuid,
         "project_uuid": who.project_uuid,
         "command_uuid": who.command_uuid,
-        "pdt_version": __version__,
-        "python_version": ".".join(map(str, sys.version_info[:3])),
-        "os": sys.platform,
+        "pdt_version": __version__[:MAX_TEXT],
+        "python_version": ".".join(map(str, sys.version_info[:3]))[:MAX_TEXT],
+        "os": sys.platform[:MAX_TEXT],
         "architecture": (os.uname().machine if hasattr(os, "uname")
-                         else os.environ.get("PROCESSOR_ARCHITECTURE", "")),
+                         else os.environ.get("PROCESSOR_ARCHITECTURE", ""))[:MAX_TEXT],
         "ci": os.environ.get("CI", "").strip() != "",
         "params": {key: value for key, value in event.params.items() if _allowed(key, value)},
     }
@@ -373,14 +392,17 @@ def _send_each() -> None:
 
 
 def wait(at_most: float | None = None) -> None:
-    global _gave_up, _process_deadline
+    global _gave_up, _waited_seconds
     with _changed:
-        if _process_deadline is None:
-            _process_deadline = time.monotonic() + EXIT_WAIT_SECONDS
-        limit = _process_deadline - time.monotonic()
+        if _gave_up or (not _queued and not _sending):
+            return
+        limit = EXIT_WAIT_SECONDS - _waited_seconds
         if at_most is not None:
             limit = min(limit, at_most)
-        if not _gave_up and not _changed.wait_for(lambda: not _queued and not _sending, limit):
+        began = time.monotonic()
+        finished = _changed.wait_for(lambda: not _queued and not _sending, limit)
+        _waited_seconds += time.monotonic() - began
+        if not finished:
             _gave_up = True
             _queued.clear()
 
