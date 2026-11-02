@@ -203,13 +203,10 @@ def task_arguments(app: dict) -> str:
 
 
 def run_as(app: dict) -> str:
-    """The group managed service account the task runs as, or "" for SYSTEM."""
     return str(app["platform"].get("run_as") or "").strip()
 
 
 def account_reads(app: dict, uv: str, on_machine_path: bool) -> list[tuple[str, Path, str]]:
-    """(what, path, icacls rights) that the run_as account must read and SYSTEM reads
-    already; empty for SYSTEM. The scripts put RUNNER's parent's parent on sys.path."""
     if run_as(app) == "":
         return []
     reads = [("the project folder", config.find_project(), "(OI)(CI)RX"),
@@ -356,9 +353,6 @@ def _deploying_user() -> str:
 
 
 def _folder_script(app: dict, user: str, reads: list[tuple[str, Path, str]] = ()) -> str:
-    """Create the app folder with the rules its files need: SYSTEM and the run_as account
-    (the task) have full control, and the deploying user can change and delete what the
-    task writes. Then let the run_as account read each of `reads` (account_reads)."""
     folders = [app_folder(app["name"]), logs_folder(app["name"])]
     if app["storage"]:
         folders.append(storage_folder(app["name"]))
@@ -384,7 +378,6 @@ def _folder_script(app: dict, user: str, reads: list[tuple[str, Path, str]] = ()
 
 
 def _account_problem(powershell: str, account: str) -> str:
-    """Why Windows cannot run a task as `account`, or "" when it finds the account."""
     script = (f"([Security.Principal.NTAccount]{_ps_string(account)}).Translate("
               "[Security.Principal.SecurityIdentifier]).Value")
     try:
