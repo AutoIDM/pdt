@@ -10,8 +10,10 @@ key, and a retry that finds that key and installation already saved finishes pdt
 Each key file is written whole or not at all, and a pending key pdt cannot read counts as none. A lock on the
 folder keeps two registers on one computer apart. On Windows the folder is
 %ProgramData%\\pdt\\registrations, and before it writes a key, pdt limits the folder,
-and so each file made in it, to SYSTEM (the scheduled task) and
-Administrators, so the command needs an administrator terminal.
+and so each file made in it, to SYSTEM (the scheduled task), Administrators, and
+read access for the account that runs the command, so that account's terminals
+without Run as administrator can read the key. The command needs an administrator
+terminal. Each run replaces the access list, so only the last account to run it reads.
 A computer that already holds another registration for the customer keeps it; the
 command stops and names the file. Either way, in a project whose pdt.yml has no
 `managed_services`, it adds `managed_services:` with the customer.
@@ -32,32 +34,40 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pdt import __version__, config, console, managed_services
 from pdt.utils import autoidm
 
-# Owner Administrators, and an access list that inherits nothing and gives full control of the
-# folder and of each file and folder made in it to SYSTEM and Administrators alone.
-FOLDER_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+# Owner Administrators, and an access list that inherits nothing and gives the folder and each
+# file and folder made in it full control to SYSTEM and Administrators, and read to {user}, the
+# SID of the account that runs pdt register.
+FOLDER_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;{user})"
 FOLDER_ENV = "PDT_REGISTRATIONS_FOLDER"
 # .NET calls, not Get-Acl and Set-Acl: Windows PowerShell started under PowerShell 7 inherits its
-# PSModulePath and cannot load the module that holds those two commands.
+# PSModulePath and cannot load the module that holds those two commands. It prints the access
+# list it asks for, then the one it reads back, both as Windows prints them, because Windows
+# writes some SIDs in two letters (the built-in Administrator account as LA).
 SET_FOLDER_SDDL = (f"$folder = [IO.DirectoryInfo]$env:{FOLDER_ENV}; "
+                   f"$sddl = '{FOLDER_SDDL}'.Replace('{{user}}', "
+                   "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value); "
                    "$acl = $folder.GetAccessControl(); "
-                   f"$acl.SetSecurityDescriptorSddlForm('{FOLDER_SDDL}'); "
+                   "$acl.SetSecurityDescriptorSddlForm($sddl); "
                    "$folder.SetAccessControl($acl); "
+                   "(New-Object Security.AccessControl.RawSecurityDescriptor $sddl)"
+                   ".GetSddlForm('Owner, Access'); "
                    "$folder.GetAccessControl().GetSecurityDescriptorSddlForm('Owner, Access')")
 
 
 def restrict_folder(folder: Path) -> None:
     """On Windows, replace the owner and the whole access list of `folder` with FOLDER_SDDL,
-    so each file made in it can be opened only by SYSTEM and Administrators from the moment it
-    exists. It reads the folder back and raises RuntimeError when it does not match."""
+    so from the moment each file made in it exists, SYSTEM and Administrators can open it and
+    the account that runs this can read it. It reads the folder back and raises RuntimeError
+    when it does not match."""
     if os.name != "nt":
         return
-    found = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+    shown = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
                             SET_FOLDER_SDDL], env={**os.environ, FOLDER_ENV: str(folder)},
                            stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                           check=True).stdout.strip()
-    if found != FOLDER_SDDL:
-        raise RuntimeError(f"its owner and access list are {found or 'unknown'}, "
-                           f"not {FOLDER_SDDL}")
+                           check=True).stdout.split()
+    if len(shown) != 2 or shown[0] != shown[1]:
+        raise RuntimeError(f"its owner and access list are {shown[-1] if shown else 'unknown'}, "
+                           f"not {shown[0] if len(shown) == 2 else FOLDER_SDDL}")
 
 
 def write_key(path: Path, key: Ed25519PrivateKey) -> None:
@@ -80,8 +90,9 @@ def register(code: str, api_url: str) -> int:
     try:
         restrict_folder(folder)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as e:
-        console.error(f"pdt could not limit {console.value(folder)} to SYSTEM and "
-                      f"Administrators, so it wrote no key: {console.escape(str(e))}")
+        console.error(f"pdt could not limit {console.value(folder)} to SYSTEM, "
+                      f"Administrators, and your account, so it wrote no key: "
+                      f"{console.escape(str(e))}")
         return 1
     digest = hashlib.sha256(code.replace("-", "").encode()).hexdigest()
     pending = folder / f"pending-{digest[:16]}.key"
