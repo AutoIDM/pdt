@@ -36,11 +36,13 @@ from pdt.utils import autoidm
 # folder and of each file and folder made in it to SYSTEM and Administrators alone.
 FOLDER_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
 FOLDER_ENV = "PDT_REGISTRATIONS_FOLDER"
-SET_FOLDER_SDDL = (f"$acl = Get-Acl -LiteralPath $env:{FOLDER_ENV}; "
+# .NET calls, not Get-Acl and Set-Acl: Windows PowerShell started under PowerShell 7 inherits its
+# PSModulePath and cannot load the module that holds those two commands.
+SET_FOLDER_SDDL = (f"$folder = [IO.DirectoryInfo]$env:{FOLDER_ENV}; "
+                   "$acl = $folder.GetAccessControl(); "
                    f"$acl.SetSecurityDescriptorSddlForm('{FOLDER_SDDL}'); "
-                   f"Set-Acl -LiteralPath $env:{FOLDER_ENV} -AclObject $acl; "
-                   f"(Get-Acl -LiteralPath $env:{FOLDER_ENV})"
-                   ".GetSecurityDescriptorSddlForm('Owner, Access')")
+                   "$folder.SetAccessControl($acl); "
+                   "$folder.GetAccessControl().GetSecurityDescriptorSddlForm('Owner, Access')")
 
 
 def restrict_folder(folder: Path) -> None:
