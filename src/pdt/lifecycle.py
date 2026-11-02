@@ -13,15 +13,10 @@
 
 usage: lifecycle.py -- <command...>
 
-`emit` builds one Event and gives it to each row of SINKS, one row per sender.
-A Sink is a name, `accept(event)`, which selects and queues the event and returns
-at once, and `wait(seconds)`, which waits for the sink's queue, up to `seconds` or
-by default the sink's own time limit. Inside one sink, events stay in order.
-
-The alerts sink gives each event to every entry of the app's `alerts:` list that
-receives it, once per entry and in config order, through the entry's type
-in TRANSPORTS. An entry receives an event that matches at least one name in
-its `events` and no name in its `exclude-events`; a name may hold a `*`
+`emit` gives each event to each row of SINKS. The alerts row gives it to every
+entry of the app's `alerts:` list that receives it, once per entry and in config
+order, through the entry's type in TRANSPORTS. An entry receives an event that
+matches at least one name in its `events` and no name in its `exclude-events`; a name may hold a `*`
 glob, and `all` is every event except a `cli:` event. An event that no entry
 receives this way is unhandled, and goes to each entry with `unhandled` in its
 `events` (its `exclude-events` still apply); a `cli:` event is never unhandled,
@@ -40,12 +35,11 @@ and the teams type (pdt.teams) posts to a Teams channel.
 `deliver` must not change the event. The console prints at once; every
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the
-end of every pdt command call, waits for all sinks in parallel: every limit starts
-at the same time, so the wait is the longest unfinished sink. The alerts sink
-waits for every open delivery for at most
-FLUSH_SECONDS in total. An event that a transport did not deliver in that
-time, or whose `deliver` raised (with a warning on stderr that names the
-error), prints on the console marked `not delivered to <type>`. A
+end of every pdt command call, waits for all rows of SINKS at the same time: the
+alerts row waits for every open delivery for at most FLUSH_SECONDS in total, and
+the managed row for at most managed_services.EXIT_WAIT_SECONDS. An event that a
+transport did not deliver in its time, or whose `deliver` raised (with a warning
+on stderr that names the error), prints on the console marked `not delivered to <type>`. A
 transport never changes the exit code of a run, a deploy, or a destroy, and pdt emits
 no event about a failed delivery.
 
@@ -67,16 +61,14 @@ script around the app's command, from the app folder, so the events land in
 the run's log. A SIGKILL, a Windows task that Task Scheduler ends, or a
 power loss stops pdt at once, so no event fires.
 
-When the project sets `managed_services`, the managed sink gets
-job:run-started and app:deploy-completed, and `run_job` also gives the run to
+When the project sets `managed_services`, `run_job` gives the run to
 pdt.managed_services, the same way on every provider: the end event, the
 command's output (which it then also writes to a file as it prints it), and the
 run's storage output folder, which it names to the command in PDT_OUTPUT_DIR
-(managed_services.output_folder). `run_job` sends these and waits for them before it
-emits the end event, so the alert and the exit code say the same when AutoIDM refuses
-the registration. A log or folder pdt cannot make, or any other error in a call to
-managed_services (`managed_services.monitored`), costs only what AutoIDM gets, never the
-run.
+(managed_services.output_folder). `run_job` sends these and waits for them
+before it emits the end event, so the alert and the exit code say the same when
+AutoIDM refuses the registration. A log or folder pdt cannot make, or any other
+error in a call to managed_services, costs only what AutoIDM gets, never the run.
 """
 
 from __future__ import annotations
@@ -266,8 +258,6 @@ def _fall_back(item: list) -> None:
 
 
 def wait_alerts(seconds: float | None = None) -> None:
-    """Wait at most `seconds`, by default FLUSH_SECONDS, for every open delivery, then print
-    each one still open on the console, after each line that a delivery thread printed."""
     limit = FLUSH_SECONDS if seconds is None else seconds
     with _lock:
         _lock.wait_for(lambda: all(item[3] != "open" for item in _open), limit)
@@ -320,14 +310,15 @@ SINKS = (Sink("alerts", accept_alerts, wait_alerts),
 
 
 def flush() -> None:
-    """Wait for all sinks in parallel, each up to its own time limit. A Ctrl+C ends the wait
-    early."""
+    """On Windows before Python 3.14, a join with no timeout does not see a Ctrl+C, so each
+    join is short."""
     waits = [threading.Thread(target=sink.wait, args=(None,), daemon=True) for sink in SINKS]
     for waiting in waits:
         waiting.start()
     try:
         for waiting in waits:
-            waiting.join()
+            while waiting.is_alive():
+                waiting.join(managed_services.WAIT_STEP_SECONDS)
     except KeyboardInterrupt:
         for sink in SINKS:
             sink.wait(0)
@@ -398,6 +389,7 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
         else:
             name = JOB_RUN_COMPLETED if code == 0 else JOB_RUN_FAILED
             details = {"exit_code": code}
+        signal.signal(signal.SIGINT, previous[signal.SIGINT])
         if managed_services.monitored("the end of this run", lambda: managed_services.end_run(
                 run, name, {**params, **details, "state": state}, time.monotonic() - began),
                 False):

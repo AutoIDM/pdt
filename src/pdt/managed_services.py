@@ -36,18 +36,8 @@ A log or zip over MAX_UPLOAD_BYTES is skipped with a warning.
 
 Every event and upload names the project and the app by `backend_name`.
 
-`accept` is the managed row of lifecycle.SINKS. It selects job:run-started and
-app:deploy-completed, which it sends as app:deployed, and returns at once. One
-thread sends everything in order. `lifecycle.run_job` calls `start_run` before
-the command runs and `end_run` after it exits. `end_run` puts the end event, the
-log, and the artifacts after what is already in the queue, and returns when
-all of it is sent or EXIT_WAIT_SECONDS end, so run_job knows of a refusal before
-it emits the end event for the alerts. `accept` does not select the end events.
-`wait` gives up on what is not sent when its time limit ends, with one warning
-for each item.
-
 A network error, an HTTP 5xx, a file pdt cannot read or zip, or a late send is
-a warning, and the run goes on with its own exit code. A 401 means AutoIDM
+one warning, and the run goes on with its own exit code. A 401 means AutoIDM
 refused the registration: the sender sends nothing more, the run's work still
 completes, and run_job ends the run with UNAUTHORIZED_EXIT and a message that
 names the registration (`refusal`).
@@ -64,6 +54,7 @@ import queue
 import re
 import tempfile
 import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -85,6 +76,7 @@ APP_DEPLOY_COMPLETED = "app:deploy-completed"
 APP_DEPLOYED = "app:deployed"
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 EXIT_WAIT_SECONDS = 15.0
+WAIT_STEP_SECONDS = 0.1
 # The project, app, run, and file names that AutoIDM takes.
 BACKEND_NAME = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9._-]{1,128}")
 
@@ -171,8 +163,6 @@ def warn_once(message: str) -> None:
 
 
 def monitored(what: str, call: Callable[[], object], default: object = None):
-    """`call()`, or `default` after one warning when it raises: a failure in what pdt sends to
-    AutoIDM never changes the run or its exit code."""
     try:
         return call()
     except Exception as e:
@@ -200,35 +190,30 @@ class Sender:
     def wants(self, key: str) -> bool:
         return sends(self.settings, key, self.app)
 
-    def send(self, what: str, call) -> None:
-        """Make one request; a 401 marks the registration refused, and any other failure is a
-        warning. After a 401 it sends nothing."""
+    def send(self, call) -> None:
         from pdt.utils import autoidm
         if self.refused:
             return
         try:
             call()
         except autoidm.AutoidmError as e:
-            if e.status == 401:
-                self.refused = True
-            else:
-                console.warn(f"AutoIDM did not get {what}: {console.escape(str(e))}")
+            if e.status != 401:
+                raise
+            self.refused = True
 
     def event(self, name: str, at: str, params: dict) -> None:
         from pdt.utils import autoidm
         params = {**params, "project": backend_name(params["project"]),
                   "app": backend_name(params["app"])}
         body = {"version": 1, "event": {"name": name, "at": at, "params": params}}
-        self.send(f"the {console.value(name)} event",
-                  lambda: autoidm.post(self.registration, "/v1/events", body))
+        self.send(lambda: autoidm.post(self.registration, "/v1/events", body))
 
     def upload(self, kind: str, data: bytes, filename: str, params: dict) -> None:
         from pdt.utils import autoidm
         body = {"kind": kind, "project": backend_name(params["project"]),
                 "app": backend_name(params["app"]),
                 "run_id": params["run_id"], "filename": filename}
-        self.send(f"the {kind} {console.value(filename)}",
-                  lambda: autoidm.upload(self.registration, body, data))
+        self.send(lambda: autoidm.upload(self.registration, body, data))
 
     def upload_log(self, log: Path, filename: str, params: dict) -> None:
         try:
@@ -321,7 +306,6 @@ def in_ci() -> bool:
     return os.environ.get("CI", "").strip() != ""
 
 
-# One sender for each app, so a refusal lasts for the whole process.
 _senders: dict[str, Sender | None] = {}
 
 
@@ -347,7 +331,6 @@ def find_sender(app: str) -> Sender | None:
     return None if registration is None else Sender(app, found, registration)
 
 
-# Each item is [sender, what, call, state]; state goes from "open" to "done" or "late".
 _queue: queue.Queue = queue.Queue()
 _open: list[list] = []
 _lock = threading.Condition()
@@ -367,9 +350,8 @@ def _send_each() -> None:
                 call()
         except Exception as e:
             with _lock:
-                late = item[3] != "open"
-            if not late:
-                console.warn(f"AutoIDM did not get {what}: {console.escape(str(e))}")
+                if item[3] == "open":
+                    console.warn(f"AutoIDM did not get {what}: {console.escape(str(e))}")
         with _lock:
             if item[3] == "open":
                 item[3] = "done"
@@ -388,11 +370,17 @@ def queue_send(found: Sender, what: str, call: Callable[[], None]) -> None:
 
 
 def wait(seconds: float | None = None) -> None:
-    """Wait at most `seconds`, by default EXIT_WAIT_SECONDS, for everything in the queue, then
-    give up on what is not sent, with one warning for each item."""
-    limit = EXIT_WAIT_SECONDS if seconds is None else seconds
+    """On Windows before Python 3.14, a long wait on a lock does not see a Ctrl+C, so each wait
+    is short."""
+    deadline = time.monotonic() + (EXIT_WAIT_SECONDS if seconds is None else seconds)
     with _lock:
-        _lock.wait_for(lambda: all(item[3] != "open" for item in _open), limit)
+        try:
+            while time.monotonic() < deadline:
+                if _lock.wait_for(lambda: all(item[3] != "open" for item in _open),
+                                  min(WAIT_STEP_SECONDS, deadline - time.monotonic())):
+                    break
+        except KeyboardInterrupt:
+            pass
         for item in _open:
             if item[3] == "open":
                 item[3] = "late"
@@ -403,7 +391,6 @@ def wait(seconds: float | None = None) -> None:
 
 
 def accept(event) -> None:
-    """Select and queue one event of lifecycle.emit."""
     if event.name not in (JOB_RUN_STARTED, APP_DEPLOY_COMPLETED):
         return
     app = str(event.params["app"])
@@ -438,8 +425,6 @@ class Run:
 
 
 def start_run(app: str, run_id: str, app_dir: Path) -> Run:
-    """What run_job keeps for AutoIDM: the file for the command's output and the run's output
-    folder, each only when the project sends it. The caller deletes `scratch` after the run."""
     found = sender(app)
     if found is None or not (found.wants("send_logs") or found.wants("send_artifacts")):
         return Run(found)
@@ -458,8 +443,6 @@ def start_run(app: str, run_id: str, app_dir: Path) -> Run:
 
 
 def end_run(run: Run, name: str, params: dict, duration: float) -> bool:
-    """Send the end event, the log, and the artifacts of a run, after what is in the queue, for
-    at most EXIT_WAIT_SECONDS in total. True when AutoIDM refused the registration."""
     found = run.sender
     if found is None:
         return False

@@ -307,6 +307,31 @@ def test_starting_a_run_does_not_wait_for_the_send_and_the_end_keeps_the_order(
         "job:run-started", "job:run-completed"]
 
 
+def test_a_send_that_fails_after_the_limit_does_not_warn_a_second_time(project, backend, warned,
+                                                                       monkeypatch, capsys):
+    url, _seen, _answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
+    registered(url)
+    release, finished = threading.Event(), threading.Event()
+
+    def fails_late(found, where, body):
+        release.wait(5)
+        raise autoidm.AutoidmError("AutoIDM answered 500")
+
+    monkeypatch.setattr(autoidm, "post", fails_late)
+    found = managed_services.sender("report")
+    managed_services.queue_send(found, "the slow event", lambda: found.event(
+        "job:run-started", "2026-11-02T00:00:00Z", {"project": "example", "app": "report"}))
+    managed_services.wait(0.1)
+    managed_services.queue_send(found, "the next item", finished.set)
+    release.set()
+    assert finished.wait(5)
+    managed_services.wait()
+    out = " ".join(capsys.readouterr().out.split())
+    assert out.count("AutoIDM did not get the slow event") == 1
+    assert "pdt stopped waiting" in out
+
+
 def test_a_late_log_and_artifact_are_warnings_inside_the_limit_and_keep_the_exit_code(
         project, backend, warned, monkeypatch, capsys):
     url, _seen, _answers = backend
