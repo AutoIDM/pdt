@@ -144,6 +144,42 @@ def test_all_and_unhandled_are_not_event_names(project, name):
         lifecycle.emit(name)
 
 
+def test_all_and_unhandled_do_not_receive_a_cli_event_and_its_own_name_does(project, monkeypatch):
+    seen = record(monkeypatch)
+    lifecycle.emit("cli:command-started")
+    (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [all]\n")
+    lifecycle.emit("cli:command-started")
+    assert seen == []
+    (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [cli:*]\n")
+    lifecycle.emit("cli:command-started")
+    assert seen == [("cli:command-started", False)]
+
+
+def test_emit_gives_one_event_to_every_sink(project, monkeypatch):
+    seen = {"one": [], "two": []}
+    monkeypatch.setattr(lifecycle, "SINKS", tuple(
+        lifecycle.Sink(name, got.append, lambda seconds: None) for name, got in seen.items()))
+    event = lifecycle.emit("job:paused", app="report")
+    assert seen == {"one": [event], "two": [event]}
+
+
+def test_flush_waits_for_the_longest_sink_and_not_the_sum(project, monkeypatch):
+    finished = []
+
+    def waits(name):
+        def wait(seconds):
+            time.sleep(0.4)
+            finished.append(name)
+        return wait
+
+    monkeypatch.setattr(lifecycle, "SINKS", tuple(
+        lifecycle.Sink(name, lambda event: None, waits(name)) for name in ("one", "two")))
+    began = time.monotonic()
+    lifecycle.flush()
+    assert time.monotonic() - began < 0.7
+    assert sorted(finished) == ["one", "two"]
+
+
 def test_the_console_prints_an_event_as_one_bold_alert_sentence_handled_or_not(
         project, monkeypatch):
     out = colour_output(monkeypatch)
