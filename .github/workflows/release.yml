@@ -238,6 +238,7 @@ jobs:
       actions: read
       contents: read
     env:
+      # Manifest schema 1.28.0 support (microsoft/winget-create#711) is not in a release; v1.12.13.0 is the latest.
       COMMIT: fb3522c2b5a5556ffe0ac70339b7e45b7c616878
     steps:
       - id: find
@@ -278,6 +279,7 @@ jobs:
         run: dotnet publish src/WingetCreateCLI/WingetCreateCLI.csproj -c Release -r win-x64 --self-contained -o ../wingetcreate -p:DebugType=None -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
 
       - if: steps.reuse.outcome != 'success'
+        continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wingetcreate-${{ env.COMMIT }}
@@ -289,10 +291,11 @@ jobs:
           name: wingetcreate
           path: wingetcreate/WingetCreateCLI.exe
 
-  # The first submission of AutoIDM.pdt is a manual `wingetcreate new` from
-  # the rendered manifests in the winget-manifests artifact. WINGET_TOKEN is a
-  # GitHub personal access token with public_repo scope on a fork of
-  # microsoft/winget-pkgs. A missing token fails only this job.
+  # Submit the first version by hand: `wingetcreate submit` on the
+  # winget-manifests artifact. Until it merges, this job stops before submit,
+  # so it does not open a second new-package PR. WINGET_TOKEN is a classic
+  # token with public_repo scope:
+  # https://github.com/microsoft/winget-create/blob/main/doc/token.md
   winget:
     needs: [windows-launcher, publish, wingetcreate]
     if: startsWith(github.ref, 'refs/tags/')
@@ -318,6 +321,9 @@ jobs:
 
       - shell: pwsh
         env:
-          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
         run: |
-          .\WingetCreateCLI.exe update AutoIDM.pdt --urls "https://github.com/AutoIDM/pdt/releases/download/v$env:VERSION/pdt-windows-x64.zip" --version $env:VERSION --submit --token $env:WINGET_TOKEN
+          gh api repos/microsoft/winget-pkgs/contents/manifests/a/AutoIDM/pdt --silent
+          if ($LASTEXITCODE -or -not $env:WINGET_CREATE_GITHUB_TOKEN) { exit 1 }
+          .\WingetCreateCLI.exe submit winget/rendered
