@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from rich.text import Text
 
-from pdt import console, deploy_common, deploy_google_cloud, watch
+from pdt import console, deploy_common, deploy_google_cloud, managed_services, watch
 
 # verify/scripts holds the live verification framework. It ships with the
 # user's project, not with the wheel, so it is not importable as a package.
@@ -19,6 +19,12 @@ def console_on_stdout(monkeypatch):
     monkeypatch.setattr(console._console, "stderr", False)
     monkeypatch.setattr(console, "_warned", set())
     monkeypatch.setenv("PDT_CONFIG_YML_WARNED", "")
+
+
+@pytest.fixture(autouse=True)
+def managed_senders(monkeypatch):
+    # A sender lasts for a process, and each test has its own project and registration.
+    monkeypatch.setattr(managed_services, "_senders", {})
 
 
 @pytest.fixture(autouse=True)
