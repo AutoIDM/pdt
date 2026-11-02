@@ -199,8 +199,10 @@ def upload(found: Registration, body: dict, data: bytes) -> str:
     and filename), send `data` there, and return its key."""
     place = answered(post(found, "/v1/uploads", {"version": 1, **body, "size": len(data)}),
                      "/v1/uploads", "url", "key")
-    if not isinstance(place.get("fields"), dict):
-        raise AutoidmError("AutoIDM answered /v1/uploads without fields")
+    fields = place.get("fields")
+    if not (isinstance(fields, dict)
+            and all(isinstance(value, str) for item in fields.items() for value in item)):
+        raise AutoidmError("AutoIDM answered /v1/uploads without fields of text")
     try:
         target = urllib.parse.urlsplit(place["url"])
         local = target.hostname in ("127.0.0.1", "localhost")
@@ -211,11 +213,14 @@ def upload(found: Registration, body: dict, data: bytes) -> str:
         raise AutoidmError(f"AutoIDM answered /v1/uploads with the URL {place['url']!r}, which "
                            "is not https")
     boundary = uuid.uuid4().hex
-    parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
-             .encode() for name, value in place["fields"].items()]
-    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
-                 f'filename="{body["filename"]}"\r\n'
-                 'Content-Type: application/octet-stream\r\n\r\n'.encode() + data + b"\r\n")
+    try:
+        parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+                 f'{value}\r\n'.encode() for name, value in fields.items()]
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+                     f'filename="{body["filename"]}"\r\n'
+                     'Content-Type: application/octet-stream\r\n\r\n'.encode() + data + b"\r\n")
+    except UnicodeEncodeError as e:
+        raise AutoidmError(f"AutoIDM answered /v1/uploads with fields pdt cannot send: {e}") from None
     send(place["url"], b"".join(parts) + f"--{boundary}--\r\n".encode(),
          {"Content-Type": f"multipart/form-data; boundary={boundary}"}, UPLOAD_TIMEOUT_SECONDS)
     return place["key"]
