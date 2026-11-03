@@ -17,12 +17,16 @@ def project(tmp_path, monkeypatch):
     return tmp_path
 
 
+TASK_PATH = "\\pdt\\pdt-my-report"
+
+
 def windows_app(project, monkeypatch):
     add_app(project, "my-report", "schedule: hourly\ntimezone: local\n")
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
-    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user",
+                        lambda: (r"PC\jon", "S-1-5-21-1-2-3-1001"))
     return config.merged_app("my-report")
 
 
@@ -58,7 +62,7 @@ def test_storage_ls_lists_the_folder_contents(project, monkeypatch, capsys):
 
 def destroy_with_task(project, monkeypatch, scripts):
     app = windows_app(project, monkeypatch)
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "ready" if path == TASK_PATH else "absent")
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append(script) or True)
     return app
@@ -76,13 +80,13 @@ def test_destroy_plans_the_task_the_logs_and_the_kept_storage(project, monkeypat
     assert deploy_windows.destroy(app, assume_yes=True) == 0
 
     out = capsys.readouterr().out
-    assert "delete Windows scheduled task pdt-my-report" in out
+    assert "delete Windows scheduled task \\pdt\\pdt-my-report" in out
     assert f"delete run logs folder {folder / 'logs'}" in out
     assert f"keep folder {folder / 'storage'} (the app's files)" in out
     assert f"removed: run logs folder {folder / 'logs'}" in out
     assert f"kept: folder {folder / 'storage'} (1 files)" in out
     (script,) = scripts
-    assert script.index("Unregister-ScheduledTask") < script.index(
+    assert script.index("Unregister-ScheduledTask -InputObject $task") < script.index(
         f"Remove-Item -Recurse -Force -Path '{folder / 'logs'}'")
     assert str(folder / "storage") not in script
 
@@ -104,7 +108,7 @@ def test_destroy_removes_a_leftover_logs_folder_when_the_task_is_gone(
         project, monkeypatch, capsys):
     scripts = []
     app = destroy_with_task(project, monkeypatch, scripts)
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "absent")
     logs = project / "ProgramData" / "pdt" / "my-report" / "logs"
     logs.mkdir(parents=True)
 
@@ -115,7 +119,7 @@ def test_destroy_removes_a_leftover_logs_folder_when_the_task_is_gone(
     assert f"removed: run logs folder {logs}" in out
     assert "removing: the files of my-report" in err
     (script,) = scripts
-    assert "Unregister-ScheduledTask" not in script
+    assert "schtasks.exe" not in script
 
 
 def test_destroy_warns_when_a_run_holds_the_state_lock(project, monkeypatch, capsys):

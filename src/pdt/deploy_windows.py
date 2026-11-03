@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import csv
 import ctypes
 import html
 import json
@@ -36,7 +37,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -62,82 +63,54 @@ MONTHS = (
 DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday",
         "Thursday", "Friday", "Saturday")
 FORBIDDEN_TASK_NAME_CHARS = set('\\/:*?"<>|')
-# The same limit as --replica-timeout on Azure Container Apps.
-RUN_TIME_LIMIT = "PT30M"
+NO_RUN_TIME_LIMIT = "PT0S"
+# A repeat ends one minute after the last start of the day, so the repeat at the start of the
+# next day, which Windows counts as inside a 24-hour duration, never runs on a weekly or
+# monthly trigger.
+MINUTES_A_DAY = 24 * 60
 FOLLOW_POLL_SECONDS = 0.25
+TASK_FOLDER_NAME = "pdt"
+TASK_FOLDER = f"\\{TASK_FOLDER_NAME}\\"
+MANAGED = "Managed by pdt;"
+# Columns of `schtasks /Query /V /FO CSV`. Most columns hold text in the PC's language;
+# these two do not.
+LAST_RESULT_COLUMN = 6
+COMMENT_COLUMN = 10
+SCHED_S_TASK_RUNNING = 0x41301
+SCHED_S_TASK_HAS_NOT_RUN = 0x41303
+LOG_START_SLACK = timedelta(seconds=2)
+LOG_START_WINDOW = timedelta(minutes=15)
 EXIT_LINE_BYTES = 256
 
 
-def _number_set(field: str) -> list[int]:
-    values: set[int] = set()
-    for part in field.split(","):
-        first, _, last = part.partition("-")
-        values.update(range(int(first), int(last or first) + 1))
-    return sorted(values)
-
-
-def schedule_trigger(cron: str) -> tuple[str, str]:
-    """Return (human description, Task Scheduler XML trigger fragment)."""
+def schedule_triggers(cron: str) -> str:
     problem = config.windows_schedule_problem(cron)
     if problem != "":
         raise WindowsDeployError(problem)
-    minute_field, hour_field, dom, month, dow = cron.split()
-
-    if hour_field == "*" and dom == month == dow == "*":
-        if minute_field.startswith("*/"):
-            interval = int(minute_field[2:])
-            minute = 0
-            description = f"every {interval} minutes"
-            repetition = f"<Interval>PT{interval}M</Interval>"
-        else:
-            minute = int(minute_field)
-            description = f"hourly at minute {minute:02d}"
-            repetition = "<Interval>PT1H</Interval>"
-        trigger = (
-            f"<CalendarTrigger><Repetition>{repetition}<Duration>P1D</Duration>"
-            "<StopAtDurationEnd>false</StopAtDurationEnd>"
-            f"</Repetition><StartBoundary>2000-01-01T00:{minute:02d}:00"
-            "</StartBoundary><Enabled>true</Enabled>"
-            "<ScheduleByDay><DaysInterval>1</DaysInterval>"
-            "</ScheduleByDay></CalendarTrigger>"
-        )
-        return description, trigger
-
-    minute = int(minute_field)
-    hour = int(hour_field)
-    start = f"<StartBoundary>2000-01-01T{hour:02d}:{minute:02d}:00</StartBoundary>"
-
-    if dom == month == dow == "*":
-        return (
-            f"daily at {hour:02d}:{minute:02d}",
-            f"<CalendarTrigger>{start}<Enabled>true</Enabled><ScheduleByDay>"
-            "<DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger>",
-        )
-
-    if dom == month == "*" and dow != "*":
-        weekdays = {value % 7 for value in _number_set(dow)}
-        day_xml = "".join(f"<{DAYS[value]}/>" for value in sorted(weekdays))
-        names = ", ".join(DAYS[value] for value in sorted(weekdays))
-        return (
-            f"weekly on {names} at {hour:02d}:{minute:02d}",
-            f"<CalendarTrigger>{start}<Enabled>true</Enabled><ScheduleByWeek>"
-            f"<WeeksInterval>1</WeeksInterval><DaysOfWeek>{day_xml}</DaysOfWeek>"
-            "</ScheduleByWeek></CalendarTrigger>",
-        )
-
-    month_values = list(range(1, 13)) if month == "*" else _number_set(month)
-    day_values = _number_set(dom)
-    days_xml = "".join(f"<Day>{value}</Day>" for value in day_values)
-    months_xml = "".join(f"<{MONTHS[value - 1]}/>" for value in month_values)
-    month_words = "every month" if month == "*" else ", ".join(
-        MONTHS[value - 1] for value in month_values)
-    return (
-        f"{month_words} on day {', '.join(map(str, day_values))} "
-        f"at {hour:02d}:{minute:02d}",
-        f"<CalendarTrigger>{start}<Enabled>true</Enabled><ScheduleByMonth>"
-        f"<DaysOfMonth>{days_xml}</DaysOfMonth><Months>{months_xml}</Months>"
-        "</ScheduleByMonth></CalendarTrigger>",
-    )
+    kind, values, months = config.windows_trigger_days(cron)
+    if kind == "daily":
+        days = "<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>"
+    elif kind == "weekly":
+        day_xml = "".join(f"<{DAYS[value]}/>" for value in values)
+        days = (f"<ScheduleByWeek><WeeksInterval>1</WeeksInterval><DaysOfWeek>{day_xml}"
+                "</DaysOfWeek></ScheduleByWeek>")
+    else:
+        days_xml = "".join(f"<Day>{value}</Day>" for value in values)
+        months_xml = "".join(f"<{MONTHS[value - 1]}/>" for value in months)
+        days = (f"<ScheduleByMonth><DaysOfMonth>{days_xml}</DaysOfMonth><Months>{months_xml}"
+                "</Months></ScheduleByMonth>")
+    starts, every = config.windows_trigger_times(cron)
+    repetition = ""
+    if every:
+        interval = "PT1H" if every == 60 else f"PT{every}M"
+        repetition = (f"<Repetition><Interval>{interval}</Interval>"
+                      f"<Duration>PT{MINUTES_A_DAY + 1 - every}M</Duration>"
+                      "<StopAtDurationEnd>false</StopAtDurationEnd></Repetition>")
+    return "".join(
+        f"<CalendarTrigger>{repetition}<StartBoundary>2000-01-01T{hour:02d}:{minute:02d}:00"
+        f"</StartBoundary><ExecutionTimeLimit>{NO_RUN_TIME_LIMIT}</ExecutionTimeLimit>"
+        f"<Enabled>true</Enabled>{days}</CalendarTrigger>"
+        for hour, minute in starts)
 
 
 def app_folder(app_name: str) -> Path:
@@ -160,6 +133,21 @@ def _task_name(app_name: str) -> str:
         raise WindowsDeployError(
             f"app name {app_name!r} contains characters Windows forbids in task names")
     return name
+
+
+def _task_path(app_name: str) -> str:
+    return TASK_FOLDER + _task_name(app_name)
+
+
+def _root_folder_path(app_name: str) -> str:
+    return "\\" + _task_name(app_name)
+
+
+def _task_sddl(sid: str) -> str:
+    """Administrators and SYSTEM own the task; the deploying user may read, start, enable,
+    and disable it with no UAC prompt. Task Scheduler still refuses that user a change to
+    the task's action or account, and a delete."""
+    return f"D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;FRFWFX;;;{sid})"
 
 
 def storage_url(app_name: str) -> str:
@@ -201,12 +189,13 @@ def task_arguments(app: dict) -> str:
 
 def task_xml(app: dict) -> tuple[str, str]:
     cron = config.cron_expression(app["schedule"])
-    description, trigger = schedule_trigger(cron)
+    description = config.describe_schedule(cron)
+    trigger = schedule_triggers(cron)
     command = html.escape(str(machine_uv()))
     arguments = html.escape(task_arguments(app))
     workdir = html.escape(str(deployed_app_dir(app["name"])))
     task_description = html.escape(
-        f"Managed by pdt; runs {app['name']} from {deployed_app_dir(app['name'])}")
+        f"{MANAGED} runs {app['name']} from {deployed_app_dir(app['name'])}")
     xml = f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>{task_description}</Description></RegistrationInfo>
@@ -226,7 +215,7 @@ def task_xml(app: dict) -> tuple[str, str]:
     <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <Enabled>{"false" if app.get("pause") else "true"}</Enabled>
     <Hidden>false</Hidden>
-    <ExecutionTimeLimit>{RUN_TIME_LIMIT}</ExecutionTimeLimit>
+    <ExecutionTimeLimit>{NO_RUN_TIME_LIMIT}</ExecutionTimeLimit>
     <Priority>7</Priority>
   </Settings>
   <Actions Context="Author">
@@ -307,14 +296,15 @@ def _ps_string(value: str) -> str:
     return ps.quoted(value)
 
 
-def _deploying_user() -> str:
-    """The account running deploy, as DOMAIN\\user. Read before elevation, because the
-    UAC prompt may switch to an administrator's account when this user is not one."""
-    proc = subprocess.run(["whoami"], stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    user = proc.stdout.strip()
-    if proc.returncode != 0 or user == "":
+def _deploying_user() -> tuple[str, str]:
+    """The account running deploy, as DOMAIN\\user, and its SID. Read before elevation,
+    because the UAC prompt may switch to an administrator's account when this user is not one."""
+    proc = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, errors="replace")
+    row = next(csv.reader(proc.stdout.splitlines()), [])
+    if proc.returncode != 0 or len(row) != 2:
         raise WindowsDeployError("whoami could not name the current Windows user")
-    return user
+    return row[0], row[1]
 
 
 def _folder_script(app: dict, user: str) -> str:
@@ -336,41 +326,20 @@ def _folder_script(app: dict, user: str) -> str:
     )
 
 
-def _task_state(powershell: str, name: str) -> str:
-    quoted = _ps_string(name)
-    script = (
-        f"$name = {quoted}; $task = Get-ScheduledTask -TaskName $name "
-        "-TaskPath '\\' -ErrorAction SilentlyContinue; "
-        "if ($null -eq $task) { exit 3 }; "
-        "if (-not $task.Description.StartsWith('Managed by pdt;')) { exit 4 }"
-    )
-    proc = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
-         "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    if proc.returncode == 0:
-        return "managed"
-    if proc.returncode == 3:
+def _schtasks(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["schtasks.exe", *args], stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, errors="replace")
+
+
+def _task_state(path: str) -> str:
+    """A task this account may not read is absent to it, as Task Scheduler shows it."""
+    proc = _schtasks("/Query", "/TN", path, "/V", "/FO", "CSV", "/NH")
+    row = next(csv.reader(proc.stdout.splitlines()), [])
+    if proc.returncode != 0 or len(row) <= COMMENT_COLUMN:
         return "absent"
-    if proc.returncode == 4:
+    if not row[COMMENT_COLUMN].startswith(MANAGED):
         return "unmanaged"
-    detail = (proc.stderr or proc.stdout).strip()
-    raise WindowsDeployError(
-        "Windows Task Scheduler command failed"
-        + (f": {detail}" if detail else f" (exit {proc.returncode})"))
-
-
-def _task_running(powershell: str, name: str) -> bool:
-    script = (
-        f"$task = Get-ScheduledTask -TaskName {_ps_string(name)} -TaskPath '\\' "
-        "-ErrorAction SilentlyContinue; "
-        "if ($null -ne $task -and $task.State -eq 'Running') { exit 0 }; exit 1"
-    )
-    proc = subprocess.run(
-        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
-         "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    return proc.returncode == 0
+    return "running" if row[LAST_RESULT_COLUMN] == str(SCHED_S_TASK_RUNNING) else "ready"
 
 
 def _missing_host_modules(pwsh: str, names: list[str]) -> list[str]:
@@ -408,13 +377,18 @@ def _prepare_powershell(app: dict) -> tuple[str | None, list]:
 
 
 def plan(app: dict, verb: str, description: str, user: str, secrets: dict[str, str],
-         install_uv: bool, pwsh: str | None = None, modules: list = ()) -> list[console.Markup]:
+         install_uv: bool, pwsh: str | None = None, modules: list = (),
+         legacy: bool = False) -> list[console.Markup]:
     name = app["name"]
     actions = [
-        console.Markup(f"{verb} Windows scheduled task {console.value(_task_name(name))} "
+        console.Markup(f"{verb} Windows scheduled task {console.value(_task_path(name))} "
                        "(runs as SYSTEM)"),
         console.Markup(f"run {console.value(name)} {console.escape(description)} "
                        "(machine local time)" + (" (paused)" if app.get("pause") else "")),
+        console.Markup("runs only while this PC is on; a missed run starts when the PC is "
+                       "next on"),
+        console.Markup(f"let {console.value(user)} start, pause, and unpause the task with no "
+                       "administrator prompt"),
         console.Markup(f"copy the app to {console.value(deployed_folder(name))} and pdt "
                        f"{console.value(windows_remote.pdt_version())} to {console.value(runtime_folder(name))}; "
                        "the task runs this copy, so a change to the project reaches the job "
@@ -447,6 +421,9 @@ def plan(app: dict, verb: str, description: str, user: str, secrets: dict[str, s
     if modules:
         names = ", ".join(console.value(need.name) for need in modules)
         actions.append(console.Markup(f"install PowerShell modules {names} (all users)"))
+    if legacy:
+        actions.append(console.Markup(f"delete the task {console.value(_root_folder_path(name))} that "
+                                      "an earlier pdt made in the root task folder"))
     return actions
 
 
@@ -526,18 +503,58 @@ def _release_script(app: dict, release: Path, install: str, register: str) -> st
     )
 
 
+def register_script(name: str, xml: str, sid: str) -> str:
+    """Register the task in the \\pdt\\ folder, give the deploying user its rights, and delete
+    the task an earlier pdt made in the root folder. A failure puts the earlier task back, or
+    removes the new one, before the release script restores the files."""
+    payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
+    return (
+        f"if (-not [Diagnostics.EventLog]::SourceExists({_ps_string(EVENT_SOURCE)})) {{ "
+        f"New-EventLog -LogName Application -Source {_ps_string(EVENT_SOURCE)} }}; "
+        f"$name = {_ps_string(name)}; "
+        f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
+        f"$current = Get-ScheduledTask -TaskName $name -TaskPath '{TASK_FOLDER}' "
+        "-ErrorAction SilentlyContinue; "
+        f"if ($null -ne $current -and -not \"$($current.Description)\".StartsWith('{MANAGED}')) {{ "
+        f"throw \"Windows scheduled task {TASK_FOLDER}$name exists but is not managed by PDT\" }}; "
+        "$previous = $null; "
+        f"if ($null -ne $current) {{ $previous = Export-ScheduledTask -TaskName $name "
+        f"-TaskPath '{TASK_FOLDER}' }}; "
+        f"Register-ScheduledTask -TaskName $name -TaskPath '{TASK_FOLDER}' -Xml $xml -Force "
+        "-ErrorAction Stop | Out-Null; "
+        "try { $service = New-Object -ComObject Schedule.Service; $service.Connect(); "
+        f"$service.GetFolder('\\{TASK_FOLDER_NAME}').GetTask($name)"
+        f".SetSecurityDescriptor('{_task_sddl(sid)}', 0); "
+        "$legacy = Get-ScheduledTask -TaskName $name -TaskPath '\\' -ErrorAction SilentlyContinue; "
+        f"if ($null -ne $legacy -and \"$($legacy.Description)\".StartsWith('{MANAGED}')) {{ "
+        "Unregister-ScheduledTask -InputObject $legacy -Confirm:$false } "
+        "} catch { "
+        f"if ($null -ne $previous) {{ Register-ScheduledTask -TaskName $name -TaskPath '{TASK_FOLDER}' "
+        "-Xml $previous -Force | Out-Null } "
+        f"else {{ Unregister-ScheduledTask -TaskName $name -TaskPath '{TASK_FOLDER}' -Confirm:$false }}; "
+        "throw }; ")
+
+
 def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     try:
         powershell = _preflight()
         name = _task_name(app["name"])
-        console.status(f"Checking Windows scheduled task {console.value(name)}...")
-        user = _deploying_user()
+        path = _task_path(app["name"])
+        console.status(f"Checking Windows scheduled task {console.value(path)}...")
+        user, sid = _deploying_user()
         description, xml = task_xml(app)
-        state = _task_state(powershell, name)
+        state = _task_state(path)
         if state == "unmanaged":
             raise WindowsDeployError(
-                f"Windows scheduled task {name} exists but is not managed by PDT")
-        exists = state == "managed"
+                f"Windows scheduled task {path} exists but is not managed by PDT")
+        exists = state != "absent"
+        legacy_state = _task_state(_root_folder_path(app["name"]))
+        if legacy_state == "running":
+            raise WindowsDeployError(
+                f"{app['name']} is running from Windows task {_root_folder_path(app['name'])}, "
+                f"which an earlier pdt made; deploy again when that run ends, so the task in "
+                f"{TASK_FOLDER} does not start a second run beside it")
+        legacy = legacy_state == "ready"
         pwsh, modules = _prepare_powershell(app)
         install_uv = not _machine_uv_current()
         uv = (windows_uv.fetch(os.environ.get("PROCESSOR_ARCHITECTURE", "AMD64"))
@@ -548,7 +565,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     secrets = gather_secrets(app)
 
     actions = plan(app, "update" if exists else "create", description, user, secrets,
-                   install_uv, pwsh, modules)
+                   install_uv, pwsh, modules, legacy)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges", currency=regions.local_currency())
     if plan_only:
@@ -558,45 +575,38 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         return DECLINED
 
     release = stage_release(app, secrets, uv)
-    payload = base64.b64encode(xml.encode("utf-8")).decode("ascii")
     install = ""
     if modules:
         command = _encoded(ps.install_command(modules))
         install = (f"& {_ps_string(pwsh)} -NoProfile -NonInteractive -EncodedCommand {command}; "
                    "if ($LASTEXITCODE -ne 0) { throw \"PowerShell module install failed "
                    "with exit $LASTEXITCODE\" }; ")
-    register = (
-        f"if (-not [Diagnostics.EventLog]::SourceExists({_ps_string(EVENT_SOURCE)})) {{ "
-        f"New-EventLog -LogName Application -Source {_ps_string(EVENT_SOURCE)} }}; "
-        f"$name = {_ps_string(name)}; "
-        f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
-        "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
-        "-ErrorAction Stop | Out-Null; ")
     script = ("$ErrorActionPreference = 'Stop'; " + SET_ACL + _folder_script(app, user)
-              + _release_script(app, release, install, register))
+              + _release_script(app, release, install, register_script(name, xml, sid)))
     try:
         with console.waiting(f"{'updating' if exists else 'creating'}: Windows scheduled task "
-                             f"{console.value(name)}"):
+                             f"{console.value(path)}"):
             _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
     finally:
         shutil.rmtree(release, ignore_errors=True)
-    console.done(f"Deployed {console.value(app['name'])} as Windows task {console.value(name)}.")
+    console.done(f"Deployed {console.value(app['name'])} as Windows task {console.value(path)}.")
     return 0
 
 
 def destroy(app: dict, assume_yes: bool) -> int:
     try:
         powershell = _preflight()
-        name = _task_name(app["name"])
+        name = _task_path(app["name"])
         console.status(f"Checking Windows scheduled task {console.value(name)}...")
-        state = _task_state(powershell, name)
+        state = _task_state(name)
         if state == "unmanaged":
             raise WindowsDeployError(
                 f"Windows scheduled task {name} exists but is not managed by PDT")
-        exists = state == "managed"
+        exists = state != "absent"
+        legacy = _task_state(_root_folder_path(app["name"])) in ("ready", "running")
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
@@ -607,7 +617,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     leftovers = [(Path(f"{path}{suffix}"), f"{label} ({suffix[1:]} copy)" if suffix else label)
                  for path, label in parts for suffix in ("", ".new", ".old", ".tmp")
                  if Path(f"{path}{suffix}").exists()]
-    if not exists and not leftovers:
+    if not exists and not legacy and not leftovers:
         console.done(f"Nothing to remove for {console.value(app['name'])}; task "
                      f"{console.value(name)} does not exist.")
         if app["storage"]:
@@ -615,10 +625,19 @@ def destroy(app: dict, assume_yes: bool) -> int:
         return 0
     actions = []
     script = ""
-    if exists:
-        actions.append(console.Markup(f"delete Windows scheduled task {console.value(name)}"))
-        script += (f"Unregister-ScheduledTask -TaskName {_ps_string(name)} "
-                   "-Confirm:$false -ErrorAction Stop; ")
+    for task, found in ((name, exists), (_root_folder_path(app["name"]), legacy)):
+        if found:
+            actions.append(console.Markup(f"delete Windows scheduled task {console.value(task)}"))
+    for folder in (TASK_FOLDER, "\\"):
+        script += (f"$task = Get-ScheduledTask -TaskName {_ps_string(_task_name(app['name']))} "
+                   f"-TaskPath '{folder}' -ErrorAction SilentlyContinue; "
+                   f"if ($null -ne $task -and \"$($task.Description)\".StartsWith('{MANAGED}')) {{ "
+                   "Unregister-ScheduledTask -InputObject $task -Confirm:$false }; ")
+    script += ("$service = New-Object -ComObject Schedule.Service; $service.Connect(); "
+               f"try {{ $folder = $service.GetFolder('\\{TASK_FOLDER_NAME}') }} catch {{ $folder = $null }}; "
+               "if ($null -ne $folder -and $folder.GetTasks(1).Count -eq 0 "
+               "-and $folder.GetFolders(0).Count -eq 0) { "
+               f"$service.GetFolder('\\').DeleteFolder('{TASK_FOLDER_NAME}', 0) }}; ")
     for path, label in leftovers:
         actions.append(console.Markup(f"delete {console.escape(label)} {console.value(path)}"))
         script += f"Remove-Item -Recurse -Force -Path {_ps_string(str(path))} -ErrorAction Stop; "
@@ -629,14 +648,16 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
         return DECLINED
+    removed = name if exists else _root_folder_path(app["name"])
     try:
-        with console.waiting(f"removing: Windows scheduled task {console.value(name)}" if exists
+        with console.waiting(f"removing: Windows scheduled task {console.value(removed)}"
+                             if exists or legacy
                              else f"removing: the files of {console.value(app['name'])}"):
             _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
-    console.done(f"Removed Windows task {console.value(name)}." if exists
+    console.done(f"Removed Windows task {console.value(removed)}." if exists or legacy
                  else f"Nothing to remove for {console.value(app['name'])}; task "
                  f"{console.value(name)} does not exist.")
     for path, label in leftovers:
@@ -701,25 +722,37 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
 
 
 def _managed_task(app: dict) -> tuple[str, str]:
-    """The PowerShell path and the task name, once the task exists and is pdt's."""
-    powershell = _preflight()
-    name = _task_name(app["name"])
-    state = _task_state(powershell, name)
+    _preflight()
+    path = _task_path(app["name"])
+    state = _task_state(path)
     if state == "unmanaged":
         raise WindowsDeployError(
-            f"Windows scheduled task {name} exists but is not managed by PDT")
+            f"Windows scheduled task {path} exists but is not managed by PDT")
+    if state == "absent" and _task_state(_root_folder_path(app["name"])) in ("ready", "running"):
+        raise WindowsDeployError(
+            f"an earlier pdt made Windows task {_root_folder_path(app['name'])}; run pdt deploy "
+            f"{app['name']} to move it to {path}")
     if state == "absent":
         raise WindowsDeployError(
-            f"Windows scheduled task {name} does not exist; run pdt deploy {app['name']} first")
-    return powershell, name
+            f"Windows scheduled task {path} does not exist, or another Windows account deployed "
+            f"it; run pdt deploy {app['name']} first")
+    return path, state
+
+
+def _task_command(path: str, *args: str) -> None:
+    proc = _schtasks(*args, "/TN", path)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        raise WindowsDeployError(
+            f"Windows Task Scheduler refused {' '.join(args)} for {path}"
+            + (f": {detail}" if detail else f" (exit {proc.returncode})")
+            + "; deploy the app again from this Windows account")
 
 
 def pause(app: dict, paused: bool) -> int:
-    verb = "Disable-ScheduledTask" if paused else "Enable-ScheduledTask"
     try:
-        powershell, name = _managed_task(app)
-        _run(powershell, f"{verb} -TaskName {_ps_string(name)} -ErrorAction Stop | Out-Null",
-             elevate=True)
+        name, _state = _managed_task(app)
+        _task_command(name, "/Change", "/DISABLE" if paused else "/ENABLE")
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
@@ -731,13 +764,20 @@ def pause(app: dict, paused: bool) -> int:
 
 def start(app: dict, follow: bool = False) -> int:
     before = {run.id for run in list_runs(app["name"])}
+    marker = logs_folder(app["name"]) / MANUAL_START
     try:
-        powershell, name = _managed_task(app)
-        logs_folder(app["name"]).mkdir(parents=True, exist_ok=True)
-        (logs_folder(app["name"]) / MANUAL_START).touch()
-        _run(powershell, f"Start-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
-             elevate=True)
+        name, state = _managed_task(app)
+        if state == "running":
+            console.error(f"{console.value(app['name'])} is running now, and Windows task "
+                          f"{console.value(name)} starts no second run while one runs; pdt "
+                          "started none.")
+            console.command(f"pdt logs {app['name']} --follow", "follow the run in progress")
+            return 1
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        _task_command(name, "/Run")
     except WindowsDeployError as exc:
+        marker.unlink(missing_ok=True)
         console.error(console.escape(str(exc)))
         return 1
     console.done(f"Started {console.value(app['name'])}: Windows task {console.value(name)}.")
@@ -753,6 +793,7 @@ def start(app: dict, follow: bool = False) -> int:
 def logs(app: dict, rest: list[str], new: Callable[[runs_cli.Run], bool] | None = None) -> int:
     return runs_cli.logs(lambda: list_runs(app["name"]),
                          lambda run, since: list(read_lines(app["name"], run)), app["name"], rest,
+                         resolve=lambda found: resolve_runs(app["name"], found),
                          store="the run's log file",
                          stream=lambda run, follow: read_lines(app["name"], run, follow), new=new,
                          place=runs_cli.LogPlace("Logs folder", str(logs_folder(app["name"])),
@@ -835,28 +876,96 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
     folder = logs_folder(app_name)
     if not folder.is_dir():
         return []
-    files = sorted(folder.glob("*.log"), key=lambda file: file.name, reverse=True)
-    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
-    task_name = _task_name(app_name)
-    found = []
-    newest = files[0] if files else None
-    for file in files:
-        started = datetime.strptime(file.stem, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    stems = sorted((file.stem for file in folder.glob("*.log")), reverse=True)
+    return [runs_cli.Run(stem, datetime.strptime(stem, "%Y%m%dT%H%M%SZ")
+                         .replace(tzinfo=timezone.utc), None, "unknown") for stem in stems]
+
+
+def resolve_runs(app_name: str, found: list[runs_cli.Run]) -> None:
+    newest = max((file.stem for file in logs_folder(app_name).glob("*.log")), default=None)
+    for run in found:
+        file = logs_folder(app_name) / f"{run.id}.log"
         read = _tail(file)
         if read is None:
             continue
         lines, mtime = read
         running = False
-        if file == newest and runs_cli.exit_code(lines) is None:
-            running = powershell is not None and _task_running(powershell, task_name)
+        if run.id == newest and runs_cli.exit_code(lines) is None:
+            running = _task_state(_task_path(app_name)) == "running"
             if not running:
-                # The run can write its exit line and end while _task_running waits for powershell.
+                # The run can write its exit line and end while _task_state reads the task.
                 lines, mtime = _tail(file) or read
-        status = runs_cli.marker_status(lines, lambda: running)
-        code = runs_cli.exit_code(lines)
-        ended = datetime.fromtimestamp(mtime, tz=timezone.utc) if code is not None else None
-        found.append(runs_cli.Run(file.stem, started, ended, status, code))
-    return found
+        run.status = runs_cli.marker_status(lines, lambda: running)
+        run.exit_code = runs_cli.exit_code(lines)
+        run.ended = (datetime.fromtimestamp(mtime, tz=timezone.utc)
+                     if run.exit_code is not None else None)
+
+
+def _task_info(powershell: str, app_name: str) -> dict | None:
+    script = (
+        "$service = New-Object -ComObject Schedule.Service; $service.Connect(); "
+        f"try {{ $task = $service.GetFolder('\\{TASK_FOLDER_NAME}')"
+        f".GetTask({_ps_string(_task_name(app_name))}) }} catch {{ exit 3 }}; "
+        "$times = @{}; foreach ($key in 'LastRunTime', 'NextRunTime') { $time = $task.$key; "
+        "$times[$key] = if ($time.Year -ge 2000) { "
+        "$time.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } else { $null } }; "
+        "ConvertTo-Json -Compress @{ enabled = $task.Enabled; result = $task.LastTaskResult; "
+        "missed = $task.NumberOfMissedRuns; last_run = $times.LastRunTime; "
+        "next_run = $times.NextRunTime }")
+    proc = subprocess.run(
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
+         "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    if proc.returncode == 3:
+        return None
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        raise WindowsDeployError(
+            "Windows Task Scheduler command failed"
+            + (f": {detail}" if detail else f" (exit {proc.returncode})"))
+    info = json.loads(proc.stdout)
+    for key in ("last_run", "next_run"):
+        info[key] = datetime.fromisoformat(info[key]) if info[key] else None
+    return info
+
+
+def task_problems(app: dict, info: dict, starts: list[datetime]) -> list[str]:
+    name = app["name"]
+    problems = []
+    if not info["enabled"] and not app.get("pause"):
+        problems.append(f"Windows task {_task_path(name)} is disabled, so its schedule starts "
+                        f"no run; run pdt unpause {name} to enable it")
+    if info["missed"]:
+        problems.append(
+            f"Task Scheduler counts {info['missed']} missed runs of {name}: this PC was off or "
+            "asleep at those times"
+            + (f"; the next run is at {runs_cli.local_text(info['next_run'])}"
+               if info["next_run"] else ""))
+    result = info["result"] & 0xFFFFFFFF
+    last = info["last_run"]
+    if (last is not None and result not in (0, SCHED_S_TASK_RUNNING, SCHED_S_TASK_HAS_NOT_RUN)
+            and not any(last - LOG_START_SLACK <= started <= last + LOG_START_WINDOW
+                        for started in starts)):
+        problems.append(f"Task Scheduler could not start {name} at "
+                        f"{runs_cli.local_text(last)} (result 0x{result:08X}), and that start "
+                        f"wrote no log; run pdt deploy {name} to repair the deployed copy")
+    return problems
+
+
+def say_task_problems(app: dict) -> None:
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if powershell is None:
+        return
+    try:
+        info = _task_info(powershell, app["name"])
+    except WindowsDeployError as exc:
+        console.warn(console.escape(str(exc)))
+        return
+    if info is None:
+        return
+    starts = [run.started for run in list_runs(app["name"])]
+    for problem in task_problems(app, info, starts):
+        console.warn(console.escape(problem))
 
 
 def remote(app: dict, host, command: str, rest: list[str], assume_yes: bool,
@@ -911,9 +1020,11 @@ def main() -> int:
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
     if args.command == "runs":
+        say_task_problems(app)
         return runs_cli.runs(lambda: list_runs(app["name"]), app["name"], args.rest,
+                             resolve=lambda found: resolve_runs(app["name"], found),
                              page="taskschd.msc",
-                             note=f"Find the task {console.value(_task_name(app['name']))} "
+                             note=f"Find the task {console.value(_task_path(app['name']))} "
                                   "in Task Scheduler Library.")
     if args.command == "logs":
         return logs(app, args.rest)

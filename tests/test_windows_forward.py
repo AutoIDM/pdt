@@ -151,6 +151,7 @@ def test_the_forwarded_arguments_parse_on_the_pc(app, monkeypatch):
     args = re.findall(r"'((?:[^']|'')*)'", script.split("deploy_windows.py' ", 1)[1].split(";")[0])
     seen = []
     monkeypatch.setattr(deploy_windows.runs_cli, "runs", lambda lister, name, rest, **kw: seen.append(rest) or 0)
+    monkeypatch.setattr(deploy_windows, "say_task_problems", lambda app: None)
     monkeypatch.setattr(deploy_windows.sys, "platform", "win32")
     monkeypatch.setattr(deploy_windows.sys, "argv", ["deploy_windows.py", *args])
     app_without_host = Path(app["dir"]).parent / "pdt.yml"

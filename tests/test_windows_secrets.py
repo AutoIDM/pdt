@@ -92,7 +92,8 @@ def test_destroy_removes_the_copy_and_the_secrets_and_keeps_storage(app, monkeyp
         (folder / part).mkdir(parents=True)
     deployed_secret({"API_KEY": "x"})
     scripts = []
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_task_state",
+                        lambda path: "ready" if path == r"\pdt\pdt-my-report" else "absent")
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append(script) or True)
 
@@ -112,7 +113,7 @@ def test_destroy_also_removes_copies_a_failed_deploy_left(app, monkeypatch, caps
     (folder / "runtime.old").mkdir()
     (folder / "secrets.json.tmp").write_text("{}")
     scripts = []
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "absent")
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append(script) or True)
     assert deploy_windows.destroy(app, assume_yes=True) == 0

@@ -692,33 +692,40 @@ def cron_expression(schedule) -> str:
     return text
 
 
+WINDOWS_MAX_TRIGGERS = 48
+
+
+def windows_trigger_times(cron: str) -> tuple[list[tuple[int, int]], int]:
+    minute, hour = cron.split()[:2]
+    minutes = sorted(_cron_values(minute, 0, 59, "minute"))
+    hours = sorted(_cron_values(hour, 0, 23, "hour"))
+    if hours != list(range(24)):
+        return [(h, m) for h in hours for m in minutes], 0
+    step = minutes[1] - minutes[0] if len(minutes) > 1 else 60
+    if 60 % step == 0 and minutes[0] < step and minutes == list(range(minutes[0], 60, step)):
+        return [(0, minutes[0])], step
+    return [(0, m) for m in minutes], 60
+
+
+def windows_trigger_days(cron: str) -> tuple[str, list[int], list[int]]:
+    _, _, dom, month, dow = cron.split()
+    if dom == month == dow == "*":
+        return "daily", [], []
+    if dow != "*":
+        return "weekly", sorted({d % 7 for d in _cron_values(dow, 0, 7, "day-of-week")}), []
+    return ("monthly", sorted(_cron_values(dom, 1, 31, "day-of-month")),
+            sorted(_cron_values(month, 1, 12, "month")))
+
+
 def windows_schedule_problem(cron: str) -> str:
-    """Why Windows Task Scheduler cannot run this valid cron as written, or ""."""
-    minute, hour, dom, month, dow = cron.split()
-    hourly = hour == dom == month == dow == "*"
-    if hourly and minute.startswith("*/"):
-        step = minute[2:]
-        if step.isdigit() and int(step) < 60 and 60 % int(step) == 0:
-            return ""
-        return (f"cron minute interval {minute!r} resets each hour, but a Windows Task "
-                "Scheduler repetition interval does not; use an interval that divides 60")
-    for label, field in [("minute", minute)] + ([] if hourly else [("hour", hour)]):
-        if not field.isdigit():
-            return f"Windows Task Scheduler requires one numeric {label}; got {field!r}"
-    if hourly or dom == month == dow == "*":
-        return ""
-    if dom == month == "*":
-        listed = [("day-of-week", dow)]
-    elif dow == "*" and dom != "*":
-        listed = [("day-of-month", dom)] + ([] if month == "*" else [("month", month)])
-    else:
-        return (f"cron {cron!r} cannot be represented faithfully by Windows Task "
-                "Scheduler; use hourly, daily, weekly, monthly, yearly, '*/N * * * *', "
-                "or a fixed-time cron restricted by either day-of-week or day-of-month")
-    for label, field in listed:
-        if "*" in field or "/" in field:
-            return (f"Windows Task Scheduler cannot represent {label} field {field!r}; "
-                    "use numbers, comma-separated numbers, or ranges")
+    _, _, dom, month, dow = cron.split()
+    if dow != "*" and (dom != "*" or month != "*"):
+        return (f"Windows Task Scheduler cannot run cron {cron!r} as written: a day-of-week "
+                "works only when day-of-month and month are *; use one of them")
+    count = len(windows_trigger_times(cron)[0])
+    if count > WINDOWS_MAX_TRIGGERS:
+        return (f"cron {cron!r} needs {count} Windows Task Scheduler triggers, and a task holds "
+                f"at most {WINDOWS_MAX_TRIGGERS}; name fewer hours or minutes")
     return ""
 
 

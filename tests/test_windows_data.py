@@ -28,6 +28,9 @@ def project(tmp_path, monkeypatch):
     return tmp_path
 
 
+SID = "S-1-5-21-1-2-3-1001"
+
+
 def windows_app(project, config_text="schedule: hourly\ntimezone: local\n"):
     add_app(project, "my-report", config_text)
     return config.merged_app("my-report")
@@ -105,8 +108,10 @@ def test_plan_names_the_copy_the_secrets_the_uv_and_the_folders(project):
     actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
                                   {"API_KEY": "x"}, False)
     assert plain(actions) == [
-        "create Windows scheduled task pdt-my-report (runs as SYSTEM)",
+        r"create Windows scheduled task \pdt\pdt-my-report (runs as SYSTEM)",
         "run my-report hourly at minute 00 (machine local time)",
+        "runs only while this PC is on; a missed run starts when the PC is next on",
+        r"let PC\jon start, pause, and unpause the task with no administrator prompt",
         f"copy the app to {folder / 'app'} and pdt {deploy_windows.windows_remote.pdt_version()} to "
         f"{folder / 'runtime'}; the task runs this copy, so a change to the project reaches "
         "the job at the next deploy",
@@ -123,7 +128,7 @@ def test_plan_names_the_copy_the_secrets_the_uv_and_the_folders(project):
 def test_plan_without_storage_has_no_storage_line(project):
     app = windows_app(project, "schedule: hourly\ntimezone: local\nstorage: false\n")
     actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon", {}, False)
-    assert len(actions) == 8
+    assert len(actions) == 10
     assert not any("app's files" in action for action in actions)
 
 
@@ -199,8 +204,8 @@ def test_deploy_runs_one_elevated_script_that_registers_the_task_inside_the_roll
     app = windows_app(project)
     scripts = []
     monkeypatch.setattr(deploy_windows, "_preflight", lambda: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
-    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: (r"PC\jon", SID))
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append(script) or True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
@@ -226,8 +231,8 @@ def test_deploy_creates_the_folders_before_registering_the_task(project, monkeyp
     scripts = []
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
-    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: (r"PC\jon", SID))
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append((script, kw)) or True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
@@ -239,10 +244,9 @@ def test_deploy_creates_the_folders_before_registering_the_task(project, monkeyp
 
 def test_a_plan_shows_the_plan_and_registers_nothing(project, monkeypatch, capsys):
     app = windows_app(project)
-    monkeypatch.setattr(deploy_windows, "_preflight",
-                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
-    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_preflight", lambda: "powershell.exe")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: (r"PC\jon", SID))
     monkeypatch.setattr(deploy_windows, "_run", lambda *args, **kw: pytest.fail("ran a script"))
     monkeypatch.setattr(deploy_windows, "confirm", lambda *args: pytest.fail("asked to proceed"))
     assert deploy_windows.deploy(app, assume_yes=False, plan_only=True) == 0
@@ -254,13 +258,13 @@ def test_deploy_says_what_it_does_before_each_slow_step(project, monkeypatch, ca
     app = windows_app(project)
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
-    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "ready")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: (r"PC\jon", SID))
     monkeypatch.setattr(deploy_windows, "_run", lambda powershell, script, **kw: True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
     out, err = capsys.readouterr()
-    assert out.index("Checking Windows scheduled task pdt-my-report") < out.index("Plan")
-    assert err == "updating: Windows scheduled task pdt-my-report\n"
+    assert out.index("Checking Windows scheduled task \\pdt\\pdt-my-report") < out.index("Plan")
+    assert err == "updating: Windows scheduled task \\pdt\\pdt-my-report\n"
 
 @pytest.fixture
 def powershell_deploy(project, monkeypatch):
@@ -290,8 +294,8 @@ def powershell_deploy(project, monkeypatch):
     monkeypatch.setattr(deploy_windows.regions, "local_currency", lambda: "USD")
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
-    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: (r"PC\jon", SID))
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: runs.append(powershell) or scripts.append(script) or True)
     return config.merged_app("ps-report"), needs, host, checked, scripts, runs
@@ -362,11 +366,13 @@ def test_plan_says_the_windows_provider_ignores_a_dockerfile(project):
 
 @pytest.mark.parametrize("schedule, description", [
     ("*/15 * * * *", "every 15 minutes"),
-    ("hourly", "hourly at minute 00"),
-    ("30 6 * * *", "daily at 06:30"),
-    ("0 9 * * 1-5", "weekly on Monday, Tuesday, Wednesday, Thursday, Friday at 09:00"),
-    ("0 8 1,15 * *", "every month on day 1, 15 at 08:00"),
-    ("yearly", "January on day 1 at 00:00"),
+    ("hourly", "on the hour, every hour"),
+    ("30 6 * * *", "every day at 06:30"),
+    ("0 9 * * 1-5", "every Monday to Friday at 09:00"),
+    ("0 8 1,15 * *", "on the 1st and 15th of every month at 08:00"),
+    ("yearly", "on the 1st of January at 00:00"),
+    ("*/7 * * * *", "every 7 minutes"),
+    ("0,30 9,17 * * 1-5", "every Monday to Friday at 09:00, 09:30, 17:00 and 17:30"),
 ])
 def test_validate_and_deploy_accept_the_same_schedules(project, schedule, description):
     app = windows_app(project, f"schedule: '{schedule}'\n")
@@ -375,14 +381,10 @@ def test_validate_and_deploy_accept_the_same_schedules(project, schedule, descri
 
 
 @pytest.mark.parametrize("config_text, problem", [
-    ("schedule: '*/7 * * * *'\n", "schedule: cron minute interval '*/7' resets each hour"),
-    ("schedule: '0,30 * * * *'\n", "schedule: Windows Task Scheduler requires one numeric "
-                                   "minute; got '0,30'"),
-    ("schedule: '0 */2 * * *'\n", "schedule: Windows Task Scheduler requires one numeric "
-                                  "hour; got '*/2'"),
-    ("schedule: '0 9 * * */2'\n", "schedule: Windows Task Scheduler cannot represent "
-                                  "day-of-week field '*/2'"),
-    ("schedule: '0 9 1 * 1'\n", "schedule: cron '0 9 1 * 1' cannot be represented"),
+    ("schedule: '* 9-17 * * *'\n", "schedule: cron '* 9-17 * * *' needs 540 Windows Task "
+                                   "Scheduler triggers"),
+    ("schedule: '0 9 1 * 1'\n", "schedule: Windows Task Scheduler cannot run cron '0 9 1 * 1'"),
+    ("schedule: '0 9 * 1 1'\n", "schedule: Windows Task Scheduler cannot run cron '0 9 * 1 1'"),
 ])
 def test_validate_reports_what_the_windows_deploy_rejects(project, config_text, problem):
     app = windows_app(project, config_text)
@@ -397,16 +399,15 @@ def test_validate_reports_what_the_windows_deploy_rejects(project, config_text, 
 def test_deploy_registers_the_event_source_before_the_task(project, monkeypatch):
     app = windows_app(project)
     scripts = []
-    monkeypatch.setattr(deploy_windows, "_preflight",
-                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
-    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_preflight", lambda: "powershell.exe")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: (r"PC\jon", SID))
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append(script) or True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
     assert (scripts[0].index("New-EventLog -LogName Application -Source 'pdt'")
-            < scripts[0].index("Register-ScheduledTask -TaskName $name -Xml $xml -Force "
-                               "-ErrorAction Stop"))
+            < scripts[0].index("Register-ScheduledTask -TaskName $name -TaskPath '\\pdt\\' "
+                               "-Xml $xml -Force -ErrorAction Stop"))
 @pytest.mark.parametrize("host", ["false", "5"])
 def test_a_host_that_is_not_text_is_rejected_and_never_runs_locally(project, monkeypatch, capsys,
                                                                     host):
