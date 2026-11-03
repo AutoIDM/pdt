@@ -219,6 +219,7 @@ def test_a_worker_refuses_a_token_with_no_valid_grant(grant):
 @pytest.mark.parametrize("operation, args", [
     ("run_snapshot", {"project": "p", "snapshot_id": "a" * 64, "app": "hr"}),
     ("sync_up", {"project": "p", "snapshot_id": "a" * 64}),
+    ("sync_down", {"project": "p", "snapshot_id": "a" * 64}),
     ("logs", {"project": "p", "app": "hr", "snapshot_id": "a" * 64}),
 ])
 def test_a_worker_does_not_run_customer_code_copy_files_or_open_logs(operation, args):

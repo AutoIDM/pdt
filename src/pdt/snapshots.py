@@ -24,6 +24,7 @@ import zipfile
 import zlib
 from pathlib import Path, PurePosixPath
 
+from pdt import config, managed_services
 from pdt.deploy_common import BUILD_EXCLUDES
 from pdt.utils import autoidm
 
@@ -208,9 +209,28 @@ def download(url: str, target: Path, limit: int) -> None:
                             f"{getattr(e, 'reason', e)}") from None
 
 
-def fetch(found: autoidm.Registration, project: str, wanted: str | None, target: Path) -> tuple:
+def customer_problem(root: Path, customer: str) -> str:
+    """Why the project files in `root` must not serve `customer`, or "". A pdt.yml that names no
+    customer is fine: pdt adds the customer after it copies the files."""
+    path = root / config.PROJECT_FILE
+    if not path.is_file():
+        return ""
+    try:
+        found = config.load_yaml(path).get(managed_services.KEY)
+    except config.ConfigError as e:
+        return str(e)
+    named = found.get("customer") if isinstance(found, dict) else None
+    if named is not None and named != customer:
+        return (f"the {config.PROJECT_FILE} of this snapshot names the customer {named}, "
+                f"and this computer acts for {customer}")
+    return ""
+
+
+def fetch(found: autoidm.Registration, project: str, wanted: str | None, target: Path,
+          customer: str) -> tuple:
     """Ask AutoIDM for a snapshot (the newest head when `wanted` is None), download its zip, and
-    write its files into the new, empty folder `target`. Returns its ID and its `files`."""
+    write its files into the new, empty folder `target`. It stops when the snapshot names another
+    customer. Returns its ID and its `files`."""
     answer = autoidm.answered(
         autoidm.post(found, "/v1/snapshots/get",
                      {"version": 1, "project": project, "snapshot_id": wanted}),
@@ -225,6 +245,9 @@ def fetch(found: autoidm.Registration, project: str, wanted: str | None, target:
         raise SnapshotError("the snapshot zip does not parse") from None
     finally:
         archive.unlink(missing_ok=True)
+    problem = customer_problem(target, customer)
+    if problem:
+        raise SnapshotError(problem)
     return identity, files
 
 

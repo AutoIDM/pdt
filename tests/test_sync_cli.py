@@ -219,6 +219,63 @@ def test_a_new_project_goes_in_the_folder_the_service_names(tmp_path, portal, mo
     assert portal.bodies("/v1/snapshots/get")[0]["project"] == "fresh"
 
 
+def new_project(tmp_path, monkeypatch):
+    new = tmp_path / "projects" / "fresh"
+    new.mkdir(parents=True)
+    monkeypatch.chdir(new)
+    monkeypatch.setenv("PDT_SERVICE_PROJECT", "fresh")
+    monkeypatch.setenv("PDT_SERVICE_CUSTOMER", CUSTOMER)
+    return new
+
+
+def test_a_new_project_with_no_customer_gets_the_customer(tmp_path, portal, monkeypatch, project, capsys):
+    new = new_project(tmp_path, monkeypatch)
+    identity = serve(portal, {"pdt.yml": b"apps: []\n", "hr/run.py": b"print('new')\n"})
+    assert sync_cli.down(identity, False) == 0
+    assert managed_services_customer(new) == CUSTOMER
+    assert "Saved managed_services" in capsys.readouterr().out
+    assert sync_cli.read_record(new)["snapshot_id"] == identity
+
+
+def managed_services_customer(root):
+    return config.load_yaml(root / "pdt.yml")["managed_services"]["customer"]
+
+
+def test_the_customer_line_is_not_a_change_at_the_next_sync(tmp_path, portal, monkeypatch, project):
+    new = new_project(tmp_path, monkeypatch)
+    identity = serve(portal, {"pdt.yml": b"apps: []\n", "hr/run.py": b"print('new')\n"})
+    assert sync_cli.down(identity, False) == 0
+    newer = serve(portal, {"pdt.yml": b"apps: [hr]\n", "hr/run.py": b"print('newer')\n"})
+    assert sync_cli.down(newer, False) == 0
+    assert (new / "hr" / "run.py").read_bytes() == b"print('newer')\n"
+    assert managed_services_customer(new) == CUSTOMER
+    assert sync_cli.down(newer, False) == 0
+
+
+def test_a_snapshot_of_another_customer_writes_nothing(tmp_path, portal, monkeypatch, project):
+    new = new_project(tmp_path, monkeypatch)
+    identity = serve(portal, {"pdt.yml": b"managed_services:\n  customer: cus_0000000000\n",
+                              "hr/run.py": b"print('new')\n"})
+    with pytest.raises(snapshots.SnapshotError, match="cus_0000000000"):
+        sync_cli.down(identity, True)
+    assert list(new.iterdir()) == []
+
+
+def test_a_new_project_needs_a_pdt_yml_in_the_snapshot(tmp_path, portal, monkeypatch, project, capsys):
+    new = new_project(tmp_path, monkeypatch)
+    identity = serve(portal, {"hr/run.py": b"print('new')\n"})
+    assert sync_cli.down(identity, False) == 1
+    assert list(new.iterdir()) == []
+    assert "holds no pdt.yml" in capsys.readouterr().out
+
+
+def test_a_snapshot_that_drops_the_customer_keeps_it_in_the_project(project, portal, monkeypatch):
+    (project / "hr" / "run.py").unlink()
+    identity = serve(portal, {"hr/run.py": b"print('new')\n", "pdt.yml": b"apps: []\n"})
+    assert sync_cli.down(identity, True) == 0
+    assert managed_services_customer(project) == CUSTOMER
+
+
 def test_sync_diff_lists_the_changed_files(project, portal, monkeypatch, capsys):
     serve(portal, BASE)
     assert run(monkeypatch, "sync", "diff", "--json") == 0

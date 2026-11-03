@@ -6,9 +6,10 @@ record for two rules: it deletes a file only when the record lists it and the ne
 not, and it stops when a file it would overwrite or delete changed on this computer since the
 record. Files are checked first, and written after every check passes.
 
-The pdt service starts `pdt sync down` in a new folder for a project this computer does not
-hold yet. PDT_SERVICE_PROJECT and PDT_SERVICE_CUSTOMER then name it, because the folder has no
-pdt.yml to read.
+The pdt service starts `pdt sync down` in the project's folder, new or not. PDT_SERVICE_PROJECT
+and PDT_SERVICE_CUSTOMER name the project and its customer, because a new folder has no pdt.yml
+to read. After the copy, `pdt sync down` adds `managed_services:` to a pdt.yml that has none, as
+`pdt register` does, and it refuses a snapshot whose pdt.yml names another customer.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-from pdt import config, console, managed_services, service_runner, snapshots
+from pdt import config, console, managed_services, register_cli, service_runner, snapshots
 from pdt.deploy import DECLINED
 from pdt.utils import autoidm
 from pdt.utils.email_auth import can_prompt
@@ -29,11 +30,11 @@ from pdt.utils.email_auth import can_prompt
 RECORD = "sync.json"
 
 
-def context() -> tuple[Path, str, autoidm.Registration]:
-    """This project's folder, its name for AutoIDM, and the registration of its customer."""
+def context() -> tuple[Path, str, str, autoidm.Registration]:
+    """This project's folder, its name for AutoIDM, its customer, and that registration."""
     named = os.environ.get(service_runner.SERVICE_PROJECT_ENV, "").strip()
     customer = os.environ.get(service_runner.SERVICE_CUSTOMER_ENV, "").strip()
-    if named and customer and not (Path.cwd() / config.PROJECT_FILE).is_file():
+    if named and customer:
         root, name = Path.cwd(), named
     else:
         root = config.find_project()
@@ -48,7 +49,7 @@ def context() -> tuple[Path, str, autoidm.Registration]:
     if registration is None:
         raise config.ConfigError(f"This computer is not registered to AutoIDM for {customer}. "
                                  "To register it, run `pdt register`.")
-    return root, name, registration
+    return root, name, customer, registration
 
 
 def read_record(root: Path) -> dict:
@@ -77,7 +78,7 @@ def file_hash(path: Path) -> str | None:
 
 
 def up(assume_yes: bool, ref: str | None, label: str | None) -> int:
-    root, name, registration = context()
+    root, name, _customer, registration = context()
     files, large = snapshots.collect(root)
     if not files:
         console.error(f"{console.value(root)} holds no file to send.")
@@ -171,12 +172,16 @@ def plan_down(root: Path, files: list[dict], known: dict) -> tuple[list[str], li
 
 
 def down(wanted: str | None, force: bool) -> int:
-    root, name, registration = context()
+    root, name, customer, registration = context()
     with tempfile.TemporaryDirectory(prefix="pdt-sync-") as folder:
         staged = Path(folder) / "files"
         staged.mkdir()
         with console.waiting(f"reading: snapshot of {name}"):
-            identity, files = snapshots.fetch(registration, name, wanted, staged)
+            identity, files = snapshots.fetch(registration, name, wanted, staged, customer)
+        if not (root / config.PROJECT_FILE).is_file() and not (staged / config.PROJECT_FILE).is_file():
+            console.error(f"Snapshot {console.value(identity)} holds no "
+                          f"{console.value(config.PROJECT_FILE)}, so it is not a project.")
+            return 1
         known = read_record(root).get("files") or {}
         added, changed, deleted, conflicts = plan_down(root, files, known)
         if conflicts and not force:
@@ -196,7 +201,11 @@ def down(wanted: str | None, force: bool) -> int:
             os.replace(snapshots.long_path(temporary), snapshots.long_path(target))
         for path in deleted:
             Path(snapshots.long_path(snapshots.inside(root, path))).unlink(missing_ok=True)
-    write_record(root, identity, files)
+    register_cli.save_customer(customer)
+    # The customer line is pdt's own edit, so a later sync does not read it as a change here.
+    write_record(root, identity, [
+        {**entry, "sha256": file_hash(root / entry["path"])}
+        if entry["path"] == config.PROJECT_FILE else entry for entry in files])
     for label, paths in (("added", added), ("changed", changed), ("deleted", deleted)):
         for path in paths:
             console.say(f"{console.escape(label)}: {console.value(path)}")
@@ -210,7 +219,7 @@ def down(wanted: str | None, force: bool) -> int:
 
 
 def diff(as_json: bool) -> int:
-    root, name, registration = context()
+    root, name, _customer, registration = context()
     identity, files = snapshots.read_manifest(registration, name, None)
     local = {entry["path"]: entry["sha256"] for entry in snapshots.collect(root)[0]}
     head = {entry["path"]: entry["sha256"] for entry in files}
