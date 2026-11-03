@@ -25,6 +25,7 @@ def usage_on(tmp_path, monkeypatch):
     for name in ("DO_NOT_TRACK", usage.CLIENT_ENV, usage.PROJECT_ENV, usage.COMMAND_ENV):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "data"))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     return tmp_path / "data" / "pdt" / "usage"
