@@ -250,6 +250,17 @@ def test_run_snapshot_runs_in_a_new_folder_with_the_project_env_and_removes_the_
     assert (machine / "hr" / "run.py").read_text() == "print('hi')\n"
 
 
+def test_a_snapshot_of_another_customer_does_not_run(machine, portal, monkeypatch):
+    identity, manifest, data = snapshot_of({
+        "pdt.yml": b"managed_services:\n  customer: cus_0000000000\n", "hr/run.py": b"x"})
+    portal.serve_snapshot(identity, manifest, data)
+    child(monkeypatch, "raise SystemExit('this must not run')")
+    execute(job(machine, "run_snapshot", snapshot_args(identity)))
+    result = portal.result()
+    assert result["outcome"] == "failed" and "cus_0000000000" in result["message"]
+    assert "started" not in portal.facts()
+
+
 def test_a_bad_snapshot_reports_failed_and_leaves_no_folder(machine, portal, monkeypatch):
     identity, manifest, _data = snapshot_of({"a.txt": b"x"})
     portal.serve_snapshot(identity, manifest, b"not a zip")
@@ -419,6 +430,43 @@ def test_a_command_for_a_project_of_another_customer_is_refused(machine, portal)
     assert accept(pool, token())
     assert pool.waiting == []
     assert "cus_0000000000" in portal.result()["message"]
+
+
+def test_a_project_with_no_customer_is_refused_with_the_fix(machine, portal):
+    (machine / "pdt.yml").write_text("apps: []\n")
+    assert accept(Pool(), token())
+    assert "pdt register" in portal.result()["message"]
+
+
+def test_sync_down_can_add_the_customer_to_a_project_that_has_none(machine, portal, monkeypatch):
+    (machine / "pdt.yml").write_text("apps: []\n")
+    pool = Pool()
+    assert accept(pool, token("sync_down", {"project": "example", "snapshot_id": "a" * 64}))
+    item = pool.waiting[0]
+    assert item.project == machine
+    prepared = service_runner.prepare(item, dict(os.environ))
+    assert prepared.cwd == machine
+    assert prepared.env[service_runner.SERVICE_CUSTOMER_ENV] == CUSTOMER
+
+
+def test_a_staff_install_of_a_new_project_runs_for_real_and_is_served(machine, portal, monkeypatch):
+    home = machine.parent
+    monkeypatch.setenv(service_runner.PROJECTS_HOME_ENV, str(home))
+    identity, manifest, data = snapshot_of({"pdt.yml": b"apps: []\n", "hr/config.yml": b"schedule: daily\n",
+                                            "hr/run.py": b"print('x')\n"})
+    portal.serve_snapshot(identity, manifest, data)
+    answers = [checkin_answer(portal, [{"command_id": COMMAND, "token": token(
+        "sync_down", {"project": "third-project", "snapshot_id": identity})}])]
+    portal.routes["/v1/service/checkin"] = lambda _body: answers.pop(0) if answers else checkin_answer(portal)
+    assert service.tick() == 0
+    assert portal.result()["outcome"] == "done", portal.output()
+    assert service.project_customer(home / "third-project") == CUSTOMER
+    state = service.read_state()
+    state[CUSTOMER]["last_checkin"] = 0
+    service.write_state(state)
+    assert service.tick() == 0
+    names = [item["name"] for item in portal.bodies("/v1/service/checkin")[-1]["projects"]]
+    assert "third-project" in names
 
 
 def test_a_command_for_a_project_not_served_is_refused(machine, portal):

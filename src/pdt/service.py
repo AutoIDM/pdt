@@ -250,6 +250,11 @@ def locate(claims: dict, served: Served, settings: dict, worker: bool) -> Path |
     root = projects_of(settings).get(project)
     if root is not None:
         owner = project_customer(root)
+        if owner is None and claims["operation"] == "sync_down":
+            return root
+        if owner is None:
+            raise Refused(f"The project {project} has no {managed_services.KEY} in "
+                          f"{config.PROJECT_FILE}. To add it, run pdt register in {root}.")
         if owner != served.customer:
             raise Refused(f"The project {project} names the customer {owner} in "
                           f"{config.PROJECT_FILE}, not {served.customer}.")

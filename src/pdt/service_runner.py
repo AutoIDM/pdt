@@ -305,7 +305,8 @@ def write_snapshot_files(job: Job, work: Path) -> None:
     folder's own name is a command ID."""
     target = work / "project"
     target.mkdir()
-    snapshots.fetch(job.registration, job.args["project"], job.args["snapshot_id"], target)
+    snapshots.fetch(job.registration, job.args["project"], job.args["snapshot_id"], target,
+                    job.claims["customer_id"])
     (target / config.PROJECT_NAME_FILE).write_text(job.args["project"] + "\n", encoding="utf-8")
 
 
@@ -353,8 +354,8 @@ def prepare(job: Job, base: dict[str, str]) -> Prepared:
             extra["PDT_OUTPUT_DIR"] = str(project / app / ".pdt" / "runs" / job.command_id / "output")
         return Prepared(project, child_env(found, project, preset["env"], extra), argv,
                         project / app, work)
-    if job.operation == "sync_down" and job.project is None:
-        target = Path(base[PROJECTS_HOME_ENV]) / job.args["project"]
+    if job.operation == "sync_down":
+        target = job.project or Path(base[PROJECTS_HOME_ENV]) / job.args["project"]
         target.mkdir(parents=True, exist_ok=True)
         env = child_env(base, None, {}, {SERVICE_PROJECT_ENV: job.args["project"],
                                          SERVICE_CUSTOMER_ENV: job.claims["customer_id"]})
