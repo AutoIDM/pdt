@@ -61,7 +61,7 @@ def deploy_plan(project, monkeypatch, on_machine_path: bool) -> list[str]:
     app = windows_app(project)
     shown = []
     monkeypatch.setattr(deploy_windows, "_preflight", lambda: ("powershell.exe", "uv.exe"))
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: ("absent", True))
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "uv_on_machine_path", lambda: on_machine_path)
     monkeypatch.setattr(deploy_windows, "confirm",

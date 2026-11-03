@@ -84,6 +84,7 @@ RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
 RUN_TIME_LIMIT = "PT30M"
 FOLLOW_POLL_SECONDS = 0.25
 EXIT_LINE_BYTES = 256
+HISTORY_LOG = "Microsoft-Windows-TaskScheduler/Operational"
 
 
 def _number_set(field: str) -> list[int]:
@@ -339,9 +340,11 @@ def _folder_script(app: dict, user: str) -> str:
     )
 
 
-def _task_state(powershell: str, name: str) -> str:
+def _task_state(powershell: str, name: str) -> tuple[str, bool]:
+    """The task's state, and whether Task Scheduler keeps its history log."""
     quoted = _ps_string(name)
     script = (
+        f"(Get-WinEvent -ListLog {_ps_string(HISTORY_LOG)}).IsEnabled; "
         f"$name = {quoted}; $task = Get-ScheduledTask -TaskName $name "
         "-TaskPath '\\' -ErrorAction SilentlyContinue; "
         "if ($null -eq $task) { exit 3 }; "
@@ -351,12 +354,13 @@ def _task_state(powershell: str, name: str) -> str:
         [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
          "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
         stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    history = proc.stdout.strip() == "True"
     if proc.returncode == 0:
-        return "managed"
+        return "managed", history
     if proc.returncode == 3:
-        return "absent"
+        return "absent", history
     if proc.returncode == 4:
-        return "unmanaged"
+        return "unmanaged", history
     detail = (proc.stderr or proc.stdout).strip()
     raise WindowsDeployError(
         "Windows Task Scheduler command failed"
@@ -412,7 +416,7 @@ def _prepare_powershell(app: dict) -> tuple[str | None, list]:
 
 def plan(app: dict, verb: str, description: str, user: str, uv: str,
          on_machine_path: bool, pwsh: str | None = None,
-         modules: list = ()) -> list[console.Markup]:
+         modules: list = (), history: bool = True) -> list[console.Markup]:
     name = app["name"]
     actions = [
         console.Markup(f"{verb} Windows scheduled task {console.value(_task_name(name))} "
@@ -443,6 +447,10 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
     if modules:
         names = ", ".join(console.value(need.name) for need in modules)
         actions.append(console.Markup(f"install PowerShell modules {names} (all users)"))
+    if not history:
+        actions.append(console.Markup(f"turn on the Task Scheduler history log "
+                                      f"{console.value(HISTORY_LOG)} for this computer "
+                                      "(stays on after destroy)"))
     return actions
 
 
@@ -455,7 +463,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         console.status(f"Checking Windows scheduled task {console.value(name)}...")
         user = _deploying_user()
         description, xml = task_xml(app, uv, on_machine_path)
-        state = _task_state(powershell, name)
+        state, history = _task_state(powershell, name)
         if state == "unmanaged":
             raise WindowsDeployError(
                 f"Windows scheduled task {name} exists but is not managed by PDT")
@@ -466,7 +474,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         return 1
 
     actions = plan(app, "update" if exists else "create", description, user, uv,
-                   on_machine_path, pwsh, modules)
+                   on_machine_path, pwsh, modules, history)
     cost = CostEstimate([("Task Scheduler on this Windows computer", 0.0)],
                         "no cloud charges", currency=regions.local_currency())
     if plan_only:
@@ -487,6 +495,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         f"{install}"
         f"if (-not [Diagnostics.EventLog]::SourceExists({_ps_string(EVENT_SOURCE)})) {{ "
         f"New-EventLog -LogName Application -Source {_ps_string(EVENT_SOURCE)} }}; "
+        f"wevtutil set-log {HISTORY_LOG} /enabled:true; "
+        "if ($LASTEXITCODE -ne 0) { throw \"wevtutil failed with exit $LASTEXITCODE\" }; "
         f"$name = {_ps_string(name)}; "
         f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
         "Register-ScheduledTask -TaskName $name -Xml $xml -Force "
@@ -508,7 +518,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         powershell, _uv = _preflight(require_uv=False)
         name = _task_name(app["name"])
         console.status(f"Checking Windows scheduled task {console.value(name)}...")
-        state = _task_state(powershell, name)
+        state, _history = _task_state(powershell, name)
         if state == "unmanaged":
             raise WindowsDeployError(
                 f"Windows scheduled task {name} exists but is not managed by PDT")
@@ -561,7 +571,7 @@ def _managed_task(app: dict) -> tuple[str, str]:
     """The PowerShell path and the task name, once the task exists and is pdt's."""
     powershell, _uv = _preflight(require_uv=False)
     name = _task_name(app["name"])
-    state = _task_state(powershell, name)
+    state, _history = _task_state(powershell, name)
     if state == "unmanaged":
         raise WindowsDeployError(
             f"Windows scheduled task {name} exists but is not managed by PDT")
