@@ -55,10 +55,10 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError, MissingDependencyException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, storage_cli
+from pdt import config, console, grants, storage_cli
 from pdt.deploy_common import (
     STORE_PREFIX, STORE_TAGS, CostEstimate, cached_price, convert_from_usd, fail, fetch_json,
-    run_main, store_cost_label, store_name)
+    keeps_secret, run_main, store_cost_label, store_name)
 from pdt.utils import email_auth
 from pdt.utils.env_secret import private_file
 from pdt.utils.storage import Store
@@ -66,6 +66,7 @@ from pdt.utils.storage import Store
 AWS_CLI_V2 = "awscli @ https://github.com/aws/aws-cli/archive/refs/tags/2.36.49.tar.gz"
 MANAGED_TAGS = {"managed-by": "pdt"}
 SCHEDULE_GROUP = "pdt"
+BOUNDARY_ENV = "PDT_PERMISSIONS_BOUNDARY"
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 PRICE_LIST_URL = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/{offer}/current/{region}/index.json"
@@ -784,7 +785,8 @@ def login_error(exc: Exception) -> bool:
 
 def ensure_session(app: dict):
     region = app["platform"].get("region") or os.environ.get("AWS_REGION") or None
-    profile = app["platform"].get("profile") or None
+    # A cloud worker's credentials are in its env, and pdt.yml names a profile of the customer's.
+    profile = None if os.environ.get(BOUNDARY_ENV) else app["platform"].get("profile") or None
     if profile and profile not in boto3.Session().available_profiles:
         console.warn(f"AWS profile {console.value(repr(profile))} from your config is not on "
                      "this computer.")
@@ -848,7 +850,8 @@ def preflight(sts, iam, expected_account: str, region: str,
         fail(f"configured AWS account {console.value(expected_account)} does not match "
              f"credentials ({console.value(account)})")
     source_arn = principal_arn(identity_arn, account)
-    if source_arn.endswith(":root"):
+    # A cloud worker's grant fixes its actions, and leaves out iam:SimulatePrincipalPolicy.
+    if source_arn.endswith(":root") or os.environ.get(BOUNDARY_ENV):
         return account, lambda: None
     policy = deployer_policy(actions, account, region)
     key = hashlib.sha256(json.dumps([source_arn, account, region, policy],
@@ -906,10 +909,14 @@ def trust_policy(service: str) -> str:
 
 def ensure_role(iam, name: str, service: str, policy_name: str,
                 statements: list[dict]) -> str:
+    boundary = os.environ.get(BOUNDARY_ENV)
     try:
         role = iam.get_role(RoleName=name)["Role"]
         if not has_managed_tag(role.get("Tags", []), "Key", "Value"):
             fail(f"IAM role {console.value(name)} exists but is not managed by PDT")
+        # A cloud worker may change only a role that has the grant's fixed maximum.
+        if boundary:
+            iam.put_role_permissions_boundary(RoleName=name, PermissionsBoundary=boundary)
         iam.update_assume_role_policy(
             RoleName=name, PolicyDocument=trust_policy(service))
         iam.tag_role(RoleName=name, Tags=iam_tags())
@@ -921,6 +928,7 @@ def ensure_role(iam, name: str, service: str, policy_name: str,
             AssumeRolePolicyDocument=trust_policy(service),
             Description="Managed by PDT",
             Tags=iam_tags(),
+            **({"PermissionsBoundary": boundary} if boundary else {}),
         )["Role"]
     for existing in iam.list_role_policies(RoleName=name).get("PolicyNames", []):
         if existing != policy_name or not statements:
@@ -1063,6 +1071,8 @@ def ensure_secret(secrets, name: str, payload: str) -> str:
             fail(f"Secrets Manager secret {console.value(name)} exists but is not managed by PDT")
         if current.get("DeletedDate"):
             secrets.restore_secret(SecretId=name)
+        if keeps_secret():
+            return arn
         try:
             value = secrets.get_secret_value(SecretId=name).get("SecretString", "")
         except Exception:  # noqa: BLE001 - a missing or inaccessible value is replaced
@@ -1269,6 +1279,260 @@ def delete_role(iam, name: str) -> None:
             raise
 
 
+GRANT_ROLE = "pdt-autoidm"
+GRANT_BOUNDARY = "pdt-autoidm-boundary"
+GRANT_SESSION_SECONDS = 3600
+# What panel safety section 4 takes out of the printed deployer policy: a grant does not open a
+# secret, a log, or a data file, and it does not simulate the policy of the login it holds.
+GRANT_LEFT_OUT = {"secretsmanager:GetSecretValue", "s3:GetObject", "logs:GetLogEvents",
+                  "logs:FilterLogEvents", "logs:StartLiveTail", "iam:SimulatePrincipalPolicy"}
+# Each of these needs the boundary named in the request, so no role exceeds the fixed maximum.
+GRANT_BOUNDED = ["iam:CreateRole", "iam:DeleteRolePolicy", "iam:PutRolePermissionsBoundary",
+                 "iam:PutRolePolicy"]
+GRANT_LOGIN_POLICY = {"Version": "2012-10-17", "Statement": [{
+    "Effect": "Allow",
+    "Action": ["iam:AttachRolePolicy", "iam:CreatePolicy", "iam:CreatePolicyVersion",
+               "iam:CreateRole", "iam:DeletePolicy", "iam:DeletePolicyVersion", "iam:DeleteRole",
+               "iam:DetachRolePolicy", "iam:GetPolicy", "iam:GetPolicyVersion", "iam:GetRole",
+               "iam:ListAttachedRolePolicies", "iam:ListPolicyVersions", "iam:TagPolicy",
+               "iam:TagRole", "iam:UpdateAssumeRolePolicy"],
+    "Resource": ["arn:aws:iam::*:role/pdt-autoidm", "arn:aws:iam::*:policy/pdt-autoidm*"]}]}
+
+
+def grant_arns(account: str) -> dict[str, str]:
+    return {"role": f"arn:aws:iam::{account}:role/{GRANT_ROLE}",
+            "boundary": f"arn:aws:iam::{account}:policy/{GRANT_BOUNDARY}",
+            "policies": f"arn:aws:iam::{account}:policy/{GRANT_ROLE}*"}
+
+
+def grant_denies(account: str) -> list[dict]:
+    """No action may change the identity itself or remove a boundary."""
+    arns = grant_arns(account)
+    return [{"Effect": "Deny", "Action": ["iam:*"], "Resource": [arns["role"], arns["policies"]]},
+            {"Effect": "Deny", "Action": ["iam:DeleteRolePermissionsBoundary"], "Resource": ["*"]}]
+
+
+def grant_policy(account: str, region: str) -> dict:
+    """The printed deployer policy, less GRANT_LEFT_OUT, with GRANT_BOUNDED under the boundary."""
+    from pdt.deploy_aws_batch import DEPLOYER_ACTIONS
+    actions = sorted(set(DEPLOYER_ACTIONS) - GRANT_LEFT_OUT)
+    statements = []
+    for statement in deployer_policy(actions, account, region)["Statement"]:
+        rest = [action for action in statement["Action"] if action not in GRANT_BOUNDED]
+        if rest:
+            statements.append({**statement, "Action": rest})
+    statements.append({"Effect": "Allow", "Action": GRANT_BOUNDED,
+                       "Resource": [ROLE_ARN.format(account=account)],
+                       "Condition": {"StringEquals": {
+                           "iam:PermissionsBoundary": grant_arns(account)["boundary"]}}})
+    return {"Version": "2012-10-17", "Statement": [*statements, *grant_denies(account)]}
+
+
+def grant_boundary(account: str) -> dict:
+    """The fixed maximum of each role AutoIDM makes: what the roles of `ensure_role` hold."""
+    region = "*"
+    logs = [arn.format(region=region, account=account) for arn in LOG_GROUP_ARNS]
+    return {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": ["ecr:GetAuthorizationToken"], "Resource": ["*"]},
+        {"Effect": "Allow",
+         "Action": ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage",
+                    "ecr:CompleteLayerUpload", "ecr:GetDownloadUrlForLayer",
+                    "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart"],
+         "Resource": [f"arn:aws:ecr:*:{account}:repository/pdt"]},
+        {"Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+         "Resource": logs},
+        {"Effect": "Allow",
+         "Action": ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"],
+         "Resource": [f"arn:aws:secretsmanager:*:{account}:secret:pdt-*"]},
+        {"Effect": "Allow",
+         "Action": ["s3:DeleteObject", "s3:GetBucketAcl", "s3:GetBucketLocation", "s3:GetObject",
+                    "s3:GetObjectVersion", "s3:ListBucket", "s3:PutObject"],
+         "Resource": [f"arn:aws:s3:::{STORE_PREFIX}-*", f"arn:aws:s3:::{STORE_PREFIX}-*/*",
+                      f"arn:aws:s3:::{BUILD_BUCKET_PREFIX}-*",
+                      f"arn:aws:s3:::{BUILD_BUCKET_PREFIX}-*/*"]},
+        {"Effect": "Allow", "Action": ["batch:SubmitJob"],
+         "Resource": [f"arn:aws:batch:*:{account}:job-definition/pdt-*",
+                      f"arn:aws:batch:*:{account}:job-queue/pdt"]},
+        {"Effect": "Allow", "Action": ["iam:PassRole"],
+         "Resource": [ROLE_ARN.format(account=account)]},
+        *grant_denies(account)]}
+
+
+def grant_trust(values: dict) -> str:
+    principal = (values.get("principal") or {}).get("aws")
+    external_id = values.get("external_id")
+    if not (principal and external_id):
+        fail("AutoIDM did not name its AWS principal and the external ID. Run the command again.")
+    return json.dumps({"Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Principal": {"AWS": principal}, "Action": "sts:AssumeRole",
+        "Condition": {"StringEquals": {"sts:ExternalId": external_id}}}]}, sort_keys=True)
+
+
+def grant_policy_name(region: str, part: int = 0) -> str:
+    return f"{GRANT_ROLE}-{region}" + (f"-{part + 1}" if part else "")
+
+
+def grant_policy_parts(account: str, region: str) -> list[dict]:
+    """A managed policy holds at most 6144 characters, so the statements go in as many policies
+    as they need, each with the denies. A place has its own policies, so a second region adds
+    to the role and does not replace the first."""
+    policy = grant_policy(account, region)
+    denies = grant_denies(account)
+    allows = policy["Statement"][:-len(denies)]
+    parts: list[list[dict]] = [[]]
+    for statement in allows:
+        if parts[-1] and policy_size([*parts[-1], statement, *denies]) > GRANT_POLICY_LIMIT:
+            parts.append([])
+        parts[-1].append(statement)
+    return [{"Version": "2012-10-17", "Statement": [*part, *denies]} for part in parts]
+
+
+GRANT_POLICY_LIMIT = 6144
+
+
+def policy_size(statements: list[dict]) -> int:
+    return len(json.dumps({"Version": "2012-10-17", "Statement": statements},
+                          separators=(",", ":")))
+
+
+def grant_plan(place: str, values: dict) -> list:
+    _provider, account, region = grants.split_place(place)
+    principal = (values.get("principal") or {}).get("aws") or "the AWS principal of AutoIDM"
+    parts = grant_policy_parts(account, region)
+    return [
+        console.Markup(f"create or update IAM policy {console.value(GRANT_BOUNDARY)} in AWS account "
+                       f"{console.value(account)}: the most any role AutoIDM makes can do "
+                       "(managed-by=pdt)"),
+        console.Markup(f"create or update {console.value(len(parts))} IAM "
+                       f"polic{'y' if len(parts) == 1 else 'ies'} "
+                       f"{console.value(grant_policy_name(region) + '*')} for "
+                       f"{console.value(region)}: named actions on resources named "
+                       f"{console.value('pdt*')} (managed-by=pdt)"),
+        console.Markup(f"create or update IAM role {console.value(GRANT_ROLE)}: {console.value(principal)} "
+                       "can assume it with the external ID, for at most one hour (managed-by=pdt)"),
+    ]
+
+
+def grant_remove_plan(place: str, _values: dict) -> list:
+    _provider, account, region = grants.split_place(place)
+    return [console.Markup(f"delete IAM policies {console.value(grant_policy_name(region) + '*')} "
+                           f"from AWS account {console.value(account)}"),
+            console.Markup(f"delete IAM role {console.value(GRANT_ROLE)} and policy "
+                           f"{console.value(GRANT_BOUNDARY)} when no other region uses them")]
+
+
+def grant_login(place: str):
+    """A session of the customer's own login, in the account the place names."""
+    _provider, account, region = grants.split_place(place)
+    platform = {"provider": "aws", "account": account, "region": region}
+    try:
+        project = config.load_yaml(config.find_project() / config.PROJECT_FILE)
+        platform["profile"] = (project.get("platform") or {}).get("profile")
+    except config.ConfigError:
+        pass
+    session = ensure_session({"name": GRANT_ROLE, "platform": platform})
+    found = session.client("sts", config=RETRIES).get_caller_identity()["Account"]
+    if found != account:
+        fail(f"This AWS login is for account {console.value(found)}, and the place names "
+             f"{console.value(account)}. Sign in to that account, then run the command again.")
+    return session
+
+
+def ensure_grant_policy(iam, arn: str, name: str, document: dict) -> None:
+    body = json.dumps(document, sort_keys=True)
+    try:
+        current = iam.get_policy(PolicyArn=arn)["Policy"]
+    except Exception as exc:
+        if not not_found(exc):
+            raise
+        iam.create_policy(PolicyName=name, PolicyDocument=body,
+                          Description="Managed by PDT", Tags=iam_tags())
+        return
+    if not has_managed_tag(current.get("Tags", []), "Key", "Value"):
+        fail(f"IAM policy {console.value(name)} exists but is not managed by PDT")
+    versions = iam.list_policy_versions(PolicyArn=arn)["Versions"]
+    for version in versions[4:]:
+        if not version.get("IsDefaultVersion"):
+            iam.delete_policy_version(PolicyArn=arn, VersionId=version["VersionId"])
+    iam.create_policy_version(PolicyArn=arn, PolicyDocument=body, SetAsDefault=True)
+
+
+def grant_create(place: str, values: dict, _assume_yes: bool) -> str:
+    _provider, account, region = grants.split_place(place)
+    trust = grant_trust(values)
+    iam = grant_login(place).client("iam", config=RETRIES)
+    arns = grant_arns(account)
+    ensure_grant_policy(iam, arns["boundary"], GRANT_BOUNDARY, grant_boundary(account))
+    try:
+        role = iam.get_role(RoleName=GRANT_ROLE)["Role"]
+        if not has_managed_tag(role.get("Tags", []), "Key", "Value"):
+            fail(f"IAM role {console.value(GRANT_ROLE)} exists but is not managed by PDT")
+        iam.update_assume_role_policy(RoleName=GRANT_ROLE, PolicyDocument=trust)
+    except Exception as exc:
+        if not not_found(exc):
+            raise
+        iam.create_role(RoleName=GRANT_ROLE, AssumeRolePolicyDocument=trust,
+                        Description="Managed by PDT", Tags=iam_tags(),
+                        MaxSessionDuration=GRANT_SESSION_SECONDS)
+    for part, document in enumerate(grant_policy_parts(account, region)):
+        name = grant_policy_name(region, part)
+        arn = f"arn:aws:iam::{account}:policy/{name}"
+        ensure_grant_policy(iam, arn, name, document)
+        iam.attach_role_policy(RoleName=GRANT_ROLE, PolicyArn=arn)
+    return arns["role"]
+
+
+def delete_grant_policy(iam, arn: str) -> None:
+    for version in iam.list_policy_versions(PolicyArn=arn)["Versions"]:
+        if not version.get("IsDefaultVersion"):
+            iam.delete_policy_version(PolicyArn=arn, VersionId=version["VersionId"])
+    iam.delete_policy(PolicyArn=arn)
+
+
+def grant_remove(place: str, _values: dict, _assume_yes: bool) -> None:
+    _provider, account, region = grants.split_place(place)
+    iam = grant_login(place).client("iam", config=RETRIES)
+    try:
+        role = iam.get_role(RoleName=GRANT_ROLE)["Role"]
+    except Exception as exc:
+        if not not_found(exc):
+            raise
+        console.say(f"AWS account {console.value(account)} has no role {console.value(GRANT_ROLE)}.")
+        return
+    if not has_managed_tag(role.get("Tags", []), "Key", "Value"):
+        fail(f"IAM role {console.value(GRANT_ROLE)} exists but is not managed by PDT")
+    attached = iam.list_attached_role_policies(RoleName=GRANT_ROLE)["AttachedPolicies"]
+    base = grant_policy_name(region)
+    mine = [item for item in attached
+            if item["PolicyName"] == base or item["PolicyName"].startswith(base + "-")]
+    for item in mine:
+        iam.detach_role_policy(RoleName=GRANT_ROLE, PolicyArn=item["PolicyArn"])
+        delete_grant_policy(iam, item["PolicyArn"])
+    if len(mine) == len(attached):
+        iam.delete_role(RoleName=GRANT_ROLE)
+        delete_grant_policy(iam, grant_arns(account)["boundary"])
+
+
+def grant_env(place: str, values: dict) -> dict[str, str]:
+    """STS AssumeRole with the external ID, from AutoIDM's own login, into env values."""
+    _provider, account, region = grants.split_place(place)
+    role = values.get("role") or ""
+    if not role.startswith(f"arn:aws:iam::{account}:role/"):
+        fail(f"The grant names the role {console.value(role)}, which is not in AWS account "
+             f"{console.value(account)}.")
+    answer = boto3.client("sts", region_name=region, config=RETRIES).assume_role(
+        RoleArn=role, RoleSessionName="pdt-worker", ExternalId=values.get("external_id") or "",
+        DurationSeconds=GRANT_SESSION_SECONDS)["Credentials"]
+    return {"AWS_ACCESS_KEY_ID": answer["AccessKeyId"],
+            "AWS_SECRET_ACCESS_KEY": answer["SecretAccessKey"],
+            "AWS_SESSION_TOKEN": answer["SessionToken"],
+            "AWS_REGION": region, "AWS_DEFAULT_REGION": region,
+            BOUNDARY_ENV: grant_arns(account)["boundary"]}
+
+
+GRANT = grants.ProviderGrant(grant_plan, grant_remove_plan, grant_create, grant_remove, grant_env)
+
+
 def load_app(app_name: str) -> dict:
     try:
         app = config.merged_app(app_name)
@@ -1284,12 +1548,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
         "deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-        "pause", "unpause", "start"))
+        "pause", "unpause", "start", *grants.COMMANDS))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_intermixed_args()
+    if args.command in grants.COMMANDS:
+        try:
+            return grants.run_verb(args.command, args.app, args.yes, args.plan, GRANT)
+        except ClientError as exc:
+            if error_code(exc) in {"AccessDenied", "AccessDeniedException"}:
+                fail(f"Your AWS login cannot do this: {console.escape(str(exc))}\n"
+                     "Add this policy to the login, then run the same command again:\n"
+                     f"{console.escape(json.dumps(GRANT_LOGIN_POLICY, indent=2))}")
+            raise
     app = load_app(args.app)
     if args.command == "login":
         return relogin(app)

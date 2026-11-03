@@ -5,7 +5,14 @@
 | `pdt init [DIR]` | create a project here, or in DIR |
 | `pdt examples` | list the example apps bundled with pdt |
 | `pdt new APP` | add an empty app to the project |
-| `pdt register --code CODE` | authenticate this computer for AutoIDM managed services with a one-time enrollment code from AutoIDM |
+| `pdt register` | authenticate this computer for AutoIDM managed services: approve it in a browser, or pass `--code CODE` with a one-time enrollment code from AutoIDM |
+| `pdt service install [--level view\|run\|manage] [--projects DIR]` | run commands from the AutoIDM portal on this computer, now and at each boot, with no open port |
+| `pdt service status [--json]` | show the service, its last checks, the level, the projects, and the running commands |
+| `pdt service run`, `pdt service tick`, `pdt service remove`, `pdt service allow LEVEL` | run it in this terminal, check once, remove it, or change the most the portal may ask for |
+| `pdt sync up [--yes] [--ref REF] [--label LABEL]` | copy this project to AutoIDM as a snapshot; `.env` files, keys, and links stay on this computer |
+| `pdt sync down [--snapshot ID] [--force]` | copy a snapshot into this project; it stops when a file changed on this computer |
+| `pdt sync diff [--json]` | list the files that differ from the newest snapshot |
+| `pdt grant add\|remove PLACE [--yes] [--plan]`, `pdt grant list` | let AutoIDM deploy in one cloud place with an identity you can see and delete, or stop it |
 | `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
 | `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
 | `pdt run APP` | run an app on this machine |

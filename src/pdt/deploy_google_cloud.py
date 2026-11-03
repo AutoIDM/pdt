@@ -80,12 +80,13 @@ os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 from pdt import config
 from pdt import console
 from pdt import gcloud_sdk
+from pdt import grants
 from pdt import lifecycle
 from pdt import regions
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
-    ensure_image, fail, fetch_json, gather_secrets, image_action, make_registration,
+    ensure_image, fail, fetch_json, gather_secrets, image_action, keeps_secret, make_registration,
     registration_secrets, run_build, run_main, run_secrets, secret_contents, ssh_build_args,
     store_cost_label, store_kept_line, store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
@@ -942,7 +943,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         sid = secret_id(name)
         secret = read_json_or_none("secrets", "describe", sid, "--project", project)
         require_managed(secret, f"Secret Manager secret {console.value(sid)}")
-        current = secret_value(project, sid) if secret else None
+        current = secret_value(project, sid) if secret and not keeps_secret() else None
+        kept_secret = keeps_secret() and secret is not None
         values.update(registration_secrets(current))
         payload = json.dumps(values, sort_keys=True)
         secret_state = None
@@ -969,6 +971,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     if secret_state:
         actions.append(console.Markup(f"{secret_state} secret {console.value(sid)} "
                                       f"({secret_contents(values)}, as one json blob)"))
+    if kept_secret:
+        actions.append(console.Markup(f"keep secret {console.value(sid)} as it is"))
     if values:
         actions.append(console.Markup(f"allow {console.value(job)} to update its own secret "
                                       f"{console.value(sid)}"))
@@ -1058,10 +1062,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     args = ["run", "jobs", "deploy", job, "--image", pinned, "--region", region,
             "--project", project, "--service-account", sa, "--max-retries", "0",
             "--labels", f"managed-by=pdt,{BUILD_TAG}={fingerprint}"]
-    if values:
+    if values or kept_secret:
         args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"]
     env_vars = []
-    if values:
+    if values or kept_secret:
         env_vars.append(f"PDT_ENV_SECRET_RESOURCE=projects/{project}/secrets/{sid}")
     if store:
         env_vars.append(f"PDT_STORAGE_URL={store.url}")
@@ -1501,6 +1505,104 @@ def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
     return logs(app, ["--follow"], assume_yes, new=lambda run: run.id == name)
 
 
+GRANT_NAME = "pdt-autoidm"
+# Named roles, and no project IAM write: the identity cannot give itself or anyone more.
+GRANT_ROLES = ("roles/run.admin", "roles/cloudscheduler.admin", "roles/artifactregistry.admin",
+               "roles/secretmanager.viewer", "roles/cloudbuild.builds.editor",
+               "roles/iam.serviceAccountViewer", "roles/serviceusage.serviceUsageConsumer")
+GRANT_RUNNER = "pdt-runner"
+
+
+def grant_email(name: str, project: str) -> str:
+    return f"{name}@{project}.iam.gserviceaccount.com"
+
+
+def grant_plan(place: str, values: dict) -> list:
+    _provider, project, _region = grants.split_place(place)
+    principal = (values.get("principal") or {}).get("google-cloud") or "the service account of AutoIDM"
+    return [
+        console.Markup(f"create service account {console.value(GRANT_NAME)} in Google Cloud project "
+                       f"{console.value(project)} (description managed-by=pdt)"),
+        console.Markup(f"let {console.value(principal)} act as it "
+                       f"({console.value('roles/iam.serviceAccountTokenCreator')})"),
+        console.Markup(f"give it {', '.join(console.value(role) for role in GRANT_ROLES)}. It gets no project "
+                       "IAM write"),
+        console.Markup(f"create service account {console.value(GRANT_RUNNER)} when missing, and "
+                       "let it run jobs as that account only"),
+    ]
+
+
+def grant_remove_plan(place: str, _values: dict) -> list:
+    _provider, project, _region = grants.split_place(place)
+    return [console.Markup(f"delete service account {console.value(GRANT_NAME)} and its roles "
+                           f"from Google Cloud project {console.value(project)}")]
+
+
+def grant_login(project: str, assume_yes: bool) -> None:
+    preflight({"name": GRANT_NAME, "platform": {}}, project, assume_yes)
+
+
+def grant_create(place: str, values: dict, assume_yes: bool) -> str:
+    _provider, project, _region = grants.split_place(place)
+    principal = (values.get("principal") or {}).get("google-cloud")
+    if not principal:
+        fail("AutoIDM did not name its Google Cloud service account. Run the command again.")
+    grant_login(project, assume_yes)
+    email = grant_email(GRANT_NAME, project)
+    member = f"serviceAccount:{email}"
+    if service_account_or_none(project, email) is None:
+        console.step(f"creating service account {console.value(email)}")
+        run_quiet("iam", "service-accounts", "create", GRANT_NAME, "--project", project,
+                  "--display-name", "AutoIDM access for pdt", "--description", "managed-by=pdt")
+    run_quiet("iam", "service-accounts", "add-iam-policy-binding", email, "--project", project,
+              "--member", f"serviceAccount:{principal}",
+              "--role", "roles/iam.serviceAccountTokenCreator")
+    for role in GRANT_ROLES:
+        run_quiet("projects", "add-iam-policy-binding", project, "--member", member,
+                  "--role", role, "--condition=None", "--format=none")
+    runner = grant_email(GRANT_RUNNER, project)
+    if service_account_or_none(project, runner) is None:
+        run_quiet("iam", "service-accounts", "create", GRANT_RUNNER, "--project", project,
+                  "--display-name", "pdt job runner", "--description", "managed-by=pdt")
+    run_quiet("iam", "service-accounts", "add-iam-policy-binding", runner, "--project", project,
+              "--member", member, "--role", "roles/iam.serviceAccountUser")
+    return email
+
+
+def grant_remove(place: str, _values: dict, assume_yes: bool) -> None:
+    _provider, project, _region = grants.split_place(place)
+    grant_login(project, assume_yes)
+    email = grant_email(GRANT_NAME, project)
+    if service_account_or_none(project, email) is None:
+        console.say(f"Google Cloud project {console.value(project)} has no service account "
+                    f"{console.value(email)}.")
+        return
+    for role in GRANT_ROLES:
+        run_quiet("projects", "remove-iam-policy-binding", project,
+                  "--member", f"serviceAccount:{email}", "--role", role,
+                  "--condition=None", "--format=none")
+    run_quiet("iam", "service-accounts", "delete", email, "--project", project, "--quiet")
+
+
+def grant_env(place: str, values: dict) -> dict[str, str]:
+    """The documented impersonation env var. gcloud reads AutoIDM's own login from the key file
+    and keeps its tokens in CLOUDSDK_CONFIG, so that is a folder in memory, which the worker
+    deletes after the command."""
+    _provider, project, _region = grants.split_place(place)
+    role = values.get("role") or ""
+    key_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if not (role and key_file):
+        fail("A cloud worker needs GOOGLE_APPLICATION_CREDENTIALS and a grant that names a "
+             "service account.")
+    folder = grants.memory_folder("pdt-gcloud-")
+    return {"CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT": role, "CLOUDSDK_CORE_PROJECT": project,
+            "CLOUDSDK_CONFIG": str(folder), "GOOGLE_APPLICATION_CREDENTIALS": key_file,
+            "PDT_GRANT_FOLDER": str(folder)}
+
+
+GRANT = grants.ProviderGrant(grant_plan, grant_remove_plan, grant_create, grant_remove, grant_env)
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "gcloud":
         try:
@@ -1511,12 +1613,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-                                 "pause", "unpause", "start"))
+                                 "pause", "unpause", "start", *grants.COMMANDS))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_intermixed_args()
+    if args.command in grants.COMMANDS:
+        return grants.run_verb(args.command, args.app, args.yes, args.plan, GRANT)
     try:
         app = config.merged_app(args.app)
     except config.ConfigError as exc:

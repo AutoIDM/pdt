@@ -76,6 +76,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 import time
 import urllib.parse
 import urllib.request
@@ -83,10 +85,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, storage_cli
+from pdt import config, console, grants, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,
-    run_main, secret_contents, store_plan_lines, store_suffix)
+    keeps_secret, run_main, secret_contents, store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
@@ -117,6 +119,9 @@ ROLE_IDS = {
     "Key Vault Secrets Officer": "b86a8fe4-44ce-4948-aee5-eccb2c155cd7",
     "Key Vault Secrets User": "4633458b-17de-408a-b874-0445c86b69e6",
     "Storage Blob Data Contributor": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "Contributor": "b24988ac-6180-42a0-ab88-20f7382dd24c",
+    "Key Vault Reader": "21090545-7ca7-4776-b22c-e363652d74d2",
+    "Role Based Access Control Administrator": "f58310d9-a9f6-439a-9e8d-f62e7b41a168",
 }
 STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
 STORE_METADATA_ARGS = tuple(
@@ -740,6 +745,8 @@ def secret_reads(settings: dict[str, str], vault_token: str, sid: str,
     if vault is None or not wanted:
         return vault, None, []
     url = f"https://{settings['vault']}.vault.azure.net/secrets/{sid}"
+    if keeps_secret():
+        return vault, None, secret_versions(settings, vault_token, sid)
     current = arm_get(vault_token, f"{url}?api-version={VAULT_API_VERSION}",
                       ("keyvault", "secret", "show", "--vault-name", settings["vault"]),
                       missing=SECRET_MISSING_OR_NOT_GRANTED)
@@ -1235,12 +1242,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-                                 "pause", "unpause", "start"))
+                                 "pause", "unpause", "start", *grants.COMMANDS))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_intermixed_args()
+    if args.command in grants.COMMANDS:
+        return grants.run_verb(args.command, args.app, args.yes, args.plan, GRANT)
     app = load_app(args.app)
     try:
         return run_command(app, args)
@@ -1248,6 +1257,145 @@ def main() -> int:
         console.say(console.escape(str(exc)))
         command = "pdt az " + " ".join(exc.az_command[:4])
         fail(f"{console.value(command)} failed; fix the problem above and re-run")
+
+
+GRANT_NAME = "pdt-autoidm"
+GRANT_ROLES = ("Contributor", "Key Vault Reader")
+GRANT_ASSIGNS = ("AcrPull", "Key Vault Secrets User", "Key Vault Secrets Officer",
+                 "Storage Blob Data Contributor")
+ROLE_WRITE = "Microsoft.Authorization/roleAssignments"
+
+
+def grant_groups(subscription: str) -> list[str]:
+    return [f"/subscriptions/{subscription}/resourceGroups/{group}"
+            for group in ("pdt", SHARED_GROUP)]
+
+
+def grant_condition() -> str:
+    """Role assignments the identity may add or delete: only the named roles a job needs."""
+    ids = ", ".join(ROLE_IDS[role] for role in GRANT_ASSIGNS)
+    return (f"((!(ActionMatches{{'{ROLE_WRITE}/write'}})) OR "
+            f"(@Request[{ROLE_WRITE}:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {{{ids}}})) AND "
+            f"((!(ActionMatches{{'{ROLE_WRITE}/delete'}})) OR "
+            f"(@Resource[{ROLE_WRITE}:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {{{ids}}}))")
+
+
+def grant_plan(place: str, values: dict) -> list:
+    _provider, subscription, region = grants.split_place(place)
+    client = ((values.get("principal") or {}).get("azure") or {}).get("client_id") or "AutoIDM"
+    return [
+        console.Markup(f"create service principal {console.value(GRANT_NAME)} of the application "
+                       f"{console.value(client)} in Azure subscription "
+                       f"{console.value(subscription)}'s tenant (managed-by=pdt)"),
+        console.Markup(f"create resource groups {console.value('pdt')} and "
+                       f"{console.value(SHARED_GROUP)} in {console.value(region)} when missing "
+                       "(managed-by=pdt)"),
+        console.Markup(f"assign it {', '.join(console.value(role) for role in GRANT_ROLES)} on those two "
+                       "groups only"),
+        console.Markup(f"let it assign only {', '.join(console.value(role) for role in GRANT_ASSIGNS)} on "
+                       "those two groups"),
+    ]
+
+
+def grant_remove_plan(place: str, _values: dict) -> list:
+    _provider, subscription, _region = grants.split_place(place)
+    return [console.Markup(f"delete service principal {console.value(GRANT_NAME)} and its role "
+                           f"assignments from Azure subscription {console.value(subscription)}")]
+
+
+def grant_login(assume_yes: bool) -> dict:
+    account = az_json("account", "show")
+    if account:
+        return account
+    if assume_yes or not can_prompt(None):
+        fail(f"no Azure sign-in on this computer. Run {console.value('pdt az login')}, then run "
+             "the same command again.")
+    login("")
+    account = az_json("account", "show")
+    if not account:
+        fail("Azure login failed")
+    return account
+
+
+def grant_create(place: str, values: dict, assume_yes: bool) -> str:
+    _provider, subscription, region = grants.split_place(place)
+    client = ((values.get("principal") or {}).get("azure") or {}).get("client_id")
+    if not client:
+        fail("AutoIDM did not name its Azure application. Run the command again.")
+    grant_login(assume_yes)
+    principal = az_json("ad", "sp", "show", "--id", client)
+    if not principal:
+        console.step(f"creating service principal {console.value(GRANT_NAME)}")
+        principal = az_json("ad", "sp", "create", "--id", client)
+    run_quiet("ad", "sp", "update", "--id", principal["id"], "--add", "tags", "managed-by=pdt")
+    for group, scope in zip(("pdt", SHARED_GROUP), grant_groups(subscription)):
+        if not az_json("group", "show", "--name", group, "--subscription", subscription):
+            console.step(f"creating resource group {console.value(group)}")
+            run_quiet("group", "create", "--name", group, "--location", region,
+                      "--subscription", subscription, "--tags", "managed-by=pdt")
+        for role in GRANT_ROLES:
+            assign_role(scope, principal["id"], role)
+        assign_role(scope, principal["id"], "Role Based Access Control Administrator",
+                    condition=grant_condition())
+    return principal["id"]
+
+
+def grant_remove(place: str, values: dict, assume_yes: bool) -> None:
+    _provider, subscription, _region = grants.split_place(place)
+    role = values.get("role") or ""
+    if not role:
+        fail(f"This computer has no record of the identity in {console.value(place)}. Delete the "
+             f"service principal {console.value(GRANT_NAME)} in the Azure portal.")
+    grant_login(assume_yes)
+    principal = az_json("ad", "sp", "show", "--id", role)
+    if not principal:
+        console.say(f"Azure has no service principal {console.value(role)}.")
+        return
+    for scope in grant_groups(subscription):
+        for name in (*GRANT_ROLES, "Role Based Access Control Administrator"):
+            revoke_role(scope, principal["id"], name)
+    run_quiet("ad", "sp", "delete", "--id", role)
+
+
+def subscription_tenant(subscription: str) -> str:
+    """The tenant of a subscription, from the sign-in address in Azure's answer to a request
+    with no token. The grant names a subscription, and a login needs its tenant."""
+    url = f"{MANAGEMENT_API}/subscriptions/{subscription}?api-version=2022-12-01"
+    try:
+        with urllib.request.urlopen(url, timeout=30):
+            pass
+    except urllib.error.HTTPError as e:
+        found = re.search(r"login\.[a-z.]+/([0-9a-fA-F-]{36})",
+                          e.headers.get("WWW-Authenticate") or "")
+        if found:
+            return found.group(1)
+    fail(f"Azure did not name the tenant of subscription {console.value(subscription)}.")
+
+
+def grant_env(place: str, values: dict) -> dict[str, str]:
+    """`az login --service-principal` with AutoIDM's federated token. The CLI keeps its login in
+    AZURE_CONFIG_DIR, so that is a folder in memory, which the worker deletes after the command."""
+    _provider, subscription, _region = grants.split_place(place)
+    client = ((values.get("principal") or {}).get("azure") or {}).get("client_id")
+    token_file = os.environ.get("AZURE_FEDERATED_TOKEN_FILE", "").strip()
+    if not (client and token_file):
+        fail("A cloud worker needs AZURE_FEDERATED_TOKEN_FILE, and AutoIDM must name its Azure "
+             "application.")
+    tenant = subscription_tenant(subscription)
+    folder = grants.memory_folder("pdt-az-")
+    proc = subprocess.run(
+        [*AZ, "login", "--service-principal", "--tenant", tenant, "--username", client,
+         "--federated-token", Path(token_file).read_text(encoding="utf-8").strip(),
+         "--allow-no-subscriptions"],
+        env={**os.environ, "AZURE_CONFIG_DIR": str(folder)}, stdin=subprocess.DEVNULL,
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        fail(f"Azure refused the login as {console.value(client)}: "
+             f"{console.escape(proc.stderr.strip())}")
+    return {"AZURE_CONFIG_DIR": str(folder), "PDT_GRANT_FOLDER": str(folder)}
+
+
+GRANT = grants.ProviderGrant(grant_plan, grant_remove_plan, grant_create, grant_remove, grant_env)
 
 
 def run_command(app: dict, args: argparse.Namespace) -> int:

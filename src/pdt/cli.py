@@ -3,8 +3,8 @@
 Inside an app folder, leave <app> off any command that takes one and pdt uses that app.
 Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
-Every command except init, examples, upgrade, completion, register, aws, az, and gcloud needs a
-project.
+Every command except init, examples, upgrade, completion, register, service, grant, aws, az, and
+gcloud needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
 """
 
@@ -27,11 +27,16 @@ from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh,
-                     register_cli, scaffold, upgrade)
+    from pdt import (alerts_cli, console, deploy, grants, gui_cli, lifecycle, powershell, pwsh,
+                     register_cli, scaffold, service, snapshots, sync_cli, upgrade)
+    from pdt.utils import autoidm
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
+# The same names as service_commands.LEVELS and service_backends.BACKENDS. Tab completion builds
+# this parser, and it skips the modules that hold them.
+LEVELS = ("view", "run", "manage")
+BACKENDS = ("windows", "systemd", "launchd", "cron")
 CLOUD_CLIS = {
     "aws": "deploy_aws.py",
     "az": "deploy_azure.py",
@@ -540,6 +545,44 @@ def cmd_register(args) -> int:
     return register_cli.register(args.code, args.api_url)
 
 
+def cmd_service(args) -> int:
+    actions = {
+        "install": lambda: service.install(args.level, args.projects, args.backend),
+        "status": lambda: service.status(args.json),
+        "run": lambda: service.run(args.worker),
+        "tick": service.tick,
+        "remove": service.remove,
+        "allow": lambda: service.allow(args.level),
+    }
+    return actions[args.action]()
+
+
+def cmd_sync(args) -> int:
+    actions = {
+        "up": lambda: sync_cli.up(args.yes, args.ref, args.label),
+        "down": lambda: sync_cli.down(args.snapshot, args.force),
+        "diff": lambda: sync_cli.diff(args.json),
+    }
+    try:
+        return actions[args.action]()
+    except (autoidm.AutoidmError, snapshots.SnapshotError) as e:
+        console.error(console.escape(str(e)))
+        return 1
+
+
+def cmd_grant(args) -> int:
+    actions = {
+        "add": lambda: grants.add(args.place, args.yes, args.plan),
+        "list": lambda: grants.show(args.json),
+        "remove": lambda: grants.remove(args.place, args.yes, args.plan),
+    }
+    try:
+        return actions[args.action]()
+    except autoidm.AutoidmError as e:
+        console.error(console.escape(str(e)))
+        return 1
+
+
 def cmd_gui(args) -> int:
     return gui_cli.main(args.port, args.background, args.no_browser, args.stop)
 
@@ -617,6 +660,7 @@ COMMAND_GROUPS = {
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
     "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
+    "Work with the AutoIDM portal": ["service", "sync", "grant"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
 
@@ -788,11 +832,65 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_alerts)
     p = add_parser("register",
                    help="authenticate this computer for AutoIDM managed services")
-    p.add_argument("--code", required=True,
-                   help="the one-time enrollment code from AutoIDM, such as KQ7M-2RTX")
-    p.add_argument("--api-url", default=config.AUTOIDM_API_URL,
-                   help=f"the AutoIDM address (default: {config.AUTOIDM_API_URL})")
+    p.add_argument("--code",
+                   help="the one-time enrollment code from AutoIDM, such as KQ7M-2RTX; leave it "
+                        "off to sign in through a browser")
+    p.add_argument("--api-url",
+                   help=f"the AutoIDM address (default: PDT_API_URL, else {config.AUTOIDM_API_URL})")
     p.set_defaults(func=cmd_register)
+    p = add_parser("service", help="run commands from the AutoIDM portal on this computer")
+    actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt service")
+
+    def add_action(group, name: str, **kwargs):
+        return group.add_parser(
+            name, formatter_class=rich_argparse.RawDescriptionRichHelpFormatter, **kwargs)
+
+    q = add_action(actions, "install", help="start the service now and at each boot")
+    q.add_argument("--level", choices=LEVELS,
+                   help="the most the portal may ask for: view reads, run also starts jobs, "
+                        "manage also deploys and copies files (default: run)")
+    projects = q.add_argument("--projects", metavar="DIR",
+                              help="one project, or the folder that holds the projects to serve "
+                                   "(default: the current project)")
+    projects.completer = completion.directories
+    q.add_argument("--backend", choices=BACKENDS,
+                   help="what keeps the service running (default: the one for this computer; "
+                        "cron starts one check each minute)")
+    q = add_action(actions, "status", help="show the service, its last checks, and running commands")
+    q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
+    q = add_action(actions, "run", help="run the service in this terminal")
+    q.add_argument("--worker", action="store_true",
+                   help="act as a cloud worker, with the registration in the environment")
+    add_action(actions, "tick", help="check once, and stay until no command runs")
+    add_action(actions, "remove", help="stop the service and remove it from this computer")
+    q = add_action(actions, "allow", help="change the most the portal may ask for")
+    q.add_argument("level", choices=LEVELS, help="view, run, or manage")
+    p.set_defaults(func=cmd_service)
+    p = add_parser("sync", help="copy this project to or from AutoIDM")
+    actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt sync")
+    q = add_action(actions, "up", help="copy this project to AutoIDM as a snapshot")
+    q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
+    q.add_argument("--ref", help="a Git commit or another name of this version, saved with it")
+    q.add_argument("--label", help="a short note saved with the snapshot, such as MR 12")
+    q = add_action(actions, "down", help="copy a snapshot into this project")
+    q.add_argument("--snapshot", metavar="ID",
+                   help="which snapshot (default: the newest copy any computer sent)")
+    q.add_argument("--force", action="store_true",
+                   help="overwrite each file that changed on this computer")
+    q = add_action(actions, "diff", help="list the files that differ from the newest snapshot")
+    q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
+    p.set_defaults(func=cmd_sync)
+    p = add_parser("grant", help="let AutoIDM deploy in a cloud account, or stop it")
+    actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt grant")
+    for name, what in (("add", "create the AutoIDM identity in a place"),
+                       ("remove", "delete the AutoIDM identity from a place")):
+        q = add_action(actions, name, help=what)
+        q.add_argument("place", help="such as aws:123456789012:us-east-2")
+        q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
+        q.add_argument("--plan", action="store_true", help="show the resources, then stop")
+    q = add_action(actions, "list", help="show each place this computer granted")
+    q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
+    p.set_defaults(func=cmd_grant)
     p = add_parser("gui", help="open the project's dashboard in your web browser")
     p.add_argument("--port", type=int, default=config.GUI_PORT,
                    help=f"the local port to serve on (default: {config.GUI_PORT})")

@@ -375,7 +375,8 @@ def test_register_writes_a_pending_key_before_the_request_then_the_customer_file
     assert set(request["body"]) == {"code", "public_key", "hostname", "pdt_version"}
     info, key = autoidm.files(CUSTOMER)
     assert json.loads(info.read_text()) == {
-        "installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER, "api_url": url}
+        "installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER, "api_url": url,
+        "command_keys": []}
     assert sorted(p.name for p in info.parent.iterdir()) == [info.name, key.name]
     assert os.name == "nt" or key.stat().st_mode & 0o777 == 0o600
     assert autoidm.registration(CUSTOMER).installation_id == "ins_4f8a1c2e9b"
@@ -471,11 +472,14 @@ def test_register_outside_a_project_says_what_to_add(backend, tmp_path, monkeypa
     assert f"customer: {CUSTOMER}" in capsys.readouterr().out
 
 
-def test_pdt_register_needs_a_code_and_defaults_the_api_url():
+def test_pdt_register_defaults_the_api_url_and_pdt_api_url_overrides_it(monkeypatch):
     args = cli.build_parser().parse_args(["register", "--code", "KQ7M-2RTX"])
-    assert (args.code, args.api_url) == ("KQ7M-2RTX", config.AUTOIDM_API_URL)
-    with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["register"])
+    assert (args.code, args.api_url) == ("KQ7M-2RTX", None)
+    assert cli.build_parser().parse_args(["register"]).code is None
+    monkeypatch.delenv(autoidm.URL_ENV, raising=False)
+    assert register_cli.default_api_url() == config.AUTOIDM_API_URL
+    monkeypatch.setenv(autoidm.URL_ENV, "https://portal.example")
+    assert register_cli.default_api_url() == "https://portal.example"
 
 
 def test_an_upload_sends_the_presigned_fields_and_the_file_as_multipart(backend):

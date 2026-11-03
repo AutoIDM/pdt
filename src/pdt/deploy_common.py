@@ -13,6 +13,12 @@ it and no other, through `pdt.utils.env_secret`. When the project sets
 registration (registration_secrets, make_registration), which every later
 deploy keeps and `pdt secrets` never shows, copies, or replaces.
 
+A cloud worker (`pdt service run --worker`) deploys with KEEP_SECRET_ENV set. It holds no
+.env, and the grant it acts under cannot open a secret, so a deploy then reads no secret value
+and writes none: `gather_secrets` and `registration_secrets` give nothing, the root skips
+`missing_env`, and each provider keeps the secret the app already has and its reference on the
+job. The next `pdt secrets save` from the customer's computer changes it.
+
 A build context holds the app directory, pdt.yml, config.PROJECT_NAME_FILE
 (the name of the project folder, since the image's project folder is
 /workspace, so every event names the project as a local run does), and in .pdt-lifecycle
@@ -145,6 +151,7 @@ BUILD_EXCLUDES = (
 )
 BUILD_TAG = "pdt-build"
 REBUILD_ENV = "PDT_REBUILD"
+KEEP_SECRET_ENV = "PDT_KEEP_DEPLOYED_SECRET"
 STORE_PREFIX = "pdt-data"
 STORE_TAGS = {"managed-by": "pdt", "pdt-lifecycle": "retain"}
 
@@ -673,7 +680,14 @@ def secret_contents(values: dict[str, str]) -> str:
     return f"env vars {', '.join(map(console.value, sorted(values)))}" if values else "no env vars"
 
 
+def keeps_secret() -> bool:
+    """Whether this deploy leaves the app's deployed secret as it is: a cloud worker's."""
+    return os.environ.get(KEEP_SECRET_ENV, "").strip() != ""
+
+
 def gather_secrets(app: dict) -> dict[str, str]:
+    if keeps_secret():
+        return {}
     try:
         spec = config.env_spec(app)
     except config.ConfigError as e:
@@ -724,8 +738,11 @@ def split_registration(current: str | None) -> tuple[dict[str, str], str | None]
 
 def reads_registration() -> bool:
     """Whether a deploy reads the app's secret for an AutoIDM cloud registration even when
-    the app has no env vars: the project sets `managed_services`."""
+    the app has no env vars: the project sets `managed_services`. A worker's deploy lists the
+    secret's versions, to keep its reference, and reads no value."""
     from pdt import managed_services
+    if keeps_secret():
+        return True
     try:
         return managed_services.settings() is not None
     except config.ConfigError:
@@ -741,6 +758,8 @@ def registration_secrets(current: str | None) -> dict[str, str]:
     nothing."""
     from pdt import managed_services
     from pdt.utils import autoidm
+    if keeps_secret():
+        return {}
     kept, _rest = split_registration(current)
     try:
         found = managed_services.settings()

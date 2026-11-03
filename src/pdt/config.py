@@ -51,7 +51,8 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
-ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch", "managed_services"}
+ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch", "managed_services",
+             "service"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
             "run_scripts", "continue_on_error", "pause", "docker-build", "alerts"}
 # Where a cloud provider builds the image: with Docker on this computer when

@@ -62,7 +62,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, regions, runs_cli
+from pdt import config, console, grants, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import CostEstimate, run_main, warn_if_locked
@@ -722,12 +722,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets",
-                                 "runs", "logs", "pause", "unpause", "start"))
+                                 "runs", "logs", "pause", "unpause", "start", *grants.COMMANDS))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_intermixed_args()
+    if args.command in grants.COMMANDS:
+        return grants.no_grant(args.command, args.app)
     try:
         app = config.merged_app(args.app)
     except config.ConfigError as exc:

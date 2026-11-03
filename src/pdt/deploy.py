@@ -33,7 +33,7 @@ from pathlib import Path
 from pdt import (__version__, alerts_cli, config, console, lifecycle, managed_services, powershell,
                  pwsh, regions, runs_cli)
 from pdt.config import ConfigError
-from pdt.deploy_common import REBUILD_ENV, CostEstimate
+from pdt.deploy_common import REBUILD_ENV, CostEstimate, keeps_secret
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -173,10 +173,10 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     problems = config.validate_app(app_name)
     sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
-    missing = config.missing_env(app)
+    missing = "" if keeps_secret() else config.missing_env(app)
     if missing != "":
         problems.append(missing)
-    if config.uses_email(app):
+    if config.uses_email(app) and not keeps_secret():
         problems.extend(email_problems(app["config"], check_oauth=False))
     lines = [f"runs {console.value('run.py')}"]
     if config.powershell_scripts(app["dir"]):
@@ -207,7 +207,7 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
             console.done("Plan only; nothing was deployed. To deploy this plan, run:")
             console.command(f"pdt deploy {app_name} --yes")
         return code
-    if config.uses_email(app):
+    if config.uses_email(app) and not keeps_secret():
         prepare_email_auth(auth_env_file(app["dir"]))
     alerts_cli.offer(app_name, assume_yes)
     code = provider_step("deploy", provider, app_name, assume_yes, rebuild)

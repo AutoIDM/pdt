@@ -1,4 +1,12 @@
-"""`pdt register`: authenticate this computer for AutoIDM managed services with a one-time code.
+"""`pdt register`: authenticate this computer for AutoIDM managed services.
+
+With no `--code`, a person approves this computer in a browser: pdt prints the URL and a short
+code, opens the browser, and waits. `pdt register --code CODE` uses a one-time code instead.
+Both follow the rules below. The browser flow's pending key has one fixed name, because its
+code comes from the server after the key exists, so a retry also sends the same public key.
+The registration file also holds `command_keys`, the keys that `pdt service` pins to check
+what the portal signs. After approval, pdt makes each grant the person chose in the browser. A
+person at a terminal who chose none gets one question for each place of the project.
 
 The code names the customer, so pdt learns the customer only from the answer.
 It makes the key and writes it as pending-<hash of the code>.key before it
@@ -27,12 +35,16 @@ import json
 import os
 import socket
 import subprocess
+import sys
+import time
+import webbrowser
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from pdt import __version__, config, console, managed_services
+from pdt import __version__, config, console, grants, managed_services
 from pdt.utils import autoidm
+from pdt.utils.email_auth import can_prompt
 
 # Owner Administrators, and an access list that inherits nothing and gives the folder and each
 # file and folder made in it full control to SYSTEM and Administrators, and read to {user}, the
@@ -41,6 +53,9 @@ from pdt.utils import autoidm
 FOLDER_SDDL = "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FR;;;{user})"
 SYSTEM_READ = "(A;OICI;FR;;;S-1-5-18)"
 FOLDER_ENV = "PDT_REGISTRATIONS_FOLDER"
+DEVICE_KEY = "pending-device.key"
+DEFAULT_POLL_SECONDS = 3
+PLATFORM_NAMES = {"win32": "windows", "darwin": "macos"}
 # .NET calls only, not Get-Acl, Set-Acl, or New-Object: Windows PowerShell started under
 # PowerShell 7 inherits its PSModulePath and cannot load the modules that hold those commands.
 # It prints the access list as .NET holds it before it saves it, then as it reads it back, so
@@ -82,23 +97,46 @@ def write_key(path: Path, key: Ed25519PrivateKey) -> None:
     config.write_text_atomically(path, autoidm.private_pem(key).decode(), newline="\n")
 
 
-def register(code: str, api_url: str) -> int:
-    folder = autoidm.folder()
-    if os.name == "nt" and not ctypes.windll.shell32.IsUserAnAdmin():
-        console.error(f"pdt register writes the key of this computer in {console.value(folder)}, "
-                      "which only an administrator can do. Run it in a terminal opened with "
-                      "Run as administrator.")
-        return 1
-    code = code.strip().upper()
-    api_url = api_url.rstrip("/")
-    folder.mkdir(parents=True, exist_ok=True)
+def is_admin() -> bool:
+    return bool(ctypes.windll.shell32.IsUserAnAdmin())
+
+
+def limit_folder(folder: Path, what: str) -> int:
+    """`restrict_folder`, with one error line that says what pdt did not do."""
     try:
         restrict_folder(folder)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as e:
         console.error(f"pdt could not limit {console.value(folder)} to SYSTEM, "
-                      f"Administrators, and your account, so it wrote no key: "
+                      f"Administrators, and your account, so it {console.escape(what)}: "
                       f"{console.escape(str(e))}")
         return 1
+    return 0
+
+
+def prepare_folder() -> int:
+    folder = autoidm.folder()
+    if os.name == "nt" and not is_admin():
+        console.error(f"pdt register writes the key of this computer in {console.value(folder)}, "
+                      "which only an administrator can do. Run it in a terminal opened with "
+                      "Run as administrator.")
+        return 1
+    folder.mkdir(parents=True, exist_ok=True)
+    return limit_folder(folder, "wrote no key")
+
+
+def default_api_url() -> str:
+    return os.environ.get(autoidm.URL_ENV, "").strip() or config.AUTOIDM_API_URL
+
+
+def register(code: str | None, api_url: str | None) -> int:
+    api_url = (api_url or default_api_url()).rstrip("/")
+    code_prepared = prepare_folder()
+    if code_prepared != 0:
+        return code_prepared
+    if code is None:
+        return register_in_browser(api_url)
+    folder = autoidm.folder()
+    code = code.strip().upper()
     digest = hashlib.sha256(code.replace("-", "").encode()).hexdigest()
     pending = folder / f"pending-{digest[:16]}.key"
     with config.locked(folder):
@@ -123,35 +161,144 @@ def register(code: str, api_url: str) -> int:
             else:
                 console.error(console.escape(str(e)))
             return 1
-        customer = answer["customer_id"]
-        info, key_path = autoidm.files(customer)
-        if info.is_file():
-            found = json.loads(info.read_text(encoding="utf-8"))
-            try:
-                kept = autoidm.public_key(autoidm.load_key(key_path.read_bytes()))
-            except (OSError, ValueError, autoidm.AutoidmError):
-                kept = None
-            if not (kept == autoidm.public_key(key)
-                    and found.get("installation_id") == answer["installation_id"]):
-                console.error(f"This computer is already registered to AutoIDM for "
-                              f"{console.value(customer)} as "
-                              f"{console.value(found.get('installation_id'))} in "
-                              f"{console.value(info)}. To register it again, delete "
-                              f"{console.value(info)} and {console.value(key_path)}, then run "
-                              "this command again with the same code.")
-                save_customer(customer)
-                return 1
-        else:
-            write_key(key_path, key)
-            config.write_text_atomically(info, json.dumps({
-                "installation_id": answer["installation_id"], "customer_id": customer,
-                "api_url": api_url}) + "\n")
-        console.done(f"Registered this computer to AutoIDM for {console.value(customer)} as "
-                     f"{console.value(answer['installation_id'])}.")
-        console.field("Saved in", str(info))
-        save_customer(customer)
-        pending.unlink()
+        return save_registration(answer, key, api_url, pending)
+
+
+def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pending: Path) -> int:
+    customer = answer["customer_id"]
+    info, key_path = autoidm.files(customer)
+    saved = {"installation_id": answer["installation_id"], "customer_id": customer,
+             "api_url": api_url, "command_keys": answer.get("command_keys") or []}
+    if info.is_file():
+        found = json.loads(info.read_text(encoding="utf-8"))
+        try:
+            kept = autoidm.public_key(autoidm.load_key(key_path.read_bytes()))
+        except (OSError, ValueError, autoidm.AutoidmError):
+            kept = None
+        if not (kept == autoidm.public_key(key)
+                and found.get("installation_id") == answer["installation_id"]):
+            console.error(f"This computer is already registered to AutoIDM for "
+                          f"{console.value(customer)} as "
+                          f"{console.value(found.get('installation_id'))} in "
+                          f"{console.value(info)}. To register it again, delete "
+                          f"{console.value(info)} and {console.value(key_path)}, then run "
+                          "this command again with the same code.")
+            save_customer(customer)
+            return 1
+        if found != saved:
+            config.write_text_atomically(info, json.dumps(saved) + "\n")
+    else:
+        write_key(key_path, key)
+        config.write_text_atomically(info, json.dumps(saved) + "\n")
+    console.done(f"Registered this computer to AutoIDM for {console.value(customer)} as "
+                 f"{console.value(answer['installation_id'])}.")
+    console.field("Saved in", str(info))
+    save_customer(customer)
+    pending.unlink()
     return 0
+
+
+def device_start_body(key: Ed25519PrivateKey) -> dict:
+    try:
+        projects = [managed_services.backend_name(config.project_name())]
+    except config.ConfigError:
+        projects = []
+    return {"public_key": autoidm.public_key(key), "hostname": socket.gethostname(),
+            "pdt_version": __version__,
+            "platform": PLATFORM_NAMES.get(sys.platform, sys.platform),
+            "places": grants.places_of_project(), "projects": projects}
+
+
+def wait_for_decision(api_url: str, codes: dict) -> dict | None:
+    """The approved answer of /v1/device/poll, or None after one error line. A poll that gets no
+    answer tries again until the code expires."""
+    interval = max(1, int(codes.get("interval") or DEFAULT_POLL_SECONDS))
+    deadline = time.monotonic() + float(codes.get("expires_in") or 900)
+    body = json.dumps({"user_code": codes["user_code"], "device_code": codes["device_code"]}).encode()
+    with console.waiting("waiting: approval in the browser"):
+        while time.monotonic() < deadline:
+            try:
+                answer = autoidm.send(f"{api_url}/v1/device/poll", body, {})
+            except autoidm.AutoidmError as e:
+                if e.code == "unknown_code":
+                    break
+                if e.status and e.status < 500:
+                    console.error(console.escape(str(e)))
+                    return None
+                answer = {"state": "waiting"}
+            if answer.get("state") == "approved":
+                return answer
+            if answer.get("state") == "denied":
+                console.error("The request was denied in the browser. pdt registered nothing.")
+                return None
+            time.sleep(interval)
+    console.error(f"The code {console.value(codes['user_code'])} expired. Run "
+                  f"{console.value('pdt register')} again for a new code.")
+    return None
+
+
+def register_in_browser(api_url: str) -> int:
+    folder = autoidm.folder()
+    pending = folder / DEVICE_KEY
+    with config.locked(folder):
+        try:
+            key = autoidm.load_key(pending.read_bytes())
+        except (OSError, ValueError, autoidm.AutoidmError):
+            key = Ed25519PrivateKey.generate()
+            write_key(pending, key)
+    body = json.dumps(device_start_body(key)).encode()
+    try:
+        codes = autoidm.answered(autoidm.send(f"{api_url}/v1/device/start", body, {}),
+                                 "/v1/device/start", "user_code", "device_code", "url")
+        autoidm.check_url(codes["url"], "/v1/device/start")
+    except autoidm.AutoidmError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    console.say("To connect this computer to AutoIDM, open this page and sign in:")
+    console.command(codes["url"])
+    console.field("Check that the page shows this code", codes["user_code"])
+    webbrowser.open(codes["url"])
+    answer = wait_for_decision(api_url, codes)
+    if answer is None:
+        return 1
+    try:
+        autoidm.answered(answer, "/v1/device/poll", "installation_id", "customer_id")
+    except autoidm.AutoidmError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    if not managed_services.CUSTOMER.fullmatch(answer["customer_id"]):
+        console.error(f"AutoIDM answered with the customer ID {console.value(answer['customer_id'])}, "
+                      "which is not one.")
+        return 1
+    with config.locked(folder):
+        code = save_registration(answer, key, api_url, pending)
+    if code != 0:
+        return code
+    found = autoidm.machine_registration(answer["customer_id"])
+    try:
+        autoidm.post(found, "/v1/device/confirm", {"version": 1, "user_code": codes["user_code"]})
+    except autoidm.AutoidmError as e:
+        console.warn(f"The portal page may not show success: {console.escape(str(e))}")
+    if answer.get("email"):
+        console.field("Signed in as", str(answer["email"]))
+    return make_grants(answer.get("grants") or [], found)
+
+
+def make_grants(chosen: list[str], found: autoidm.Registration) -> int:
+    """Make each grant the person chose in the browser. With none chosen, ask a person at a
+    terminal about each place of this project."""
+    places = list(chosen)
+    if not places and can_prompt(None):
+        for place in grants.places_of_project():
+            try:
+                if console.confirm(f"Let AutoIDM deploy and run pdt jobs in {place}?"):
+                    places.append(place)
+            except EOFError:
+                break
+    code = 0
+    for place in places:
+        code = grants.add(place, False, False, found) or code
+    return code
 
 
 def save_customer(customer: str) -> None:

@@ -199,33 +199,44 @@ def post(found: Registration, path: str, body: dict) -> dict:
     return send(found.api_url + path, data, {"Authorization": f"Bearer {token(found, data)}"})
 
 
-def upload(found: Registration, body: dict, data: bytes) -> str:
-    """Ask /v1/uploads for a place for one file (`body` has its kind, project, app, run_id,
-    and filename), send `data` there, and return its key."""
-    place = answered(post(found, "/v1/uploads", {"version": 1, **body, "size": len(data)}),
-                     "/v1/uploads", "url", "key")
+def check_url(url: object, what: str) -> str:
+    """`url` when it is https, or http to this computer (a test or a local server)."""
+    try:
+        target = urllib.parse.urlsplit(str(url))
+        local = target.hostname in ("127.0.0.1", "localhost")
+    except ValueError:
+        raise AutoidmError(f"AutoIDM answered {what} with the URL {url!r}, which "
+                           "does not parse") from None
+    if not (target.scheme == "https" or (target.scheme == "http" and local)):
+        raise AutoidmError(f"AutoIDM answered {what} with the URL {url!r}, which "
+                           "is not https")
+    return str(url)
+
+
+def post_file(place: dict, filename: str, data: bytes, what: str) -> None:
+    """Send `data` to a presigned POST: `place` holds its url and its fields."""
     fields = place.get("fields")
     if not (isinstance(fields, dict)
             and all(isinstance(value, str) for item in fields.items() for value in item)):
-        raise AutoidmError("AutoIDM answered /v1/uploads without fields of text")
-    try:
-        target = urllib.parse.urlsplit(place["url"])
-        local = target.hostname in ("127.0.0.1", "localhost")
-    except ValueError:
-        raise AutoidmError(f"AutoIDM answered /v1/uploads with the URL {place['url']!r}, which "
-                           "does not parse") from None
-    if not (target.scheme == "https" or (target.scheme == "http" and local)):
-        raise AutoidmError(f"AutoIDM answered /v1/uploads with the URL {place['url']!r}, which "
-                           "is not https")
+        raise AutoidmError(f"AutoIDM answered {what} without fields of text")
+    url = check_url(place["url"], what)
     boundary = uuid.uuid4().hex
     try:
         parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
                  f'{value}\r\n'.encode() for name, value in fields.items()]
         parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
-                     f'filename="{body["filename"]}"\r\n'
+                     f'filename="{filename}"\r\n'
                      'Content-Type: application/octet-stream\r\n\r\n'.encode() + data + b"\r\n")
     except UnicodeEncodeError as e:
-        raise AutoidmError(f"AutoIDM answered /v1/uploads with fields pdt cannot send: {e}") from None
-    send(place["url"], b"".join(parts) + f"--{boundary}--\r\n".encode(),
+        raise AutoidmError(f"AutoIDM answered {what} with fields pdt cannot send: {e}") from None
+    send(url, b"".join(parts) + f"--{boundary}--\r\n".encode(),
          {"Content-Type": f"multipart/form-data; boundary={boundary}"}, UPLOAD_TIMEOUT_SECONDS)
+
+
+def upload(found: Registration, body: dict, data: bytes) -> str:
+    """Ask /v1/uploads for a place for one file (`body` has its kind, project, app, run_id,
+    and filename), send `data` there, and return its key."""
+    place = answered(post(found, "/v1/uploads", {"version": 1, **body, "size": len(data)}),
+                     "/v1/uploads", "url", "key")
+    post_file(place, body["filename"], data, "/v1/uploads")
     return place["key"]

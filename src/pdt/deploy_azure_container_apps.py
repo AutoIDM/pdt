@@ -71,7 +71,8 @@ from pdt.deploy_azure import (
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, gather_secrets,
-    image_action, make_registration, reads_registration, registration_secrets, run_build,
+    image_action, keeps_secret, make_registration, reads_registration, registration_secrets,
+    run_build,
     run_secrets, ssh_build_args, store_cost_label, store_kept_line, warn_if_locked)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
@@ -1121,6 +1122,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     if not owned_by(legacy_job, name):
         legacy_job = None
     vault_exists, current_secret = secret_state(settings, sid, name, state["secret"])
+    kept_secret = keeps_secret() and bool(state["secret"][2])
     values.update(registration_secrets(current_secret))
     payload = json.dumps(values, sort_keys=True)
     store_present = False
@@ -1162,6 +1164,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         app, console.Markup(f"build and push image {console.value(image)}"),
         "ACR Tasks" if cloud else ""))
     actions += secret_actions(sid, values, current_secret, payload)
+    if kept_secret:
+        actions.append(console.Markup(f"keep Key Vault secret {console.value(sid)} as it is"))
     if legacy_job:
         actions.append(console.Markup(f"delete Container Apps Job {console.value(legacy)} "
                                       f"(its name is now {console.value(job)})"))
@@ -1189,7 +1193,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     vault_id = ensure_group_and_vault(
         settings, tuple(name for name in (*COMMON_PROVIDERS, *PROVIDERS) if not found[name]),
         vault_exists, group)
-    if vault_exists and current_secret is None and wanted_secret:
+    if vault_exists and current_secret is None and wanted_secret and not keeps_secret():
         current_secret = granted_secret_value(settings, sid)
         values.update(registration_secrets(current_secret))
     if not registry_exists:
@@ -1243,6 +1247,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                                         "region": settings["region"]})
     payload = json.dumps(values, sort_keys=True)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
+    if kept_secret:
+        secret_uri = f"https://{settings['vault']}.vault.azure.net/secrets/{sid}"
     if legacy_job:
         retire_job(settings, legacy, legacy_job, store, sid)
     console.step(f"reconciling Container Apps Job {console.value(job)}")
@@ -1257,7 +1263,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     principal = ((resource or {}).get("identity") or {}).get("principalId") or job_principal_id(
         job, rg)
     if secret_uri:
-        if current_secret != payload:
+        if current_secret != payload and not kept_secret:
             disable_old_secret_versions(settings, sid)
         assign_role(secret_scope(settings, sid), principal, SECRET_ROLE)
     if store:
