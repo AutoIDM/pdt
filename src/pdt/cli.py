@@ -506,8 +506,7 @@ def cmd_logs(args) -> int:
                                    ("--open", args.open), ("--json", args.json)) if on]
     lines = [] if args.lines is None else ["--lines", str(args.lines)]
     number = [] if args.number is None and args.open else [str(1 if args.number is None else args.number)]
-    run_id = [part for wanted in args.id or [] for part in ("--id", wanted)]
-    return deploy.logs(name, [*number, *run_id, *window_options(args), *lines, *flags])
+    return deploy.logs(name, [*number, *window_options(args), *lines, *flags])
 
 
 def cmd_health(args) -> int:
@@ -726,9 +725,6 @@ def build_parser() -> argparse.ArgumentParser:
     app.completer = completion.apps
     p.add_argument("number", nargs="?", type=int,
                    help="which run, as `pdt runs` numbers them (default: 1, the newest)")
-    p.add_argument("--id", action="append",
-                   help="which run, by the id `pdt runs` shows, instead of a number; "
-                        "repeat it to read several runs at once")
     p.add_argument("--since", help=SINCE_HELP)
     p.add_argument("--span", help=SPAN_HELP)
     p.add_argument("--count", type=int, help=COUNT_HELP)

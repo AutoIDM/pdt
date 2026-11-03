@@ -20,14 +20,16 @@ from pdt import config
 from pdt.gui import timing
 
 
-def run_pdt(*args: str, timeout: int = 900) -> tuple[int, str]:
-    """The exit code and output of `pdt <args>`; stderr is added when it failed."""
+def run_pdt(*args: str, timeout: int = 900, module: str = "pdt.cli") -> tuple[int, str]:
+    """The exit code and output of `pdt <args>`; stderr is added when it failed.
+
+    `module` pdt.deploy reads runs by id (see its `__main__`), which `pdt logs` does not."""
     env = dict(os.environ, PDT_PROJECT=str(config.find_project()), NO_COLOR="1",
                PYTHONPATH=str(Path(pdt.__file__).resolve().parent.parent))
     started = datetime.now(UTC)
     clock = time.monotonic()
     try:
-        proc = subprocess.run([sys.executable, "-m", "pdt.cli", *args], env=env,
+        proc = subprocess.run([sys.executable, "-m", module, *args], env=env,
                               stdin=subprocess.DEVNULL, capture_output=True, text=True,
                               timeout=timeout)
     except subprocess.TimeoutExpired:

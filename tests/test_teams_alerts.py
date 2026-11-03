@@ -70,7 +70,7 @@ def test_a_failed_scheduled_run_is_a_red_card_that_lists_every_parameter_in_orde
                     {"title": "Trigger", "value": "Schedule"},
                     {"title": "Exit code", "value": "1"},
                     {"title": "Run id", "value": "20261013T140200Z"},
-                    {"title": "Logs", "value": "pdt logs sync-users --id 20261013T140200Z"}]},
+                    {"title": "Logs", "value": "pdt runs sync-users"}]},
                 {"type": "TextBlock", "text": "job:run-failed at 2026-10-13 14:02 UTC, sent by pdt",
                  "isSubtle": True, "size": "Small", "wrap": True}]}}]}
 
