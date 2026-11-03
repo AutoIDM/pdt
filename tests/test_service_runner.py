@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from service_fixtures import (
     COMMAND, CUSTOMER, INSTALLATION, KEYS, FakePortal, claims, snapshot_of, token)
 
-from pdt import register_cli, service, service_commands, service_runner
+from pdt import config, register_cli, service, service_commands, service_runner
 from pdt.service_runner import Job, Pool, execute
 from pdt.utils import autoidm
 
@@ -231,6 +231,7 @@ def test_run_snapshot_runs_in_a_new_folder_with_the_project_env_and_removes_the_
             "print('env', os.path.exists('.env'), os.path.exists('hr/.env'))\n"
             "print('project', os.environ['FROM_PROJECT'], os.environ['BOTH'], os.environ['PDT_STEPS'])\n"
             "print('name', pathlib.Path('.pdt-project-name').read_text().strip())\n"
+            "print('files', os.environ['PDT_SERVICE_ENV_FILES'])\n"
             "folder = pathlib.Path(os.environ['PDT_OUTPUT_DIR'])\n"
             "folder.mkdir(parents=True)\n"
             "(folder / 'out.txt').write_text('made')\n")
@@ -247,6 +248,7 @@ def test_run_snapshot_runs_in_a_new_folder_with_the_project_env_and_removes_the_
     assert "env False False" in output
     assert "project project-value app-value extract" in output
     assert "name example" in output
+    assert "files " + os.pathsep.join([str(machine / "hr" / ".env"), str(machine / ".env")]) in output
     assert result["artifact_key"] == "k"
     assert not (service_runner.service_folder() / "work" / COMMAND).exists()
     assert (machine / "hr" / "run.py").read_text() == "print('hi')\n"
@@ -261,6 +263,25 @@ def test_a_snapshot_of_another_customer_does_not_run(machine, portal, monkeypatc
     result = portal.result()
     assert result["outcome"] == "failed" and "cus_0000000000" in result["message"]
     assert "started" not in portal.facts()
+
+
+def test_the_env_line_of_a_snapshot_run_states_where_the_values_came_from(tmp_path, monkeypatch):
+    monkeypatch.setenv(config.SERVICE_ENV_FILES_ENV, str(tmp_path / ".env"))
+    line = " ".join(config.env_file_lines(tmp_path))
+    assert "the pdt service passed the values" in line and str(tmp_path / ".env") in line
+    assert "terminal" not in line
+    monkeypatch.setenv(config.SERVICE_ENV_FILES_ENV, "")
+    line = " ".join(config.env_file_lines(tmp_path))
+    assert "the pdt service started this command" in line and "terminal" not in line
+
+
+def test_a_missing_var_in_a_snapshot_run_names_the_served_project(tmp_path, monkeypatch):
+    monkeypatch.setenv(config.SERVICE_ENV_FILES_ENV, "")
+    monkeypatch.delenv("NEEDED", raising=False)
+    message = config.missing_env({"dir": tmp_path, "name": "hr", "config": {},
+                                  "env": {"required": ["NEEDED"]}})
+    assert "project that the service serves" in message
+    assert str(tmp_path) not in message
 
 
 def test_a_bad_snapshot_reports_failed_and_leaves_no_folder(machine, portal, monkeypatch):

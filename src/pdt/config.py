@@ -865,6 +865,11 @@ def runs_per_month(cron: str) -> float:
     return per_day * days / 12
 
 
+# Set by the pdt service for a child that runs from a snapshot, which holds no .env file. It
+# names the served project's .env files, whose values the child gets in its environment.
+SERVICE_ENV_FILES_ENV = "PDT_SERVICE_ENV_FILES"
+
+
 def find_env_files(start: Path) -> list[Path]:
     folder = start.resolve()
     files = []
@@ -902,8 +907,14 @@ def env_file_lines(start: Path) -> list[str]:
     from dotenv import dotenv_values
 
     from pdt import console
-    files = find_env_files(start)
     env = console.value(".env")
+    named = os.environ.get(SERVICE_ENV_FILES_ENV)
+    if named is not None:
+        if not named:
+            return [f"the pdt service started this command, and it read no {env} file"]
+        return [f"the pdt service passed the values of these {env} files: "
+                f"{', '.join(console.value(path) for path in named.split(os.pathsep))}"]
+    files = find_env_files(start)
     if not files:
         return [f"no {env} file in {console.value(start.name)} or a folder above it, "
                 "so pdt reads env vars only from this terminal"]
@@ -1059,7 +1070,11 @@ def missing_env(app: dict) -> str:
         return ""
     secret = os.environ.get("PDT_ENV_SECRET_RESOURCE", "").strip()
     files = find_env_files(app["dir"])
-    if secret != "":
+    if SERVICE_ENV_FILES_ENV in os.environ:
+        looked = "the environment that the pdt service passed"
+        fix = ("add each one as NAME=value to a .env file in the project that the service serves, "
+               "then run the command again")
+    elif secret != "":
         looked = f"the app's cloud secret {secret}"
         fix = (f"add each one as NAME=value to the .env file in your pdt project, "
                f"then run `pdt secrets {app['name']} save`")
