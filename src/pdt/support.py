@@ -67,15 +67,18 @@ def last_error(entries: list[dict], project: str, now: datetime) -> dict | None:
     return None
 
 
-def provider() -> str:
+def providers() -> str:
+    found = set()
     try:
-        settings = config.load_yaml(config.find_project() / config.PROJECT_FILE)
+        for name in config.find_apps():
+            try:
+                provider = config.merged_app(name)["platform"].get("provider")
+            except config.ConfigError:
+                continue
+            found.add(provider if provider in config.PROVIDERS else "unknown")
     except (config.ConfigError, OSError, UnicodeError):
-        return "none found"
-    found = settings.get("platform")
-    if isinstance(found, dict) and found.get("provider") in config.PROVIDERS:
-        return found["provider"]
-    return "unknown"
+        pass
+    return ", ".join(sorted(found)) or "none found"
 
 
 def build(entry: dict) -> Report:
@@ -90,7 +93,7 @@ def build(entry: dict) -> Report:
         lines += ["", "## Where in pdt", *entry["where"]]
     lines += ["", "## Versions",
               f"pdt {entry.get('pdt')}, Python {entry.get('python')}, {entry.get('os')}, "
-              f"provider {provider()}"]
+              f"providers of the apps: {providers()}"]
     return Report(f"pdt support: {command} {what}: {error}"[:120], "\n".join(lines))
 
 
@@ -114,6 +117,12 @@ def drafted(entry: dict, report: Report, error: BaseException | None) -> Report 
     """The report with a part that a coding agent wrote from the full error, or None when no
     coding agent that the user allowed answered."""
     if not coding_agents.installed() or coding_agents.running_inside() is not None:
+        return None
+    try:
+        if coding_agents.consent(coding_agents.read_settings()) is False:
+            return None
+    except (config.ConfigError, OSError, UnicodeError) as e:
+        console.note(f"pdt did not ask a coding agent: {console.escape(str(e))}")
         return None
     console.say("pdt can ask a coding agent on this computer to write what failed, with the "
                 "secrets and private details removed. Press Ctrl+C to skip it.")

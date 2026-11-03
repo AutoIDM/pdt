@@ -3,6 +3,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from conftest import add_app
 from pdt import coding_agents, console, support, watch
 
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
@@ -69,6 +70,8 @@ def test_a_long_report_still_fits_the_link():
 def test_with_no_agent_the_report_holds_only_the_structure(project, quiet):
     opened, _said, asked = quiet
     (project / "pdt.yml").write_text("platform:\n  provider: aws\n  profile: AcmePayroll\n")
+    add_app(project, "payroll-sync")
+    add_app(project, "hr-feed", "platform:\n  provider: azure\n")
     support.propose(entry(command="pdt deploy <value> --yes"))
     title, body = sent(opened)
     assert title == "pdt support: pdt deploy <value> --yes failed: ConfigError"
@@ -76,8 +79,19 @@ def test_with_no_agent_the_report_holds_only_the_structure(project, quiet):
         support.INTRO, "", "## What happened", "Command: `pdt deploy <value> --yes`",
         "Result: error, exit code 1", "Exception: ConfigError", "", "## Where in pdt",
         "config.py:663 in cron_expression", "", "## Versions",
-        "pdt 0.1.9, Python 3.12.1, win32, provider aws"])
+        "pdt 0.1.9, Python 3.12.1, win32, providers of the apps: aws, azure"])
     assert len(asked) == 1
+
+
+def test_a_refused_consent_runs_no_check_and_asks_no_agent(project, quiet, monkeypatch):
+    opened, _said, _asked = quiet
+    monkeypatch.setattr(coding_agents, "installed", lambda: {"claude": "/bin/claude"})
+    monkeypatch.setattr(coding_agents, "running_inside", lambda: None)
+    monkeypatch.setattr(coding_agents, "read_settings", lambda: {coding_agents.CONSENT_KEY: False})
+    monkeypatch.setattr(support, "check_lines", lambda: pytest.fail("ran pdt validate"))
+    monkeypatch.setattr(coding_agents, "ask", lambda *args: pytest.fail("asked an agent"))
+    support.propose(entry())
+    assert sent(opened)[1].startswith(support.INTRO)
 
 
 def test_the_issue_holds_no_instructions_for_a_coding_agent(project, quiet):
