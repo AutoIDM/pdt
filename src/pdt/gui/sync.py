@@ -61,6 +61,11 @@ def is_stale(moment: datetime | None, limit: timedelta) -> bool:
     return moment is None or now() - moment >= limit
 
 
+def is_updating(app: App) -> bool:
+    """True while the app's runs were never fetched or a fetch holds its lock."""
+    return app.synced_at is None or LOCKS[app.name].locked()
+
+
 def runs_window(app: App) -> list[str]:
     """The `pdt runs` flags for the next fetch: the newest FIRST_COUNT the first
     time, then every run since the newest one known (or the oldest one still

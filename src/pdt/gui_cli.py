@@ -44,7 +44,7 @@ def url(port: int) -> str:
 
 def is_up(port: int) -> bool:
     try:
-        urllib.request.urlopen(url(port), timeout=1).close()
+        urllib.request.urlopen(url(port) + "up/", timeout=1).close()
     except urllib.error.HTTPError:
         return True
     except OSError:

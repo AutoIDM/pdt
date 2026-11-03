@@ -78,19 +78,47 @@ def runs_answer(state, runs=RUNS):
     state.answers[("runs", "my-report", "--json")] = (0, "note line\n" + json.dumps(runs) + "\n")
 
 
-def test_the_index_lists_apps_and_fetches_their_runs_once(gui):
+def test_the_index_shows_stored_rows_and_leaves_the_fetch_to_the_worker(gui):
+    worker.WAKE.clear()
     page = gui.client.get("/")
     assert page.status_code == 200
     html = page.content.decode()
     assert "my-report" in html
+    assert 'class="badge updating"' in html and 'http-equiv="refresh" content="5"' in html
+    assert gui.calls == []
+    assert worker.WAKE.is_set()
+    worker.tick()
+    html = gui.client.get("/").content.decode()
     assert "not yet run" in html
-    assert gui.calls == [("runs", "my-report", "--json", "--count", "50")]
-    gui.client.get("/")
-    assert len(gui.calls) == 1
+    assert 'class="badge updating"' not in html and 'http-equiv="refresh"' not in html
+
+
+class HeldLock:
+    def locked(self):
+        return True
+
+    def __enter__(self):
+        raise AssertionError("the page waited for the worker's lock")
+
+
+def test_the_index_does_not_wait_while_the_worker_holds_an_apps_lock(gui, monkeypatch):
+    runs_answer(gui)
+    worker.tick()
+    monkeypatch.setitem(sync.LOCKS, "my-report", HeldLock())
+    html = gui.client.get("/").content.decode()
+    assert "1 of 2 succeeded" in html and 'class="badge updating"' in html
+
+
+def test_the_up_url_answers_without_a_sync_or_a_timing_row(gui, monkeypatch):
+    monkeypatch.setitem(sync.LOCKS, "my-report", HeldLock())
+    response = gui.client.get("/up/")
+    assert response.status_code == 200 and response.content == b"ok"
+    assert gui.calls == [] and Timing.objects.count() == 0
 
 
 def test_the_index_shows_the_health_row_from_the_fetched_runs(gui):
     runs_answer(gui)
+    worker.tick()
     html = gui.client.get("/").content.decode()
     assert "1 of 2 succeeded" in html
     assert 'class="status failed"' in html
@@ -99,12 +127,14 @@ def test_the_index_shows_the_health_row_from_the_fetched_runs(gui):
 
 def test_a_failed_fetch_is_shown_and_not_repeated(gui):
     gui.answers[("runs",)] = (1, "error: AWS credentials are unavailable\n")
+    worker.tick()
+    fetches = len(gui.calls)
     html = gui.client.get("/").content.decode()
     assert "could not read runs" in html
     assert "AWS credentials are unavailable" in html
     assert "unknown" in html
     gui.client.get("/")
-    assert len(gui.calls) == 1
+    assert len(gui.calls) == fetches
 
 
 def test_the_app_page_numbers_runs_newest_first(gui):
@@ -289,7 +319,7 @@ def test_the_actions_name_the_commands_they_run(gui):
 
 def test_the_health_grid_shows_runs_and_projects_the_schedule(gui):
     runs_answer(gui)
-    gui.client.get("/")
+    worker.tick()
     grid = gui.client.get("/health/", {"gran": "day"}).content.decode()
     assert "<svg" in grid and 'class="hg-bad"' in grid
     assert 'class="hg-sched"' in grid
@@ -346,7 +376,7 @@ def test_the_worker_leaves_a_failed_fetch_to_the_page(gui):
 
 def test_a_page_never_waits_for_a_fetch_once_the_app_is_known(gui):
     runs_answer(gui)
-    gui.client.get("/")
+    gui.client.get("/apps/my-report/")
     from pdt.gui.models import App
     App.objects.update(synced_at=T0 - timedelta(days=30))
     gui.client.get("/")
@@ -483,8 +513,8 @@ def test_the_duckdb_files_are_served_from_the_data_folder(gui, duckdb_dir):
 
 def test_pages_with_a_running_run_refresh_themselves(gui):
     runs_answer(gui, [dict(RUNS[0], status="running", ended=None, exit_code=None)])
-    assert 'http-equiv="refresh" content="30"' in gui.client.get("/").content.decode()
     assert 'http-equiv="refresh" content="15"' in gui.client.get("/apps/my-report/").content.decode()
+    assert 'http-equiv="refresh" content="30"' in gui.client.get("/").content.decode()
     run = Run.objects.get(run_id="ecs/my-report/task2")
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert 'http-equiv="refresh" content="15"' in html and "This run is going" in html
