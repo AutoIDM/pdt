@@ -131,7 +131,7 @@ def up(assume_yes: bool, ref: str | None, label: str | None) -> int:
         place = answer.get("upload")
         if place:
             with console.waiting(f"sending: snapshot of {name}"):
-                autoidm.post_file(place, archive.name, archive.read_bytes(), "/v1/snapshots/start")
+                autoidm.post_file(place, archive.name, archive, "/v1/snapshots/start")
         else:
             console.status("AutoIDM already holds these files.")
     autoidm.post(registration, "/v1/snapshots/finish",

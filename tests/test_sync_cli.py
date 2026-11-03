@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -55,6 +56,33 @@ def test_sync_up_lists_the_files_sends_nothing_secret_and_records_the_snapshot(p
     assert b"secret" not in portal.uploads[0]
     assert portal.bodies("/v1/snapshots/finish")[0]["snapshot_id"] == start["snapshot_id"]
     assert sync_cli.read_record(project)["snapshot_id"] == start["snapshot_id"]
+
+
+def test_a_file_goes_up_in_chunks_with_no_read_into_memory(portal, tmp_path, monkeypatch):
+    path = tmp_path / "big.zip"
+    data = os.urandom(3 * autoidm.UPLOAD_CHUNK_BYTES + 17)
+    path.write_bytes(data)
+
+    def no_read(_self):
+        pytest.fail("the send read the whole file")
+
+    monkeypatch.setattr(type(path), "read_bytes", no_read)
+    place = {"url": f"{portal.url}/bucket", "fields": {"key": "projects/x.zip"}}
+    autoidm.post_file(place, "big.zip", path, "/v1/snapshots/start")
+    sent = portal.uploads[0]
+    assert data in sent
+    assert b'name="key"' in sent and b"projects/x.zip" in sent
+    assert sent.endswith(b"--\r\n")
+
+
+def test_bytes_and_a_file_send_the_same_parts(portal, tmp_path):
+    path = tmp_path / "a.zip"
+    path.write_bytes(b"content")
+    place = {"url": f"{portal.url}/bucket", "fields": {"key": "x"}}
+    autoidm.post_file(place, "a.zip", path, "what")
+    autoidm.post_file(place, "a.zip", b"content", "what")
+    first, second = [item.replace(item[2:34], b"B") for item in portal.uploads]
+    assert first == second
 
 
 def test_a_repeat_sync_up_sends_no_zip(project, portal, monkeypatch, capsys):

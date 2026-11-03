@@ -24,6 +24,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from base64 import urlsafe_b64encode
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -45,6 +46,7 @@ AUDIENCE = "pdt-backend"
 TOKEN_SECONDS = 300
 TIMEOUT_SECONDS = 10
 UPLOAD_TIMEOUT_SECONDS = 15
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 class AutoidmError(RuntimeError):
@@ -149,7 +151,7 @@ def token(found: Registration, data: bytes) -> str:
                       found.key, algorithm="EdDSA")
 
 
-def send(url: str, data: bytes, headers: dict[str, str],
+def send(url: str, data: bytes | Iterator[bytes], headers: dict[str, str],
          timeout: int = TIMEOUT_SECONDS) -> dict:
     try:
         request = urllib.request.Request(url, data=data, method="POST",
@@ -213,8 +215,17 @@ def check_url(url: object, what: str) -> str:
     return str(url)
 
 
-def post_file(place: dict, filename: str, data: bytes, what: str) -> None:
-    """Send `data` to a presigned POST: `place` holds its url and its fields."""
+def file_chunks(head: bytes, path: Path, tail: bytes) -> Iterator[bytes]:
+    yield head
+    with path.open("rb") as file:
+        while chunk := file.read(UPLOAD_CHUNK_BYTES):
+            yield chunk
+    yield tail
+
+
+def post_file(place: dict, filename: str, data: bytes | Path, what: str) -> None:
+    """Send `data` to a presigned POST: `place` holds its url and its fields. A Path goes up in
+    chunks, so a large file is not held in memory."""
     fields = place.get("fields")
     if not (isinstance(fields, dict)
             and all(isinstance(value, str) for item in fields.items() for value in item)):
@@ -226,11 +237,17 @@ def post_file(place: dict, filename: str, data: bytes, what: str) -> None:
                  f'{value}\r\n'.encode() for name, value in fields.items()]
         parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
                      f'filename="{filename}"\r\n'
-                     'Content-Type: application/octet-stream\r\n\r\n'.encode() + data + b"\r\n")
+                     'Content-Type: application/octet-stream\r\n\r\n'.encode())
     except UnicodeEncodeError as e:
         raise AutoidmError(f"AutoIDM answered {what} with fields pdt cannot send: {e}") from None
-    send(url, b"".join(parts) + f"--{boundary}--\r\n".encode(),
-         {"Content-Type": f"multipart/form-data; boundary={boundary}"}, UPLOAD_TIMEOUT_SECONDS)
+    head = b"".join(parts)
+    tail = f"\r\n--{boundary}--\r\n".encode()
+    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    if isinstance(data, Path):
+        headers["Content-Length"] = str(len(head) + data.stat().st_size + len(tail))
+        send(url, file_chunks(head, data, tail), headers, UPLOAD_TIMEOUT_SECONDS)
+    else:
+        send(url, head + data + tail, headers, UPLOAD_TIMEOUT_SECONDS)
 
 
 def upload(found: Registration, body: dict, data: bytes) -> str:
