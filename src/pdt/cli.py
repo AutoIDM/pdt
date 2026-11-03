@@ -862,7 +862,7 @@ def run() -> int:
         try:
             lifecycle.emit(lifecycle.CLI_COMMAND, exit_code=code,
                            duration_seconds=round(time.monotonic() - began, 3),
-                           command_line=usage.command_line(sys.argv), **exception)
+                           command_line=usage.command_line(sys.argv, parser), **exception)
         except Exception:
             pass
         lifecycle.flush()

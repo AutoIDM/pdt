@@ -37,6 +37,7 @@ PROVIDERS = ("google-cloud", "azure", "aws", "windows")
 # completion offers them without importing the code that runs them.
 SECRET_ACTIONS = ("diff", "save", "get", "set")
 STORAGE_COMMANDS = ("ls", "get", "query", "unlock", "destroy")
+STORAGE_FLAGS = ("--json", "--recursive", "--yes", "-y", "--open")
 # The local port `pdt gui` serves on unless --port names another.
 GUI_PORT = 8765
 AUTOIDM_API_URL = "https://app.autoidm.com"

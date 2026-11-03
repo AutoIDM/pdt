@@ -52,76 +52,58 @@ def event(name="cli:command", **params):
     return lifecycle.Event(name, datetime(2026, 11, 2, tzinfo=timezone.utc), params)
 
 
+@pytest.fixture
+def apps(monkeypatch):
+    monkeypatch.setattr(config, "app_folders", lambda: ["hello-world", "report"])
+
+
 @pytest.mark.parametrize("typed, expected", [
-    ("pdt storage report ls exports --recursive", "pdt storage report ls exports --recursive"),
-    ("pdt storage report get exports/a.csv ~/a.csv", "pdt storage report get exports/a.csv ~/a.csv"),
-    ('pdt storage report query "select * from t"', "pdt storage report query <excluded>"),
-    ('pdt storage query "select * from t"', "pdt storage query <excluded>"),
-    ("pdt storage report query select * from t", "pdt storage report query <excluded>"),
-    ('pdt storag report query "select 1"', "pdt storag report query <excluded>"),
-    ("pdt register --code KQ7M-2RTX", "pdt register --code <excluded>"),
-    ("pdt registr --code=KQ7M-2RTX", "pdt registr --code=<excluded>"),
-    ("pdt az keyvault secret set --value hunter2", "pdt az keyvault secret set --value <excluded>"),
-    ("pdt az storage list --connection-string a=b", "pdt az storage list --connection-string <excluded>"),
-    ("pdt az storage list --sas-token=abc", "pdt az storage list --sas-token=<excluded>"),
-    ("pdt aws login --pass hunter2", "pdt aws login --pass <excluded>"),
-    ("pdt secrets report set API_KEY hunter2", "pdt secrets report set API_KEY <excluded>"),
-    ("pdt secrets set API_KEY hunter2", "pdt secrets set API_KEY <excluded>"),
-    ("pdt secrets report API_KEY=hunter2", "pdt secrets report <excluded>"),
-    ("pdt secret report set API_KEY hunter2", "pdt secret report set API_KEY <excluded>"),
-    ("pdt aws s3 ls --profile dev", "pdt aws s3 ls --profile dev"),
-    ("pdt az login -u a@example.com -p pw", "pdt az login -u <excluded> -p <excluded>"),
-    ("pdt az login --username=a@example.com -ppw", "pdt az login --username=<excluded> -p<excluded>"),
-    ("pdt deploy /Users/ann/x", "pdt deploy ~/x"),
-    ("pdt deploy /Users/annie/x", "pdt deploy /Users/annie/x"),
-    ("pdt lgos KQ7M-2RTX", "pdt lgos <excluded>"),
-    ("pdt lgos --name=KQ7M-2RTX", "pdt lgos --name=<excluded>"),
-    ("pdt run a.b.c eyJhbGci.eyJzdWIi.sig", "pdt run a.b.c <excluded>"),
-    ("pdt x AKIAABCDEFGHIJKLMNOP", "pdt x <excluded>"),
-    ("pdt x postgres://u:pw@host/db", "pdt x <excluded>"),
-    ("pdt x https://example.com/a:b", "pdt x https://example.com/a:b"),
-    ('pdt new "my report"', "pdt new 'my report'"),
+    ("pdt deploy hello-world --yes", "pdt deploy hello-world --yes"),
+    ("pdt deplyo hello-world", "pdt deplyo hello-world"),
+    ("pdt az containerapp secret set -n app -g rg --secrets db=Hunter2pw api=Zx9QpLm",
+     "pdt az containerapp secret set -n <excluded> -g <excluded> --secrets <excluded> <excluded>"),
+    ("pdt gcloud run jobs update app --set-env-vars DB_PASSWORD=Hunter2pw",
+     "pdt gcloud run jobs update app --set-env-vars <excluded>"),
+    ("pdt az storage blob upload --blob-url https://acct.blob.core.windows.net/c/f?sv=2024&sig=AbC123xYz",
+     "pdt az storage blob upload --blob-url <excluded>"),
+    ("pdt --project /Users/jane/acme secrets set payroll SMTP_PASSWORD Hunter2pw",
+     "pdt <excluded> <excluded> secrets set <excluded> <excluded> <excluded>"),
+    ("pdt aws s3 cp s3://customer-bucket/export.csv .", "pdt aws s3 cp <excluded> <excluded>"),
+    ("pdt register --code ABCD-EFGH", "pdt register --code <excluded>"),
+    ("pdt register --code=ABCD-EFGH", "pdt register --code=<excluded>"),
+    ("pdt register --co ABCD-EFGH", "pdt register --co <excluded>"),
+    ("pdt registr --code --code hunter2", "pdt registr --code --code <excluded>"),
+    ("pdt storage report query 'select * from t'", "pdt storage report query <excluded>"),
+    ("pdt storage report ls exports --recursive", "pdt storage report ls <excluded> --recursive"),
+    ("pdt secrets report set API_KEY hunter2", "pdt secrets report set <excluded> <excluded>"),
+    ("pdt secrets report diff -y", "pdt secrets report diff -y"),
+    ("pdt runs report --count 5 --json", "pdt runs report --count 5 --json"),
+    ("pdt runs report --count=5 --since=12h", "pdt runs report --count=5 --since=<excluded>"),
+    ("pdt init --yes", "pdt init --yes"),
+    ("pdt completion zsh --script", "pdt completion zsh --script"),
+    ("pdt alerts setup", "pdt alerts setup"),
+    ("pdt alerts --wat=hunter2", "pdt alerts <excluded>"),
+    ("pdt validate --nope", "pdt validate <excluded>"),
+    ("pdt lgos hunter2", "pdt lgos <excluded>"),
+    ("pdt hunter2 deploy", "pdt <excluded> deploy"),
+    ("pdt hunter2", "pdt <excluded>"),
+    ("pdt az login -u a@example.com -phunter2", "pdt az login -u <excluded> <excluded>"),
+    ("pdt az login --username=a@example.com", "pdt az login --username=<excluded>"),
+    ("pdt az keyvault secret set --name n --value hunter2 hunter3",
+     "pdt az keyvault secret set --name <excluded> --value <excluded> <excluded>"),
+    ("pdt aws s3 ls --profile dev", "pdt aws s3 ls --profile <excluded>"),
+    ("pdt aws S3cr3t ls", "pdt aws <excluded> ls"),
+    ("pdt aws --Hunter2 x", "pdt aws <excluded> <excluded>"),
     ("pdt", "pdt"),
-    ("pdt az login -ppasswordhunter2", "pdt az login -p<excluded>"),
-    ("pdt az login -utokenhunter2", "pdt az login -u<excluded>"),
-    ("pdt az login -password plainword --tenant x", "pdt az login -p<excluded> <excluded> --tenant x"),
-    ("pdt register --c plain-word", "pdt register --c <excluded>"),
-    ("pdt register --co plain-word", "pdt register --co <excluded>"),
-    ("pdt register --cod plain-word", "pdt register --cod <excluded>"),
-    ("pdt register --c=plain-word", "pdt register --c=<excluded>"),
-    ("pdt register --co=plain-word", "pdt register --co=<excluded>"),
-    ("pdt register --cod=plain-word", "pdt register --cod=<excluded>"),
-    ("pdt runs --count 5", "pdt runs --count 5"),
-    ("pdt secrets", "pdt secrets"),
-    ("pdt secrets report", "pdt secrets report"),
-    ("pdt secrets report save", "pdt secrets report save"),
-    ("pdt secrets report set API_KEY", "pdt secrets report set API_KEY"),
-    ("pdt secrets report set API_KEY --yes", "pdt secrets report set API_KEY --yes"),
-    ("pdt secrets -y report set API_KEY", "pdt secrets -y report set API_KEY"),
-    ("pdt secrets report set API_KEY --ye -h", "pdt secrets report set API_KEY --ye -h"),
-    ("pdt secrets set API_KEY", "pdt secrets set API_KEY"),
-    ("pdt secrets report set --name=API_KEY plainword", "pdt secrets report set <excluded> <excluded>"),
-    ("pdt secrets report set --name API_KEY plainword", "pdt secrets report set <excluded> <excluded> <excluded>"),
-    ("pdt secrets --wat report set API_KEY", "pdt secrets <excluded> <excluded> <excluded> <excluded>"),
-    ("pdt secrets report set API_KEY --plainword", "pdt secrets report set API_KEY <excluded>"),
-    ("pdt secrets report set API_KEY --yes=plainword", "pdt secrets report set API_KEY <excluded>"),
-    ("pdt secrets report set -- plainword", "pdt secrets report set <excluded> <excluded>"),
-    ("pdt secrets report save plainword", "pdt secrets report save <excluded>"),
-    ("pdt secrets save plainword", "pdt secrets save <excluded>"),
-    ("pdt secrets report sett API_KEY plainword", "pdt secrets report <excluded> <excluded> <excluded>"),
-    ("pdt secrets API_KEY=plainword", "pdt secrets <excluded>"),
-    ("pdt secrets report set API_KEY=plainword", "pdt secrets report set <excluded>"),
 ])
-def test_command_line(typed, expected):
-    assert usage.command_line(shlex.split(typed), home="/Users/ann") == expected
+def test_command_line(apps, typed, expected):
+    assert usage.command_line(shlex.split(typed), cli.build_parser(), home="/Users/ann") == expected
 
 
-def test_each_secret_long_flag_of_the_parser_is_named():
-    parser = cli.build_parser()
-    found = {flag for command in parser.commands.values()
-             for flag in command._option_string_actions
-             if flag.startswith("--") and usage.SECRET_FLAG.search(flag)}
-    assert found == set(usage.OWN_SECRET_FLAGS)
+def test_command_line_keeps_a_region_a_provider_and_a_schedule_word(apps):
+    assert (usage.command_line(["pdt", "deploy", "eastus2", "aws", "daily", "1.5"],
+                               cli.build_parser(), home="")
+            == "pdt deploy eastus2 aws daily 1.5")
 
 
 @pytest.mark.parametrize("word, expected", [
@@ -131,17 +113,29 @@ def test_each_secret_long_flag_of_the_parser_is_named():
     (r"c:/USERS\ann", "~"),
     (r"--folder=c:\users\ann\project", r"--folder=~\project"),
     (r"c:\users\annie\project", r"c:\users\annie\project"),
+    (r"home=c:\users\ann,team=it", "home=~,team=it"),
 ])
-def test_command_line_finds_a_windows_home_in_any_case_and_separator(word, expected):
-    assert usage.command_line(["pdt", word], home="C:\\Users\\Ann\\") == f"pdt {expected}"
+def test_home_to_tilde_finds_a_windows_home_in_any_case_and_separator(word, expected):
+    assert usage.home_to_tilde([word], home="C:\\Users\\Ann\\") == [expected]
 
 
-def test_command_line_keeps_the_case_of_a_posix_home():
-    assert usage.command_line(["pdt", "/users/ann/x"], home="/Users/ann") == "pdt /users/ann/x"
+@pytest.mark.parametrize("word, expected", [
+    ("/Users/ann/x", "~/x"),
+    ("/users/ann/x", "/users/ann/x"),
+    ("/Users/annie/x", "/Users/annie/x"),
+    ("home=/Users/ann,team=it", "home=~,team=it"),
+    ('{"path":"/Users/ann"}', '{"path":"~"}'),
+    ("/Users/ann;x", "~;x"),
+    ("a=/Users/ann=b", "a=~=b"),
+    ("'/Users/ann'", "'~'"),
+])
+def test_home_to_tilde_ends_the_home_at_a_separator_or_a_quote(word, expected):
+    assert usage.home_to_tilde([word], home="/Users/ann") == [expected]
 
 
-def test_command_line_has_a_maximum_length():
-    assert len(usage.command_line(["pdt", "x" * 5000], home="")) == usage.MAX_COMMAND_LINE
+def test_command_line_has_a_maximum_length(apps):
+    argv = ["pdt", "deploy", *["--yes"] * 500]
+    assert len(usage.command_line(argv, cli.build_parser(), home="")) == usage.MAX_COMMAND_LINE
 
 
 def test_no_question_or_send_when_any_opt_out_is_set(usage_on, at_terminal, posts, monkeypatch):
@@ -236,7 +230,37 @@ def test_with_no_one_to_ask_a_refusal_saved_after_the_read_stays(usage_on, monke
     monkeypatch.setattr(usage, "_read_client", read)
     assert usage.identity() is None
     assert (usage_on / "client.json").read_text() == refusal
-    assert [path.name for path in usage_on.iterdir()] == ["client.json"]
+    assert (sorted(path.name for path in usage_on.iterdir())
+            == ["client.json", "client.json.lock"])
+
+
+def test_the_repair_of_a_bad_file_waits_for_a_refusal_being_saved(usage_on):
+    usage_on.mkdir(parents=True)
+    (usage_on / "client.json").write_text("{")
+    refusal = json.dumps({"client_uuid": None, "asked": True})
+    found = []
+    with config.locked(usage_on / "client.json"):
+        thread = threading.Thread(target=lambda: found.append(usage.identity()))
+        thread.start()
+        thread.join(0.5)
+        assert thread.is_alive()
+        (usage_on / "client.json").write_text(refusal)
+    thread.join(5)
+    assert found == [None]
+    assert (usage_on / "client.json").read_text() == refusal
+
+
+def test_two_first_commands_in_a_project_send_one_project_uuid(usage_on, monkeypatch, tmp_path):
+    (tmp_path / config.PROJECT_FILE).write_text("apps: []\n")
+    real_create = usage._create
+
+    def create(path, text):
+        if path.parent.name == "projects":
+            real_create(path, PROJECT)
+        return real_create(path, text)
+
+    monkeypatch.setattr(usage, "_create", create)
+    assert usage.identity().project_uuid == PROJECT
 
 
 def test_with_no_one_to_ask_a_record_saved_after_the_read_is_used(usage_on, monkeypatch):
@@ -643,8 +667,9 @@ def test_usage_imports_no_third_party_package():
     source = (Path(usage.__file__)).read_text()
     imported = {line.split()[1].split(".")[0] for line in source.splitlines()
                 if line.startswith(("import ", "from "))}
-    assert imported == {"__future__", "difflib", "hashlib", "json", "math", "os", "re", "shlex",
-                        "sys", "threading", "time", "uuid", "dataclasses", "pathlib", "pdt"}
+    assert imported == {"__future__", "argparse", "difflib", "hashlib", "json", "math", "os", "re",
+                        "shlex", "sys", "threading", "time", "uuid", "dataclasses", "pathlib",
+                        "pdt"}
 
 
 def test_exception_fields_name_the_pdt_file_and_no_message():
@@ -672,7 +697,7 @@ def test_exception_fields_of_a_pdt_frame(tmp_path):
     (["pdt", "--help"], 0),
     (["pdt"], 0),
     (["pdt", "lgos"], 2),
-    (["pdt", "validate", "--nope"], 2),
+    (["pdt", "validate", "--yes"], 2),
     (["pdt", "validate"], 1),
 ])
 def test_each_command_ends_with_one_cli_event(usage_on, posts, monkeypatch, argv, code, capsys):

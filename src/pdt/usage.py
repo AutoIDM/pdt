@@ -14,7 +14,7 @@ One request, which `_post` sends to USAGE_URL (PDT_USAGE_URL overrides it), is
 A param outside these rules is dropped, so an app that emits a pdt event name cannot send
 free text in a param that has known values. `app` and `command_line` stay free text.
 
-`command_line` is the typed text after its exclusion rules. `exception_fields` is
+`command_line` keeps only the typed words that its allow-list names. `exception_fields` is
 the type name and the pdt file and line of an exception, with no message.
 
 `accept` is the usage row of lifecycle.SINKS and returns at once. The first event
@@ -49,6 +49,7 @@ library and pdt.config, and a job never reaches its imports of pdt.console and p
 
 from __future__ import annotations
 
+import argparse
 import difflib
 import hashlib
 import json
@@ -94,18 +95,10 @@ MAX_FOLDER_NAME = 255
 MAX_COMMAND_LINE = 1024
 MAX_INT = 2**63
 UUID_SHAPE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-SECRET_FLAG = re.compile(r"code|pass|secret|token|key|credential|value|connection|sas",
-                         re.IGNORECASE)
-OWN_SECRET_FLAGS = ("--code",)
-CLOUD_LOGIN_FLAGS = ("-u", "-p", "--username")
-CODE_LETTER = "[ABCDEFGHJKMNPQRSTVWXYZ23456789]"
-SECRET_VALUE = re.compile(
-    rf"(?<![A-Z0-9]){CODE_LETTER}{{4}}-{CODE_LETTER}{{4}}(?![A-Z0-9])"
-    r"|eyJ[\w-]+\.[\w-]+\.[\w-]*"
-    r"|(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])"
-    r"|[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]*:[^/\s@]+@")
-ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-APP_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+CLOUD_CLIS = ("aws", "az", "gcloud")
+CLOUD_WORD = re.compile(r"[a-z][a-z0-9-]*")
+CLOUD_FLAG = re.compile(r"-[A-Za-z]|--[a-z][a-z0-9-]*")
+NUMBER = re.compile(r"-?[0-9]+(\.[0-9]+)?")
 
 
 @dataclass(frozen=True)
@@ -220,7 +213,16 @@ def _project_uuid() -> str | None:
         project_uuid = ""
     if not _is_uuid(project_uuid):
         project_uuid = str(uuid.uuid4())
-        _replace(path, project_uuid)
+        if not _create(path, project_uuid):
+            with config.locked(path):
+                try:
+                    saved = path.read_text(encoding="utf-8").strip()
+                except (OSError, ValueError):
+                    saved = ""
+                if _is_uuid(saved):
+                    project_uuid = saved
+                else:
+                    _replace(path, project_uuid)
     return project_uuid
 
 
@@ -248,11 +250,12 @@ def _resolve() -> Identity | None:
         record = {"client_uuid": str(uuid.uuid4()), "asked": False}
         try:
             if not _create(folder() / "client.json", json.dumps(record)):
-                saved = _read_client()
-                if saved is None:
-                    _replace(folder() / "client.json", json.dumps(record))
-                else:
-                    record = saved
+                with config.locked(folder() / "client.json"):
+                    saved = _read_client()
+                    if saved is None:
+                        _replace(folder() / "client.json", json.dumps(record))
+                    else:
+                        record = saved
         except OSError:
             return None
     if record["client_uuid"] is None:
@@ -297,8 +300,10 @@ def start(argv: list[str]) -> None:
                 and CLIENT_ENV not in os.environ and not off() and watch.person_at_terminal()):
             send = console.confirm(QUESTION, default=True, stderr=True)
             client_uuid = (record.get("client_uuid") or str(uuid.uuid4())) if send else None
-            _replace(folder() / "client.json",
-                     json.dumps({"client_uuid": client_uuid, "asked": True}))
+            folder().mkdir(parents=True, exist_ok=True)
+            with config.locked(folder() / "client.json"):
+                _replace(folder() / "client.json",
+                         json.dumps({"client_uuid": client_uuid, "asked": True}))
         identity()
     except Exception:
         pass
@@ -419,88 +424,99 @@ def exception_fields(error: BaseException) -> dict[str, object]:
     return {"type": type(error).__name__, "file": file, "line": line}
 
 
-def _command_rules(words: list[str]) -> list[str]:
-    """Rules c and d of command_line. A close spelling counts, so a typo keeps them."""
-    positional = [word for word in words if not word.startswith("-")]
-    if not positional:
-        return words
-    command = difflib.get_close_matches(positional[0], ("secrets", "storage"), n=1)
-    after = words.index(positional[0]) + 1
-    if command == ["storage"]:
-        for word in positional[1:3]:
-            if difflib.get_close_matches(word, ("query",), n=1):
-                sql = words.index(word, after) + 1
-                return words[:sql] + [EXCLUDED] if words[sql:] else words
-    if command == ["secrets"]:
-        return words[:after] + _exclude_from_first_uncertain_role(words[after:])
-    return words
+def _parser_words(parser: argparse.ArgumentParser) -> tuple[set[str], set[str]]:
+    """The flag names, and the command words and choices, of pdt's parser."""
+    flags: set[str] = set()
+    values: set[str] = set()
+    parsers = [parser]
+    while parsers:
+        for action in parsers.pop()._actions:
+            flags.update(action.option_strings)
+            if isinstance(action, argparse._SubParsersAction):
+                values.update(action.choices)
+                parsers.extend(action.choices.values())
+            elif action.choices:
+                values.update(map(str, action.choices))
+    return flags, values
 
 
-def _exclude_from_first_uncertain_role(words: list[str]) -> list[str]:
-    kept: list[str] = []
-    roles: list[str] | None = None
-    action = ""
-    for index, word in enumerate(words):
-        if word in NO_QUESTION_SHORT_FLAGS or _named(word, "--yes") or _named(word, "--help"):
-            kept.append(word)
-            continue
-        if roles is None:
-            roles = ["action", "name"] if word in config.SECRET_ACTIONS else ["app", "action", "name"]
-        role = roles.pop(0) if roles else ""
-        if role == "action" and word in config.SECRET_ACTIONS:
-            action = word
-        elif not ((role == "app" and APP_WORD.fullmatch(word))
-                  or (role == "name" and action == "set" and ENV_NAME.fullmatch(word))):
-            return kept + [EXCLUDED] * (len(words) - index)
-        kept.append(word)
-    return kept
-
-
-def command_line(argv: list[str], home: str | None = None) -> str:
-    """The typed command after the exclusion rules, which need no parse, so they also hold
-    after a parse error:
-
-    a. A flag name that holds a SECRET_FLAG word, or that argparse takes as short for an
-       OWN_SECRET_FLAGS flag, loses its value, in both flag forms.
-    b. CLOUD_LOGIN_FLAGS lose their values, also a value attached to -u or -p. No pdt command
-       has its own -u or -p, so this holds in every command, and a mistyped `pdt az` keeps it
-       too.
-    c. The SQL of `pdt storage ... query` goes.
-    d. `pdt secrets` keeps a word only when it is certainly the app, the action, or the name.
-    e. A word that holds a SECRET_VALUE shape goes.
-    f. The home folder becomes ~, in any case and with either separator when it is a Windows
-       folder, and the text has at most MAX_COMMAND_LINE characters.
-    """
-    kept = []
-    takes_value = False
-    for word in _command_rules(argv[1:]):
-        name, equals, value = word.partition("=")
-        flag = word.startswith("-") and word.strip("-") != ""
-        if takes_value:
-            kept.append(EXCLUDED)
-            takes_value = False
-        elif word == EXCLUDED:
-            kept.append(word)
-        elif flag and re.match(r"-[up].", word):
-            kept.append(f"{word[:2]}{EXCLUDED}")
-            takes_value = not equals and SECRET_FLAG.search(name) is not None
-        elif flag and (SECRET_FLAG.search(name) or name in CLOUD_LOGIN_FLAGS
-                       or any(_named(name, secret) for secret in OWN_SECRET_FLAGS)):
-            kept.append(f"{name}={EXCLUDED}" if equals else word)
-            takes_value = not equals
-        elif flag and equals and SECRET_VALUE.search(value):
-            kept.append(f"{name}={EXCLUDED}")
-        elif SECRET_VALUE.search(word):
-            kept.append(EXCLUDED)
-        else:
-            kept.append(word)
+def home_to_tilde(words: list[str], home: str | None = None) -> list[str]:
+    """The home folder becomes ~, in any case and with either separator when it is a Windows
+    folder."""
     home_folder = (str(Path.home()) if home is None else home).rstrip("/\\")
-    if home_folder != "":
-        windows = re.match(r"[A-Za-z]:|\\", home_folder) is not None
-        parts = re.split(r"[/\\]+", home_folder) if windows else [home_folder]
-        at_home = re.compile(r"[/\\]+".join(map(re.escape, parts)) + r"(?=$|[/\\])",
-                             re.IGNORECASE if windows else 0)
-        kept = [at_home.sub("~", word) for word in kept]
+    if home_folder == "":
+        return words
+    windows = re.match(r"[A-Za-z]:|\\", home_folder) is not None
+    parts = re.split(r"[/\\]+", home_folder) if windows else [home_folder]
+    at_home = re.compile(r"[/\\]+".join(map(re.escape, parts)) + r"(?=$|[/\\,;=\"'])",
+                         re.IGNORECASE if windows else 0)
+    return [at_home.sub("~", word) for word in words]
+
+
+def command_line(argv: list[str], parser: argparse.ArgumentParser,
+                 home: str | None = None) -> str:
+    """The typed command with only the words that are pdt's own or from a fixed set; every
+    other word, or the value of a `--flag=value`, becomes EXCLUDED. The rules need no parse,
+    so they also hold after a parse error.
+
+    The command is the first word that is a pdt command, else the first word that is not a
+    flag when it is a close spelling of one. pdt keeps it as typed, and every flag name of
+    its parser, also as argparse shortens it. A value stays when it is a command word or a
+    choice of the parser, an app of the project, a provider, a region of regions.py, a
+    schedule word, a secrets action, a storage command, or a number.
+
+    After `pdt aws`, `pdt az`, or `pdt gcloud`, the plain lowercase words before the first
+    flag stay, and the flag names; every value goes.
+
+    The home folder becomes ~, and the text has at most MAX_COMMAND_LINE characters.
+    """
+    from pdt import regions
+    flags, values = _parser_words(parser)
+    flags.update(config.STORAGE_FLAGS)
+    commands = list(getattr(parser, "commands", {}))
+    try:
+        apps = set(config.app_folders())
+    except (config.ConfigError, OSError):
+        apps = set()
+    region_rows = [regions.DEFAULT_REGIONS, *regions.COUNTRY_REGIONS.values(),
+                   *regions.ZONE_REGIONS.values()]
+    known = (values | apps | set(config.PROVIDERS) | set(config.SCHEDULE_SHORTHAND)
+             | set(config.SECRET_ACTIONS) | set(config.STORAGE_COMMANDS)
+             | {region for row in region_rows for region in row})
+    words = argv[1:]
+    exact = [index for index, word in enumerate(words) if word in commands]
+    first = [index for index, word in enumerate(words) if not word.startswith("-")][:1]
+    position, command = None, None
+    if exact:
+        position, command = exact[0], words[exact[0]]
+    elif first and difflib.get_close_matches(words[first[0]], commands, n=1):
+        position = first[0]
+        command = difflib.get_close_matches(words[first[0]], commands, n=1)[0]
+    kept = []
+    cloud_flag_seen = False
+    for index, word in enumerate(words):
+        name, equals, value = word.partition("=")
+        if index == position:
+            kept.append(word)
+        elif position is not None and index > position and command in CLOUD_CLIS:
+            cloud_flag_seen = cloud_flag_seen or word.startswith("-")
+            if CLOUD_FLAG.fullmatch(name):
+                kept.append(f"{name}={EXCLUDED}" if equals else name)
+            elif not cloud_flag_seen and CLOUD_WORD.fullmatch(word):
+                kept.append(word)
+            else:
+                kept.append(EXCLUDED)
+        elif word in known or NUMBER.fullmatch(word):
+            kept.append(word)
+        elif name in flags or any(_named(name, flag) for flag in flags if flag.startswith("--")):
+            if equals and not (value in known or NUMBER.fullmatch(value)):
+                kept.append(f"{name}={EXCLUDED}")
+            else:
+                kept.append(word)
+        else:
+            kept.append(EXCLUDED)
     text = " ".join(["pdt", *(shlex.quote(word) if word == "" or re.search(r"\s", word) else word
-                              for word in kept)])
+                              for word in home_to_tilde(kept, home))])
     return text[:MAX_COMMAND_LINE]
+
+

@@ -100,7 +100,7 @@ Both install routes must keep working, and a change is not done until both do:
 
 The tool downloads the Google Cloud CLI, the PowerShell modules a local run needs, and the DuckDB-WASM files of the `pdt gui` SQL workbench (`src/pdt/duckdb_wasm.py`) to the user's data folder (`~/.local/share/pdt`, or `%LOCALAPPDATA%\pdt`). A deploy keeps the list prices and exchange rates of its cost estimate there too (`deploy_common.PRICE_CACHE`). Never write them beside the code. An installed package's folder is managed by `uv`, and an upgrade discards whatever is in it.
 
-`src/pdt/usage.py` keeps one client UUID file and one project UUID for each project path there too, under `pdt/usage`. A deployed job never writes these files: `usage.job_env` puts the UUIDs and the opt-out state in the job's environment on every provider, and a job with any of them absent sends nothing.
+`src/pdt/usage.py` keeps one client UUID file and one project UUID for each project path there too, under `pdt/usage`. A deployed job never writes these files: `usage.job_env` puts the UUIDs and the opt-out state in the job's environment on every provider, and a job with any of them absent sends nothing. The `command_line` that pdt sends is an allow-list, not a deny-list: `usage.command_line` keeps only pdt's command words and flag names from its parser, app names, values from fixed sets, and numbers, and every other word becomes `<excluded>`; a new pdt command or flag gets this rule from the parser with no change, and a new fixed value set goes in `command_line`.
 
 ## verify/
 
