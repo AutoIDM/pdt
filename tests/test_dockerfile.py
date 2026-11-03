@@ -149,7 +149,7 @@ def test_a_powershell_app_gets_the_powershell_dockerfile_with_its_modules(powers
         app="my-report", version=__version__, modules=install, sync="",
         start="/opt/pdt/bin/python -m pdt.run_powershell .")
     assert scans == ["aws"]
-    pdt_line = f'RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={__version__}"\n'
+    pdt_line = f'RUN uv venv /opt/pdt && uv pip install --no-cache --python /opt/pdt "pdt-cli[apps]=={__version__}"\n'
     pwsh_line = 'RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh'
     assert text.index(pdt_line) < text.index(pwsh_line) < text.index(install)
     assert "curl" not in text
