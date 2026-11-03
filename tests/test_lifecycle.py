@@ -143,6 +143,42 @@ def test_all_and_unhandled_are_not_event_names(project, name):
         lifecycle.emit(name)
 
 
+def test_all_and_unhandled_do_not_receive_a_cli_event_and_its_own_name_does(project, monkeypatch):
+    seen = record(monkeypatch)
+    lifecycle.emit("cli:command-started")
+    (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [all]\n")
+    lifecycle.emit("cli:command-started")
+    assert seen == []
+    (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [cli:*]\n")
+    lifecycle.emit("cli:command-started")
+    assert seen == [("cli:command-started", False)]
+
+
+def test_emit_gives_one_event_to_every_sink(project, monkeypatch):
+    seen = {"one": [], "two": []}
+    monkeypatch.setattr(lifecycle, "SINKS", tuple(
+        lifecycle.Sink(name, got.append, lambda seconds: None) for name, got in seen.items()))
+    event = lifecycle.emit("job:paused", app="report")
+    assert seen == {"one": [event], "two": [event]}
+
+
+def test_flush_waits_for_the_longest_sink_and_not_the_sum(project, monkeypatch):
+    finished = []
+
+    def waits(name):
+        def wait(seconds):
+            time.sleep(0.4)
+            finished.append(name)
+        return wait
+
+    monkeypatch.setattr(lifecycle, "SINKS", tuple(
+        lifecycle.Sink(name, lambda event: None, waits(name)) for name in ("one", "two")))
+    began = time.monotonic()
+    lifecycle.flush()
+    assert time.monotonic() - began < 0.7
+    assert sorted(finished) == ["one", "two"]
+
+
 def test_the_console_prints_an_event_as_one_bold_alert_sentence_handled_or_not(
         project, monkeypatch):
     out = colour_output(monkeypatch)
@@ -198,6 +234,32 @@ def test_a_failing_transport_warns_falls_back_to_the_console_and_the_run_goes_on
     assert seen == [("job:run-started", False), ("job:run-failed", False)]
     out, err = capsys.readouterr()
     assert err.count("The boom alert could not send job:run-failed: no [route]") == 1
+    assert out.count("[alert] not delivered to boom: Run of report failed (exit code 3)\n") == 1
+
+
+def test_a_delivery_thread_pdt_cannot_start_falls_back_to_the_console_and_keeps_the_exit_code(
+        project, monkeypatch, capsys):
+    delivered = []
+    seen = record(monkeypatch, boom=lifecycle.Transport(
+        "boom", frozenset(), lambda event, entry, unhandled: delivered.append(event.name)))
+    two_entries(project, "boom")
+    monkeypatch.setattr(lifecycle, "_queues", {})
+    real_start = threading.Thread.start
+
+    def at_the_limit(self):
+        if self._target is lifecycle._deliver_each:
+            raise RuntimeError("can't start new thread")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", at_the_limit)
+    code = lifecycle.run_job("report", "local", [sys.executable, "-c", "raise SystemExit(3)"],
+                             project)
+    assert code == 3
+    assert delivered == []
+    assert seen == [("job:run-started", False), ("job:run-failed", False)]
+    out, err = capsys.readouterr()
+    assert ("The boom alert could not send job:run-failed: can't start new thread"
+            in " ".join((out + err).split()))
     assert out.count("[alert] not delivered to boom: Run of report failed (exit code 3)\n") == 1
 
 

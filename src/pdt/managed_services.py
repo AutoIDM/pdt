@@ -16,11 +16,12 @@ A project with no registration gets one warning in each pdt command, and
 sends nothing; WARNED_ENV keeps it to one warning across the processes of the
 command.
 
-`lifecycle.run_job` sends the same things for a scheduled run on every
-provider and for a `pdt run` on this computer:
+pdt sends the same things for a scheduled run on every provider and for a
+`pdt run` on this computer:
 
 - send_run_history: the job:run-started event, then job:run-completed or
-  job:run-failed with exit_code and duration_seconds.
+  job:run-failed with exit_code and duration_seconds, and app:deployed after
+  each deploy, with the schedule, its time zone, the provider, and the place.
 - send_logs: the run's output as one upload, <run_id>.log. run_job writes the
   command's output to a file as it prints it, because a cloud job's output goes
   from the container to the cloud's log service, and the run cannot read it
@@ -33,16 +34,13 @@ provider and for a `pdt run` on this computer:
 
 A log or zip over MAX_UPLOAD_BYTES is skipped with a warning.
 
-`deploy.provider_step` sends app:deployed after each deploy that send_run_history
-covers, with the schedule, its time zone, the provider, and the place.
-
 Every event and upload names the project and the app by `backend_name`.
 
-A network error, an HTTP 5xx, or a file pdt cannot read or zip is a warning,
-and the run goes on with its own exit code. A 401 means
-AutoIDM refused the registration: the sender sends nothing more, the run's
-work still completes, and run_job ends the run with UNAUTHORIZED_EXIT and a
-message that names the registration (`refusal`).
+A network error, an HTTP 5xx, a file pdt cannot read or zip, or a late send is
+one warning, and the run goes on with its own exit code. A 401 means AutoIDM
+refused the registration: the sender sends nothing more, the run's work still
+completes, and run_job ends the run with UNAUTHORIZED_EXIT and a message that
+names the registration (`refusal`).
 
 This module is in deploy_common.LIFECYCLE_MODULES, so it imports only what
 lifecycle.py's script header installs.
@@ -52,12 +50,16 @@ from __future__ import annotations
 
 import hashlib
 import os
+import queue
 import re
 import tempfile
+import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from pdt import config, console
 
@@ -69,7 +71,12 @@ CUSTOMER = re.compile(r"cus_[0-9a-f]{10}")
 UNAUTHORIZED_EXIT = 77
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 WARNED_ENV = "PDT_MANAGED_SERVICES_WARNED"
+JOB_RUN_STARTED = "job:run-started"
+APP_DEPLOY_COMPLETED = "app:deploy-completed"
 APP_DEPLOYED = "app:deployed"
+TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+EXIT_WAIT_SECONDS = 15.0
+WAIT_STEP_SECONDS = 0.1
 # The project, app, run, and file names that AutoIDM takes.
 BACKEND_NAME = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9._-]{1,128}")
 
@@ -155,6 +162,29 @@ def warn_once(message: str) -> None:
     console.warn(message)
 
 
+def monitored(what: str, call: Callable[[], object], default: object = None):
+    try:
+        return call()
+    except Exception as e:
+        console.warn(f"AutoIDM did not get {what}: {console.escape(f'{type(e).__name__}: {e}')}")
+        return default
+
+
+def started(target: Callable[..., object], *args: object,
+            message: str = "") -> threading.Thread | None:
+    """A daemon thread that runs `target(*args)`, or None when the OS cannot start one (with
+    `message`, when given), so the caller does the work another way and the run keeps its
+    exit code."""
+    thread = threading.Thread(target=target, args=args, daemon=True)
+    try:
+        thread.start()
+    except RuntimeError as e:
+        if message:
+            console.warn(f"{message}: {console.escape(str(e))}")
+        return None
+    return thread
+
+
 def place(platform: dict) -> str | None:
     """`<provider>:<account, subscription, or project>:<region>` of a cloud provider, or None
     for the windows provider."""
@@ -163,10 +193,6 @@ def place(platform: dict) -> str | None:
         return None
     scope = next((str(platform[key]) for key in config.FOUND_KEYS if platform.get(key)), "")
     return f"{provider}:{scope}:{platform.get('region') or ''}"
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass
@@ -179,58 +205,30 @@ class Sender:
     def wants(self, key: str) -> bool:
         return sends(self.settings, key, self.app)
 
-    def send(self, what: str, call) -> None:
-        """Make one request; a 401 marks the registration refused, and any other failure is a
-        warning. After a 401 it sends nothing."""
+    def send(self, call) -> None:
         from pdt.utils import autoidm
         if self.refused:
             return
         try:
             call()
         except autoidm.AutoidmError as e:
-            if e.status == 401:
-                self.refused = True
-            else:
-                console.warn(f"AutoIDM did not get {what}: {console.escape(str(e))}")
+            if e.status != 401:
+                raise
+            self.refused = True
 
     def event(self, name: str, at: str, params: dict) -> None:
         from pdt.utils import autoidm
         params = {**params, "project": backend_name(params["project"]),
                   "app": backend_name(params["app"])}
         body = {"version": 1, "event": {"name": name, "at": at, "params": params}}
-        self.send(f"the {console.value(name)} event",
-                  lambda: autoidm.post(self.registration, "/v1/events", body))
+        self.send(lambda: autoidm.post(self.registration, "/v1/events", body))
 
     def upload(self, kind: str, data: bytes, filename: str, params: dict) -> None:
         from pdt.utils import autoidm
         body = {"kind": kind, "project": backend_name(params["project"]),
                 "app": backend_name(params["app"]),
                 "run_id": params["run_id"], "filename": filename}
-        self.send(f"the {kind} {console.value(filename)}",
-                  lambda: autoidm.upload(self.registration, body, data))
-
-    def run_started(self, at: datetime, name: str, params: dict) -> None:
-        if self.wants("send_run_history"):
-            self.event(name, at.strftime("%Y-%m-%dT%H:%M:%SZ"), params)
-
-    def run_ended(self, name: str, params: dict, duration: float, log: Path | None,
-                  output: Path | None) -> bool:
-        """Send the end event, the log, and the artifacts of a run; True when AutoIDM refused
-        the registration."""
-        if self.wants("send_run_history"):
-            self.event(name, now(), {**params, "duration_seconds": round(duration, 1)})
-        run_id = str(params["run_id"])
-        if log is not None:
-            self.upload_log(log, f"{run_id}.log", params)
-        if output is not None and not self.refused:
-            try:
-                if output.is_dir():
-                    self.upload_artifacts(output, f"{run_id}.zip", params)
-            except (OSError, RuntimeError, ValueError, zipfile.BadZipFile,
-                    zipfile.LargeZipFile) as e:
-                console.warn(f"AutoIDM did not get the artifacts {console.value(run_id + '.zip')}: "
-                             f"{console.escape(str(e))}")
-        return self.refused
+        self.send(lambda: autoidm.upload(self.registration, body, data))
 
     def upload_log(self, log: Path, filename: str, params: dict) -> None:
         try:
@@ -285,15 +283,6 @@ class Sender:
                 return
             self.upload("artifact", archive.read_bytes(), filename, params)
 
-    def deployed(self, params: dict, app: dict, platform: dict) -> None:
-        from pdt import regions
-        if not self.wants("send_run_history"):
-            return
-        zone = regions.local_timezone() if app["timezone"] == "local" else app["timezone"]
-        schedule = config.cron_expression(app["schedule"]) if app["schedule"] else None
-        self.event(APP_DEPLOYED, now(), {**params, "schedule": schedule, "timezone": zone,
-                                         "place": place(platform)})
-
     def refusal(self) -> str:
         from pdt.utils import autoidm
         found = self.registration
@@ -332,9 +321,18 @@ def in_ci() -> bool:
     return os.environ.get("CI", "").strip() != ""
 
 
+_senders: dict[str, Sender | None] = {}
+
+
 def sender(app: str) -> Sender | None:
-    """The sender for `app`, or None when pdt sends nothing: no `managed_services`, the env
-    var CI is set, or no registration (with a warning)."""
+    """The find_sender result for `app`, kept for the whole process, so a refusal of one send
+    stops every later send of that app."""
+    if app not in _senders:
+        _senders[app] = monitored("this run", lambda: find_sender(app))
+    return _senders[app]
+
+
+def find_sender(app: str) -> Sender | None:
     if in_ci():
         return None
     try:
@@ -346,3 +344,140 @@ def sender(app: str) -> Sender | None:
         return None
     registration = find_registration(found["customer"])
     return None if registration is None else Sender(app, found, registration)
+
+
+_queue: queue.Queue = queue.Queue()
+_open: list[list] = []
+_lock = threading.Condition()
+_thread: threading.Thread | None = None
+
+
+def _send_each() -> None:
+    while True:
+        item = _queue.get()
+        found, what, call, _state = item
+        with _lock:
+            skip = item[3] != "open"
+        if skip:
+            continue
+        try:
+            if not found.refused:
+                call()
+        except Exception as e:
+            with _lock:
+                if item[3] == "open":
+                    console.warn(f"AutoIDM did not get {what}: {console.escape(str(e))}")
+        with _lock:
+            if item[3] == "open":
+                item[3] = "done"
+            _lock.notify_all()
+
+
+def queue_send(found: Sender, what: str, call: Callable[[], None]) -> None:
+    global _thread
+    item = [found, what, call, "open"]
+    with _lock:
+        if _thread is None:
+            _thread = started(_send_each, message=f"AutoIDM did not get {what}")
+            if _thread is None:
+                return
+        _open.append(item)
+        _queue.put(item)
+
+
+def wait(seconds: float | None = None) -> None:
+    """On Windows before Python 3.14, a long wait on a lock does not see a Ctrl+C, so each wait
+    is short."""
+    deadline = time.monotonic() + (EXIT_WAIT_SECONDS if seconds is None else seconds)
+    with _lock:
+        try:
+            while time.monotonic() < deadline:
+                if _lock.wait_for(lambda: all(item[3] != "open" for item in _open),
+                                  min(WAIT_STEP_SECONDS, deadline - time.monotonic())):
+                    break
+        except KeyboardInterrupt:
+            pass
+        for item in _open:
+            if item[3] == "open":
+                item[3] = "late"
+                what = item[1]
+                console.warn(f"AutoIDM did not get {what}: pdt stopped waiting for it.")
+        _open.clear()
+    console.drain()
+
+
+def accept(event) -> None:
+    if event.name not in (JOB_RUN_STARTED, APP_DEPLOY_COMPLETED):
+        return
+    app = str(event.params["app"])
+    found = sender(app)
+    if found is None or not found.wants("send_run_history"):
+        return
+    at = event.at.strftime(TIME_FORMAT)
+    if event.name == JOB_RUN_STARTED:
+        queue_send(found, f"the {console.value(event.name)} event",
+                   lambda: found.event(event.name, at, event.params))
+    else:
+        queue_send(found, f"the {console.value(APP_DEPLOYED)} event",
+                   lambda: found.event(APP_DEPLOYED, at,
+                                       {**event.params, **deployed_params(app)}))
+
+
+def deployed_params(app_name: str) -> dict[str, object]:
+    from pdt import regions
+    app = config.merged_app(app_name)
+    zone = regions.local_timezone() if app["timezone"] == "local" else app["timezone"]
+    schedule = config.cron_expression(app["schedule"]) if app["schedule"] else None
+    return {"schedule": schedule, "timezone": zone,
+            "place": place(config.deployed_platform(app_name))}
+
+
+@dataclass(frozen=True)
+class Run:
+    sender: Sender | None = None
+    scratch: Path | None = None
+    log: Path | None = None
+    output: Path | None = None
+
+
+def start_run(app: str, run_id: str, app_dir: Path) -> Run:
+    found = sender(app)
+    if found is None or not (found.wants("send_logs") or found.wants("send_artifacts")):
+        return Run(found)
+    try:
+        scratch = Path(tempfile.mkdtemp(prefix=f"pdt-{run_id}-"))
+    except OSError as e:
+        console.warn(f"pdt cannot keep the output or the artifacts of this run for AutoIDM: "
+                     f"{console.escape(str(e))}")
+        return Run(found)
+    log = scratch / f"{run_id}.log" if found.wants("send_logs") else None
+    output = None
+    if found.wants("send_artifacts"):
+        output = monitored("the artifacts of this run",
+                           lambda: output_folder(app_dir, run_id, scratch / "output"))
+    return Run(found, scratch, log, output)
+
+
+def end_run(run: Run, name: str, params: dict, duration: float) -> bool:
+    found = run.sender
+    if found is None:
+        return False
+    run_id = str(params["run_id"])
+    if found.wants("send_run_history"):
+        at = datetime.now(timezone.utc).strftime(TIME_FORMAT)
+        ended = {**params, "duration_seconds": round(duration, 1)}
+        queue_send(found, f"the {console.value(name)} event", lambda: found.event(name, at, ended))
+    if run.log is not None:
+        filename = f"{run_id}.log"
+        queue_send(found, f"the log {console.value(filename)}",
+                   lambda: found.upload_log(run.log, filename, params))
+    if run.output is not None:
+        zipname = f"{run_id}.zip"
+
+        def send_artifacts() -> None:
+            if run.output.is_dir():
+                found.upload_artifacts(run.output, zipname, params)
+
+        queue_send(found, f"the artifacts {console.value(zipname)}", send_artifacts)
+    wait()
+    return found.refused

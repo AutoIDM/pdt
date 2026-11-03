@@ -4,6 +4,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import zipfile
 
 import pytest
@@ -184,9 +185,10 @@ def test_registration_metadata_of_the_wrong_shape_is_a_warning(project, folder, 
     assert f"pdt cannot use the AutoIDM registration for {CUSTOMER}" in out
 
 
-@pytest.mark.parametrize("target", ["sender", "run_started", "output_folder", "run_ended"])
+@pytest.mark.parametrize(("target", "warnings"), [
+    ("find_sender", 1), ("start_run", 1), ("accept", 2), ("output_folder", 1), ("end_run", 1)])
 def test_an_unexpected_error_in_monitoring_is_a_warning_and_keeps_the_exit_code(
-        project, backend, warned, monkeypatch, capfd, target):
+        project, backend, warned, monkeypatch, capfd, target, warnings):
     url, _seen, _answers = backend
     project_with(project, ALL_ON)
     registered(url)
@@ -194,12 +196,52 @@ def test_an_unexpected_error_in_monitoring_is_a_warning_and_keeps_the_exit_code(
     def broken(*args, **kwargs):
         raise TypeError("an error no handler expects")
 
-    owner = managed_services if target in ("sender", "output_folder") else managed_services.Sender
-    monkeypatch.setattr(owner, target, broken)
+    monkeypatch.setattr(managed_services, target, broken)
     assert run(project, 3) == 3
     out, err = capfd.readouterr()
     assert "hello from the app" in out
-    assert "TypeError: an error no handler expects" in " ".join((out + err).split())
+    said = " ".join((out + err).split())
+    assert said.count("TypeError: an error no handler expects") == warnings
+    assert "Run of report failed" in out
+
+
+def test_a_folder_pdt_cannot_name_costs_only_the_artifacts(project, backend, warned, monkeypatch):
+    url, seen, _answers = backend
+    project_with(project, ALL_ON)
+    registered(url)
+
+    def broken(*args, **kwargs):
+        raise TypeError("an error no handler expects")
+
+    monkeypatch.setattr(managed_services, "output_folder", broken)
+    assert run(project) == 0
+    assert [request["body"]["filename"] for request in seen
+            if request["path"] == "/v1/uploads"] == [f"{storage.RUN_ID}.log"]
+
+
+def test_an_unexpected_error_on_the_send_thread_is_a_warning_and_keeps_the_exit_code(
+        project, backend, warned, monkeypatch, capfd):
+    url, _seen, _answers = backend
+    project_with(project, ALL_ON)
+    registered(url)
+
+    def broken(*args, **kwargs):
+        raise TypeError("an error no handler expects")
+
+    monkeypatch.setattr(managed_services.Sender, "event", broken)
+    assert run(project, 3) == 3
+    out, err = capfd.readouterr()
+    said = " ".join((out + err).split())
+    assert "AutoIDM did not get the job:run-started event: an error no handler expects" in said
+    assert "AutoIDM did not get the job:run-failed event: an error no handler expects" in said
+
+
+def test_an_event_with_no_app_is_a_warning_and_emit_returns(project, warned, capsys):
+    project_with(project, ALL_ON)
+    event = lifecycle.emit("job:run-started")
+    assert event.name == "job:run-started"
+    assert "AutoIDM did not get the job:run-started event: KeyError" in " ".join(
+        capsys.readouterr().out.split())
 
 
 def test_a_refused_registration_completes_the_work_then_exits_with_its_own_code(
@@ -215,6 +257,100 @@ def test_a_refused_registration_completes_the_work_then_exits_with_its_own_code(
     info = autoidm.files(CUSTOMER)[0]
     assert f"AutoIDM refused the registration ins_4f8a1c2e9b in {info}" in out
     assert "Run of report failed (unauthorized, exit code 77)" in out
+
+
+def test_a_refusal_at_the_first_upload_fails_the_run_unauthorized(project, backend, warned,
+                                                                  monkeypatch, capsys):
+    url, seen, answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n"
+                          "  send_run_history: false\n  send_logs: true\n")
+    registered(url)
+    answers.append((401, {"error": "unauthorized"}))
+    events = []
+    emit = lifecycle.emit
+    monkeypatch.setattr(lifecycle, "emit", lambda name, **params: events.append(
+        (name, emit(name, **params).params)))
+    assert run(project) == managed_services.UNAUTHORIZED_EXIT
+    assert paths(seen) == ["/v1/uploads"]
+    name, params = events[-1]
+    assert (name, params["reason"], params["exit_code"]) == (
+        "job:run-failed", "unauthorized", managed_services.UNAUTHORIZED_EXIT)
+    out = " ".join(capsys.readouterr().out.split())
+    assert "AutoIDM refused the registration" in out
+    assert "Run of report failed (unauthorized, exit code 77)" in out
+    assert "completed" not in out
+
+
+def test_starting_a_run_does_not_wait_for_the_send_and_the_end_keeps_the_order(
+        project, backend, warned, monkeypatch):
+    url, seen, _answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
+    registered(url)
+    release = threading.Event()
+    post = autoidm.post
+
+    def held(found, where, body):
+        release.wait(5)
+        return post(found, where, body)
+
+    monkeypatch.setattr(autoidm, "post", held)
+    began = time.monotonic()
+    lifecycle.emit("job:run-started", project="example", app="report", run_id="r1")
+    assert time.monotonic() - began < 1
+    assert seen == []
+    threading.Timer(0.1, release.set).start()
+    found = managed_services.sender("report")
+    assert not managed_services.end_run(
+        managed_services.Run(found), "job:run-completed",
+        {"project": "example", "app": "report", "run_id": "r1"}, 1.0)
+    assert [request["body"]["event"]["name"] for request in seen] == [
+        "job:run-started", "job:run-completed"]
+
+
+def test_a_send_that_fails_after_the_limit_does_not_warn_a_second_time(project, backend, warned,
+                                                                       monkeypatch, capsys):
+    url, _seen, _answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
+    registered(url)
+    release, finished = threading.Event(), threading.Event()
+
+    def fails_late(found, where, body):
+        release.wait(5)
+        raise autoidm.AutoidmError("AutoIDM answered 500")
+
+    monkeypatch.setattr(autoidm, "post", fails_late)
+    found = managed_services.sender("report")
+    managed_services.queue_send(found, "the slow event", lambda: found.event(
+        "job:run-started", "2026-11-02T00:00:00Z", {"project": "example", "app": "report"}))
+    managed_services.wait(0.1)
+    managed_services.queue_send(found, "the next item", finished.set)
+    release.set()
+    assert finished.wait(5)
+    managed_services.wait()
+    out = " ".join(capsys.readouterr().out.split())
+    assert out.count("AutoIDM did not get the slow event") == 1
+    assert "pdt stopped waiting" in out
+
+
+def test_a_late_log_and_artifact_are_warnings_inside_the_limit_and_keep_the_exit_code(
+        project, backend, warned, monkeypatch, capsys):
+    url, _seen, _answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n"
+                          "  send_run_history: false\n  send_logs: true\n"
+                          "  send_artifacts: true\n")
+    registered(url)
+    release = threading.Event()
+    monkeypatch.setattr(autoidm, "upload", lambda found, body, data: release.wait(5))
+    monkeypatch.setattr(managed_services, "EXIT_WAIT_SECONDS", 0.3)
+    began = time.monotonic()
+    assert run(project) == 0
+    waited = time.monotonic() - began
+    release.set()
+    assert waited < 3
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"AutoIDM did not get the log {storage.RUN_ID}.log: pdt stopped waiting" in out
+    assert f"AutoIDM did not get the artifacts {storage.RUN_ID}.zip: pdt stopped waiting" in out
+    assert "Run of report completed" in out
 
 
 def test_a_refused_registration_keeps_the_exit_code_of_a_failed_run(project, backend, warned,
@@ -291,7 +427,7 @@ def test_a_cloud_job_sends_with_the_registration_in_its_secret(project, backend,
 
 
 def test_a_deploy_sends_app_deployed_with_the_schedule_and_the_place(project, backend, warned,
-                                                                     monkeypatch):
+                                                                     monkeypatch, capsys):
     url, seen, _answers = backend
     project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
     (project / "report" / "config.yml").write_text(
@@ -302,8 +438,11 @@ def test_a_deploy_sends_app_deployed_with_the_schedule_and_the_place(project, ba
     monkeypatch.setattr(config, "deployed_platform", lambda name: {
         "provider": "aws", "region": "us-east-2", "account": "123456789012"})
     assert deploy.provider_step("deploy", "aws", "report", True) == 0
+    assert len(seen) == 1
     event = seen[0]["body"]["event"]
     assert event["name"] == "app:deployed"
+    assert capsys.readouterr().out.splitlines() == ["[alert] Deploying report to AWS",
+                                                    "[alert] Deployed report to AWS"]
     assert event["params"] == {"project": project.name, "app": "report", "provider": "aws",
                                "schedule": "0 0 * * *", "timezone": "America/New_York",
                                "place": "aws:123456789012:us-east-2"}
@@ -311,14 +450,19 @@ def test_a_deploy_sends_app_deployed_with_the_schedule_and_the_place(project, ba
 
 def test_a_windows_app_has_no_place_and_its_time_zone_is_the_computers(project, monkeypatch):
     project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
-    sent = []
-    sender = managed_services.Sender("report", managed_services.parse(
-        {"customer": CUSTOMER}, "pdt.yml"), None)
-    monkeypatch.setattr(sender, "event", lambda name, at, params: sent.append(params))
     monkeypatch.setattr("pdt.regions.local_timezone", lambda: "Europe/Berlin")
-    sender.deployed({"app": "report"}, config.merged_app("report"), {"provider": "windows"})
-    assert sent == [{"app": "report", "schedule": None, "timezone": "Europe/Berlin",
-                     "place": None}]
+    monkeypatch.setattr(config, "deployed_platform", lambda name: {"provider": "windows"})
+    assert managed_services.deployed_params("report") == {
+        "schedule": None, "timezone": "Europe/Berlin", "place": None}
+
+
+def test_a_deploy_without_managed_services_reads_no_deploy_fields(project, monkeypatch):
+    project_with(project, "")
+    monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(managed_services, "deployed_params",
+                        lambda name: pytest.fail("read the deploy fields"))
+    monkeypatch.setattr("pdt.regions.local_timezone", lambda: pytest.fail("read the time zone"))
+    assert deploy.provider_step("deploy", "aws", "report", True) == 0
 
 
 def test_a_cloud_job_in_workspace_reports_the_name_of_the_deploying_project(
@@ -652,8 +796,8 @@ def test_a_log_pdt_cannot_make_leaves_the_output_unpiped_and_the_run_goes_on(
     def full(*args, **kwargs):
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(lifecycle.tempfile, "mkstemp", full)
-    monkeypatch.setattr(lifecycle.tempfile, "mkdtemp", full)
+    monkeypatch.setattr(managed_services.tempfile, "mkstemp", full)
+    monkeypatch.setattr(managed_services.tempfile, "mkdtemp", full)
     assert run(project) == 0
     out, err = capfd.readouterr()
     assert "hello from the app" in out
@@ -719,6 +863,60 @@ def test_a_reader_thread_pdt_cannot_start_leaves_the_output_unpiped_and_keeps_th
     assert ("pdt cannot keep the output of this run for AutoIDM: can't start new thread"
             in " ".join((out + err).split()))
     assert [kwargs.get("stdout") for kwargs in started] == [None]
+    assert "Run of report failed (exit code 3)" in out
+    end = seen[1]["body"]["event"]
+    assert (end["name"], end["params"]["exit_code"]) == ("job:run-failed", 3)
+
+
+def failing_start(monkeypatch, *names, times=None):
+    """Make Thread.start raise for a thread whose target has one of `names`, at most `times`
+    times."""
+    real_start = threading.Thread.start
+    failed = []
+
+    def at_the_limit(self):
+        if (getattr(self._target, "__name__", "") in names
+                and (times is None or len(failed) < times)):
+            failed.append(self._target.__name__)
+            raise RuntimeError("can't start new thread")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", at_the_limit)
+    return failed
+
+
+def test_a_sender_thread_pdt_cannot_start_skips_that_send_and_starts_for_the_next(
+        project, backend, warned, monkeypatch, capfd):
+    url, seen, _answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
+    registered(url)
+    monkeypatch.setattr(managed_services, "_thread", None)
+    monkeypatch.setattr(managed_services, "_queue", queue.Queue())
+    failed = failing_start(monkeypatch, "_send_each", times=1)
+    began = time.monotonic()
+    assert run(project, 3) == 3
+    assert time.monotonic() - began < managed_services.EXIT_WAIT_SECONDS
+    console.drain()
+    out, err = capfd.readouterr()
+    said = " ".join((out + err).split())
+    assert failed == ["_send_each"]
+    assert "AutoIDM did not get the job:run-started event: can't start new thread" in said
+    assert "Run of report failed (exit code 3)" in out
+    assert [(request["body"]["event"]["name"], request["body"]["event"]["params"]["exit_code"])
+            for request in seen] == [("job:run-failed", 3)]
+
+
+def test_a_wait_thread_pdt_cannot_start_waits_on_the_calling_thread_and_keeps_the_exit_code(
+        project, backend, warned, monkeypatch, capfd):
+    url, seen, _answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
+    registered(url)
+    failed = failing_start(monkeypatch, "wait", "wait_alerts")
+    assert run(project, 3) == 3
+    console.drain()
+    out, _err = capfd.readouterr()
+    assert sorted(failed) == ["wait", "wait_alerts"]
+    assert "Run of report failed (exit code 3)" in out
     end = seen[1]["body"]["event"]
     assert (end["name"], end["params"]["exit_code"]) == ("job:run-failed", 3)
 
