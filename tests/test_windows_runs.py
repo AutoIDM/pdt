@@ -25,7 +25,7 @@ def windows_app(project):
 def test_task_action_runs_the_deployed_runner_through_the_machine_uv(project):
     app = windows_app(project)
     description, xml = deploy_windows.task_xml(app)
-    assert description == "hourly at minute 00"
+    assert description == config.describe_schedule("0 * * * *")
     data = project / "ProgramData"
     folder = data / "pdt" / "my-report"
     runner = folder / "runtime" / "pdt" / "run_windows_task.py"
@@ -38,10 +38,10 @@ def test_task_action_runs_the_deployed_runner_through_the_machine_uv(project):
     assert "powershell.exe" not in xml.lower()
 
 
-def test_task_stops_a_run_after_30_minutes_and_skips_an_overlapping_start(project):
+def test_task_has_no_run_time_limit_and_skips_an_overlapping_start(project):
     app = windows_app(project)
     _description, xml = deploy_windows.task_xml(app)
-    assert "<ExecutionTimeLimit>PT30M</ExecutionTimeLimit>" in xml
+    assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in xml
     assert "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" in xml
 
 
@@ -63,8 +63,9 @@ def deploy_plan(project, monkeypatch, uv_current: bool) -> tuple[list[str], list
     app = windows_app(project)
     shown, fetched = [], []
     monkeypatch.setattr(deploy_windows, "_preflight", lambda: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
-    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "absent")
+    monkeypatch.setattr(deploy_windows, "_deploying_user",
+                        lambda: (r"PC\jon", "S-1-5-21-1-2-3-1001"))
     monkeypatch.setattr(deploy_windows, "_machine_uv_current", lambda: uv_current)
     monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "ARM64")
     monkeypatch.setattr(deploy_windows.windows_uv, "fetch",
@@ -89,37 +90,67 @@ def test_plan_runs_the_installed_uv_when_it_is_the_pinned_version(project, monke
     assert fetched == []
 
 
-def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch):
+def test_list_runs_reads_no_log_content(project, monkeypatch):
+    windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder.mkdir(parents=True)
+    for stamp in ("090000", "100000", "110000"):
+        (folder / f"20260923T{stamp}Z.log").write_text("pdt: exit 0\n")
+    monkeypatch.setattr(Path, "read_text", lambda *a, **k: pytest.fail("read a log"))
+    monkeypatch.setattr(Path, "open", lambda *a, **k: pytest.fail("opened a log"))
+
+    found = deploy_windows.list_runs("my-report")
+
+    assert [run.id for run in found] == ["20260923T110000Z", "20260923T100000Z",
+                                         "20260923T090000Z"]
+    assert [run.status for run in found] == ["unknown"] * 3
+    assert found[0].started == datetime(2026, 9, 23, 11, 0, 0, tzinfo=timezone.utc)
+
+
+def test_resolve_runs_fills_status_exit_code_and_end_from_the_log_tail(project, monkeypatch):
     windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T090000Z.log").write_text("10:00:00 INFO   starting\npdt: exit 0\n")
-    (folder / "20260923T100000Z.log").write_text("10:00:00 INFO   starting\n")
-    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: True)
-
+    (folder / "20260923T100000Z.log").write_text("10:00:00 INFO   starting\npdt: exit 3\n")
+    (folder / "20260923T110000Z.log").write_text("10:00:00 INFO   starting\n")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "running")
     found = deploy_windows.list_runs("my-report")
 
-    assert [run.id for run in found] == ["20260923T100000Z", "20260923T090000Z"]
-    running, finished = found
-    assert running.started == datetime(2026, 9, 23, 10, 0, 0, tzinfo=timezone.utc)
-    assert running.status == "running"
-    assert running.ended is None
-    assert running.exit_code is None
-    assert finished.status == "succeeded"
-    assert finished.exit_code == 0
-    assert finished.ended is not None
+    deploy_windows.resolve_runs("my-report", found)
+
+    running, failed, succeeded = found
+    assert (running.status, running.exit_code, running.ended) == ("running", None, None)
+    assert (failed.status, failed.exit_code) == ("failed", 3)
+    assert (succeeded.status, succeeded.exit_code) == ("succeeded", 0)
+    assert failed.ended is not None
+    assert succeeded.ended is not None
 
 
-def test_list_runs_without_a_running_task_is_failed(project, monkeypatch):
+def test_resolve_runs_ignores_an_exit_line_before_the_last_256_bytes(project, monkeypatch):
+    windows_app(project)
+    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder.mkdir(parents=True)
+    (folder / "20260923T090000Z.log").write_text(
+        "pdt: exit 0\n" + "10:00:00 INFO   line\n" * 100)
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "absent")
+    found = deploy_windows.list_runs("my-report")
+
+    deploy_windows.resolve_runs("my-report", found)
+
+    assert found[0].exit_code is None
+    assert found[0].status == "failed"
+
+
+def test_a_log_with_no_exit_marker_is_failed_when_the_task_is_not_running(project, monkeypatch):
     windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T100000Z.log").write_text("10:00:00 ERROR   boom\n")
-    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: False)
-
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "ready")
     found = deploy_windows.list_runs("my-report")
+
+    deploy_windows.resolve_runs("my-report", found)
 
     assert found[0].status == "failed"
 
@@ -131,15 +162,16 @@ def test_list_runs_reads_an_exit_line_written_while_it_checks_the_task(project, 
     log = folder / "20261020T132758Z.log"
     log.write_bytes(b"2026-10-20T13:29:24.100Z 06:29:24 INFO    Hello, world!\r\n")
 
-    def task_ends(powershell, name):
+    def task_ends(path):
         with log.open("ab") as out:
             out.write(b"2026-10-20T13:29:24.300Z pdt: exit 0\n")
-        return False
+        return "ready"
 
-    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_running", task_ends)
+    monkeypatch.setattr(deploy_windows, "_task_state", task_ends)
 
-    (run,) = deploy_windows.list_runs("my-report")
+    found = deploy_windows.list_runs("my-report")
+    deploy_windows.resolve_runs("my-report", found)
+    (run,) = found
 
     assert (run.status, run.exit_code) == ("succeeded", 0)
     assert run.ended is not None
@@ -237,7 +269,7 @@ def test_follow_ends_when_the_log_stays_quiet(project, monkeypatch):
     assert clock[0] == runs_cli.STREAM_QUIET
 
 
-def test_list_runs_reads_only_the_end_of_each_log_and_asks_only_about_the_newest(
+def test_resolve_runs_reads_only_the_end_of_each_log_and_asks_only_about_the_newest(
         project, monkeypatch):
     windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
@@ -246,31 +278,31 @@ def test_list_runs_reads_only_the_end_of_each_log_and_asks_only_about_the_newest
     (folder / "20260923T100000Z.log").write_text("x" * 10_000 + "\npdt: exit 0\n")
     (folder / "20260923T110000Z.log").write_text("10:00:00 INFO   starting\n")
     asked = []
-    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_running",
-                        lambda powershell, name: asked.append(name) or True)
+    monkeypatch.setattr(deploy_windows, "_task_state",
+                        lambda path: asked.append(path) or "running")
     reads = []
     real_read = deploy_windows.parse_line
     monkeypatch.setattr(deploy_windows, "parse_line",
                         lambda raw: reads.append(len(raw)) or real_read(raw))
 
     found = deploy_windows.list_runs("my-report")
+    deploy_windows.resolve_runs("my-report", found)
 
     assert [run.status for run in found] == ["running", "succeeded", "failed"]
-    assert asked == ["pdt-my-report"]
+    assert asked == ["\\pdt\\pdt-my-report"]
     assert max(reads) < deploy_windows.EXIT_LINE_BYTES
 
 
-def test_list_runs_does_not_take_an_exit_marker_from_the_middle_of_a_line(project, monkeypatch):
+def test_resolve_runs_does_not_take_an_exit_marker_from_the_middle_of_a_line(project, monkeypatch):
     windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
     folder.mkdir(parents=True)
     line = "2026-09-23T10:00:01.000Z said " + "x" * 300 + " pdt: exit 0 " + "y" * 200 + "\n"
     (folder / "20260923T100000Z.log").write_text(line)
-    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: True)
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "running")
 
     (run,) = deploy_windows.list_runs("my-report")
+    deploy_windows.resolve_runs("my-report", [run])
 
     assert (run.status, run.exit_code) == ("running", None)
 
@@ -292,8 +324,7 @@ def two_logs(project, monkeypatch):
     folder.mkdir(parents=True)
     (folder / "20260923T090000Z.log").write_bytes(b"10:00:00 INFO   starting\npdt: exit 3\n")
     (folder / "20260923T100000Z.log").write_bytes(b"10:00:00 INFO   starting\n")
-    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
-    monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: True)
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda path: "running")
     return app, folder
 
 

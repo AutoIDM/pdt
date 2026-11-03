@@ -34,8 +34,8 @@ GOOGLE_DESCRIBE = {
                                 "--location", location),
 }
 WINDOWS_TASKS = (
-    "$tasks = @(Get-ScheduledTask -TaskPath '\\' | "
-    "Where-Object { $_.TaskName -like 'pdt-*' } | "
+    "$tasks = @(Get-ScheduledTask | "
+    "Where-Object { $_.TaskPath -in '\\', '\\pdt\\' -and $_.TaskName -like 'pdt-*' } | "
     "Select-Object TaskName, TaskPath, Description); "
     "ConvertTo-Json -InputObject $tasks -Compress"
 )
