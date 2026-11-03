@@ -59,7 +59,8 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
-ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch", "managed_services"}
+ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch", "managed_services",
+             "service"}
 APP_KEYS = {"name", "app_profile", "schedule", "timezone", "platform", "config", "env", "storage",
             "enabled", "run_scripts", "continue_on_error", "pause", "docker-build", "alerts",
             "web", "job"}

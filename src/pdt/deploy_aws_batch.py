@@ -59,7 +59,7 @@ from pdt.deploy_aws import (
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, ensure_image, fail, gather_secrets, image_action,
-    make_registration, registration_secrets, run_build, run_secrets, secret_contents,
+    keeps_secret, make_registration, registration_secrets, run_build, run_secrets, secret_contents,
     ssh_build_args, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked,
 )
@@ -837,7 +837,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         secret_exists = resource_exists(
             clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
         current_secret = None
-        if secret_exists:
+        if secret_exists and not keeps_secret():
             try:
                 current_secret = clients["secretsmanager"].get_secret_value(
                     SecretId=names["secret"]).get("SecretString")
@@ -861,7 +861,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                        f"queue {console.value(JOB_QUEUE.name)}"),
         image_action(app, console.Markup(f"build and push Docker image {console.value(image)} "
                                          f"({DOCKER_PLATFORM})"), "CodeBuild" if cloud else ""),
-        console.Markup(("update" if secret_exists else "create")
+        console.Markup(f"keep Secrets Manager secret {console.value(names['secret'])} as it is"
+                       if keeps_secret() and secret_exists else
+                       ("update" if secret_exists else "create")
                        + f" Secrets Manager secret {console.value(names['secret'])} "
                        f"({secret_contents(secrets)})"),
         "reconcile the execution, job, and scheduler IAM roles",
