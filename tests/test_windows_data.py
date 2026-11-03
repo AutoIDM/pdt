@@ -67,7 +67,7 @@ def test_a_host_runs_every_command_on_that_pc(project, monkeypatch, command):
     monkeypatch.setattr(deploy_windows.windows_remote, "connect",
                         lambda host, app_name: reached.append((host, app_name)) or "connection")
     monkeypatch.setattr(deploy_windows.windows_remote, "forward",
-                        lambda connection, app, command, rest, yes:
+                        lambda connection, app, command, rest, yes, plan:
                         forwarded.append((connection, command, rest, yes)) or 0)
     monkeypatch.setattr(deploy_windows, "deploy", lambda app, yes: pytest.fail("ran locally"))
     monkeypatch.setattr(deploy_windows.sys, "argv",
