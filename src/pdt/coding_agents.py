@@ -2,8 +2,8 @@
 
 `ask` is the one entry point. It sends a request and the context the caller
 chooses to one agent, at low effort and with read-only access, and returns
-the reply. The user consents once per agent, and pdt asks which agent to use
-only when more than one could answer. Both answers live in the user's
+the reply. The user consents once, for every agent, at the first call, and pdt
+asks which agent to use only when more than one is installed. Both answers live in the user's
 settings file (`SETTINGS`), not in the project. Inside a coding agent's own
 session, pdt starts no second agent: it prints the request for the agent
 that is already running.
@@ -28,13 +28,15 @@ SETTINGS = config.data_home() / "pdt" / "settings.yml"
 CHOICE_KEY = "coding-agent"
 CONSENT_KEY = "coding-agent-consent"
 REMOVED = "<secret removed>"
-FOLLOW_RULES = "Follow the rules in AGENTS.md of this pdt project, the folder that holds pdt.yml."
+RULES = ("Do not read, open, search, or print any .env file or its contents. "
+         "Follow the rules in AGENTS.md of this pdt project, the folder that holds pdt.yml.")
 # A value this short, such as 1 or yes, is not a secret, and removing it would change many words.
 SHORTEST_SECRET = 4
 REPLY_SECONDS = 300
 # Windows env var names ignore case, so API_TOKEN in the environment is api_token in a .env file.
 ENV_NAME = str.upper if os.name == "nt" else str
 LIST_SECONDS = 60
+CLAUDE_SETTINGS = '{"disableAllHooks": true, "permissions": {"deny": ["Read(//**/.env)"]}}'
 
 
 class AgentCommandError(Exception):
@@ -43,8 +45,9 @@ class AgentCommandError(Exception):
 
 def _claude_args(program: str, env: dict[str, str]) -> list[str]:
     # --tools limits only the built-in tools, so MCP servers and hooks are turned off too.
+    # The deny rule also keeps .env files out of Grep and Glob, in parent folders too.
     return [program, "-p", "--effort", "low", "--tools", "Read,Grep,Glob", "--strict-mcp-config",
-            "--settings", '{"disableAllHooks": true}', "--no-session-persistence"]
+            "--settings", CLAUDE_SETTINGS, "--no-session-persistence"]
 
 
 def _codex_args(program: str, env: dict[str, str]) -> list[str]:
@@ -105,30 +108,25 @@ def installed() -> dict[str, str]:
 
 def read_settings() -> dict:
     settings = config.load_yaml(SETTINGS)
-    answers = settings.get(CONSENT_KEY) or {}
-    if not isinstance(answers, dict) or not all(isinstance(answer, bool)
-                                                for answer in answers.values()):
-        raise ConfigError(f"{SETTINGS}: {CONSENT_KEY} must list each coding agent with true "
-                          "or false, for example `claude: false` on its own line under it")
+    if not isinstance(settings.get(CONSENT_KEY, False), bool):
+        raise ConfigError(f"{SETTINGS}: {CONSENT_KEY} must be true or false")
     if not isinstance(settings.get(CHOICE_KEY, ""), str):
         raise ConfigError(f"{SETTINGS}: {CHOICE_KEY} must be one of "
                           f"{', '.join(agent.name for agent in AGENTS)}")
     return settings
 
 
-def remember(key: str, value, merge: bool = False) -> None:
+def remember(key: str, value) -> None:
     import yaml
     SETTINGS.parent.mkdir(parents=True, exist_ok=True)
     with config.locked(SETTINGS):
         settings = read_settings()
-        if merge:
-            value = {**(settings.get(key) or {}), **value}
         settings[key] = value
         config.write_text_atomically(SETTINGS, yaml.safe_dump(settings, sort_keys=False))
 
 
-def consent(settings: dict, agent: Agent) -> bool | None:
-    return (settings.get(CONSENT_KEY) or {}).get(agent.name)
+def consent(settings: dict) -> bool | None:
+    return settings.get(CONSENT_KEY)
 
 
 @dataclass(frozen=True)
@@ -158,23 +156,14 @@ def message(request: str, context: dict[str, str], secrets: set[str]) -> str:
     text = "\n\n".join([request, *(f"## {heading}\n{body}" for heading, body in context.items())])
     for value in sorted(secrets, key=len, reverse=True):
         text = text.replace(value, REMOVED)
-    return f"{FOLLOW_RULES}\n\n{text}"
+    return f"{RULES}\n\n{text}"
 
 
 def choose(settings: dict, found: dict[str, str], ask_user: bool) -> Agent | None:
-    usable = [agent for agent in AGENTS if agent.name in found
-              and consent(settings, agent) is not False and (ask_user or consent(settings, agent))]
+    usable = [agent for agent in AGENTS if agent.name in found]
     stored = next((agent for agent in usable if agent.name == settings.get(CHOICE_KEY)), None)
     if stored is not None or len(usable) == 1:
         return stored or usable[0]
-    if not usable and ask_user:
-        console.note("pdt did not ask a coding agent for help, because you said no to each one "
-                     f"on this computer. Edit {console.value(str(SETTINGS))} to change it.")
-        return None
-    if not usable:
-        console.note("pdt did not ask a coding agent for help, because you have not allowed "
-                     "one yet. The question shows only in a terminal window.")
-        return None
     if not ask_user:
         console.note(f"more than one coding agent is on this computer, and pdt cannot ask "
                      f"which one to use here. Set {console.value(CHOICE_KEY)} in "
@@ -196,25 +185,29 @@ def choose(settings: dict, found: dict[str, str], ask_user: bool) -> Agent | Non
     return agent
 
 
-def allowed(settings: dict, agent: Agent, context: dict[str, str]) -> bool:
-    answer = consent(settings, agent)
+def allowed(settings: dict, found: dict[str, str], ask_user: bool) -> bool:
+    answer = consent(settings)
     if answer is not None:
         return answer
-    label = console.value(agent.label)
-    sent = f" and this text: {console.escape(', '.join(context))}" if context else ""
-    console.say(f"pdt can ask {label}, a coding agent on this computer, for help.")
-    console.say(f"pdt sends it a request{sent}. "
-                f"pdt first removes each value of {SHORTEST_SECRET} or more characters "
-                "in your .env files.")
-    console.say(f"{label} can read files on this computer, .env files too. It cannot change "
-                "them. pdt tells it to follow the rules in your project's AGENTS.md.")
-    console.say(f"pdt saves your answer in {console.value(str(SETTINGS))}. "
-                "Edit that file to change it.")
+    if not ask_user:
+        console.note("pdt did not ask a coding agent for help, because you have not allowed "
+                     "it yet. The question shows only in a terminal window.")
+        return False
+    labels = ", ".join(console.value(agent.label) for agent in AGENTS if agent.name in found)
+    console.say(f"pdt found a coding agent on this computer: {labels}.")
+    console.say("When pdt calls it, pdt sends a request, such as the command, the error text, "
+                f"and the last log lines. pdt first replaces each value of {SHORTEST_SECRET} or "
+                f"more characters in your .env files with {console.escape(REMOVED)}.")
+    console.say("The agent can read files on this computer. It cannot change them. "
+                "pdt tells it not to read .env files.")
+    console.say(f"pdt saves your answer as {console.value(CONSENT_KEY)} in "
+                f"{console.value(str(SETTINGS))}. Set it to false to turn this off.")
     try:
-        answer = console.confirm(f"Let pdt send requests to {agent.label}?")
+        answer = console.confirm("Do you permit pdt to call your installed coding agent when it "
+                                 "could be helpful?")
     except EOFError:
         return False
-    remember(CONSENT_KEY, {agent.name: answer}, merge=True)
+    remember(CONSENT_KEY, answer)
     return answer
 
 
@@ -237,8 +230,10 @@ def ask(request: str, context: dict[str, str] | None = None) -> str | None:
         return None
     settings = read_settings()
     ask_user = can_prompt(None)
+    if not allowed(settings, found, ask_user):
+        return None
     agent = choose(settings, found, ask_user)
-    if agent is None or not allowed(settings, agent, context):
+    if agent is None:
         return None
     label = console.value(agent.label)
     hidden = {ENV_NAME(name) for name in secrets.names}
@@ -282,8 +277,8 @@ def main(argv: list[str]) -> int:
     found, inside = installed(), running_inside()
     states = {True: "allowed", False: "not allowed", None: "not asked yet"}
     for agent in AGENTS:
-        where = found.get(agent.name, "not found")
-        console.field(agent.label, f"{where}, {states[consent(settings, agent)]}")
+        console.field(agent.label, found.get(agent.name, "not found"))
+    console.field("Consent", states[consent(settings)])
     console.field("Settings file", str(SETTINGS))
     if settings.get(CHOICE_KEY):
         console.field("Agent to use", str(settings[CHOICE_KEY]))

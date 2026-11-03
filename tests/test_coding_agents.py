@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -46,20 +47,21 @@ class FakeComputer:
         return self.pick
 
 
+QUESTION = "Do you permit pdt to call your installed coding agent when it could be helpful?"
 MODELS = "Available models\n\nauto - Auto (default)\nfast-low - Fast Low\nslow-low - Slow Low\n"
 
 
 def test_the_first_request_asks_for_consent_and_remembers_the_answer(monkeypatch, tmp_path, capsys):
     computer = FakeComputer(monkeypatch, tmp_path)
     assert coding_agents.ask("Why did it fail?", {"error text": "boom"}) == "the reply"
-    assert computer.asked == ["Let pdt send requests to Claude Code?"]
-    assert "this text: error text." in capsys.readouterr().out
+    assert computer.asked == [QUESTION]
+    assert "found a coding agent on this computer: Claude Code." in capsys.readouterr().out
     command, sent = computer.runs[0]
     assert command[:4] == ["/bin/claude", "-p", "--effort", "low"]
-    assert sent == f"{coding_agents.FOLLOW_RULES}\n\nWhy did it fail?\n\n## error text\nboom"
+    assert sent == f"{coding_agents.RULES}\n\nWhy did it fail?\n\n## error text\nboom"
     assert coding_agents.ask("Again?") == "the reply"
-    assert computer.asked == ["Let pdt send requests to Claude Code?"]
-    assert coding_agents.read_settings() == {"coding-agent-consent": {"claude": True}}
+    assert computer.asked == [QUESTION]
+    assert coding_agents.read_settings() == {"coding-agent-consent": True}
 
 
 def test_a_no_is_stored_and_pdt_does_not_ask_again(monkeypatch, tmp_path):
@@ -74,7 +76,7 @@ def test_with_no_one_to_ask_pdt_sends_nothing(monkeypatch, tmp_path, capsys):
     computer = FakeComputer(monkeypatch, tmp_path, terminal=False)
     assert coding_agents.ask("Why?") is None
     assert computer.asked == [] and computer.runs == []
-    assert "you have not allowed one yet" in capsys.readouterr().out
+    assert "you have not allowed it yet" in capsys.readouterr().out
     assert not coding_agents.SETTINGS.exists()
 
 
@@ -91,6 +93,7 @@ def test_inside_a_coding_agent_pdt_prints_the_request_and_starts_no_agent(monkey
 def test_pdt_asks_which_agent_only_when_more_than_one_can_answer(monkeypatch, tmp_path):
     computer = FakeComputer(monkeypatch, tmp_path, programs=("claude", "codex"), pick="2")
     assert coding_agents.ask("Why?") == "the reply"
+    assert computer.asked == [QUESTION]
     assert computer.questions == ["Which one should pdt use?"]
     assert computer.runs[0][0][:2] == ["/bin/codex", "exec"]
     coding_agents.ask("Why?")
@@ -104,12 +107,21 @@ def test_an_input_that_ends_at_the_question_sends_nothing(monkeypatch, tmp_path)
     assert computer.runs == []
 
 
-def test_an_agent_the_user_refused_leaves_one_choice_and_no_question(monkeypatch, tmp_path):
-    computer = FakeComputer(monkeypatch, tmp_path, programs=("claude", "codex"))
-    coding_agents.SETTINGS.write_text("coding-agent-consent:\n  claude: false\n")
+def test_one_consent_covers_every_agent(monkeypatch, tmp_path):
+    computer = FakeComputer(monkeypatch, tmp_path, programs=("claude",))
     coding_agents.ask("Why?")
-    assert computer.questions == []
-    assert computer.runs[0][0][0] == "/bin/codex"
+    monkeypatch.setattr(coding_agents.shutil, "which",
+                        lambda name: "/bin/codex" if name == "codex" else None)
+    assert coding_agents.ask("Why?") == "the reply"
+    assert computer.asked == [QUESTION]
+    assert computer.runs[1][0][0] == "/bin/codex"
+
+
+def test_a_consent_set_to_false_sends_nothing_and_asks_nothing(monkeypatch, tmp_path):
+    computer = FakeComputer(monkeypatch, tmp_path, programs=("claude", "codex"))
+    coding_agents.SETTINGS.write_text("coding-agent-consent: false\n")
+    assert coding_agents.ask("Why?") is None
+    assert computer.asked == [] and computer.questions == [] and computer.runs == []
 
 
 def test_no_agent_on_the_path_sends_nothing(monkeypatch, tmp_path, capsys):
@@ -141,9 +153,9 @@ def test_each_agent_runs_at_low_effort(name, flags):
     assert any(command[index:index + 2] == flags for index in range(len(command)))
 
 
-def test_with_no_one_to_ask_pdt_uses_the_one_agent_the_user_allowed(monkeypatch, tmp_path):
+def test_with_no_one_to_ask_pdt_uses_the_stored_agent(monkeypatch, tmp_path):
     computer = FakeComputer(monkeypatch, tmp_path, programs=("claude", "codex"), terminal=False)
-    coding_agents.SETTINGS.write_text("coding-agent-consent:\n  claude: true\n")
+    coding_agents.SETTINGS.write_text("coding-agent-consent: true\ncoding-agent: claude\n")
     assert coding_agents.ask("Why?") == "the reply"
     assert computer.runs[0][0][0] == "/bin/claude"
 
@@ -164,7 +176,7 @@ def test_an_agent_that_does_not_answer_in_time_is_stopped(monkeypatch, tmp_path,
 
 
 @pytest.mark.parametrize("text", ['coding-agent-consent: "false"\n',
-                                  "coding-agent-consent:\n  claude: nope\n",
+                                  "coding-agent-consent:\n  claude: true\n",
                                   "coding-agent:\n  - claude\n"])
 def test_a_settings_file_of_the_wrong_shape_names_the_file_and_key(monkeypatch, tmp_path, text):
     FakeComputer(monkeypatch, tmp_path)
@@ -185,10 +197,12 @@ def test_an_app_env_file_and_the_terminal_value_are_kept_from_the_agent(monkeypa
     assert "API_TOKEN" not in computer.envs[0]
 
 
-def test_claude_runs_with_no_mcp_servers_and_no_hooks():
+def test_claude_runs_with_no_mcp_servers_no_hooks_and_no_env_file_reads():
     command = coding_agents.AGENTS[0].args("claude", {})
     assert "--strict-mcp-config" in command
-    assert command[command.index("--settings") + 1] == '{"disableAllHooks": true}'
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["disableAllHooks"] is True
+    assert settings["permissions"]["deny"] == ["Read(//**/.env)"]
 
 
 def test_codex_runs_with_no_user_config_and_no_rules_files():
