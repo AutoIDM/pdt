@@ -339,7 +339,8 @@ def _row(event, who: Identity) -> dict:
         "architecture": (os.uname().machine if hasattr(os, "uname")
                          else os.environ.get("PROCESSOR_ARCHITECTURE", ""))[:MAX_TEXT],
         "ci": os.environ.get("CI", "").strip() != "",
-        "params": {key: value for key, value in event.params.items() if _allowed(key, value)},
+        "params": {key: _built.get(key, value) for key, value in event.params.items()
+                   if _allowed(key, value)},
     }
 
 
@@ -419,7 +420,7 @@ def exception_fields(error: BaseException) -> dict[str, object]:
             file, line = f"pdt/{path.relative_to(root).as_posix()}", frame.tb_lineno
         frame = frame.tb_next
     _built["exception"] = {"type": type(error).__name__[:MAX_TEXT], "file": file, "line": line}
-    return _built["exception"]
+    return dict(_built["exception"])
 
 
 def _parser_words(parser: argparse.ArgumentParser) -> tuple[set[str], set[str]]:

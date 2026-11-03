@@ -428,6 +428,18 @@ def test_an_event_sends_only_the_command_line_and_exception_this_process_built(u
         {}, {"command_line": "pdt register --code <excluded>", "exception": fields}]
 
 
+def test_a_changed_exception_dict_is_not_sent(usage_on, posts):
+    changed = usage.exception_fields(ValueError("hunter2"))
+    changed["file"] = "/Users/ann/customer.txt"
+    usage.accept(event(exception=changed))
+    sent = usage.exception_fields(ValueError("hunter2"))
+    usage.accept(event(exception=sent))
+    sent["message"] = "hunter2"
+    usage.wait()
+    assert [row["params"] for batch in posts for row in batch] == [
+        {}, {"exception": {"type": "ValueError", "file": None, "line": None}}]
+
+
 def test_a_second_yes_keeps_the_client_uuid_another_command_saved(usage_on, at_terminal,
                                                                   monkeypatch):
     def answer_after_another_command_saved(question, default, stderr=False):
