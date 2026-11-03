@@ -60,8 +60,6 @@ DATABASES = {"default": {
     "NAME": STATE / "gui.sqlite3" if STATE else ":memory:",
     "OPTIONS": {"timeout": 30, "transaction_mode": "IMMEDIATE"},
 }}
-# The terminal shows only what pdt gui prints; the worker's errors and the
-# server's errors go to .pdt/gui.log, which gui_cli trims at each start.
 if STATE:
     LOGGING = {
         "version": 1,

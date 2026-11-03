@@ -33,8 +33,6 @@ HTTPS = {"urlopen(": "os_ssl_context()", "smtplib.SMTP_SSL(": "os_ssl_context()"
          "credentials.refresh(": "os_requests_session()"}
 
 
-# The process scripts that pdt alone starts, each injecting when it is imported,
-# and the modules that only they import.
 PROCESS_SCRIPTS = {"deploy_aws", "deploy_aws_batch", "deploy_azure",
                    "deploy_azure_container_apps", "deploy_google_cloud", "deploy_windows",
                    "gui_server"}

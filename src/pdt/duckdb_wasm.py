@@ -54,9 +54,7 @@ CONTENT_TYPES = {".wasm": "application/wasm", ".mjs": "text/javascript",
 
 DIR = data_home() / "pdt" / "duckdb-wasm" / VERSION
 
-# Held while a download thread runs.
 FETCH = threading.Lock()
-# Why the last download failed, or "".
 failure = ""
 
 
@@ -73,13 +71,11 @@ def fetching() -> bool:
 
 
 def fetch_in_background() -> None:
-    """Run `ensure` in a thread unless one is running already."""
     if FETCH.acquire(blocking=False):
         threading.Thread(target=fetch, name="pdt-gui-sql-tools", daemon=True).start()
 
 
 def fetch() -> None:
-    """`ensure`, keeping any failure in `failure` and the log; releases FETCH."""
     global failure
     try:
         # A download stopped with the server leaves its temporary file behind.
@@ -88,7 +84,7 @@ def fetch() -> None:
                 partial.unlink(missing_ok=True)
         ensure()
         failure = ""
-    except Exception as e:  # noqa: BLE001 - a full disk or a cut connection must not stop the server
+    except Exception as e:  # noqa: BLE001
         failure = str(e) or type(e).__name__
         logging.getLogger("pdt.gui").warning("the SQL tools did not download: %s", failure)
     finally:

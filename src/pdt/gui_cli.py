@@ -30,7 +30,6 @@ from pdt import config, console
 
 PID_FILE = "gui.pid"
 LOG_FILE = "gui.log"
-# The log keeps its newest half when it grows past this.
 LOG_LIMIT = 1024 * 1024
 START_TIMEOUT = 300
 POLL = 0.3
@@ -49,7 +48,6 @@ def url(port: int) -> str:
 
 
 def is_up(port: int, project: Path) -> bool:
-    """True when the pdt gui of `project` answers on the port, not another program."""
     try:
         with urllib.request.urlopen(url(port) + "pdt/", timeout=1) as answer:
             expected = str(project).encode()

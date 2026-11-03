@@ -140,7 +140,6 @@ def test_a_busy_port_prints_one_plain_line_and_starts_nothing(project, launcher,
 
 @pytest.fixture
 def other_server():
-    """An HTTP server of another program on a free port."""
     server = http.server.HTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield server.server_address[1]

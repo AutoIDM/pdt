@@ -13,8 +13,7 @@ from pdt.utils.log import die
 def trust_os_certificates() -> None:
     """Verify every HTTPS call of this process against the operating system's certificate
     store, as pip does: a company TLS proxy's root and a root Windows has not fetched yet
-    are there and not in Python's or certifi's file. truststore replaces ssl.SSLContext,
-    which urllib, urllib3, requests, botocore, msal, and google-auth all build on.
+    are there and not in Python's or certifi's file.
 
     Only a process pdt starts calls this, first: botocore keeps its own reference to
     ssl.SSLContext, and once that is replaced a botocore imported earlier fails with a

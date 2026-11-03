@@ -100,7 +100,6 @@ def run_forever(stop: threading.Event) -> None:
             backlog = tick()
             running = Run.objects.filter(status="running").exists()
         except Exception as e:  # noqa: BLE001 - the worker must outlive any one bad fetch
-            # A write that waited the whole busy timeout; the next pass, PAUSE from now, tries again.
             backlog = isinstance(e, OperationalError) and "locked" in str(e)
             if backlog:
                 log.warning("pdt gui worker: %s, trying again", e)
