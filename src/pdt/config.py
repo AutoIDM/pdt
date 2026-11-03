@@ -147,9 +147,10 @@ def machine_data_home() -> Path:
 
 
 # What pdt keeps in machine_data_home() beside the app folders: pwsh.install_dir() and its
-# siblings, and the installation key. An app with one of these names would share that folder.
+# siblings, the installation key, and the grants records. An app with one of these names
+# would share that folder.
 MACHINE_DATA_NAMES = {"pwsh", "pwsh.new", "pwsh.previous", "pwsh.lock", "installation.key",
-                      "versions", "wheels"}
+                      "versions", "wheels", "grants"}
 
 
 def find_project(start: Path | None = None) -> Path:

@@ -37,7 +37,7 @@ deploying user modify rights, so that user can delete what the task wrote.
 SYSTEM reads every file on the PC, and the run_as account does not, so the
 script also lets that account read the app's folder, the project files that
 pdt and uv read (not the other apps' folders), pdt, uv when it is not on the machine
-PATH, and the AutoIDM installation key when it exists. The app folder's `grants.json`
+PATH, and the AutoIDM installation key when it exists. `%ProgramData%\\pdt\\grants\\<app>.json`
 records each of these grants that the account did not hold before. Deploy removes the
 recorded grants that the new account and paths do not need (another account, or a moved
 project), and destroy removes all of them, except a grant that another app's record lists
@@ -64,6 +64,7 @@ import argparse
 import base64
 import ctypes
 import html
+import json
 import os
 import shutil
 import subprocess
@@ -99,9 +100,10 @@ RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
 # The key `pdt register` writes in machine_data_home(), readable only by SYSTEM and
 # Administrators.
 INSTALLATION_KEY = "installation.key"
-# In the app folder: the account and the paths pdt granted it, readable only by SYSTEM and
-# Administrators.
-GRANTS = "grants.json"
+# In machine_data_home(): one record per app of the account and the paths pdt granted it.
+# Only SYSTEM and Administrators write it, so the account, with full control of its app
+# folder, cannot delete the record and keep its rights.
+GRANTS = "grants"
 # The same limit as --replica-timeout on Azure Container Apps.
 RUN_TIME_LIMIT = "PT30M"
 FOLLOW_POLL_SECONDS = 0.25
@@ -417,16 +419,23 @@ def _grants_script(app: dict, account: str, reads: list[tuple[str, Path, str]] =
     sid = (f"([Security.Principal.NTAccount]{_ps_string(account)}).Translate("
            "[Security.Principal.SecurityIdentifier]).Value" if account else "''")
     check = "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
-    # The account has full control of the app folder, so it can put a record there, but
-    # not one that Administrators own.
+    # Any user can create a folder in %ProgramData%\pdt, so each run resets the owner and
+    # the rules of the records folder, and a record that Administrators do not own counts
+    # as no record. Users read the records, so pdt finds them without elevation.
     return (
-        f"$record = {_ps_string(str(folder / GRANTS))}; $sid = {sid}; "
+        f"$records = {_ps_string(str(config.machine_data_home() / GRANTS))}; "
+        f"$record = {_ps_string(str(grants_record(app['name'])))}; $sid = {sid}; "
+        "New-Item -ItemType Directory -Force -Path $records | Out-Null; "
+        f"icacls $records /setowner '*S-1-5-32-544' | Out-Null; {check}"
+        f"icacls $records /reset | Out-Null; {check}"
+        "icacls $records /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' "
+        f"'*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null; {check}"
         "function Read-Grants($file) { if ((Test-Path -LiteralPath $file) -and "
         "(Get-Acl -LiteralPath $file).GetOwner([Security.Principal.SecurityIdentifier]).Value "
         "-eq 'S-1-5-32-544') { Get-Content -Raw -LiteralPath $file | ConvertFrom-Json } }; "
-        f"$others = @(Get-ChildItem -LiteralPath {_ps_string(str(config.machine_data_home()))} "
-        f"-Directory | Where-Object {{ $_.Name -ne {_ps_string(app['name'])} }} | "
-        f"ForEach-Object {{ Read-Grants (Join-Path $_.FullName {_ps_string(GRANTS)}) }}); "
+        "$others = @(Get-ChildItem -LiteralPath $records -Filter '*.json' -File | "
+        f"Where-Object {{ $_.BaseName -ne {_ps_string(app['name'])} }} | "
+        "ForEach-Object { Read-Grants $_.FullName }); "
         "function Shared($s) { @($others | Where-Object { $_.sid -eq $s } | "
         "ForEach-Object { $_.paths }) }; "
         f"$old = Read-Grants $record; $want = @({want}); "
@@ -444,9 +453,41 @@ def _grants_script(app: dict, account: str, reads: list[tuple[str, Path, str]] =
         "Remove-Item -LiteralPath $record -Force -ErrorAction SilentlyContinue; "
         "if ($paths.Count -gt 0) { ConvertTo-Json @{ sid = $sid; paths = $paths } | "
         "Set-Content -LiteralPath $record -Encoding UTF8; "
-        f"icacls $record /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null; "
-        f"{check}icacls $record /setowner '*S-1-5-32-544' | Out-Null; {check}}}; "
+        f"icacls $record /setowner '*S-1-5-32-544' | Out-Null; {check}}}; "
     )
+
+
+def grants_record(app_name: str) -> Path:
+    return config.machine_data_home() / GRANTS / f"{app_name}.json"
+
+
+def _recorded_grants(app_name: str) -> dict | None:
+    """The app's GRANTS record, or None when it is missing or pdt cannot read it."""
+    try:
+        record = json.loads(grants_record(app_name).read_text(encoding="utf-8-sig"))
+        paths = record["paths"]
+        return {"sid": str(record["sid"]),
+                "paths": [paths] if isinstance(paths, str) else [str(path) for path in paths]}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _revoke_steps(record: dict | None, account: str, paths: list[Path]) -> None:
+    """Print the icacls commands that remove the old account's rights, when pdt cannot be
+    sure that it removed them: from the record, else from the account and the paths pdt
+    would grant now."""
+    if record is not None:
+        who, paths = f"*{record['sid']}", record["paths"]
+    elif account:
+        who = account
+    else:
+        return
+    console.next_steps(
+        [(subprocess.list2cmdline(["icacls", str(path), "/remove:g", who]), "")
+         for path in paths],
+        title=f"pdt cannot be sure that {console.value(who.lstrip('*'))} lost the rights pdt "
+              "gave it. Unless another app runs as that account, run these commands in an "
+              "administrator PowerShell:")
 
 
 def _previous_account(powershell: str, name: str, account: str) -> str:
@@ -655,6 +696,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                    "if ($LASTEXITCODE -ne 0) { throw \"PowerShell module install failed "
                    "with exit $LASTEXITCODE\" }; ")
     reads = account_reads(app, uv, on_machine_path, pwsh) if account else []
+    record = _recorded_grants(app["name"])
+    old_paths = [app_folder(app["name"]),
+                 *(path for _what, path, _rights in account_reads(app, uv, on_machine_path, pwsh))]
     script = (
         f"{_folder_script(app, user)}"
         f"{_grants_script(app, account, reads)}"
@@ -672,8 +716,12 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
+        if previous:
+            _revoke_steps(record, previous, old_paths)
         return 1
     console.done(f"Deployed {console.value(app['name'])} as Windows task {console.value(name)}.")
+    if previous and record is None:
+        _revoke_steps(None, previous, old_paths)
     return 0
 
 
@@ -693,7 +741,11 @@ def destroy(app: dict, assume_yes: bool) -> int:
         return 1
     logs = logs_folder(app["name"])
     logs_exist = logs.is_dir()
-    if not exists and not logs_exist:
+    record = _recorded_grants(app["name"])
+    has_record = grants_record(app["name"]).exists()
+    old_paths = [app_folder(app["name"]),
+                 *(path for _what, path, _rights in account_reads(app, "", True))]
+    if not exists and not logs_exist and not has_record:
         console.done(f"Nothing to remove for {console.value(app['name'])}; task "
                      f"{console.value(name)} does not exist.")
         if app["storage"]:
@@ -708,8 +760,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if logs_exist:
         actions.append(console.Markup(f"delete run logs folder {console.value(logs)}"))
         script += f"Remove-Item -Recurse -Force -Path {_ps_string(str(logs))} -ErrorAction Stop; "
-    if previous:
-        actions.append(console.Markup(f"remove the rights pdt gave {console.value(previous)}, "
+    if previous or record:
+        who = previous or record["sid"]
+        actions.append(console.Markup(f"remove the rights pdt gave {console.value(who)}, "
                                       "the account the task runs as"))
     script += _grants_script(app, "")
     if app["storage"]:
@@ -720,11 +773,13 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.warn("Aborted; nothing was changed.")
         return DECLINED
     try:
+        removing = logs if logs_exist else grants_record(app["name"])
         with console.waiting(f"removing: Windows scheduled task {console.value(name)}" if exists
-                             else f"removing: {console.value(logs)}"):
+                             else f"removing: {console.value(removing)}"):
             _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
+        _revoke_steps(record, previous, old_paths)
         return 1
     console.done(f"Removed Windows task {console.value(name)}." if exists
                  else f"Nothing to remove for {console.value(app['name'])}; task "
@@ -733,6 +788,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.say(f"removed: run logs folder {console.value(logs)}")
     if app["storage"]:
         console.say(_kept_storage_line(app["name"]))
+    if previous and record is None:
+        _revoke_steps(None, previous, old_paths)
     return 0
 
 

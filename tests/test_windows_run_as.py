@@ -45,7 +45,7 @@ def test_validate_reports_a_run_as_that_is_not_text(project, value):
 
 
 @pytest.mark.parametrize("name", ["pwsh", "PWSH", "versions", "wheels", "installation.key",
-                                  "pwsh.previous", "pwsh."])
+                                  "pwsh.previous", "pwsh.", "grants"])
 def test_validate_reports_a_windows_app_named_like_a_pdt_folder(project, name):
     add_app(project, name, "schedule: daily\n")
     assert any(p.startswith(f"{name}/: a Windows app keeps its run data in ")
@@ -216,7 +216,7 @@ def test_system_needs_no_read_grants(project, monkeypatch):
     assert not any(line.startswith("let ") for line in shown)
 
 
-def deploy(project, monkeypatch, problem="", previous=""):
+def deploy(project, monkeypatch, problem="", previous="", fails=False):
     app = windows_app(project)
     shown, scripts = [], []
     monkeypatch.setattr(deploy_windows, "_preflight", lambda: ("powershell.exe", "uv.exe"))
@@ -230,8 +230,13 @@ def deploy(project, monkeypatch, problem="", previous=""):
     monkeypatch.setattr(deploy_windows.regions, "local_currency", lambda: "USD")
     monkeypatch.setattr(deploy_windows, "confirm",
                         lambda actions, assume_yes, cost: shown.extend(plain(actions)) or True)
-    monkeypatch.setattr(deploy_windows, "_run",
-                        lambda powershell, script, **kw: scripts.append(script) or True)
+    def run(powershell, script, **kw):
+        scripts.append(script)
+        if fails:
+            raise deploy_windows.WindowsDeployError("icacls failed with exit 5")
+        return True
+
+    monkeypatch.setattr(deploy_windows, "_run", run)
     return deploy_windows.deploy(app, assume_yes=True), shown, scripts
 
 
@@ -331,7 +336,7 @@ def test_destroy_keeps_a_grant_the_account_held_before_pdt(machine):
     assert "Modify,Synchronize" in "".join(held(machine / "p1", LOCAL_SERVICE))
     assert held(machine / "p1" / "one", LOCAL_SERVICE) == []
     assert held(machine / "pdt", LOCAL_SERVICE) == []
-    assert not (machine / "ProgramData" / "pdt" / "one" / deploy_windows.GRANTS).exists()
+    assert not deploy_windows.grants_record("one").exists()
 
 
 @needs_admin
@@ -376,8 +381,120 @@ def test_destroy_removes_the_rights_of_the_account_the_task_runs_as(project, mon
     assert asked == [""]
     assert f"remove the rights pdt gave {ACCOUNT}, the account the task runs as" in shown
     (script,) = scripts
-    assert f"$record = '{folder / deploy_windows.GRANTS}'; $sid = ''; " in script
+    assert f"$record = '{deploy_windows.grants_record('my-report')}'; $sid = ''; " in script
     assert script.index("Unregister-ScheduledTask") < script.index("/remove:g")
+
+
+@needs_admin
+def test_only_system_and_administrators_change_the_records(machine):
+    grants("one", LOCAL_SERVICE, machine / "p1")
+    records = machine / "ProgramData" / "pdt" / deploy_windows.GRANTS
+    assert held(records, LOCAL_SERVICE) == []
+    assert held(records, "BUILTIN\\Users") == ["ReadAndExecute,", "Synchronize"]
+    assert deploy_windows._recorded_grants("one")["paths"]
+
+
+def test_the_records_folder_is_reset_to_system_and_administrators(project):
+    script = deploy_windows._grants_script({"name": "my-report"}, ACCOUNT)
+    records = project / "ProgramData" / "pdt" / "grants"
+    assert f"$records = '{records}'; $record = '{records / 'my-report.json'}'; " in script
+    assert "icacls $records /setowner '*S-1-5-32-544'" in script
+    assert script.index("icacls $records /reset") < script.index(
+        "icacls $records /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' "
+        "'*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX'")
+    assert "Get-ChildItem -LiteralPath $records -Filter '*.json' -File" in script
+
+
+def write_record(paths, sid="S-1-5-21-1-2-3-1105"):
+    record = deploy_windows.grants_record("my-report")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(f'{{"sid": "{sid}", "paths": {paths}}}', encoding="utf-8-sig")
+    return record
+
+
+def destroy(project, monkeypatch, previous="", exists=True, fails=False):
+    app = windows_app(project)
+    shown, scripts = [], []
+    monkeypatch.setattr(deploy_windows, "_preflight",
+                        lambda require_uv=True: ("powershell.exe", None))
+    monkeypatch.setattr(deploy_windows, "_task_state",
+                        lambda powershell, name: "managed" if exists else "absent")
+    monkeypatch.setattr(deploy_windows, "_previous_account",
+                        lambda powershell, name, account: previous)
+    monkeypatch.setattr(deploy_windows, "confirm",
+                        lambda actions, assume_yes: shown.extend(plain(actions)) or True)
+
+    def run(powershell, script, **kw):
+        scripts.append(script)
+        if fails:
+            raise deploy_windows.WindowsDeployError("icacls failed with exit 5")
+        return True
+
+    monkeypatch.setattr(deploy_windows, "_run", run)
+    return deploy_windows.destroy(app, assume_yes=True), shown, scripts
+
+
+def test_destroy_with_only_a_record_left_removes_the_rights_it_lists(project, monkeypatch):
+    write_record('["C:\\\\p1"]')
+    code, shown, (script,) = destroy(project, monkeypatch, exists=False)
+    assert code == 0
+    assert "remove the rights pdt gave S-1-5-21-1-2-3-1105, the account the task runs as" in shown
+    assert "Unregister-ScheduledTask" not in script and "/remove:g" in script
+
+
+def test_destroy_with_no_task_no_logs_and_no_record_changes_nothing(project, monkeypatch):
+    code, shown, scripts = destroy(project, monkeypatch, exists=False)
+    assert (code, shown, scripts) == (0, [], [])
+
+
+def test_destroy_without_a_record_prints_the_icacls_commands(project, monkeypatch, capsys):
+    code, _shown, _scripts = destroy(project, monkeypatch, previous=ACCOUNT)
+    assert code == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"pdt cannot be sure that {ACCOUNT} lost the rights pdt gave it." in out
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    assert f"icacls {folder} /remove:g {ACCOUNT}" in out
+    assert f"icacls {project / 'my-report'} /remove:g {ACCOUNT}" in out
+
+
+def test_a_failed_destroy_prints_the_commands_for_the_recorded_paths(project, monkeypatch,
+                                                                    capsys):
+    write_record('["C:\\\\p1", "C:\\\\pdt"]')
+    code, _shown, _scripts = destroy(project, monkeypatch, previous=ACCOUNT, fails=True)
+    assert code == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "icacls C:\\p1 /remove:g *S-1-5-21-1-2-3-1105" in out
+    assert "icacls C:\\pdt /remove:g *S-1-5-21-1-2-3-1105" in out
+    assert "/remove:g EXAMPLE" not in out
+    assert deploy_windows.grants_record("my-report").exists()
+
+
+def test_a_deploy_with_a_new_account_and_an_unreadable_record_prints_the_commands(
+        project, monkeypatch, capsys):
+    write_record("not json")
+    code, _shown, _scripts = deploy(project, monkeypatch, previous="EXAMPLE\\svc-old$")
+    assert code == 0
+    out = " ".join(capsys.readouterr().out.split())
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    assert f"icacls {folder} /remove:g EXAMPLE\\svc-old$" in out
+
+
+def test_a_deploy_with_a_readable_record_prints_no_commands(project, monkeypatch, capsys):
+    write_record('"C:\\\\p1"')
+    assert deploy_windows._recorded_grants("my-report")["paths"] == ["C:\\p1"]
+    code, _shown, _scripts = deploy(project, monkeypatch, previous="EXAMPLE\\svc-old$")
+    assert code == 0
+    assert "icacls" not in capsys.readouterr().out
+
+
+def test_a_failed_deploy_prints_the_commands_only_for_an_old_account(project, monkeypatch,
+                                                                     capsys):
+    write_record('["C:\\\\p1"]')
+    assert deploy(project, monkeypatch, fails=True)[0] == 1
+    assert "icacls C:" not in capsys.readouterr().out
+    assert deploy(project, monkeypatch, previous="EXAMPLE\\svc-old$", fails=True)[0] == 1
+    assert "icacls C:\\p1 /remove:g *S-1-5-21-1-2-3-1105" in " ".join(
+        capsys.readouterr().out.split())
 
 
 @pytest.mark.parametrize("returncode", [0, 1])
