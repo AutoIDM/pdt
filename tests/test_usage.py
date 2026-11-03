@@ -355,7 +355,8 @@ def test_each_generated_text_field_has_the_maximum_length(usage_on, monkeypatch)
     who = usage.Identity(UUID, None, PROJECT)
     long_word = "x" * 200
     monkeypatch.setattr("pdt.__version__", long_word)
-    monkeypatch.setattr(usage.os, "uname", lambda: SimpleNamespace(machine=long_word))
+    monkeypatch.setattr(usage.os, "uname", lambda: SimpleNamespace(machine=long_word),
+                        raising=False)
     with monkeypatch.context() as patched:
         patched.setattr(sys, "platform", long_word)
         patched.setattr(sys, "version_info", (3, 12, long_word))
