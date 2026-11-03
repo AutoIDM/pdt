@@ -22,7 +22,7 @@ def test_azure_does_not_ask_for_the_resource_group():
 
 
 def test_azure_does_not_ask_for_the_subscription():
-    # deploy_azure.choose_subscription lists the real ones and saves the pick.
+    # deploy_azure.preflight saves the signed-in subscription on the first deploy.
     assert "subscription" not in keys("azure")
 
 

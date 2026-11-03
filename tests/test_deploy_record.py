@@ -273,7 +273,7 @@ def test_a_destroy_with_a_record_needs_the_recorded_azure_subscription(project, 
                         lambda *args: [{"id": "sub-2", "name": "Other"}])
     monkeypatch.setattr("builtins.input", lambda prompt="": "1")
     with pytest.raises(SystemExit) as stopped:
-        deploy_azure.choose_subscription(config.merged_app(APP), "sub-1", True)
+        deploy_azure.switch_subscription(config.merged_app(APP), "sub-1", {}, True)
     assert stopped.value.code == 1
     out = capsys.readouterr().out
     assert "is deployed to Azure subscription sub-1" in out
