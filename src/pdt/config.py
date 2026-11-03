@@ -58,7 +58,7 @@ PLATFORM_KEYS = {
     "provider", "region", "project",
     "account", "profile",
     "subscription", "resource_group", "environment",
-    "timezone",
+    "timezone", "run_as",
 }
 ENV_KEYS = {"required", "one_of", "optional"}
 # The platform keys besides provider that say where an app of each provider runs.
@@ -142,8 +142,15 @@ def data_home() -> Path:
 
 def machine_data_home() -> Path:
     """The machine-wide data folder on Windows, %ProgramData%\\pdt, where a scheduled
-    task that runs as SYSTEM and the user who deployed it both reach an app's files."""
+    task's account and the user who deployed it both reach an app's files."""
     return Path(os.environ.get("ProgramData") or r"C:\ProgramData") / "pdt"
+
+
+# What pdt keeps in machine_data_home() beside the app folders: pwsh.install_dir() and its
+# siblings, the installation key, and the grants records. An app with one of these names
+# would share that folder.
+MACHINE_DATA_NAMES = {"pwsh", "pwsh.new", "pwsh.previous", "pwsh.lock", "installation.key",
+                      "versions", "wheels", "grants"}
 
 
 def find_project(start: Path | None = None) -> Path:
@@ -283,6 +290,8 @@ def merged_app(name: str) -> dict:
     }
     platform_from = next((where for section, where in ((own, own_where), (entry, entry_where))
                           if section.get("platform")), PROJECT_FILE)
+    run_as_from = next((where for section, where in ((own, own_where), (entry, entry_where))
+                        if "run_as" in mapping(section, "platform", where)), PROJECT_FILE)
     deployed = json.loads(os.environ.get(DEPLOYED_PLATFORM_ENV) or "{}")
     if deployed.get("app") == name:
         platform = deployed["platform"]
@@ -307,6 +316,7 @@ def merged_app(name: str) -> dict:
         "timezone": timezone,
         "platform": platform,
         "platform_from": platform_from,
+        "run_as_from": run_as_from,
         "config": {
             **mapping(entry, "config", entry_where),
             **mapping(own, "config", own_where),
@@ -650,6 +660,21 @@ def azure_environment_problem(environment: str) -> str:
         return ""
     return ("That is not a Container Apps environment. Write it as "
             "<resource-group>/<name>, for example my-group/my-environment.")
+
+
+def run_as_problem(account) -> str:
+    # Task Scheduler gets a group managed service account's password from the domain, so
+    # pdt stores no password. An account with a password of its own is not supported.
+    if account is None:
+        return ""
+    if isinstance(account, str):
+        account = account.strip()
+        _domain, _, name = account.rpartition("\\")
+        if account == "" or (name.endswith("$") and len(name) > 1):
+            return ""
+    return ("That is not a group managed service account. Write it as <domain>\\<name>$, "
+            "for example EXAMPLE\\svc-pdt$. A Windows task runs as SYSTEM, or as a group "
+            "managed service account, whose name ends in $.")
 
 
 def cron_expression(schedule) -> str:
@@ -1193,6 +1218,17 @@ def validate_app(name: str) -> list[str]:
         problem = azure_environment_problem(str(app["platform"].get("environment") or ""))
         if problem != "":
             problems.append(f"{name}: platform.environment: {problem}")
+    run_as = app["platform"].get("run_as")
+    if provider == "windows":
+        problem = run_as_problem(run_as)
+    else:
+        problem = "only the windows provider uses it; remove the key" if run_as is not None else ""
+    if problem != "":
+        problems.append(f"{app['run_as_from']}: platform.run_as: {problem}")
+    if provider == "windows" and name.rstrip(". ").lower() in MACHINE_DATA_NAMES:
+        problems.append(f"{name}/: a Windows app keeps its run data in "
+                        f"{machine_data_home() / name}, and pdt keeps its own files there; "
+                        f"rename the folder {name}/ and its entry in {PROJECT_FILE}")
     if app["schedule"] is not None:
         try:
             cron = cron_expression(app["schedule"])

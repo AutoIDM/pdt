@@ -59,6 +59,7 @@ def test_storage_ls_lists_the_folder_contents(project, monkeypatch, capsys):
 def destroy_with_task(project, monkeypatch, scripts):
     app = windows_app(project, monkeypatch)
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_previous_account", lambda powershell, name, account: "")
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append(script) or True)
     return app
@@ -97,7 +98,7 @@ def test_destroy_without_a_logs_folder_deletes_only_the_task(project, monkeypatc
     assert "delete run logs folder" not in out
     assert "removed: run logs folder" not in out
     (script,) = scripts
-    assert "Remove-Item" not in script
+    assert "Remove-Item -Recurse" not in script
 
 
 def test_destroy_removes_a_leftover_logs_folder_when_the_task_is_gone(

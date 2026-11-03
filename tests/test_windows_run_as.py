@@ -1,0 +1,588 @@
+import base64
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from conftest import add_app, plain
+from pdt import config, deploy_windows
+
+ACCOUNT = "EXAMPLE\\svc-pdt$"
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    (tmp_path / "pdt.yml").write_text("platform:\n  provider: windows\n  run_as: EXAMPLE\\svc-pdt$\n")
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def windows_app(project, config_text="schedule: hourly\n"):
+    add_app(project, "my-report", config_text)
+    return config.merged_app("my-report")
+
+
+@pytest.mark.parametrize("value", [None, "", ACCOUNT, "svc-pdt$", " EXAMPLE\\svc-pdt$ "])
+def test_a_group_managed_service_account_passes(value):
+    assert config.run_as_problem(value) == ""
+
+
+@pytest.mark.parametrize("value", ["EXAMPLE\\svc-pdt", "jon", "$", "EXAMPLE\\$", "svc-pdt$@example.com",
+                                   False, 0, [], {}, True])
+def test_a_value_that_is_not_a_name_ending_in_dollar_is_reported(value):
+    assert "group managed service account" in config.run_as_problem(value)
+
+
+@pytest.mark.parametrize("value", ["false", "0", "[]", "{}"])
+def test_validate_reports_a_run_as_that_is_not_text(project, value):
+    add_app(project, "my-report", f"schedule: daily\nplatform:\n  run_as: {value}\n")
+    assert any(p.startswith("my-report/config.yml: platform.run_as: That is not a group managed "
+                            "service account") for p in config.validate_app("my-report"))
+
+
+@pytest.mark.parametrize("name", ["pwsh", "PWSH", "versions", "wheels", "installation.key",
+                                  "pwsh.previous", "pwsh.", "grants"])
+def test_validate_reports_a_windows_app_named_like_a_pdt_folder(project, name):
+    add_app(project, name, "schedule: daily\n")
+    assert any(p.startswith(f"{name}/: a Windows app keeps its run data in ")
+               and f"rename the folder {name}/" in p for p in config.validate_app(name))
+
+
+def test_an_app_named_like_a_pdt_folder_is_fine_on_a_cloud_provider(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: aws\n")
+    add_app(project, "pwsh", "schedule: daily\n")
+    assert not any("run data" in p for p in config.validate_app("pwsh"))
+
+
+def test_pdt_yml_sets_run_as_for_every_app_and_an_app_overrides_it(project):
+    assert deploy_windows.run_as(windows_app(project)) == ACCOUNT
+    add_app(project, "other", "schedule: hourly\nplatform:\n  run_as: EXAMPLE\\svc-other$\n")
+    assert deploy_windows.run_as(config.merged_app("other")) == "EXAMPLE\\svc-other$"
+
+
+def test_validate_names_the_key_for_an_account_with_a_password(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n  run_as: EXAMPLE\\jon\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    problems = config.validate_app("my-report")
+    assert any(p.startswith("pdt.yml: platform.run_as: That is not a group managed service "
+                            "account") for p in problems)
+
+
+def test_validate_reports_run_as_on_a_cloud_provider(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: aws\n  run_as: EXAMPLE\\svc-pdt$\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    assert ("pdt.yml: platform.run_as: only the windows provider uses it; remove the key"
+            in config.validate_app("my-report"))
+
+
+def test_run_as_from_names_the_most_specific_file_that_sets_it(project):
+    assert windows_app(project)["run_as_from"] == "pdt.yml"
+    add_app(project, "other", "schedule: hourly\nplatform:\n  run_as: EXAMPLE\\svc-other$\n")
+    assert config.merged_app("other")["run_as_from"] == "other/config.yml"
+
+
+def test_validate_accepts_a_group_managed_service_account(project):
+    add_app(project, "my-report", "schedule: daily\n")
+    assert not any("run_as" in p for p in config.validate_app("my-report"))
+
+
+def test_without_run_as_the_task_runs_as_system(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    _description, xml = deploy_windows.task_xml(windows_app(project), "uv.exe", False)
+    assert "<UserId>S-1-5-18</UserId>" in xml
+    assert "LogonType" not in xml
+
+
+def test_with_run_as_the_task_logs_on_with_the_domain_password(project):
+    _description, xml = deploy_windows.task_xml(windows_app(project), "uv.exe", False)
+    assert ("<Principal id=\"Author\">\n      <UserId>EXAMPLE\\svc-pdt$</UserId>\n"
+            "      <LogonType>Password</LogonType>\n"
+            "      <RunLevel>HighestAvailable</RunLevel>") in xml
+    assert "S-1-5-18" not in xml
+
+
+def test_the_account_gets_full_control_of_the_app_folder(project):
+    app = windows_app(project)
+    script = deploy_windows._folder_script(app, r"PC\jon")
+    assert "icacls $folder /grant '*S-1-5-18:(OI)(CI)F' 'PC\\jon:(OI)(CI)M'" in script
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    assert (f"$want = @(@{{p = '{folder}'; r = '(OI)(CI)F'}}); "
+            in deploy_windows._grants_script(app, ACCOUNT))
+
+
+def test_the_account_reads_its_app_the_project_files_pdt_uv_and_the_installation_key(project):
+    app = windows_app(project)
+    add_app(project, "other", "schedule: hourly\n")
+    (project / ".env").write_text("")
+    (project / "pyproject.toml").write_text("")
+    key = project / "ProgramData" / "pdt" / "installation.key"
+    key.parent.mkdir(parents=True)
+    key.write_text("")
+    reads = deploy_windows.account_reads(app, "uv.exe", False)
+    assert reads == [
+        ("the app folder", project / "my-report", "(OI)(CI)RX"),
+        ("the project folder entry", project, "RX"),
+        ("the project file pdt.yml", project / "pdt.yml", "R"),
+        ("the project file .env", project / ".env", "R"),
+        ("the project file pyproject.toml", project / "pyproject.toml", "R"),
+        ("pdt", deploy_windows.RUNNER.parent.parent, "(OI)(CI)RX"),
+        ("uv", Path("uv.exe").resolve().parent, "(OI)(CI)RX"),
+        ("the AutoIDM installation key", key, "R"),
+    ]
+    assert not any(path == project / "other" for _what, path, _rights in reads)
+    script = deploy_windows._grants_script(app, ACCOUNT, reads)
+    assert f"@{{p = '{project}'; r = 'RX'}}" in script
+    assert f"@{{p = '{key}'; r = 'R'}}" in script
+
+
+def test_the_account_reads_no_uv_on_the_machine_path_and_no_missing_file(project):
+    reads = deploy_windows.account_reads(windows_app(project), "uv.exe", True)
+    assert [what for what, _path, _rights in reads] == [
+        "the app folder", "the project folder entry", "the project file pdt.yml", "pdt"]
+
+
+def test_the_account_reads_the_shared_pwsh_install_and_no_other_pwsh(project):
+    app = windows_app(project)
+    shared = str(project / "ProgramData" / "pdt" / "pwsh" / "pwsh.exe")
+    reads = deploy_windows.account_reads(app, "uv.exe", True, shared)
+    assert ("PowerShell", project / "ProgramData" / "pdt" / "pwsh", "(OI)(CI)RX") in reads
+    reads = deploy_windows.account_reads(app, "uv.exe", True, r"C:\Program Files\PowerShell\7\pwsh.exe")
+    assert "PowerShell" not in [what for what, _path, _rights in reads]
+
+
+@pytest.mark.parametrize("on_machine_path, account, expected", [
+    (False, "", True), (True, ACCOUNT, True), (False, ACCOUNT, False)])
+def test_a_run_as_powershell_app_uses_pwsh_from_the_machine_path_or_the_shared_install(
+        project, monkeypatch, on_machine_path, account, expected):
+    platform = f"platform:\n  run_as: {account}\n" if account else "platform:\n  run_as:\n"
+    windows_app(project, "schedule: hourly\n" + platform)
+    (project / "my-report" / "run.py").unlink()
+    (project / "my-report" / "run.ps1").write_text("Write-Output hi\n")
+    asked = []
+    monkeypatch.setattr(deploy_windows, "machine_path_has", lambda program: on_machine_path)
+    monkeypatch.setattr(deploy_windows, "ensure_pwsh", lambda on_path: asked.append(on_path) or "pwsh")
+    monkeypatch.setattr(deploy_windows.ps, "scan", lambda app, target: type("Scan", (), {
+        "host_modules": [], "modules": []})())
+    monkeypatch.setattr(deploy_windows, "_missing_host_modules", lambda pwsh, modules: [])
+    assert deploy_windows._prepare_powershell(config.merged_app("my-report")) == ("pwsh", [])
+    assert asked == [expected]
+
+
+def test_pwsh_off_path_skips_the_path_and_takes_the_shared_install(tmp_path, monkeypatch):
+    from pdt import pwsh
+    monkeypatch.setattr(pwsh.shutil, "which", lambda name: "/usr/bin/pwsh")
+    monkeypatch.setattr(pwsh, "install_dir", lambda windows=False: tmp_path)
+    pwsh.local_pwsh().write_text("")
+    (tmp_path / "VERSION").write_text(pwsh.VERSION)
+    assert pwsh.ensure_pwsh() == "/usr/bin/pwsh"
+    assert pwsh.ensure_pwsh(on_path=False) == str(pwsh.local_pwsh())
+
+
+def account_check(monkeypatch, answer):
+    scripts = []
+    monkeypatch.setattr(deploy_windows, "_run_output",
+                        lambda powershell, script: scripts.append(script) or f"{answer}\r\n")
+    problem = deploy_windows._account_problem("powershell.exe", ACCOUNT, "pdt.yml")
+    return problem, scripts[0]
+
+
+def test_the_account_check_asks_active_directory_for_the_gmsa_class(monkeypatch):
+    problem, script = account_check(monkeypatch, "gmsa")
+    assert problem == ""
+    assert "[Security.Principal.NTAccount]'EXAMPLE\\svc-pdt$'" in script
+    assert ("[adsisearcher]\"(&(objectClass=msDS-GroupManagedServiceAccount)(objectSid=$sid))\""
+            in script)
+
+
+@pytest.mark.parametrize("answer, start", [
+    ("missing", f"Windows on this computer cannot find the account {ACCOUNT}."),
+    ("not-gmsa", f"{ACCOUNT} is not a group managed service account."),
+    ("no-domain", f"pdt cannot ask the domain whether {ACCOUNT}"),
+])
+def test_the_account_check_names_the_file_that_sets_run_as(monkeypatch, answer, start):
+    problem, _script = account_check(monkeypatch, answer)
+    assert problem.startswith(start)
+    assert "platform.run_as" in problem and "pdt.yml" in problem
+
+
+def test_system_needs_no_read_grants(project, monkeypatch):
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    _code, shown, (script,) = deploy(project, monkeypatch)
+    assert "$sid = ''; " in script and "$want = @(); " in script
+    assert not any(line.startswith("let ") for line in shown)
+
+
+def deploy(project, monkeypatch, problem="", previous="", fails=False, cleanup=None):
+    app = windows_app(project)
+    shown, scripts = [], []
+    monkeypatch.setattr(deploy_windows, "_preflight", lambda: ("powershell.exe", "uv.exe"))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_previous_account",
+                        lambda powershell, name, account: previous)
+    monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
+    monkeypatch.setattr(deploy_windows, "machine_path_has", lambda program: True)
+    monkeypatch.setattr(deploy_windows, "_account_problem",
+                        lambda powershell, account, where: problem)
+    monkeypatch.setattr(deploy_windows.regions, "local_currency", lambda: "USD")
+    monkeypatch.setattr(deploy_windows, "confirm",
+                        lambda actions, assume_yes, cost: shown.extend(plain(actions)) or True)
+    monkeypatch.setattr(deploy_windows, "_run", fake_run(scripts, fails, cleanup))
+    return deploy_windows.deploy(app, assume_yes=True), shown, scripts
+
+
+def fake_run(scripts, fails, cleanup):
+    """A _run that writes `cleanup` where the GRANTS script would, then fails if asked."""
+    def run(powershell, script, **kw):
+        scripts.append(script)
+        out = re.search(r"\$out = '([^']+)'", script)
+        if cleanup is not None and out:
+            Path(out.group(1)).write_text(json.dumps(cleanup))
+        if fails:
+            raise deploy_windows.WindowsDeployError("icacls failed with exit 5")
+        return True
+    return run
+
+
+def test_deploy_plans_the_account_and_states_the_batch_right(project, monkeypatch, capsys):
+    code, shown, scripts = deploy(project, monkeypatch)
+    assert code == 0
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    assert shown[0] == f"update Windows scheduled task pdt-my-report (runs as {ACCOUNT})"
+    assert (f"keep the app's run data in {folder} (SYSTEM and {ACCOUNT}: full control; "
+            "PC\\jon: modify)") in shown
+    assert f"let {ACCOUNT} read the app folder {project / 'my-report'}" in shown
+    assert f"let {ACCOUNT} read the project file pdt.yml {project / 'pdt.yml'}" in shown
+    assert f"let {ACCOUNT} read pdt {deploy_windows.RUNNER.parent.parent}" in shown
+    out = capsys.readouterr().out
+    assert (f"note: the task starts only when {ACCOUNT} has the Log on as a batch job right on "
+            "this computer. pdt does not grant this right.") in " ".join(out.split())
+    (script,) = scripts
+    assert script.index(f"@{{p = '{project}'") < script.index("Register-ScheduledTask -TaskName "
+                                                               "$name -Xml $xml -Force")
+
+
+def test_deploy_stops_when_windows_cannot_find_the_account(project, monkeypatch, capsys):
+    code, shown, scripts = deploy(project, monkeypatch, problem="no such account")
+    assert (code, shown, scripts) == (1, [], [])
+    assert "error: no such account" in capsys.readouterr().out
+
+
+def test_deploy_without_run_as_says_nothing_about_the_batch_right(project, monkeypatch, capsys):
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    code, shown, _scripts = deploy(project, monkeypatch)
+    assert code == 0
+    assert shown[0] == "update Windows scheduled task pdt-my-report (runs as SYSTEM)"
+    assert "batch" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("account, new", [
+    (ACCOUNT, "([Security.Principal.NTAccount]'EXAMPLE\\svc-pdt$').Translate("),
+    ("", "'S-1-5-18'")])
+def test_the_previous_account_is_neither_system_nor_the_new_account(monkeypatch, account, new):
+    scripts = []
+    monkeypatch.setattr(deploy_windows, "_run_output",
+                        lambda powershell, script: scripts.append(script) or "EXAMPLE\\svc-old$\r\n")
+    assert deploy_windows._previous_account("powershell.exe", "pdt-my-report",
+                                            account) == "EXAMPLE\\svc-old$"
+    assert "$old = $task.Principal.UserId; " in scripts[0]
+    assert f"if ($sid -ne 'S-1-5-18' -and $sid -ne {new}" in scripts[0]
+
+
+def test_deploy_without_run_as_names_the_account_the_task_ran_as_before(project, monkeypatch):
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    code, shown, (script,) = deploy(project, monkeypatch, previous="EXAMPLE\\svc-old$")
+    assert code == 0
+    assert ("remove the rights pdt gave EXAMPLE\\svc-old$, the account the task ran as until now"
+            in shown)
+    assert "$want = @(); " in script
+
+
+LOCAL_SERVICE, NETWORK_SERVICE = "NT AUTHORITY\\LOCAL SERVICE", "NT AUTHORITY\\NETWORK SERVICE"
+needs_admin = pytest.mark.skipif(os.name != "nt" or not deploy_windows._is_admin(),
+                                 reason="changes Windows ACLs as an administrator")
+
+
+def grants(app_name, account, project=None):
+    reads = [("app", project / app_name, "(OI)(CI)RX"), ("project", project, "RX"),
+             ("pdt", project.parent / "pdt", "(OI)(CI)RX")] if project else []
+    deploy_windows._run("powershell.exe", deploy_windows._grants_script(
+        {"name": app_name}, account, reads))
+
+
+def held(path, account):
+    """The rights of the account's explicit grants on the path, like 'ReadAndExecute'."""
+    return deploy_windows._run_output("powershell.exe", (
+        f"$sid = ([Security.Principal.NTAccount]{deploy_windows._ps_string(account)}).Translate("
+        "[Security.Principal.SecurityIdentifier]).Value; "
+        f"(Get-Acl -LiteralPath {deploy_windows._ps_string(str(path))}).GetAccessRules("
+        "$true, $false, [Security.Principal.SecurityIdentifier]) | Where-Object { "
+        "$_.IdentityReference.Value -eq $sid } | ForEach-Object { \"$($_.FileSystemRights)\" }"
+    )).split()
+
+
+@pytest.fixture
+def machine(tmp_path, monkeypatch):
+    monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
+    for folder in ("ProgramData/pdt/one", "ProgramData/pdt/two", "pdt", "p1/one", "p2/two",
+                   "moved/one"):
+        (tmp_path / folder).mkdir(parents=True)
+    return tmp_path
+
+
+@needs_admin
+def test_destroy_keeps_a_grant_the_account_held_before_pdt(machine):
+    deploy_windows._run("powershell.exe",
+                        f"icacls '{machine / 'p1'}' /grant '{LOCAL_SERVICE}:(OI)(CI)M' | Out-Null")
+    grants("one", LOCAL_SERVICE, machine / "p1")
+    assert "ReadAndExecute,Synchronize" in "".join(held(machine / "p1" / "one", LOCAL_SERVICE))
+    grants("one", "")
+    assert "Modify,Synchronize" in "".join(held(machine / "p1", LOCAL_SERVICE))
+    assert held(machine / "p1" / "one", LOCAL_SERVICE) == []
+    assert held(machine / "pdt", LOCAL_SERVICE) == []
+    assert not deploy_windows.grants_record("one").exists()
+
+
+@needs_admin
+def test_two_projects_on_one_account_keep_only_their_own_grants(machine):
+    grants("one", LOCAL_SERVICE, machine / "p1")
+    grants("two", LOCAL_SERVICE, machine / "p2")
+    grants("one", "")
+    assert held(machine / "p1" / "one", LOCAL_SERVICE) == []
+    assert held(machine / "p2" / "two", LOCAL_SERVICE) != []
+    assert held(machine / "pdt", LOCAL_SERVICE) != []
+    grants("two", NETWORK_SERVICE, machine / "p2")
+    assert held(machine / "p2" / "two", LOCAL_SERVICE) == []
+    assert held(machine / "pdt", LOCAL_SERVICE) == []
+    assert held(machine / "pdt", NETWORK_SERVICE) != []
+
+
+@needs_admin
+def test_a_moved_project_loses_the_grants_on_its_old_path(machine):
+    grants("one", LOCAL_SERVICE, machine / "p1")
+    grants("one", LOCAL_SERVICE, machine / "moved")
+    assert held(machine / "p1" / "one", LOCAL_SERVICE) == []
+    assert held(machine / "p1", LOCAL_SERVICE) == []
+    assert held(machine / "moved" / "one", LOCAL_SERVICE) != []
+    assert held(machine / "pdt", LOCAL_SERVICE) != []
+
+
+def test_destroy_removes_the_rights_of_the_account_the_task_runs_as(project, monkeypatch):
+    code, shown, (script,) = destroy(project, monkeypatch, previous=ACCOUNT)
+    assert code == 0
+    assert f"remove the rights pdt gave {ACCOUNT}, the account the task runs as" in shown
+    assert f"$record = '{deploy_windows.grants_record('my-report')}'; " in script
+    assert "$sid = ''; " in script
+    assert script.index("Unregister-ScheduledTask") < script.index("/remove:g")
+
+
+@needs_admin
+def test_only_system_and_administrators_change_the_records(machine):
+    out = machine / "grants-out.json"
+    deploy_windows._run("powershell.exe", deploy_windows._grants_script(
+        {"name": "one"}, LOCAL_SERVICE,
+        [("app", machine / "p1" / "one", "(OI)(CI)RX")], out))
+    assert deploy_windows._cleanup(out) == {"record": False, "commands": []}
+    records = machine / "ProgramData" / "pdt" / deploy_windows.GRANTS
+    assert held(records, LOCAL_SERVICE) == []
+    assert held(records, "BUILTIN\\Users") == ["ReadAndExecute,", "Synchronize"]
+    owner = ("(Get-Acl -LiteralPath {}).GetOwner([Security.Principal.SecurityIdentifier])"
+             ".Value")
+    for folder in (records, records.parent, deploy_windows.grants_record("one")):
+        assert deploy_windows._run_output("powershell.exe", owner.format(
+            deploy_windows._ps_string(str(folder)))).strip() == "S-1-5-32-544"
+    deploy_windows._run("powershell.exe", deploy_windows._grants_script(
+        {"name": "one"}, "", out=out))
+    assert deploy_windows._cleanup(out) == {"record": True, "commands": []}
+    assert not deploy_windows.grants_record("one").exists()
+
+
+def test_the_records_folder_is_given_to_administrators_in_one_step(project):
+    script = deploy_windows._grants_script({"name": "my-report"}, ACCOUNT)
+    base = project / "ProgramData" / "pdt"
+    assert (f"$base = '{base}'; $records = '{base / 'grants'}'; "
+            f"$record = '{base / 'grants' / 'my-report.json'}'; $out = $null; ") in script
+    assert "[IO.FileAttributes]::ReparsePoint) { throw" in script
+    assert "icacls $base /setowner '*S-1-5-32-544'" in script
+    assert "icacls $records /reset" not in script
+    assert ("'D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)', 'Access'); "
+            "Set-Acl -LiteralPath $records") in script
+    assert "Get-ChildItem -LiteralPath $records -Filter '*.json' -File" in script
+    assert script.index("Set-Content -LiteralPath $new") < script.index(
+        "Move-Item -LiteralPath $new -Destination $record -Force -ErrorAction Stop")
+    assert "SilentlyContinue" not in script
+
+
+def destroy(project, monkeypatch, previous="", exists=True, fails=False, cleanup=None):
+    app = windows_app(project)
+    shown, scripts = [], []
+    monkeypatch.setattr(deploy_windows, "_preflight",
+                        lambda require_uv=True: ("powershell.exe", None))
+    monkeypatch.setattr(deploy_windows, "_task_state",
+                        lambda powershell, name: "managed" if exists else "absent")
+    monkeypatch.setattr(deploy_windows, "_previous_account",
+                        lambda powershell, name, account: previous)
+    monkeypatch.setattr(deploy_windows, "confirm",
+                        lambda actions, assume_yes: shown.extend(plain(actions)) or True)
+    monkeypatch.setattr(deploy_windows, "_run", fake_run(scripts, fails, cleanup))
+    return deploy_windows.destroy(app, assume_yes=True), shown, scripts
+
+
+def write_record():
+    record = deploy_windows.grants_record("my-report")
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text('{"sid": "S-1-5-21-1-2-3-1105", "paths": ["C:\\\\p1"]}')
+
+
+def commands(capsys):
+    return [line.strip() for line in capsys.readouterr().out.splitlines()
+            if line.strip().startswith("icacls ")]
+
+
+def test_destroy_with_only_a_record_left_removes_the_rights_it_lists(project, monkeypatch):
+    write_record()
+    code, shown, (script,) = destroy(project, monkeypatch, exists=False)
+    assert code == 0
+    assert (f"remove the rights that {deploy_windows.grants_record('my-report')} lists"
+            in shown)
+    assert "Unregister-ScheduledTask" not in script and "/remove:g" in script
+
+
+def test_destroy_with_no_task_no_logs_and_no_record_changes_nothing(project, monkeypatch):
+    assert destroy(project, monkeypatch, exists=False)[1:] == ([], [])
+
+
+def test_a_record_pdt_cannot_look_at_is_remaining_work(project, monkeypatch):
+    def denied(self, **kwargs):
+        raise PermissionError(13, "Access is denied")
+    monkeypatch.setattr(deploy_windows.Path, "stat", denied)
+    assert deploy_windows._has_record("my-report") is True
+
+
+def test_destroy_with_no_trusted_record_prints_one_command_per_line(project, monkeypatch,
+                                                                    capsys):
+    code, _shown, _scripts = destroy(project, monkeypatch, previous=ACCOUNT,
+                                     cleanup={"record": False, "commands": []})
+    assert code == 0
+    printed = commands(capsys)
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    assert f"icacls '{folder}' /remove:g 'EXAMPLE\\svc-pdt$'" in printed
+    assert f"icacls '{project / 'my-report'}' /remove:g 'EXAMPLE\\svc-pdt$'" in printed
+
+
+def test_destroy_with_a_trusted_record_prints_only_what_the_script_could_not_remove(
+        project, monkeypatch, capsys):
+    failed = "icacls 'C:\\O''Brien' /remove:g '*S-1-5-21-1-2-3-1105'"
+    code, _shown, _scripts = destroy(project, monkeypatch, previous=ACCOUNT,
+                                     cleanup={"record": True, "commands": [failed]})
+    assert code == 0
+    assert commands(capsys) == [failed]
+
+
+def test_a_destroy_that_stops_before_the_grants_names_the_account(project, monkeypatch,
+                                                                  capsys):
+    code, _shown, _scripts = destroy(project, monkeypatch, previous=ACCOUNT, fails=True)
+    assert code == 1
+    printed = commands(capsys)
+    assert printed and all(line.endswith("/remove:g 'EXAMPLE\\svc-pdt$'") for line in printed)
+
+
+def test_a_deploy_with_a_new_account_and_no_trusted_record_prints_the_commands(
+        project, monkeypatch, capsys):
+    code, _shown, _scripts = deploy(project, monkeypatch, previous="EXAMPLE\\svc-old$",
+                                    cleanup={"record": False, "commands": []})
+    assert code == 0
+    folder = project / "ProgramData" / "pdt" / "my-report"
+    assert f"icacls '{folder}' /remove:g 'EXAMPLE\\svc-old$'" in commands(capsys)
+
+
+def test_a_deploy_with_a_trusted_record_prints_no_commands(project, monkeypatch, capsys):
+    code, _shown, _scripts = deploy(project, monkeypatch, previous="EXAMPLE\\svc-old$",
+                                    cleanup={"record": True, "commands": []})
+    assert code == 0
+    assert commands(capsys) == []
+
+
+def test_a_moved_project_prints_the_command_the_script_could_not_run(project, monkeypatch,
+                                                                     capsys):
+    failed = "icacls 'C:\\old project' /remove:g '*S-1-5-21-1-2-3-1105'"
+    code, _shown, _scripts = deploy(project, monkeypatch,
+                                    cleanup={"record": True, "commands": [failed]})
+    assert code == 0
+    assert commands(capsys) == [failed]
+
+
+def test_a_first_deploy_prints_no_commands(project, monkeypatch, capsys):
+    code, _shown, _scripts = deploy(project, monkeypatch,
+                                    cleanup={"record": False, "commands": []})
+    assert code == 0
+    assert commands(capsys) == []
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_an_elevated_script_passes_as_a_file_that_is_deleted_afterwards(tmp_path, monkeypatch,
+                                                                        returncode):
+    temp = tmp_path / "Temp Folder"
+    temp.mkdir()
+    monkeypatch.setattr(deploy_windows.tempfile, "tempdir", str(temp))
+    monkeypatch.setattr(deploy_windows, "_is_admin", lambda: False)
+    script = f"icacls '{'C:\\long folder\\' * 2000}' /grant 'EXAMPLE\\svc-pdt$:R'"
+    passed = []
+
+    def run(command, **kwargs):
+        outer = base64.b64decode(command[-1]).decode("utf-16-le")
+        file = Path(re.search(r"'-File','\"(.+)\"'; exit \$p\.ExitCode$", outer).group(1))
+        passed.append((file, file.read_text(encoding="utf-8-sig"),
+                       len(subprocess.list2cmdline(command))))
+        return subprocess.CompletedProcess(command, returncode, "", "")
+
+    monkeypatch.setattr(deploy_windows.subprocess, "run", run)
+    if returncode == 0:
+        assert deploy_windows._run("powershell.exe", script, elevate=True)
+    else:
+        with pytest.raises(deploy_windows.WindowsDeployError):
+            deploy_windows._run("powershell.exe", script, elevate=True)
+    ((file, text, length),) = passed
+    assert text == script
+    assert length < 2000 < len(script)
+    assert list(temp.iterdir()) == []
+
+
+def test_an_already_elevated_shell_runs_a_long_script_from_a_file(tmp_path, monkeypatch):
+    temp = tmp_path / "Temp Folder"
+    temp.mkdir()
+    monkeypatch.setattr(deploy_windows.tempfile, "tempdir", str(temp))
+    monkeypatch.setattr(deploy_windows, "_is_admin", lambda: True)
+    script = f"icacls '{'C:\\long folder\\' * 3000}' /grant 'EXAMPLE\\svc-pdt$:R'"
+    passed = []
+
+    def run(command, **kwargs):
+        passed.append((command, Path(command[-1]).read_text(encoding="utf-8-sig")))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(deploy_windows.subprocess, "run", run)
+    assert deploy_windows._run("powershell.exe", script, elevate=True)
+    ((command, text),) = passed
+    assert command[-2] == "-File" and "-EncodedCommand" not in command
+    assert text == script
+    assert len(subprocess.list2cmdline(command)) < 2000 < 32_767 < len(script)
+    assert list(temp.iterdir()) == []
+
+
+def test_windows_powershell_starts_without_the_pwsh_module_path(monkeypatch):
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
+    passed = []
+
+    def run(command, **kwargs):
+        passed.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(deploy_windows.subprocess, "run", run)
+    deploy_windows._run_output("powershell.exe", "Get-Acl C:\\")
+    deploy_windows._run("powershell.exe", "Get-Acl C:\\")
+    assert passed and all("PSModulePath" not in env and "PATH" in {k.upper() for k in env}
+                          for env in passed)

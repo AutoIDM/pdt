@@ -131,6 +131,7 @@ def test_deploy_says_what_it_does_before_each_slow_step(project, monkeypatch, ca
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda require_uv=True: ("powershell.exe", "uv.exe"))
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_previous_account", lambda powershell, name, account: "")
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run", lambda powershell, script, **kw: True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
@@ -150,7 +151,7 @@ def powershell_deploy(project, monkeypatch):
     checked = []
     scripts = []
     runs = []
-    monkeypatch.setattr(deploy_windows, "ensure_pwsh", lambda: r"C:\ProgramData\pdt\pwsh\pwsh.exe")
+    monkeypatch.setattr(deploy_windows, "ensure_pwsh", lambda on_path: r"C:\ProgramData\pdt\pwsh\pwsh.exe")
     monkeypatch.setattr(powershell, "scan", lambda app, provider: powershell.ScriptScan(
         ["report.ps1"], [], list(needs), [], list(host))
         if provider == "windows" else pytest.fail(provider))
