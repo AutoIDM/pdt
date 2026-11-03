@@ -194,6 +194,8 @@ def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pendin
                  f"{console.value(answer['installation_id'])}.")
     console.field("Saved in", str(info))
     save_customer(customer)
+    from pdt import service
+    service.add_registration(customer)
     pending.unlink()
     return 0
 

@@ -170,6 +170,15 @@ def test_a_retry_of_the_same_registration_adds_the_keys(portal):
     assert json.loads(autoidm.files(CUSTOMER)[0].read_text())["command_keys"] == KEYS
 
 
+def test_a_new_registration_joins_the_service_settings(portal):
+    from pdt import service, service_runner
+    service_runner.service_folder().mkdir(parents=True)
+    service.write_settings({"level": "run", "registrations": []})
+    poll_answers(portal, (200, APPROVED))
+    assert register_cli.register(None, portal.url) == 0
+    assert service.read_settings()["registrations"] == [CUSTOMER]
+
+
 def test_the_project_gets_the_customer(portal, tmp_path, monkeypatch):
     project = tmp_path / "example"
     project.mkdir()
