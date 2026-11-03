@@ -179,7 +179,7 @@ def unpack(archive: Path, files: list[dict], target: Path) -> None:
             path = root / info.filename
             if not path.resolve().is_relative_to(root):
                 raise SnapshotError(f"the snapshot zip entry {info.filename!r} leaves the folder")
-            path.parent.mkdir(parents=True, exist_ok=True)
+            Path(long_path(path.parent)).mkdir(parents=True, exist_ok=True)
             Path(long_path(path)).write_bytes(data)
 
 

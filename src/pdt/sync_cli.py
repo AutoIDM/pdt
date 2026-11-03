@@ -190,7 +190,7 @@ def down(wanted: str | None, force: bool) -> int:
             return 1
         for path in [*added, *changed]:
             target = snapshots.inside(root, path)
-            target.parent.mkdir(parents=True, exist_ok=True)
+            Path(snapshots.long_path(target.parent)).mkdir(parents=True, exist_ok=True)
             temporary = target.with_name(target.name + ".pdt-sync")
             shutil.copyfile(snapshots.long_path(staged / path), snapshots.long_path(temporary))
             os.replace(snapshots.long_path(temporary), snapshots.long_path(target))

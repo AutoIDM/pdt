@@ -42,6 +42,12 @@ def decoded(call) -> str:
 NS = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
 
 
+def test_the_parser_names_the_same_levels_and_backends_as_the_tables():
+    from pdt import cli, service_commands
+    assert cli.LEVELS == service_commands.LEVELS
+    assert cli.BACKENDS == tuple(BACKENDS)
+
+
 def test_the_table_has_one_entry_per_manager_with_each_action():
     assert list(BACKENDS) == ["windows", "systemd", "launchd", "cron"]
     for backend in BACKENDS.values():
