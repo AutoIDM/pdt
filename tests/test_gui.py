@@ -6,6 +6,7 @@ is what `pdt.gui.settings` picks when PDT_PROJECT is unset.
 
 import json
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -433,12 +434,39 @@ def test_the_explore_page_lists_the_csv_files_as_views_and_marks_the_open_one(
                               {"path": path}).status_code == 404
 
 
-def test_the_explore_page_says_when_duckdb_is_not_downloaded(run_with_files, gui, duckdb_dir):
+@pytest.fixture
+def fetches(monkeypatch):
+    started = []
+    monkeypatch.setattr(duckdb_wasm, "fetch_in_background", lambda: started.append(1))
+    monkeypatch.setattr(duckdb_wasm, "fetching", lambda: bool(started))
+    monkeypatch.setattr(duckdb_wasm, "failure", "")
+    return started
+
+
+def test_the_explore_page_downloads_the_missing_sql_tools_and_refreshes(
+        run_with_files, gui, duckdb_dir, fetches):
     html = gui.client.get(f"/apps/my-report/runs/{run_with_files.pk}/explore/",
                           {"path": f"{FOLDER}/report.csv"}).content.decode()
-    assert "DuckDB is not installed yet" in html
+    assert fetches == [1]
+    assert "pdt is downloading the SQL tools this page needs (35 MB, once)" in html
+    assert '<meta http-equiv="refresh" content="5">' in html
+    assert "DuckDB" not in html.split("<main", 1)[-1]
     assert "workbench.js" not in html
     assert "%2Freport.csv\">Download</a>" in html
+
+
+def test_a_failed_download_names_the_log_and_try_again_downloads_again(
+        run_with_files, gui, duckdb_dir, fetches, monkeypatch):
+    monkeypatch.setattr(duckdb_wasm, "failure", "could not download: offline")
+    url = f"/apps/my-report/runs/{run_with_files.pk}/explore/?path={FOLDER}/report.csv"
+    html = gui.client.get(url).content.decode()
+    assert fetches == []
+    assert "did not download" in html
+    assert str(gui.project / ".pdt" / "gui.log") in html
+    assert "refresh" not in html.split("<main", 1)[-1]
+    answer = gui.client.post(url)
+    assert fetches == [1]
+    assert answer.status_code == 302 and answer["Location"] == url
 
 
 def test_an_artifact_is_delivered_inline_for_the_workbench(run_with_files, gui, monkeypatch):
@@ -523,3 +551,86 @@ def test_every_shown_command_is_a_copy_button(gui):
     run = Run.objects.get(run_id="ecs/my-report/task2")
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert '<button type="button" class="chip" data-copy>pdt logs my-report --id ecs/my-report/task2 --full</button>' in html
+
+
+def test_two_writers_that_read_first_wait_for_each_other_instead_of_failing(tmp_path):
+    """Writer a reads, b writes and commits, then a writes: the order that gave
+    "database is locked" at once under SQLite's default DEFERRED transactions."""
+    import threading
+    from django.db import connections, transaction
+    for alias in ("lock_a", "lock_b"):
+        connections.settings[alias] = {**connections.settings["default"],
+                                       "NAME": str(tmp_path / "gui.sqlite3")}
+    with connections["lock_a"].cursor() as cursor:
+        cursor.execute("CREATE TABLE counter (n INTEGER)")
+        cursor.execute("INSERT INTO counter VALUES (0)")
+    a_read = threading.Event()
+    errors = []
+
+    def add_one(alias, before_write):
+        try:
+            with transaction.atomic(using=alias), connections[alias].cursor() as cursor:
+                cursor.execute("SELECT n FROM counter")
+                before_write()
+                cursor.execute("UPDATE counter SET n = n + 1")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{alias}: {e}")
+        finally:
+            a_read.set()
+            connections[alias].close()
+
+    a = threading.Thread(target=add_one, args=("lock_a", lambda: (a_read.set(), time.sleep(0.3))))
+    b = threading.Thread(target=add_one, args=("lock_b", lambda: None))
+    a.start()
+    a_read.wait()
+    b.start()
+    a.join()
+    b.join()
+    with connections["lock_a"].cursor() as cursor:
+        cursor.execute("SELECT n FROM counter")
+        assert (errors, cursor.fetchone()[0]) == ([], 2)
+    for alias in ("lock_a", "lock_b"):
+        connections[alias].close()
+        del connections.settings[alias]
+
+
+def test_the_worker_tries_a_locked_database_again_and_prints_nothing(monkeypatch, capsys, caplog):
+    from django.db import OperationalError
+    stop = worker.threading.Event()
+    passes = []
+
+    def fake_tick():
+        passes.append(1)
+        if len(passes) == 1:
+            raise OperationalError("database is locked")
+        stop.set()
+        return True
+
+    waits = []
+    monkeypatch.setattr(worker, "tick", fake_tick)
+    monkeypatch.setattr(stop, "wait", lambda seconds: waits.append(seconds))
+    worker.run_forever(stop)
+    assert len(passes) == 2
+    assert waits[0] == worker.PAUSE.total_seconds()
+    assert "database is locked, trying again" in caplog.text
+    assert capsys.readouterr() == ("", "")
+
+
+def test_the_server_names_its_project_so_pdt_gui_knows_it_is_its_own(gui):
+    answer = gui.client.get("/pdt/")
+    assert answer.status_code == 200
+    assert answer.content.decode() == str(config.find_project())
+
+
+def test_a_download_that_ends_while_the_page_reads_shows_the_workbench(
+        run_with_files, gui, duckdb_dir, monkeypatch):
+    def ends_now():
+        install_duckdb(duckdb_dir)
+        return False
+    monkeypatch.setattr(duckdb_wasm, "fetch_in_background", lambda: None)
+    monkeypatch.setattr(duckdb_wasm, "fetching", ends_now)
+    monkeypatch.setattr(duckdb_wasm, "failure", "")
+    html = gui.client.get(f"/apps/my-report/runs/{run_with_files.pk}/explore/",
+                          {"path": f"{FOLDER}/report.csv"}).content.decode()
+    assert "workbench.js" in html
+    assert "did not download" not in html

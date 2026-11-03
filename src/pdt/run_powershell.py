@@ -7,6 +7,7 @@
 #     "rich",
 #     "backoff",
 #     "fsspec",
+#     "truststore",
 # ]
 # ///
 """Run a PowerShell app: the part run.py plays for a Python app.
@@ -53,6 +54,7 @@ from pdt import config, powershell
 from pdt.pwsh import ensure_pwsh
 from pdt.utils import storage
 from pdt.utils.log import die, log
+from pdt.utils.web import trust_os_certificates
 
 USAGE = "usage: run_powershell.py <app dir>"
 
@@ -144,4 +146,6 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    # Here and not at import: a run.py imports pwsh_command after its own boto3.
+    trust_os_certificates()
     sys.exit(main(sys.argv[1:]))
