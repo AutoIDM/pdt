@@ -756,6 +756,85 @@ def test_a_new_project_for_sync_down_goes_under_the_projects_folder(machine, por
     assert "PDT_PROJECT" not in prepared.env
 
 
+def test_the_service_serves_each_named_project_and_each_folder_in_the_projects_folder(
+        machine, tmp_path):
+    other = tmp_path / "elsewhere" / "named"
+    other.mkdir(parents=True)
+    (other / "pdt.yml").write_text("apps: []\n")
+    (machine.parent / "not-a-project").mkdir()
+    found = service.projects_of({"projects": str(machine.parent), "named_projects": [str(other)]})
+    assert found == {"example": machine, "named": other}
+
+
+def test_a_named_project_that_is_gone_is_left_out(tmp_path):
+    assert service.projects_of({"projects": str(tmp_path), "named_projects": [str(tmp_path / "gone")]}) == {}
+
+
+def test_the_projects_folder_has_a_default(machine):
+    assert service.projects_folder({}) == service_runner.service_folder() / "projects"
+    fresh = service.projects_folder({}) / "new-one"
+    fresh.mkdir(parents=True)
+    (fresh / "pdt.yml").write_text("apps: []\n")
+    assert service.projects_of({"named_projects": [str(machine)]}) == {"example": machine, "new-one": fresh}
+
+
+def test_a_new_project_in_the_projects_folder_is_served_with_no_restart(machine, portal):
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
+    state = {}
+    pool = Pool()
+    service.check_in(served(), settings(), False, pool, state)
+    fresh = machine.parent / "second-project"
+    (fresh / "hr").mkdir(parents=True)
+    (fresh / "pdt.yml").write_text(f"managed_services:\n  customer: {CUSTOMER}\n")
+    service.check_in(served(), settings(), False, pool, state)
+    bodies = portal.bodies("/v1/service/checkin")
+    assert [item["name"] for item in bodies[0]["projects"]] == ["example"]
+    assert [item["name"] for item in bodies[1]["projects"]] == ["example", "second-project"]
+    assert accept(pool, token("list", {"project": "second-project"}))
+    assert pool.waiting[0].project == fresh
+
+
+@pytest.mark.parametrize("wanted, is_project", [("one", True), ("many", False), (None, False)])
+def test_an_install_tells_a_project_from_a_projects_folder(tmp_path, monkeypatch, wanted, is_project):
+    monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path / "data"))
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "one").mkdir()
+    (tmp_path / "one" / "pdt.yml").write_text("apps: []\n")
+    folder, named = service.choose_projects(str(tmp_path / wanted) if wanted else None, {})
+    if is_project:
+        assert named == [str((tmp_path / "one").resolve())]
+        assert folder == str(service_runner.service_folder() / "projects")
+    elif wanted:
+        assert named == [] and folder == str((tmp_path / "many").resolve())
+    else:
+        assert named == [] and folder == str(service_runner.service_folder() / "projects")
+
+
+def test_an_install_in_a_project_names_it_and_keeps_the_default_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path / "data"))
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    project = tmp_path / "here"
+    project.mkdir()
+    (project / "pdt.yml").write_text("apps: []\n")
+    monkeypatch.chdir(project)
+    folder, named = service.choose_projects(None, {})
+    assert named == [str(project.resolve())]
+    assert folder == str(service_runner.service_folder() / "projects")
+
+
+def test_an_install_moves_settings_that_named_one_project_as_the_folder(tmp_path, monkeypatch):
+    monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path / "data"))
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    project = tmp_path / "old-form"
+    project.mkdir()
+    (project / "pdt.yml").write_text("apps: []\n")
+    folder, named = service.choose_projects(None, {"projects": str(project)})
+    assert named == [str(project.resolve())]
+    assert folder == str(service_runner.service_folder() / "projects")
+
+
 def test_a_child_gets_no_registration_from_the_service_environment(tmp_path):
     env = service_runner.child_env({"PATH": "x", autoidm.KEY_ENV: "key", autoidm.ID_ENV: "id"},
                                    tmp_path, {}, {})

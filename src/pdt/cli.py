@@ -850,8 +850,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the most the portal may ask for: view reads, run also starts jobs, "
                         "manage also deploys and copies files (default: run)")
     projects = q.add_argument("--projects", metavar="DIR",
-                              help="one project, or the folder that holds the projects to serve "
-                                   "(default: the current project)")
+                              help="one project to serve, or the folder that holds the projects "
+                                   "to serve (default: the current project, and the folder "
+                                   "service/projects in pdt's data folder)")
     projects.completer = completion.directories
     q.add_argument("--backend", choices=BACKENDS,
                    help="what keeps the service running (default: the one for this computer; "

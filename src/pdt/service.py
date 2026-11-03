@@ -8,9 +8,11 @@ command against the pinned keys, claims it, and starts it (pdt.service_runner). 
 the two intervals. `pdt service tick` does this once and stays until no command runs, so cron
 needs no running process, and a tick that finds a service running exits at once.
 
-A project is the folder the settings name, when it holds pdt.yml, else each folder directly in
-it that holds pdt.yml. A project serves the customer that its `managed_services` names, and a
-command for any other customer is refused, so one computer can serve two customers.
+The service serves each project the settings name, and each folder directly in the projects
+folder that holds pdt.yml. The projects folder has a default, `<data folder>/service/projects`,
+and a new project from `sync_down` goes there. The service reads this list at each check-in, so
+a new project needs no restart. A project serves the customer that its `managed_services` names,
+and a command for any other customer is refused, so one computer can serve two customers.
 
 `pdt service run --worker` is the same loop for a cloud worker. Its registration, and the keys
 it pins in PDT_COMMAND_KEYS, come from its environment. It has no settings file.
@@ -121,15 +123,43 @@ def project_customer(root: Path) -> str | None:
     return found.get("customer") if isinstance(found, dict) else None
 
 
+def projects_folder(settings: dict) -> Path:
+    return Path(settings.get("projects") or service_runner.service_folder() / "projects")
+
+
 def projects_of(settings: dict) -> dict[str, Path]:
     """Each project the settings serve, by the name the portal uses."""
-    home = Path(settings.get("projects") or "")
-    if (home / config.PROJECT_FILE).is_file():
-        return {managed_services.backend_name(home.name): home}
-    if not home.is_dir():
-        return {}
-    return {managed_services.backend_name(folder.name): folder for folder in sorted(home.iterdir())
+    try:
+        folders = sorted(projects_folder(settings).iterdir())
+    except OSError:
+        folders = []
+    folders += [Path(named) for named in settings.get("named_projects") or []]
+    return {managed_services.backend_name(folder.name): folder for folder in folders
             if (folder / config.PROJECT_FILE).is_file()}
+
+
+def choose_projects(wanted: str | None, current: dict) -> tuple[str, list[str]]:
+    """The projects folder and the named projects after an install. A folder that holds pdt.yml
+    is one named project, and any other folder is the projects folder. With no choice, an
+    install in a project names that project."""
+    folder = current.get("projects") or str(service_runner.service_folder() / "projects")
+    named = list(current.get("named_projects") or [])
+    if wanted is None:
+        try:
+            wanted = str(config.find_project())
+        except config.ConfigError:
+            pass
+    for path in (folder, wanted):
+        if path is None:
+            continue
+        resolved = Path(path).expanduser().resolve()
+        if (resolved / config.PROJECT_FILE).is_file():
+            named.append(str(resolved))
+            if path == folder:
+                folder = str(service_runner.service_folder() / "projects")
+        else:
+            folder = str(resolved)
+    return folder, list(dict.fromkeys(named))
 
 
 def project_record(name: str, root: Path) -> dict:
@@ -421,7 +451,7 @@ def serve(settings: dict, worker: bool, once: bool) -> int:
         uv = settings.get("uv")
         if uv:
             os.environ["PATH"] = str(Path(uv).parent) + os.pathsep + os.environ.get("PATH", "")
-        os.environ[service_runner.PROJECTS_HOME_ENV] = new_project_home(settings)
+        os.environ[service_runner.PROJECTS_HOME_ENV] = str(projects_folder(settings))
         served = worker_served() if worker else machine_served(settings)
         if not served:
             console.error("The service has no registration to serve. Run "
@@ -429,13 +459,6 @@ def serve(settings: dict, worker: bool, once: bool) -> int:
             return 1
         reader = (lambda: settings) if worker else (lambda: read_settings() or settings)
         return loop(served, reader, worker, once)
-
-
-def new_project_home(settings: dict) -> str:
-    """The folder a new project goes in: the projects folder, or the one above it when the
-    settings name one project."""
-    home = Path(settings.get("projects") or service_runner.service_folder() / "projects")
-    return str(home.parent if (home / config.PROJECT_FILE).is_file() else home)
 
 
 def registrations_here() -> list[str]:
@@ -475,17 +498,10 @@ def install(level: str | None, projects: str | None, backend: str | None) -> int
         console.error(console.escape(str(e)))
         return 1
     current = read_settings() or {}
-    home = projects
-    if home is None:
-        home = current.get("projects")
-    if home is None:
-        try:
-            home = str(config.find_project())
-        except config.ConfigError:
-            home = str(service_runner.service_folder() / "projects")
+    folder, named = choose_projects(projects, current)
     settings = {"version": SETTINGS_VERSION,
                 "level": level or current.get("level", service_commands.DEFAULT_LEVEL),
-                "projects": str(Path(home).expanduser().resolve()), "registrations": found,
+                "projects": folder, "named_projects": named, "registrations": found,
                 "backend": name, "uv": shutil.which("uv"), "installed_by": __version__}
     if settings["uv"] is None:
         console.warn(f"pdt did not find {console.value('uv')} on the PATH, so an app run by the "
@@ -512,7 +528,9 @@ def install(level: str | None, projects: str | None, backend: str | None) -> int
 
 def show_settings(settings: dict) -> None:
     console.field("Maximum level", settings.get("level", ""))
-    console.field("Projects", settings.get("projects", ""))
+    console.field("Projects folder", settings.get("projects", ""))
+    for named in settings.get("named_projects") or []:
+        console.field("Project", named)
     for customer in settings.get("registrations") or []:
         console.field("Registration", customer)
 
@@ -580,13 +598,13 @@ def status(as_json: bool = False) -> int:
     if as_json:
         console.data(json.dumps({"installed": True, "backend": name, "running": running,
                                  "level": settings.get("level"),
-                                 "projects_folder": settings.get("projects"),
+                                 "projects_folder": str(projects_folder(settings)),
                                  "projects": projects, "registrations": registrations,
                                  "commands": commands}))
         return 0
     console.field("Backend", f"{name} ({'running' if running else 'not running'})")
     console.field("Maximum level", settings.get("level", ""))
-    console.field("Projects folder", settings.get("projects", ""))
+    console.field("Projects folder", str(projects_folder(settings)))
     console.field("Projects", ", ".join(projects) or "none")
     for item in registrations:
         console.field("Registration", item["customer_id"])
