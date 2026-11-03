@@ -82,6 +82,14 @@ def test_the_report_keeps_only_pdt_words(project, quiet, monkeypatch, signature,
     assert "<value>" in title and "## What happened" in body
 
 
+def test_the_versions_and_the_title_lose_private_names_and_secrets(project, quiet, monkeypatch):
+    monkeypatch.setattr(support.platform, "release", lambda: "6.8.0-AcmePayroll")
+    title, body = proposed(project, quiet, monkeypatch, "failed: abc",
+                           "platform:\n  provider: aws\n  profile: AcmePayroll\n")
+    assert "AcmePayroll" not in body and "6.8.0-<app>" in body
+    assert "abc" not in title + body
+
+
 def test_a_platform_setting_that_is_a_pdt_word_is_replaced(project, quiet, monkeypatch):
     title, body = proposed(project, quiet, monkeypatch, "Permission denied on project deploy",
                            "platform:\n  provider: google-cloud\n  project: deploy\n")
@@ -106,7 +114,7 @@ def test_pdt_says_that_the_link_sends_the_text_to_github(project, quiet, monkeyp
 
 def test_a_broken_apps_list_still_gives_the_private_names(project):
     (project / "pdt.yml").write_text("platform:\n  provider: azure\napps: 123\n")
-    assert project.name in support.private_names()
+    assert project.name in watch.private_names()
 
 
 def test_the_report_keeps_the_versions_the_error_happened_with(project, quiet):

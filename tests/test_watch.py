@@ -114,7 +114,43 @@ def test_shape_keeps_pdt_command_and_flag_names_and_hides_every_other_word():
     assert watch.shape(["pdt", "run", "-pSecret", "-y"], {"run"}, flags) == "pdt run <arg> -y"
     assert watch.shape(["pdt", "aws", "sts", "--AcmeInternalToken", "--json=x"], {"aws"},
                        flags) == "pdt aws <arg> <arg> --json=<value>"
-    assert watch.typed_words(["pdt", "run", "-pSecret", "-y"], {"run"}) == ["-pSecret"]
+    assert watch.typed_words(["pdt", "run", "-pSecret", "-y"], {"run"}, flags) == ["-pSecret"]
+    assert watch.typed_words(["pdt", "run", "deploy"], {"run", "deploy"}) == ["deploy"]
+    assert watch.shape(["pdt", "run", "deploy"], {"run", "deploy"}, flags) == "pdt run <arg>"
+
+
+def test_a_short_or_punctuated_or_spaced_value_is_hidden(monkeypatch):
+    monkeypatch.setenv("PASSWORD", "a!")
+    monkeypatch.setenv("TOKEN", "run deploy")
+    assert watch.signature("server rejected password a!") == "server rejected password <value>"
+    assert "deploy" not in watch.signature("failed: run deploy now")
+    assert watch.signature("no file .env here", [".env"]) == "no file <arg> here"
+
+
+def test_a_private_name_is_hidden_in_any_case_and_inside_a_word(project, monkeypatch):
+    (project / "pdt.yml").write_text("platform:\n  provider: aws\n  profile: Microsoft Graph\n")
+    names = watch.private_names()
+    assert (watch.without_names("AWS profile 'microsoft graph' not found", names)
+            == "AWS profile '<app>' not found")
+    monkeypatch.setattr(watch.platform, "node", lambda: "LOCALHOST")
+    assert watch.without_names("cannot reach localhost", watch.private_names()) == (
+        "cannot reach <app>")
+
+
+def test_a_failed_diagnosis_keeps_the_child_exit_code(tmp_path, monkeypatch):
+    monkeypatch.setenv(watch.NOTE_ENV, str(tmp_path / "note.json"))
+
+    def broken(*args):
+        raise MemoryError
+    monkeypatch.setattr(watch, "handled", broken)
+    assert watch.child(lambda: 7) == 7
+
+
+def test_a_provider_script_does_not_import_completion(monkeypatch):
+    monkeypatch.delitem(watch.sys.modules, "pdt.completion", raising=False)
+    monkeypatch.setenv("CI", "true")
+    assert watch.watched(lambda: 3) == 3
+    assert "pdt.completion" not in watch.sys.modules
 
 
 def test_signature_removes_values_that_identify_someone(monkeypatch):
@@ -162,8 +198,8 @@ def test_a_child_writes_its_note_and_no_history(tmp_path, monkeypatch):
 def test_a_crash_in_a_child_marks_the_command_unhandled(monkeypatch):
     def main():
         Path(watch.os.environ[watch.NOTE_ENV]).parent.mkdir(parents=True, exist_ok=True)
-        watch.write_note("unhandled", "KeyError: x at deploy_aws.py:main")
-        watch.write_note("error", "exit 1")
+        watch.write_note(lambda: ("unhandled", "KeyError: x at deploy_aws.py:main"))
+        watch.write_note(lambda: ("error", "exit 1"))
         return 1
     assert watch.watched(main) == 1
     last = lines(watch.HISTORY)[-1]
@@ -175,10 +211,10 @@ def test_a_child_signature_keeps_its_place_and_loses_the_words_the_user_typed(mo
 
     def main():
         Path(watch.os.environ[watch.NOTE_ENV]).parent.mkdir(parents=True, exist_ok=True)
-        watch.write_note("unhandled", watch.signature("deploy failed at deploy_aws.py:main"))
+        watch.write_note(lambda: ("unhandled", watch.signature("deploy failed at deploy_aws.py:main")))
         return 1
     assert watch.watched(main, {"run"}) == 1
-    assert lines(watch.HISTORY)[-1]["signature"] == "<arg> failed at deploy_aws.py:main"
+    assert lines(watch.HISTORY)[-1]["signature"] == "<arg> failed at <arg>_aws.py:main"
 
 
 def test_the_history_holds_an_id_of_the_project_and_not_its_path(project):

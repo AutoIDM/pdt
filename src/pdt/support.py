@@ -62,44 +62,10 @@ def last_error(entries: list[dict], project: str, now: datetime) -> dict | None:
     return None
 
 
-def private_names() -> set[str]:
-    """Names that can be one of pdt's own words and still name the user: the home folder,
-    the computer, the project, its apps, and their platform settings."""
-    names = {Path.home().name, platform.node(), platform.node().split(".")[0]}
-    try:
-        project = config.find_project()
-        names |= {project.name, *config.app_folders()}
-        settings = config.load_yaml(project / config.PROJECT_FILE)
-        if isinstance(settings.get("platform"), dict):
-            names |= {str(value) for value in settings["platform"].values()}
-        entries = settings.get("apps")
-        if isinstance(entries, list):
-            names |= {str(entry["name"]) for entry in entries
-                      if isinstance(entry, dict) and "name" in entry}
-        for app in config.app_folders():
-            try:
-                names |= {str(value) for value in config.merged_app(app)["platform"].values()}
-            except config.ConfigError:
-                continue
-    except (config.ConfigError, OSError, UnicodeError):
-        pass
-    return {name for name in names if name != ""}
-
-
 def public(text: str, names: set[str], secrets: set[str]) -> str:
-    """`text` with each word that is a private name, or a value in the user's .env files,
-    replaced. watch.signature already replaced every word that is not pdt's own."""
-    def replace(match: re.Match) -> str:
-        token = match.group()
-        word = token.strip(watch.EDGES)
-        if word == "":
-            return token
-        if word in secrets:
-            return token.replace(word, watch.VALUE)
-        if word in names:
-            return token.replace(word, "<app>")
-        return token
-    return re.sub(r"\S+", replace, text)
+    """`text` with each value in the user's .env files and each private name replaced, also
+    in the fields that do not pass through watch.signature, such as the computer's versions."""
+    return watch.without_names(watch.hide(text, secrets, watch.VALUE, watch.WORD_PART), names)
 
 
 def install_method() -> str:
@@ -167,8 +133,7 @@ def trace_lines(error: BaseException) -> list[str]:
 
 
 def build(entry: dict, error: BaseException | None = None) -> Report:
-    names, secrets = private_names(), coding_agents.env_secrets(shortest=1).values
-    signature = public(watch.signature(str(entry.get("signature", ""))), names, secrets)
+    signature = watch.signature(str(entry.get("signature", "")))
     sections = {
         "What happened": "\n".join([
             f"{entry.get('command')}: {entry.get('outcome')}, exit {entry.get('code')}, "
@@ -192,9 +157,11 @@ def build(entry: dict, error: BaseException | None = None) -> Report:
             apps = []
             listing = [f"pdt could not list them, because listing them also raised {type(e).__name__}"]
         sections["Apps in the project"] = "\n".join(listing)
-        sections["pdt validate"] = "\n".join(public(line, names, secrets) for line in check_lines(apps))
+        sections["pdt validate"] = "\n".join(check_lines(apps))
     what = "crash" if entry.get("outcome") == "unhandled" else f"{entry.get('command')} failed"
-    return Report(f"pdt support: {what}: {signature}"[:120], sections)
+    names, secrets = watch.private_names(), coding_agents.env_secrets(shortest=1).values
+    return Report(public(f"pdt support: {what}: {signature}", names, secrets)[:120],
+                  {heading: public(text, names, secrets) for heading, text in sections.items()})
 
 
 def issue_link(title: str, body: str) -> Link:

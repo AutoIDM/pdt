@@ -63,17 +63,44 @@ def command_type(argv: list[str], commands: set[str]) -> str:
     return f"pdt {word}" if word in commands else "pdt"
 
 
+def command_index(argv: list[str], commands: set[str]) -> int | None:
+    """Where the pdt command is in argv: the first word that is not a flag, when it is a
+    command. A later word that matches a command is something the user typed."""
+    first = next((index for index, token in enumerate(argv) if index > 0 and not is_flag(token)),
+                 None)
+    return first if first is not None and argv[first] in commands else None
+
+
 def shape(argv: list[str], commands: set[str], flags: set[str] = frozenset()) -> str:
     words = ["pdt"]
-    for token in argv[1:]:
+    command = command_index(argv, commands)
+    for index, token in enumerate(argv[1:], 1):
         flag, equals, _ = token.partition("=")
-        if token in commands:
+        if index == command:
             words.append(token)
         elif flag in flags:
             words.append(flag + ("=<value>" if equals else ""))
         else:
             words.append(ARG)
     return " ".join(words)
+
+
+def hide(text: str, values: set[str], placeholder: str, inside: str,
+         shortest: int = 4, flags: int = 0) -> str:
+    """`text` with each value replaced: one of `shortest` characters or more wherever it is,
+    a shorter one only where no `inside` character touches it. A short number stays, because
+    signature makes each number NUMBER."""
+    for value in sorted(values, key=len, reverse=True):
+        if value == "" or (len(value) < shortest and value.isdigit()):
+            continue
+        pattern = re.escape(value)
+        if len(value) < shortest:
+            pattern = rf"(?<!{inside}){pattern}(?!{inside})"
+        text = re.sub(pattern, lambda _match: placeholder, text, flags=flags)
+    return text
+
+
+WORD_PART = rf"[^\s{re.escape(EDGES)}]"
 
 
 @functools.cache
@@ -108,36 +135,23 @@ def signature(text: str, typed: list[str] = ()) -> str:
     except MarkupError:
         pass
     line = next((line.strip() for line in text.splitlines() if line.strip()), "")
-    typed_set = {part for word in typed for part in word.split()}
-    environment = set(os.environ.values())
+    line = hide(line, set(os.environ.values()), VALUE, WORD_PART)
+    line = hide(line, set(typed), ARG, WORD_PART)
 
     def public(match: re.Match) -> str:
         token = match.group()
         word = token.strip(EDGES)
         if word == "":
             return token
-        if word in typed_set:
-            kept = ARG
-        elif word.isdigit():
+        if word.isdigit():
             kept = NUMBER
-        elif word in known_words() and word not in environment:
+        elif word in known_words():
             kept = word
         else:
             kept = VALUE
         start = token.index(word)
         return token[:start] + kept + token[start + len(word):]
     return re.sub(r"\S+", public, line)[:160]
-
-
-def without_typed(sign: str, typed: list[str]) -> str:
-    """A child's signature, which holds only pdt's own words, with each one the user typed
-    in the parent's command line replaced."""
-    typed_set = {part for word in typed for part in word.split()}
-
-    def replace(match: re.Match) -> str:
-        word = match.group().strip(EDGES)
-        return match.group().replace(word, ARG) if word in typed_set else match.group()
-    return re.sub(r"\S+", replace, sign)
 
 
 def exception_signature(error: BaseException, typed: list[str] = ()) -> str:
@@ -181,14 +195,45 @@ def can_offer() -> bool:
             and not any(name in os.environ for name in AGENT_ENVS))
 
 
-def typed_words(argv: list[str], commands: set[str]) -> list[str]:
+def typed_words(argv: list[str], commands: set[str], flags: set[str] = frozenset()) -> list[str]:
     words = []
-    for token in argv[1:]:
-        if is_flag(token):
-            words.append(token.partition("=")[2])
-        elif token not in commands:
+    command = command_index(argv, commands)
+    for index, token in enumerate(argv[1:], 1):
+        flag, _, value = token.partition("=")
+        if flag not in flags and index != command:
             words.append(token)
+        words.append(value)
     return [word for word in words if word != ""]
+
+
+def private_names() -> set[str]:
+    """Names that can be one of pdt's own words and still name the user: the home folder,
+    the computer, the project, its apps, and their platform settings except the provider."""
+    names = {Path.home().name, platform.node(), platform.node().split(".")[0]}
+    try:
+        project = config.find_project()
+        names |= {project.name, *config.app_folders()}
+        settings = config.load_yaml(project / config.PROJECT_FILE)
+        if isinstance(settings.get("platform"), dict):
+            names |= {str(value) for key, value in settings["platform"].items()
+                      if key != "provider"}
+        entries = settings.get("apps")
+        if isinstance(entries, list):
+            names |= {str(entry["name"]) for entry in entries
+                      if isinstance(entry, dict) and "name" in entry}
+        for app in config.app_folders():
+            try:
+                names |= {str(value) for key, value in config.merged_app(app)["platform"].items()
+                          if key != "provider"}
+            except config.ConfigError:
+                continue
+    except (config.ConfigError, OSError, UnicodeError):
+        pass
+    return {name for name in names if len(name) > 1}
+
+
+def without_names(text: str, names: set[str]) -> str:
+    return hide(text, names, "<app>", "[A-Za-z0-9]", shortest=sys.maxsize, flags=re.IGNORECASE)
 
 
 def project() -> str:
@@ -202,8 +247,9 @@ def project() -> str:
 
 def watched(main: Callable[[], int], commands: set[str] = frozenset(),
             flags: set[str] = frozenset()) -> int:
-    from pdt import completion
-    if completion.COMPLETING or os.environ.get("CI", "").strip() != "" or off():
+    # A provider script's environment has no argcomplete, so completion.py is not imported.
+    completing = getattr(sys.modules.get("pdt.completion"), "COMPLETING", False)
+    if completing or os.environ.get("CI", "").strip() != "" or off():
         return main()
     from pdt import console
     console.error_hook = saw
@@ -228,7 +274,7 @@ def watched(main: Callable[[], int], commands: set[str] = frozenset(),
     os.environ.pop(NOTE_ENV, None)
     entry = None
     try:
-        typed = typed_words(sys.argv, commands)
+        typed = typed_words(sys.argv, commands, flags)
         if failure is not None:
             outcome, sign = "unhandled", exception_signature(failure, typed)
         else:
@@ -240,9 +286,11 @@ def watched(main: Callable[[], int], commands: set[str] = frozenset(),
                 child_note = {}
             note.unlink()
             if code != 0 and child_note.get("signature"):
-                sign = without_typed(str(child_note["signature"]), typed)
+                sign = hide(str(child_note["signature"]), set(typed), ARG, WORD_PART)
                 if child_note.get("outcome") == "unhandled":
                     outcome = "unhandled"
+        if code != 0:
+            sign = without_names(sign, private_names())
         entry = {"v": 1, "time": datetime.now(timezone.utc).strftime(TIME_FORMAT),
                  "project": project(), "command": shape(sys.argv, commands, flags),
                  "outcome": outcome, "code": code, "signature": sign,
@@ -266,18 +314,21 @@ def child(main: Callable[[], int]) -> int:
         result = main()
     except SystemExit as e:
         if exit_code(e.code) != 0:
-            write_note(*handled(exit_code(e.code)))
+            write_note(lambda code=exit_code(e.code): handled(code))
         raise
     except Exception as e:
-        write_note("unhandled", exception_signature(e))
+        write_note(lambda error=e: ("unhandled", exception_signature(error)))
         raise
     if exit_code(result) != 0:
-        write_note(*handled(exit_code(result)))
+        write_note(lambda: handled(exit_code(result)))
     return result
 
 
-def write_note(outcome: str, sign: str) -> None:
+def write_note(make: Callable[[], tuple[str, str]]) -> None:
+    """Write the outcome and signature that `make` gives to the parent's note. Nothing that
+    goes wrong here changes the child's exit code or exception."""
     try:
+        outcome, sign = make()
         path = Path(os.environ[NOTE_ENV])
         if path.is_file():
             kept = json.loads(path.read_text()).get("outcome")
@@ -285,7 +336,7 @@ def write_note(outcome: str, sign: str) -> None:
                 return
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"outcome": outcome, "signature": sign}))
-    except (OSError, KeyError, ValueError):
+    except Exception:
         pass
 
 
