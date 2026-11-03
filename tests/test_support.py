@@ -20,7 +20,8 @@ def quiet(monkeypatch):
     monkeypatch.setattr(support, "check_lines", lambda apps: ["no problems"])
     monkeypatch.setattr(coding_agents, "installed", lambda: {})
     monkeypatch.setattr(coding_agents, "env_secrets",
-                        lambda: coding_agents.EnvSecrets({"API_KEY"}, {"s3cr3t-value"}))
+                        lambda shortest=4: coding_agents.EnvSecrets({"API_KEY", "PASSWORD"},
+                                                                    {"s3cr3t-value", "abc"}))
     monkeypatch.setattr(support, "copy", lambda text: True)
     monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
     monkeypatch.setattr(console, "bullet", lambda text, indent=2: said.append(text))
@@ -58,58 +59,49 @@ def test_a_long_report_still_fits_the_link():
         f"{support.ISSUES_URL}?title=a+title&body=short", True)
 
 
-def test_the_report_names_no_path_or_secret(project, quiet, monkeypatch):
-    opened, said = quiet
-    monkeypatch.setattr(support, "can_prompt", lambda interactive: True)
-    monkeypatch.setattr(console, "confirm", lambda question: True)
-    support.propose(entry(project=str(project), signature="401 for s3cr3t-value"))
-    query = parse_qs(urlparse(opened[0]).query)
-    assert "s3cr3t-value" not in query["body"][0] + query["title"][0]
-    assert str(project) not in query["body"][0]
-    assert "## What happened" in query["body"][0]
-    assert any("<secret removed>" in line for line in said)
-
-
-def test_the_report_names_no_host_relative_path_app_or_user(project, quiet, monkeypatch):
+def proposed(project, quiet, monkeypatch, signature, pdt_yml="platform:\n  provider: azure\n"):
     opened, _said = quiet
-    (project / "pdt.yml").write_text("platform:\n  provider: azure\napps:\n  - name: acme-payroll\n")
-    monkeypatch.setattr(support.Path, "home", lambda: support.Path("/Users/jdoe"))
-    monkeypatch.setattr(support, "check_lines",
-                        lambda apps: ["pdt.yml: app 'acme-payroll' has no directory",
-                                      "report-i#: missing required env var TOKEN"])
-    (project / "report-i89").mkdir()
-    (project / "report-i89" / "run.py").write_text("")
+    (project / "pdt.yml").write_text(pdt_yml)
     monkeypatch.setattr(support, "can_prompt", lambda interactive: True)
     monkeypatch.setattr(console, "confirm", lambda question: True)
-    support.propose(entry(project=str(project), signature=(
-        "cannot reach payroll.internal.corp for finance/reports.csv as jdoe in config.py")))
+    support.propose(entry(project=str(project), signature=signature))
     query = parse_qs(urlparse(opened[0]).query)
-    text = query["body"][0] + query["title"][0]
-    for private in ("payroll.internal.corp", "finance/reports.csv", "acme-payroll", "jdoe"):
-        assert private not in text
-    assert "<host> for <path> as <app> in config.py" in text
-    assert "pdt.yml: app '<app>' has no directory" in text
-    assert "report-i" not in text and "<app>: missing required env var TOKEN" in text
+    return query["title"][0], query["body"][0]
 
 
-@pytest.mark.parametrize("text, public", [
-    ("cannot reach pdt.internal.corp", "cannot reach <host>"),
-    ("cannot reach payroll.internal.sh", "cannot reach <host>"),
-    ("no file 'finance reports/payroll.csv'", "no file '<path>'"),
-    ("app hr failed", "app <app> failed"),
-    ("No module named 'azure.identity'", "No module named 'azure.identity'"),
-    ("at config.py and pdt.deploy_common", "at config.py and pdt.deploy_common"),
-    ("no job pdt-hr-env", "no job pdt-<app>-env"),
-    ("platform.provider is required", "platform.provider is required"),
-    ("module Microsoft.Graph.Users is missing", "module Microsoft.Graph.Users is missing"),
+@pytest.mark.parametrize("signature, private", [
+    ("cannot reach ACME.INTERNAL", "ACME.INTERNAL"),
+    ("no file AcmePayroll.json", "AcmePayroll"),
+    ("cannot reach payroll.internal.corp for finance/reports.csv", "payroll"),
+    ("401 for s3cr3t-value at /Users/jdoe/acme", "jdoe"),
+    ("server rejected password abc", "abc"),
 ])
-def test_public_text_drops_private_names_and_keeps_pdt_facts(text, public):
-    assert support.public(text, ["hr"]) == public
+def test_the_report_keeps_only_pdt_words(project, quiet, monkeypatch, signature, private):
+    title, body = proposed(project, quiet, monkeypatch, signature)
+    assert private not in title + body
+    assert "<value>" in title and "## What happened" in body
 
 
-def test_a_numbered_host_goes_after_the_history_filter():
-    assert support.public(watch.signature("cannot reach payroll01.internal.corp"), []) == (
-        "cannot reach <host>")
+def test_a_platform_setting_that_is_a_pdt_word_is_replaced(project, quiet, monkeypatch):
+    title, body = proposed(project, quiet, monkeypatch, "Permission denied on project deploy",
+                           "platform:\n  provider: google-cloud\n  project: deploy\n")
+    assert "<value> denied on project <app>" in body
+
+
+def test_the_issue_holds_no_instructions_for_a_coding_agent(project, quiet, monkeypatch):
+    title, body = proposed(project, quiet, monkeypatch, "KeyError: 'name'")
+    assert title.startswith("pdt support: pdt run <arg> failed: KeyError")
+    assert body.startswith(support.INTRO)
+    assert coding_agents.RULES not in title + body
+
+
+def test_pdt_says_that_the_link_sends_the_text_to_github(project, quiet, monkeypatch):
+    lines = []
+    monkeypatch.setattr(console, "say", lambda message="": lines.append(message))
+    proposed(project, quiet, monkeypatch, "boom")
+    assert ("Your browser sends this text to GitHub. GitHub publishes it only when you check "
+            "the issue and select Create.") in lines
+    assert not any("Nothing is sent" in line for line in lines)
 
 
 def test_a_broken_apps_list_still_gives_the_private_names(project):

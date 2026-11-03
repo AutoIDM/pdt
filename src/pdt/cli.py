@@ -840,7 +840,14 @@ def run() -> int:
 
 
 def main() -> int:
-    return watch.watched(run, {name for names in COMMAND_GROUPS.values() for name in names})
+    flags, parsers = set(), [build_parser()]
+    while parsers:
+        for action in parsers.pop()._actions:
+            flags.update(action.option_strings)
+            if isinstance(action, argparse._SubParsersAction):
+                parsers.extend(action.choices.values())
+    return watch.watched(run, {name for names in COMMAND_GROUPS.values() for name in names},
+                         flags)
 
 
 if __name__ == "__main__":

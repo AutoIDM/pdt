@@ -6,7 +6,8 @@ import pytest
 from conftest import add_app, plain
 from pdt import cli, completion, console, deploy, support, watch
 
-HELP = f"Get help with pdt run at {watch.SUPPORT_URL}"
+REPORT = ", or run pdt support to report it to the pdt team"
+HELP = f"Get help with pdt run at {watch.SUPPORT_URL}{REPORT}"
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ def test_each_failed_command_prints_where_to_get_help_once(project, monkeypatch,
         with pytest.raises(SystemExit):
             cli.main()
         assert len(said) == count + 1
-    assert plain(said) == [f"Get help with pdt at {watch.SUPPORT_URL}"] * 2
+    assert plain(said) == [f"Get help with pdt at {watch.SUPPORT_URL}{REPORT}"] * 2
 
 
 def test_a_failed_provider_script_gives_one_help_line(project, monkeypatch, said):
@@ -39,7 +40,7 @@ def test_a_failed_provider_script_gives_one_help_line(project, monkeypatch, said
     monkeypatch.setattr("sys.argv", ["pdt", "storage", "hello-world", "ls"])
     monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: 1)
     assert cli.main() == 1
-    assert plain(said) == [f"Get help with pdt storage at {watch.SUPPORT_URL}"]
+    assert plain(said) == [f"Get help with pdt storage at {watch.SUPPORT_URL}{REPORT}"]
 
 
 def test_success_interruption_and_a_declined_plan_print_no_help(said):
@@ -106,19 +107,25 @@ def lines(history):
     return [json.loads(line) for line in history.read_text().splitlines()] if history.exists() else []
 
 
-def test_shape_keeps_command_names_and_flags_and_hides_values():
+def test_shape_keeps_pdt_command_and_flag_names_and_hides_every_other_word():
+    flags = {"--since", "--json", "-y"}
     argv = ["pdt", "run", "my-app", "--since=3d", "--json", "secret"]
-    assert watch.shape(argv, {"run"}) == "pdt run <arg> --since=<value> --json <arg>"
-    assert watch.shape(["pdt", "run", "-pSecret", "-y"], {"run"}) == "pdt run <arg> -y"
+    assert watch.shape(argv, {"run"}, flags) == "pdt run <arg> --since=<value> --json <arg>"
+    assert watch.shape(["pdt", "run", "-pSecret", "-y"], {"run"}, flags) == "pdt run <arg> -y"
+    assert watch.shape(["pdt", "aws", "sts", "--AcmeInternalToken", "--json=x"], {"aws"},
+                       flags) == "pdt aws <arg> <arg> --json=<value>"
     assert watch.typed_words(["pdt", "run", "-pSecret", "-y"], {"run"}) == ["-pSecret"]
 
 
 def test_signature_removes_values_that_identify_someone(monkeypatch):
     monkeypatch.setenv("MY_TOKEN", "s3cr3tvalue")
     text = ("[bold]failed[/] s3cr3tvalue at https://x.io/a for a@b.com KEY=v /home/u/f "
-            "C:\\Users\\u abcdef0123456789abcd after 42 tries\nsecond line")
+            "C:\\Users\\u abcdef0123456789abcd ACME.INTERNAL after 42 tries\nsecond line")
     assert watch.signature(text) == (
-        "failed <value> at <url> for <email> KEY=<value> <path> <path> <id> after # tries")
+        "failed <value> at <value> for <value> <value> <value> <value> <value> <value> after # "
+        "tries")
+    assert watch.signature("cannot reach Acme2Payroll", ["Acme2Payroll"]) == "cannot reach <arg>"
+    assert watch.signature(watch.signature("deploy failed: 42")) == "deploy failed: #"
 
 
 def test_each_command_adds_one_history_line_with_no_typed_value(project, monkeypatch):
@@ -128,7 +135,7 @@ def test_each_command_adds_one_history_line_with_no_typed_value(project, monkeyp
     [last] = lines(watch.HISTORY)
     assert "hunter2" not in json.dumps(last) and "s3cret" not in json.dumps(last)
     assert last["outcome"] == "usage"
-    assert last["signature"].startswith("unrecognized arguments: <arg> --since=<value>")
+    assert last["signature"].startswith("unrecognized arguments: <arg> <value>")
 
 
 def test_a_handled_error_records_the_message_pdt_printed():
@@ -161,6 +168,24 @@ def test_a_crash_in_a_child_marks_the_command_unhandled(monkeypatch):
     assert watch.watched(main) == 1
     last = lines(watch.HISTORY)[-1]
     assert (last["outcome"], last["signature"]) == ("unhandled", "KeyError: x at deploy_aws.py:main")
+
+
+def test_a_child_signature_keeps_its_place_and_loses_the_words_the_user_typed(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["pdt", "run", "deploy"])
+
+    def main():
+        Path(watch.os.environ[watch.NOTE_ENV]).parent.mkdir(parents=True, exist_ok=True)
+        watch.write_note("unhandled", watch.signature("deploy failed at deploy_aws.py:main"))
+        return 1
+    assert watch.watched(main, {"run"}) == 1
+    assert lines(watch.HISTORY)[-1]["signature"] == "<arg> failed at deploy_aws.py:main"
+
+
+def test_the_history_holds_an_id_of_the_project_and_not_its_path(project):
+    watch.watched(lambda: 1)
+    last = lines(watch.HISTORY)[-1]
+    assert str(project) not in json.dumps(last) and project.name not in json.dumps(last)
+    assert last["project"] == watch.project() and len(last["project"]) == 16
 
 
 def test_a_broken_note_still_records_the_command():

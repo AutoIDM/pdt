@@ -1,13 +1,19 @@
 """Keep a history of each top-level pdt command, and point a person at the pdt
 community after a pdt command fails at a terminal.
 
-The history in `HISTORY` holds no value the user typed; `pdt support` reads it.
+The history in `HISTORY` holds only pdt's own words (its command and flag names, the text
+in its code, and exception names); every other word becomes a placeholder. `pdt support`
+reads it.
 When pdt itself crashes at a terminal, `pdt support` starts on its own. It sends
 nothing anywhere.
 """
 
 from __future__ import annotations
 
+import ast
+import builtins
+import functools
+import hashlib
 import json
 import os
 import platform
@@ -37,19 +43,8 @@ NOTE_RANKS = {"unhandled": 2, "error": 1, "usage": 1, "interrupted": 1}
 
 _seen = ("", "")
 
-LOCATIONS = (
-    (re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://\S+"), "<url>"),
-    (re.compile(r"\b[A-Za-z]:\\[^\s'\"]*"), "<path>"),
-    (re.compile(r"(?<![\w.~])/[^\s'\"]+"), "<path>"),
-)
-
-SCRUBS = (
-    (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), "<email>"),
-    (re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)=(?!<value>)\S+"), r"\1=<value>"),
-    (re.compile(r"[A-Za-z0-9+/=_-]{16,}"),
-     lambda match: "<id>" if re.search(r"\d", match.group()) else match.group()),
-    (re.compile(r"\d+"), "#"),
-)
+VALUE, ARG, NUMBER = "<value>", "<arg>", "#"
+EDGES = ".,:;!?()[]{}'\"`"
 
 
 def saw(message: str, usage: bool = False) -> None:
@@ -68,20 +63,44 @@ def command_type(argv: list[str], commands: set[str]) -> str:
     return f"pdt {word}" if word in commands else "pdt"
 
 
-def shape(argv: list[str], commands: set[str]) -> str:
+def shape(argv: list[str], commands: set[str], flags: set[str] = frozenset()) -> str:
     words = ["pdt"]
     for token in argv[1:]:
+        flag, equals, _ = token.partition("=")
         if token in commands:
             words.append(token)
-        elif is_flag(token):
-            flag, equals, _ = token.partition("=")
+        elif flag in flags:
             words.append(flag + ("=<value>" if equals else ""))
         else:
-            words.append("<arg>")
+            words.append(ARG)
     return " ".join(words)
 
 
+@functools.cache
+def known_words() -> frozenset[str]:
+    """The words of pdt's own text, the string constants in its package, the places in it
+    that exception_signature names, and the names of Python's exceptions."""
+    words = {VALUE, ARG, NUMBER}
+    words.update(name for name, value in vars(builtins).items()
+                 if isinstance(value, type) and issubclass(value, BaseException))
+    for path in PACKAGE.rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeError, ValueError):
+            continue
+        file = path.relative_to(PACKAGE).as_posix()
+        words.add(f"{file}:<module>")
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                words.add(f"{file}:{node.name}")
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                words.update(word.strip(EDGES) for word in node.value.split())
+    return frozenset(words)
+
+
 def signature(text: str, typed: list[str] = ()) -> str:
+    """The first line of `text` with only pdt's own words: a word the user typed becomes
+    ARG, a number NUMBER, and every other word VALUE."""
     from rich.errors import MarkupError
     from rich.text import Text
     try:
@@ -89,17 +108,36 @@ def signature(text: str, typed: list[str] = ()) -> str:
     except MarkupError:
         pass
     line = next((line.strip() for line in text.splitlines() if line.strip()), "")
-    for pattern, replacement in LOCATIONS:
-        line = pattern.sub(replacement, line)
-    values = sorted({value for value in os.environ.values() if len(value) >= 6},
-                    key=len, reverse=True)
-    for value in values:
-        line = line.replace(value, "<value>")
-    for word in sorted(set(typed), key=len, reverse=True):
-        line = re.sub(rf"(?<![\w-]){re.escape(word)}(?![\w-])", "<arg>", line)
-    for pattern, replacement in SCRUBS:
-        line = pattern.sub(replacement, line)
-    return line[:160]
+    typed_set = {part for word in typed for part in word.split()}
+    environment = set(os.environ.values())
+
+    def public(match: re.Match) -> str:
+        token = match.group()
+        word = token.strip(EDGES)
+        if word == "":
+            return token
+        if word in typed_set:
+            kept = ARG
+        elif word.isdigit():
+            kept = NUMBER
+        elif word in known_words() and word not in environment:
+            kept = word
+        else:
+            kept = VALUE
+        start = token.index(word)
+        return token[:start] + kept + token[start + len(word):]
+    return re.sub(r"\S+", public, line)[:160]
+
+
+def without_typed(sign: str, typed: list[str]) -> str:
+    """A child's signature, which holds only pdt's own words, with each one the user typed
+    in the parent's command line replaced."""
+    typed_set = {part for word in typed for part in word.split()}
+
+    def replace(match: re.Match) -> str:
+        word = match.group().strip(EDGES)
+        return match.group().replace(word, ARG) if word in typed_set else match.group()
+    return re.sub(r"\S+", replace, sign)
 
 
 def exception_signature(error: BaseException, typed: list[str] = ()) -> str:
@@ -154,13 +192,16 @@ def typed_words(argv: list[str], commands: set[str]) -> list[str]:
 
 
 def project() -> str:
+    """An id of the project folder, so the history holds no path."""
     try:
-        return str(config.find_project())
+        folder = str(config.find_project())
     except (config.ConfigError, OSError):
         return ""
+    return hashlib.sha256(folder.encode()).hexdigest()[:16]
 
 
-def watched(main: Callable[[], int], commands: set[str] = frozenset()) -> int:
+def watched(main: Callable[[], int], commands: set[str] = frozenset(),
+            flags: set[str] = frozenset()) -> int:
     from pdt import completion
     if completion.COMPLETING or os.environ.get("CI", "").strip() != "" or off():
         return main()
@@ -199,11 +240,11 @@ def watched(main: Callable[[], int], commands: set[str] = frozenset()) -> int:
                 child_note = {}
             note.unlink()
             if code != 0 and child_note.get("signature"):
-                sign = signature(child_note["signature"], typed)
+                sign = without_typed(str(child_note["signature"]), typed)
                 if child_note.get("outcome") == "unhandled":
                     outcome = "unhandled"
         entry = {"v": 1, "time": datetime.now(timezone.utc).strftime(TIME_FORMAT),
-                 "project": project(), "command": shape(sys.argv, commands),
+                 "project": project(), "command": shape(sys.argv, commands, flags),
                  "outcome": outcome, "code": code, "signature": sign,
                  "seconds": round(time.monotonic() - start, 2), "pdt": version(),
                  "os": sys.platform, "python": platform.python_version()}
@@ -294,4 +335,5 @@ def offer(code: int, commands: set[str]) -> None:
     if code in (0, DECLINED, 130) or not can_offer():
         return
     console.say(f"Get help with {console.escape(command_type(sys.argv, commands))} "
-                f"at {console.value(SUPPORT_URL)}")
+                f"at {console.value(SUPPORT_URL)}, or run {console.value('pdt support')} to "
+                "report it to the pdt team")

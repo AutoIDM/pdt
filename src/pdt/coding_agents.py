@@ -135,7 +135,7 @@ class EnvSecrets:
     values: set[str]
 
 
-def env_secrets() -> EnvSecrets:
+def env_secrets(shortest: int = SHORTEST_SECRET) -> EnvSecrets:
     from dotenv import dotenv_values
     files = config.find_env_files(Path.cwd())
     try:
@@ -149,7 +149,7 @@ def env_secrets() -> EnvSecrets:
         for name, value in dotenv_values(path).items():
             names.add(name)
             values.update({value or "", os.environ.get(name, "")})
-    return EnvSecrets(names, {value for value in values if len(value) >= SHORTEST_SECRET})
+    return EnvSecrets(names, {value for value in values if len(value) >= shortest})
 
 
 def message(request: str, context: dict[str, str], secrets: set[str]) -> str:

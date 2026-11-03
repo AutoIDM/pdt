@@ -26,17 +26,9 @@ AGENT_SECONDS = 120
 VALIDATE_SECONDS = 120
 REPORTED = ("error", "unhandled")
 TRACE_FRAMES = 10
-INTRO = ("`pdt support` wrote this report. It removed paths, web addresses, host names, email "
-         "addresses, ids, app names, and the values in the user's .env files. `<arg>` stands for "
-         "a word the user typed, and `<app>`, `<host>`, `<path>`, and `<value>` for what pdt "
-         "removed.")
-FILE_TYPES = {"py", "yml", "yaml", "ps1", "psd1", "psm1", "env", "json", "toml", "txt", "md",
-              "lock", "exe", "sh", "bat", "cmd"}
-HOST = re.compile(r"\b(?:[A-Za-z0-9_#-]+\.)+([A-Za-z][A-Za-z0-9_#-]*)\b")
-CONFIG_SECTIONS = {"platform", "config", "env"}
-QUOTED_PATH = re.compile(r"'[^'\n]*[/\\][^'\n]*'|\"[^\"\n]*[/\\][^\"\n]*\"")
-RELATIVE_PATH = re.compile(r"(?<![\w<])[\w.-]+(?:[/\\][\w.-]+)+")
-MISSING_MODULE = re.compile(r"No module named '?$")
+INTRO = ("`pdt support` wrote this report. It kept only pdt's own words: `<arg>` stands for a "
+         "word the user typed, `<app>` for an app, project, or computer name or a platform "
+         "setting, `#` for a number, and `<value>` for any other word.")
 CUT = "pdt cut the report here to fit the link. Paste the rest of it below."
 REQUEST = (
     "A user of pdt, a command line tool that runs and deploys scheduled jobs, hit the problem "
@@ -70,42 +62,44 @@ def last_error(entries: list[dict], project: str, now: datetime) -> dict | None:
     return None
 
 
-def private_names() -> list[str]:
-    names = [Path.home().name, platform.node(), platform.node().split(".")[0]]
+def private_names() -> set[str]:
+    """Names that can be one of pdt's own words and still name the user: the home folder,
+    the computer, the project, its apps, and their platform settings."""
+    names = {Path.home().name, platform.node(), platform.node().split(".")[0]}
     try:
         project = config.find_project()
-        names += [project.name, *config.app_folders()]
-        entries = config.load_yaml(project / config.PROJECT_FILE).get("apps")
+        names |= {project.name, *config.app_folders()}
+        settings = config.load_yaml(project / config.PROJECT_FILE)
+        if isinstance(settings.get("platform"), dict):
+            names |= {str(value) for value in settings["platform"].values()}
+        entries = settings.get("apps")
         if isinstance(entries, list):
-            names += [str(entry["name"]) for entry in entries
-                      if isinstance(entry, dict) and "name" in entry]
+            names |= {str(entry["name"]) for entry in entries
+                      if isinstance(entry, dict) and "name" in entry}
+        for app in config.app_folders():
+            try:
+                names |= {str(value) for value in config.merged_app(app)["platform"].values()}
+            except config.ConfigError:
+                continue
     except (config.ConfigError, OSError, UnicodeError):
         pass
-    return sorted({name for name in names if name != ""}, key=len, reverse=True)
+    return {name for name in names if name != ""}
 
 
-def public_host(match: re.Match) -> str:
-    token = match.group()
-    one_file = token.count(".") == 1 and match.group(1).lower() in FILE_TYPES
-    module = watch.PACKAGE.parent / token.replace(".", "/")
-    pdt_module = token.startswith("pdt.") and (module.with_suffix(".py").is_file() or module.is_dir())
-    config_key = token.split(".")[0] in CONFIG_SECTIONS
-    powershell_module = all(label[:1].isupper() for label in token.split("."))
-    if (one_file or pdt_module or config_key or powershell_module
-            or MISSING_MODULE.search(match.string[:match.start()])):
+def public(text: str, names: set[str], secrets: set[str]) -> str:
+    """`text` with each word that is a private name, or a value in the user's .env files,
+    replaced. watch.signature already replaced every word that is not pdt's own."""
+    def replace(match: re.Match) -> str:
+        token = match.group()
+        word = token.strip(watch.EDGES)
+        if word == "":
+            return token
+        if word in secrets:
+            return token.replace(word, watch.VALUE)
+        if word in names:
+            return token.replace(word, "<app>")
         return token
-    return "<host>"
-
-
-def public(text: str, names: list[str]) -> str:
-    text = QUOTED_PATH.sub("'<path>'", text)
-    text = RELATIVE_PATH.sub(lambda match: match.group()
-                             if (watch.PACKAGE / match.group()).is_file() else "<path>", text)
-    text = HOST.sub(public_host, text)
-    for name in names:
-        for form in {name, re.sub(r"\d+", "#", name)}:
-            text = re.sub(rf"(?<!\w){re.escape(form)}(?![\w#])", "<app>", text)
-    return text
+    return re.sub(r"\S+", replace, text)
 
 
 def install_method() -> str:
@@ -173,8 +167,8 @@ def trace_lines(error: BaseException) -> list[str]:
 
 
 def build(entry: dict, error: BaseException | None = None) -> Report:
-    names = private_names()
-    signature = public(str(entry.get("signature", "")), names)
+    names, secrets = private_names(), coding_agents.env_secrets(shortest=1).values
+    signature = public(watch.signature(str(entry.get("signature", ""))), names, secrets)
     sections = {
         "What happened": "\n".join([
             f"{entry.get('command')}: {entry.get('outcome')}, exit {entry.get('code')}, "
@@ -198,7 +192,7 @@ def build(entry: dict, error: BaseException | None = None) -> Report:
             apps = []
             listing = [f"pdt could not list them, because listing them also raised {type(e).__name__}"]
         sections["Apps in the project"] = "\n".join(listing)
-        sections["pdt validate"] = "\n".join(public(line, names) for line in check_lines(apps))
+        sections["pdt validate"] = "\n".join(public(line, names, secrets) for line in check_lines(apps))
     what = "crash" if entry.get("outcome") == "unhandled" else f"{entry.get('command')} failed"
     return Report(f"pdt support: {what}: {signature}"[:120], sections)
 
@@ -268,9 +262,9 @@ def advise(report: Report) -> None:
 
 def propose(entry: dict, error: BaseException | None = None) -> int:
     report = build(entry, error)
-    secrets = coding_agents.env_secrets().values
-    title = coding_agents.message(report.title, {}, secrets)
-    body = coding_agents.message(INTRO, report.sections, secrets)
+    title = report.title
+    body = "\n\n".join([INTRO, *(f"## {heading}\n{text}"
+                                 for heading, text in report.sections.items())])
     console.say("pdt can start a GitHub issue about this problem, so the pdt team can fix it.")
     console.say("The issue is public. Anyone can read it. This is all it holds:")
     console.say()
@@ -280,10 +274,12 @@ def propose(entry: dict, error: BaseException | None = None) -> int:
     console.say()
     advise(report)
     if not can_prompt(None):
-        console.say("Open this link to start the issue. Nothing is sent until you select Create:")
+        console.say("Open this link to start the issue. The link sends this text to GitHub, and "
+                    "GitHub publishes it only when you select Create:")
         console.command(issue_link(title, body).url)
         return 0
-    console.say("Nothing is sent until you check the issue in your browser and select Create.")
+    console.say("Your browser sends this text to GitHub. GitHub publishes it only when you "
+                "check the issue and select Create.")
     if console.confirm("Start this GitHub issue in your browser?"):
         submit(title, body)
     else:
