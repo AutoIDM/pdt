@@ -369,11 +369,16 @@ def prepare(job: Job, base: dict[str, str]) -> Prepared:
     if job.operation == "run" and not job.args["deployed"]:
         app_dir = job.project / app
         extra = {"PDT_RUN_ID": job.command_id}
+        if not config.find_env_files(app_dir):
+            extra[config.SERVICE_ENV_FILES_ENV] = ""
         if preset["artifacts"]:
             extra["PDT_OUTPUT_DIR"] = str(app_dir / ".pdt" / "runs" / job.command_id / "output")
         return Prepared(job.project, child_env(base, job.project, preset["env"], extra), argv,
                         app_dir)
-    return Prepared(job.project, child_env(base, job.project, preset["env"], {}), argv)
+    extra = {}
+    if not config.find_env_files(job.project / app if app else job.project):
+        extra[config.SERVICE_ENV_FILES_ENV] = ""
+    return Prepared(job.project, child_env(base, job.project, preset["env"], extra), argv)
 
 
 def remove_folder(folder: str | Path | None) -> None:
