@@ -120,6 +120,7 @@ def choose_app(name: str | None, command: str, quiet: bool = False) -> str | Non
         console.name(app)
     if len(apps) > len(shown):
         console.bullet(f"... and {len(apps) - len(shown)} more")
+    console.say()
     console.command("pdt list", "see every app")
     console.command(f"pdt {command} <app>")
     return None
@@ -334,6 +335,7 @@ def destroy_all(assume_yes: bool, skip_failures: bool) -> int:
         console.heading("pdt destroy --all will destroy these apps, one at a time:")
         for name in deployed:
             console.name(name)
+        console.say()
     return each_app("destroy", deployed,
                     lambda name: deploy.destroy(name, assume_yes=assume_yes),
                     assume_yes, skip_failures)

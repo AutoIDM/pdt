@@ -21,6 +21,7 @@ def width(monkeypatch):
 def test_commands_and_descriptions_line_up(width, capsys):
     console.next_steps([("pdt validate", "check the config"), ("pdt run my-report", "run it here")])
     assert capsys.readouterr().out.splitlines() == [
+        "",
         "Next steps:",
         "  pdt validate       check the config",
         "  pdt run my-report  run it here",
@@ -31,6 +32,7 @@ def test_a_long_command_prints_alone_and_keeps_the_column(width, capsys):
     long = "pdt gcloud run jobs execute pdt-my-report --region us-central1 --project my-project"
     console.next_steps([(long, "start a run now"), ("pdt logs my-report", "read the log")])
     assert capsys.readouterr().out.splitlines() == [
+        "",
         "Next steps:",
         f"  {long}",
         "                      start a run now",
@@ -44,6 +46,7 @@ def test_a_narrow_terminal_puts_each_description_under_its_command(width, capsys
                        "Then run:")
     out = capsys.readouterr().out.splitlines()
     assert out == [
+        "",
         "Then run:",
         "  pdt health my-report",
         "      show whether the last",
@@ -54,12 +57,13 @@ def test_a_narrow_terminal_puts_each_description_under_its_command(width, capsys
 
 def test_a_command_with_no_description_has_no_trailing_space(width, capsys):
     console.next_steps([("cd my-project", ""), ("pdt examples", "see what else you can start from")])
-    assert capsys.readouterr().out.splitlines()[1] == "  cd my-project"
+    assert capsys.readouterr().out.splitlines()[2] == "  cd my-project"
 
 
 def test_a_deploy_suggests_pdt_run_deployed_first(width, capsys):
     deployed_next_steps("my-report")
-    assert capsys.readouterr().out.splitlines()[1:] == [
+    assert capsys.readouterr().out.splitlines() == [
+        "",
         "Next steps:",
         "  pdt run my-report --deployed --follow  start a run now and follow its log",
         "  pdt logs my-report                     read the log of the newest run",

@@ -318,6 +318,15 @@ def suggest_region(provider: str, zone: str | None = None) -> str:
     return region_suggestion(provider, zone=zone)[0]
 
 
+def say_suggestion(provider: str, platform: dict | None = None) -> str:
+    """Print the region pdt suggests, why, and where to see every region, before a region
+    question. Returns the suggested region."""
+    region, reason = region_suggestion(provider, platform)
+    console.say(f"pdt suggests {console.value(region)}, because {console.escape(reason)}.")
+    console.field(f"All {PROVIDER_NAMES[provider]} regions", REGION_LISTS[provider])
+    return region
+
+
 def windows_currency() -> str:
     import ctypes
     locale_sintlsymbol = 0x15
@@ -400,8 +409,7 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
                 f"platform: in {config.PROJECT_FILE}, or run again with --yes to use {region}.")
     else:
         console.say()
-        console.say(f"pdt suggests {console.value(region)}, because {console.escape(reason)}.")
-        console.field(f"All {PROVIDER_NAMES[provider]} regions", REGION_LISTS[provider])
+        region = say_suggestion(provider, app["platform"])
         try:
             region = console.ask(question(provider), region) or region
         except EOFError:

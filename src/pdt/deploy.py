@@ -270,8 +270,11 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
 
 
 def describe_place(place: dict[str, str]) -> str:
-    return ", ".join([place["provider"], *(f"{key.replace('_', ' ')} {value}"
-                                           for key, value in place.items() if key != "provider")])
+    """`azure (eastus2, subscription 1234)`: the provider, then the region and the other
+    place keys in parentheses."""
+    details = [value if key == "region" else f"{key.replace('_', ' ')} {value}"
+               for key, value in place.items() if key != "provider"]
+    return f"{place['provider']} ({', '.join(details)})" if details else place["provider"]
 
 
 # The environment variables a provider script reads for a place key the config leaves empty.
@@ -444,7 +447,6 @@ def run_history(provider: str, app_name: str, stderr=None) -> list[runs_cli.Run]
 
 def deployed_next_steps(app_name: str, started: bool = False) -> None:
     """The same commands after every provider's deploy; no `pdt run` when pdt just started one."""
-    console.say()
     console.next_steps([
         *([] if started else [(f"pdt run {app_name} --deployed --follow", "start a run now and follow its log")]),
         (f"pdt logs {app_name}", "read the log of the newest run"),
@@ -555,7 +557,6 @@ def start(app_name: str, follow: bool = False) -> int:
         return dispatch(provider, "start", app_name, False, ["--", "--follow"])
     code = dispatch(provider, "start", app_name, False)
     if code == 0:
-        console.say()
         console.next_steps([
             (f"pdt logs {app_name} --follow", "print the log lines as they arrive"),
             (f"pdt runs {app_name}", "list the recent runs"),
