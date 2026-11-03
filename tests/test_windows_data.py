@@ -211,8 +211,9 @@ def test_deploy_runs_one_elevated_script_that_registers_the_task_inside_the_roll
     assert deploy_windows.deploy(app, assume_yes=True) == 0
     (script,) = scripts
     assert script.startswith("$ErrorActionPreference = 'Stop'; ")
-    assert script.index("$folder =") < script.index("try {") < script.index(
-        "Register-ScheduledTask") < script.index("} catch {")
+    attempt = script.index("try {", script.index("$folder ="))
+    register = script.index("Register-ScheduledTask", attempt)
+    assert register < script.index("} catch {", register)
 
 
 def test_an_elevated_step_starts_with_a_short_command_line_and_runs_a_file(tmp_path):

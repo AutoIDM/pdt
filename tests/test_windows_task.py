@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -271,6 +272,13 @@ def test_destroy_unregisters_a_managed_task_in_both_folders_and_removes_the_empt
     assert script.index("-TaskPath '\\'") < script.index("DeleteFolder")
 
 
+def test_destroy_stops_before_the_file_deletion_when_an_unregister_fails(project, monkeypatch):
+    script = destroy_script(project, monkeypatch, {TASK_PATH: "ready"}, leftovers=True)
+    unregister = "Unregister-ScheduledTask -InputObject $task -Confirm:$false -ErrorAction Stop"
+    assert script.count(unregister) == 2
+    assert script.rindex(unregister) < script.index("Remove-Item")
+
+
 def test_destroy_still_unregisters_the_root_task_when_the_pdt_task_is_absent(
         project, monkeypatch):
     script = destroy_script(project, monkeypatch, {LEGACY_PATH: "ready"})
@@ -318,6 +326,20 @@ def test_deploy_refuses_while_the_root_task_runs_and_changes_nothing(
     assert "is running from Windows task \\pdt-my-report" in out
 
 
+def test_deploy_disables_the_root_task_and_refuses_its_running_run_before_any_file_changes(
+        project, monkeypatch):
+    script, _shown = deploy_script(project, monkeypatch, {LEGACY_PATH: "ready"})
+    disable = script.index("Disable-ScheduledTask -InputObject $root")
+    running = script.index("GetTask('pdt-my-report').GetInstances(0).Count -gt 0", disable)
+    refusal = script.index("wait for that run to end, then run pdt deploy my-report again",
+                           running)
+    assert refusal < script.index("New-Item -ItemType Directory")
+    assert refusal < script.index("Register-ScheduledTask")
+    restore = script.index("if ($rootDisabled) { Enable-ScheduledTask -InputObject $root",
+                           script.index("Register-ScheduledTask"))
+    assert restore < script.rindex("throw }")
+
+
 def test_deploy_does_not_plan_the_root_task_deletion_when_that_task_is_unmanaged(
         project, monkeypatch):
     _script, shown = deploy_script(project, monkeypatch, {LEGACY_PATH: "unmanaged"})
@@ -333,7 +355,8 @@ def task_info(**changes):
 
 
 def test_a_disabled_task_of_an_app_that_is_not_paused_is_a_problem():
-    problems = deploy_windows.task_problems({"name": "my-report"}, task_info(enabled=False), [NOW])
+    problems = deploy_windows.task_problems(
+        {"name": "my-report"}, task_info(enabled=False), [(NOW, NOW)])
     assert len(problems) == 1
     assert "is disabled" in problems[0]
     assert "pdt unpause my-report" in problems[0]
@@ -341,18 +364,20 @@ def test_a_disabled_task_of_an_app_that_is_not_paused_is_a_problem():
 
 def test_a_disabled_task_of_a_paused_app_is_no_problem():
     app = {"name": "my-report", "pause": True}
-    assert deploy_windows.task_problems(app, task_info(enabled=False), [NOW]) == []
+    assert deploy_windows.task_problems(app, task_info(enabled=False), [(NOW, NOW)]) == []
 
 
 def test_missed_runs_are_a_problem_and_name_the_count():
-    problems = deploy_windows.task_problems({"name": "my-report"}, task_info(missed=3), [NOW])
+    problems = deploy_windows.task_problems(
+        {"name": "my-report"}, task_info(missed=3), [(NOW, NOW)])
     assert len(problems) == 1
     assert "3 missed runs" in problems[0]
 
 
 def test_a_failed_start_with_no_log_is_a_problem_and_names_the_result():
+    earlier = NOW - timedelta(hours=1)
     problems = deploy_windows.task_problems(
-        {"name": "my-report"}, task_info(result=0x80070002), [NOW - timedelta(hours=1)])
+        {"name": "my-report"}, task_info(result=0x80070002), [(earlier, earlier)])
     assert len(problems) == 1
     assert "could not start my-report" in problems[0]
     assert "0x80070002" in problems[0]
@@ -362,7 +387,7 @@ def test_a_failed_start_with_no_log_is_a_problem_and_names_the_result():
 def test_a_log_from_an_earlier_day_later_than_the_window_does_not_hide_the_failed_start():
     late = NOW + deploy_windows.LOG_START_WINDOW + timedelta(seconds=1)
     problems = deploy_windows.task_problems(
-        {"name": "my-report"}, task_info(result=0x80070002), [late])
+        {"name": "my-report"}, task_info(result=0x80070002), [(late, late)])
     assert len(problems) == 1
     assert "could not start my-report" in problems[0]
 
@@ -370,13 +395,28 @@ def test_a_log_from_an_earlier_day_later_than_the_window_does_not_hide_the_faile
 def test_a_log_at_the_end_of_the_window_is_the_failed_starts_own_log():
     started = NOW + deploy_windows.LOG_START_WINDOW
     assert deploy_windows.task_problems(
-        {"name": "my-report"}, task_info(result=1), [started]) == []
+        {"name": "my-report"}, task_info(result=1), [(started, NOW)]) == []
 
 
 def test_a_failed_run_that_wrote_a_log_is_no_problem():
     started = NOW - timedelta(seconds=1)
     assert deploy_windows.task_problems(
-        {"name": "my-report"}, task_info(result=1), [started]) == []
+        {"name": "my-report"}, task_info(result=1), [(started, NOW)]) == []
+
+
+def test_the_log_of_a_short_run_that_ended_before_the_failed_start_does_not_hide_it(
+        project, monkeypatch, capsys):
+    logs = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    logs.mkdir(parents=True)
+    log = logs / "20260923T095959Z.log"
+    log.write_text("")
+    ended = NOW - timedelta(milliseconds=500)
+    os.utime(log, (ended.timestamp(), ended.timestamp()))
+    monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
+    monkeypatch.setattr(deploy_windows, "_task_info",
+                        lambda powershell, name: task_info(result=0x80070002))
+    deploy_windows.say_task_problems({"name": "my-report"})
+    assert "could not start my-report" in " ".join(capsys.readouterr().out.split())
 
 
 @pytest.mark.parametrize("result", [0, 0x41301, 0x41303])

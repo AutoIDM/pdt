@@ -548,12 +548,14 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             raise WindowsDeployError(
                 f"Windows scheduled task {path} exists but is not managed by PDT")
         exists = state != "absent"
+        legacy_running = (
+            f"{app['name']} is running from Windows task {_root_folder_path(app['name'])}, "
+            f"which an earlier pdt made; wait for that run to end, then run pdt deploy "
+            f"{app['name']} again, so the task in {TASK_FOLDER} does not start a second run "
+            "beside it")
         legacy_state = _task_state(_root_folder_path(app["name"]))
         if legacy_state == "running":
-            raise WindowsDeployError(
-                f"{app['name']} is running from Windows task {_root_folder_path(app['name'])}, "
-                f"which an earlier pdt made; deploy again when that run ends, so the task in "
-                f"{TASK_FOLDER} does not start a second run beside it")
+            raise WindowsDeployError(legacy_running)
         legacy = legacy_state == "ready"
         pwsh, modules = _prepare_powershell(app)
         install_uv = not _machine_uv_current()
@@ -581,8 +583,23 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         install = (f"& {_ps_string(pwsh)} -NoProfile -NonInteractive -EncodedCommand {command}; "
                    "if ($LASTEXITCODE -ne 0) { throw \"PowerShell module install failed "
                    "with exit $LASTEXITCODE\" }; ")
-    script = ("$ErrorActionPreference = 'Stop'; " + SET_ACL + _folder_script(app, user)
-              + _release_script(app, release, install, register_script(name, xml, sid)))
+    # The root task can start a run after the check above; disabled, its schedule starts none
+    # while the files change, and a run it already started stops the deploy.
+    hold_legacy = (
+        f"$root = Get-ScheduledTask -TaskName {_ps_string(name)} -TaskPath '\\' "
+        "-ErrorAction SilentlyContinue; $rootDisabled = $false; "
+        f"if ($null -ne $root -and \"$($root.Description)\".StartsWith('{MANAGED}')) {{ "
+        "if ($root.Settings.Enabled) { Disable-ScheduledTask -InputObject $root | Out-Null; "
+        "$rootDisabled = $true }; "
+        "$service = New-Object -ComObject Schedule.Service; $service.Connect(); "
+        f"if ($service.GetFolder('\\').GetTask({_ps_string(name)}).GetInstances(0).Count -gt 0) {{ "
+        "if ($rootDisabled) { Enable-ScheduledTask -InputObject $root | Out-Null }; "
+        f"throw {_ps_string(legacy_running)} }} }}; ")
+    script = ("$ErrorActionPreference = 'Stop'; " + SET_ACL + hold_legacy
+              + f"try {{ {_folder_script(app, user)}"
+              + _release_script(app, release, install, register_script(name, xml, sid))
+              + "} catch { if ($rootDisabled) { Enable-ScheduledTask -InputObject $root "
+              "-ErrorAction SilentlyContinue | Out-Null }; throw }; ")
     try:
         with console.waiting(f"{'updating' if exists else 'creating'}: Windows scheduled task "
                              f"{console.value(path)}"):
@@ -632,7 +649,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         script += (f"$task = Get-ScheduledTask -TaskName {_ps_string(_task_name(app['name']))} "
                    f"-TaskPath '{folder}' -ErrorAction SilentlyContinue; "
                    f"if ($null -ne $task -and \"$($task.Description)\".StartsWith('{MANAGED}')) {{ "
-                   "Unregister-ScheduledTask -InputObject $task -Confirm:$false }; ")
+                   "Unregister-ScheduledTask -InputObject $task -Confirm:$false "
+                   "-ErrorAction Stop }; ")
     script += ("$service = New-Object -ComObject Schedule.Service; $service.Connect(); "
                f"try {{ $folder = $service.GetFolder('\\{TASK_FOLDER_NAME}') }} catch {{ $folder = $null }}; "
                "if ($null -ne $folder -and $folder.GetTasks(1).Count -eq 0 "
@@ -929,7 +947,10 @@ def _task_info(powershell: str, app_name: str) -> dict | None:
     return info
 
 
-def task_problems(app: dict, info: dict, starts: list[datetime]) -> list[str]:
+def task_problems(app: dict, info: dict,
+                  logs: list[tuple[datetime, datetime]]) -> list[str]:
+    """`logs` holds the start and last write of each run log. A log last written before the
+    failed start belongs to a run that ended earlier, so it is not that start's log."""
     name = app["name"]
     problems = []
     if not info["enabled"] and not app.get("pause"):
@@ -945,7 +966,7 @@ def task_problems(app: dict, info: dict, starts: list[datetime]) -> list[str]:
     last = info["last_run"]
     if (last is not None and result not in (0, SCHED_S_TASK_RUNNING, SCHED_S_TASK_HAS_NOT_RUN)
             and not any(last - LOG_START_SLACK <= started <= last + LOG_START_WINDOW
-                        for started in starts)):
+                        and written >= last for started, written in logs)):
         problems.append(f"Task Scheduler could not start {name} at "
                         f"{runs_cli.local_text(last)} (result 0x{result:08X}), and that start "
                         f"wrote no log; run pdt deploy {name} to repair the deployed copy")
@@ -963,8 +984,11 @@ def say_task_problems(app: dict) -> None:
         return
     if info is None:
         return
-    starts = [run.started for run in list_runs(app["name"])]
-    for problem in task_problems(app, info, starts):
+    folder = logs_folder(app["name"])
+    logs = [(run.started, datetime.fromtimestamp((folder / f"{run.id}.log").stat().st_mtime,
+                                                 tz=timezone.utc))
+            for run in list_runs(app["name"])]
+    for problem in task_problems(app, info, logs):
         console.warn(console.escape(problem))
 
 
