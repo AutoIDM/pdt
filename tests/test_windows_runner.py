@@ -229,3 +229,33 @@ def test_runner_keeps_the_exit_code_when_the_event_write_fails(folders, monkeypa
     monkeypatch.setattr("ctypes.WinDLL", lambda name: advapi, raising=False)
 
     assert run_windows_task.main([str(app_dir), str(logs), url]) == 3
+def test_runner_passes_the_stored_secrets_as_the_env_json_and_keeps_the_uv_cache(
+        tmp_path, monkeypatch):
+    folder = tmp_path / "pdt" / "my-report"
+    app_dir = folder / "app" / "my-report"
+    app_dir.mkdir(parents=True)
+    (app_dir / "run.py").write_text("")
+    (folder / "secrets.json").write_text('﻿{"API_KEY": "x"}', encoding="utf-8")
+    calls = []
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    monkeypatch.setenv("UV_PYTHON", "3.15")
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen(calls, b"", 0))
+
+    assert run_windows_task.main([str(app_dir), str(folder / "logs"), "file:///s/"]) == 0
+
+    (_command, kwargs), = calls
+    assert kwargs["env"]["PDT_ENV_JSON"] == '{"API_KEY": "x"}'
+    assert kwargs["env"]["UV_CACHE_DIR"] == str(tmp_path / "pdt" / "uv-cache")
+    assert kwargs["env"]["UV_PYTHON"] == "3.12"
+
+
+def test_runner_without_stored_secrets_sets_no_env_json(folders, monkeypatch):
+    app_dir, logs, url = folders
+    calls = []
+    monkeypatch.delenv("PDT_ENV_JSON", raising=False)
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen(calls, b"", 0))
+
+    assert run_windows_task.main([str(app_dir), str(logs), url]) == 0
+
+    (_command, kwargs), = calls
+    assert "PDT_ENV_JSON" not in kwargs["env"]

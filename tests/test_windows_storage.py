@@ -20,7 +20,7 @@ def project(tmp_path, monkeypatch):
 def windows_app(project, monkeypatch):
     add_app(project, "my-report", "schedule: hourly\ntimezone: local\n")
     monkeypatch.setattr(deploy_windows, "_preflight",
-                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+                        lambda: "powershell.exe")
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     return config.merged_app("my-report")
@@ -110,9 +110,10 @@ def test_destroy_removes_a_leftover_logs_folder_when_the_task_is_gone(
 
     assert deploy_windows.destroy(app, assume_yes=True) == 0
 
-    out = capsys.readouterr().out
+    out, err = capsys.readouterr()
     assert "delete Windows scheduled task" not in out
     assert f"removed: run logs folder {logs}" in out
+    assert "removing: the files of my-report" in err
     (script,) = scripts
     assert "Unregister-ScheduledTask" not in script
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pdt import __version__, config, console, deploy, powershell, pwsh, regions, watch
 from pdt.config import (APP_FILE, PROJECT_FILE, ConfigError, app_name_problem, find_project,
-                        merged_app, powershell_scripts)
+                        merged_app, powershell_scripts, windows_host_problem, yaml_quoted)
 from pdt.utils.env_secret import private_file
 
 EXAMPLES = Path(__file__).resolve().parent / "examples"
@@ -36,7 +36,7 @@ PROVIDER_CHOICES = [
     ("azure", "Microsoft Azure"),
     ("aws", "Amazon Web Services"),
     ("google-cloud", "Google Cloud"),
-    ("windows", "This Windows PC, using Task Scheduler"),
+    ("windows", "A Windows PC, using Task Scheduler"),
     ("", "Decide later"),
 ]
 NAMES = {**regions.PROVIDER_NAMES, "windows": "Windows Task Scheduler"}
@@ -66,7 +66,11 @@ PROVIDER_QUESTIONS = {
          lambda: regions.suggest_region("google-cloud"), _needed),
         TIMEZONE_QUESTION,
     ],
-    "windows": [],
+    "windows": [
+        ("host", "Which Windows PC should run your jobs? Type its name"
+                 + (", or press Enter for this PC" if os.name == "nt" else ""),
+         lambda: "", windows_host_problem),
+    ],
     "": [],
 }
 
@@ -296,7 +300,8 @@ def ask_settings(provider: str, kept: dict) -> dict | None:
             if problem == "":
                 break
             console.warn(console.escape(problem))
-        settings[key] = answer
+        if answer.strip() != "":
+            settings[key] = answer.strip()
     return settings
 
 
@@ -527,7 +532,7 @@ def project_yaml(platform: dict) -> str:
             "# Defaults for every app. An app's own config.yml can override them.",
             "platform:",
         ]
-        lines += [f"  {key}: {value}" for key, value in platform.items()]
+        lines += [f"  {key}: {yaml_quoted(value)}" for key, value in platform.items()]
     else:
         lines += [
             "# Defaults for every app. Fill this in before you deploy.",
