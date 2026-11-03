@@ -137,6 +137,15 @@ def test_an_agent_writes_what_failed_and_the_user_confirms_it(project, quiet, ag
     assert asked == ["Does this report look right? Start it as a GitHub issue in your browser?"]
 
 
+def test_a_no_to_the_agent_report_opens_nothing(project, quiet, agent, monkeypatch):
+    opened, said, _asked = quiet
+    monkeypatch.setattr(console, "confirm", lambda question: False)
+    monkeypatch.setattr(coding_agents, "ask", lambda request, context, seconds:
+                        coding_agents.Reply("Cursor", "drafted text"))
+    support.propose(entry())
+    assert "drafted text" in said and opened == []
+
+
 def test_the_agent_gets_the_traceback_of_a_crash(project, quiet, agent, monkeypatch):
     contexts = []
     monkeypatch.setattr(coding_agents, "ask", lambda request, context, seconds:
