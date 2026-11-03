@@ -596,10 +596,10 @@ rich_argparse.RawDescriptionRichHelpFormatter.group_name_formatter = (
     lambda title: title[:1].upper() + title[1:])
 
 COMMAND_GROUPS = {
-    "Get started": ["init", "examples", "new", "upgrade", "completion"],
+    "Get started": ["init", "examples", "new", "register", "upgrade", "completion"],
     "Run and validate": ["list", "validate", "run"],
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
-    "Check a deployed app": ["health", "runs", "logs", "alerts", "register", "gui"],
+    "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
