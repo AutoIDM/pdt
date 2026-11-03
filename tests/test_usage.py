@@ -193,7 +193,7 @@ def test_no_records_the_answer_with_no_uuid(usage_on, at_terminal, posts, monkey
 @pytest.mark.parametrize("flag", ["--yes", "--ye", "-y"])
 def test_yes_answers_the_question_with_yes(usage_on, at_terminal, monkeypatch, flag):
     monkeypatch.setattr(console, "confirm", lambda *a, **k: pytest.fail("asked"))
-    usage.start(["pdt", "deploy", "my-app", "--json", flag])
+    usage.start(["pdt", "deploy", "my-app", flag])
     record = json.loads((usage_on / "client.json").read_text())
     assert record["asked"] is True
     assert usage.identity().client_uuid == record["client_uuid"]
@@ -225,9 +225,10 @@ def test_yes_of_a_cloud_cli_is_not_an_answer(usage_on, at_terminal, monkeypatch)
 @pytest.mark.parametrize("flag", ["--help", "-h", "--version", "--json", "--js",
                                   "--no-usage-stats", "--plan", "--pl", "--names", "--nam",
                                   "--script", "--scr"])
+@pytest.mark.parametrize("yes", [[], ["--yes"], ["-y"]])
 def test_flags_skip_the_question_and_a_person_sends_nothing_yet(
-        usage_on, at_terminal, monkeypatch, flag):
-    argv = ["pdt", "run", flag]
+        usage_on, at_terminal, monkeypatch, flag, yes):
+    argv = ["pdt", "run", flag, *yes]
     monkeypatch.setattr("sys.argv", argv)
     monkeypatch.setattr(console, "confirm", lambda *a, **k: pytest.fail("asked"))
     usage.start(argv)

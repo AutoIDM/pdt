@@ -35,7 +35,8 @@ this computer, and no hash is ever sent.
 
 `start` asks a person once, before the command runs. `--yes` or `-y` answers yes in
 place of the question, except in a command of aws, az, or gcloud. A person who has not
-answered, at a terminal in a command that skips the question, sends nothing yet. With no one to ask, pdt sends until someone opts out. Any one of
+answered, at a terminal in a command that skips the question, sends nothing yet, also
+with `--yes`. With no one to ask, pdt sends until someone opts out. Any one of
 DO_NOT_TRACK, OFF_ENV with an off value, or `anonymous_usage_stats: false` in pdt.yml
 turns it off, with no output.
 
@@ -294,7 +295,7 @@ def start(argv: list[str]) -> None:
             token == "-y" or _named(token, "--yes") for token in tokens)
         skipped = any(token in NO_QUESTION_SHORT_FLAGS or _named(token, flag)
                       for token in tokens for flag in NO_QUESTION_FLAGS)
-        if ((yes or not skipped) and not record.get("asked") and JOB_ENV not in os.environ
+        if (not skipped and not record.get("asked") and JOB_ENV not in os.environ
                 and CLIENT_ENV not in os.environ and not off() and watch.person_at_terminal()):
             send = yes or console.confirm(QUESTION, default=True, stderr=True)
             folder().mkdir(parents=True, exist_ok=True)
