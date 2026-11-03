@@ -24,7 +24,8 @@ def record(monkeypatch, **more):
 def colour_output(monkeypatch):
     out = io.StringIO()
     monkeypatch.setattr(console, "_console", Console(
-        file=out, highlight=False, soft_wrap=True, force_terminal=True, color_system="standard"))
+        file=out, highlight=False, soft_wrap=True, force_terminal=True, color_system="standard",
+        width=200))
     return out
 
 

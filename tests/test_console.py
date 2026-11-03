@@ -203,7 +203,7 @@ def test_queued_lines_print_before_a_line_queued_while_they_print(monkeypatch, t
             in_thread("new line 3")
             return "old line 1"
 
-    printer = threading.Thread(target=lambda: (console.styled(First()),
+    printer = threading.Thread(target=lambda: (console._console.print(First()),
                                                console.say("old line 2")))
     printer.start()
     printer.join()
