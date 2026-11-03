@@ -31,6 +31,14 @@ def quiet(monkeypatch):
     return opened, said, asked
 
 
+@pytest.fixture
+def agent(monkeypatch):
+    monkeypatch.setattr(coding_agents, "installed", lambda: {"claude": "/bin/claude"})
+    monkeypatch.setattr(coding_agents, "running_inside", lambda: None)
+    coding_agents.SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    coding_agents.SETTINGS.write_text("coding-agent-consent: true\n")
+
+
 def sent(opened):
     query = parse_qs(urlparse(opened[0]).query)
     return query["title"][0], query["body"][0]
@@ -83,15 +91,24 @@ def test_with_no_agent_the_report_holds_only_the_structure(project, quiet):
     assert len(asked) == 1
 
 
-def test_a_refused_consent_runs_no_check_and_asks_no_agent(project, quiet, monkeypatch):
+def test_a_refused_consent_runs_no_check_and_asks_no_agent(project, quiet, agent, monkeypatch):
     opened, _said, _asked = quiet
-    monkeypatch.setattr(coding_agents, "installed", lambda: {"claude": "/bin/claude"})
-    monkeypatch.setattr(coding_agents, "running_inside", lambda: None)
-    monkeypatch.setattr(coding_agents, "read_settings", lambda: {coding_agents.CONSENT_KEY: False})
+    coding_agents.SETTINGS.write_text("coding-agent-consent: false\n")
     monkeypatch.setattr(support, "check_lines", lambda: pytest.fail("ran pdt validate"))
     monkeypatch.setattr(coding_agents, "ask", lambda *args: pytest.fail("asked an agent"))
     support.propose(entry())
     assert sent(opened)[1].startswith(support.INTRO)
+
+
+def test_pdt_asks_for_consent_before_it_gathers_context(project, quiet, agent, monkeypatch):
+    events = []
+    coding_agents.SETTINGS.unlink()
+    monkeypatch.setattr(console, "confirm", lambda question: events.append(question) or False)
+    monkeypatch.setattr(support, "check_lines", lambda: events.append("validate") or [])
+    monkeypatch.setattr(coding_agents, "ask", lambda *args: pytest.fail("asked an agent"))
+    support.propose(entry())
+    assert events[0].startswith("Do you permit pdt to call your installed coding agent")
+    assert "validate" not in events
 
 
 def test_the_issue_holds_no_instructions_for_a_coding_agent(project, quiet):
@@ -101,11 +118,9 @@ def test_the_issue_holds_no_instructions_for_a_coding_agent(project, quiet):
     assert coding_agents.RULES not in title + body and support.REQUEST[:40] not in body
 
 
-def test_an_agent_writes_what_failed_and_the_user_confirms_it(project, quiet, monkeypatch):
+def test_an_agent_writes_what_failed_and_the_user_confirms_it(project, quiet, agent, monkeypatch):
     opened, said, asked = quiet
     requests = []
-    monkeypatch.setattr(coding_agents, "installed", lambda: {"claude": "/bin/claude"})
-    monkeypatch.setattr(coding_agents, "running_inside", lambda: None)
 
     def ask(request, context, seconds):
         requests.append(context)
@@ -122,10 +137,8 @@ def test_an_agent_writes_what_failed_and_the_user_confirms_it(project, quiet, mo
     assert asked == ["Does this report look right? Start it as a GitHub issue in your browser?"]
 
 
-def test_the_agent_gets_the_traceback_of_a_crash(project, quiet, monkeypatch):
+def test_the_agent_gets_the_traceback_of_a_crash(project, quiet, agent, monkeypatch):
     contexts = []
-    monkeypatch.setattr(coding_agents, "installed", lambda: {"claude": "/bin/claude"})
-    monkeypatch.setattr(coding_agents, "running_inside", lambda: None)
     monkeypatch.setattr(coding_agents, "ask", lambda request, context, seconds:
                         contexts.append(context))
     try:
@@ -137,10 +150,9 @@ def test_the_agent_gets_the_traceback_of_a_crash(project, quiet, monkeypatch):
 
 @pytest.mark.parametrize("failure", [None, KeyboardInterrupt, PermissionError("settings.yml"),
                                      UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")])
-def test_with_no_agent_reply_pdt_offers_the_structure_report(project, quiet, monkeypatch, failure):
+def test_with_no_agent_reply_pdt_offers_the_structure_report(project, quiet, agent, monkeypatch,
+                                                           failure):
     opened, _said, _asked = quiet
-    monkeypatch.setattr(coding_agents, "installed", lambda: {"claude": "/bin/claude"})
-    monkeypatch.setattr(coding_agents, "running_inside", lambda: None)
 
     def ask(request, context, seconds):
         if failure is not None:

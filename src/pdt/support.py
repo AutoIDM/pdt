@@ -74,7 +74,7 @@ def providers() -> str:
             try:
                 provider = config.merged_app(name)["platform"].get("provider")
             except config.ConfigError:
-                continue
+                provider = "unknown"
             found.add(provider if provider in config.PROVIDERS else "unknown")
     except (config.ConfigError, OSError, UnicodeError):
         pass
@@ -119,7 +119,8 @@ def drafted(entry: dict, report: Report, error: BaseException | None) -> Report 
     if not coding_agents.installed() or coding_agents.running_inside() is not None:
         return None
     try:
-        if coding_agents.consent(coding_agents.read_settings()) is False:
+        if not coding_agents.allowed(coding_agents.read_settings(), coding_agents.installed(),
+                                     can_prompt(None)):
             return None
     except (config.ConfigError, OSError, UnicodeError) as e:
         console.note(f"pdt did not ask a coding agent: {console.escape(str(e))}")
