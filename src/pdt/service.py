@@ -19,6 +19,10 @@ and a new project from `sync_down` goes there. The service reads this list at ea
 a new project needs no restart. A project serves the customer that its `managed_services` names,
 and a command for any other customer is refused, so one computer can serve two customers.
 
+`pdt service run` needs only a registration, so a person can try the service before an install.
+It writes the settings it needs, and `service.pid` names the running process for
+`pdt service status`.
+
 `pdt service run --worker` is the same loop for a cloud worker. Its registration, and the keys
 it pins in PDT_COMMAND_KEYS, come from its environment. It has no settings file.
 """
@@ -62,6 +66,20 @@ def settings_path() -> Path:
 
 def state_path() -> Path:
     return service_runner.service_folder() / "state.json"
+
+
+def pid_path() -> Path:
+    return service_runner.service_folder() / "service.pid"
+
+
+def running_pid() -> int | None:
+    """The process of the service that runs now, or None. A service that ended with no chance to
+    clean up leaves the file, so the process must also run."""
+    try:
+        pid = json.loads(pid_path().read_text(encoding="utf-8"))["pid"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return pid if type(pid) is int and service_runner.process_runs(pid) else None
 
 
 def read_settings() -> dict | None:
@@ -505,26 +523,49 @@ def loop(served: dict[str, Served], settings: dict, worker: bool, once: bool) ->
     return 0
 
 
-def run(worker: bool = False) -> int:
-    """`pdt service run`: the foreground loop."""
-    if worker:
-        return serve({"level": "manage", "projects": ""}, worker=True, once=False)
+def say_no_registration() -> None:
+    console.error(f"This computer has no AutoIDM registration in "
+                  f"{console.value(autoidm.folder())}. Run {console.value('pdt register')} "
+                  "first.")
+
+
+def new_settings(level: str | None, projects: str | None, backend: str | None,
+                 current: dict) -> dict:
+    folder, named = choose_projects(projects, current)
+    return {"version": SETTINGS_VERSION,
+            "level": level or current.get("level", service_commands.DEFAULT_LEVEL),
+            "projects": folder, "named_projects": named, "registrations": registrations_here(),
+            "backend": backend, "uv": shutil.which("uv"), "installed_by": __version__}
+
+
+def settings_to_serve(level: str | None, action: str) -> dict | None:
+    """The settings on disk, with `level` applied. With none on disk, it writes them from what
+    this computer holds. None after one error line."""
     settings = read_settings()
-    if settings is None:
-        console.error(f"This computer has no pdt service. Run {console.value('pdt service install')} "
-                      "first.")
-        return 1
-    return serve(settings, worker=False, once=False)
+    if settings is not None and level in (None, settings.get("level")):
+        return settings
+    if settings is None and not registrations_here():
+        say_no_registration()
+        return None
+    if needs_admin(action) or prepare_folder() != 0:
+        return None
+    settings = {**settings, "level": level} if settings else new_settings(level, None, None, {})
+    write_settings(settings)
+    return settings
+
+
+def run(worker: bool = False, level: str | None = None) -> int:
+    """`pdt service run`: the foreground loop. It needs only a registration."""
+    if worker:
+        return serve({"level": "manage"}, worker=True, once=False)
+    settings = settings_to_serve(level, "run")
+    return 1 if settings is None else serve(settings, worker=False, once=False)
 
 
 def tick() -> int:
     """`pdt service tick`: one pass, and then wait for the commands it started."""
-    settings = read_settings()
-    if settings is None:
-        console.error(f"This computer has no pdt service. Run {console.value('pdt service install')} "
-                      "first.")
-        return 1
-    return serve(settings, worker=False, once=True)
+    settings = settings_to_serve(None, "tick")
+    return 1 if settings is None else serve(settings, worker=False, once=True)
 
 
 def serve(settings: dict, worker: bool, once: bool) -> int:
@@ -545,7 +586,11 @@ def serve(settings: dict, worker: bool, once: bool) -> int:
             console.error("The service has no registration to serve. Run "
                           f"{console.value('pdt register')} first.")
             return 1
-        return loop(served, settings, worker, once)
+        config.write_text_atomically(pid_path(), json.dumps({"pid": os.getpid()}) + "\n")
+        try:
+            return loop(served, settings, worker, once)
+        finally:
+            pid_path().unlink(missing_ok=True)
 
 
 def add_registration(customer: str) -> None:
@@ -579,9 +624,7 @@ def install(level: str | None, projects: str | None, backend: str | None) -> int
         return 1
     found = registrations_here()
     if not found:
-        console.error(f"This computer has no AutoIDM registration in "
-                      f"{console.value(autoidm.folder())}. Run {console.value('pdt register')} "
-                      "first.")
+        say_no_registration()
         return 1
     code = prepare_folder()
     if code != 0:
@@ -592,11 +635,7 @@ def install(level: str | None, projects: str | None, backend: str | None) -> int
         console.error(console.escape(str(e)))
         return 1
     current = read_settings() or {}
-    folder, named = choose_projects(projects, current)
-    settings = {"version": SETTINGS_VERSION,
-                "level": level or current.get("level", service_commands.DEFAULT_LEVEL),
-                "projects": folder, "named_projects": named, "registrations": found,
-                "backend": name, "uv": shutil.which("uv"), "installed_by": __version__}
+    settings = new_settings(level, projects, name, current)
     if settings["uv"] is None:
         console.warn(f"pdt did not find {console.value('uv')} on the PATH, so an app run by the "
                      "service needs it on the service account's PATH.")
@@ -646,18 +685,19 @@ def allow(level: str) -> int:
 def remove() -> int:
     if needs_admin("remove"):
         return 1
-    settings = read_settings() or {}
-    name = settings.get("backend")
-    if name not in service_backends.BACKENDS:
+    settings = read_settings()
+    if settings is None:
         console.say("This computer has no pdt service.")
         return 0
-    try:
-        service_backends.BACKENDS[name].remove()
-    except service_backends.BackendError as e:
-        console.error(console.escape(str(e)))
-        return 1
+    name = settings.get("backend")
+    if name in service_backends.BACKENDS:
+        try:
+            service_backends.BACKENDS[name].remove()
+        except service_backends.BackendError as e:
+            console.error(console.escape(str(e)))
+            return 1
     settings_path().unlink(missing_ok=True)
-    console.done(f"Removed the pdt service from {console.value(name)}. The registrations stay.")
+    console.done("Removed the pdt service. The registrations stay.")
     return 0
 
 
@@ -678,6 +718,15 @@ def status(as_json: bool = False) -> int:
             running = service_backends.BACKENDS[name].running()
         except service_backends.BackendError as e:
             console.warn(console.escape(str(e)))
+    pid = running_pid()
+    if name in service_backends.BACKENDS:
+        words = f"{name} ({'running' if running else 'not running'})"
+        if pid and not running:
+            words += f", and a service runs in the foreground, PID {pid}"
+    elif pid:
+        words = f"none (running in the foreground, PID {pid})"
+    else:
+        words = "none (not running)"
     commands = [{"command_id": entry["command_id"], "operation": entry.get("operation"),
                  "project": (entry.get("args") or {}).get("project"),
                  "app": (entry.get("args") or {}).get("app"), "phase": entry.get("phase"),
@@ -690,13 +739,15 @@ def status(as_json: bool = False) -> int:
                      for customer in settings.get("registrations") or []]
     projects = sorted(projects_of(settings))
     if as_json:
-        console.data(json.dumps({"installed": True, "backend": name, "running": running,
+        console.data(json.dumps({"installed": name in service_backends.BACKENDS,
+                                 "backend": name or "none", "running": running or pid is not None,
+                                 "pid": pid,
                                  "level": settings.get("level"),
                                  "projects_folder": str(projects_folder(settings)),
                                  "projects": projects, "registrations": registrations,
                                  "commands": commands}))
         return 0
-    console.field("Backend", f"{name} ({'running' if running else 'not running'})")
+    console.field("Backend", words)
     console.field("Maximum level", settings.get("level", ""))
     console.field("Projects folder", str(projects_folder(settings)))
     console.field("Projects", ", ".join(projects) or "none")

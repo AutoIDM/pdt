@@ -549,7 +549,7 @@ def cmd_service(args) -> int:
     actions = {
         "install": lambda: service.install(args.level, args.projects, args.backend),
         "status": lambda: service.status(args.json),
-        "run": lambda: service.run(args.worker),
+        "run": lambda: service.run(args.worker, args.level),
         "tick": service.tick,
         "remove": service.remove,
         "allow": lambda: service.allow(args.level),
@@ -859,7 +859,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "cron starts one check each minute)")
     q = add_action(actions, "status", help="show the service, its last checks, and running commands")
     q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
-    q = add_action(actions, "run", help="run the service in this terminal")
+    q = add_action(actions, "run", help="run the service in this terminal, with no install")
+    q.add_argument("--level", choices=LEVELS,
+                   help="the most the portal may ask for (default: the installed level, else run)")
     q.add_argument("--worker", action="store_true",
                    help="act as a cloud worker, with the registration in the environment")
     add_action(actions, "tick", help="check once, and stay until no command runs")
