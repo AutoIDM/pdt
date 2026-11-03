@@ -977,7 +977,7 @@ def env_spec(app: dict) -> dict:
 
 
 def found_env_lines(app: dict) -> list[str]:
-    """The env vars the app's code reads that pdt.yml does not list, as lines for
+    """The env vars the app's code reads that its own pdt.yml does not list, as lines for
     the user, or none. Raises ConfigError, like env_spec."""
     from pdt import console
     spec = env_spec(app)
@@ -993,7 +993,8 @@ def found_env_lines(app: dict) -> list[str]:
         found += [(name, f"optional, {first.get(name, 'the code')}") for name in optional]
     if not found:
         return []
-    return console.rows(f"env vars the code reads that {console.value(APP_FILE)} does not list:",
+    own_file = f"{app['name']}/{APP_FILE}"
+    return console.rows(f"env vars the code reads that {console.value(own_file)} does not list:",
                         found)
 
 
@@ -1181,10 +1182,13 @@ def validate_app(name: str) -> list[str]:
         return [str(e)]
     problems = []
     if (find_project() / name / OLD_APP_FILE).is_file():
-        problems.append(
-            f"{name}/{OLD_APP_FILE}: an app's settings now live in {name}/{APP_FILE}. "
-            f"Rename the file, and pin pdt-cli {APP_FILE_SINCE} or newer in {name}/run.py, "
-            f"because older versions read {OLD_APP_FILE}")
+        rename = f"{name}/{OLD_APP_FILE}: an app's settings now live in {name}/{APP_FILE}. "
+        if (find_project() / name / "run.py").is_file():
+            rename += (f"Rename the file, and pin pdt-cli {APP_FILE_SINCE} or newer in "
+                       f"{name}/run.py, because older versions read {OLD_APP_FILE}")
+        else:
+            rename += "Rename the file"
+        problems.append(rename)
     try:
         platform = mapping(root_cfg, "platform", PROJECT_FILE)
     except ConfigError as e:

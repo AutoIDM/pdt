@@ -89,6 +89,12 @@ def test_an_old_config_yml_is_reported_and_not_read(project):
     assert merged_app("my-report")["schedule"] is None
 
 
+def test_an_old_config_yml_in_a_powershell_app_asks_for_no_run_py_pin(project):
+    (powershell_app(project, "ad-report") / "config.yml").write_text("schedule: daily\n")
+    assert validate_app("ad-report")[0] == (
+        "ad-report/config.yml: an app's settings now live in ad-report/pdt.yml. Rename the file")
+
+
 def test_reports_a_useful_error_outside_any_project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     monkeypatch.chdir(tmp_path)

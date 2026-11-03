@@ -104,14 +104,14 @@ def test_the_project_line_says_how_pdt_found_the_project(project, monkeypatch):
 
 def test_the_env_vars_a_python_app_reads_are_named_with_their_line(py_app):
     assert plain(config.found_env_lines(config.merged_app("py-report"))) == [
-        "env vars the code reads that pdt.yml does not list:",
+        "env vars the code reads that py-report/pdt.yml does not list:",
         "  TENANT_ID  required, run.py line 4",
         "  NOTE       optional, run.py line 5"]
 
 
 def test_the_env_vars_a_powershell_app_reads_are_named_with_their_line(ps_app):
     assert plain(config.found_env_lines(config.merged_app("ps-report"))) == [
-        "env vars the code reads that pdt.yml does not list: "
+        "env vars the code reads that ps-report/pdt.yml does not list: "
         "TENANT_ID (required, report.ps1 line 4)"]
 
 
@@ -124,7 +124,7 @@ def test_validate_says_what_it_found_for_each_app(py_app, project, monkeypatch, 
     assert run_cli(monkeypatch, "validate") == 0
     out = text(capsys)
     assert f"Project folder: {project} (the first folder with pdt.yml, from here up)" in out
-    assert ("py-report runs run.py env vars the code reads that pdt.yml does not list: "
+    assert ("py-report runs run.py env vars the code reads that py-report/pdt.yml does not list: "
             "TENANT_ID required, run.py line 4 NOTE optional, run.py line 5 "
             "no .env file in py-report or a folder above it") in out
 
@@ -155,11 +155,11 @@ def test_deploy_says_what_it_found_before_the_provider_starts(py_app, ps_app, mo
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: seen.append(text(capsys)) or 1)
     deploy.deploy(app, assume_yes=True)
     found = {
-        "py-report": "py-report runs run.py env vars the code reads that pdt.yml does not "
+        "py-report": "py-report runs run.py env vars the code reads that py-report/pdt.yml does not "
                      "list: TENANT_ID required, run.py line 4 NOTE optional, run.py line 5",
         "ps-report": "ps-report runs, in order: report.ps1 (run.ps1 is in the folder, so only it "
                      "runs) modules to install, found in the scripts: ImportExcel (latest, "
-                     "Import-Module in report.ps1) env vars the code reads that pdt.yml does "
+                     "Import-Module in report.ps1) env vars the code reads that ps-report/pdt.yml does "
                      "not list: TENANT_ID (required, report.ps1 line 4)",
     }[app]
     assert found in seen[0]
