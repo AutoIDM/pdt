@@ -8,6 +8,11 @@ command against the pinned keys, claims it, and starts it (pdt.service_runner). 
 the two intervals. `pdt service tick` does this once and stays until no command runs, so cron
 needs no running process, and a tick that finds a service running exits at once.
 
+The service reads the settings at each pass of its loop. A change (`pdt service allow`,
+`install`, or a new `pdt register`) starts a check-in at once, so the portal shows the new level
+and registration in about a second. When `pdt service remove` deletes the settings, the service
+stops.
+
 The service serves each project the settings name, and each folder directly in the projects
 folder that holds pdt.yml. The projects folder has a default, `<data folder>/service/projects`,
 and a new project from `sync_down` goes there. The service reads this list at each check-in, so
@@ -218,6 +223,8 @@ class Served:
     keys: list[dict]
     next_poll: float = 0.0
     checked: bool = False
+    # A change of the settings waits for no doorbell and no interval.
+    due: bool = False
 
 
 def read_keys(customer: str) -> list[dict]:
@@ -397,7 +404,7 @@ def check(served: Served, settings: dict, worker: bool, pool: Pool, states: dict
     state = states.setdefault(served.customer, {})
     now = time.time()
     url = state.get("doorbell_url")
-    due = (not url or state.get("more")
+    due = (served.due or not url or state.get("more")
            or now - state.get("last_checkin", 0) >= state.get("checkin_seconds",
                                                               DEFAULT_CHECKIN_SECONDS))
     new_etag = None
@@ -413,13 +420,44 @@ def check(served: Served, settings: dict, worker: bool, pool: Pool, states: dict
             say(f"AutoIDM did not answer the check-in of {served.customer}: {e}")
         else:
             state["etag"] = new_etag or state.get("etag")
+            served.due = False
     served.checked = not state.get("more")
     poll = state.get("poll_seconds", DEFAULT_POLL_SECONDS)
     served.next_poll = time.monotonic() + (0 if state.get("more")
                                            else max(MINIMUM_POLL_SECONDS, poll))
 
 
-def loop(served: dict[str, Served], settings_reader, worker: bool, once: bool) -> int:
+def settings_mark(settings: dict) -> tuple:
+    """What the portal or this loop must act on when it changes."""
+    return (settings.get("level"), settings.get("projects"),
+            tuple(settings.get("named_projects") or []),
+            tuple(settings.get("registrations") or []))
+
+
+def current_settings(last: dict) -> dict | None:
+    """The settings on disk, or `last` while another process replaces the file, or None when
+    the file is gone."""
+    found = read_settings()
+    if found is not None:
+        return found
+    return last if settings_path().exists() else None
+
+
+def apply_settings(served: dict[str, Served], settings: dict) -> None:
+    """Serve the registrations the changed settings name, and check in at once."""
+    os.environ[service_runner.PROJECTS_HOME_ENV] = str(projects_folder(settings))
+    wanted = machine_served(settings)
+    for customer in list(served):
+        if customer not in wanted:
+            del served[customer]
+    for customer, item in wanted.items():
+        served.setdefault(customer, item).keys = item.keys
+    for item in served.values():
+        item.next_poll = 0.0
+        item.due = True
+
+
+def loop(served: dict[str, Served], settings: dict, worker: bool, once: bool) -> int:
     pool = Pool()
     stopping: list[int] = []
 
@@ -429,12 +467,19 @@ def loop(served: dict[str, Served], settings_reader, worker: bool, once: bool) -
     previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
     _said_once.clear()
     states = read_state()
-    registrations = {name: item.registration for name, item in served.items()}
-    service_runner.recover(pool, registrations)
+    service_runner.recover(pool, {name: item.registration for name, item in served.items()})
     last_recover = time.monotonic()
+    seen = settings_mark(settings)
     try:
         while not stopping:
-            settings = settings_reader()
+            if not worker:
+                settings = current_settings(settings)
+                if settings is None:
+                    say("The service settings are gone, so the service stops.")
+                    break
+                if settings_mark(settings) != seen:
+                    seen = settings_mark(settings)
+                    apply_settings(served, settings)
             changed = False
             for item in served.values():
                 if time.monotonic() >= item.next_poll:
@@ -444,7 +489,8 @@ def loop(served: dict[str, Served], settings_reader, worker: bool, once: bool) -
                 write_state(states)
             pool.start_ready()
             if time.monotonic() - last_recover >= DEFAULT_POLL_SECONDS:
-                service_runner.recover(pool, registrations)
+                service_runner.recover(pool, {name: item.registration
+                                              for name, item in served.items()})
                 last_recover = time.monotonic()
             console.drain()
             if once and all(item.checked for item in served.values()) and not pool.ids():
@@ -499,8 +545,14 @@ def serve(settings: dict, worker: bool, once: bool) -> int:
             console.error("The service has no registration to serve. Run "
                           f"{console.value('pdt register')} first.")
             return 1
-        reader = (lambda: settings) if worker else (lambda: read_settings() or settings)
-        return loop(served, reader, worker, once)
+        return loop(served, settings, worker, once)
+
+
+def add_registration(customer: str) -> None:
+    """Name a new registration in the settings, when this computer has a service."""
+    settings = read_settings()
+    if settings is not None and customer not in (settings.get("registrations") or []):
+        write_settings({**settings, "registrations": [*(settings.get("registrations") or []), customer]})
 
 
 def registrations_here() -> list[str]:

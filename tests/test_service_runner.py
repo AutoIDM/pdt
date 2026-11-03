@@ -1,10 +1,12 @@
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -709,6 +711,111 @@ def test_a_cancel_in_a_check_in_stops_the_running_command(machine, portal, monke
     portal.routes["/v1/service/checkin"] = answer
     assert service.tick() == 0
     assert portal.result()["outcome"] == "cancelled"
+
+
+def run_loop(monkeypatch, steps):
+    """Run the real loop in this thread. Each step runs at one pause of the loop, and the loop
+    stops after the last one."""
+    remaining = list(steps)
+
+    def pause(_seconds):
+        if remaining:
+            remaining.pop(0)()
+        else:
+            signal.raise_signal(signal.SIGTERM)
+
+    monkeypatch.setattr(service, "time", SimpleNamespace(
+        sleep=pause, time=time.time, monotonic=time.monotonic, strftime=time.strftime,
+        gmtime=time.gmtime))
+    return service.serve(settings(), worker=False, once=False)
+
+
+def test_pdt_service_allow_checks_in_at_once(machine, portal, monkeypatch, capsys):
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
+    assert run_loop(monkeypatch, [lambda: service.allow("view"), lambda: None]) == 0
+    bodies = portal.bodies("/v1/service/checkin")
+    assert [body["maximum_level"] for body in bodies] == ["manage", "view"]
+
+
+def test_a_failed_check_in_after_a_change_stays_due(machine, portal, monkeypatch):
+    item = served()
+    item.due = True
+    portal.routes["/v1/service/checkin"] = lambda _body: (500, {"error": "boom"})
+    service.check(item, settings(), False, Pool(), {})
+    assert item.due is True
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
+    service.check(item, settings(), False, Pool(), {})
+    assert item.due is False
+
+
+def test_an_install_that_changes_the_projects_checks_in_at_once(machine, portal, monkeypatch, tmp_path):
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
+    fresh = tmp_path / "elsewhere" / "named"
+    (fresh / "hr").mkdir(parents=True)
+    (fresh / "hr" / "run.py").write_text("print('hi')\n")
+    (fresh / "pdt.yml").write_text(f"managed_services:\n  customer: {CUSTOMER}\n")
+
+    def install():
+        service.write_settings({**settings(), "named_projects": [str(fresh)]})
+
+    assert run_loop(monkeypatch, [install, lambda: None]) == 0
+    bodies = portal.bodies("/v1/service/checkin")
+    assert [item["name"] for item in bodies[-1]["projects"]] == ["example", "named"]
+    assert len(bodies) == 2
+
+
+def test_the_new_projects_folder_applies_with_no_restart(machine, portal, monkeypatch, tmp_path):
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
+
+    def move():
+        service.write_settings({**settings(), "projects": str(tmp_path / "moved")})
+
+    assert run_loop(monkeypatch, [move, lambda: None]) == 0
+    assert os.environ[service_runner.PROJECTS_HOME_ENV] == str(tmp_path / "moved")
+
+
+def test_a_new_registration_is_served_with_no_restart(machine, portal, monkeypatch):
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
+    other = "cus_00000000aa"
+
+    def register():
+        folder = autoidm.folder()
+        register_cli.write_key(folder / f"{other}.key", Ed25519PrivateKey.generate())
+        (folder / f"{other}.json").write_text(json.dumps({
+            "installation_id": "ins_00000000bb", "customer_id": other, "api_url": portal.url,
+            "command_keys": KEYS}))
+        service.add_registration(other)
+
+    assert run_loop(monkeypatch, [register, lambda: None]) == 0
+    assert settings()["registrations"] == [CUSTOMER, other]
+    assert set(service.read_state()) == {CUSTOMER, other}
+
+
+def test_add_registration_with_no_service_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path / "none"))
+    service.add_registration(CUSTOMER)
+    assert not service.settings_path().exists()
+
+
+def test_a_removed_registration_stops_being_served(machine, portal, monkeypatch):
+    item = served()
+    found = {CUSTOMER: item, "cus_00000000aa": served()}
+    service.apply_settings(found, settings())
+    assert list(found) == [CUSTOMER]
+    assert item.due is True and item.next_poll == 0.0
+
+
+def test_the_service_stops_when_the_settings_are_gone(machine, portal, monkeypatch, capsys):
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
+    steps = [lambda: service.settings_path().unlink()]
+    assert run_loop(monkeypatch, steps) == 0
+    assert "settings are gone" in (service_runner.service_folder() / "service.log").read_text()
+
+
+def test_a_settings_file_being_replaced_does_not_stop_the_service(machine):
+    last = settings()
+    service.settings_path().write_text("{ half a file")
+    assert service.current_settings(last) is last
 
 
 def test_one_service_runs_on_a_computer(machine, portal, capsys):
