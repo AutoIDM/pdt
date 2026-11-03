@@ -279,7 +279,9 @@ def test_setup_sends_no_test_message_on_the_default_answer_and_names_pdt_alerts_
     answers(monkeypatch, "", "", url, "y", "n")
     assert alerts_cli.setup() == 0
     assert seen == []
-    assert "Send one later with pdt alerts test." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Send one later with pdt alerts test." in out
+    assert "\n\n\nNext steps:" not in out and "\n\nNext steps:" in out
 
 
 APP_EVENTS = ["app:deploy-started", "app:deploy-completed", "app:deploy-failed", "app:destroy-started",
