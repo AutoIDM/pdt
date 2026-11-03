@@ -125,7 +125,7 @@ platform:
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
-| `subscription` | An Azure subscription ID. | The active subscription of the Azure CLI (`az account show`). The first deploy saves it. pdt asks nothing. When you are not logged in, pdt asks to open the browser login. | Selects the subscription. When the Azure CLI uses another subscription, the deploy switches the Azure CLI to this one. |
+| `subscription` | An Azure subscription ID. | The active subscription of the Azure CLI (`az account show`). A deploy at a terminal saves it; a deploy with no one to ask (CI) uses it and does not save it. pdt asks nothing. When you are not logged in, pdt asks at a terminal to open the browser login, and a deploy with no one to ask stops. | Selects the subscription. When the Azure CLI uses another subscription, the deploy switches the Azure CLI to this one. |
 | `resource_group` | A resource group name. | `pdt` | Names the resource group that holds the project's resources. |
 | `environment` | An environment you already own, written as `<resource-group>/<name>`. | The shared environment `pdt-<region>` in the resource group `pdt-shared`. | Selects the Container Apps environment. pdt never creates, changes, or deletes an environment that you name here. |
 
@@ -237,7 +237,7 @@ pdt also reads the app's code and adds each env var name that it finds:
 
 This scan skips each name that starts with `PDT_`. List each `PDT_` name that your app needs, or the deploy does not send it. An alert entry adds its own webhook name, so do not list that name.
 
-A name that ends in `_PATH` names a file. A deploy reads the file and sends its contents as `<NAME>_B64`. pdt looks for a relative path next to each `.env` file, then in the app folder, then in the project folder. A value for `<NAME>_B64` also satisfies a `required` name `<NAME>_PATH`. A deploy sends only the names in `config.yml`. To set `<NAME>_B64` yourself, list it too, for example under `optional`.
+A name that ends in `_PATH` names a file. A deploy reads the file and sends its contents as `<NAME>_B64`. pdt looks for a relative path next to each `.env` file, then in the app folder, then in the project folder. A value for `<NAME>_B64` also satisfies a `required` name `<NAME>_PATH`. A deploy sends only the env vars that the app lists (in `config.yml` or its `pdt.yml` entry), that pdt finds in the code, or that the alert settings need. To set `<NAME>_B64` yourself, list it too, for example under `optional`.
 
 ### PowerShell keys
 
