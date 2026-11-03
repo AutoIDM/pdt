@@ -181,7 +181,11 @@ def add(place: str, assume_yes: bool, plan_only: bool, registration: object | No
     autoidm.post(found, "/v1/grants/finish", {"version": 1, "place": place, "role": role})
     records = read_records()
     records[place] = {"role": role, "installation_id": found.installation_id}
-    write_records(records)
+    try:
+        write_records(records)
+    except OSError as e:
+        console.warn(f"{console.value('pdt grant list')} will not show this place: "
+                     f"{console.escape(str(e))}")
     console.done(f"AutoIDM can now ask to act in {console.value(place)} as {console.value(role)}. "
                  "The portal checks it before it uses it.")
     return 0
@@ -195,7 +199,11 @@ def remove(place: str, assume_yes: bool, plan_only: bool) -> int:
         return code
     if place in records:
         del records[place]
-        write_records(records)
+        try:
+            write_records(records)
+        except OSError as e:
+            console.warn(f"{console.value('pdt grant list')} still shows this place: "
+                         f"{console.escape(str(e))}")
     console.done(f"Removed the AutoIDM identity from {console.value(place)}.")
     return 0
 
