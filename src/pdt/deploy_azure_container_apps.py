@@ -60,7 +60,8 @@ from pdt.deploy_azure import (
     azure_settings, check_shared_names, clean_name, cli_credential_store, cost_estimate,
     deleted_vault, delete_unless_locked,
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
-    ensure_secret, ensure_store, ensure_workspace, group_can_be_deleted, held_token_store, list_remaining,
+    ensure_secret, ensure_store, ensure_workspace, granted_secret_value, group_can_be_deleted,
+    held_token_store, list_remaining,
     managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
     portal_url, purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     revoke_role, run_basis, run_quiet, secret_actions, secret_name,
@@ -70,8 +71,8 @@ from pdt.deploy_azure import (
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, gather_secrets,
-    image_action, run_build, run_secrets, ssh_build_args, store_cost_label, store_kept_line,
-    warn_if_locked)
+    image_action, make_registration, reads_registration, registration_secrets, run_build,
+    run_secrets, ssh_build_args, store_cost_label, store_kept_line, warn_if_locked)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -1074,7 +1075,6 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     job = job_name(settings, name)
     cron = config.cron_expression(app["schedule"])
     values = gather_secrets(app)
-    payload = json.dumps(values, sort_keys=True)
     sid = secret_name(name)
     rg = settings["resource_group"]
 
@@ -1084,7 +1084,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     locks = shared_locks(settings, lock_owner(name))
     legacy = legacy_job_name(name)
     store = store_settings(settings) if app["storage"] else None
-    state = read_state(settings, job, legacy, sid, bool(values), locks, store,
+    wanted_secret = bool(values) or reads_registration()
+    state = read_state(settings, job, legacy, sid, wanted_secret, locks, store,
                        held_token_store(settings, name, access_token(STORAGE_RESOURCE))
                        if store else None, regions.local_currency())
     check_shared_names(settings, state["resources"])
@@ -1120,6 +1121,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     if not owned_by(legacy_job, name):
         legacy_job = None
     vault_exists, current_secret = secret_state(settings, sid, name, state["secret"])
+    values.update(registration_secrets(current_secret))
+    payload = json.dumps(values, sort_keys=True)
     store_present = False
     usage = None
     if store:
@@ -1186,6 +1189,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     vault_id = ensure_group_and_vault(
         settings, tuple(name for name in (*COMMON_PROVIDERS, *PROVIDERS) if not found[name]),
         vault_exists, group)
+    if vault_exists and current_secret is None and wanted_secret:
+        current_secret = granted_secret_value(settings, sid)
+        values.update(registration_secrets(current_secret))
     if not registry_exists:
         console.step(f"creating ACR {console.value(settings['registry'])}")
         run_quiet("acr", "create", "--name", settings["registry"],
@@ -1232,6 +1238,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
 
     fingerprint = ensure_image(app, image, "linux/amd64", "ACR Tasks" if cloud else "",
                                deployed, current, build)
+    values = make_registration(values, {"provider": "azure",
+                                        "subscription": settings["subscription"],
+                                        "region": settings["region"]})
+    payload = json.dumps(values, sort_keys=True)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
     if legacy_job:
         retire_job(settings, legacy, legacy_job, store, sid)

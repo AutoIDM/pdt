@@ -12,6 +12,8 @@
 #     "google-auth",
 #     "google-cloud-logging==3.17.0",
 #     "duckdb",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Deploy an app to Google Cloud as a scheduled Cloud Run job.
@@ -83,9 +85,9 @@ from pdt import regions
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
-    ensure_image, fail, fetch_json, gather_secrets, image_action, run_build,
-    run_main, run_secrets, secret_contents, ssh_build_args, store_cost_label, store_kept_line,
-    store_name, store_plan_lines, store_suffix, warn_if_locked)
+    ensure_image, fail, fetch_json, gather_secrets, image_action, make_registration,
+    registration_secrets, run_build, run_main, run_secrets, secret_contents, ssh_build_args,
+    store_cost_label, store_kept_line, store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -550,13 +552,20 @@ def run_job_identity(run_job: dict) -> tuple[str, str]:
 
 
 def secret_value(project: str, sid: str) -> str | None:
+    """The latest value of the secret, or None when it has none. A read that fails for another
+    reason stops the command, so a deploy never replaces a value it could not read."""
     proc = subprocess.run(
         [GCLOUD, "secrets", "versions", "access", "latest",
          "--secret", sid, "--project", project],
         stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    if proc.returncode != 0:
+    if proc.returncode == 0:
+        return proc.stdout
+    if not_found(proc.stderr):
         return None
-    return proc.stdout
+    console.say(console.escape(proc.stderr.strip()))
+    fail(f"pdt could not read Secret Manager secret {console.value(sid)}. The current login "
+         f"needs {console.value('secretmanager.versions.access')} on it, for example through "
+         f"the role {console.value('roles/secretmanager.secretAccessor')}.")
 
 
 def build_image(stage: Path, image: str, region: str) -> None:
@@ -933,13 +942,14 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         sid = secret_id(name)
         secret = read_json_or_none("secrets", "describe", sid, "--project", project)
         require_managed(secret, f"Secret Manager secret {console.value(sid)}")
+        current = secret_value(project, sid) if secret else None
+        values.update(registration_secrets(current))
         payload = json.dumps(values, sort_keys=True)
         secret_state = None
         if values:
             if secret is None:
                 secret_state = "create"
             else:
-                current = secret_value(project, sid)
                 secret_state = "unchanged" if current == payload else "update"
 
     actions = [console.Markup(("use existing" if repo_exists else "create")
@@ -1022,6 +1032,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             run_quiet("storage", "buckets", "update", f"gs://{bucket}", "--update-labels",
                       ",".join(f"{key}={value}" for key, value in STORE_TAGS.items()))
         grant_store_access(bucket, name, sa)
+    values = make_registration(values, {"provider": "google-cloud", "project": project,
+                                        "region": region})
+    payload = json.dumps(values, sort_keys=True)
     if secret_state:
         if secret_state == "create":
             console.step(f"creating secret {console.value(sid)}")

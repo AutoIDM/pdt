@@ -20,7 +20,10 @@ runner, and the container image start it there; it also runs as
 It loads the app's config and env (PDT_ENV_JSON secrets become env vars),
 stops when an env var that config.yml lists as required, or that a script
 reads and config.yml does not list, is not set,
-exports an empty folder as PDT_OUTPUT_DIR and the app's merged `config:`
+exports an empty folder as PDT_OUTPUT_DIR (`output_folder`: the one
+`lifecycle.run_job` names, else .pdt/runs/<run id>/output in the app folder,
+the folder `storage.sync` gives a Python app, else a temporary folder when pdt
+cannot write in the app folder) and the app's merged `config:`
 section as JSON in PDT_CONFIG_JSON, then runs each entry script in
 order through pwsh. It stops at the first failure unless `continue_on_error`
 is true. The entry scripts are
@@ -49,7 +52,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, powershell
+from pdt import config, managed_services, powershell
 from pdt.pwsh import ensure_pwsh
 from pdt.utils import storage
 from pdt.utils.log import die, log
@@ -71,6 +74,17 @@ def pwsh_command(script: Path) -> str:
 def reads_state(files: list[dict]) -> bool:
     """Whether a scanned script reads $env:PDT_STATE_DIR, so the run needs state/."""
     return any(read["name"].upper() == "PDT_STATE_DIR" for f in files for read in f["envReads"])
+
+
+def output_folder(app_dir: Path, local: Path) -> Path:
+    """PDT_OUTPUT_DIR when `lifecycle.run_job` named it for AutoIDM, else the run's output
+    folder that managed_services.output_folder picks, with `local`/output in place of a folder
+    pdt cannot write in."""
+    named = os.environ.get("PDT_OUTPUT_DIR", "").strip()
+    folder = (Path(named) if named
+              else managed_services.output_folder(app_dir, storage.RUN_ID, local / "output"))
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
 
 def run_entries(pwsh: str, app_dir: Path, entries: list[str], continue_on_error: bool,
@@ -113,8 +127,8 @@ def main(argv: list[str]) -> int:
         die(1, str(exc))
     store = storage.store() if app["storage"] else None
     with tempfile.TemporaryDirectory(prefix="pdt-run-") as local:
-        output, state = Path(local) / "output", Path(local) / "state"
-        output.mkdir()
+        output = output_folder(app_dir, Path(local))
+        state = Path(local) / "state"
         state.mkdir()
         lease = None
         if store is not None and reads_state(files):

@@ -5,6 +5,8 @@
 #     "pyyaml",
 #     "python-dotenv",
 #     "rich",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Lifecycle events: a name, the UTC time, and a few parameters.
@@ -56,15 +58,25 @@ it, and the Windows task and every cloud image (a copy at
 script around the app's command, from the app folder, so the events land in
 the run's log. A SIGKILL, a Windows task that Task Scheduler ends, or a
 power loss stops pdt at once, so no event fires.
+
+When the project sets `managed_services`, `run_job` also gives the run to
+pdt.managed_services, the same way on every provider: the start and end
+events, the command's output (which it then also writes to a file as it
+prints it), and the run's storage output folder, which it names to the
+command in PDT_OUTPUT_DIR (managed_services.output_folder). A log or
+folder pdt cannot make, or any other error in a call to managed_services
+(`monitored`), costs only what AutoIDM gets, never the run.
 """
 
 from __future__ import annotations
 
 import os
 import queue
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -74,7 +86,7 @@ from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import alert_message, config, console, slack, teams
+from pdt import alert_message, config, console, managed_services, slack, teams
 from pdt.utils import storage
 
 JOB_RUN_STARTED = "job:run-started"
@@ -287,7 +299,17 @@ def emit(name: str, **params: object) -> Event:
 
 
 def app_params(app: str, provider: str) -> dict[str, object]:
-    return {"project": config.find_project().name, "app": app, "provider": provider}
+    return {"project": config.project_name(), "app": app, "provider": provider}
+
+
+def monitored(what: str, call: Callable[[], object], default: object = None):
+    """`call()`, or `default` after one warning when it raises: a failure in what pdt sends to
+    AutoIDM never changes the run or its exit code."""
+    try:
+        return call()
+    except Exception as e:
+        console.warn(f"AutoIDM did not get {what}: {console.escape(f'{type(e).__name__}: {e}')}")
+        return default
 
 
 def run_job(app: str, provider: str, command: list[str], cwd: Path,
@@ -298,7 +320,24 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     trigger = "manual" if not deployed or os.environ.get(TRIGGER_ENV) == "manual" else "schedule"
     params = {**app_params(app, provider), "run_id": storage.RUN_ID, "deployed": deployed,
               "trigger": trigger}
-    emit(JOB_RUN_STARTED, **params)
+    sender = monitored("this run", lambda: managed_services.sender(app))
+    event = emit(JOB_RUN_STARTED, **params)
+    if sender is not None:
+        monitored(f"the {console.value(event.name)} event",
+                  lambda: sender.run_started(event.at, event.name, params))
+    scratch = log = output = None
+    if sender is not None and (sender.wants("send_logs") or sender.wants("send_artifacts")):
+        try:
+            scratch = Path(tempfile.mkdtemp(prefix=f"pdt-{storage.RUN_ID}-"))
+        except OSError as e:
+            console.warn(f"pdt cannot keep the output or the artifacts of this run for AutoIDM: "
+                         f"{console.escape(str(e))}")
+    if scratch is not None and sender.wants("send_logs"):
+        log = scratch / f"{storage.RUN_ID}.log"
+    if scratch is not None and sender.wants("send_artifacts"):
+        output = monitored("the artifacts of this run", lambda: managed_services.output_folder(
+            cwd, storage.RUN_ID, scratch / "output"))
+    began = time.monotonic()
     stopped: list[int] = []
     child: subprocess.Popen | None = None
 
@@ -311,23 +350,109 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     # Before Popen, so the command does not inherit a SIGINT that a cloud image's sh ignores.
     previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
     try:
-        child = subprocess.Popen(command, cwd=cwd, env={**(env or os.environ),
-                                                        "PDT_RUN_ID": storage.RUN_ID})
+        child_env = {**(env or os.environ), "PDT_RUN_ID": storage.RUN_ID}
+        if output is not None:
+            child_env["PDT_OUTPUT_DIR"] = str(output)
+        children: queue.Queue[subprocess.Popen] = queue.Queue(1)
+        copier = None if log is None else copy_output(children, log)
+        if copier is None:
+            child = subprocess.Popen(command, cwd=cwd, env=child_env)
+        else:
+            # Python holds output to a pipe until a buffer fills, so a print() line would
+            # land after a later stderr line.
+            child = subprocess.Popen(command, cwd=cwd, env={"PYTHONUNBUFFERED": "1", **child_env},
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            children.put(child)
         code = child.wait()
+        if copier is not None:
+            copier.join(DRAIN_SECONDS)
         if code < 0:
             code = 128 - code
         state = f"runs/*-{storage.RUN_ID}/"
         if stopped:
-            emit(JOB_RUN_FAILED, **params, exit_code=code, reason="interrupted",
-                 signal=signal.Signals(stopped[0]).name, state=state)
+            name = JOB_RUN_FAILED
+            details = {"exit_code": code, "reason": "interrupted",
+                       "signal": signal.Signals(stopped[0]).name}
         else:
-            emit(JOB_RUN_COMPLETED if code == 0 else JOB_RUN_FAILED, **params, exit_code=code,
-                 state=state)
+            name = JOB_RUN_COMPLETED if code == 0 else JOB_RUN_FAILED
+            details = {"exit_code": code}
+        if sender is not None and monitored("the end of this run", lambda: sender.run_ended(
+                name, {**params, **details, "state": state}, time.monotonic() - began, log,
+                output), False):
+            console.error(sender.refusal())
+            if code == 0:
+                code = managed_services.UNAUTHORIZED_EXIT
+                name, details = JOB_RUN_FAILED, {"exit_code": code, "reason": "unauthorized"}
+        emit(name, **params, **details, state=state)
         flush()
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
     return code
+
+
+# A process the command started in the background can hold the pipe open.
+DRAIN_SECONDS = 2
+
+
+def copy_output(children: queue.Queue[subprocess.Popen], log: Path) -> threading.Thread | None:
+    def copy() -> None:
+        """Print the command's output and keep it in `log`, up to one byte over
+        MAX_UPLOAD_BYTES so the upload skips a longer log. A failed write to stdout or to `log`
+        stops only that write, so the command never waits on a pipe that no one reads."""
+        child = children.get()
+        out = None
+        try:
+            kept = log.open("wb", buffering=0)
+        except OSError as e:
+            console.warn(f"pdt cannot keep the output of this run for AutoIDM: "
+                         f"{console.escape(str(e))}")
+            kept = None
+        printing = True
+        size = 0
+        while True:
+            chunk = child.stdout.read1()
+            if chunk == b"":
+                break
+            if printing:
+                try:
+                    if out is None:
+                        sys.stdout.flush()
+                        out = sys.stdout.buffer
+                    out.write(chunk)
+                    out.flush()
+                except (OSError, ValueError, AttributeError) as e:
+                    console.say(f"pdt stopped printing the output of this run: "
+                                f"{console.escape(str(e))}", stderr=True)
+                    printing = False
+            if kept is None:
+                continue
+            piece = chunk[:managed_services.MAX_UPLOAD_BYTES + 1 - size]
+            try:
+                kept.write(piece)
+            except OSError as e:
+                console.warn(f"pdt stopped keeping the output of this run for AutoIDM: "
+                             f"{console.escape(str(e))}")
+                kept.close()
+                kept = None
+                continue
+            size += len(piece)
+            if size > managed_services.MAX_UPLOAD_BYTES:
+                kept.close()
+                kept = None
+        if kept is not None:
+            kept.close()
+
+    copier = threading.Thread(target=copy, daemon=True)
+    try:
+        copier.start()
+    except RuntimeError as e:
+        console.warn(f"pdt cannot keep the output of this run for AutoIDM: "
+                     f"{console.escape(str(e))}")
+        return None
+    return copier
 
 
 def main(argv: list[str]) -> int:

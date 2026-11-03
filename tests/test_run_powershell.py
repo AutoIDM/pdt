@@ -1,6 +1,7 @@
 """The wrapper that runs a PowerShell app: `src/pdt/run_powershell.py`."""
 
 import json
+import os
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -281,3 +282,43 @@ def test_scripts_that_do_not_read_pdt_state_dir_leave_state_alone(app_dir, wrapp
 
     assert calls == [""]
     assert not stored_state(app_dir).exists()
+
+
+def test_the_from_scripts_run_py_writes_into_the_output_folder_the_lifecycle_names(
+        app_dir, monkeypatch, tmp_path):
+    from pdt import scaffold
+
+    (app_dir / "a.ps1").write_text("")
+    run_py = app_dir / "run.py"
+    run_py.write_text(scaffold.RUN_PY_TEXT)
+    namespace = {"__file__": str(run_py), "__name__": "run_py"}
+    exec(compile(scaffold.RUN_PY_TEXT, str(run_py), "exec"), namespace)
+    monkeypatch.setitem(namespace, "ensure_pwsh", lambda: "/fake/pwsh")
+    monkeypatch.setattr(namespace["powershell"], "extract", lambda folder: {"files": [
+        {"file": "a.ps1", "localInvocations": [], "envReads": []}]})
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_pwsh([], {"a.ps1": 0}))
+    named = tmp_path / "named" / "output"
+    monkeypatch.setenv("PDT_OUTPUT_DIR", str(named))
+
+    assert namespace["main"]() == 0
+
+    assert [path.name for path in named.iterdir()] == ["a.csv"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod does not refuse writes on Windows")
+def test_an_app_folder_pdt_cannot_write_in_still_runs_and_stores_the_output(
+        app_dir, wrapper, monkeypatch):
+    (app_dir / "a.ps1").write_text("")
+    monkeypatch.delenv("PDT_OUTPUT_DIR", raising=False)
+    calls = []
+    monkeypatch.setattr(wrapper.subprocess, "run", fake_pwsh(calls, {"a.ps1": 0}))
+    app_dir.chmod(0o555)
+    try:
+        assert wrapper.main([str(app_dir)]) == 0
+    finally:
+        app_dir.chmod(0o755)
+
+    (_, kwargs), = calls
+    assert not Path(kwargs["env"]["PDT_OUTPUT_DIR"]).is_relative_to(app_dir)
+    (run,) = (app_dir.parent / ".pdt" / "storage" / "my-report" / "runs").iterdir()
+    assert "a.csv" in [path.name for path in (run / "output").iterdir()]
