@@ -84,11 +84,24 @@ def test_a_repeating_trigger_has_one_start_and_a_15_minute_interval():
     assert "<ScheduleByDay>" in xml
 
 
-def test_a_repeating_trigger_lasts_to_the_end_of_the_day_and_every_trigger_has_no_time_limit():
+@pytest.mark.parametrize("cron", ["* * * * 5", "* * 1 * *", "*/15 * * * 5", "5 * * * 5",
+                                  "*/20 * 1,15 * *"])
+def test_a_repetition_starts_the_last_slot_of_its_day_and_nothing_at_the_next_midnight(cron):
+    xml = deploy_windows.schedule_triggers(cron)
+    start = re.search(r"<StartBoundary>2000-01-01T(\d\d):(\d\d):00", xml)
+    first = int(start.group(1)) * 60 + int(start.group(2))
+    every = re.search(r"<Interval>PT(?:(\d+)M|1H)</Interval>", xml).group(1)
+    every = int(every) if every else 60
+    minutes, seconds = re.search(r"<Duration>PT(\d+)M(?:(\d+)S)?</Duration>", xml).groups()
+    duration = int(minutes) * 60 + int(seconds or 0)
+    last = first * 60 + duration // (every * 60) * every * 60
+    assert last == (first + (24 * 60 // every - 1) * every) * 60
+    assert last < 24 * 60 * 60
+
+
+def test_every_trigger_has_no_time_limit():
     hourly = deploy_windows.schedule_triggers("0 * * * *")
-    assert "<Duration>PT1381M</Duration>" in hourly
     quarter = deploy_windows.schedule_triggers("*/15 * * * *")
-    assert "<Duration>PT1426M</Duration>" in quarter
     for xml in (hourly, quarter, deploy_windows.schedule_triggers("0,30 9,17 * * 1-5"),
                 deploy_windows.schedule_triggers("*/7 * * * *")):
         assert xml.count("</StartBoundary><ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"
@@ -340,6 +353,16 @@ def test_deploy_disables_the_root_task_and_refuses_its_running_run_before_any_fi
     assert restore < script.rindex("throw }")
 
 
+def test_a_failed_task_scheduler_connection_after_the_disable_enables_the_root_task_again(
+        project, monkeypatch):
+    script, _shown = deploy_script(project, monkeypatch, {LEGACY_PATH: "ready"})
+    disable = script.index("Disable-ScheduledTask -InputObject $root")
+    held = script.index("try { ", disable)
+    assert held < script.index("$service.Connect()", disable)
+    assert script.startswith("catch { if ($rootDisabled) { Enable-ScheduledTask -InputObject $root",
+                             script.rindex("} catch { ") + 2)
+
+
 def test_deploy_does_not_plan_the_root_task_deletion_when_that_task_is_unmanaged(
         project, monkeypatch):
     _script, shown = deploy_script(project, monkeypatch, {LEGACY_PATH: "unmanaged"})
@@ -402,6 +425,27 @@ def test_a_failed_run_that_wrote_a_log_is_no_problem():
     started = NOW - timedelta(seconds=1)
     assert deploy_windows.task_problems(
         {"name": "my-report"}, task_info(result=1), [(started, NOW)]) == []
+
+
+def test_the_last_run_time_keeps_its_fractional_seconds(monkeypatch):
+    failed_start = NOW + timedelta(milliseconds=800)
+
+    def task_scheduler(command, **kw):
+        script = deploy_windows.base64.b64decode(command[-1]).decode("utf-16-le")
+        layout = re.search(r"ToString\('([^']+)'", script).group(1)
+        for dotnet, python in (("yyyy", "%Y"), ("MM", "%m"), ("dd", "%d"), ("HH", "%H"),
+                               ("mm", "%M"), ("ss", "%S"), ("fff", "%f")):
+            layout = layout.replace(dotnet, python)
+        last_run = failed_start.strftime(layout).replace("%f", "")
+        return subprocess.CompletedProcess(command, 0, (
+            '{"enabled": true, "result": 2147942402, "missed": 0, '
+            f'"last_run": "{last_run}", "next_run": null}}'), "")
+
+    monkeypatch.setattr(deploy_windows.subprocess, "run", task_scheduler)
+    info = deploy_windows._task_info("powershell.exe", "my-report")
+    assert info["last_run"] == failed_start
+    ended = NOW + timedelta(milliseconds=100)
+    assert deploy_windows.task_problems({"name": "my-report"}, info, [(NOW, ended)])
 
 
 def test_the_log_of_a_short_run_that_ended_before_the_failed_start_does_not_hide_it(

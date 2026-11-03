@@ -104,7 +104,7 @@ def schedule_triggers(cron: str) -> str:
     if every:
         interval = "PT1H" if every == 60 else f"PT{every}M"
         repetition = (f"<Repetition><Interval>{interval}</Interval>"
-                      f"<Duration>PT{MINUTES_A_DAY + 1 - every}M</Duration>"
+                      f"<Duration>PT{MINUTES_A_DAY - every}M30S</Duration>"
                       "<StopAtDurationEnd>false</StopAtDurationEnd></Repetition>")
     return "".join(
         f"<CalendarTrigger>{repetition}<StartBoundary>2000-01-01T{hour:02d}:{minute:02d}:00"
@@ -588,15 +588,16 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     hold_legacy = (
         f"$root = Get-ScheduledTask -TaskName {_ps_string(name)} -TaskPath '\\' "
         "-ErrorAction SilentlyContinue; $rootDisabled = $false; "
-        f"if ($null -ne $root -and \"$($root.Description)\".StartsWith('{MANAGED}')) {{ "
-        "if ($root.Settings.Enabled) { Disable-ScheduledTask -InputObject $root | Out-Null; "
-        "$rootDisabled = $true }; "
+        f"$rootManaged = $null -ne $root -and \"$($root.Description)\".StartsWith('{MANAGED}'); "
+        "if ($rootManaged -and $root.Settings.Enabled) { "
+        "Disable-ScheduledTask -InputObject $root | Out-Null; $rootDisabled = $true }; ")
+    refuse_legacy_run = (
+        "if ($rootManaged) { "
         "$service = New-Object -ComObject Schedule.Service; $service.Connect(); "
         f"if ($service.GetFolder('\\').GetTask({_ps_string(name)}).GetInstances(0).Count -gt 0) {{ "
-        "if ($rootDisabled) { Enable-ScheduledTask -InputObject $root | Out-Null }; "
         f"throw {_ps_string(legacy_running)} }} }}; ")
     script = ("$ErrorActionPreference = 'Stop'; " + SET_ACL + hold_legacy
-              + f"try {{ {_folder_script(app, user)}"
+              + f"try {{ {refuse_legacy_run}{_folder_script(app, user)}"
               + _release_script(app, release, install, register_script(name, xml, sid))
               + "} catch { if ($rootDisabled) { Enable-ScheduledTask -InputObject $root "
               "-ErrorAction SilentlyContinue | Out-Null }; throw }; ")
@@ -926,7 +927,8 @@ def _task_info(powershell: str, app_name: str) -> dict | None:
         f".GetTask({_ps_string(_task_name(app_name))}) }} catch {{ exit 3 }}; "
         "$times = @{}; foreach ($key in 'LastRunTime', 'NextRunTime') { $time = $task.$key; "
         "$times[$key] = if ($time.Year -ge 2000) { "
-        "$time.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } else { $null } }; "
+        "$time.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ', "
+        "[Globalization.CultureInfo]::InvariantCulture) } else { $null } }; "
         "ConvertTo-Json -Compress @{ enabled = $task.Enabled; result = $task.LastTaskResult; "
         "missed = $task.NumberOfMissedRuns; last_run = $times.LastRunTime; "
         "next_run = $times.NextRunTime }")
