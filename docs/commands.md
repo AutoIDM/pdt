@@ -8,7 +8,8 @@
 | `pdt register` | authenticate this computer for AutoIDM managed services: approve it in a browser, or pass `--code CODE` with a one-time enrollment code from AutoIDM |
 | `pdt service install [--level view\|run\|manage] [--projects DIR]` | run commands from the AutoIDM portal on this computer, now and at each boot, with no open port |
 | `pdt service status [--json]` | show the service, its last checks, the level, the projects, and the running commands |
-| `pdt service run`, `pdt service tick`, `pdt service remove`, `pdt service allow LEVEL` | run it in this terminal, check once, remove it, or change the most the portal may ask for |
+| `pdt service run [--level view\|run\|manage]` | run it in this terminal; it needs only a registration, so you can try it before an install |
+| `pdt service tick`, `pdt service remove`, `pdt service allow LEVEL` | check once, remove it, or change the most the portal may ask for |
 | `pdt sync up [--yes] [--ref REF] [--label LABEL]` | copy this project to AutoIDM as a snapshot; `.env` files, keys, and links stay on this computer |
 | `pdt sync down [--snapshot ID] [--force]` | copy a snapshot into this project; it stops when a file changed on this computer |
 | `pdt sync diff [--json]` | list the files that differ from the newest snapshot |

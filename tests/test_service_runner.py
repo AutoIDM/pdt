@@ -835,13 +835,82 @@ def test_status_names_the_service_as_json(machine, portal, monkeypatch, capsys):
     journal(operation="run", args={"project": "example", "app": "hr"}, phase="running")
     assert service.status(as_json=True) == 0
     found = json.loads(capsys.readouterr().out)
-    assert found["backend"] == "cron" and found["running"] is True
+    assert found["backend"] == "cron" and found["running"] is True and found["installed"] is True
     assert found["level"] == "manage" and found["projects"] == ["example"]
     assert found["commands"][0]["command_id"] == COMMAND
     assert found["registrations"][0]["customer_id"] == CUSTOMER
     assert service.status() == 0
     out = capsys.readouterr().out
     assert "cron (running)" in out and "last check-in" in out and COMMAND in out
+
+
+def test_a_service_run_needs_only_a_registration_and_status_sees_it(machine, portal, capsys):
+    service.settings_path().unlink()
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    proc = subprocess.Popen([sys.executable, "-m", "pdt.cli", "service", "run", "--level", "view"],
+                            cwd=machine, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 30
+        while not portal.bodies("/v1/service/checkin") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        body = portal.bodies("/v1/service/checkin")[0]
+        assert body["maximum_level"] == "view"
+        assert [item["name"] for item in body["projects"]] == ["example"]
+        found = settings()
+        assert found["backend"] is None and found["registrations"] == [CUSTOMER]
+        assert found["named_projects"] == [str(machine.resolve())]
+        assert service.status() == 0
+        assert f"Backend: none (running in the foreground, PID {proc.pid})" in capsys.readouterr().out
+        assert service.status(as_json=True) == 0
+        answer = json.loads(capsys.readouterr().out)
+        assert answer["backend"] == "none" and answer["running"] is True
+        assert answer["pid"] == proc.pid and answer["installed"] is False
+    finally:
+        proc.terminate()
+        proc.wait(30)
+    assert proc.returncode == 0
+    assert service.running_pid() is None
+    assert service.status() == 0
+    assert "Backend: none (not running)" in capsys.readouterr().out
+
+
+def test_a_service_run_with_no_registration_says_what_to_do(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path / "none"))
+    assert service.run() == 1
+    assert "pdt register" in capsys.readouterr().out
+    assert not service.settings_path().exists()
+
+
+def test_a_service_run_with_a_level_changes_the_settings(machine):
+    assert service.settings_to_serve("view", "run")["level"] == "view"
+    assert settings()["level"] == "view"
+    assert service.settings_to_serve(None, "run")["level"] == "view"
+
+
+def test_a_service_run_with_no_level_takes_the_default(machine):
+    service.settings_path().unlink()
+    assert service.settings_to_serve(None, "run")["level"] == service_commands.DEFAULT_LEVEL
+
+
+def test_a_pid_file_of_a_process_that_ended_means_not_running(machine):
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    service.pid_path().write_text(json.dumps({"pid": proc.pid}))
+    assert service.running_pid() is None
+    service.pid_path().write_text("not json")
+    assert service.running_pid() is None
+    service.pid_path().write_text(json.dumps({"pid": os.getpid()}))
+    assert service.running_pid() == os.getpid()
+
+
+def test_remove_of_a_foreground_service_deletes_the_settings(machine, portal, capsys):
+    service.write_settings({**settings(), "backend": None})
+    assert service.remove() == 0
+    assert settings() is None
+    assert service.remove() == 0
+    assert "no pdt service" in capsys.readouterr().out
 
 
 def test_status_with_no_service_says_so(tmp_path, monkeypatch, capsys):
