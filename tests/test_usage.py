@@ -215,6 +215,17 @@ def test_each_opt_out_is_stronger_than_yes(usage_on, at_terminal, tmp_path, monk
     assert not usage_on.exists()
 
 
+@pytest.mark.parametrize("where", ["job", "no terminal"])
+def test_yes_with_no_one_to_ask_records_no_answer(usage_on, request, monkeypatch, where):
+    if where == "job":
+        request.getfixturevalue("at_terminal")
+        monkeypatch.setenv(usage.JOB_ENV, "true")
+    monkeypatch.setattr(console, "confirm", lambda *a, **k: pytest.fail("asked"))
+    usage.start(["pdt", "deploy", "my-app", "--yes"])
+    client = usage_on / "client.json"
+    assert not client.exists() or json.loads(client.read_text())["asked"] is False
+
+
 def test_yes_of_a_cloud_cli_is_not_an_answer(usage_on, at_terminal, monkeypatch):
     monkeypatch.setattr(console, "confirm", lambda *a, **k: False)
     usage.start(["pdt", "az", "group", "delete", "--yes"])
