@@ -487,11 +487,26 @@ def save_managed_customer(customer: str) -> Path:
 
 
 def save_usage_stats_off(path: Path) -> None:
+    import yaml
     with locked(path):
-        lines = [line for line in path.read_text(encoding="utf-8-sig").splitlines()
-                 if not line.split("#")[0].rstrip().startswith(f"{USAGE_STATS_KEY}:")]
+        lines = []
+        in_old_value = False
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            if line.split("#")[0].rstrip().startswith(f"{USAGE_STATS_KEY}:"):
+                in_old_value = True
+            elif not (in_old_value and (line[:1].isspace() or not line.strip())):
+                in_old_value = False
+                lines.append(line)
         lines += ([""] if lines and lines[-1].strip() else []) + [f"{USAGE_STATS_KEY}: false"]
-        write_text_atomically(path, "\n".join(lines) + "\n")
+        text = "\n".join(lines) + "\n"
+        try:
+            saved = yaml.safe_load(text)
+        except yaml.YAMLError:
+            saved = None
+        if not isinstance(saved, dict) or saved.get(USAGE_STATS_KEY) is not False:
+            raise ConfigError(f"{path}: pdt could not add {USAGE_STATS_KEY}: false; "
+                              f"add that line at the top level yourself")
+        write_text_atomically(path, text)
 
 
 def _yaml_scalar(value) -> str:

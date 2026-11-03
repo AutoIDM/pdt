@@ -94,6 +94,8 @@ def apps(monkeypatch):
     ("pdt aws s3 ls --profile dev", "pdt aws s3 ls --profile <excluded>"),
     ("pdt aws S3cr3t ls", "pdt aws <excluded> ls"),
     ("pdt aws --Hunter2 x", "pdt aws <excluded> <excluded>"),
+    ("pdt gclod customer-secret", "pdt gclod <excluded>"),
+    ("pdt --unknown aws customer-secret", "pdt <excluded> aws <excluded>"),
     ("pdt", "pdt"),
 ])
 def test_command_line(apps, typed, expected):
@@ -409,6 +411,34 @@ def test_a_value_outside_the_known_values_is_dropped(usage_on, posts):
                        exception={"type": "E", "file": "f", "line": 1, "message": "hunter2"}))
     usage.wait()
     assert [row["params"] for batch in posts for row in batch] == [{}, {}]
+
+
+def test_an_event_sends_only_the_command_line_and_exception_this_process_built(usage_on, posts):
+    exception = {"type": "ValueError", "file": "/Users/ann/customer.txt", "line": 1}
+    usage.accept(event("job:run-failed", command_line="pdt register --code hunter2",
+                       exception=exception))
+    built = usage.command_line(["pdt", "register", "--code", "hunter2"], cli.build_parser())
+    try:
+        raise ValueError("hunter2")
+    except ValueError as error:
+        fields = usage.exception_fields(error)
+    usage.accept(event(command_line=built, exception=fields))
+    usage.wait()
+    assert [row["params"] for batch in posts for row in batch] == [
+        {}, {"command_line": "pdt register --code <excluded>", "exception": fields}]
+
+
+def test_a_second_yes_keeps_the_client_uuid_another_command_saved(usage_on, at_terminal,
+                                                                  monkeypatch):
+    def answer_after_another_command_saved(question, default, stderr=False):
+        usage_on.mkdir(parents=True)
+        (usage_on / "client.json").write_text(json.dumps({"client_uuid": UUID, "asked": True}))
+        return True
+
+    monkeypatch.setattr(console, "confirm", answer_after_another_command_saved)
+    usage.start(["pdt", "validate"])
+    assert json.loads((usage_on / "client.json").read_text()) == {"client_uuid": UUID,
+                                                                  "asked": True}
 
 
 def test_the_known_values_match_the_source():
@@ -821,3 +851,18 @@ def test_init_no_usage_stats_changes_an_existing_project(tmp_path, monkeypatch):
     text = (tmp_path / config.PROJECT_FILE).read_text()
     assert "# keep" in text
     assert config.load_yaml(tmp_path / config.PROJECT_FILE)[config.USAGE_STATS_KEY] is False
+
+
+def test_turning_usage_stats_off_replaces_a_value_on_more_than_one_line(tmp_path):
+    path = tmp_path / config.PROJECT_FILE
+    path.write_text(f"apps: []\n{config.USAGE_STATS_KEY}:\n  true\n\nalerts: []\n")
+    config.save_usage_stats_off(path)
+    assert config.load_yaml(path) == {"apps": [], "alerts": [], config.USAGE_STATS_KEY: False}
+
+
+def test_turning_usage_stats_off_leaves_a_file_it_cannot_change_as_it_was(tmp_path):
+    path = tmp_path / config.PROJECT_FILE
+    path.write_text("apps: []\n...\n")
+    with pytest.raises(config.ConfigError, match=config.USAGE_STATS_KEY):
+        config.save_usage_stats_off(path)
+    assert path.read_text() == "apps: []\n...\n"

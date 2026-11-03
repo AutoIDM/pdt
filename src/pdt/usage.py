@@ -12,7 +12,8 @@ One request, which `_post` sends to USAGE_URL (PDT_USAGE_URL overrides it), is
     params        the event's params that KNOWN_VALUES or PARAM_RULES allow
 
 A param outside these rules is dropped, so an app that emits a pdt event name cannot send
-free text in a param that has known values. `app` and `command_line` stay free text.
+free text in a param that has known values. `app` stays free text. `command_line` and
+`exception` are sent only as `command_line` and `exception_fields` built them in this process.
 
 `command_line` keeps only the typed words that its allow-list names. `exception_fields` is
 the type name and the pdt file and line of an exception, with no message.
@@ -118,18 +119,13 @@ _sending = False
 _sender: threading.Thread | None = None
 _gave_up = False
 _waited_seconds = 0.0
+# What command_line and exception_fields built in this process; an app's own event cannot
+# send any other value in these params.
+_built: dict[str, object] = {}
 
 
 def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and abs(value) < MAX_INT
-
-
-def _is_exception(value: object) -> bool:
-    return (isinstance(value, dict) and set(value) == {"type", "file", "line"}
-            and isinstance(value["type"], str) and len(value["type"]) <= MAX_TEXT
-            and (value["file"] is None
-                 or (isinstance(value["file"], str) and len(value["file"]) <= MAX_TEXT))
-            and (value["line"] is None or _is_int(value["line"])))
 
 
 PARAM_RULES = {
@@ -139,8 +135,8 @@ PARAM_RULES = {
     "duration_seconds": lambda value: (_is_int(value)
                                        or (isinstance(value, float) and math.isfinite(value))),
     "app": lambda value: isinstance(value, str) and len(value) <= MAX_FOLDER_NAME,
-    "command_line": lambda value: isinstance(value, str) and len(value) <= MAX_COMMAND_LINE,
-    "exception": _is_exception,
+    "command_line": lambda value: "command_line" in _built and value == _built["command_line"],
+    "exception": lambda value: "exception" in _built and value == _built["exception"],
 }
 
 
@@ -299,9 +295,10 @@ def start(argv: list[str]) -> None:
         if (not skipped and not record.get("asked") and JOB_ENV not in os.environ
                 and CLIENT_ENV not in os.environ and not off() and watch.person_at_terminal()):
             send = console.confirm(QUESTION, default=True, stderr=True)
-            client_uuid = (record.get("client_uuid") or str(uuid.uuid4())) if send else None
             folder().mkdir(parents=True, exist_ok=True)
             with config.locked(folder() / "client.json"):
+                saved = _read_client() or {}
+                client_uuid = (saved.get("client_uuid") or str(uuid.uuid4())) if send else None
                 _replace(folder() / "client.json",
                          json.dumps({"client_uuid": client_uuid, "asked": True}))
         identity()
@@ -421,7 +418,8 @@ def exception_fields(error: BaseException) -> dict[str, object]:
         if path.is_relative_to(root):
             file, line = f"pdt/{path.relative_to(root).as_posix()}", frame.tb_lineno
         frame = frame.tb_next
-    return {"type": type(error).__name__, "file": file, "line": line}
+    _built["exception"] = {"type": type(error).__name__[:MAX_TEXT], "file": file, "line": line}
+    return _built["exception"]
 
 
 def _parser_words(parser: argparse.ArgumentParser) -> tuple[set[str], set[str]]:
@@ -465,8 +463,8 @@ def command_line(argv: list[str], parser: argparse.ArgumentParser,
     choice of the parser, an app of the project, a provider, a region of regions.py, a
     schedule word, a secrets action, a storage command, or a number.
 
-    After `pdt aws`, `pdt az`, or `pdt gcloud`, the plain lowercase words before the first
-    flag stay, and the flag names; every value goes.
+    When the first word is aws, az, or gcloud, which cli.run passes to that CLI, the plain
+    lowercase words before the first flag stay, and the flag names; every value goes.
 
     The home folder becomes ~, and the text has at most MAX_COMMAND_LINE characters.
     """
@@ -486,19 +484,19 @@ def command_line(argv: list[str], parser: argparse.ArgumentParser,
     words = argv[1:]
     exact = [index for index, word in enumerate(words) if word in commands]
     first = [index for index, word in enumerate(words) if not word.startswith("-")][:1]
-    position, command = None, None
+    position = None
     if exact:
-        position, command = exact[0], words[exact[0]]
+        position = exact[0]
     elif first and difflib.get_close_matches(words[first[0]], commands, n=1):
         position = first[0]
-        command = difflib.get_close_matches(words[first[0]], commands, n=1)[0]
+    cloud = len(words) > 0 and words[0] in CLOUD_CLIS
     kept = []
     cloud_flag_seen = False
     for index, word in enumerate(words):
         name, equals, value = word.partition("=")
         if index == position:
             kept.append(word)
-        elif position is not None and index > position and command in CLOUD_CLIS:
+        elif cloud:
             cloud_flag_seen = cloud_flag_seen or word.startswith("-")
             if CLOUD_FLAG.fullmatch(name):
                 kept.append(f"{name}={EXCLUDED}" if equals else name)
@@ -517,6 +515,5 @@ def command_line(argv: list[str], parser: argparse.ArgumentParser,
             kept.append(EXCLUDED)
     text = " ".join(["pdt", *(shlex.quote(word) if word == "" or re.search(r"\s", word) else word
                               for word in home_to_tilde(kept, home))])
-    return text[:MAX_COMMAND_LINE]
-
-
+    _built["command_line"] = text[:MAX_COMMAND_LINE]
+    return _built["command_line"]
