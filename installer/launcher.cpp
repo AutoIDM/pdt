@@ -1,4 +1,6 @@
 #include <windows.h>
+#include <cwchar>
+#include <cwctype>
 #include <string>
 
 #define WIDEN(x) L## #x
@@ -33,6 +35,31 @@ std::wstring environment(const wchar_t* name) {
 bool is_file(const std::wstring& path) {
     DWORD attributes = GetFileAttributesW(path.c_str());
     return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+bool at_least(const wchar_t* installed, const wchar_t* wanted) {
+    while (iswdigit(*installed) || iswdigit(*wanted)) {
+        wchar_t* end = nullptr;
+        unsigned long have = iswdigit(*installed) ? wcstoul(installed, &end, 10) : 0;
+        if (end) installed = *end == L'.' ? end + 1 : end;
+        end = nullptr;
+        unsigned long want = iswdigit(*wanted) ? wcstoul(wanted, &end, 10) : 0;
+        if (end) wanted = *end == L'.' ? end + 1 : end;
+        if (have != want) return have > want;
+    }
+    return true;
+}
+
+bool pdt_at_least_launcher_version(const std::wstring& home) {
+    WIN32_FIND_DATAW found;
+    HANDLE search = FindFirstFileW((home + L"\\tools\\pdt-cli\\Lib\\site-packages\\pdt_cli-*.dist-info").c_str(), &found);
+    if (search == INVALID_HANDLE_VALUE) return false;
+    bool ok = false;
+    do {
+        if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ok = ok || at_least(found.cFileName + wcslen(L"pdt_cli-"), VERSION);
+    } while (FindNextFileW(search, &found));
+    FindClose(search);
+    return ok;
 }
 
 std::wstring find_uv() {
@@ -91,7 +118,7 @@ void drain(HANDLE pipe, std::string& output) {
 bool install(const std::wstring& uv, const std::wstring& home) {
     ULONGLONG started = GetTickCount64();
     auto seconds = [&] { return std::to_string((GetTickCount64() - started) / 1000); };
-    std::wstring command = L"\"" + uv + L"\" tool install --python 3.12 --compile-bytecode pdt-cli==" + VERSION;
+    std::wstring command = L"\"" + uv + L"\" tool install --python 3.12 --compile-bytecode \"pdt-cli>=" + VERSION + L"\"";
 
     std::wstring uv_environment;
     wchar_t* strings = GetEnvironmentStringsW();
@@ -162,8 +189,7 @@ int wmain() {
         return 1;
     }
     std::wstring home = local + L"\\AutoIDM\\pdt";
-    DWORD installed = GetFileAttributesW((home + L"\\tools\\pdt-cli\\Lib\\site-packages\\pdt_cli-" + VERSION + L".dist-info").c_str());
-    if (installed == INVALID_FILE_ATTRIBUTES || !(installed & FILE_ATTRIBUTE_DIRECTORY)) {
+    if (!pdt_at_least_launcher_version(home)) {
         std::wstring uv = find_uv();
         if (uv.empty()) {
             write(NEEDS_UV);
