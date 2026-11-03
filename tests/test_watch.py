@@ -1,9 +1,13 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from conftest import add_app, plain
-from pdt import cli, completion, console, deploy, watch
+from pdt import cli, completion, console, deploy, support, watch
 
-HELP = f"Get help with pdt run at {watch.SUPPORT_URL}"
+REPORT = ", or run pdt support to report it to the pdt team"
+HELP = f"Get help with pdt run at {watch.SUPPORT_URL}{REPORT}"
 
 
 @pytest.fixture
@@ -28,7 +32,7 @@ def test_each_failed_command_prints_where_to_get_help_once(project, monkeypatch,
         with pytest.raises(SystemExit):
             cli.main()
         assert len(said) == count + 1
-    assert plain(said) == [f"Get help with pdt at {watch.SUPPORT_URL}"] * 2
+    assert plain(said) == [f"Get help with pdt at {watch.SUPPORT_URL}{REPORT}"] * 2
 
 
 def test_a_failed_provider_script_gives_one_help_line(project, monkeypatch, said):
@@ -36,7 +40,7 @@ def test_a_failed_provider_script_gives_one_help_line(project, monkeypatch, said
     monkeypatch.setattr("sys.argv", ["pdt", "storage", "hello-world", "ls"])
     monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: 1)
     assert cli.main() == 1
-    assert plain(said) == [f"Get help with pdt storage at {watch.SUPPORT_URL}"]
+    assert plain(said) == [f"Get help with pdt storage at {watch.SUPPORT_URL}{REPORT}"]
 
 
 def test_success_interruption_and_a_declined_plan_print_no_help(said):
@@ -45,12 +49,18 @@ def test_success_interruption_and_a_declined_plan_print_no_help(said):
     assert said == []
 
 
-def test_a_crash_prints_its_traceback_then_the_help_line(said, capsys):
+def test_a_crash_prints_its_traceback_then_starts_pdt_support(said, capsys, monkeypatch):
+    crashes = []
+    monkeypatch.setattr(support, "crashed", lambda entry, error: crashes.append((entry, error)))
+
     def main():
         raise ValueError("bad 7")
     assert watch.watched(main, {"run"}) == 1
     assert "ValueError: bad 7" in capsys.readouterr().err
-    assert plain(said) == [HELP]
+    [(entry, error)] = crashes
+    assert (entry["outcome"], entry["command"]) == ("unhandled", "pdt run <value>")
+    assert isinstance(error, ValueError)
+    assert said == []
 
 
 def test_json_output_and_a_coding_agent_get_no_help_line(project, monkeypatch):
@@ -91,3 +101,150 @@ def test_completion_prints_nothing(monkeypatch, said):
     monkeypatch.setattr(completion, "COMPLETING", True)
     assert watch.watched(lambda: 1, {"run"}) == 1
     assert said == []
+
+
+def lines(history):
+    return [json.loads(line) for line in history.read_text().splitlines()] if history.exists() else []
+
+
+def test_shape_keeps_pdt_command_and_flag_names_and_hides_every_other_word():
+    flags = {"--since", "--json", "-y"}
+    argv = ["pdt", "run", "my-app", "--since=3d", "--json", "secret"]
+    assert watch.shape(argv, {"run"}, flags) == "pdt run <value> --since=<value> --json <value>"
+    assert watch.shape(["pdt", "run", "-pSecret", "-y"], {"run"}, flags) == "pdt run <value> -y"
+    assert watch.shape(["pdt", "aws", "sts", "--AcmeInternalToken", "--json=x"], {"aws"},
+                       flags) == "pdt aws <value> <value> --json=<value>"
+    assert watch.shape(["pdt", "run", "deploy"], {"run", "deploy"}, flags) == "pdt run <value>"
+
+
+def test_a_failed_diagnosis_keeps_the_child_exit_code(tmp_path, monkeypatch):
+    monkeypatch.setenv(watch.NOTE_ENV, str(tmp_path / "note.json"))
+
+    def broken(*args):
+        raise MemoryError
+    monkeypatch.setattr(watch, "handled", broken)
+    assert watch.child(lambda: 7) == 7
+
+
+def test_a_provider_script_does_not_import_completion(monkeypatch):
+    monkeypatch.delitem(watch.sys.modules, "pdt.completion", raising=False)
+    monkeypatch.setenv("CI", "true")
+    assert watch.watched(lambda: 3) == 3
+    assert "pdt.completion" not in watch.sys.modules
+
+
+def test_each_command_adds_one_history_line_with_no_typed_value(project, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["pdt", "run", "hello-world", "hunter2", "--since=s3cret"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    [last] = lines(watch.HISTORY)
+    assert last["command"] == "pdt run <value> <value> --since=<value>"
+    assert (last["outcome"], last["error"]) == ("usage", "")
+
+
+def test_a_handled_error_records_the_exception_and_where_pdt_raised_it(tmp_path, monkeypatch):
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["pdt", "validate"])
+    assert cli.main() == 1
+    last = lines(watch.HISTORY)[-1]
+    assert (last["outcome"], last["error"]) == ("error", "ConfigError")
+    assert last["where"] and all(":" in line and " in " in line for line in last["where"])
+    assert last["message"] != ""
+
+
+def test_an_error_printed_outside_an_exception_has_no_exception_type():
+    assert watch.watched(lambda: console.error("[bold]deploy[/] failed for 3 apps") or 1) == 1
+    [last] = lines(watch.HISTORY)
+    assert (last["outcome"], last["error"], last["where"]) == ("error", "", [])
+    assert last["message"] == "deploy failed for 3 apps"
+
+
+def test_an_error_pdt_prints_outside_an_exception_records_where_pdt_printed_it(project, monkeypatch):
+    add_app(project, "needs-token", "env:\n  required: [REPORT_TOKEN]\n")
+    monkeypatch.delenv("REPORT_TOKEN", raising=False)
+    monkeypatch.setattr("sys.argv", ["pdt", "run", "needs-token"])
+    assert cli.main() == 1
+    last = lines(watch.HISTORY)[-1]
+    assert (last["outcome"], last["error"]) == ("error", "")
+    assert last["where"][0].startswith("cli.py:") and "REPORT_TOKEN" in last["message"]
+
+
+def test_an_unhandled_exception_records_its_type_and_pdt_lines():
+    def main():
+        raise ValueError("bad 7")
+    assert watch.watched(main) == 1
+    last = lines(watch.HISTORY)[-1]
+    assert (last["outcome"], last["error"], last["message"]) == ("unhandled", "ValueError", "bad 7")
+
+
+def test_where_keeps_only_pdt_lines(tmp_path):
+    with pytest.raises(watch.config.ConfigError) as raised:
+        watch.config.find_project(tmp_path)
+    found = watch.where(watch.traceback.extract_tb(raised.value.__traceback__))
+    assert found and all(line.startswith("config.py:") for line in found)
+    assert watch.where([]) == []
+
+
+def test_a_child_writes_its_note_and_no_history(tmp_path, monkeypatch):
+    note = tmp_path / "notes" / "n.json"
+    monkeypatch.setenv(watch.NOTE_ENV, str(note))
+    assert watch.watched(lambda: console.error("deploy failed") or 1) == 1
+    assert json.loads(note.read_text()) == {"outcome": "error", "error": "", "where": [],
+                                            "message": "deploy failed"}
+    assert not watch.HISTORY.exists()
+
+
+def test_a_crash_in_a_child_marks_the_command_unhandled(monkeypatch):
+    crash = {"outcome": "unhandled", "error": "KeyError", "where": ["deploy_aws.py:9 in main"],
+             "message": "'x'"}
+
+    def main():
+        Path(watch.os.environ[watch.NOTE_ENV]).parent.mkdir(parents=True, exist_ok=True)
+        watch.write_note(lambda: crash)
+        watch.write_note(lambda: watch.failed("error", None, "exit 1"))
+        return 1
+    assert watch.watched(main) == 1
+    last = lines(watch.HISTORY)[-1]
+    assert {key: last[key] for key in crash} == crash
+
+
+def test_the_history_holds_an_id_of_the_project_and_not_its_path(project):
+    watch.watched(lambda: 1)
+    last = lines(watch.HISTORY)[-1]
+    assert str(project) not in json.dumps(last) and project.name not in json.dumps(last)
+    assert last["project"] == watch.project() and len(last["project"]) == 16
+
+
+def test_a_broken_note_still_records_the_command():
+    def main():
+        Path(watch.os.environ[watch.NOTE_ENV]).parent.mkdir(parents=True, exist_ok=True)
+        Path(watch.os.environ[watch.NOTE_ENV]).write_text("{not json")
+        return 1
+    assert watch.watched(main) == 1
+    assert lines(watch.HISTORY)[-1]["message"] == "exit 1"
+
+
+def test_an_unwritable_history_keeps_the_exit_code(tmp_path, monkeypatch):
+    (tmp_path / "file").write_text("")
+    monkeypatch.setattr(watch, "HISTORY", tmp_path / "file" / "history.jsonl")
+    assert watch.watched(lambda: 3) == 3
+
+
+def test_ci_completion_and_the_off_switch_record_nothing(monkeypatch):
+    monkeypatch.setenv("CI", "true")
+    assert watch.watched(lambda: 1) == 1
+    monkeypatch.delenv("CI")
+    monkeypatch.setenv(watch.OFF_ENV, "0")
+    assert watch.watched(lambda: 1) == 1
+    monkeypatch.delenv(watch.OFF_ENV)
+    monkeypatch.setattr(completion, "COMPLETING", True)
+    assert watch.watched(lambda: 1) == 1
+    assert not watch.HISTORY.exists()
+
+
+def test_every_provider_script_runs_through_the_watch():
+    folder = Path(watch.__file__).parent
+    for name in ("aws", "azure", "google_cloud", "windows"):
+        assert "    run_main(main)" in (folder / f"deploy_{name}.py").read_text()
+    assert "code = watch.watched(main)" in (folder / "deploy_common.py").read_text()

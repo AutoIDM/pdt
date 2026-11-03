@@ -86,7 +86,7 @@ from typing import Any, Callable
 
 import backoff
 
-from pdt import config, console, lifecycle
+from pdt import config, console, lifecycle, watch
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.env_secret import private_file
 
@@ -307,7 +307,7 @@ def run_main(main: Callable[[], int]) -> None:
     every worker thread, and a worker that waits on the network keeps the script running.
     uv passes on each Ctrl+C, so the script ignores the next ones while it stops."""
     try:
-        code = main()
+        code = watch.watched(main)
     except KeyboardInterrupt:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:

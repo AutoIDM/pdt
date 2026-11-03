@@ -211,10 +211,18 @@ def allowed(settings: dict, found: dict[str, str], ask_user: bool) -> bool:
     return answer
 
 
-def ask(request: str, context: dict[str, str] | None = None) -> str | None:
+@dataclass(frozen=True)
+class Reply:
+    agent: str
+    text: str
+
+
+def ask(request: str, context: dict[str, str] | None = None,
+        seconds: int = REPLY_SECONDS) -> Reply | None:
     """Send `request` and each `context` section (a heading and its text) to a coding agent
-    at low effort, and return its reply. Return None when no agent answered; pdt has then
-    said why, or, inside a coding agent's session, printed the request for that agent."""
+    at low effort, and return the agent's label and reply. Return None when no agent answered
+    within `seconds`; pdt has then said why, or, inside a coding agent's session, printed the
+    request for that agent."""
     context = context or {}
     secrets = env_secrets()
     inside = running_inside()
@@ -247,12 +255,12 @@ def ask(request: str, context: dict[str, str] | None = None) -> str | None:
         with console.waiting(f"Waiting for {agent.label}"):
             result = subprocess.run(command, input=message(request, context, secrets.values),
                                     env=env, capture_output=True, text=True, encoding="utf-8",
-                                    errors="replace", timeout=REPLY_SECONDS)
+                                    errors="replace", timeout=seconds)
     except OSError as e:
         console.error(f"pdt could not start {label}: {console.escape(str(e))}")
         return None
     except subprocess.TimeoutExpired:
-        console.error(f"{label} did not answer in {console.value(REPLY_SECONDS)} seconds.")
+        console.error(f"{label} did not answer in {console.value(seconds)} seconds.")
         return None
     if result.returncode != 0:
         console.error(f"{console.value(agent.label)} stopped with exit code "
@@ -260,7 +268,7 @@ def ask(request: str, context: dict[str, str] | None = None) -> str | None:
         for line in result.stderr.strip().splitlines()[-5:]:
             console.detail(console.escape(line))
         return None
-    return result.stdout.strip()
+    return Reply(agent.label, result.stdout.strip())
 
 
 def main(argv: list[str]) -> int:
@@ -293,7 +301,7 @@ def main(argv: list[str]) -> int:
     reply = ask(args.request, context)
     if reply is None:
         return 1
-    console.say(console.escape(reply))
+    console.say(console.escape(reply.text))
     return 0
 
 

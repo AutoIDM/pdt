@@ -30,7 +30,7 @@ import threading
 from contextlib import contextmanager
 from functools import partial
 from time import monotonic
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from rich.console import Console
 from rich.control import Control
@@ -43,6 +43,9 @@ _queued: list[partial] = []
 _queued_lock = threading.Lock()
 # True once the exit drain has run. No question can wait then, so every line prints at once.
 _exited = False
+# Set by `watch.watched`, which keeps the last error for the command history. console.py runs
+# inside a job image without watch.py, so it cannot import it.
+error_hook: Callable[[str], None] | None = None
 
 
 class MainThreadConsole(Console):
@@ -261,6 +264,8 @@ def choice(number: int, label: str, detail: str = "") -> None:
 
 
 def error(message: str) -> None:
+    if error_hook is not None:
+        error_hook(message)
     _console.print(f"[bold red]error:[/] {message}")
 
 
