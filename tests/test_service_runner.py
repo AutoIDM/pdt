@@ -637,6 +637,61 @@ def test_a_full_answer_checks_in_again(machine, portal):
     assert len(portal.bodies("/v1/service/checkin")) >= 2
 
 
+def test_an_app_folder_with_a_bad_name_stays_out_and_delivery_goes_on(machine, portal, capsys):
+    bad = machine / "My App"
+    bad.mkdir()
+    (bad / "config.yml").write_text("schedule: daily\n")
+    (bad / "run.py").write_text("print('hi')\n")
+    dash = machine / "-dash"
+    dash.mkdir()
+    (dash / "run.py").write_text("print('hi')\n")
+    answers = [checkin_answer(portal, [{"command_id": COMMAND, "token": token()}])]
+
+    def answer(body):
+        for project in body["projects"]:
+            for name in project["apps"]:
+                if not service_commands.NAME.fullmatch(name):
+                    return 400, {"error": "bad_request"}
+        return answers.pop(0) if answers else checkin_answer(portal)
+
+    portal.routes["/v1/service/checkin"] = answer
+    assert service.tick() == 0
+    assert portal.result()["outcome"] == "done"
+    assert portal.bodies("/v1/service/checkin")[0]["projects"][0]["apps"] == ["hr"]
+    log = (service_runner.service_folder() / "service.log").read_text()
+    assert log.count("My App") == 1
+    assert "-dash" in log
+    assert "My App" in capsys.readouterr().out
+
+
+def test_a_bad_name_warns_one_time_at_each_start(machine, portal):
+    bad = machine / "My App"
+    bad.mkdir()
+    (bad / "run.py").write_text("print('hi')\n")
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
+    item = served()
+    pool = Pool()
+    service._said_once.clear()
+    service.check_in(item, settings(), False, pool, {})
+    service.check_in(item, settings(), False, pool, {})
+    assert (service_runner.service_folder() / "service.log").read_text().count("My App") == 1
+    assert service.tick() == 0
+    assert (service_runner.service_folder() / "service.log").read_text().count("My App") == 2
+
+
+def test_a_bad_head_in_the_record_stays_out(machine):
+    (machine / ".pdt").mkdir()
+    (machine / ".pdt" / "sync.json").write_text('{"snapshot_id": "not a hash"}')
+    assert service.project_record("example", machine)["head"] is None
+
+
+def test_a_project_folder_with_a_leading_dash_stays_out(machine, portal):
+    dash = machine.parent / "-dash"
+    dash.mkdir()
+    (dash / "pdt.yml").write_text(f"managed_services:\n  customer: {CUSTOMER}\n")
+    assert [item["name"] for item in service.checkin_projects(settings(), CUSTOMER)] == ["example"]
+
+
 def test_a_cancel_in_a_check_in_stops_the_running_command(machine, portal, monkeypatch):
     child(monkeypatch, TREE)
     monkeypatch.setattr(service, "MINIMUM_POLL_SECONDS", 0)

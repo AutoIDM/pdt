@@ -48,6 +48,7 @@ LOOP_SECONDS = 1.0
 CHECKIN_PAGE = 20
 MAX_RUNNING_IDS = 100
 DOORBELL_TIMEOUT_SECONDS = 10
+_said_once: set[str] = set()
 
 
 def settings_path() -> Path:
@@ -162,16 +163,52 @@ def choose_projects(wanted: str | None, current: dict) -> tuple[str, list[str]]:
     return folder, list(dict.fromkeys(named))
 
 
+def say_once(message: str) -> None:
+    """`say`, one time for each start of the service."""
+    if message not in _said_once:
+        _said_once.add(message)
+        say(message)
+
+
 def project_record(name: str, root: Path) -> dict:
+    """One project of a check-in. AutoIDM refuses a whole check-in that holds one bad value, so
+    a name or a head that fails its rule stays out, and delivery goes on."""
     head = None
     try:
         record = json.loads((root / config.STATE_DIR / "sync.json").read_text(encoding="utf-8"))
         head = record.get("snapshot_id") if isinstance(record, dict) else None
     except (OSError, ValueError):
         pass
-    return {"name": name, "head": head,
-            "apps": sorted(folder.name for folder in root.iterdir()
-                           if folder.is_dir() and config.is_app(folder))}
+    if not (isinstance(head, str) and service_commands.SNAPSHOT.fullmatch(head)):
+        head = None
+    try:
+        folders = sorted(root.iterdir())
+    except OSError:
+        folders = []
+    apps = []
+    for folder in folders:
+        if not (folder.is_dir() and config.is_app(folder)):
+            continue
+        if service_commands.NAME.fullmatch(folder.name):
+            apps.append(folder.name)
+        else:
+            say_once(f"The portal does not show the app folder {folder}: a name holds only "
+                     "letters, digits, dots, dashes, and underscores, and does not start with "
+                     "a dash. Rename the folder to use it from the portal.")
+    return {"name": name, "head": head, "apps": apps}
+
+
+def checkin_projects(settings: dict, customer: str) -> list[dict]:
+    records = []
+    for name, root in projects_of(settings).items():
+        if project_customer(root) != customer:
+            continue
+        if service_commands.NAME.fullmatch(name):
+            records.append(project_record(name, root))
+        else:
+            say_once(f"The portal does not show the project folder {root}: its name starts with "
+                     "a dash. Rename the folder to use it from the portal.")
+    return records
 
 
 @dataclass
@@ -332,8 +369,7 @@ def doorbell(url: str, etag: str | None) -> tuple[int, str | None]:
 
 
 def check_in(served: Served, settings: dict, worker: bool, pool: Pool, state: dict) -> None:
-    projects = [project_record(name, root) for name, root in projects_of(settings).items()
-                if project_customer(root) == served.customer]
+    projects = checkin_projects(settings, served.customer)
     answer = autoidm.post(served.registration, "/v1/service/checkin", {
         "version": 1, "pdt_version": __version__,
         "maximum_level": settings.get("level", service_commands.DEFAULT_LEVEL),
@@ -391,6 +427,7 @@ def loop(served: dict[str, Served], settings_reader, worker: bool, once: bool) -
         stopping.append(signum)
 
     previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
+    _said_once.clear()
     states = read_state()
     registrations = {name: item.registration for name, item in served.items()}
     service_runner.recover(pool, registrations)
