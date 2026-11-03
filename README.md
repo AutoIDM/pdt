@@ -128,6 +128,7 @@ PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in th
 - [Projects and apps](docs/projects.md): set up a project, add an app, and where pdt keeps its files
 - [Deploying](docs/deploy.md): deploy, run, pause, and destroy a job, and run pdt from CI
 - [Commands](docs/commands.md): every `pdt` command and its options
+- [Settings](docs/settings.md): every `pdt.yml`, `config.yml`, and env var setting, with its allowed values and its default
 - [Choosing where jobs run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
 - [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
 - [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's runs, logs, and files
