@@ -774,7 +774,7 @@ def cost_estimate(project: str, region: str, cron: str, job: str,
                                                  currency)
                 return list(sku_price(skus[service], region, description, prefer))
 
-            amount, unit = cached_price("google-cloud", region, currency,
+            amount, unit = cached_price("gcloud", region, currency,
                                         f"{service}: {description} ({prefer})", read,
                                         "reading: prices from the Cloud Billing catalog")
             return amount, unit

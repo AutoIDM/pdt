@@ -29,7 +29,7 @@ from pathlib import Path
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
 
-PROVIDERS = ("google-cloud", "azure", "aws", "windows")
+PROVIDERS = ("gcloud", "azure", "aws", "windows")
 # The words after `pdt secrets <app>` and `pdt storage <app>`. They live here, so tab
 # completion offers them without importing the code that runs them.
 SECRET_ACTIONS = ("diff", "save", "get", "set")
@@ -39,7 +39,7 @@ GUI_PORT = 8765
 # Every cloud provider runs a job as a container image built from the app
 # folder: AWS on Fargate, Azure on Container Apps Jobs, Google Cloud on
 # Cloud Run Jobs. The windows provider runs the app directly.
-CONTAINER_PROVIDERS = ("google-cloud", "aws", "azure")
+CONTAINER_PROVIDERS = ("gcloud", "aws", "azure")
 SCHEDULE_SHORTHAND = {
     "hourly": "0 * * * *",
     "daily": "0 0 * * *",
@@ -62,7 +62,7 @@ PLATFORM_KEYS = {
 }
 ENV_KEYS = {"required", "one_of", "optional"}
 # The platform keys besides provider that say where an app of each provider runs.
-PLACE_KEYS = {"aws": ("region", "account"), "google-cloud": ("region", "project"),
+PLACE_KEYS = {"aws": ("region", "account"), "gcloud": ("region", "project"),
               "azure": ("region", "subscription", "resource_group", "environment"),
               "windows": ()}
 # The place keys a deploy finds and saves when the config leaves them empty. Every other
@@ -258,6 +258,12 @@ def mapping(cfg: dict, key: str, where: str) -> dict:
     return value
 
 
+def provider_name(value):
+    """The provider's current name. Earlier releases named Google Cloud google-cloud,
+    and a config file that still says so keeps working."""
+    return "gcloud" if value == "google-cloud" else value
+
+
 def app_name_problem(name: str) -> str:
     if name in ("", ".", "..") or any(c in name for c in "/\\\0") or Path(name).name != name:
         return f"{name!r} is not an app name; use one folder name with no path separators"
@@ -300,6 +306,8 @@ def merged_app(name: str) -> dict:
                 own.get("timezone", entry.get("timezone", platform.get("timezone", "Etc/UTC"))))
     plan = unsaved() or {}
     platform.update(plan.get("platform", {}))
+    if "provider" in platform:
+        platform["provider"] = provider_name(platform["provider"])
     return {
         "name": name,
         "dir": app_dir,
@@ -391,7 +399,7 @@ def save_platform_key(app: dict, key: str, value: str, path: Path | None = None)
     if path is None:
         project_file = find_project() / PROJECT_FILE
         root_cfg = load_yaml(project_file)
-        if (root_cfg.get("platform") or {}).get("provider") == app["platform"].get("provider"):
+        if provider_name((root_cfg.get("platform") or {}).get("provider")) == app["platform"].get("provider"):
             path = project_file
         else:
             path = app["dir"] / APP_FILE
@@ -581,11 +589,16 @@ def deployed_platform(name: str) -> dict | None:
     """The platform section the app was last deployed with, or None when pdt has no record:
     the app is not deployed, a pdt older than the record deployed it, or the record is not valid."""
     platform = (read_state().get("platforms") or {}).get(name)
-    return platform if isinstance(platform, dict) else None
+    if not isinstance(platform, dict):
+        return None
+    if "provider" in platform:
+        platform["provider"] = provider_name(platform["provider"])
+    return platform
 
 
 def place(platform: dict) -> dict[str, str]:
-    keys = ("provider", *PLACE_KEYS.get(platform.get("provider"), ()))
+    platform = {**platform, "provider": provider_name(platform.get("provider"))}
+    keys = ("provider", *PLACE_KEYS.get(platform["provider"], ()))
     return {key: str(platform[key]) for key in keys if str(platform.get(key) or "") != ""}
 
 

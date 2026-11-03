@@ -73,7 +73,7 @@ def test_a_failed_scheduled_run_is_red_and_lists_every_parameter_in_order():
 @pytest.mark.parametrize(("deployed", "provider", "where", "logs"), [
     (False, "aws", "Local run on build-pc", False),
     (True, "windows", "Deployed run on build-pc", True),
-    (True, "google-cloud", "Cloud run on Google Cloud", True),
+    (True, "gcloud", "Cloud run on Google Cloud", True),
 ])
 def test_where_names_the_computer_or_cloud_and_logs_is_only_for_a_deployed_run(
         monkeypatch, deployed, provider, where, logs):

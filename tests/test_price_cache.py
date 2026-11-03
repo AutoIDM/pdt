@@ -110,10 +110,10 @@ def test_a_no_price_answer_is_kept_for_72_hours(monkeypatch):
     at(monkeypatch, 1_000_000)
     for _ in range(2):
         with pytest.raises(LookupError, match="no 'Jobs CPU' SKU priced for region mars-1"):
-            deploy_common.cached_price("google-cloud", "mars-1", "GBP", "q", no_price(calls))
+            deploy_common.cached_price("gcloud", "mars-1", "GBP", "q", no_price(calls))
     assert calls == ["no price"]
     at(monkeypatch, 1_000_000 + MAX_AGE + 1)
-    assert deploy_common.cached_price("google-cloud", "mars-1", "GBP", "q", reader(2.0, calls)) == 2.0
+    assert deploy_common.cached_price("gcloud", "mars-1", "GBP", "q", reader(2.0, calls)) == 2.0
 
 
 def test_a_failed_read_of_an_old_no_price_answer_raises_it(monkeypatch):

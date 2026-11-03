@@ -38,7 +38,7 @@ from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
 PROVIDERS = {
-    "google-cloud": "deploy_google_cloud.py",
+    "gcloud": "deploy_google_cloud.py",
     "aws": "deploy_aws.py",
     "azure": "deploy_azure.py",
     "windows": "deploy_windows.py",
@@ -279,7 +279,7 @@ PLACE_ENV = {
     "azure": {"subscription": ("PDT_AZURE_SUBSCRIPTION",),
               "resource_group": ("PDT_AZURE_RESOURCE_GROUP",),
               "environment": ("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT",)},
-    "google-cloud": {"project": ("PDT_GOOGLE_CLOUD_PROJECT",)},
+    "gcloud": {"project": ("PDT_GOOGLE_CLOUD_PROJECT",)},
 }
 # The place key a provider script takes when neither the config nor the environment names it.
 PLACE_DEFAULTS = {"azure": {"resource_group": "pdt"}}

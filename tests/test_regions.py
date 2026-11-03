@@ -59,7 +59,7 @@ def test_reads_the_tz_variable(monkeypatch):
 
 
 def test_question_names_the_provider():
-    assert regions.question("google-cloud") == "Which Google Cloud region should hold your jobs?"
+    assert regions.question("gcloud") == "Which Google Cloud region should hold your jobs?"
 
 
 def region_in(path):
@@ -145,7 +145,7 @@ def test_the_cli_settings_come_before_the_default(tmp_path):
     found = {p: regions.region_suggestion(p, {}, "Etc/UTC") for p in regions.PROVIDERS}
     assert found["aws"][0] == "eu-west-1" and "AWS CLI profile default" in found["aws"][1]
     assert found["azure"][0] == "northeurope" and "defaults.location" in found["azure"][1]
-    assert found["google-cloud"][0] == "europe-west1" and "run/region" in found["google-cloud"][1]
+    assert found["gcloud"][0] == "europe-west1" and "run/region" in found["gcloud"][1]
 
 
 def test_the_aws_settings_follow_the_profile(tmp_path):
@@ -157,7 +157,7 @@ def test_gcloud_falls_back_to_the_compute_region(tmp_path):
     write_cli_settings(tmp_path)
     (tmp_path / "gcloud" / "configurations" / "config_work").write_text(
         "[compute]\nregion = europe-west4\n")
-    assert regions.region_suggestion("google-cloud", {}, "")[0] == "europe-west4"
+    assert regions.region_suggestion("gcloud", {}, "")[0] == "europe-west4"
 
 
 def test_with_no_place_and_no_settings_the_default_says_so():

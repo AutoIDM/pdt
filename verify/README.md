@@ -10,7 +10,7 @@ The `apps:` list in `pdt.yml` is the matrix and the single source of truth. Ever
 | --- | --- | --- |
 | `aws-fargate-a`, `aws-fargate-b` | aws | Batch job on Fargate |
 | `azure-container-apps-a`, `azure-container-apps-b` | azure | Container Apps job |
-| `google-cloud-a`, `google-cloud-b` | google-cloud | Cloud Run job |
+| `google-cloud-a`, `google-cloud-b` | gcloud | Cloud Run job |
 | `windows-a`, `windows-b` | windows | Task Scheduler |
 
 The app directories are generated. Edit `scripts/templates/`, then run `uv run --with pyyaml python verify/scripts/sync_apps.py` from the repository root.
@@ -43,8 +43,8 @@ Each cloud job builds container images with Docker on the GitHub Actions runner 
 | `AZURE_TENANT_ID` | variable | azure | Azure tenant ID |
 | `PDT_AZURE_SUBSCRIPTION` | variable | azure | Azure subscription ID |
 | `AZURE_CLIENT_SECRET` | secret | azure | Service principal secret |
-| `GOOGLE_CLOUD_PROJECT` | variable | google-cloud | Google Cloud project ID |
-| `GOOGLE_APPLICATION_CREDENTIALS` | secret | google-cloud | Service account key, the JSON file's content |
+| `GOOGLE_CLOUD_PROJECT` | variable | gcloud | Google Cloud project ID |
+| `GOOGLE_APPLICATION_CREDENTIALS` | secret | gcloud | Service account key, the JSON file's content |
 
 A push to `main` and a daily schedule start the workflow. A pull request does not. To verify a pull request, start the workflow by hand (Actions > verify > Run workflow) and choose the pull request's branch; every job checks out and tests that branch.
 
@@ -68,7 +68,7 @@ Every listing drops resources tagged `pdt-lifecycle: retain`. The data store (an
 | --- | --- |
 | aws | `resourcegroupstaggingapi get-resources`, plus one list per kind filtered on the `pdt` name prefix |
 | azure | `az resource list --resource-group pdt-verify`, plus the resource group itself. The Container Apps environment `pdt-shared/pdt-eastus2` is named in `PDT_AZURE_CONTAINER_APPS_ENVIRONMENT`, so the run treats it as the user's own and never creates, lists, or deletes it. Create it once by hand before the first run |
-| google-cloud | `gcloud asset search-all-resources`, each result confirmed with its service's describe call, plus `scheduler jobs list` and `iam service-accounts list` |
+| gcloud | `gcloud asset search-all-resources`, each result confirmed with its service's describe call, plus `scheduler jobs list` and `iam service-accounts list` |
 | windows | `Get-ScheduledTask` filtered on `pdt-` task names |
 
 ### Google Cloud needs the Cloud Asset API

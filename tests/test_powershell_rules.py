@@ -31,7 +31,7 @@ def no_gallery(commands):
     raise AssertionError(f"pdt looked up {commands} on the gallery")
 
 
-def verdict(facts, provider="google-cloud", run_scripts=None, gallery=no_gallery):
+def verdict(facts, provider="gcloud", run_scripts=None, gallery=no_gallery):
     return judge(facts, {"run_scripts": run_scripts}, provider, gallery)
 
 
@@ -116,7 +116,7 @@ def test_windows_signals_are_certain_on_a_cloud_only():
     assert windows.modules == []
 
 
-@pytest.mark.parametrize("provider", ["google-cloud", "windows"])
+@pytest.mark.parametrize("provider", ["gcloud", "windows"])
 def test_rules_that_hold_on_every_provider(provider):
     seen = facts(
         script("r.ps1", parseErrors=[{"line": 2, "message": "Missing closing '}'"}],
@@ -452,7 +452,7 @@ def test_the_extractor_reads_a_real_script(tmp_path, monkeypatch):
     assert seen["requirements"] == {"Az.Accounts": "4.*"}
     assert seen["known"]["Import-Module"] == "Microsoft.PowerShell.Core"
     assert seen["known"]["Get-Thing"] is None
-    scan = judge(seen, {"run_scripts": None}, "google-cloud", lambda commands: {})
+    scan = judge(seen, {"run_scripts": None}, "gcloud", lambda commands: {})
     assert scan.entries == ["report.ps1"]
     assert scan.helpers == ["helpers.ps1", "lib.psm1"]
     assert [(f.kind, f.line, f.certain) for f in scan.findings][:2] == [

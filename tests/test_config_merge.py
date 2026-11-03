@@ -102,6 +102,21 @@ def test_storage_must_be_a_bool(project):
     assert any("storage must be true or false" in p for p in validate_app("my-report"))
 
 
+@pytest.mark.parametrize("name", ["gcloud", "google-cloud"])
+def test_google_cloud_loads_under_its_current_and_its_earlier_name(project, name):
+    (project / "pdt.yml").write_text(f"platform:\n  provider: {name}\n  region: us-central1\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    assert merged_app("my-report")["platform"]["provider"] == "gcloud"
+    assert validate_app("my-report") == []
+
+
+def test_an_app_file_may_use_the_earlier_google_cloud_name(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: aws\n  region: us-east-1\n")
+    add_app(project, "my-report", "platform:\n  provider: google-cloud\n  region: us-central1\n")
+    assert merged_app("my-report")["platform"]["provider"] == "gcloud"
+    assert validate_app("my-report") == []
+
+
 def test_windows_app_with_no_timezone_runs_on_local_time(project):
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
     add_app(project, "my-report", "schedule: daily\n")
@@ -109,14 +124,14 @@ def test_windows_app_with_no_timezone_runs_on_local_time(project):
 
 
 def test_cloud_app_with_no_timezone_runs_on_utc(project):
-    (project / "pdt.yml").write_text("platform:\n  provider: google-cloud\n  region: us-central1\n")
+    (project / "pdt.yml").write_text("platform:\n  provider: gcloud\n  region: us-central1\n")
     add_app(project, "my-report", "schedule: daily\n")
     assert merged_app("my-report")["timezone"] == "Etc/UTC"
 
 
 def test_explicit_timezone_on_the_apps_entry_wins_on_a_cloud_provider(project):
     (project / "pdt.yml").write_text(
-        "platform:\n  provider: google-cloud\n  region: us-central1\n"
+        "platform:\n  provider: gcloud\n  region: us-central1\n"
         "apps:\n  - name: my-report\n    timezone: America/Chicago\n")
     add_app(project, "my-report", "schedule: daily\n")
     assert merged_app("my-report")["timezone"] == "America/Chicago"
@@ -132,21 +147,21 @@ def test_windows_app_runs_on_local_time_whatever_timezone_it_sets(project):
 
 
 def test_app_that_picks_windows_itself_defaults_to_local_time(project):
-    (project / "pdt.yml").write_text("platform:\n  provider: google-cloud\n  region: us-central1\n")
+    (project / "pdt.yml").write_text("platform:\n  provider: gcloud\n  region: us-central1\n")
     add_app(project, "my-report", "schedule: daily\nplatform:\n  provider: windows\n")
     assert merged_app("my-report")["timezone"] == "local"
 
 
 def test_platform_timezone_in_pdt_yml_reaches_an_app_without_one(project):
     (project / "pdt.yml").write_text(
-        "platform:\n  provider: google-cloud\n  region: us-central1\n  timezone: America/Chicago\n")
+        "platform:\n  provider: gcloud\n  region: us-central1\n  timezone: America/Chicago\n")
     add_app(project, "my-report", "schedule: daily\n")
     assert merged_app("my-report")["timezone"] == "America/Chicago"
 
 
 def test_apps_entry_timezone_beats_platform_timezone(project):
     (project / "pdt.yml").write_text(
-        "platform:\n  provider: google-cloud\n  region: us-central1\n  timezone: America/Chicago\n"
+        "platform:\n  provider: gcloud\n  region: us-central1\n  timezone: America/Chicago\n"
         "apps:\n  - name: my-report\n    timezone: Europe/London\n")
     add_app(project, "my-report", "schedule: daily\n")
     assert merged_app("my-report")["timezone"] == "Europe/London"
@@ -154,7 +169,7 @@ def test_apps_entry_timezone_beats_platform_timezone(project):
 
 def test_app_config_timezone_beats_the_apps_entry_and_platform(project):
     (project / "pdt.yml").write_text(
-        "platform:\n  provider: google-cloud\n  region: us-central1\n  timezone: America/Chicago\n"
+        "platform:\n  provider: gcloud\n  region: us-central1\n  timezone: America/Chicago\n"
         "apps:\n  - name: my-report\n    timezone: Europe/London\n")
     add_app(project, "my-report", "schedule: daily\ntimezone: Asia/Tokyo\n")
     assert merged_app("my-report")["timezone"] == "Asia/Tokyo"
@@ -162,11 +177,11 @@ def test_app_config_timezone_beats_the_apps_entry_and_platform(project):
 
 def test_validate_accepts_timezone_under_platform_and_rejects_schedule(project):
     (project / "pdt.yml").write_text(
-        "platform:\n  provider: google-cloud\n  region: us-central1\n  timezone: America/Chicago\n")
+        "platform:\n  provider: gcloud\n  region: us-central1\n  timezone: America/Chicago\n")
     add_app(project, "my-report", "schedule: daily\n")
     assert validate() == []
     (project / "pdt.yml").write_text(
-        "platform:\n  provider: google-cloud\n  region: us-central1\n  schedule: daily\n")
+        "platform:\n  provider: gcloud\n  region: us-central1\n  schedule: daily\n")
     assert validate() == [
         "pdt.yml: platform: 'schedule' belongs in the top level of the app's config.yml, "
         "or its apps: entry in pdt.yml, not here"]

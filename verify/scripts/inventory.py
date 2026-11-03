@@ -378,7 +378,7 @@ def windows_inventory(_settings: dict[str, str]) -> Inventory:
 INVENTORIES = {
     "aws": aws_inventory,
     "azure": azure_inventory,
-    "google-cloud": google_cloud_inventory,
+    "gcloud": google_cloud_inventory,
     "windows": windows_inventory,
 }
 
@@ -394,7 +394,7 @@ SETTINGS = {
         "environment": platform.get("environment")
         or os.environ.get("PDT_AZURE_CONTAINER_APPS_ENVIRONMENT") or "",
     },
-    "google-cloud": lambda platform: {
+    "gcloud": lambda platform: {
         "project": platform.get("project")
         or os.environ.get("PDT_GOOGLE_CLOUD_PROJECT") or "",
         "region": platform.get("region")

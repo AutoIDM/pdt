@@ -35,7 +35,7 @@ ART = """
 PROVIDER_CHOICES = [
     ("azure", "Microsoft Azure"),
     ("aws", "Amazon Web Services"),
-    ("google-cloud", "Google Cloud"),
+    ("gcloud", "Google Cloud"),
     ("windows", "This Windows PC, using Task Scheduler"),
     ("", "Decide later"),
 ]
@@ -61,9 +61,9 @@ PROVIDER_QUESTIONS = {
         ("region", regions.question("aws"), lambda: regions.suggest_region("aws"), _needed),
         TIMEZONE_QUESTION,
     ],
-    "google-cloud": [
-        ("region", regions.question("google-cloud"),
-         lambda: regions.suggest_region("google-cloud"), _needed),
+    "gcloud": [
+        ("region", regions.question("gcloud"),
+         lambda: regions.suggest_region("gcloud"), _needed),
         TIMEZONE_QUESTION,
     ],
     "windows": [],
@@ -363,9 +363,12 @@ def replace_platform(text: str, platform: dict) -> str:
 
 
 def merged_platform(root_cfg: dict, root_platform: dict, app_dir: Path) -> dict:
-    return {**root_platform,
-            **(config.root_app_entry(root_cfg, app_dir.name).get("platform") or {}),
-            **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
+    platform = {**root_platform,
+                **(config.root_app_entry(root_cfg, app_dir.name).get("platform") or {}),
+                **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
+    if "provider" in platform:
+        platform["provider"] = config.provider_name(platform["provider"])
+    return platform
 
 
 def pin_problem(path: Path, shown: str) -> str:
@@ -400,7 +403,9 @@ def change_provider(target: Path) -> int:
     text = marker.read_bytes().decode("utf-8")
     bom = "\ufeff" if text.startswith("\ufeff") else ""
     root_cfg = config.load_yaml(marker)
-    current = root_cfg.get("platform") or {}
+    current = dict(root_cfg.get("platform") or {})
+    if "provider" in current:
+        current["provider"] = config.provider_name(current["provider"])
     old = str(current.get("provider") or "")
     console.say(f"{console.value(target)} is already a pdt project.")
     if old != "":
@@ -532,7 +537,7 @@ def project_yaml(platform: dict) -> str:
         lines += [
             "# Defaults for every app. Fill this in before you deploy.",
             PLATFORM_TEMPLATE,
-            "#  provider: azure        # azure, aws, google-cloud, or windows",
+            "#  provider: azure        # azure, aws, gcloud, or windows",
             "#  region: eastus2",
         ]
     lines += [

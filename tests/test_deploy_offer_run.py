@@ -5,7 +5,7 @@ import pytest
 from pdt import cli, config, console, deploy, scaffold
 
 APP = scaffold.STARTER
-REGIONS = {"aws": "us-east-1", "azure": "eastus", "google-cloud": "us-central1", "windows": None}
+REGIONS = {"aws": "us-east-1", "azure": "eastus", "gcloud": "us-central1", "windows": None}
 
 
 @pytest.fixture(params=list(REGIONS))

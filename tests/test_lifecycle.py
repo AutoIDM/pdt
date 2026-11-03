@@ -156,7 +156,7 @@ def test_the_console_prints_an_event_as_one_bold_alert_sentence_handled_or_not(
 @pytest.mark.parametrize(("name", "params", "line"), [
     ("app:deploy-started", {"provider": "azure"}, "Deploying report to Azure"),
     ("app:deploy-completed", {"provider": "aws"}, "Deployed report to AWS"),
-    ("app:deploy-failed", {"provider": "google-cloud", "exit_code": 1},
+    ("app:deploy-failed", {"provider": "gcloud", "exit_code": 1},
      "Deploy of report to Google Cloud failed"),
     ("app:deploy-failed", {"provider": "azure", "exit_code": 10, "reason": "declined"},
      "Deploy of report to Azure failed (declined)"),
@@ -170,7 +170,7 @@ def test_the_console_prints_an_event_as_one_bold_alert_sentence_handled_or_not(
      "Run of report failed (exit code 2)"),
     ("job:paused", {"provider": "azure", "deployed": False}, "Paused report"),
     ("job:unpaused", {"provider": "", "deployed": True}, "Unpaused report"),
-    ("app:secrets-updated", {"provider": "google-cloud", "action": "set", "count": 1},
+    ("app:secrets-updated", {"provider": "gcloud", "action": "set", "count": 1},
      "Updated the secrets of report on Google Cloud: 1 changed"),
     ("app:report-ready", {"provider": "azure"}, "Report ready: report"),
 ])

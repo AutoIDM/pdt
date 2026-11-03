@@ -8,7 +8,7 @@ from pdt import alerts_cli, cli, config, console, deploy, deploy_aws, deploy_azu
 APP = scaffold.STARTER
 AWS = "platform:\n  provider: aws\n  region: us-east-1\n  account: \"123456789012\"\n"
 AZURE = "platform:\n  provider: azure\n  region: eastus\n  subscription: sub-1\n"
-GOOGLE = "platform:\n  provider: google-cloud\n  region: us-central1\n  project: my-project\n"
+GOOGLE = "platform:\n  provider: gcloud\n  region: us-central1\n  project: my-project\n"
 WINDOWS = "platform:\n  provider: windows\n"
 MOVES = {
     "region": (AWS, AWS.replace("us-east-1", "eu-west-1")),
@@ -16,7 +16,7 @@ MOVES = {
     "project": (GOOGLE, GOOGLE.replace("my-project", "other-project")),
     "aws-to-azure": (AWS, AZURE),
     "azure-to-windows": (AZURE, WINDOWS),
-    "windows-to-google-cloud": (WINDOWS, GOOGLE),
+    "windows-to-gcloud": (WINDOWS, GOOGLE),
 }
 
 
@@ -183,15 +183,28 @@ def test_destroy_at_the_same_place_says_nothing_extra(project, monkeypatch, caps
     assert "pdt destroys it where it is deployed" not in capsys.readouterr().out
 
 
+def test_a_record_with_the_earlier_google_cloud_name_is_the_same_place(project, monkeypatch, capsys):
+    (project / "pdt.yml").write_text(GOOGLE.replace("gcloud", "google-cloud"))
+    config.mark_deployed(APP, {"provider": "google-cloud", "region": "us-central1",
+                               "project": "my-project"})
+    assert config.deployed_places()[APP]["provider"] == "gcloud"
+    cloud = Cloud(monkeypatch)
+    assert deploy.deploy(APP, run=False) == 0
+    assert deploy.destroy(APP) == 0
+    assert [call[:2] for call in cloud.calls] == [("gcloud", "deploy"), ("gcloud", "destroy")]
+    assert cloud.asked == []
+    assert "pdt destroys it where it is deployed" not in capsys.readouterr().out
+
+
 def test_an_app_config_yml_that_names_another_provider_is_a_move(project, monkeypatch):
     recorded = deployed_to(project, AWS)
     (project / APP / config.APP_FILE).write_text(
-        "schedule: daily\nplatform:\n  provider: google-cloud\n  region: europe-west1\n"
+        "schedule: daily\nplatform:\n  provider: gcloud\n  region: europe-west1\n"
         "  project: my-project\n")
     cloud = Cloud(monkeypatch, answers=["1"])
     assert deploy.deploy(APP, run=False) == 0
-    assert cloud.calls == [("aws", "destroy", recorded), ("google-cloud", "deploy", None)]
-    assert config.deployed_places()[APP]["provider"] == "google-cloud"
+    assert cloud.calls == [("aws", "destroy", recorded), ("gcloud", "deploy", None)]
+    assert config.deployed_places()[APP]["provider"] == "gcloud"
 
 
 def test_a_powershell_app_is_checked_and_destroyed_the_same_way(project, monkeypatch, capsys):
