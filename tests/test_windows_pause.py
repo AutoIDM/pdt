@@ -37,7 +37,7 @@ def test_an_app_that_is_not_paused_registers_an_enabled_task(project):
 def fake_task(monkeypatch, state: str):
     scripts = []
     monkeypatch.setattr(deploy_windows, "_preflight", lambda require_uv=True: ("powershell.exe", None))
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: state)
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: (state, True))
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kwargs: scripts.append((script, kwargs)) or True)
     return scripts

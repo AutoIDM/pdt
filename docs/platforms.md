@@ -99,6 +99,8 @@ The job runs as the SYSTEM account.
 
 Each run writes one event to the Windows Application log, source `pdt`: event 1000 when it succeeds, event 1001 when it fails.
 
+Deploy turns on the Task Scheduler history (the `Microsoft-Windows-TaskScheduler/Operational` log) for the whole PC, and destroy leaves it on.
+
 Windows accepts these schedules:
 
 - `hourly`, `daily`, `weekly`, `monthly`, and `yearly`

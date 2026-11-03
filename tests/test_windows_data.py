@@ -86,6 +86,36 @@ def test_plan_without_storage_has_no_storage_line(project):
     assert not any("app's files" in action for action in actions)
 
 
+def test_plan_turns_on_the_task_history_only_when_it_is_off(project):
+    app = windows_app(project)
+    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
+                                  "uv.exe", False, history=False)
+    assert plain(actions)[-1] == ("turn on the Task Scheduler history log "
+                                  "Microsoft-Windows-TaskScheduler/Operational for this "
+                                  "computer (stays on after destroy)")
+    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
+                                  "uv.exe", False, history=True)
+    assert not any("history" in action for action in actions)
+    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
+                                  "uv.exe", False, history=None)
+    assert plain(actions)[-1].startswith("make sure the Task Scheduler history log ")
+
+
+@pytest.mark.parametrize(("stdout", "history"),
+                         [("True\n", True), ("False\n", False), ("", None)])
+def test_task_state_reads_the_task_history_in_the_same_call(monkeypatch, stdout, history):
+    scripts = []
+
+    def fake_run(command, **kwargs):
+        scripts.append(base64.b64decode(command[-1]).decode("utf-16-le"))
+        return deploy_windows.subprocess.CompletedProcess(command, 3, stdout, "")
+
+    monkeypatch.setattr(deploy_windows.subprocess, "run", fake_run)
+    assert deploy_windows._task_state("powershell.exe", "pdt-my-report") == ("absent", history)
+    assert scripts[0].startswith(
+        "(Get-WinEvent -ListLog 'Microsoft-Windows-TaskScheduler/Operational').IsEnabled; ")
+
+
 def test_folder_script_creates_the_folders_and_grants_the_two_rules(project):
     app = windows_app(project)
     folder = project / "ProgramData" / "pdt" / "my-report"
@@ -102,7 +132,7 @@ def test_deploy_creates_the_folders_before_registering_the_task(project, monkeyp
     scripts = []
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda require_uv=True: ("powershell.exe", "uv.exe"))
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: ("absent", True))
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append((script, kw)) or True)
@@ -117,7 +147,7 @@ def test_a_plan_shows_the_plan_and_registers_nothing(project, monkeypatch, capsy
     app = windows_app(project)
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda require_uv=True: ("powershell.exe", "uv.exe"))
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: ("absent", True))
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run", lambda *args, **kw: pytest.fail("ran a script"))
     monkeypatch.setattr(deploy_windows, "confirm", lambda *args: pytest.fail("asked to proceed"))
@@ -130,7 +160,7 @@ def test_deploy_says_what_it_does_before_each_slow_step(project, monkeypatch, ca
     app = windows_app(project)
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda require_uv=True: ("powershell.exe", "uv.exe"))
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: ("managed", True))
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run", lambda powershell, script, **kw: True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
@@ -165,7 +195,7 @@ def powershell_deploy(project, monkeypatch):
     monkeypatch.setattr(deploy_windows.regions, "local_currency", lambda: "USD")
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda require_uv=True: ("powershell.exe", "uv.exe"))
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: ("absent", True))
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: runs.append(powershell) or scripts.append(script) or True)
@@ -275,7 +305,7 @@ def test_deploy_registers_the_event_source_before_the_task(project, monkeypatch)
     scripts = []
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda require_uv=True: ("powershell.exe", "uv.exe"))
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: ("absent", True))
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append(script) or True)
@@ -283,3 +313,6 @@ def test_deploy_registers_the_event_source_before_the_task(project, monkeypatch)
     assert (scripts[0].index("New-EventLog -LogName Application -Source 'pdt'")
             < scripts[0].index("Register-ScheduledTask -TaskName $name -Xml $xml -Force "
                                "-ErrorAction Stop"))
+    assert ("wevtutil set-log Microsoft-Windows-TaskScheduler/Operational /enabled:true; "
+            "if ($LASTEXITCODE -ne 0) { throw \"wevtutil failed with exit $LASTEXITCODE\" }; "
+            "$name = ") in scripts[0]

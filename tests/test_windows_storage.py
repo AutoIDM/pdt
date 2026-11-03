@@ -21,7 +21,7 @@ def windows_app(project, monkeypatch):
     add_app(project, "my-report", "schedule: hourly\ntimezone: local\n")
     monkeypatch.setattr(deploy_windows, "_preflight",
                         lambda require_uv=True: ("powershell.exe", "uv.exe"))
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: ("absent", True))
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     return config.merged_app("my-report")
 
@@ -58,7 +58,7 @@ def test_storage_ls_lists_the_folder_contents(project, monkeypatch, capsys):
 
 def destroy_with_task(project, monkeypatch, scripts):
     app = windows_app(project, monkeypatch)
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: ("managed", True))
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kw: scripts.append(script) or True)
     return app
@@ -104,7 +104,7 @@ def test_destroy_removes_a_leftover_logs_folder_when_the_task_is_gone(
         project, monkeypatch, capsys):
     scripts = []
     app = destroy_with_task(project, monkeypatch, scripts)
-    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: ("absent", True))
     logs = project / "ProgramData" / "pdt" / "my-report" / "logs"
     logs.mkdir(parents=True)
 
