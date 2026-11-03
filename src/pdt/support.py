@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -11,7 +9,6 @@ import traceback
 import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import urlencode
 
 from pdt import coding_agents, config, console, watch
@@ -25,24 +22,32 @@ MAX_URL = 4000
 AGENT_SECONDS = 120
 VALIDATE_SECONDS = 120
 REPORTED = ("error", "unhandled")
-TRACE_FRAMES = 10
-INTRO = ("`pdt support` wrote this report. It kept only pdt's own words: `<arg>` stands for a "
-         "word the user typed, `<app>` for an app, project, or computer name or a platform "
-         "setting, `#` for a number, and `<value>` for any other word.")
+INTRO = ("`pdt support` wrote this report. It holds only the structure of the error: no "
+         "error message, no name, and no value. `<value>` stands for a word the user typed.")
+AGENT_INTRO = ("`pdt support` wrote the first part of this report, with only the structure of "
+               "the error. {agent}, a coding agent, wrote the part under What failed, and "
+               "removed the secrets and private details it found. The user read the whole "
+               "report before sending it.")
 CUT = "pdt cut the report here to fit the link. Paste the rest of it below."
 REQUEST = (
-    "A user of pdt, a command line tool that runs and deploys scheduled jobs, hit the problem "
-    "in this report. pdt's own code is in {package}. The reader is an IT administrator, not a "
-    "software engineer. Answer in plain words, in at most 12 short lines, with two parts:\n"
-    "1. What a pdt developer still needs to know to fix this, that the report does not say. "
-    "Write 'nothing' when the report is enough.\n"
-    "2. The most likely way for the user to fix or work around the problem now.")
+    "A user of pdt, a command line tool that runs and deploys scheduled jobs, hit the error "
+    "in this report. pdt's own code is in {package}. The user's pdt project is the working "
+    "folder. Write the part of a public GitHub issue that tells a pdt maintainer what failed. "
+    "The user reads it before it is sent.\n"
+    "1. Remove every secret and every private detail: passwords, tokens, keys, the names of "
+    "people, companies, computers, apps, and projects, paths, host names, email addresses, "
+    "and account, subscription, and project ids. Write <value> in place of each one.\n"
+    "2. Give the error message, and add what you find in pdt's code and the project's files "
+    "that helps a maintainer understand the failure, such as the pdt code that raised the "
+    "error and the setting that led to it.\n"
+    "3. Use at most 30 lines of Markdown, with no heading.\n"
+    "Reply with only that text.")
 
 
 @dataclass(frozen=True)
 class Report:
     title: str
-    sections: dict[str, str]
+    body: str
 
 
 @dataclass(frozen=True)
@@ -62,51 +67,34 @@ def last_error(entries: list[dict], project: str, now: datetime) -> dict | None:
     return None
 
 
-def public(text: str, names: set[str], secrets: set[str]) -> str:
-    """`text` with each value in the user's .env files and each private name replaced, also
-    in the fields that do not pass through watch.signature, such as the computer's versions."""
-    return watch.without_names(watch.hide(text, secrets, watch.VALUE, watch.WORD_PART), names)
+def provider() -> str:
+    try:
+        settings = config.load_yaml(config.find_project() / config.PROJECT_FILE)
+    except (config.ConfigError, OSError, UnicodeError):
+        return "none found"
+    found = settings.get("platform")
+    if isinstance(found, dict) and found.get("provider") in config.PROVIDERS:
+        return found["provider"]
+    return "unknown"
 
 
-def install_method() -> str:
-    prefix = Path(sys.prefix)
-    clone = watch.PACKAGE.parent.parent
-    if watch.PACKAGE.parent.name == "src" and (clone / "pyproject.toml").is_file():
-        try:
-            commit = subprocess.run(["git", "-C", str(clone), "rev-parse", "--short", "HEAD"],
-                                    capture_output=True, text=True, timeout=10).stdout.strip()
-            changed = subprocess.run(["git", "-C", str(clone), "status", "--porcelain"],
-                                     capture_output=True, text=True, timeout=10).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            return "a clone of the repository"
-        if commit == "":
-            return "a clone of the repository"
-        return f"a clone of the repository at {commit}" + (", with local changes" if changed else "")
-    if prefix.parent.name == "tools" and prefix.parent.parent.name == "pdt":
-        return "winget"
-    if prefix.parent.name == "tools":
-        return "uv tool install"
-    return "another way, such as uvx"
+def build(entry: dict) -> Report:
+    """The report with only the structure of the error, which pdt can send with no check."""
+    command, error = entry.get("command"), entry.get("error") or "no exception"
+    what = "crashed" if entry.get("outcome") == "unhandled" else "failed"
+    lines = [INTRO, "", "## What happened",
+             f"Command: `{command}`",
+             f"Result: {entry.get('outcome')}, exit code {entry.get('code')}",
+             f"Exception: {error}"]
+    if entry.get("where"):
+        lines += ["", "## Where in pdt", *entry["where"]]
+    lines += ["", "## Versions",
+              f"pdt {entry.get('pdt')}, Python {entry.get('python')}, {entry.get('os')}, "
+              f"provider {provider()}"]
+    return Report(f"pdt support: {command} {what}: {error}"[:120], "\n".join(lines))
 
 
-def apps_lines(apps: list[str]) -> list[str]:
-    counts = {}
-    for name in apps:
-        try:
-            app = config.merged_app(name)
-        except config.ConfigError:
-            counts["apps with a config error"] = counts.get("apps with a config error", 0) + 1
-            continue
-        provider = app["platform"].get("provider")
-        if provider not in config.PROVIDERS:
-            provider = "an unknown provider"
-        kind = "PowerShell" if config.powershell_scripts(app["dir"]) else "Python"
-        label = f"{kind} apps on {provider}"
-        counts[label] = counts.get(label, 0) + 1
-    return [f"{label}: {count}" for label, count in counts.items()] or ["no apps"]
-
-
-def check_lines(apps: list[str]) -> list[str]:
+def check_lines() -> list[str]:
     env = {**os.environ, watch.OFF_ENV: "0", "NO_COLOR": "1"}
     env.pop(watch.NOTE_ENV, None)
     try:
@@ -119,49 +107,34 @@ def check_lines(apps: list[str]) -> list[str]:
         return [f"pdt validate did not finish in {VALIDATE_SECONDS} seconds"]
     except (OSError, ValueError):
         return ["pdt validate stopped before it printed a result"]
-    problems = [watch.signature(problem["message"], apps) for problem in found["problems"]]
-    return problems or ["no problems"]
+    return [problem["message"] for problem in found["problems"]] or ["no problems"]
 
 
-def trace_lines(error: BaseException) -> list[str]:
-    lines = []
-    for frame in traceback.extract_tb(error.__traceback__):
-        path = Path(frame.filename).resolve()
-        if path.is_relative_to(watch.PACKAGE) and path.name != "watch.py":
-            lines.append(f"{path.relative_to(watch.PACKAGE).as_posix()}:{frame.lineno} in {frame.name}")
-    return lines[-TRACE_FRAMES:]
-
-
-def build(entry: dict, error: BaseException | None = None) -> Report:
-    signature = watch.signature(str(entry.get("signature", "")))
-    sections = {
-        "What happened": "\n".join([
-            f"{entry.get('command')}: {entry.get('outcome')}, exit {entry.get('code')}, "
-            f"at {entry.get('time')}",
-            f"with pdt {entry.get('pdt')} on {entry.get('os')}, Python {entry.get('python')}",
-            signature]),
-        "This computer now": "\n".join([
-            f"pdt {watch.version()}",
-            f"{platform.system()} {platform.release()} ({platform.machine()})",
-            f"Python {platform.python_version()}",
-            f"installed with {install_method()}"]),
-    }
-    trace = trace_lines(error) if error is not None else []
-    if trace:
-        sections["Where in pdt"] = "\n".join(trace)
+def drafted(entry: dict, report: Report, error: BaseException | None) -> Report | None:
+    """The report with a part that a coding agent wrote from the full error, or None when no
+    coding agent that the user allowed answered."""
+    if not coding_agents.installed() or coding_agents.running_inside() is not None:
+        return None
+    console.say("pdt can ask a coding agent on this computer to write what failed, with the "
+                "secrets and private details removed. Press Ctrl+C to skip it.")
+    context = {"Report": report.body, "Error message": entry.get("message") or "none"}
+    if error is not None:
+        context["Traceback"] = "".join(traceback.format_exception(error)).strip()
     if entry.get("project"):
-        try:
-            apps = config.find_apps()
-            listing = apps_lines(apps)
-        except Exception as e:
-            apps = []
-            listing = [f"pdt could not list them, because listing them also raised {type(e).__name__}"]
-        sections["Apps in the project"] = "\n".join(listing)
-        sections["pdt validate"] = "\n".join(check_lines(apps))
-    what = "crash" if entry.get("outcome") == "unhandled" else f"{entry.get('command')} failed"
-    names, secrets = watch.private_names(), coding_agents.env_secrets(shortest=1).values
-    return Report(public(f"pdt support: {what}: {signature}", names, secrets)[:120],
-                  {heading: public(text, names, secrets) for heading, text in sections.items()})
+        context["pdt validate"] = "\n".join(check_lines())
+    try:
+        reply = coding_agents.ask(REQUEST.format(package=watch.PACKAGE), context, AGENT_SECONDS)
+    except KeyboardInterrupt:
+        console.say()
+        console.note("pdt did not wait for the coding agent.")
+        return None
+    except (config.ConfigError, OSError, UnicodeError) as e:
+        console.note(f"pdt did not ask a coding agent: {console.escape(str(e))}")
+        return None
+    if reply is None or reply.text == "":
+        return None
+    body = report.body.replace(INTRO, AGENT_INTRO.format(agent=reply.agent), 1)
+    return Report(report.title, f"{body}\n\n## What failed\n{reply.text}")
 
 
 def issue_link(title: str, body: str) -> Link:
@@ -188,9 +161,9 @@ def copy(text: str) -> bool:
     return False
 
 
-def submit(title: str, body: str) -> None:
-    link = issue_link(title, body)
-    copied = copy(body)
+def submit(report: Report) -> None:
+    link = issue_link(report.title, report.body)
+    copied = copy(report.body)
     if copied:
         console.say("pdt copied the full report to your clipboard.")
     if not link.whole:
@@ -205,50 +178,29 @@ def submit(title: str, body: str) -> None:
                 f"{console.value('Create')} to send it.")
 
 
-def advise(report: Report) -> None:
-    if not coding_agents.installed() or coding_agents.running_inside() is not None:
-        return
-    console.say("pdt can ask a coding agent on this computer to check the report and suggest "
-                "a fix. Press Ctrl+C to skip it.")
-    try:
-        reply = coding_agents.ask(REQUEST.format(package=watch.PACKAGE), report.sections,
-                                  AGENT_SECONDS)
-    except KeyboardInterrupt:
-        console.say()
-        console.note("pdt did not wait for the coding agent.")
-        return
-    except (config.ConfigError, OSError, UnicodeError) as e:
-        console.note(f"pdt did not ask a coding agent: {console.escape(str(e))}")
-        return
-    if reply is None or reply.text == "":
-        return
-    console.heading(f"Advice from {console.escape(reply.agent)} (a coding agent, not the pdt team):")
-    for line in reply.text.splitlines():
+def show(report: Report) -> None:
+    console.say("The issue is public. Anyone can read it. This is all it holds:")
+    console.say()
+    console.field("Title", report.title)
+    for line in report.body.splitlines():
         console.bullet(console.escape(line))
+    console.say()
 
 
 def propose(entry: dict, error: BaseException | None = None) -> int:
-    report = build(entry, error)
-    title = report.title
-    body = "\n\n".join([INTRO, *(f"## {heading}\n{text}"
-                                 for heading, text in report.sections.items())])
+    report = build(entry)
     console.say("pdt can start a GitHub issue about this problem, so the pdt team can fix it.")
-    console.say("The issue is public. Anyone can read it. This is all it holds:")
-    console.say()
-    console.field("Title", title)
-    for line in body.splitlines():
-        console.bullet(console.escape(line))
-    console.say()
-    advise(report)
     if not can_prompt(None):
-        console.say("Open this link to start the issue. The link sends this text to GitHub, and "
-                    "GitHub publishes it only when you select Create:")
-        console.command(issue_link(title, body).url)
+        show(report)
+        console.say(f"To report it, start an issue at {console.value(ISSUES_URL)} with this "
+                    f"text, or ask on Discord: {console.value(watch.SUPPORT_URL)}")
         return 0
+    report = drafted(entry, report, error) or report
+    show(report)
     console.say("Your browser sends this text to GitHub. GitHub publishes it only when you "
                 "check the issue and select Create.")
-    if console.confirm("Start this GitHub issue in your browser?"):
-        submit(title, body)
+    if console.confirm("Does this report look right? Start it as a GitHub issue in your browser?"):
+        submit(report)
     else:
         console.say(f"pdt sent nothing. You can also ask on Discord: {console.value(watch.SUPPORT_URL)}")
     return 0

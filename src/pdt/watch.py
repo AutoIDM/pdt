@@ -1,23 +1,20 @@
 """Keep a history of each top-level pdt command, and point a person at the pdt
 community after a pdt command fails at a terminal.
 
-The history in `HISTORY` holds only pdt's own words (its command and flag names, the text
-in its code, and exception names); every other word becomes a placeholder. `pdt support`
-reads it.
+The history in `HISTORY` stays on this computer. Each entry holds the shape of the command
+(pdt's command and flag names, every other word `<value>`), the exception type, pdt's own
+lines in the traceback, and the error message pdt printed. `pdt support` reads it, and only
+a coding agent the user allowed sees the message.
 When pdt itself crashes at a terminal, `pdt support` starts on its own. It sends
 nothing anywhere.
 """
 
 from __future__ import annotations
 
-import ast
-import builtins
-import functools
 import hashlib
 import json
 import os
 import platform
-import re
 import sys
 import time
 import traceback
@@ -40,16 +37,20 @@ AGENT_ENVS = ("CLAUDECODE", "CURSOR_AGENT", "CODEX_SANDBOX", "GEMINI_CLI")
 PACKAGE = Path(__file__).resolve().parent
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 NOTE_RANKS = {"unhandled": 2, "error": 1, "usage": 1, "interrupted": 1}
+TRACE_FRAMES = 10
+MESSAGE_CHARS = 2000
+VALUE = "<value>"
 
-_seen = ("", "")
-
-VALUE, ARG, NUMBER = "<value>", "<arg>", "#"
-EDGES = ".,:;!?()[]{}'\"`"
+_seen: tuple[str, str, BaseException | None, list] = ("", "", None, [])
 
 
 def saw(message: str, usage: bool = False) -> None:
+    """Keep the last error pdt printed, with the exception that pdt was handling then, such
+    as the ConfigError that `cli.run` prints, or else the calls that led to the print."""
     global _seen
-    _seen = ("usage" if usage else "", message)
+    error = sys.exc_info()[1]
+    calls = traceback.extract_stack()[:-2] if error is None else []
+    _seen = ("usage" if usage else "", message, error, calls)
 
 
 def is_flag(token: str) -> bool:
@@ -81,86 +82,31 @@ def shape(argv: list[str], commands: set[str], flags: set[str] = frozenset()) ->
         elif flag in flags:
             words.append(flag + ("=<value>" if equals else ""))
         else:
-            words.append(ARG)
+            words.append(VALUE)
     return " ".join(words)
 
 
-def hide(text: str, values: set[str], placeholder: str, inside: str,
-         shortest: int = 4, flags: int = 0) -> str:
-    """`text` with each value replaced: one of `shortest` characters or more wherever it is,
-    a shorter one only where no `inside` character touches it. A short number stays, because
-    signature makes each number NUMBER."""
-    for value in sorted(values, key=len, reverse=True):
-        if value == "" or (len(value) < shortest and value.isdigit()):
-            continue
-        pattern = re.escape(value)
-        if len(value) < shortest:
-            pattern = rf"(?<!{inside}){pattern}(?!{inside})"
-        text = re.sub(pattern, lambda _match: placeholder, text, flags=flags)
-    return text
+def where(frames: list[traceback.FrameSummary]) -> list[str]:
+    """pdt's own lines in `frames`, such as `config.py:663 in cron_expression`."""
+    lines = []
+    for frame in frames:
+        path = Path(frame.filename).resolve()
+        if path.is_relative_to(PACKAGE) and path != Path(__file__).resolve():
+            lines.append(f"{path.relative_to(PACKAGE).as_posix()}:{frame.lineno} in {frame.name}")
+    return lines[-TRACE_FRAMES:]
 
 
-WORD_PART = rf"[^\s{re.escape(EDGES)}]"
-
-
-@functools.cache
-def known_words() -> frozenset[str]:
-    """The words of pdt's own text, the string constants in its package, the places in it
-    that exception_signature names, and the names of Python's exceptions."""
-    words = {VALUE, ARG, NUMBER}
-    words.update(name for name, value in vars(builtins).items()
-                 if isinstance(value, type) and issubclass(value, BaseException))
-    for path in PACKAGE.rglob("*.py"):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError, UnicodeError, ValueError):
-            continue
-        file = path.relative_to(PACKAGE).as_posix()
-        words.add(f"{file}:<module>")
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                words.add(f"{file}:{node.name}")
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                words.update(word.strip(EDGES) for word in node.value.split())
-    return frozenset(words)
-
-
-def signature(text: str, typed: list[str] = ()) -> str:
-    """The first line of `text` with only pdt's own words: a word the user typed becomes
-    ARG, a number NUMBER, and every other word VALUE."""
+def failed(outcome: str, error: BaseException | None, message: str,
+           calls: list[traceback.FrameSummary] = ()) -> dict:
     from rich.errors import MarkupError
     from rich.text import Text
     try:
-        text = Text.from_markup(text).plain
+        message = Text.from_markup(message).plain
     except MarkupError:
         pass
-    line = next((line.strip() for line in text.splitlines() if line.strip()), "")
-    line = hide(line, set(os.environ.values()), VALUE, WORD_PART)
-    line = hide(line, set(typed), ARG, WORD_PART)
-
-    def public(match: re.Match) -> str:
-        token = match.group()
-        word = token.strip(EDGES)
-        if word == "":
-            return token
-        if word.isdigit():
-            kept = NUMBER
-        elif word in known_words():
-            kept = word
-        else:
-            kept = VALUE
-        start = token.index(word)
-        return token[:start] + kept + token[start + len(word):]
-    return re.sub(r"\S+", public, line)[:160]
-
-
-def exception_signature(error: BaseException, typed: list[str] = ()) -> str:
-    text = f"{type(error).__name__}: {signature(str(error), typed)}"
-    for frame in reversed(traceback.extract_tb(error.__traceback__)):
-        path = Path(frame.filename).resolve()
-        if path.is_relative_to(PACKAGE) and path != Path(__file__).resolve():
-            return f"{text} at {path.relative_to(PACKAGE).as_posix()}:{frame.name}"
-    return text
+    return {"outcome": outcome, "error": "" if error is None else type(error).__name__,
+            "where": where(calls if error is None else traceback.extract_tb(error.__traceback__)),
+            "message": message.strip()[:MESSAGE_CHARS]}
 
 
 def exit_code(code: object) -> int:
@@ -169,14 +115,14 @@ def exit_code(code: object) -> int:
     return code if isinstance(code, int) else 1
 
 
-def handled(code: int, typed: list[str] = ()) -> tuple[str, str]:
+def handled(code: int) -> dict:
     if code == 0:
-        return "ok", ""
+        return failed("ok", None, "")
     if code == 130:
         outcome = "interrupted"
     else:
         outcome = "usage" if _seen[0] == "usage" else "error"
-    return outcome, signature(_seen[1], typed) or f"exit {code}"
+    return failed(outcome, _seen[2], _seen[1] or f"exit {code}", _seen[3])
 
 
 def off() -> bool:
@@ -193,47 +139,6 @@ def can_offer() -> bool:
     return (can_prompt(None) and sys.stderr.isatty()
             and not any(len(token) > 2 and "--json".startswith(token) for token in sys.argv)
             and not any(name in os.environ for name in AGENT_ENVS))
-
-
-def typed_words(argv: list[str], commands: set[str], flags: set[str] = frozenset()) -> list[str]:
-    words = []
-    command = command_index(argv, commands)
-    for index, token in enumerate(argv[1:], 1):
-        flag, _, value = token.partition("=")
-        if flag not in flags and index != command:
-            words.append(token)
-        words.append(value)
-    return [word for word in words if word != ""]
-
-
-def private_names() -> set[str]:
-    """Names that can be one of pdt's own words and still name the user: the home folder,
-    the computer, the project, its apps, and their platform settings except the provider."""
-    names = {Path.home().name, platform.node(), platform.node().split(".")[0]}
-    try:
-        project = config.find_project()
-        names |= {project.name, *config.app_folders()}
-        settings = config.load_yaml(project / config.PROJECT_FILE)
-        if isinstance(settings.get("platform"), dict):
-            names |= {str(value) for key, value in settings["platform"].items()
-                      if key != "provider"}
-        entries = settings.get("apps")
-        if isinstance(entries, list):
-            names |= {str(entry["name"]) for entry in entries
-                      if isinstance(entry, dict) and "name" in entry}
-        for app in config.app_folders():
-            try:
-                names |= {str(value) for key, value in config.merged_app(app)["platform"].items()
-                          if key != "provider"}
-            except config.ConfigError:
-                continue
-    except (config.ConfigError, OSError, UnicodeError):
-        pass
-    return {name for name in names if len(name) > 1}
-
-
-def without_names(text: str, names: set[str]) -> str:
-    return hide(text, names, "<app>", "[A-Za-z0-9]", shortest=sys.maxsize, flags=re.IGNORECASE)
 
 
 def project() -> str:
@@ -274,28 +179,20 @@ def watched(main: Callable[[], int], commands: set[str] = frozenset(),
     os.environ.pop(NOTE_ENV, None)
     entry = None
     try:
-        typed = typed_words(sys.argv, commands, flags)
-        if failure is not None:
-            outcome, sign = "unhandled", exception_signature(failure, typed)
-        else:
-            outcome, sign = handled(code, typed)
+        found = failed("unhandled", failure, str(failure)) if failure is not None else handled(code)
         if note.is_file():
             try:
                 child_note = json.loads(note.read_text())
             except ValueError:
                 child_note = {}
             note.unlink()
-            if code != 0 and child_note.get("signature"):
-                sign = hide(str(child_note["signature"]), set(typed), ARG, WORD_PART)
-                if child_note.get("outcome") == "unhandled":
-                    outcome = "unhandled"
-        if code != 0:
-            sign = without_names(sign, private_names())
-        entry = {"v": 1, "time": datetime.now(timezone.utc).strftime(TIME_FORMAT),
+            if code != 0 and child_note.get("outcome") in NOTE_RANKS:
+                outcome = "unhandled" if child_note["outcome"] == "unhandled" else found["outcome"]
+                found = {**child_note, "outcome": outcome}
+        entry = {"v": 2, "time": datetime.now(timezone.utc).strftime(TIME_FORMAT),
                  "project": project(), "command": shape(sys.argv, commands, flags),
-                 "outcome": outcome, "code": code, "signature": sign,
-                 "seconds": round(time.monotonic() - start, 2), "pdt": version(),
-                 "os": sys.platform, "python": platform.python_version()}
+                 **found, "code": code, "seconds": round(time.monotonic() - start, 2),
+                 "pdt": version(), "os": sys.platform, "python": platform.python_version()}
         record(entry)
     except Exception:
         pass
@@ -317,25 +214,25 @@ def child(main: Callable[[], int]) -> int:
             write_note(lambda code=exit_code(e.code): handled(code))
         raise
     except Exception as e:
-        write_note(lambda error=e: ("unhandled", exception_signature(error)))
+        write_note(lambda error=e: failed("unhandled", error, str(error)))
         raise
     if exit_code(result) != 0:
         write_note(lambda: handled(exit_code(result)))
     return result
 
 
-def write_note(make: Callable[[], tuple[str, str]]) -> None:
-    """Write the outcome and signature that `make` gives to the parent's note. Nothing that
-    goes wrong here changes the child's exit code or exception."""
+def write_note(make: Callable[[], dict]) -> None:
+    """Write the failure that `make` gives to the parent's note. Nothing that goes wrong here
+    changes the child's exit code or exception."""
     try:
-        outcome, sign = make()
+        found = make()
         path = Path(os.environ[NOTE_ENV])
         if path.is_file():
             kept = json.loads(path.read_text()).get("outcome")
-            if NOTE_RANKS.get(kept, 0) >= NOTE_RANKS[outcome]:
+            if NOTE_RANKS.get(kept, 0) >= NOTE_RANKS[found["outcome"]]:
                 return
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"outcome": outcome, "signature": sign}))
+        path.write_text(json.dumps(found))
     except Exception:
         pass
 
