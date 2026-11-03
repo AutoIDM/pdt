@@ -64,7 +64,7 @@ DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday",
         "Thursday", "Friday", "Saturday")
 FORBIDDEN_TASK_NAME_CHARS = set('\\/:*?"<>|')
 NO_RUN_TIME_LIMIT = "PT0S"
-# A repeat ends one minute after the last start of the day, so the repeat at the start of the
+# A repeat ends 30 seconds after the last start of the day, so the repeat at the start of the
 # next day, which Windows counts as inside a 24-hour duration, never runs on a weekly or
 # monthly trigger.
 MINUTES_A_DAY = 24 * 60
