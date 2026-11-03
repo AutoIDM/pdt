@@ -340,8 +340,8 @@ def _folder_script(app: dict, user: str) -> str:
     )
 
 
-def _task_state(powershell: str, name: str) -> tuple[str, bool]:
-    """The task's state, and whether Task Scheduler keeps its history log."""
+def _task_state(powershell: str, name: str) -> tuple[str, bool | None]:
+    """The task's state, and whether Task Scheduler keeps its history log (None: unreadable)."""
     quoted = _ps_string(name)
     script = (
         f"(Get-WinEvent -ListLog {_ps_string(HISTORY_LOG)}).IsEnabled; "
@@ -354,7 +354,7 @@ def _task_state(powershell: str, name: str) -> tuple[str, bool]:
         [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
          "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
         stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    history = proc.stdout.strip() == "True"
+    history = {"True": True, "False": False}.get(proc.stdout.strip())
     if proc.returncode == 0:
         return "managed", history
     if proc.returncode == 3:
@@ -416,7 +416,7 @@ def _prepare_powershell(app: dict) -> tuple[str | None, list]:
 
 def plan(app: dict, verb: str, description: str, user: str, uv: str,
          on_machine_path: bool, pwsh: str | None = None,
-         modules: list = (), history: bool = True) -> list[console.Markup]:
+         modules: list = (), history: bool | None = True) -> list[console.Markup]:
     name = app["name"]
     actions = [
         console.Markup(f"{verb} Windows scheduled task {console.value(_task_name(name))} "
@@ -447,7 +447,11 @@ def plan(app: dict, verb: str, description: str, user: str, uv: str,
     if modules:
         names = ", ".join(console.value(need.name) for need in modules)
         actions.append(console.Markup(f"install PowerShell modules {names} (all users)"))
-    if not history:
+    if history is None:
+        actions.append(console.Markup(f"make sure the Task Scheduler history log "
+                                      f"{console.value(HISTORY_LOG)} is on for this computer "
+                                      "(this account cannot read it; it stays on after destroy)"))
+    elif not history:
         actions.append(console.Markup(f"turn on the Task Scheduler history log "
                                       f"{console.value(HISTORY_LOG)} for this computer "
                                       "(stays on after destroy)"))

@@ -96,9 +96,13 @@ def test_plan_turns_on_the_task_history_only_when_it_is_off(project):
     actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
                                   "uv.exe", False, history=True)
     assert not any("history" in action for action in actions)
+    actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
+                                  "uv.exe", False, history=None)
+    assert plain(actions)[-1].startswith("make sure the Task Scheduler history log ")
 
 
-@pytest.mark.parametrize(("stdout", "history"), [("True\n", True), ("False\n", False)])
+@pytest.mark.parametrize(("stdout", "history"),
+                         [("True\n", True), ("False\n", False), ("", None)])
 def test_task_state_reads_the_task_history_in_the_same_call(monkeypatch, stdout, history):
     scripts = []
 
