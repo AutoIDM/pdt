@@ -202,7 +202,7 @@ def ask_apps(numbered: list[str]) -> list[str]:
 
 def kept_settings(current: dict, provider: str) -> dict:
     if current.get("provider") == provider:
-        return dict(current)
+        return {key: value for key, value in current.items() if key != "region"}
     timezone = current.get("timezone")
     if timezone not in (None, "local") and TIMEZONE_QUESTION in PROVIDER_QUESTIONS[provider]:
         return {"timezone": timezone}
@@ -302,13 +302,15 @@ def apply(root_cfg: dict, root_platform: dict, platform: dict, moving: list[str]
            for name in deployed])
     if deployed:
         console.say("Stored data will not be deleted.")
-    try:
-        answer = console.confirm("Continue?")
-    except EOFError:
-        answer = False
-    if not answer:
-        console.say("Cancelled. Nothing changed.")
-        return 0
+        try:
+            answer = console.confirm("Continue?", default=True)
+        except EOFError:
+            answer = False
+        if not answer:
+            console.say("Cancelled. Nothing changed.")
+            return 0
+    else:
+        console.say("Nothing is deployed, so pdt move only updates the config.")
     stale = [path.relative_to(target).as_posix() for path, text in snapshot.items()
              if read_text(path) != text]
     if stale:

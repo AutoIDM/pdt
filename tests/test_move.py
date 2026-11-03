@@ -47,7 +47,7 @@ def test_replace_platform_adds_a_block_when_there_is_none():
 
 @pytest.mark.parametrize("current,provider,kept", [
     ({"provider": "aws", "region": "us-east-1", "timezone": "America/Chicago"}, "aws",
-     {"provider": "aws", "region": "us-east-1", "timezone": "America/Chicago"}),
+     {"provider": "aws", "timezone": "America/Chicago"}),
     ({"provider": "aws", "account": "1", "timezone": "America/Chicago"}, "google-cloud",
      {"timezone": "America/Chicago"}),
     ({"provider": "aws", "timezone": "America/Chicago"}, "azure", {}),
@@ -240,7 +240,7 @@ def test_move_all_offers_the_new_default_and_writes_only_pdt_yml(project, monkey
     monkeypatch.setattr(move.console, "confirm", confirm)
     assert move.move_app("beta") == 0
     assert questions == [("Change the default platform to aws, region us-east-2?", True),
-                         ("Continue?", False)]
+                         ("Continue?", True)]
     assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"] == AWS
     assert [platform_of(project, name) for name in ("alpha", "beta", "gamma")] == [None, None, None]
     assert [name for name, *_ in cloud.deployed] == ["alpha", "beta", "gamma"]
@@ -268,11 +268,16 @@ def test_move_an_app_that_is_not_deployed_destroys_and_deploys_nothing(project, 
     for name in ("alpha", "beta"):
         add_app(project, name)
     cloud = Cloud(monkeypatch)
-    answer(monkeypatch, ["1", *TO_AWS], [False, True])
+    answer(monkeypatch, ["1", *TO_AWS])
+    questions = []
+    monkeypatch.setattr(move.console, "confirm",
+                        lambda question, **kwargs: questions.append(question) or False)
     assert move.move_app("alpha") == 0
     out = capsys.readouterr().out
     assert "alpha is not deployed. pdt.yml deploys it to azure, resource group pdt." in out
-    assert "Plan:\n  update alpha/config.yml\n" in out
+    assert ("Plan:\n  update alpha/config.yml\n"
+            "Nothing is deployed, so pdt move only updates the config.\n") in out
+    assert questions == ["Change the default platform to aws, region us-east-2?"]
     assert platform_of(project, "alpha") == AWS
     assert cloud.destroyed == cloud.deployed == []
 
@@ -315,6 +320,21 @@ def test_a_failed_destroy_in_move_writes_no_config_yml_for_that_app(project, mon
     assert cloud.deployed == []
     assert (project / PROJECT_FILE).read_text() == before
     assert platform_of(project, "alpha") is None
+
+
+def test_the_region_question_offers_the_suggested_region_for_the_same_provider(project, monkeypatch):
+    moving_project(project)
+    Cloud(monkeypatch)
+    from pdt import regions
+    monkeypatch.setattr(regions, "region_suggestion",
+                        lambda provider, platform=None, zone=None: ("westeurope", "the time zone"))
+    answer(monkeypatch, [])
+    asked, replies = [], iter(["1", "1", "cancel"])
+    monkeypatch.setattr(move.console, "ask",
+                        lambda question, default="": asked.append((question, default)) or next(replies))
+    assert move.move_app("alpha") == 0
+    assert asked[-1] == ("Which Azure region should hold your jobs? (type cancel to change nothing)",
+                         "westeurope")
 
 
 def test_move_to_the_current_place_changes_nothing(project, monkeypatch, capsys):
