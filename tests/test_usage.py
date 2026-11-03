@@ -190,7 +190,39 @@ def test_no_records_the_answer_with_no_uuid(usage_on, at_terminal, posts, monkey
     assert usage._sender is None
 
 
-@pytest.mark.parametrize("flag", ["--help", "-h", "--version", "--json", "--js", "--yes", "-y",
+@pytest.mark.parametrize("flag", ["--yes", "--ye", "-y"])
+def test_yes_answers_the_question_with_yes(usage_on, at_terminal, monkeypatch, flag):
+    monkeypatch.setattr(console, "confirm", lambda *a, **k: pytest.fail("asked"))
+    usage.start(["pdt", "deploy", "my-app", "--json", flag])
+    record = json.loads((usage_on / "client.json").read_text())
+    assert record["asked"] is True
+    assert usage.identity().client_uuid == record["client_uuid"]
+
+
+@pytest.mark.parametrize("name, value", [("DO_NOT_TRACK", "1"), (usage.OFF_ENV, "off"),
+                                         ("project", None), ("flag", None)])
+def test_each_opt_out_is_stronger_than_yes(usage_on, at_terminal, tmp_path, monkeypatch,
+                                           name, value):
+    argv = ["pdt", "init", "--yes"]
+    if name == "project":
+        (tmp_path / config.PROJECT_FILE).write_text(f"{config.USAGE_STATS_KEY}: false\n")
+    elif name == "flag":
+        argv.append(usage.OPT_OUT_FLAG)
+    else:
+        monkeypatch.setenv(name, value)
+    usage.start(argv)
+    assert usage.identity() is None
+    assert not usage_on.exists()
+
+
+def test_yes_of_a_cloud_cli_is_not_an_answer(usage_on, at_terminal, monkeypatch):
+    monkeypatch.setattr(console, "confirm", lambda *a, **k: False)
+    usage.start(["pdt", "az", "group", "delete", "--yes"])
+    assert json.loads((usage_on / "client.json").read_text()) == {"client_uuid": None,
+                                                                  "asked": True}
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h", "--version", "--json", "--js",
                                   "--no-usage-stats", "--plan", "--pl", "--names", "--nam",
                                   "--script", "--scr"])
 def test_flags_skip_the_question_and_a_person_sends_nothing_yet(

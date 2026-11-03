@@ -33,9 +33,9 @@ Under the data folder (`folder`), client.json is {"client_uuid": str | null, "as
 projects/<sha256 of the project path> holds the project's UUID. The name stays on
 this computer, and no hash is ever sent.
 
-`start` asks a person once, before the command runs. A person who has not answered,
-at a terminal in a command that skips the question, sends
-nothing yet. With no one to ask, pdt sends until someone opts out. Any one of
+`start` asks a person once, before the command runs. `--yes` or `-y` answers yes in
+place of the question, except in a command of aws, az, or gcloud. A person who has not
+answered, at a terminal in a command that skips the question, sends nothing yet. With no one to ask, pdt sends until someone opts out. Any one of
 DO_NOT_TRACK, OFF_ENV with an off value, or `anonymous_usage_stats: false` in pdt.yml
 turns it off, with no output.
 
@@ -79,9 +79,9 @@ SEND_TIMEOUT_SECONDS = 2.0
 EXIT_WAIT_SECONDS = 5.0
 QUESTION = "Send anonymous usage statistics to AutoIDM?"
 OPT_OUT_FLAG = "--no-usage-stats"
-NO_QUESTION_FLAGS = ("--help", "--version", "--json", "--yes", "--plan", "--names", "--script",
+NO_QUESTION_FLAGS = ("--help", "--version", "--json", "--plan", "--names", "--script",
                      OPT_OUT_FLAG)
-NO_QUESTION_SHORT_FLAGS = ("-h", "-y")
+NO_QUESTION_SHORT_FLAGS = ("-h",)
 KNOWN_VALUES: dict[str, tuple[str, ...]] = {
     "provider": config.PROVIDERS,
     "trigger": ("manual", "schedule"),
@@ -290,11 +290,13 @@ def start(argv: list[str]) -> None:
         if any(_named(token, OPT_OUT_FLAG) for token in tokens):
             os.environ[OFF_ENV] = "false"
         record = _read_client() or {}
+        yes = (not tokens or tokens[0] not in CLOUD_CLIS) and any(
+            token == "-y" or _named(token, "--yes") for token in tokens)
         skipped = any(token in NO_QUESTION_SHORT_FLAGS or _named(token, flag)
                       for token in tokens for flag in NO_QUESTION_FLAGS)
-        if (not skipped and not record.get("asked") and JOB_ENV not in os.environ
+        if ((yes or not skipped) and not record.get("asked") and JOB_ENV not in os.environ
                 and CLIENT_ENV not in os.environ and not off() and watch.person_at_terminal()):
-            send = console.confirm(QUESTION, default=True, stderr=True)
+            send = yes or console.confirm(QUESTION, default=True, stderr=True)
             folder().mkdir(parents=True, exist_ok=True)
             with config.locked(folder() / "client.json"):
                 saved = _read_client() or {}
