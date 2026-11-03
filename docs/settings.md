@@ -341,7 +341,7 @@ When no entry names `unhandled`, pdt adds a `console` entry for `unhandled` to t
 
 ## `managed_services:` keys
 
-Put this block at the top level of `pdt.yml`. It applies to every app in the project. With no block, pdt sends nothing to AutoIDM. See [Managed services from AutoIDM](projects.md#managed-services-from-autoidm).
+Put this block at the top level of `pdt.yml`. It applies to every app in the project. With no block, pdt sends nothing to AutoIDM.
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
@@ -358,7 +358,7 @@ pdt sends nothing to AutoIDM when the env var `CI` is set. A cloud job uses the 
 
 ## Anonymous usage statistics
 
-pdt sends anonymous usage statistics to AutoIDM: each command line, the app name, the exit code, the pdt version, the Python version, the operating system, and a random ID for this computer and for the project. Before it sends a command line, pdt removes each value that looks like a secret, and replaces your home folder with `~`. A path that you type on the command line stays in it, for example `pdt init /srv/jobs --yes`. pdt sends no file content. At a terminal, pdt asks once before the first command, and saves the answer in the data folder, under `pdt/usage`. On a build server or under an AI agent program, pdt asks nothing and sends.
+pdt sends anonymous usage statistics to AutoIDM: each command line, the app name, the exit code, the pdt version, the Python version, the operating system, and a random ID for this computer and for the project. Before it sends a command line, pdt removes each value that looks like a secret, and replaces your home folder with `~`. A path that you type on the command line stays in it, for example `pdt init /srv/jobs --yes`. pdt sends no file content. At a terminal, pdt asks once before the first command, and saves the answer in the data folder, under `pdt/usage`. `--yes` answers the question with yes, so pdt does not ask. Each setting in the table below still turns the statistics off. On a build server or under an AI agent program, pdt asks nothing and sends.
 
 Any one of these turns the statistics off, with no output:
 
