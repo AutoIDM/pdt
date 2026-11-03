@@ -274,12 +274,13 @@ def test_scp_names_the_user_and_the_sftp_path(monkeypatch, name, remote):
 
     found = Connection(Target("CORP\\admin", name), "SSH (port 22)", "CORP\\admin", "PC01",
                        "C:\\ProgramData", "AMD64", "-")
-    windows_remote.SshSession(found, run).upload(Path("/tmp/x.zip"),
+    local = Path("/tmp/x.zip")
+    windows_remote.SshSession(found, run).upload(local,
                                                  PureWindowsPath("C:\\ProgramData\\pdt\\x.zip"))
     (args,) = calls
     assert args[0] == "scp"
     assert "User=CORP\\admin" in args
-    assert args[-3:] == ["--", "/tmp/x.zip", remote]
+    assert args[-3:] == ["--", str(local), remote]
 
 
 def test_a_failed_scp_names_the_reason():
