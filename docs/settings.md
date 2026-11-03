@@ -110,7 +110,7 @@ Put these keys under `platform:` in `pdt.yml`, in an `apps:` entry, or in `confi
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `account` | A 12-digit AWS account ID in quotes, for example `"123456789012"`. | The first deploy reads it from your credentials and saves it. | Each later deploy checks that your credentials match this account. |
-| `profile` | The name of a profile in `~/.aws`. | `AWS_PROFILE`, or the only profile on the computer. With several profiles, the deploy asks and saves the answer. | Selects the sign-in that pdt uses. |
+| `profile` | The name of a profile in `~/.aws`. | The default sign-in of the AWS SDK: `AWS_PROFILE`, the `default` profile, or `AWS_ACCESS_KEY_ID`. When that sign-in has no credentials, pdt uses the only profile on the computer. With several profiles, pdt asks at a terminal and saves the answer. On a build server, it stops. | Selects the sign-in that pdt uses. |
 
 ```yaml
 # pdt.yml
@@ -125,7 +125,7 @@ platform:
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
-| `subscription` | An Azure subscription ID. | The deploy asks you to choose one and saves the answer. | Selects the subscription. |
+| `subscription` | An Azure subscription ID. | The active subscription of the Azure CLI (`az account show`). The first deploy saves it. pdt asks nothing. When you are not logged in, pdt asks to open the browser login. | Selects the subscription. When the Azure CLI uses another subscription, the deploy switches the Azure CLI to this one. |
 | `resource_group` | A resource group name. | `pdt` | Names the resource group that holds the project's resources. |
 | `environment` | An environment you already own, written as `<resource-group>/<name>`. | The shared environment `pdt-<region>` in the resource group `pdt-shared`. | Selects the Container Apps environment. pdt never creates, changes, or deletes an environment that you name here. |
 
@@ -180,7 +180,7 @@ Put these keys at the top level of the app's `config.yml`, or in its entry in th
 | `config` | A block of your own keys. See [`config:` keys](#config-keys). | Empty. | Holds the settings that your app reads. |
 | `env` | A block with [`env:` keys](#env-keys). | Empty. | Names the env vars that the app needs. |
 | `storage` | `true` or `false`. | `true` | Gives the app a storage folder. See [Keeping files between runs](storage.md). |
-| `enabled` | `true` or `false`. | `true` | With `false`, every command except `pdt list` acts as if the app is not there. A deployed schedule keeps running. Run `pdt pause` or `pdt destroy` first. |
+| `enabled` | `true` or `false`. | `true` | With `false`, every command except `pdt list` acts as if the app is not there. `pdt destroy` still accepts the app while it is deployed. A deployed schedule keeps running. Run `pdt pause` or `pdt destroy` first. |
 | `pause` | `true` or `false`. | `false` | With `true`, the deployed schedule starts no runs. You can still start a run with `pdt run APP --deployed`. `pdt pause` and `pdt unpause` write this key. |
 | `docker-build` | `auto`, `local`, or `cloud`. | The top-level `pdt.yml` value, then `auto`. | Sets where a deploy builds the image. `auto` uses Docker on this computer when Docker answers, else the cloud. `local` uses only Docker. `cloud` uses only the cloud. `pdt validate` reports this key for the `windows` provider. |
 | `alerts` | A list of [alert entries](#alerts-entries), or `false`. | The top-level `pdt.yml` list. | Replaces the whole project list for this app. |
@@ -237,7 +237,7 @@ pdt also reads the app's code and adds each env var name that it finds:
 
 This scan skips each name that starts with `PDT_`. List each `PDT_` name that your app needs, or the deploy does not send it. An alert entry adds its own webhook name, so do not list that name.
 
-A name that ends in `_PATH` names a file. A deploy reads the file and sends its contents as `<NAME>_B64`. pdt looks for a relative path next to each `.env` file, then in the app folder, then in the project folder. A value for `<NAME>_B64` also satisfies a `required` name `<NAME>_PATH`.
+A name that ends in `_PATH` names a file. A deploy reads the file and sends its contents as `<NAME>_B64`. pdt looks for a relative path next to each `.env` file, then in the app folder, then in the project folder. A value for `<NAME>_B64` also satisfies a `required` name `<NAME>_PATH`. A deploy sends only the names in `config.yml`. To set `<NAME>_B64` yourself, list it too, for example under `optional`.
 
 ### PowerShell keys
 
@@ -352,13 +352,13 @@ Put this block at the top level of `pdt.yml`. It applies to every app in the pro
 
 A list sends only for the apps it names. `pdt validate` reports a key that is not in this table, and an app name that is not an app of the project.
 
-`pdt register --code CODE` registers this computer to AutoIDM. It writes `<customer id>.json` and `<customer id>.key` in the registrations folder. The folder is `~/.local/share/pdt/registrations`, or `%ProgramData%\pdt\registrations` on Windows. The env var `PDT_INSTALLATION_DIR` names another folder. In a project whose `pdt.yml` has no `managed_services` block, the command adds the block with `customer` and no other key. `--api-url URL` names another AutoIDM address. The default is `https://app.autoidm.com`. See [Commands](commands.md).
+`pdt register --code CODE` registers this computer to AutoIDM. It writes `<customer id>.json` and `<customer id>.key` in the registrations folder. The folder is `~/.local/share/pdt/registrations`, or `%ProgramData%\pdt\registrations` on Windows. The env var `PDT_INSTALLATION_DIR` names another parent folder. The files then go in `<PDT_INSTALLATION_DIR>/registrations`. In a project whose `pdt.yml` has no `managed_services` block, the command adds the block with `customer` and no other key. `--api-url URL` names another AutoIDM address. The default is `https://app.autoidm.com`. See [Commands](commands.md).
 
 pdt sends nothing to AutoIDM when the env var `CI` is set. A cloud job uses the registration that a deploy keeps in the app's secret. See [Values between pdt processes](#values-between-pdt-processes).
 
 ## Anonymous usage statistics
 
-pdt sends anonymous usage statistics to AutoIDM: each command line, the app name, the exit code, the pdt version, the Python version, the operating system, and a random ID for this computer and for the project. Before it sends a command line, pdt removes each value that looks like a secret, and replaces your home folder with `~`. It sends no project path and no file content. At a terminal, pdt asks once before the first command, and saves the answer in the data folder, under `pdt/usage`. On a build server or under an AI agent program, pdt asks nothing and sends.
+pdt sends anonymous usage statistics to AutoIDM: each command line, the app name, the exit code, the pdt version, the Python version, the operating system, and a random ID for this computer and for the project. Before it sends a command line, pdt removes each value that looks like a secret, and replaces your home folder with `~`. A path that you type on the command line stays in it, for example `pdt init /srv/jobs --yes`. pdt sends no file content. At a terminal, pdt asks once before the first command, and saves the answer in the data folder, under `pdt/usage`. On a build server or under an AI agent program, pdt asks nothing and sends.
 
 Any one of these turns the statistics off, with no output:
 
@@ -385,14 +385,14 @@ Set these in the terminal or in the CI variables. pdt reads some of them before 
 | `PDT_ANONYMOUS_USAGE_STATS` | `0`, `false`, `off`, or `no` turn the statistics off. | Not set. | Turns off the same statistics as `anonymous_usage_stats: false`. See [Anonymous usage statistics](#anonymous-usage-statistics). |
 | `DO_NOT_TRACK` | Any value except an empty value or `0`. | Not set. | Turns off the anonymous usage statistics. |
 | `PDT_USAGE_URL` | A URL. | `https://usage.pdt.autoidm.com/v1/usage` | Names the address that receives the anonymous usage statistics. |
-| `PDT_INSTALLATION_DIR` | A folder path. | The data folder, under `pdt/registrations`. On Windows, `%ProgramData%\pdt\registrations`. | Names the folder that holds the AutoIDM registrations of this computer. |
+| `PDT_INSTALLATION_DIR` | A folder path. | The data folder, under `pdt`. On Windows, `%ProgramData%\pdt`. | Names the parent folder of the AutoIDM registrations of this computer. The registrations are in `<PDT_INSTALLATION_DIR>/registrations`. |
 | `CI` | Any text. | Not set. Build servers set it. | pdt treats the computer as a build server. pdt asks no sign-in questions, creates no `.env` file, prints no `error-watch` line, asks no usage statistics question, and sends nothing to AutoIDM managed services. See [Running pdt from CI](deploy.md#running-pdt-from-ci). |
 | `NO_COLOR` | Any text. | Not set. | Turns off color in the output. |
 | `XDG_DATA_HOME` | A folder path. | `~/.local/share` | Sets the data folder on macOS and Linux. pdt keeps its downloads in a `pdt` folder inside it. |
 | `XDG_CONFIG_HOME` | A folder path. | `~/.config` | Sets where `pdt completion` writes the fish shell file. |
 | `ZDOTDIR` | A folder path. | Your home folder. | Sets where `pdt completion` finds the zsh `.zshrc` file. |
 | `TZ` | A time zone name. | The time zone setting of the computer. | Sets the time zone that pdt uses to suggest a region. |
-| `LC_ALL`, `LC_MONETARY`, `LANG` | A locale name, for example `en_GB.UTF-8`. | The regional setting of the computer, then US dollars. | Sets the currency of the cost estimate on macOS and Linux. pdt uses the first one that is set. |
+| `LC_ALL`, `LC_MONETARY`, `LANG` | A locale name, for example `en_GB.UTF-8`. | The monetary locale of the computer, then US dollars. | Sets the currency of the cost estimate on Linux. pdt uses the first one that is set. On macOS the currency comes from the `AppleLocale` system setting. On Windows it comes from the regional setting. |
 
 ### Values that can go in `.env`
 
@@ -412,13 +412,13 @@ Put these in `.env`, in the terminal, or in the CI variables. See [Which value w
 | `AWS_PROFILE` | The name of a profile in `~/.aws`. | Not set. | Selects the sign-in when `platform.profile` is empty. |
 | `AWS_REGION` | An AWS region name. | Not set. | Selects the region when `platform.region` is empty. The deploy then asks no region question. |
 | `AWS_DEFAULT_REGION` | An AWS region name. | Not set. | The same as `AWS_REGION`, when `AWS_REGION` is not set. |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | An AWS access key and its secret. | Not set. | The AWS SDK signs in with these when no profile applies. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` | An AWS access key, its secret, and the session token of a temporary key. | Not set. | The AWS SDK signs in with these when no profile applies. A temporary key needs all three. |
 | `AWS_CONFIG_FILE` | A file path. | `~/.aws/config` | Names the AWS settings file that pdt reads. |
 | `AWS_SHARED_CREDENTIALS_FILE` | A file path. | `~/.aws/credentials` | Names the AWS credentials file that pdt reads. |
 
 ### Azure env vars
 
-Set the last six of these only to use a resource with another name. Each default name stays the same between deploys.
+Set the last five of these only to use a resource with another name. Each default name stays the same between deploys.
 
 | Env var | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
@@ -430,7 +430,6 @@ Set the last six of these only to use a resource with another name. Each default
 | `PDT_AZURE_MANAGED_IDENTITY` | A managed identity name. | `pdt-runner` | Names the identity that jobs run as. |
 | `PDT_AZURE_LOG_WORKSPACE` | A Log Analytics workspace name, from 4 to 63 characters. | `pdt-logs` | Names the workspace that holds the logs. |
 | `PDT_AZURE_CONTAINER_REGISTRY` | A container registry name. | `pdt` plus a 10-character code. | Names the image registry. |
-| `PDT_AZURE_STORAGE_ACCOUNT` | A storage account name. | `pdt` plus a 10-character code. | Names the storage account. |
 | `PDT_AZURE_KEY_VAULT` | A Key Vault name. | `pdt-` plus a 10-character code. | Names the Key Vault. |
 | `PDT_AZURE_DEPLOYER_OBJECT_ID` | An Entra object ID. | The ID in your sign-in token. | Names the principal that receives access. Set it only when pdt says that it cannot find the principal. |
 
@@ -445,6 +444,9 @@ Set the last six of these only to use a resource with another name. Each default
 | `GOOGLE_APPLICATION_CREDENTIALS` | The path of a key file. | Not set. | pdt signs in with this file when you have no other sign-in. |
 | `CLOUDSDK_CONFIG` | A folder path. | `~/.config/gcloud`, or `%APPDATA%\gcloud` on Windows. | Names the gcloud settings folder that pdt reads to suggest a region. |
 | `CLOUDSDK_ACTIVE_CONFIG_NAME` | A gcloud configuration name. | The active gcloud configuration. | Selects the gcloud configuration that pdt reads to suggest a region. |
+| `CLOUDSDK_PYTHON` | The path of a Python interpreter. | On macOS and Linux, the Python that runs pdt. | Names the Python that the gcloud copy pdt downloaded runs with. pdt keeps your value. |
+| `CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK` | `true` or `false`. | `true` | Turns off the gcloud update check. pdt keeps your value. |
+| `CLOUDSDK_SURVEY_DISABLE_PROMPTS` | `true` or `false`. | `true` | Turns off the gcloud survey question. pdt keeps your value. |
 
 ### Docker env vars
 
@@ -520,7 +522,7 @@ Do not set the env vars in this section.
 | `PDT_REBUILD` | Tells a provider script to build the image. `pdt deploy --rebuild` sets it. |
 | `PDT_SCAN_DIR` | Names the temporary folder of PowerShell scans. |
 | `PDT_TRIGGER` | Marks a run as `manual`. |
-| `PDT_USAGE_CLIENT_UUID`, `PDT_USAGE_PROJECT_UUID`, `PDT_USAGE_JOB` | Give a deployed job the anonymous IDs of the usage statistics. A job with one of them absent sends nothing. |
+| `PDT_USAGE_CLIENT_UUID`, `PDT_USAGE_PROJECT_UUID`, `PDT_USAGE_JOB` | Give a deployed job the anonymous IDs of the usage statistics. `PDT_USAGE_JOB` marks a process as a job. A job sends only when both IDs are valid UUIDs and `PDT_ANONYMOUS_USAGE_STATS` is set. |
 
 ### Values that other programs set
 
