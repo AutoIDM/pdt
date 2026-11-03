@@ -444,7 +444,8 @@ def change_provider(target: Path) -> int:
         problem = pin_problem(target / name / APP_FILE, f"{name}/{APP_FILE}")
         if pins[name].keys() - {"timezone"} and problem != "":
             raise ConfigError(problem)
-    movable = [name for name in numbered if deploy.moved(recorded[name], after[name])]
+    movable = [name for name in numbered if deploy.moved(recorded[name], after[name])
+               and (provider in config.CONTAINER_PROVIDERS or not docker_app(target / name))]
     moving = []
     if movable:
         here = deploy.describe_place(config.place(deploy.resolved(current)))
