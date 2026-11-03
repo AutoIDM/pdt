@@ -13,6 +13,9 @@ it and no other, through `pdt.utils.env_secret`. When the project sets
 registration (registration_secrets, make_registration), which every later
 deploy keeps and `pdt secrets` never shows, copies, or replaces.
 
+Every provider also sets pdt.usage.job_env on the job as plain env vars, or on
+the Windows task as NAME=VALUE arguments of its runner.
+
 A build context holds the app directory, pdt.yml, config.PROJECT_NAME_FILE
 (the name of the project folder, since the image's project folder is
 /workspace, so every event names the project as a local run does), and in .pdt-lifecycle
@@ -131,7 +134,7 @@ WORKDIR /workspace/{app}
 # The PEP 723 script block, with the reference regex of the PEP.
 SCRIPT_HEADER = re.compile(r"(?m)^# /// script$\s(?:^#(?:| .*)$\s)+^# ///$")
 LIFECYCLE_MODULES = ("__init__.py", "alert_message.py", "config.py", "console.py",
-                     "lifecycle.py", "managed_services.py", "slack.py", "teams.py",
+                     "lifecycle.py", "managed_services.py", "slack.py", "teams.py", "usage.py",
                      "utils/__init__.py", "utils/autoidm.py", "utils/storage.py")
 # Secret shapes and local state that never belong in an image. The version-control names are
 # the ones `az acr build` always leaves out, so every build place gets the same context.

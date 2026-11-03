@@ -44,6 +44,7 @@ from typing import Callable, Iterator
 from botocore.exceptions import BotoCoreError, ClientError
 
 from pdt import config, console, lifecycle, regions, runs_cli
+from pdt.usage import job_env
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_aws import (
     BUILD_BUCKET_PREFIX, COMMON_ACTIONS, MANAGED_TAGS, RETRIES, SCHEDULE_GROUP,
@@ -923,7 +924,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                                           "region": region})
     secret_arn = ensure_secret(clients["secretsmanager"], names["secret"],
                                json.dumps(secrets, sort_keys=True))
-    environment = {"PDT_ENV_SECRET_RESOURCE": secret_arn}
+    environment = {"PDT_ENV_SECRET_RESOURCE": secret_arn, **job_env()}
     grants = []
     if store:
         ensure_store(clients["s3"], bucket, region)

@@ -45,6 +45,14 @@ def off() -> bool:
         return False
 
 
+def person_at_terminal() -> bool:
+    """True with stdin and stderr at a terminal, also when stdout goes to a pipe."""
+    return (os.environ.get("CLOUD_RUN_JOB", "").strip() == "" and config.unsaved() is None
+            and os.environ.get("CI", "").strip() == ""
+            and sys.stdin.isatty() and sys.stderr.isatty()
+            and not any(name in os.environ for name in AGENT_ENVS))
+
+
 def can_offer() -> bool:
     from pdt.utils.email_auth import can_prompt
     return (can_prompt(None) and sys.stderr.isatty()

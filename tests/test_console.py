@@ -434,5 +434,5 @@ def test_only_console_reads_an_answer_from_the_user():
              for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
              if isinstance(node, ast.Call) and "input" in (getattr(node.func, "id", ""),
                                                            getattr(node.func, "attr", ""))]
-    assert calls == [("console.py", "_console.input")], \
+    assert calls == [("console.py", "out.input")], \
         "ask with console.ask, console.read, console.secret or console.confirm"

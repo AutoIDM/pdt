@@ -60,6 +60,18 @@ def test_runner_logs_both_streams_and_exits_with_the_child_code(folders, monkeyp
     assert untimed(only_log(logs)) == "hello\npdt: exit 3\n"
 
 
+def test_runner_gives_the_child_each_name_and_value_after_the_storage_url(folders, monkeypatch):
+    app_dir, logs, url = folders
+    calls = []
+    monkeypatch.setenv("UV", "/tools/uv.exe")
+    monkeypatch.setattr(run_windows_task.subprocess, "Popen", fake_popen(calls, b"", 0))
+
+    assert run_windows_task.main([str(app_dir), str(logs), url, "PDT_USAGE_CLIENT_UUID=a=b"]) == 0
+
+    (_command, kwargs), = calls
+    assert kwargs["env"]["PDT_USAGE_CLIENT_UUID"] == "a=b"
+
+
 def test_runner_sets_the_storage_url_for_the_child(folders, monkeypatch):
     app_dir, logs, url = folders
     calls = []

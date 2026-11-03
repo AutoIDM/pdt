@@ -43,7 +43,8 @@ CURRENT = {
             "name": JOB, "image": IMAGE,
             "env": [{"name": "PDT_ENV_JSON", "secretRef": "pdt-env"},
                     {"name": "PDT_ENV_SECRET_RESOURCE", "value": SECRET},
-                    {"name": "PDT_STORAGE_URL", "value": STORAGE}],
+                    {"name": "PDT_STORAGE_URL", "value": STORAGE},
+                    {"name": "PDT_ANONYMOUS_USAGE_STATS", "value": "false"}],
             "resources": {"cpu": 0.5, "memory": "1Gi", "ephemeralStorage": ""},
         }], "initContainers": None, "volumes": None},
     },
@@ -145,7 +146,8 @@ def test_a_removed_secret_is_written_with_no_secrets_and_no_secret_env(monkeypat
     sent = json.loads(write[write.index("--body") + 1])
     assert sent["properties"]["configuration"]["secrets"] == []
     assert sent["properties"]["template"]["containers"][0]["env"] == [
-        {"name": "PDT_STORAGE_URL", "value": STORAGE}]
+        {"name": "PDT_STORAGE_URL", "value": STORAGE},
+        {"name": "PDT_ANONYMOUS_USAGE_STATS", "value": "false"}]
 
 
 @pytest.mark.parametrize("path, value", [
@@ -197,8 +199,8 @@ def test_a_new_job_is_created_with_the_cli(monkeypatch):
     assert create[create.index("--image") + 1] == IMAGE
     assert create[create.index("--env-vars") + 1:] == (
         "PDT_ENV_JSON=secretref:pdt-env", f"PDT_ENV_SECRET_RESOURCE={SECRET}",
-        f"PDT_STORAGE_URL={STORAGE}")
-    tags = create[create.index("--tags") + 1:create.index("--environment")]
+        f"PDT_STORAGE_URL={STORAGE}", "PDT_ANONYMOUS_USAGE_STATS=false")
+    tags =create[create.index("--tags") + 1:create.index("--environment")]
     assert tags == ("managed-by=pdt", "pdt-app=report", f"pdt-build={FINGERPRINT}")
 
 

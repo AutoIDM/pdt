@@ -10,7 +10,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from pdt import console, runs_cli
+from pdt import config, console, runs_cli
 
 USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] | get <path> [dest] [--open] "
          "| query <sql> | unlock [--yes] | destroy [--yes] | --open")
@@ -133,7 +133,7 @@ def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
     recursive = "--recursive" in rest
     assume_yes = assume_yes or "--yes" in rest or "-y" in rest
     show = "--open" in rest
-    rest = [arg for arg in rest if arg not in ("--json", "--recursive", "--yes", "-y", "--open")]
+    rest = [arg for arg in rest if arg not in config.STORAGE_FLAGS]
     if show and as_json:
         console.error("--open does not print JSON; leave out --json")
         return 1

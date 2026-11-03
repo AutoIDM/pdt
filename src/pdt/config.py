@@ -37,6 +37,7 @@ PROVIDERS = ("google-cloud", "azure", "aws", "windows")
 # completion offers them without importing the code that runs them.
 SECRET_ACTIONS = ("diff", "save", "get", "set")
 STORAGE_COMMANDS = ("ls", "get", "query", "unlock", "destroy")
+STORAGE_FLAGS = ("--json", "--recursive", "--yes", "-y", "--open")
 # The local port `pdt gui` serves on unless --port names another.
 GUI_PORT = 8765
 AUTOIDM_API_URL = "https://app.autoidm.com"
@@ -51,7 +52,9 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
-ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch", "managed_services"}
+USAGE_STATS_KEY = "anonymous_usage_stats"
+ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch", "managed_services",
+             USAGE_STATS_KEY}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
             "run_scripts", "continue_on_error", "pause", "docker-build", "alerts"}
 # Where a cloud provider builds the image: with Docker on this computer when
@@ -92,6 +95,7 @@ KEY_HOME = {
     "alerts": f"the top level of {PROJECT_FILE}, or {APP_LEVEL}",
     "error-watch": f"the top level of {PROJECT_FILE}",
     "managed_services": f"the top level of {PROJECT_FILE}",
+    USAGE_STATS_KEY: f"the top level of {PROJECT_FILE}",
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -480,6 +484,29 @@ def save_managed_customer(customer: str) -> Path:
                 "managed_services:", f"  customer: {_yaml_scalar(customer)}"]
             write_text_atomically(path, "\n".join(lines) + "\n")
     return path
+
+
+def save_usage_stats_off(path: Path) -> None:
+    import yaml
+    with locked(path):
+        lines = []
+        in_old_value = False
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            if line.split("#")[0].rstrip().startswith(f"{USAGE_STATS_KEY}:"):
+                in_old_value = True
+            elif not (in_old_value and (line[:1].isspace() or not line.strip())):
+                in_old_value = False
+                lines.append(line)
+        lines += ([""] if lines and lines[-1].strip() else []) + [f"{USAGE_STATS_KEY}: false"]
+        text = "\n".join(lines) + "\n"
+        try:
+            saved = yaml.safe_load(text)
+        except yaml.YAMLError:
+            saved = None
+        if not isinstance(saved, dict) or saved.get(USAGE_STATS_KEY) is not False:
+            raise ConfigError(f"{path}: pdt could not add {USAGE_STATS_KEY}: false; "
+                              f"add that line at the top level yourself")
+        write_text_atomically(path, text)
 
 
 def _yaml_scalar(value) -> str:
@@ -1142,6 +1169,8 @@ def validate_by_app() -> list[tuple[str | None, str]]:
     problems.extend(key_problems(PROJECT_FILE, root_cfg, ROOT_KEYS))
     if not isinstance(root_cfg.get("error-watch", True), bool):
         problems.append(f"{PROJECT_FILE}: error-watch must be true or false")
+    if not isinstance(root_cfg.get(USAGE_STATS_KEY, True), bool):
+        problems.append(f"{PROJECT_FILE}: {USAGE_STATS_KEY} must be true or false")
     if "alerts" in root_cfg:
         from pdt import lifecycle
         try:

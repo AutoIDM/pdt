@@ -30,7 +30,7 @@ def test_task_action_runs_the_runner_through_uv(project):
     folder = project / "ProgramData" / "pdt" / "my-report"
     assert f"<Command>{Path('uv.exe').resolve()}</Command>" in xml
     assert (f"<Arguments>run --script {runner} {app['dir']} {folder / 'logs'} "
-            f"{(folder / 'storage').as_uri()}/</Arguments>") in xml
+            f"{(folder / 'storage').as_uri()}/ PDT_ANONYMOUS_USAGE_STATS=false</Arguments>") in xml
     assert f"<WorkingDirectory>{app['dir']}</WorkingDirectory>" in xml
     assert "powershell.exe" not in xml.lower()
 

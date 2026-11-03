@@ -549,7 +549,7 @@ def has_nothing_in_it(folder: Path) -> bool:
     return not any(child for child in folder.iterdir() if not child.name.startswith("."))
 
 
-def init(directory: str | None, assume_yes: bool) -> int:
+def init(directory: str | None, assume_yes: bool, usage_stats: bool = True) -> int:
     console.art(ART)
     here = Path.cwd().resolve()
     if directory is None and (here / PROJECT_FILE).is_file():
@@ -558,6 +558,8 @@ def init(directory: str | None, assume_yes: bool) -> int:
         target = choose_target(directory, assume_yes)
     marker = target / PROJECT_FILE
     if marker.is_file():
+        if not usage_stats:
+            config.save_usage_stats_off(marker)
         if assume_yes:
             console.say(f"{console.value(target)} is already a pdt project.")
             return 0
@@ -575,6 +577,8 @@ def init(directory: str | None, assume_yes: bool) -> int:
     platform = ask_platform(assume_yes)
     target.mkdir(parents=True, exist_ok=True)
     marker.write_text(project_yaml(platform))
+    if not usage_stats:
+        config.save_usage_stats_off(marker)
     for name, body in ((".gitignore", GITIGNORE_TEXT), (".env", ENV_TEXT),
                        ("AGENTS.md", AGENTS_TEXT), ("CLAUDE.md", CLAUDE_TEXT)):
         path = target / name

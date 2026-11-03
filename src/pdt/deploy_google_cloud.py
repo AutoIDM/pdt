@@ -90,6 +90,7 @@ from pdt.deploy_common import (
     store_cost_label, store_kept_line, store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
 from pdt import storage_cli
+from pdt.usage import job_env
 from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
@@ -1060,7 +1061,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             "--labels", f"managed-by=pdt,{BUILD_TAG}={fingerprint}"]
     if values:
         args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"]
-    env_vars = []
+    env_vars = [f"{name}={value}" for name, value in job_env().items()]
     if values:
         env_vars.append(f"PDT_ENV_SECRET_RESOURCE=projects/{project}/secrets/{sid}")
     if store:
