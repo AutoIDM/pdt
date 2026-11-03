@@ -156,21 +156,25 @@ def worker_env(base: dict[str, str], project: Path, credentials: dict[str, str])
     kept = {name: value for name, value in base.items() if name.upper() in wanted}
     # A snapshot holds customer files, so a uv.toml in one must not choose a package index.
     return {**kept, **credentials, "PDT_PROJECT": str(project), "PYTHONUTF8": "1",
-            "UV_NO_CONFIG": "1", "CI": "pdt-service", KEEP_SECRET_ENV: "1"}
+            "UV_NO_CONFIG": "1", "CI": "pdt-service", KEEP_SECRET_ENV: "1",
+            config.SERVICE_ENV_FILES_ENV: ""}
+
+
+def env_files(project: Path | None, app: str | None) -> list[Path]:
+    """The served project's .env files, nearest first, as `pdt run` reads them."""
+    if project is None:
+        return []
+    folders = [project / app, project] if app else [project]
+    return [folder / ".env" for folder in folders if (folder / ".env").is_file()]
 
 
 def env_file_values(project: Path | None, app: str | None) -> dict[str, str]:
-    """The values of the served project's .env files, nearest first, as `pdt run` reads them.
-    A snapshot holds no .env, so the service passes them to the child in its environment."""
-    if project is None:
-        return {}
+    """The values of `env_files`. A snapshot holds no .env, so the service passes them to the
+    child in its environment."""
     values: dict[str, str] = {}
-    folders = [project / app, project] if app else [project]
-    for folder in folders:
-        path = folder / ".env"
-        if path.is_file():
-            for name, value in dotenv_values(path, encoding="utf-8-sig").items():
-                values.setdefault(name, value or "")
+    for path in env_files(project, app):
+        for name, value in dotenv_values(path, encoding="utf-8-sig").items():
+            values.setdefault(name, value or "")
     return values
 
 
@@ -349,7 +353,8 @@ def prepare(job: Job, base: dict[str, str]) -> Prepared:
         write_snapshot_files(job, work)
         project = work / "project"
         found = {**env_file_values(job.project, app), **base}
-        extra = {"PDT_RUN_ID": job.command_id}
+        extra = {"PDT_RUN_ID": job.command_id, config.SERVICE_ENV_FILES_ENV: os.pathsep.join(
+            str(path) for path in env_files(job.project, app))}
         if preset["artifacts"]:
             extra["PDT_OUTPUT_DIR"] = str(project / app / ".pdt" / "runs" / job.command_id / "output")
         return Prepared(project, child_env(found, project, preset["env"], extra), argv,
