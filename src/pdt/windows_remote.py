@@ -302,7 +302,9 @@ def run_script(connection: Connection, folder: PureWindowsPath, app_name: str, c
               "$zip = Join-Path $in 'bundle.zip'; "
               "if (Test-Path $zip) { Expand-Archive -Force -Path $zip -DestinationPath $in; "
               "Remove-Item $zip }; ")
-    if new_uv:
+    if new_uv and plan:
+        uv = folder / "uv.exe"
+    elif new_uv:
         script += (f"$bin = {quoted(str(uv.parent))}; "
                    "New-Item -ItemType Directory -Force -Path $bin | Out-Null; "
                    f"{set_acl('$bin', True)}{replace_file(UV_IN_UPLOAD, uv, True)}")
@@ -313,6 +315,8 @@ def run_script(connection: Connection, folder: PureWindowsPath, app_name: str, c
         env["PDT_JSON_OUTPUT"] = "1"
     if ask_on_client:
         env["PDT_ASK_ON_CLIENT"] = "1"
+    if plan:
+        env["PDT_PLAN_VALUES"] = os.environ.get("PDT_PLAN_VALUES", "{}")
     script += "".join(f"$env:{name} = {quoted(value)}; " for name, value in env.items())
     script += ("$secret = Join-Path $in 'secrets.json'; "
                "if (Test-Path $secret) { $env:PDT_ENV_JSON = Get-Content -Raw -Encoding UTF8 $secret }; "
@@ -539,6 +543,12 @@ def forward(connection: Connection, app: dict, command: str, rest: list[str],
             [arg for arg in rest if not arg.startswith("--")]) >= 2:
         source, local, rest = storage_download(rest, folder)
         download = (source, local)
+    show = "--open" in rest
+    if show and download is None:
+        console.error(f"--open shows a folder or page on this computer, but {console.value(name)} "
+                      f"runs on {console.value(connection.computer)}; leave out --open")
+        return 1
+    rest = [arg for arg in rest if arg != "--open"]
     tag_lines = connection.kind != "ssh"
     ask = tag_lines and not assume_yes and can_prompt(None)
 
@@ -567,6 +577,9 @@ def forward(connection: Connection, app: dict, command: str, rest: list[str],
         if code == 0 and download is not None:
             remote.download(*download)
             console.done(f"Saved {console.value(download[1])} on this computer.")
+            if show:
+                from pdt import runs_cli
+                return runs_cli.open_place(str(download[1].resolve()))
         return code
     finally:
         shutil.rmtree(archive.parent, ignore_errors=True)

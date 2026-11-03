@@ -631,7 +631,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         return DECLINED
     try:
         with console.waiting(f"removing: Windows scheduled task {console.value(name)}" if exists
-                             else f"removing: {console.value(logs)}"):
+                             else f"removing: the files of {console.value(app['name'])}"):
             _run(powershell, script, elevate=True)
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))

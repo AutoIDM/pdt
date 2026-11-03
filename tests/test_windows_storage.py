@@ -110,9 +110,10 @@ def test_destroy_removes_a_leftover_logs_folder_when_the_task_is_gone(
 
     assert deploy_windows.destroy(app, assume_yes=True) == 0
 
-    out = capsys.readouterr().out
+    out, err = capsys.readouterr()
     assert "delete Windows scheduled task" not in out
     assert f"removed: run logs folder {logs}" in out
+    assert "removing: the files of my-report" in err
     (script,) = scripts
     assert "Unregister-ScheduledTask" not in script
 

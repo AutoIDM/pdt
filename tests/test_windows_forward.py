@@ -377,6 +377,39 @@ def test_a_forwarded_b64_value_satisfies_a_path_variable_on_the_pc(tmp_path, mon
     assert deploy_common.gather_secrets(config.merged_app("my-report")) == {"CERT_B64": "Y2VydA=="}
 
 
+def test_a_remote_plan_runs_the_uploaded_uv_and_installs_nothing(app, monkeypatch, tmp_path):
+    monkeypatch.setattr(windows_remote.windows_uv, "fetch", lambda processor: tmp_path / "uv.exe")
+    monkeypatch.setenv("PDT_PLAN_VALUES", '{"schedule": "daily"}')
+    remote = FakeSession()
+    windows_remote.forward(connection(uv_version="-"), app, "deploy", [], True, remote, plan=True)
+    folder = incoming(remote)
+    script = next(call[1] for call in remote.calls if call[0] == "command")
+    assert "C:\\ProgramData\\pdt\\bin" not in script
+    assert f"& '{folder / 'uv.exe'}' run --script" in script
+    assert "$env:PDT_PLAN_VALUES = '{\"schedule\": \"daily\"}'" in script
+
+
+def test_storage_get_open_opens_the_saved_file_on_this_computer(app, monkeypatch, tmp_path):
+    from pdt import runs_cli
+    opened = []
+    monkeypatch.setattr(runs_cli, "open_place", lambda target: opened.append(target) or 0)
+    remote = FakeSession()
+    rest = ["get", "runs/a.csv", str(tmp_path / "a.csv"), "--open"]
+    assert windows_remote.forward(connection(), app, "storage", rest, True, remote) == 0
+    command = next(call[1] for call in remote.calls if call[0] == "command")
+    assert "--open" not in command
+    assert opened == [str((tmp_path / "a.csv").resolve())]
+
+
+@pytest.mark.parametrize("command,rest", [("runs", ["--open"]), ("logs", ["--open"]),
+                                          ("storage", ["--open"])])
+def test_open_of_a_place_on_the_pc_stops_before_it_sends_anything(app, capsys, command, rest):
+    remote = FakeSession()
+    assert windows_remote.forward(connection(), app, command, rest, True, remote) == 1
+    assert remote.calls == []
+    assert "leave out --open" in " ".join(capsys.readouterr().out.split())
+
+
 def test_storage_get_keeps_its_flags_and_does_not_take_one_as_the_destination(app):
     remote = FakeSession()
     windows_remote.forward(connection(), app, "storage", ["get", "runs/a.csv", "--yes"], True, remote)
