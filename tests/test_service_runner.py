@@ -1056,6 +1056,17 @@ def test_a_new_project_for_sync_down_goes_under_the_projects_folder(machine, por
     assert "PDT_PROJECT" not in prepared.env
 
 
+def test_a_command_that_finds_no_env_file_names_the_service(machine, portal):
+    for operation, args in (("run", None), ("list", {"project": "example"})):
+        prepared = service_runner.prepare(job(machine, operation, args), dict(os.environ))
+        assert config.SERVICE_ENV_FILES_ENV not in prepared.env
+    (machine / ".env").unlink()
+    (machine / "hr" / ".env").unlink()
+    for operation, args in (("run", None), ("list", {"project": "example"})):
+        prepared = service_runner.prepare(job(machine, operation, args), dict(os.environ))
+        assert prepared.env[config.SERVICE_ENV_FILES_ENV] == ""
+
+
 def test_the_service_serves_each_named_project_and_each_folder_in_the_projects_folder(
         machine, tmp_path):
     other = tmp_path / "elsewhere" / "named"
