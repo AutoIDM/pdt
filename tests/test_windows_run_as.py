@@ -428,3 +428,18 @@ def test_an_already_elevated_shell_runs_a_long_script_from_a_file(tmp_path, monk
     assert text == script
     assert len(subprocess.list2cmdline(command)) < 2000 < 32_767 < len(script)
     assert list(temp.iterdir()) == []
+
+
+def test_windows_powershell_starts_without_the_pwsh_module_path(monkeypatch):
+    monkeypatch.setenv("PSModulePath", r"C:\Program Files\PowerShell\7\Modules")
+    passed = []
+
+    def run(command, **kwargs):
+        passed.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(deploy_windows.subprocess, "run", run)
+    deploy_windows._run_output("powershell.exe", "Get-Acl C:\\")
+    deploy_windows._run("powershell.exe", "Get-Acl C:\\")
+    assert passed and all("PSModulePath" not in env and "PATH" in {k.upper() for k in env}
+                          for env in passed)

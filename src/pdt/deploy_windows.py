@@ -317,6 +317,13 @@ def _preflight(require_uv: bool = True) -> tuple[str, str | None]:
     return powershell, uv
 
 
+def _powershell_env() -> dict[str, str]:
+    """The environment without PSModulePath. A PSModulePath that pwsh 7 set makes Windows
+    PowerShell load pwsh's copy of Microsoft.PowerShell.Security, which fails, so Get-Acl
+    is not found. Without it, Windows PowerShell uses its own module folders."""
+    return {key: value for key, value in os.environ.items() if key.upper() != "PSMODULEPATH"}
+
+
 def _encoded(script: str) -> str:
     return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
 
@@ -345,7 +352,8 @@ def _run(powershell: str, script: str, *, not_found_ok: bool = False,
             command = [powershell, *options, "-EncodedCommand", _encoded(outer)]
         else:
             command = [powershell, *options, "-File", str(file)]
-        proc = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        proc = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              env=_powershell_env())
     if proc.returncode == 0:
         return True
     if not_found_ok and proc.returncode == 3:
@@ -360,7 +368,7 @@ def _run_output(powershell: str, script: str) -> str:
     proc = subprocess.run(
         [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
          "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, env=_powershell_env())
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
         raise WindowsDeployError(
@@ -493,7 +501,7 @@ def _task_state(powershell: str, name: str) -> str:
     proc = subprocess.run(
         [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
          "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, env=_powershell_env())
     if proc.returncode == 0:
         return "managed"
     if proc.returncode == 3:
@@ -515,7 +523,7 @@ def _task_running(powershell: str, name: str) -> bool:
     proc = subprocess.run(
         [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
          "-ExecutionPolicy", "Bypass", "-EncodedCommand", _encoded(script)],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True)
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, env=_powershell_env())
     return proc.returncode == 0
 
 
