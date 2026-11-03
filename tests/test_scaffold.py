@@ -160,7 +160,8 @@ def test_every_bundled_example_is_complete():
     examples = sorted(p for p in scaffold.EXAMPLES.iterdir() if p.is_dir())
     assert examples, "the wheel ships no examples"
     for example in examples:
-        assert (example / "run.py").is_file() or any(example.glob("*.ps1")), example.name
+        assert ((example / "run.py").is_file() or any(example.glob("*.ps1"))
+                or (example / "Dockerfile").is_file()), example.name
         config = yaml.safe_load((example / "config.yml").read_text())
         assert config["schedule"], f"{example.name} has no schedule"
         assert "name" not in config, f"{example.name} pins a name, so it cannot be renamed"
@@ -437,6 +438,18 @@ def test_move_some_destroys_the_chosen_apps_and_pins_the_rest(project, monkeypat
     assert not (project / "beta" / APP_FILE).exists()
     assert "pdt deploy beta" in out
     assert "pdt deploy alpha" not in out
+
+
+def test_move_all_to_windows_keeps_a_docker_app_on_its_cloud(project, monkeypatch, capsys):
+    moving_project(project, ("alpha", "beta"))
+    (project / "beta" / "run.py").unlink()
+    (project / "beta" / "Dockerfile").write_text('FROM alpine\nCMD ["true"]\n')
+    cloud = Cloud(monkeypatch)
+    answer(monkeypatch, ["4", "1"], [True])
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert [name for name, *_ in cloud.destroyed] == ["alpha"]
+    assert platform_of(project, "beta") == AZURE_PIN
+    assert "beta stays on azure, region eastus2, subscription sub-1, resource group pdt." in capsys.readouterr().out
 
 
 def test_keep_pins_every_deployed_app_and_destroys_nothing(project, monkeypatch, capsys):

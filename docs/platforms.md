@@ -62,6 +62,8 @@ platform:
 
 Every cloud provider runs a job as a container (see [Primitives](../README.md#primitives)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the entrypoint. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
 
+This section is about a Python or PowerShell app. A folder with a `Dockerfile` and no `run.py` or `.ps1` file is a [Docker app](writing-apps.md#docker-apps-any-language), which builds in its own folder.
+
 Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
 
 ```dockerfile
