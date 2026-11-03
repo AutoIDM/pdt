@@ -55,7 +55,7 @@ def test_writes_to_the_app_file_when_the_app_overrides_the_provider(project):
     (project / "pdt.yml").write_text("platform:\n  provider: azure\n")
     add_app(project, "my-report", "platform:\n  provider: aws\n  region: us-east-1\n")
     saved = save_platform_key(merged_app("my-report"), "account", "123456789012")
-    assert saved == project / "my-report" / "config.yml"
+    assert saved == project / "my-report" / "pdt.yml"
     assert yaml.safe_load((project / "pdt.yml").read_text())["platform"] == {"provider": "azure"}
 
 

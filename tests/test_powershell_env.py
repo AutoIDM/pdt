@@ -35,7 +35,7 @@ def ps_app(project, monkeypatch):
     folder = project / "ps-report"
     folder.mkdir()
     (folder / "report.ps1").write_text("")
-    (folder / "config.yml").write_text("schedule: daily\nenv:\n  optional: [NOTE]\n")
+    (folder / "pdt.yml").write_text("schedule: daily\nenv:\n  optional: [NOTE]\n")
     monkeypatch.setattr(powershell, "extract", lambda folder: FACTS)
     monkeypatch.delenv("TENANT_ID", raising=False)
     monkeypatch.delenv("NOTE", raising=False)
@@ -49,7 +49,7 @@ def expected(project):
         f"the environment; there is no .env file in {project / 'ps-report'} or a folder above it. "
         f"To fix it, add each one as NAME=value to {project / '.env'}, then run the command again. "
         "If a script works without one that it reads, list that one under env: optional: in "
-        "ps-report/config.yml instead.")
+        "ps-report/pdt.yml instead.")
 
 
 def run_cli(monkeypatch, *argv):

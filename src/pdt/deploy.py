@@ -223,9 +223,9 @@ DEFAULT_SCHEDULE = "daily"
 
 
 def choose_schedule(app: dict, assume_yes: bool) -> str:
-    """When the app has no schedule, ask for one and save it in the app's config.yml.
+    """When the app has no schedule, ask for one and save it in the app's pdt.yml.
 
-    Creates config.yml when the app folder has none. Returns a problem for the
+    Creates pdt.yml when the app folder has none. Returns a problem for the
     user, or "". --yes takes DEFAULT_SCHEDULE, the same way it takes every
     other default; a run with no one to ask and no --yes stops with the line
     to add.

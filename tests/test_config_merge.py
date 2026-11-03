@@ -51,7 +51,7 @@ def test_a_byte_order_mark_from_windows_powershell_is_not_part_of_the_first_key(
     (project / "pdt.yml").write_bytes(b"\xef\xbb\xbf" + "platform:\n  provider: windows\n"
                                       "apps: []\n".encode())
     folder = add_app(project, "my-report")
-    (folder / "config.yml").write_bytes(
+    (folder / "pdt.yml").write_bytes(
         b"\xef\xbb\xbf" + "schedule: daily\nconfig:\n  greeting: Grüße\n".encode())
     assert validate_app("my-report") == []
     app = merged_app("my-report")
@@ -67,7 +67,7 @@ def test_unknown_app_is_an_error(project):
 def test_apps_list_is_rejected_inside_an_app_folder(project):
     add_app(project, "my-report", "apps:\n  - name: x\n")
     problems = validate_app("my-report")
-    assert any("belongs in the top level of pdt.yml" in p for p in problems)
+    assert any("belongs in the top level of the project's pdt.yml" in p for p in problems)
 
 
 def test_name_must_match_the_folder(project):
@@ -168,5 +168,5 @@ def test_validate_accepts_timezone_under_platform_and_rejects_schedule(project):
     (project / "pdt.yml").write_text(
         "platform:\n  provider: google-cloud\n  region: us-central1\n  schedule: daily\n")
     assert validate() == [
-        "pdt.yml: platform: 'schedule' belongs in the top level of the app's config.yml, "
-        "or its apps: entry in pdt.yml, not here"]
+        "pdt.yml: platform: 'schedule' belongs in the top level of the app's pdt.yml, "
+        "or its apps: entry in the project's pdt.yml, not here"]

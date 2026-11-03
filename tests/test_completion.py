@@ -47,8 +47,8 @@ def test_a_changed_config_yml_rescans_the_apps(project):
     folder = add_app(project, "daily-report", "enabled: true\n")
     completion.apps("")
 
-    (folder / "config.yml").write_text("enabled: false\n")
-    _later(folder / "config.yml")
+    (folder / "pdt.yml").write_text("enabled: false\n")
+    _later(folder / "pdt.yml")
 
     assert completion.apps("") == []
 
