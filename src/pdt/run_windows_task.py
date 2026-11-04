@@ -7,8 +7,9 @@
 
 usage: uv run --script run_windows_task.py <app dir> <logs folder> <storage url>
 
-Task Scheduler discards stdout and stderr, so the task `pdt-<app>` runs this
-script instead of run.py. It sets PDT_STORAGE_URL and PDT_RUN_ID (the UTC start,
+Task Scheduler discards stdout and stderr, so the task `pdt-<project>-<app>` runs this
+script instead of run.py. It holds the app's lock (`.pdt/locks/app-<app>.lock` of the project)
+for the run, and when another process holds that lock it writes the fact to the log and exits 1. It sets PDT_STORAGE_URL and PDT_RUN_ID (the UTC start,
 so the app's `runs/` folder is named after the run `pdt runs` lists), runs
 `uv run --script run.py` in the app folder with the uv that started it (or, for
 an app with no run.py, `uv run --script run_powershell.py <app dir>`) inside
@@ -82,6 +83,36 @@ def report(app: str, log: Path, code: int) -> None:
         pass
 
 
+def take_lock(path: Path, project: Path):
+    """The same rule as pdt.config.try_lock, because this script imports nothing from pdt."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "w")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise RuntimeError(f"Another process holds the lock {path} of the project {project.name}.") from None
+    return handle
+
+
+def app_lock(app_dir: Path):
+    """The lock of the app, as `pdt run` takes it. Raises RuntimeError when another process
+    holds it, or holds the lock of the whole project."""
+    project = next((folder for folder in app_dir.parents if (folder / "pdt.yml").is_file()),
+                   app_dir.parent)
+    locks = project / ".pdt" / "locks"
+    whole = take_lock(locks / "project.lock", project)
+    try:
+        return take_lock(locks / f"app-{app_dir.name}.lock", project)
+    finally:
+        whole.close()
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 3:
         sys.stderr.write(USAGE + "\n")
@@ -108,6 +139,13 @@ def main(argv: list[str]) -> int:
         command = [uv, "run", "--script", str(Path(__file__).with_name("run_powershell.py")), app_dir]
     command = [uv, "run", "--script", str(Path(__file__).with_name("lifecycle.py")), "--", *command]
     with log.open("wb") as out:
+        try:
+            held = app_lock(Path(app_dir))
+        except (OSError, RuntimeError) as exc:
+            out.write(timed(str(exc).encode()))
+            out.write(timed(f"{EXIT_MARKER}1".encode()))
+            report(Path(app_dir).name, log, 1)
+            return 1
         try:
             child = subprocess.Popen(
                 command, cwd=app_dir, env=env,
@@ -148,6 +186,7 @@ def main(argv: list[str]) -> int:
                 ended.append(True)
                 if rest[0]:
                     out.write(timed(rest[0]))
+        held.close()
         out.write(timed(f"{EXIT_MARKER}{code}".encode()))
     report(Path(app_dir).name, log, code)
     return code

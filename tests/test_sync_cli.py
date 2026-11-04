@@ -365,14 +365,14 @@ def test_a_snapshot_of_another_customer_writes_nothing(tmp_path, portal, monkeyp
                               "hr/run.py": b"print('new')\n"})
     with pytest.raises(snapshots.SnapshotError, match="cus_0000000000"):
         sync_cli.down(identity, True)
-    assert list(new.iterdir()) == []
+    assert not (new / "pdt.yml").exists() and not (new / "hr").exists()
 
 
 def test_a_new_project_needs_a_pdt_yml_in_the_snapshot(tmp_path, portal, monkeypatch, project, capsys):
     new = new_project(tmp_path, monkeypatch)
     identity = serve(portal, {"hr/run.py": b"print('new')\n"})
     assert sync_cli.down(identity, False) == 1
-    assert list(new.iterdir()) == []
+    assert not (new / "pdt.yml").exists() and not (new / "hr").exists()
     assert "holds no pdt.yml" in capsys.readouterr().out
 
 

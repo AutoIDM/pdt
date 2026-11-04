@@ -278,14 +278,16 @@ def cmd_run(args) -> int:
                                   web_app.ENV_STORAGE_READ_DIR: str(run_container.read_root())})
         return run_container.serve(name, run_container.start(["uv", "run", "--script", "run.py"],
                                                              cwd=app["dir"], env=env))
-    if (app["dir"] / "run.py").is_file():
-        code = lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"])
-    else:
-        wrapper = Path(__file__).with_name("run_powershell.py")
-        code = lifecycle.run_job(
-            name, provider,
-            ["uv", "run", "--project", str(Path.cwd()), "--script", str(wrapper), str(app["dir"])],
-            app["dir"], dict(os.environ, PDT_PROJECT=str(config.find_project())))
+    with config.run_lock(name):
+        if (app["dir"] / "run.py").is_file():
+            code = lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"])
+        else:
+            wrapper = Path(__file__).with_name("run_powershell.py")
+            code = lifecycle.run_job(
+                name, provider,
+                ["uv", "run", "--project", str(Path.cwd()), "--script", str(wrapper),
+                 str(app["dir"])],
+                app["dir"], dict(os.environ, PDT_PROJECT=str(config.find_project())))
     if (code == 0 and name == scaffold.STARTER
             and not config.is_deployed(name)):
         console.say()
@@ -973,6 +975,8 @@ def run() -> int:
         return args.func(args)
     except ConfigError as e:
         console.error(console.escape(str(e)))
+        if isinstance(e, config.LockHeld) and os.environ.get(config.SERVICE_CHILD_ENV):
+            return config.LOCKED_EXIT
         return 1
     except KeyboardInterrupt:
         console.say()
