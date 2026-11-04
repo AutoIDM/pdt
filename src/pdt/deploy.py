@@ -163,12 +163,22 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
         return _deploy(app_name, True, False, False, True)
 
 
+def say_problems(app_name: str, problems: list[str]) -> None:
+    """Each problem as an error that names the app once."""
+    named = (f"{app_name}: ", f"{app_name}/", f"{config.PROJECT_FILE}: apps entry {app_name!r}")
+    for problem in problems:
+        if problem.startswith(named):
+            console.error(console.escape(problem))
+        else:
+            console.error(f"{console.value(app_name)}: {console.escape(problem)}")
+
+
 def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
             plan_only: bool) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(console.escape(str(e)))
+        say_problems(app_name, [str(e)])
         return 1
     problems = config.validate_app(app_name)
     sources = config.env_file_lines(app["dir"])
@@ -190,11 +200,7 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
         except (pwsh.PwshError, powershell.PowerShellError) as e:
             problems.append(str(e))
     if problems:
-        for problem in problems:
-            if problem.startswith((f"{app_name}: ", f"{app_name}/")):
-                console.error(console.escape(problem))
-            else:
-                console.error(f"{console.value(app_name)}: {console.escape(problem)}")
+        say_problems(app_name, problems)
         return 1
     console.name(app_name)
     for line in [*lines, *config.found_env_lines(app), *sources]:

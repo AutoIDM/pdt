@@ -171,6 +171,25 @@ def test_a_shared_config_problem_names_the_app_once(tmp_path, monkeypatch, capsy
     assert f"{scaffold.STARTER}: {scaffold.STARTER}" not in out
 
 
+def test_a_config_load_problem_names_the_app(tmp_path, monkeypatch, capsys):
+    project_with_starter(tmp_path, monkeypatch)
+    (tmp_path / "pdt.yml").write_text("platform: azure\n")
+    assert deploy.deploy(scaffold.STARTER) == 1
+    assert f"{scaffold.STARTER}: pdt.yml" in " ".join(capsys.readouterr().out.split())
+
+
+def test_an_apps_entry_problem_names_the_app_once(tmp_path, monkeypatch, capsys):
+    project_with_starter(tmp_path, monkeypatch)
+    (tmp_path / "pdt.yml").write_text(
+        "platform:\n  provider: aws\n  region: us-east-1\n"
+        f"apps:\n  - name: {scaffold.STARTER}\n    docker-build: sometimes\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
+    assert deploy.deploy(scaffold.STARTER) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"error: pdt.yml: apps entry '{scaffold.STARTER}'" in out
+    assert f"{scaffold.STARTER}: pdt.yml: apps entry" not in out
+
+
 @pytest.mark.parametrize("plan_only", [False, True])
 def test_a_wrong_region_in_the_environment_stops_the_deploy(tmp_path, monkeypatch, capsys,
                                                             plan_only):

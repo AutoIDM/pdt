@@ -250,3 +250,32 @@ def test_a_wrong_region_in_the_cli_settings_is_not_saved(project, monkeypatch, t
     problem = regions.choose_region(merged_app("my-report"), provider, assume_yes)
     assert f"region named {typo}" in problem and "pdt.yml" in problem
     assert region_in(project / "pdt.yml") is None
+
+
+def test_a_wrong_region_in_the_cli_settings_is_not_offered(project, monkeypatch, tmp_path,
+                                                           capsys):
+    (tmp_path / "azure").mkdir()
+    (tmp_path / "azure" / "config").write_text("[defaults]\nlocation = eastu2\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: True)
+    offered = []
+    monkeypatch.setattr(regions.console, "ask",
+                        lambda _question, default: offered.append(default) or "")
+    assert regions.choose_region(merged_app("my-report"), "azure", False) == ""
+    assert offered == ["eastus2"] and region_in(project / "pdt.yml") == "eastus2"
+    assert "region named eastu2" in " ".join(capsys.readouterr().out.split())
+
+
+def test_no_answer_to_a_wrong_cli_setting_names_a_real_region(project, monkeypatch, tmp_path):
+    (tmp_path / "azure").mkdir()
+    (tmp_path / "azure" / "config").write_text("[defaults]\nlocation = eastu2\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: True)
+
+    def no_answer(_question, _default):
+        raise EOFError
+
+    monkeypatch.setattr(regions.console, "ask", no_answer)
+    assert "`region: eastus2`" in regions.choose_region(merged_app("my-report"), "azure", False)

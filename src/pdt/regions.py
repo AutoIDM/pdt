@@ -463,6 +463,10 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
                 f"platform: in {config.PROJECT_FILE}, or run again with --yes to use {region}.")
     else:
         console.say()
+        if problem != "":
+            console.warn(console.escape(f"pdt found the region {region}, because {reason}. "
+                                        f"{problem}"))
+            region, reason = DEFAULT_REGIONS[PROVIDERS.index(provider)], "it is pdt's default"
         console.say(f"pdt suggests {console.value(region)}, because {console.escape(reason)}.")
         console.field(f"All {PROVIDER_NAMES[provider]} regions", REGION_LISTS[provider])
         suggested = region
