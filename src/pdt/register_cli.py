@@ -207,18 +207,16 @@ def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pendin
     return 0
 
 
-def device_start_body(key: Ed25519PrivateKey, kind: str = "machine", ci: dict | None = None) -> dict:
-    places, projects = [], []
-    if kind == "machine":
-        places = grants.places_of_project()
-        try:
-            projects = [managed_services.backend_name(config.project_name())]
-        except config.ConfigError:
-            pass
+def device_start_body(key: Ed25519PrivateKey) -> dict:
+    projects = []
+    try:
+        projects = [managed_services.backend_name(config.project_name())]
+    except config.ConfigError:
+        pass
     return {"public_key": autoidm.public_key(key), "hostname": socket.gethostname(),
             "pdt_version": __version__,
             "platform": PLATFORM_NAMES.get(sys.platform, sys.platform),
-            "places": places, "projects": projects, "kind": kind, "ci": ci}
+            "places": grants.places_of_project(), "projects": projects}
 
 
 def wait_for_decision(api_url: str, codes: dict) -> dict | None:
