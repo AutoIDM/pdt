@@ -939,6 +939,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         if scheduler is not None and not scheduler_owned(scheduler, name, project, region, sa):
             fail(f"Cloud Scheduler job {console.value(job)} exists but is not managed by PDT")
         sched_exists = scheduler is not None
+        # The hosted runner deploys AutoIDM's copy, which holds no `pause: true` of an earlier
+        # `pdt pause` on another runner, so a paused job stays paused.
+        if keeps_secret() and sched_exists and not app["pause"]:
+            app["pause"] = scheduler.get("state") == "PAUSED"
         sid = secret_id(name)
         secret = read_json_or_none("secrets", "describe", sid, "--project", project)
         require_managed(secret, f"Secret Manager secret {console.value(sid)}")

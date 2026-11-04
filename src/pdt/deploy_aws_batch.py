@@ -837,6 +837,11 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         schedule_exists = resource_exists(
             clients["scheduler"], "get_schedule",
             Name=names["schedule"], GroupName=SCHEDULE_GROUP)
+        # The hosted runner deploys AutoIDM's copy, which holds no `pause: true` of an earlier
+        # `pdt pause` on another runner, so a paused job stays paused.
+        if keeps_secret() and schedule_exists and not app["pause"]:
+            app["pause"] = clients["scheduler"].get_schedule(
+                Name=names["schedule"], GroupName=SCHEDULE_GROUP).get("State") == "DISABLED"
         secret_exists = resource_exists(
             clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
         current_secret = None

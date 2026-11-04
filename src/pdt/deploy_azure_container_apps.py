@@ -1135,6 +1135,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     missing_locks = state["missing_locks"]
     if not owned_by(legacy_job, name):
         legacy_job = None
+    # The hosted runner deploys AutoIDM's copy, which holds no `pause: true` of an earlier
+    # `pdt pause` on another runner, so a paused job stays paused.
+    if keeps_secret() and current_job and not app["pause"]:
+        app["pause"] = (current_job.get("properties") or {}).get("runningState") == "Suspended"
     vault_exists, current_secret = secret_state(settings, sid, name, state["secret"])
     kept_secret = keeps_secret() and bool(state["secret"][2])
     values.update(registration_secrets(current_secret))
