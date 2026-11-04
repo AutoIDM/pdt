@@ -5,11 +5,13 @@
 | `pdt init [DIR]` | create a project here, or in DIR |
 | `pdt examples` | list the example apps bundled with pdt |
 | `pdt new APP` | add an empty app to the project |
-| `pdt register` | authenticate this computer for AutoIDM managed services: approve it in a browser, or pass `--code CODE` with a one-time enrollment code from AutoIDM |
-| `pdt service install [--level view\|run\|manage] [--projects DIR]` | run commands from the AutoIDM portal on this computer, now and at each boot, with no open port |
-| `pdt service status [--json]` | show the service, its last checks, the level, the projects, and the running commands |
-| `pdt service run [--level view\|run\|manage]` | run it in this terminal; it needs only a registration, so you can try it before an install |
-| `pdt service tick`, `pdt service remove`, `pdt service allow LEVEL` | check once, remove it, or change the most the portal may ask for |
+| `pdt register [--code CODE] [--yes]` | authenticate this computer for AutoIDM managed services: approve it in a browser, or pass `--code CODE` with a one-time enrollment code from AutoIDM; on a computer that runs the project's jobs (provider `windows`, or no cloud provider), an administrator also gets the service, after one question that `--yes` accepts; then it asks the grant question for each cloud place of the project |
+| `pdt service install [--projects DIR] [--backend NAME] [--proxy URL] [--ssh-key FILE] [--known-hosts FILE] [--yes]` | run commands from the AutoIDM portal on this computer as SYSTEM or root, now and at each boot, with no open port; it states that a portal user of your organization and AutoIDM staff can run any program on this computer, and asks once; one computer serves one customer; run it again to repair the service |
+| `pdt service status [--json]` | show the service, its last checks, the projects, and the running commands |
+| `pdt service run` | run it in this terminal; it needs only a registration, so you can try it before an install |
+| `pdt service remove [--purge] [--yes]` | stop the service and each command, revoke this installation at AutoIDM, and delete its key; `--purge` also deletes pdt's data folder, except each project folder |
+| `pdt service diagnose` | write `pdt-service-diagnose-<time>.zip` for AutoIDM support: the settings with no proxy password, the log, the journal with no tokens, the task definition, the folder access lists, and the event lines; no key, no `.env` file, and no output |
+| `pdt service author add\|remove PROJECT KEY`, `pdt service author list [--json]` | choose whose snapshots of a project this computer runs; it always accepts its own |
 | `pdt sync up [--yes] [--ref REF] [--label LABEL]` | copy this project to AutoIDM as a snapshot; `.env` files, keys, and links stay on this computer |
 | `pdt sync down [--snapshot ID] [--force]` | copy a snapshot into this project; it stops when a file changed on this computer |
 | `pdt sync diff [--json]` | list the files that differ from the newest snapshot |

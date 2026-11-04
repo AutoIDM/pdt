@@ -363,10 +363,10 @@ def test_a_server_error_is_a_warning_and_the_run_goes_on(project, backend, warne
     url, seen, answers = backend
     project_with(project, ALL_ON)
     registered(url)
-    answers.append((503, {"error": "unavailable", "message": "try later"}))
+    answers.append((500, {"error": "unavailable", "message": "try later"}))
     assert run(project) == 0
     out = " ".join(capsys.readouterr().out.split())
-    assert ("AutoIDM did not get the job:run-started event: AutoIDM answered HTTP 503: try later"
+    assert ("AutoIDM did not get the job:run-started event: AutoIDM answered HTTP 500: try later"
             in out)
     assert paths(seen)[1:] == ["/v1/events", "/v1/uploads", "/bucket", "/v1/uploads", "/bucket"]
 

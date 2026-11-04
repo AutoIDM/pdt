@@ -1,67 +1,73 @@
 """`pdt service`: run the portal's commands on this computer, with no open port.
 
-One service serves each registration that `<data folder>/service/settings.json` names. On
-Windows that folder has the access list of the registrations folder, so only SYSTEM and
-Administrators can change the maximum level. For each registration, the service reads a presigned
-doorbell URL, checks in when the doorbell changed or `checkin_seconds` passed, verifies each
-command against the pinned keys, claims it, and starts it (pdt.service_runner). The server sets
-the two intervals. `pdt service tick` does this once and stays until no command runs, so cron
-needs no running process, and a tick that finds a service running exits at once.
+The service serves one registration: `<data folder>/service/settings.json` names the customer. A
+job runs as SYSTEM or root and has the identity of the service, so one computer serves one
+customer. `pdt service run` is the only loop. A WebSocket connection on its own thread brings a
+notice (pdt.service_delivery), and the loop reads a presigned doorbell URL and checks in on the
+timers of `Schedule`. A failure of one pass is logged, and the next pass runs. For each command in
+a check-in, the service verifies the token against the pinned keys, writes the journal, claims it,
+and starts it (pdt.service_runner).
 
-The service reads the settings at each pass of its loop. A change (`pdt service allow`,
-`install`, or a new `pdt register`) starts a check-in at once, so the portal shows the new level
-and registration in about a second. When `pdt service remove` deletes the settings, the service
-stops.
+The service reads the settings at each pass. A change starts a check-in at once. When `pdt service
+remove` deletes the settings, the service stops.
 
-The service serves each project the settings name, and each folder directly in the projects
-folder that holds pdt.yml. The projects folder has a default, `<data folder>/service/projects`,
-and a new project from `sync_down` goes there. The service reads this list at each check-in, so
-a new project needs no restart. A project serves the customer that its `managed_services` names,
-and a command for any other customer is refused, so one computer can serve two customers.
+The service serves each project the settings name, and each folder directly in the projects folder
+that holds pdt.yml. The projects folder has a default, `<data folder>/service/projects`, and a new
+project from `sync_down` goes there. A command for a project of another customer is refused.
 
 `pdt service run` needs only a registration, so a person can try the service before an install.
-It writes the settings it needs, and `service.pid` names the running process for
-`pdt service status`.
+With no administrator rights it runs as that person, in that person's data folder.
 
-`pdt service run --worker` is the same loop for a cloud worker. Its registration, and the keys
-it pins in PDT_COMMAND_KEYS, come from its environment. It has no settings file.
+`pdt service run --worker --command ID` runs one command on a cloud worker (pdt.worker).
+`pdt service run --trial` only checks in, and an upgrade uses it to test a new version.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import shutil
 import secrets
+import shutil
 import signal
+import subprocess
+import sys
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
-from pdt import (__version__, config, console, managed_services, register_cli, service_backends,
-                 service_commands, service_runner)
-from pdt.service_commands import Refused
+from pdt import (__version__, config, console, managed_services, register_cli, service_access,
+                 service_backends, service_commands, service_delivery, service_install,
+                 service_runner, snapshots)
+from pdt.service_commands import Clock, Refused
+from pdt.service_delivery import Connection, Schedule
+from pdt.service_install import InstallError
 from pdt.service_runner import Job, Pool
 from pdt.utils import autoidm
+from pdt.utils.email_auth import can_prompt
 
-SETTINGS_VERSION = 1
-COMMAND_KEYS_ENV = "PDT_COMMAND_KEYS"
 LOG_LIMIT_BYTES = 1024 * 1024
-DEFAULT_POLL_SECONDS = 30
-DEFAULT_CHECKIN_SECONDS = 900
-# Below this, a poll or a wake of the loop would cost more than it brings.
-MINIMUM_POLL_SECONDS = 5
 LOOP_SECONDS = 1.0
+RECOVER_SECONDS = 30
 # The most commands /v1/service/checkin answers with: a full answer means there can be more.
 CHECKIN_PAGE = 20
-MAX_RUNNING_IDS = 100
+MAX_LISTED_IDS = 100
 DOORBELL_TIMEOUT_SECONDS = 10
+CLOCK_WARNING_SECONDS = 60
+CLOCK_WARNING_EVERY_SECONDS = 3600
+FIRST_CHECKIN_SECONDS = 60
+TRIAL_SECONDS = 300
+KEY_SET_EVENT = 1003
+DIAGNOSE_JOURNAL = 100
+DIAGNOSE_EVENTS = 200
+ACCESS_STATEMENT = ("A portal user of your organization and AutoIDM staff can run any program on "
+                    "this computer.")
 _said_once: set[str] = set()
 
 
 def settings_path() -> Path:
-    return service_runner.service_folder() / "settings.json"
+    return service_install.settings_path()
 
 
 def state_path() -> Path:
@@ -70,6 +76,18 @@ def state_path() -> Path:
 
 def pid_path() -> Path:
     return service_runner.service_folder() / "service.pid"
+
+
+def log_path() -> Path:
+    return service_runner.service_folder() / "service.log"
+
+
+def authors_path() -> Path:
+    return service_runner.service_folder() / "authors.json"
+
+
+def service_account() -> str:
+    return "SYSTEM" if os.name == "nt" else "root"
 
 
 def running_pid() -> int | None:
@@ -82,16 +100,8 @@ def running_pid() -> int | None:
     return pid if type(pid) is int and service_runner.process_runs(pid) else None
 
 
-def read_settings() -> dict | None:
-    try:
-        found = json.loads(settings_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return found if isinstance(found, dict) else None
-
-
-def write_settings(settings: dict) -> None:
-    config.write_text_atomically(settings_path(), json.dumps(settings, indent=2) + "\n")
+read_settings = service_install.read_settings
+write_settings = service_install.write_settings
 
 
 def read_state() -> dict:
@@ -109,14 +119,22 @@ def write_state(state: dict) -> None:
 def say(message: str) -> None:
     """A line for a person watching, and for the log file a service with no terminal leaves."""
     console.say(console.escape(message))
-    path = service_runner.service_folder() / "service.log"
+    path = log_path()
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         if path.is_file() and path.stat().st_size > LOG_LIMIT_BYTES:
             os.replace(path, path.with_suffix(".log.1"))
         with path.open("a", encoding="utf-8") as log:
             log.write(f"{service_runner.now_text()} {message}\n")
     except OSError:
         pass
+
+
+def say_once(message: str) -> None:
+    """`say`, one time for each start of the service."""
+    if message not in _said_once:
+        _said_once.add(message)
+        say(message)
 
 
 @contextmanager
@@ -151,15 +169,42 @@ def projects_folder(settings: dict) -> Path:
     return Path(settings.get("projects") or service_runner.service_folder() / "projects")
 
 
-def projects_of(settings: dict) -> dict[str, Path]:
-    """Each project the settings serve, by the name the portal uses."""
+def project_folders(settings: dict) -> list[Path]:
     try:
         folders = sorted(projects_folder(settings).iterdir())
     except OSError:
         folders = []
     folders += [Path(named) for named in settings.get("named_projects") or []]
-    return {managed_services.backend_name(folder.name): folder for folder in folders
-            if (folder / config.PROJECT_FILE).is_file()}
+    return [folder for folder in folders if (folder / config.PROJECT_FILE).is_file()]
+
+
+def projects_of(settings: dict) -> dict[str, Path]:
+    """Each project the settings serve, by the name the portal uses. The first folder keeps a
+    name that two folders hold."""
+    found: dict[str, Path] = {}
+    for folder in project_folders(settings):
+        name = managed_services.backend_name(folder.name)
+        if name == service_commands.RESERVED_PROJECT:
+            say_once(f"The portal does not show the project folder {folder}: the name "
+                     f"{service_commands.RESERVED_PROJECT} is reserved. Rename the folder to use "
+                     "it from the portal.")
+        elif name in found:
+            say_once(f"Two projects have the name {name}: {found[name]} and {folder}. The service "
+                     f"serves {found[name]}.")
+        else:
+            found[name] = folder
+    return found
+
+
+def same_name_problem(settings: dict) -> str:
+    seen: dict[str, Path] = {}
+    for folder in project_folders(settings):
+        name = managed_services.backend_name(folder.name)
+        if name in seen and seen[name] != folder:
+            return (f"Two projects have the name {name}: {seen[name]} and {folder}. Rename one of "
+                    "the folders, then run the command again.")
+        seen[name] = folder
+    return ""
 
 
 def choose_projects(wanted: str | None, current: dict) -> tuple[str, list[str]]:
@@ -184,13 +229,6 @@ def choose_projects(wanted: str | None, current: dict) -> tuple[str, list[str]]:
         else:
             folder = str(resolved)
     return folder, list(dict.fromkeys(named))
-
-
-def say_once(message: str) -> None:
-    """`say`, one time for each start of the service."""
-    if message not in _said_once:
-        _said_once.add(message)
-        say(message)
 
 
 def project_record(name: str, root: Path) -> dict:
@@ -239,75 +277,60 @@ class Served:
     customer: str
     registration: autoidm.Registration
     keys: list[dict]
-    next_poll: float = 0.0
-    checked: bool = False
-    # A change of the settings waits for no doorbell and no interval.
-    due: bool = False
+    keys_version: int = 1
+    clock: Clock = field(default_factory=Clock)
+    schedule: Schedule = field(default_factory=Schedule)
+    connection: Connection | None = None
+    # Where key sets go: None on a worker, whose keys stay in memory.
+    keys_file: Path | None = None
+    worker: bool = False
+    clock_warned_at: float = 0.0
 
 
-def read_keys(customer: str) -> list[dict]:
+def read_saved(customer: str) -> dict:
     info, _key = autoidm.files(customer)
-    saved = json.loads(info.read_text(encoding="utf-8"))
-    keys = saved.get("command_keys") if isinstance(saved, dict) else None
-    return keys if isinstance(keys, list) else []
+    found = json.loads(info.read_text(encoding="utf-8"))
+    return found if isinstance(found, dict) else {}
 
 
-def machine_served(settings: dict) -> dict[str, Served]:
-    served = {}
-    for customer in settings.get("registrations") or []:
-        try:
-            found = autoidm.machine_registration(customer)
-            keys = read_keys(customer) if found else []
-        except (autoidm.AutoidmError, OSError, ValueError) as e:
-            console.warn_once(f"pdt cannot serve the registration of {console.value(customer)}: "
-                              f"{console.escape(str(e))}")
-            continue
-        if found is None:
-            console.warn_once(f"The service settings name {console.value(customer)}, which has "
-                              "no registration on this computer.")
-            continue
-        if not keys:
-            console.warn_once(f"The registration of {console.value(customer)} has no command "
-                              "keys, so the service refuses each command for it.")
-        served[customer] = Served(customer, found, keys)
-    return served
-
-
-def worker_served() -> dict[str, Served]:
-    found = autoidm.environment_values()
-    if not found:
-        raise config.ConfigError(f"pdt service run --worker needs {', '.join(autoidm.SECRET_NAMES)} "
-                                 "in the environment")
+def machine_served(settings: dict) -> Served | None:
+    customer = settings.get("customer")
     try:
-        keys = json.loads(os.environ.get(COMMAND_KEYS_ENV) or "[]")
-    except ValueError:
-        keys = []
-    if not (isinstance(keys, list) and keys):
-        raise config.ConfigError(f"pdt service run --worker needs {COMMAND_KEYS_ENV}: the JSON "
-                                 "list of command keys")
-    customer = found[autoidm.CUSTOMER_ENV]
-    registration = autoidm.Registration(found[autoidm.ID_ENV], found[autoidm.URL_ENV].rstrip("/"),
-                                        autoidm.load_key(found[autoidm.KEY_ENV].encode()),
-                                        autoidm.ID_ENV)
-    return {customer: Served(customer, registration, keys)}
+        found = autoidm.machine_registration(customer) if customer else None
+        saved = read_saved(customer) if found else {}
+    except (autoidm.AutoidmError, OSError, ValueError) as e:
+        console.warn_once(f"pdt cannot serve the registration of {console.value(customer)}: "
+                          f"{console.escape(str(e))}")
+        return None
+    if found is None:
+        console.warn_once(f"The service settings name {console.value(customer)}, which has "
+                          "no registration on this computer.")
+        return None
+    keys = saved.get("command_keys")
+    keys = keys if isinstance(keys, list) else []
+    if not keys:
+        console.warn_once(f"The registration of {console.value(customer)} has no command "
+                          "keys, so the service refuses each command for it.")
+    version = saved.get("command_keys_version")
+    return Served(customer, found, keys, version if type(version) is int else 1,
+                  connection=Connection(found, say), keys_file=autoidm.files(customer)[0])
 
 
-def refuse(served: Served, command_id: str, message: str) -> None:
-    """Record a refusal, and report it. A refused result needs no earlier claim."""
-    result = {"outcome": "refused", "exit_code": None, "message": message, "run_id": None,
-              "artifact_key": None}
-    service_runner.journal_begin({
-        "command_id": command_id, "customer_id": served.customer, "phase": "finished",
-        "finished_at": service_runner.now_text(), "result": result, "reported": False})
+def refuse(served: Served, command_id: str, message: str, keep_journal: bool = False) -> None:
+    """Record a refusal, and report it. A refused result needs no earlier claim. A journal file
+    stays when it does not parse, or when it holds an earlier command with this ID."""
+    result = service_runner.result_of("refused", message=message)
+    if not keep_journal:
+        service_runner.journal_write({
+            "schema": service_runner.JOURNAL_SCHEMA, "command_id": command_id, "state": "finished",
+            "finished_at": service_runner.now_text(), "result": result, "reported": False})
     service_runner.send_result(served.registration, command_id, result)
     say(f"Refused {command_id}: {message}")
 
 
-def locate(claims: dict, served: Served, settings: dict, worker: bool) -> Path | None:
-    """The project folder of a command on this computer. A worker's comes from a snapshot, and
-    sync_down and run_snapshot can act on a project that is not here yet. Raises Refused."""
-    if worker:
-        return None
+def locate(claims: dict, served: Served, settings: dict) -> Path | None:
+    """The project folder of a command on this computer. sync_down and run_snapshot can act on a
+    project that is not here yet. Raises Refused."""
     project = claims["args"]["project"]
     root = projects_of(settings).get(project)
     if root is not None:
@@ -326,52 +349,109 @@ def locate(claims: dict, served: Served, settings: dict, worker: bool) -> Path |
     raise Refused(f"This computer does not serve a project named {project}.")
 
 
-def accept(item: object, served: Served, settings: dict, worker: bool, pool: Pool) -> bool:
+def read_authors() -> dict:
+    try:
+        found = json.loads(authors_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"schema": 1, "projects": {}}
+    if not (isinstance(found, dict) and isinstance(found.get("projects"), dict)):
+        return {"schema": 1, "projects": {}}
+    return found
+
+
+def allowed_authors(project: str, registration: autoidm.Registration) -> set[str]:
+    listed = read_authors()["projects"].get(project)
+    return {autoidm.public_key(registration.key), *(listed if isinstance(listed, list) else [])}
+
+
+def check_author(claims: dict, served: Served) -> None:
+    """A sync_down or a run_snapshot needs a snapshot that a known author signed. Raises Refused
+    for a snapshot it can refuse, and AutoidmError when AutoIDM did not answer."""
+    if claims["operation"] not in ("sync_down", "run_snapshot"):
+        return
+    project, identity = claims["args"]["project"], claims["args"]["snapshot_id"]
+    try:
+        answer = snapshots.get(served.registration, project, identity)
+    except autoidm.AutoidmError as e:
+        if e.status == 0 or e.status >= 500 or e.status == 429:
+            raise
+        raise Refused(str(e)) from None
+    problem = snapshots.author_problem(answer.get("publications"), served.customer, project,
+                                       identity, allowed_authors(project, served.registration))
+    if problem:
+        raise Refused(f"{problem} To accept this author, run pdt service author add {project} KEY "
+                      "as an administrator on this computer.")
+
+
+def accept(item: object, served: Served, settings: dict, pool: Pool) -> bool:
     """Verify, claim, and queue one command of a check-in. False when the claim got no answer,
-    so the cursor must not pass this command."""
+    so the next check-in names this command in `claiming`."""
     command_id = item.get("command_id") if isinstance(item, dict) else None
     token = item.get("token") if isinstance(item, dict) else None
-    if not (isinstance(command_id, str)
-            and service_commands.COMMAND_ID.fullmatch(command_id)):
+    if not (isinstance(command_id, str) and service_commands.COMMAND_ID.fullmatch(command_id)):
         say(f"AutoIDM sent a command with the ID {command_id!r}, which pdt ignores.")
         return True
-    entry = service_runner.journal_read(command_id)
-    if entry is not None and entry.get("phase") != "claiming":
-        say(f"Refused {command_id}: this computer already holds that command ID.")
+    try:
+        entry = service_runner.journal_read(command_id)
+    except (OSError, ValueError) as e:
+        refuse(served, command_id, f"The journal file of this command does not parse: {e}.", True)
         return True
-    maximum = settings.get("level", service_commands.DEFAULT_LEVEL)
+    if entry is not None and entry.get("state") != "claiming":
+        # A report here would end the command at AutoIDM while it runs, so a repeat gets none.
+        say(f"Refused a repeat of {command_id}: this computer already holds that command ID.")
+        return True
     try:
         claims = service_commands.verify(token, command_id, served.registration.installation_id,
-                                         served.customer, served.keys, maximum, worker)
-        root = locate(claims, served, settings, worker)
+                                         served.customer, served.keys, served.clock.now())
+        root = locate(claims, served, settings)
         preset = None
         if claims["args"].get("preset"):
             if root is None:
                 raise Refused(f"This computer has no project {claims['args']['project']} "
                               f"to read the preset {claims['args']['preset']} from.")
-            preset = service_commands.load_preset(root, claims["args"]["preset"])
+            preset = service_commands.load_preset(root, claims["args"]["preset"],
+                                                  claims["args"].get("app"))
+        check_author(claims, served)
     except Refused as e:
-        refuse(served, command_id, str(e))
+        refuse(served, command_id, str(e), entry is not None and False)
         return True
-    if entry is None:
-        entry = {"command_id": command_id, "customer_id": served.customer, "phase": "claiming",
-                 "operation": claims["operation"], "args": claims["args"],
-                 "claim_id": secrets.token_hex(16)}
-        service_runner.journal_begin(entry)
-    try:
-        service_runner.report(served.registration, command_id, fact="claimed",
-                              claim_id=entry["claim_id"])
     except autoidm.AutoidmError as e:
-        if e.code != "already_claimed":
-            say(f"AutoIDM did not answer the claim of {command_id}: {e}")
-            return False
-        service_runner.journal_update(command_id, phase="finished", reported=True,
-                                      result={"outcome": "not_claimed", "message": str(e)})
-        return True
-    service_runner.journal_update(command_id, phase="claimed",
-                                  claimed_at=service_runner.now_text())
-    say(f"Claimed {command_id}: {claims['operation']} on {claims['args']['project']}.")
-    pool.add(Job(command_id, claims, served.registration, root, worker, preset))
+        say(f"AutoIDM did not answer about the snapshot of {command_id}: {e}")
+        return False
+    if entry is None:
+        entry = {"schema": service_runner.JOURNAL_SCHEMA, "command_id": command_id, "token": token,
+                 "requested_by": claims.get("requested_by"), "operation": claims["operation"],
+                 "claim_id": secrets.token_hex(16), "state": "claiming", "pid": None,
+                 "process_created": None, "output_seq": 0, "output_offset": 0, "result": None}
+        service_runner.journal_write(entry)
+    job = Job(command_id, claims, served.registration, root, served.clock, preset=preset,
+              known_values=service_runner.known_values_of(root, claims["args"].get("app"), preset))
+    return claim(job, entry["claim_id"], pool)
+
+
+def claim(job: Job, claim_id: str, pool: Pool) -> bool:
+    """Send the claim, and act on its answer. Only a 2xx answer starts the command."""
+    command_id = job.command_id
+    try:
+        service_runner.report(job.registration, command_id, fact="claimed", claim_id=claim_id)
+    except autoidm.AutoidmError as e:
+        if e.code == "cancelled":
+            service_runner.finish(job, service_runner.result_of(
+                "cancelled", message="A person cancelled the command before it started."))
+            return True
+        if e.code in ("already_claimed", "unknown_command", "already_finished"):
+            say(f"pdt did not run {command_id}: {e}")
+            service_runner.journal_update(command_id, state="finished", reported=True,
+                                          finished_at=service_runner.now_text(),
+                                          result=service_runner.result_of("refused", message=str(e)))
+            return True
+        say(f"AutoIDM did not answer the claim of {command_id}: {e}")
+        return False
+    service_runner.journal_update(command_id, state="claimed")
+    service_runner.write_event(command_id, "claimed", job.operation,
+                               job.claims.get("requested_by"), None)
+    say(f"Claimed {command_id}: {job.operation} on {job.args['project']}.")
+    pool.add(job)
     return True
 
 
@@ -393,130 +473,240 @@ def doorbell(url: str, etag: str | None) -> tuple[int, str | None]:
         return 0, None
 
 
-def check_in(served: Served, settings: dict, worker: bool, pool: Pool, state: dict) -> None:
-    projects = checkin_projects(settings, served.customer)
-    answer = autoidm.post(served.registration, "/v1/service/checkin", {
-        "version": 1, "pdt_version": __version__,
-        "maximum_level": settings.get("level", service_commands.DEFAULT_LEVEL),
-        "after": state.get("after"), "running": pool.ids()[:MAX_RUNNING_IDS],
-        "projects": projects})
-    state["last_checkin"] = time.time()
-    for name in ("doorbell_url", "poll_seconds", "checkin_seconds"):
-        if answer.get(name):
-            state[name] = answer[name]
-    commands = answer.get("commands") if isinstance(answer.get("commands"), list) else []
-    for item in commands:
-        if not accept(item, served, settings, worker, pool):
-            break
-        if isinstance(item, dict) and isinstance(item.get("command_id"), str):
-            state["after"] = item["command_id"]
-    state["more"] = len(commands) >= CHECKIN_PAGE
-    for command_id in answer.get("cancels") or []:
-        if isinstance(command_id, str):
-            pool.cancel(command_id)
-            say(f"Cancelling {command_id}.")
-
-
-def check(served: Served, settings: dict, worker: bool, pool: Pool, states: dict) -> None:
-    """Steps 1 to 3 of the contract's delivery for one registration."""
-    state = states.setdefault(served.customer, {})
+def set_clock(served: Served, server_time: object) -> None:
+    """Correct each token by the difference from AutoIDM's time."""
+    try:
+        moment = datetime.fromisoformat(str(server_time))
+    except ValueError:
+        return
+    offset = moment.timestamp() - time.time()
+    served.clock.offset = offset
+    autoidm.clock_offset = offset
     now = time.time()
+    if (abs(offset) > CLOCK_WARNING_SECONDS
+            and now - served.clock_warned_at >= CLOCK_WARNING_EVERY_SECONDS):
+        served.clock_warned_at = now
+        say(f"The clock of this computer differs from AutoIDM's clock by {round(offset)} seconds. "
+            "pdt corrects its own checks. Set the clock, because the jobs read it too.")
+
+
+def apply_key_sets(served: Served, key_sets: object) -> None:
+    """Each key set in order. A check that fails leaves the file as it is."""
+    for token in key_sets if isinstance(key_sets, list) else []:
+        try:
+            served.keys_version, served.keys = service_commands.next_key_set(
+                token, served.keys_version, served.keys, served.customer)
+        except Refused as e:
+            message = f"pdt refused new command keys: {e}"
+            say(message)
+            service_runner.write_log_line(message, KEY_SET_EVENT)
+            return
+        if served.keys_file is not None:
+            saved = json.loads(served.keys_file.read_text(encoding="utf-8"))
+            config.write_text_atomically(served.keys_file, json.dumps(
+                {**saved, "command_keys": served.keys,
+                 "command_keys_version": served.keys_version}) + "\n")
+        say(f"Now holds command keys of version {served.keys_version}.")
+
+
+def checkin_answer(served: Served, settings: dict, running: list[str], claiming: list[str],
+                   state: dict, only: str | None = None) -> dict:
+    connected = served.connection.read()[0] if served.connection else False
+    now = time.time()
+    interval = served.schedule.checkin_interval(connected, now)
+    answer = autoidm.post(served.registration, "/v1/service/checkin", {
+        "version": 1, "pdt_version": __version__, "after": state.get("after"), "only": only,
+        "running": running[:MAX_LISTED_IDS], "claiming": claiming[:MAX_LISTED_IDS],
+        "interval_seconds": max(60, min(86400, interval)),
+        "clock_offset_seconds": round(served.clock.offset),
+        "command_keys_version": served.keys_version,
+        "projects": checkin_projects(settings, served.customer) if not served.worker else []},
+        retry=False)
+    if answer.get("schema") not in (None, 1):
+        raise autoidm.AutoidmError(f"AutoIDM answered /v1/service/checkin with the schema "
+                                   f"{answer['schema']!r}, which this pdt does not read")
+    set_clock(served, answer.get("server_time"))
+    served.schedule.apply(answer)
+    apply_key_sets(served, answer.get("key_sets"))
+    return answer
+
+
+def check_in(served: Served, settings: dict, pool: Pool, state: dict) -> bool:
+    """One check-in. Returns True when a full answer means there can be more commands."""
+    answer = checkin_answer(served, settings, pool.ids(), service_runner.claiming_ids(), state)
+    state["last_checkin"] = time.time()
+    state["status"] = answer.get("status")
+    if answer.get("doorbell_url"):
+        state["doorbell_url"] = answer["doorbell_url"]
+    if answer.get("ws_url") and served.connection:
+        served.connection.keepalive_seconds = served.schedule.ws_keepalive_seconds
+        served.connection.start(answer["ws_url"])
+    state["target_pdt_version"] = answer.get("target_pdt_version")
+    if answer.get("status") == "pending":
+        say_once("A customer administrator must approve this installation. The service keeps "
+                 "checking in.")
+    commands = answer.get("commands") if isinstance(answer.get("commands"), list) else []
+    settled = True
+    for item in commands:
+        if not accept(item, served, settings, pool):
+            settled = False
+            break
+    if settled and answer.get("after"):
+        state["after"] = answer["after"]
+    for item in answer.get("cancels") or []:
+        apply_cancel(item, served, pool)
+    return len(commands) >= CHECKIN_PAGE or not settled
+
+
+def apply_cancel(item: object, served: Served, pool: Pool) -> None:
+    """Stop a command only for a token that passes its check. A bad token is ignored and logged."""
+    command_id = item.get("command_id") if isinstance(item, dict) else None
+    token = item.get("token") if isinstance(item, dict) else None
+    try:
+        service_commands.verify_cancel(token, command_id, served.registration.installation_id,
+                                       served.customer, served.keys, served.clock.now())
+    except Refused as e:
+        say(f"pdt ignored a cancel of {command_id}: {e}")
+        return
+    if pool.cancel(command_id):
+        say(f"Cancelling {command_id}.")
+
+
+def check(served: Served, settings: dict, pool: Pool, state: dict) -> None:
+    """One pass of delivery: the signals of the connection, the doorbell, and the check-in."""
+    schedule = served.schedule
+    now = time.time()
+    connected, frames, wanted_at = served.connection.read()
+    schedule.frames_seen(frames)
+    if wanted_at is not None and now >= wanted_at:
+        schedule.wanted = True
+        served.connection.clear_wanted()
     url = state.get("doorbell_url")
-    due = (served.due or not url or state.get("more")
-           or now - state.get("last_checkin", 0) >= state.get("checkin_seconds",
-                                                              DEFAULT_CHECKIN_SECONDS))
-    new_etag = None
-    if url:
-        status, new_etag = doorbell(url, state.get("etag"))
+    if url and schedule.doorbell_due(connected, now):
+        known = state.get("etag")
+        status, etag = doorbell(url, known)
+        schedule.doorbell_read(status, frames, connected, bool(known), now)
         if status:
             state["last_doorbell"] = now
-        due = due or status in (200, 403)
-    if due:
+        if etag:
+            state["etag"] = etag
+    if schedule.checkin_due(connected, now):
         try:
-            check_in(served, settings, worker, pool, state)
+            more = check_in(served, settings, pool, state)
         except autoidm.AutoidmError as e:
             say(f"AutoIDM did not answer the check-in of {served.customer}: {e}")
+            schedule.checkin_failed(now)
         else:
-            state["etag"] = new_etag or state.get("etag")
-            served.due = False
-    served.checked = not state.get("more")
-    poll = state.get("poll_seconds", DEFAULT_POLL_SECONDS)
-    served.next_poll = time.monotonic() + (0 if state.get("more")
-                                           else max(MINIMUM_POLL_SECONDS, poll))
+            schedule.checkin_done(time.time(), more)
 
 
 def settings_mark(settings: dict) -> tuple:
     """What the portal or this loop must act on when it changes."""
-    return (settings.get("level"), settings.get("projects"),
-            tuple(settings.get("named_projects") or []),
-            tuple(settings.get("registrations") or []))
+    return (settings.get("customer"), settings.get("projects"),
+            tuple(settings.get("named_projects") or []))
 
 
 def current_settings(last: dict) -> dict | None:
     """The settings on disk, or `last` while another process replaces the file, or None when
     the file is gone."""
-    found = read_settings()
+    try:
+        found = read_settings()
+    except InstallError:
+        return last
     if found is not None:
         return found
     return last if settings_path().exists() else None
 
 
-def apply_settings(served: dict[str, Served], settings: dict) -> None:
-    """Serve the registrations the changed settings name, and check in at once."""
-    os.environ[service_runner.PROJECTS_HOME_ENV] = str(projects_folder(settings))
-    wanted = machine_served(settings)
-    for customer in list(served):
-        if customer not in wanted:
-            del served[customer]
-    for customer, item in wanted.items():
-        served.setdefault(customer, item).keys = item.keys
-    for item in served.values():
-        item.next_poll = 0.0
-        item.due = True
+def pinned_python(job: Job, settings: dict) -> str | None:
+    """The Python of the version the project pins, or None for this version."""
+    if job.project is None or job.worker:
+        return None
+    pin = service_commands.service_section(job.project).get("pdt_version")
+    if not pin or pin == __version__:
+        return None
+    return str(service_install.python_for(str(pin), settings))
 
 
-def loop(served: dict[str, Served], settings: dict, worker: bool, once: bool) -> int:
-    pool = Pool()
+def upgrade_due(state: dict, pool: Pool) -> str | None:
+    target = state.get("target_pdt_version")
+    if (not isinstance(target, str) or not target or target == __version__
+            or state.get("upgrade_refused") == target or pool.ids()):
+        return None
+    return target
+
+
+def upgrade(target: str, settings: dict, state: dict) -> bool:
+    """Install `target`, try it, and change the backend. True when the service must exit, so the
+    backend starts the new version. A failure keeps this version and does not try `target` again
+    until the setting changes."""
+    say(f"Upgrading pdt from {__version__} to {target}.")
+    try:
+        python = str(service_install.python_for(target, settings))
+        proc = subprocess.run([python, "-m", "pdt.cli", "service", "run", "--trial"],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=TRIAL_SECONDS)
+        if proc.returncode != 0:
+            raise InstallError(f"Version {target} did not check in: "
+                               f"{(proc.stdout + proc.stderr).strip()[-1000:]}")
+        backend = service_backends.BACKENDS[settings["backend"]]
+        backend.define(python, service_runner.service_folder())
+        write_settings({**settings, "python": python, "pdt_version": target})
+        backend.restart()
+    except (InstallError, service_backends.BackendError, OSError, KeyError,
+            subprocess.SubprocessError) as e:
+        say(f"pdt keeps version {__version__}, because the upgrade to {target} failed: {e}")
+        state["upgrade_refused"] = target
+        return False
+    say(f"The backend now starts version {target}.")
+    return True
+
+
+def loop(served: Served, settings: dict) -> int:
     stopping: list[int] = []
 
     def stop(signum: int, _frame: object) -> None:
         stopping.append(signum)
 
+    def project_of(name: str) -> Path | None:
+        return projects_of(settings).get(name)
+
+    pool = Pool(lambda job: pinned_python(job, settings),
+                lambda job: allowed_authors(job.args["project"], job.registration))
     previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
     _said_once.clear()
-    states = read_state()
-    service_runner.recover(pool, {name: item.registration for name, item in served.items()})
-    last_recover = time.monotonic()
+    state = read_state()
+    last_recover = 0.0
     seen = settings_mark(settings)
     try:
         while not stopping:
-            if not worker:
+            try:
                 settings = current_settings(settings)
                 if settings is None:
                     say("The service settings are gone, so the service stops.")
                     break
                 if settings_mark(settings) != seen:
                     seen = settings_mark(settings)
-                    apply_settings(served, settings)
-            changed = False
-            for item in served.values():
-                if time.monotonic() >= item.next_poll:
-                    check(item, settings, worker, pool, states)
-                    changed = True
-            if changed:
-                write_state(states)
-            pool.start_ready()
-            if time.monotonic() - last_recover >= DEFAULT_POLL_SECONDS:
-                service_runner.recover(pool, {name: item.registration
-                                              for name, item in served.items()})
-                last_recover = time.monotonic()
+                    os.environ[service_runner.PROJECTS_HOME_ENV] = str(projects_folder(settings))
+                    served.schedule.wanted = True
+                check(served, settings, pool, state)
+                write_state(state)
+                pool.start_ready()
+                if time.monotonic() - last_recover >= RECOVER_SECONDS:
+                    service_runner.recover(pool, served.registration, served.clock, project_of)
+                    last_recover = time.monotonic()
+                target = upgrade_due(state, pool)
+                if target and settings.get("backend") and upgrade(target, settings, state):
+                    write_state(state)
+                    break
+            except Exception as e:
+                say(f"One pass of the service failed: {type(e).__name__}: {e}")
             console.drain()
-            if once and all(item.checked for item in served.values()) and not pool.ids():
-                break
             time.sleep(LOOP_SECONDS)
     finally:
+        served.connection.stop()
         pool.stop_all()
-        write_state(states)
+        write_state(state)
         console.drain()
         for signum, handler in previous.items():
             signal.signal(signum, handler)
@@ -529,83 +719,138 @@ def say_no_registration() -> None:
                   "first.")
 
 
-def new_settings(level: str | None, projects: str | None, backend: str | None,
-                 current: dict) -> dict:
-    folder, named = choose_projects(projects, current)
-    return {"version": SETTINGS_VERSION,
-            "level": level or current.get("level", service_commands.DEFAULT_LEVEL),
-            "projects": folder, "named_projects": named, "registrations": registrations_here(),
-            "backend": backend, "uv": shutil.which("uv"), "installed_by": __version__}
+def registrations_here() -> list[str]:
+    return sorted(path.stem for path in autoidm.folder().glob("cus_*.json"))
 
 
-def settings_to_serve(level: str | None, action: str) -> dict | None:
-    """The settings on disk, with `level` applied. With none on disk, it writes them from what
-    this computer holds. None after one error line."""
-    settings = read_settings()
-    if settings is not None and level in (None, settings.get("level")):
+def one_customer_message(customer: str) -> str:
+    return (f"This computer runs jobs as {service_account()} for {console.value(customer)}. One "
+            "computer serves one customer, because a job can read each file on this computer.")
+
+
+def access_problem(settings: dict) -> bool:
+    """Refuse a program folder or a project folder that a non-administrator can change. It prints
+    one error line and the next steps. A person with no administrator rights runs only as that
+    person."""
+    if not service_access.is_admin():
+        return False
+    folders = []
+    python = settings.get("python")
+    if python:
+        folders.append(service_install.version_folder(settings.get("pdt_version") or __version__))
+    folders.extend(projects_of(settings).values())
+    for folder in folders:
+        if not folder.exists():
+            continue
+        found = service_access.writable_by_others(folder)
+        if found:
+            account, path = found
+            console.error(f"The account {console.value(account)} can change "
+                          f"{console.value(path)}, so the pdt service does not run from "
+                          f"{console.value(folder)} as {console.value(service_account())}.")
+            console.next_steps(service_access.repair_commands(folder))
+            say(f"The account {account} can change {path}, so the service stopped.")
+            return True
+    return False
+
+
+def settings_to_serve() -> dict | None:
+    """The settings on disk. With none on disk, it writes them from the one registration this
+    computer holds. None after one error line."""
+    try:
+        settings = read_settings()
+    except InstallError as e:
+        console.error(console.escape(str(e)))
+        return None
+    if settings is not None:
         return settings
-    if settings is None and not registrations_here():
+    found = registrations_here()
+    if not found:
         say_no_registration()
         return None
-    if needs_admin(action) or prepare_folder() != 0:
+    if len(found) > 1:
+        console.error(f"This computer holds registrations of {console.value(len(found))} "
+                      "customers, and the service serves one. Name it with "
+                      f"{console.value('pdt service install')}.")
         return None
-    settings = {**settings, "level": level} if settings else new_settings(level, None, None, {})
+    if needs_admin("run"):
+        return None
+    folder, named = choose_projects(None, {})
+    settings = {"version": service_install.SETTINGS_VERSION, "customer": found[0],
+                "projects": folder, "named_projects": named, "backend": None,
+                "pdt_version": __version__, "python": None, "proxy": service_install.find_proxy(None),
+                "ssh": None}
+    write_data_folders()
     write_settings(settings)
     return settings
 
 
-def run(worker: bool = False, level: str | None = None) -> int:
+def write_data_folders() -> None:
+    data = autoidm.data_folder()
+    service_access.limit(data, private=False)
+    service_access.limit(service_runner.service_folder())
+
+
+def run(worker: bool = False, command_id: str | None = None, trial: bool = False) -> int:
     """`pdt service run`: the foreground loop. It needs only a registration."""
-    if worker:
-        return serve({"level": "manage"}, worker=True, once=False)
-    settings = settings_to_serve(level, "run")
-    return 1 if settings is None else serve(settings, worker=False, once=False)
+    if worker or command_id:
+        if not (worker and command_id):
+            console.error(f"{console.value('--worker')} and {console.value('--command')} go "
+                          "together.")
+            return 2
+        from pdt import worker as worker_module
+        return worker_module.run(command_id)
+    settings = settings_to_serve()
+    if settings is None:
+        return 1
+    if trial:
+        return run_trial(settings)
+    return serve(settings)
 
 
-def tick() -> int:
-    """`pdt service tick`: one pass, and then wait for the commands it started."""
-    settings = settings_to_serve(None, "tick")
-    return 1 if settings is None else serve(settings, worker=False, once=True)
+def run_trial(settings: dict) -> int:
+    """The check of a new version: one check-in. It takes no command, and an upgrade starts it
+    while the service runs, so it takes no lock and changes no state."""
+    served = machine_served(settings)
+    if served is None:
+        return 1
+    served.connection = None
+    try:
+        checkin_answer(served, settings, [], [], read_state())
+    except autoidm.AutoidmError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    return 0
 
 
-def serve(settings: dict, worker: bool, once: bool) -> int:
+def serve(settings: dict) -> int:
     with one_service() as first:
         if not first:
-            if once:
-                console.status("A pdt service already runs on this computer.")
-                return 0
             console.error("A pdt service already runs on this computer. A computer has one "
                           "service.")
             return 1
-        uv = settings.get("uv")
-        if uv:
-            os.environ["PATH"] = str(Path(uv).parent) + os.pathsep + os.environ.get("PATH", "")
+        if access_problem(settings):
+            return 1
+        os.environ.update(service_install.service_env(settings))
         os.environ[service_runner.PROJECTS_HOME_ENV] = str(projects_folder(settings))
-        served = worker_served() if worker else machine_served(settings)
-        if not served:
+        served = machine_served(settings)
+        if served is None:
             console.error("The service has no registration to serve. Run "
                           f"{console.value('pdt register')} first.")
             return 1
         config.write_text_atomically(pid_path(), json.dumps({"pid": os.getpid()}) + "\n")
         try:
-            return loop(served, settings, worker, once)
+            return loop(served, settings)
         finally:
             pid_path().unlink(missing_ok=True)
 
 
-def add_registration(customer: str) -> None:
-    """Name a new registration in the settings, when this computer has a service."""
-    settings = read_settings()
-    if settings is not None and customer not in (settings.get("registrations") or []):
-        write_settings({**settings, "registrations": [*(settings.get("registrations") or []), customer]})
-
-
-def registrations_here() -> list[str]:
-    return sorted(path.stem for path in autoidm.folder().glob("cus_*.json"))
+def install_next_step() -> str:
+    return "pdt service install" if os.name == "nt" else "sudo pdt service install"
 
 
 def needs_admin(action: str) -> bool:
-    if os.name == "nt" and not register_cli.is_admin():
+    if os.name == "nt" and not service_access.is_admin():
         console.error(f"pdt service {console.value(action)} changes what the service may do here, "
                       "which only an administrator can do. Run it in a terminal opened with "
                       "Run as administrator.")
@@ -613,82 +858,216 @@ def needs_admin(action: str) -> bool:
     return False
 
 
-def prepare_folder() -> int:
-    folder = service_runner.service_folder()
-    folder.mkdir(parents=True, exist_ok=True)
-    return register_cli.limit_folder(folder, "wrote no service settings")
+def require_admin(action: str) -> bool:
+    """False after one error line and the exact next command."""
+    if service_access.is_admin():
+        return True
+    if os.name == "nt":
+        console.error(f"pdt service {console.value(action)} needs an administrator. Open a "
+                      "terminal with Run as administrator.")
+        console.next_steps([(f"pdt service {action}", "run it in that terminal")])
+    else:
+        console.error(f"pdt service {console.value(action)} needs root.")
+        console.next_steps([(f"sudo pdt service {action}", "run it as root")])
+    return False
 
 
-def install(level: str | None, projects: str | None, backend: str | None) -> int:
-    if needs_admin("install"):
+def ask_access(assume_yes: bool) -> bool:
+    """The access statement, and one question. `--yes` accepts it."""
+    console.say(console.escape(ACCESS_STATEMENT))
+    if assume_yes:
+        return True
+    if not can_prompt(None):
+        console.warn("There is no one to answer. Run this in a terminal, or add --yes.")
+        return False
+    try:
+        return console.confirm("Install the pdt service?")
+    except EOFError:
+        return False
+
+
+def last_log_error() -> str:
+    try:
+        lines = log_path().read_text(encoding="utf-8").strip().splitlines()
+    except OSError:
+        return "The service wrote no log."
+    return lines[-1] if lines else "The service wrote no log."
+
+
+def wait_first_checkin(started: float) -> bool:
+    deadline = time.monotonic() + FIRST_CHECKIN_SECONDS
+    with console.waiting(f"waiting: first check-in by {service_account()}"):
+        while time.monotonic() < deadline:
+            if (read_state().get("last_checkin") or 0) >= started:
+                return True
+            time.sleep(1)
+    return False
+
+
+def install_for(customer: str, projects: str | None, backend: str | None, proxy: str | None,
+                ssh_key: str | None, known_hosts: str | None) -> int:
+    """Steps 5 to 10 of the contract's `pdt service install`. It runs again without harm."""
+    try:
+        current = read_settings() or {}
+    except InstallError:
+        current = {}
+    if current.get("customer") not in (None, customer):
+        console.error(console.escape(one_customer_message(current["customer"])))
         return 1
+    try:
+        name = service_backends.choose(backend)
+        write_data_folders()
+        service_access.limit(service_runner.service_folder() / "projects")
+        folder, named = choose_projects(projects, current)
+        settings = {"version": service_install.SETTINGS_VERSION, "customer": customer,
+                    "projects": folder, "named_projects": named, "backend": name,
+                    "pdt_version": __version__, "python": None,
+                    "proxy": service_install.find_proxy(proxy) or current.get("proxy") or {},
+                    "ssh": current.get("ssh")}
+        problem = same_name_problem(settings)
+        if problem:
+            console.error(console.escape(problem))
+            return 1
+        with console.waiting(f"installing: pdt {__version__} under "
+                             f"{service_install.versions_folder()}"):
+            settings["python"] = str(service_install.install_running(settings))
+        if access_problem(settings):
+            return 1
+        if ssh_key:
+            settings["ssh"] = service_install.store_ssh_key(ssh_key, known_hosts)
+        previous = current.get("backend")
+        if previous in service_backends.BACKENDS and previous != name:
+            service_backends.BACKENDS[previous].remove()
+        write_settings(settings)
+        started = time.time()
+        chosen = service_backends.BACKENDS[name]
+        chosen.remove()
+        chosen.define(settings["python"], service_runner.service_folder())
+        chosen.start(settings["python"])
+    except (InstallError, service_backends.BackendError, OSError, RuntimeError) as e:
+        console.error(console.escape(str(e)))
+        return 1
+    if not wait_first_checkin(started):
+        console.error(f"The pdt service did not check in within "
+                      f"{console.value(FIRST_CHECKIN_SECONDS)} seconds. The last line of "
+                      f"{console.value(log_path())} is: {console.escape(last_log_error())}")
+        return 1
+    console.done(f"The pdt service runs through {console.value(name)} and checked in as "
+                 f"{console.value(service_account())}.")
+    show_settings(settings)
+    return 0
+
+
+def install(projects: str | None, backend: str | None, proxy: str | None, ssh_key: str | None,
+            known_hosts: str | None, assume_yes: bool) -> int:
+    if not require_admin("install"):
+        return 1
+    if not registrations_here():
+        code = register_cli.register(None, None, assume_yes, install_service=False)
+        if code != 0:
+            return code
     found = registrations_here()
     if not found:
         say_no_registration()
         return 1
-    code = prepare_folder()
-    if code != 0:
-        return code
-    try:
-        name = service_backends.choose(backend)
-    except service_backends.BackendError as e:
-        console.error(console.escape(str(e)))
+    if len(found) > 1:
+        console.error(f"{console.value(autoidm.folder())} holds registrations of "
+                      f"{console.value(', '.join(found))}. One computer serves one customer, "
+                      "because a job can read each file on this computer. Delete the files of "
+                      "the other customers, then run this command again.")
         return 1
-    current = read_settings() or {}
-    settings = new_settings(level, projects, name, current)
-    if settings["uv"] is None:
-        console.warn(f"pdt did not find {console.value('uv')} on the PATH, so an app run by the "
-                     "service needs it on the service account's PATH.")
-    previous = current.get("backend")
-    try:
-        if previous in service_backends.BACKENDS and previous != name:
-            service_backends.BACKENDS[previous].remove()
-        write_settings(settings)
-        service_backends.BACKENDS[name].install(service_runner.service_folder())
-    except service_backends.BackendError as e:
-        console.error(console.escape(str(e)))
+    if not ask_access(assume_yes):
+        console.next_steps([(install_next_step(), "install it later")])
         return 1
-    console.done(f"The pdt service is installed. It runs through {console.value(name)}.")
-    show_settings(settings)
-    for customer in found:
-        if not read_keys(customer):
-            console.warn(f"The registration of {console.value(customer)} has no command keys. "
-                         f"Delete {console.value(autoidm.files(customer)[0])} and "
-                         f"{console.value(autoidm.files(customer)[1])}, then run "
-                         f"{console.value('pdt register')}.")
-    return 0
+    return install_for(found[0], projects, backend, proxy, ssh_key, known_hosts)
 
 
 def show_settings(settings: dict) -> None:
-    console.field("Maximum level", settings.get("level", ""))
+    console.field("Customer", settings.get("customer") or "")
     console.field("Projects folder", settings.get("projects", ""))
     for named in settings.get("named_projects") or []:
         console.field("Project", named)
-    for customer in settings.get("registrations") or []:
-        console.field("Registration", customer)
 
 
-def allow(level: str) -> int:
-    if needs_admin("allow"):
+def stop_children(registration: autoidm.Registration | None) -> None:
+    for entry in service_runner.journal_entries():
+        if entry.get("result") or entry.get("state") != "started":
+            continue
+        command_id, pid = entry["command_id"], entry.get("pid")
+        if not service_runner.is_same_process(pid, entry.get("process_created")):
+            continue
+        created = entry.get("process_created")
+        service_runner.stop_tree(pid, lambda: not service_runner.is_same_process(pid, created))
+        result = service_runner.result_of("cancelled", message="pdt service remove stopped it.")
+        service_runner.journal_update(command_id, state="finished", result=result, reported=False,
+                                      finished_at=service_runner.now_text())
+        sent = registration is not None and service_runner.send_result(registration, command_id,
+                                                                       result)
+        console.say(f"Stopped {console.value(command_id)}. AutoIDM "
+                    f"{'has' if sent else 'does not have'} the result.")
+
+
+def remove_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(snapshots.long_path(path), ignore_errors=True)
+    else:
+        Path(snapshots.long_path(path)).unlink(missing_ok=True)
+
+
+def purge(settings: dict) -> list[str]:
+    """Delete the data folder, except each project folder. Returns what stayed."""
+    data = autoidm.data_folder()
+    kept = [Path(path).resolve() for path in settings.get("named_projects") or []]
+    kept.extend(folder.resolve() for folder in project_folders(settings))
+    home = projects_folder(settings).resolve()
+    stayed = []
+    for path in sorted(data.iterdir()) if data.is_dir() else []:
+        resolved = path.resolve()
+        if any(resolved == folder or folder.is_relative_to(resolved) for folder in [*kept, home]):
+            if not path.is_dir():
+                continue
+            for inner in sorted(path.iterdir()):
+                inner_path = inner.resolve()
+                if any(inner_path == folder or folder.is_relative_to(inner_path)
+                       for folder in [*kept, home]):
+                    stayed.append(str(inner))
+                else:
+                    remove_path(inner)
+        else:
+            remove_path(path)
+    return stayed
+
+
+def remove(purge_all: bool, assume_yes: bool) -> int:
+    if not require_admin("remove"):
         return 1
-    settings = read_settings()
-    if settings is None:
-        console.error(f"This computer has no pdt service. Run {console.value('pdt service install')} "
-                      "first.")
+    try:
+        settings = read_settings()
+    except InstallError as e:
+        console.error(console.escape(str(e)))
         return 1
-    settings["level"] = level
-    write_settings(settings)
-    console.done(f"The service now allows at most the level {console.value(level)}.")
-    return 0
-
-
-def remove() -> int:
-    if needs_admin("remove"):
-        return 1
-    settings = read_settings()
     if settings is None:
         console.say("This computer has no pdt service.")
         return 0
+    customer = settings.get("customer")
+    if not assume_yes:
+        console.say(f"pdt will stop the service, revoke this installation at AutoIDM, and delete "
+                    f"the key of {console.value(customer)}.")
+        if not can_prompt(None):
+            console.warn("There is no one to answer. Run this in a terminal, or add --yes.")
+            return 1
+        try:
+            if not console.confirm("Remove the pdt service?"):
+                console.say("Cancelled. Nothing changed.")
+                return 0
+        except EOFError:
+            return 0
+    try:
+        registration = autoidm.machine_registration(customer) if customer else None
+    except (autoidm.AutoidmError, ValueError) as e:
+        console.warn(console.escape(str(e)))
+        registration = None
+    stop_children(registration)
     name = settings.get("backend")
     if name in service_backends.BACKENDS:
         try:
@@ -696,20 +1075,38 @@ def remove() -> int:
         except service_backends.BackendError as e:
             console.error(console.escape(str(e)))
             return 1
+    if registration is not None:
+        try:
+            answer = autoidm.post(registration, "/v1/service/remove", {"version": 1})
+        except autoidm.AutoidmError as e:
+            console.error(f"AutoIDM did not revoke this installation, so the key stays: "
+                          f"{console.escape(str(e))}. Run the command again.")
+            return 1
+        console.say(f"AutoIDM revoked this installation and "
+                    f"{console.value(answer.get('children', 0))} child installations.")
+        for path in autoidm.files(customer):
+            path.unlink(missing_ok=True)
     settings_path().unlink(missing_ok=True)
-    console.done("Removed the pdt service. The registrations stay.")
+    console.done(f"Removed the pdt service. Backend: {console.value(name or 'none')}.")
+    if purge_all:
+        for path in purge(settings):
+            console.say(f"kept: {console.value(path)}")
+        return 0
+    console.heading("These stay on this computer. To delete them, run pdt service remove --purge "
+                    "before you remove the service:")
+    console.bullet(f"data folder {console.value(autoidm.data_folder())}")
+    console.bullet(f"journal {console.value(service_runner.service_folder() / 'journal')}")
+    console.bullet(f"version folders {console.value(service_install.versions_folder())}")
+    for name, folder in projects_of(settings).items():
+        console.bullet(f"project {console.value(name)} in {console.value(folder)}")
     return 0
 
 
-def status(as_json: bool = False) -> int:
+def status_record() -> dict:
+    """What `pdt service status --json` prints, and what `pdt service diagnose` keeps."""
     settings = read_settings()
     if settings is None:
-        if as_json:
-            console.data(json.dumps({"installed": False}))
-            return 0
-        console.say(f"This computer has no pdt service. To add one, run "
-                    f"{console.value('pdt service install')}.")
-        return 0
+        return {"installed": False}
     states = read_state()
     name = settings.get("backend")
     running = False
@@ -719,48 +1116,127 @@ def status(as_json: bool = False) -> int:
         except service_backends.BackendError as e:
             console.warn(console.escape(str(e)))
     pid = running_pid()
-    if name in service_backends.BACKENDS:
-        words = f"{name} ({'running' if running else 'not running'})"
-        if pid and not running:
-            words += f", and a service runs in the foreground, PID {pid}"
-    elif pid:
-        words = f"none (running in the foreground, PID {pid})"
+    commands = [{"command_id": entry["command_id"], "operation": entry.get("operation"),
+                 "state": entry.get("state"), "started_at": entry.get("started_at")}
+                for entry in service_runner.journal_entries()
+                if not entry.get("result") and entry.get("state") in ("claimed", "started")]
+    return {"installed": name in service_backends.BACKENDS, "backend": name or "none",
+            "running": running or pid is not None, "backend_running": running, "pid": pid,
+            "customer": settings.get("customer"), "status": states.get("status"),
+            "pdt_version": settings.get("pdt_version"),
+            "projects_folder": str(projects_folder(settings)),
+            "projects": sorted(projects_of(settings)),
+            "last_doorbell": states.get("last_doorbell"),
+            "last_checkin": states.get("last_checkin"), "commands": commands}
+
+
+def status(as_json: bool = False) -> int:
+    found = status_record()
+    if as_json:
+        console.data(json.dumps(found))
+        return 0
+    if not found["installed"] and "customer" not in found:
+        console.say(f"This computer has no pdt service. To add one, run "
+                    f"{console.value('pdt service install')}.")
+        return 0
+    if found["installed"]:
+        words = f"{found['backend']} ({'running' if found['backend_running'] else 'not running'})"
+        if found["pid"] and not found["backend_running"]:
+            words += f", and a service runs in the foreground, PID {found['pid']}"
+    elif found["pid"]:
+        words = f"none (running in the foreground, PID {found['pid']})"
     else:
         words = "none (not running)"
-    commands = [{"command_id": entry["command_id"], "operation": entry.get("operation"),
-                 "project": (entry.get("args") or {}).get("project"),
-                 "app": (entry.get("args") or {}).get("app"), "phase": entry.get("phase"),
-                 "started_at": entry.get("started_at")}
-                for entry in service_runner.journal_entries()
-                if not entry.get("result") and entry.get("phase") in ("claimed", "running")]
-    registrations = [{"customer_id": customer,
-                      "last_doorbell": (states.get(customer) or {}).get("last_doorbell"),
-                      "last_checkin": (states.get(customer) or {}).get("last_checkin")}
-                     for customer in settings.get("registrations") or []]
-    projects = sorted(projects_of(settings))
-    if as_json:
-        console.data(json.dumps({"installed": name in service_backends.BACKENDS,
-                                 "backend": name or "none", "running": running or pid is not None,
-                                 "pid": pid,
-                                 "level": settings.get("level"),
-                                 "projects_folder": str(projects_folder(settings)),
-                                 "projects": projects, "registrations": registrations,
-                                 "commands": commands}))
-        return 0
     console.field("Backend", words)
-    console.field("Maximum level", settings.get("level", ""))
-    console.field("Projects folder", str(projects_folder(settings)))
-    console.field("Projects", ", ".join(projects) or "none")
-    for item in registrations:
-        console.field("Registration", item["customer_id"])
-        console.detail(f"last doorbell check: {console.value(when(item['last_doorbell']))}", 2)
-        console.detail(f"last check-in: {console.value(when(item['last_checkin']))}", 2)
-    if commands:
-        console.table(["command", "operation", "project", "app", "phase"],
-                      [[item["command_id"], item["operation"] or "-", item["project"] or "-",
-                        item["app"] or "-", item["phase"] or "-"] for item in commands], ["bold"])
+    console.field("Customer", found["customer"] or "")
+    console.field("Version", found["pdt_version"] or "")
+    console.field("Projects folder", found["projects_folder"])
+    console.field("Projects", ", ".join(found["projects"]) or "none")
+    console.field("Last doorbell check", when(found["last_doorbell"]))
+    console.field("Last check-in", when(found["last_checkin"]))
+    if found["commands"]:
+        console.table(["command", "operation", "state"],
+                      [[item["command_id"], item["operation"] or "-", item["state"] or "-"]
+                       for item in found["commands"]], ["bold"])
     else:
         console.field("Running commands", "none")
+    return 0
+
+
+def command_text(args: list[str]) -> str:
+    """What a program printed, or why it did not run. diagnose keeps going either way."""
+    try:
+        proc = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"{' '.join(args)}: {e}\n"
+    return proc.stdout + proc.stderr
+
+
+def access_text(path: Path) -> str:
+    if os.name == "nt":
+        return command_text(["icacls", str(path)])
+    try:
+        found = path.stat()
+    except OSError as e:
+        return f"{path}: {e}\n"
+    return (f"{path} {oct(found.st_mode & 0o7777)} {service_access.account_name(found.st_uid)} "
+            f"{service_access.group_name(found.st_gid)}\n")
+
+
+def event_lines() -> str:
+    if os.name == "nt":
+        return command_text(["powershell.exe", "-NoProfile", "-Command",
+                             "Get-WinEvent -FilterHashtable @{LogName='Application'; "
+                             f"ProviderName='{service_runner.EVENT_SOURCE}'}} -MaxEvents "
+                             f"{DIAGNOSE_EVENTS} | Format-List TimeCreated, Id, Message"])
+    if shutil.which("journalctl"):
+        return command_text(["journalctl", "-t", service_runner.EVENT_SOURCE, "-n",
+                             str(DIAGNOSE_EVENTS), "--no-pager"])
+    found = command_text(["log", "show", "--style", "syslog", "--last", "30d", "--predicate",
+                          'eventMessage BEGINSWITH "command="'])
+    return "\n".join(found.splitlines()[-DIAGNOSE_EVENTS:]) + "\n"
+
+
+def diagnose() -> int:
+    """`pdt service diagnose`: one zip for AutoIDM support, with no key, no `.env` file, and no
+    output file."""
+    import zipfile
+    try:
+        settings = read_settings() or {}
+    except InstallError as e:
+        settings = {"error": str(e)}
+    proxy = settings.get("proxy")
+    if isinstance(proxy, dict):
+        settings["proxy"] = {name: service_install.split_proxy_password(str(url))[0]
+                             for name, url in proxy.items()}
+    entries = sorted(service_runner.journal_entries(),
+                     key=lambda entry: entry.get("command_id", ""))[-DIAGNOSE_JOURNAL:]
+    journal = [{key: value for key, value in entry.items() if key != "token"}
+               for entry in entries]
+    name = settings.get("backend")
+    definition = ""
+    if name in service_backends.BACKENDS:
+        try:
+            definition = service_backends.BACKENDS[name].definition(service_runner.service_folder())
+        except (service_backends.BackendError, OSError) as e:
+            definition = str(e)
+    paths = [autoidm.data_folder(), service_runner.service_folder(),
+             service_install.versions_folder(), *projects_of(settings).values()]
+    try:
+        log = log_path().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log = ""
+    target = Path.cwd() / f"pdt-service-diagnose-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.zip"
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("settings.json", json.dumps(settings, indent=2) + "\n")
+        archive.writestr("service.log", log)
+        archive.writestr("journal.json", json.dumps(journal, indent=2) + "\n")
+        archive.writestr("definition.txt", definition)
+        archive.writestr("status.json", json.dumps(status_record(), indent=2) + "\n")
+        archive.writestr("access.txt", "".join(access_text(path) for path in paths))
+        archive.writestr("events.txt", event_lines())
+    console.done(f"Wrote {console.value(target)}. Send it to AutoIDM support.")
     return 0
 
 
@@ -768,3 +1244,58 @@ def when(stamp: float | None) -> str:
     if not stamp:
         return "never"
     return time.strftime(service_runner.TIME_FORMAT, time.gmtime(stamp))
+
+
+def write_authors(found: dict) -> None:
+    service_access.limit(service_runner.service_folder())
+    config.write_text_atomically(authors_path(), json.dumps(found, indent=2) + "\n")
+
+
+def author_add(project: str, key: str) -> int:
+    if not require_admin("author add"):
+        return 1
+    try:
+        raw = snapshots.from_base64url(key)
+    except ValueError:
+        raw = b""
+    if len(raw) != 32:
+        console.error(f"{console.value(key)} is not a public key: an author's key is the base64url "
+                      "text of 32 bytes.")
+        return 1
+    found = read_authors()
+    keys = found["projects"].setdefault(project, [])
+    if key not in keys:
+        keys.append(key)
+        write_authors(found)
+    console.done(f"This computer accepts snapshots of {console.value(project)} that "
+                 f"{console.value(key)} signed.")
+    return 0
+
+
+def author_remove(project: str, key: str) -> int:
+    if not require_admin("author remove"):
+        return 1
+    found = read_authors()
+    keys = found["projects"].get(project) or []
+    if key in keys:
+        keys.remove(key)
+        write_authors(found)
+    console.done(f"This computer does not accept snapshots of {console.value(project)} that "
+                 f"{console.value(key)} signed.")
+    return 0
+
+
+def author_list(as_json: bool) -> int:
+    found = read_authors()
+    if as_json:
+        console.data(json.dumps(found))
+        return 0
+    rows = [[project, key] for project, keys in sorted(found["projects"].items()) for key in keys]
+    if rows:
+        console.table(["project", "public key"], rows, ["bold"])
+    else:
+        console.say("This computer has no list of authors. It accepts only its own snapshots.")
+    return 0
+
+
+__all__ = ["run", "install", "status", "remove", "sys", "service_delivery"]

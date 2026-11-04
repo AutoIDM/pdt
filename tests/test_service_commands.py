@@ -13,8 +13,9 @@ from pdt import config, service_commands
 from pdt.service_commands import OPERATIONS, Refused, command_line, load_preset, verify
 
 
-def check(signed, maximum="manage", worker=False, command_id=COMMAND, keys=KEYS):
-    return verify(signed, command_id, INSTALLATION, CUSTOMER, keys, maximum, worker)
+def check(signed, worker=False, command_id=COMMAND, keys=KEYS, now=None):
+    return verify(signed, command_id, INSTALLATION, CUSTOMER, keys,
+                  time.time() if now is None else now, worker)
 
 
 def test_a_good_token_passes_and_its_limit_never_passes_the_table():
@@ -90,18 +91,6 @@ def test_a_bad_command_id_is_refused(command_id):
         check(token(), command_id=command_id)
 
 
-@pytest.mark.parametrize("name, level, maximum", [
-    ("deploy", "manage", "run"), ("run", "run", "view"), ("sync_up", "manage", "view")])
-def test_a_command_above_the_maximum_level_is_refused(name, level, maximum):
-    args = {"project": "example"}
-    if "app" in OPERATIONS[name].required:
-        args["app"] = "hr"
-    if name == "run":
-        args["deployed"] = False
-    with pytest.raises(Refused, match=f"at most the level {maximum}, and {name} needs {level}"):
-        check(token(name, args), maximum=maximum)
-
-
 @pytest.mark.parametrize("name", ["shell", "exec", "__class__", "", 5, None])
 def test_an_unknown_operation_is_refused(name):
     with pytest.raises(Refused, match="does not know the operation"):
@@ -146,27 +135,28 @@ def test_a_bad_arg_is_refused(operation, args, says):
     ("run", {"project": "p", "app": "hr", "deployed": True}, ["run", "hr", "--deployed", "--follow"]),
     ("pause", {"project": "p", "app": "hr"}, ["pause", "hr"]),
     ("unpause", {"project": "p", "app": "hr"}, ["unpause", "hr"]),
-    ("sync_up", {"project": "p"}, ["sync", "up", "--yes"]),
+    ("sync_up", {"project": "p"}, ["sync", "up", "--yes", "--report"]),
     ("sync_down", {"project": "p", "snapshot_id": "a" * 64}, ["sync", "down", "--snapshot", "a" * 64]),
     ("run_snapshot", {"project": "p", "snapshot_id": "a" * 64, "app": "hr"}, ["run", "hr"]),
     ("deploy", {"project": "p", "app": "hr"}, ["deploy", "hr", "--yes"]),
     ("destroy", {"project": "p", "app": "hr"}, ["destroy", "hr", "--yes"]),
 ])
 def test_each_operation_maps_to_one_command_line_of_pdt(operation, args, argv):
-    assert service_commands.args_problem(OPERATIONS[operation], args) == ""
+    assert service_commands.args_problem(operation, args) == ""
     assert command_line(operation, args) == [sys.executable, "-m", "pdt.cli", *argv]
 
 
 def test_the_table_is_the_contract_table():
-    rows = {name: (operation.level, operation.expires_seconds, operation.limit_seconds)
+    rows = {name: (operation.expires_seconds, operation.limit_seconds,
+                   operation.worker_limit_seconds)
             for name, operation in OPERATIONS.items()}
     assert rows == {
-        "list": ("view", 3600, 300), "validate": ("view", 3600, 300), "runs": ("view", 3600, 300),
-        "logs": ("view", 3600, 300), "health": ("view", 3600, 300), "plan": ("view", 3600, 900),
-        "run": ("run", 3600, 21600), "pause": ("run", 86400, 900), "unpause": ("run", 86400, 900),
-        "sync_up": ("manage", 86400, 900), "sync_down": ("manage", 86400, 900),
-        "run_snapshot": ("manage", 3600, 21600), "deploy": ("manage", 86400, 3600),
-        "destroy": ("manage", 900, 3600)}
+        "list": (3600, 300, 300), "validate": (3600, 300, 300), "runs": (3600, 300, 300),
+        "logs": (3600, 300, None), "health": (3600, 300, 300), "plan": (3600, 900, 900),
+        "run": (3600, 21600, 900), "pause": (86400, 900, 900), "unpause": (86400, 900, 900),
+        "sync_up": (86400, 900, None), "sync_down": (86400, 900, None),
+        "run_snapshot": (3600, 21600, None), "deploy": (86400, 3600, 3300),
+        "destroy": (900, 3600, 3300)}
 
 
 def test_no_arg_value_reaches_the_command_line_except_the_validated_fields():
@@ -174,7 +164,7 @@ def test_no_arg_value_reaches_the_command_line_except_the_validated_fields():
             "deployed": False}
     assert command_line("run", args)[3:] == ["run", "APPVALUE"]
     for name, operation in OPERATIONS.items():
-        safe = {"project": "projectname", "app": "appname", "run": "12", "deployed": True,
+        safe = {"project": "projectname", "app": "appname", "run": "12", "deployed": True, "force": True,
                 "snapshot_id": "a" * 64, "preset": "presetname"}
         argv = operation.argv({key: safe[key] for key in (*operation.required, *operation.optional)})
         assert "projectname" not in argv, name
@@ -242,16 +232,19 @@ def write_presets(root: Path, text: str) -> None:
 @pytest.mark.parametrize("name", [
     "PATH", "Path", "PYTHONPATH", "PYTHONHOME", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
     "UV_INDEX_URL", "PDT_INSTALLATION_KEY", "PDT_INSTALLATION_ID", "pythonpath"])
-def test_the_preset_refusal_list(tmp_path, name):
+def test_the_preset_refusal_list(tmp_path, monkeypatch, name):
+    monkeypatch.setattr(service_commands, "env_spec_names", lambda project, app: {name})
     write_presets(tmp_path, f"    bad:\n      env:\n        {name}: x\n")
     with pytest.raises(Refused, match="may not set"):
-        load_preset(tmp_path, "bad")
+        load_preset(tmp_path, "bad", "hr")
 
 
-def test_a_preset_gives_fixed_values_and_says_whether_it_sends_artifacts(tmp_path):
+def test_a_preset_gives_fixed_values_and_says_whether_it_sends_artifacts(tmp_path,
+                                                                         monkeypatch):
+    monkeypatch.setattr(service_commands, "env_spec_names", lambda project, app: {"COUNT"})
     write_presets(tmp_path, "    rebuild:\n      env:\n        PDT_STEPS: extract transform\n"
                             "        COUNT: 5\n      artifacts: true\n")
-    assert load_preset(tmp_path, "rebuild") == {
+    assert load_preset(tmp_path, "rebuild", "hr") == {
         "env": {"PDT_STEPS": "extract transform", "COUNT": "5"}, "artifacts": True}
 
 
@@ -262,16 +255,17 @@ def test_a_preset_gives_fixed_values_and_says_whether_it_sends_artifacts(tmp_pat
     ("    wanted:\n      env:\n        A: [1, 2]\n", "other than one value"),
     ("    wanted:\n      env:\n        A-B: x\n", "not an env var name"),
 ])
-def test_a_preset_that_breaks_a_rule_is_refused(tmp_path, text, says):
+def test_a_preset_that_breaks_a_rule_is_refused(tmp_path, monkeypatch, text, says):
+    monkeypatch.setattr(service_commands, "env_spec_names", lambda project, app: {"A", "A-B"})
     write_presets(tmp_path, text)
     with pytest.raises(Refused, match=says):
-        load_preset(tmp_path, "wanted")
+        load_preset(tmp_path, "wanted", "hr")
 
 
 def test_a_project_with_no_service_section_has_no_preset(tmp_path):
     (tmp_path / config.PROJECT_FILE).write_text("apps: []\n", encoding="utf-8")
     with pytest.raises(Refused, match="no service preset"):
-        load_preset(tmp_path, "wanted")
+        load_preset(tmp_path, "wanted", "hr")
 
 
 def test_validation_takes_a_service_section():
@@ -280,3 +274,10 @@ def test_validation_takes_a_service_section():
 
 def test_the_private_key_is_not_a_pinned_key():
     assert all(PRIVATE_PEM.decode() != key["pem"] for key in KEYS)
+
+
+def test_a_preset_sets_only_pdt_steps_and_names_of_the_env_spec(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_commands, "env_spec_names", lambda project, app: {"COUNT"})
+    write_presets(tmp_path, "    wanted:\n      env:\n        OTHER: x\n")
+    with pytest.raises(Refused, match="OTHER, which is not PDT_STEPS and is not in the env spec"):
+        load_preset(tmp_path, "wanted", "hr")

@@ -30,6 +30,14 @@ GRANTS_FILE = "grants.json"
 PLACE_HELP = "<provider>:<account, subscription, or project>:<region>"
 # Only a memory folder keeps a cloud login's own files off the disk.
 MEMORY_FOLDER = Path("/dev/shm")
+# The AWS provider script's verb that reads a SecureString of AutoIDM's own account for a worker.
+WORKER_PARAMETER = "worker-parameter"
+REFUSED_KEY = "refused"
+EXTERNAL_ID_TAG = "autoidm-external-id"
+
+
+class Mismatch(Exception):
+    """The identity in the place does not carry the grant's external ID."""
 
 
 @dataclass(frozen=True)
@@ -63,7 +71,11 @@ def run_verb(command: str, place: str, assume_yes: bool, plan_only: bool,
     from pdt.deploy import DECLINED, confirm, show_plan
     values = grant_values()
     if command == "grant-env":
-        console.data(json.dumps(provider.env(place, values)))
+        try:
+            found = provider.env(place, values)
+        except Mismatch as e:
+            found = {REFUSED_KEY: str(e)}
+        console.data(json.dumps(found))
         return 0
     lines = (provider.plan if command == "grant" else provider.remove_plan)(place, values)
     if plan_only:
@@ -100,26 +112,47 @@ def provider_run(command: str, place: str, assume_yes: bool, values: dict,
     return deploy.run_provider(args, env=env, stdout=stdout, text=True)
 
 
-def credentials(grant: dict, registration: object) -> dict[str, str]:
-    """The env values of a token's `grant` claim. /v1/grants/start names the external ID and
-    AutoIDM's principal. The values travel through a pipe from the provider script, and into the
-    one child process that uses them."""
-    from pdt import deploy
-    from pdt.utils import autoidm
-    answer = autoidm.post(registration, "/v1/grants/start", {"version": 1, "place": grant["place"]})
-    provider = split_place(grant["place"])[0]
-    args = deploy.provider_command(provider, "grant-env", grant["place"], False)
+def script_json(args: list[str], values: dict, what: str) -> dict:
+    """The JSON a provider script prints. `values` travel in the environment of that one process,
+    and the answer travels through a pipe."""
     env = dict(os.environ, PDT_JSON_OUTPUT="1", UV_NO_CONFIG="1")
-    env[GRANT_ENV] = json.dumps({"role": grant["role"], "external_id": answer.get("external_id"),
-                                 "principal": answer.get("principal")})
+    env[GRANT_ENV] = json.dumps(values)
     proc = subprocess.run(args, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"pdt could not act as {grant['role']} in {grant['place']}: "
-                           f"{proc.stderr.strip()[-500:]}")
-    found = json.loads(proc.stdout)
-    if not (isinstance(found, dict)
-            and all(isinstance(value, str) for value in found.values())):
-        raise RuntimeError(f"pdt got no credentials for {grant['place']}")
+        raise RuntimeError(f"pdt could not {what}: {proc.stderr.strip()[-500:]}")
+    try:
+        found = json.loads(proc.stdout)
+    except ValueError:
+        found = None
+    if not (isinstance(found, dict) and all(isinstance(value, str) for value in found.values())):
+        raise RuntimeError(f"pdt could not {what}: the provider script printed no values")
+    return found
+
+
+def credentials(grant: dict, registration: object) -> dict[str, str]:
+    """The env values of a token's `grant` claim, for a cloud worker. /v1/grants/values names the
+    role, the external ID, AutoIDM's principal, and the Parameter Store name of AutoIDM's own
+    Azure or Google Cloud credential. A place whose identity does not carry the external ID
+    raises Refused, and the child does not start."""
+    from pdt import deploy
+    from pdt.service_commands import Refused
+    from pdt.utils import autoidm
+    place = grant["place"]
+    answer = autoidm.post(registration, "/v1/grants/values", {"version": 1, "place": place})
+    if answer.get("role") != grant["role"]:
+        raise Refused(f"The command names the role {grant['role']} in {place}, and AutoIDM's "
+                      f"grant names {answer.get('role')}.")
+    values = {"role": answer["role"], "external_id": answer.get("external_id"),
+              "principal": answer.get("principal")}
+    parameter = answer.get("credential_parameter")
+    if parameter:
+        values["credential"] = script_json(
+            deploy.provider_command("aws", WORKER_PARAMETER, parameter, False), {},
+            f"read the AutoIDM credential {parameter}")["value"]
+    found = script_json(deploy.provider_command(split_place(place)[0], "grant-env", place, False),
+                        values, f"act as {grant['role']} in {place}")
+    if REFUSED_KEY in found:
+        raise Refused(found[REFUSED_KEY])
     return found
 
 

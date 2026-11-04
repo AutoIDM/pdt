@@ -1,0 +1,81 @@
+import json
+import zipfile
+
+from service_fixtures import COMMAND, CUSTOMER, token
+
+from pdt import service, service_runner
+from pdt.service_delivery import SILENT_SECONDS, Schedule
+from pdt.utils import autoidm
+
+
+def test_with_a_connection_the_timers_are_the_long_ones():
+    schedule = Schedule()
+    assert schedule.poll_interval(True, 0) == 300 and schedule.checkin_interval(True, 0) == 3600
+    assert schedule.poll_interval(False, 0) == 30 and schedule.checkin_interval(False, 0) == 900
+
+
+def test_the_answer_sets_the_timers():
+    schedule = Schedule()
+    schedule.apply({"poll_seconds": 5, "ws_checkin_seconds": 7, "min_checkin_seconds": "x"})
+    assert (schedule.poll_seconds, schedule.ws_checkin_seconds) == (5, 7)
+    assert schedule.min_checkin_seconds == 10
+
+
+def test_frames_in_the_minimum_interval_give_one_check_in_at_its_end():
+    schedule = Schedule()
+    schedule.checkin_done(1000.0, False)
+    schedule.frames_seen(1)
+    schedule.frames_seen(2)
+    assert not schedule.checkin_due(True, 1005.0)
+    assert schedule.checkin_due(True, 1010.0)
+    schedule.checkin_done(1010.0, False)
+    assert not schedule.checkin_due(True, 1011.0)
+
+
+def test_a_changed_doorbell_with_no_frame_means_a_proxy_that_passes_no_frames():
+    schedule = Schedule()
+    schedule.doorbell_read(200, 4, True, True, 0.0)
+    schedule.doorbell_read(200, 4, True, True, 100.0)
+    assert schedule.silent_until == 100.0 + SILENT_SECONDS
+    assert schedule.poll_interval(True, 200.0) == schedule.poll_seconds
+
+
+def test_a_404_doorbell_asks_for_nothing_and_a_403_asks_for_a_check_in():
+    schedule = Schedule()
+    schedule.checkin_done(0.0, False)
+    schedule.doorbell_read(404, 0, False, False, 1.0)
+    assert not schedule.wanted
+    schedule.doorbell_read(403, 0, False, False, 2.0)
+    assert schedule.wanted
+
+
+def test_failed_check_ins_wait_longer_each_time():
+    schedule = Schedule()
+    schedule.checkin_failed(0.0)
+    first = schedule.retry_at
+    schedule.checkin_failed(0.0)
+    schedule.checkin_failed(0.0)
+    assert 0 < first <= 2 and schedule.retry_at >= 4
+    assert schedule.wanted
+
+
+def test_diagnose_holds_no_token_no_key_and_no_proxy_password(tmp_path, monkeypatch):
+    monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path / "data"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(service, "event_lines", lambda: "command=x fact=result\n")
+    service.write_settings({"version": 1, "customer": CUSTOMER, "projects": None,
+                            "named_projects": [], "backend": None,
+                            "proxy": {"HTTPS_PROXY": "http://user:hunter22@proxy:8080"}})
+    service_runner.journal_write({"schema": 1, "command_id": COMMAND, "state": "finished",
+                                  "token": token(), "result": None})
+    assert service.diagnose() == 0
+    [found] = tmp_path.glob("pdt-service-diagnose-*.zip")
+    with zipfile.ZipFile(found) as archive:
+        names = set(archive.namelist())
+        text = b"".join(archive.read(name) for name in names)
+        journal = json.loads(archive.read("journal.json"))
+    assert {"settings.json", "service.log", "journal.json", "definition.txt", "status.json",
+            "access.txt", "events.txt"} == names
+    assert b"hunter22" not in text
+    assert token().encode() not in text
+    assert journal[0]["command_id"] == COMMAND and "token" not in journal[0]
