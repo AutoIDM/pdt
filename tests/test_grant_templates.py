@@ -80,4 +80,5 @@ def test_the_google_script_binds_each_role_and_limits_the_secret_roles_to_pdt():
     assert 'resource.name.startsWith("projects/$NUMBER/secrets/pdt-")' in script
     assert "secretmanager.secretAccessor" in script
     assert "create-aws autoidm" in script and "roles/iam.workloadIdentityUser" in script
-    assert "autoidm-external-id=$EXTERNAL_ID" in script
+    assert "autoidm-external-id=$PDT_EXTERNAL_ID" in script
+    assert "Project number: $NUMBER" in script and "$PDT_AWS_ROLE" in script

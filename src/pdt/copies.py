@@ -1,16 +1,17 @@
 """Project copies: the current zip of each unit of a project at AutoIDM.
 
-A unit is `root` (the project files outside the app folders), `app=<name>` (one app folder, with
-paths relative to it), or `mr=<iid>` (a whole project from a merge request). A copy has no
-history and no per-file hash: `sha256` is the SHA-256 of the zip bytes.
+A unit is `root` (the project files outside the app folders), `app=<name>` (one app folder), or
+`mr=<iid>` (a whole project from a merge request). Each path in a zip is relative to the project
+folder, so the zip of `app=hr` holds `hr/...`. A copy has no history and no per-file hash:
+`sha256` is the SHA-256 of the zip bytes.
 
 In a Git clone, a copy holds only tracked files. Otherwise it leaves out each LEFT_OUT pattern.
 In both cases it leaves out each link, each file larger than MAX_FILE_BYTES, and each ALWAYS_OUT
 name. The zip has one fixed date, so the same files give the same zip.
 
 A manifest and a zip come from the network. `unpack` checks the zip's SHA-256 and size, each path
-(`path_problem`), each entry type, and each file size before it writes a file, and it writes only
-into a new, empty folder.
+(`path_problem`), each entry type, and each file size before it writes a file, and it writes no
+file over one that exists.
 """
 
 from __future__ import annotations
@@ -167,23 +168,14 @@ def app_names(root: Path) -> list[str]:
 
 
 def split_units(files: list[dict], apps: list[str]) -> dict[str, list[dict]]:
-    """The files of each unit: each app folder is `app=<name>`, with paths relative to it, and
-    the rest is `root`."""
+    """The files of each unit: each app folder is `app=<name>`, and the rest is `root`."""
     units: dict[str, list[dict]] = {ROOT: []}
     for app in apps:
         units[f"app={app}"] = []
     for entry in files:
         first, _, rest = entry["path"].partition("/")
-        if rest and first in apps:
-            units[f"app={first}"].append({**entry, "path": rest})
-        else:
-            units[ROOT].append(entry)
+        units[f"app={first}" if rest and first in apps else ROOT].append(entry)
     return units
-
-
-def unit_folder(root: Path, unit: str) -> Path:
-    """The folder whose files a unit holds."""
-    return root / unit.removeprefix("app=") if unit.startswith("app=") else root
 
 
 def build_zip(root: Path, files: list[dict]) -> bytes:
@@ -233,6 +225,9 @@ def checked_files(entry: dict) -> list[dict]:
             raise CopyError(f"the copy path {item['path']!r} {problem}")
         if not (type(item["size"]) is int and 0 <= item["size"] <= MAX_FILE_BYTES):
             raise CopyError(f"the copy file {item['path']!r} has no valid size")
+        unit = str(entry.get("unit") or "")
+        if unit.startswith("app=") and not item["path"].startswith(unit[4:] + "/"):
+            raise CopyError(f"the copy {unit} holds {item['path']!r}, outside its app folder")
         if item["path"].casefold() in seen:
             raise CopyError(f"the copy lists {item['path']!r} twice")
         seen.add(item["path"].casefold())
@@ -240,15 +235,16 @@ def checked_files(entry: dict) -> list[dict]:
 
 
 def unpack(data: bytes, entry: dict, target: Path) -> None:
-    """Write the files of the zip `data` of one unit into the new, empty folder `target`. It
-    writes nothing unless the zip has the unit's SHA-256 and holds exactly its files."""
+    """Write the files of the zip `data` of one unit into the folder `target`. It writes nothing
+    unless the zip has the unit's SHA-256, holds exactly its files, and no file exists there."""
     if hashlib.sha256(data).hexdigest() != entry.get("sha256"):
         raise CopyError(f"the zip of {entry.get('unit')} does not have the SHA-256 of its copy")
     files = checked_files(entry)
     wanted = {item["path"]: item for item in files}
     target.mkdir(parents=True, exist_ok=True)
-    if any(target.iterdir()):
-        raise CopyError(f"{target} is not empty")
+    for path in wanted:
+        if (target / path).exists():
+            raise CopyError(f"{target / path} exists")
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zipped:
             infos = zipped.infolist()
@@ -321,7 +317,7 @@ def put(upload: dict, data: bytes, digest: str) -> None:
     request = urllib.request.Request(
         autoidm.check_url(upload.get("url"), "/v1/copies/start"), data=data, method="PUT",
         headers={"x-amz-checksum-sha256": base64.b64encode(bytes.fromhex(digest)).decode(),
-                 **headers})
+                 "content-type": "application/zip", **headers})
     try:
         with urllib.request.urlopen(request, timeout=autoidm.UPLOAD_TIMEOUT_SECONDS) as response:
             response.read()

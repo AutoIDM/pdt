@@ -33,6 +33,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -75,6 +76,7 @@ FARGATE_MIN_SECONDS = 60
 COMPUTE_MAX_VCPUS = 16
 SUBMIT_JOB_TARGET = "arn:aws:scheduler:::aws-sdk:batch:submitJob"
 JOB_STATUSES = {"SUCCEEDED": "succeeded", "FAILED": "failed"}
+MR_ENV_NAMES = ("PDT_RUN_ID", "PDT_APP_ARGS")
 BATCH_WAIT_DELAYS = (2, 3, 5, 5, 10, 10, 15, 15, 15, *[30] * 18)
 # Measured in October 2026: CloudWatch Logs showed a line at most 7.0 s after the write.
 HOLD = timedelta(seconds=10)
@@ -1308,6 +1310,84 @@ def start(app: dict, session, follow: bool = False) -> int:
     if not follow:
         return 0
     return logs(app, session, ["--follow"], new=lambda run: run.id == response["jobId"])
+
+
+MR_WAIT_SECONDS = 10
+
+
+def mr_run(app: dict, session, iid: str) -> int:
+    """Build the app of this folder as image `<app>-mr<iid>`, register `pdt-<app>-mr<iid>` from
+    the settings of the deployed job with that image, run it once, print its log, and delete the
+    job definition and the image tag, also after a failure. The deployed job stays as it is."""
+    clients = batch_clients(session)
+    names = resource_names(app["name"])
+    revisions = [item for item in active_job_definitions(clients["batch"], names["job_definition"])
+                 if managed(item)]
+    if not revisions:
+        fail(f"{console.value(app['name'])} has no deployed Batch job definition "
+             f"{console.value(names['job_definition'])}; deploy it first.")
+    production = revisions[0]
+    account, region = aws_settings(app, session)
+    cloud = build_in_cloud(app, "CodeBuild", DOCKER_PLATFORM)
+    repository_uri = ensure_repository(clients["ecr"])
+    tag = f"{app['name']}-mr{iid}"
+    image = f"{repository_uri}:{tag}"
+    name = f"{names['job_definition']}-mr{iid}"
+    uploads = build_bucket(account, region)
+
+    def build(stage: Path) -> None:
+        if cloud:
+            ensure_build_resources(clients, account, region, uploads,
+                                   build_project(clients["codebuild"]))
+            codebuild_build(stage, image, clients, uploads, app["name"])
+        else:
+            docker_build(stage, image, clients["ecr"])
+
+    arn = None
+    try:
+        ensure_image(app, image, DOCKER_PLATFORM, "CodeBuild" if cloud else "", None,
+                     lambda: False, build)
+        container = dict(production["containerProperties"])
+        environment = [item for item in container.get("environment") or []
+                       if item["name"] not in (lifecycle.TRIGGER_ENV, lifecycle.MR_IID_ENV,
+                                               *MR_ENV_NAMES)]
+        environment += [{"name": lifecycle.TRIGGER_ENV, "value": lifecycle.MR_TRIGGER},
+                        {"name": lifecycle.MR_IID_ENV, "value": iid}]
+        environment += [{"name": key, "value": os.environ[key]} for key in MR_ENV_NAMES
+                        if os.environ.get(key)]
+        arn = clients["batch"].register_job_definition(
+            jobDefinitionName=name, type="container", platformCapabilities=["FARGATE"],
+            containerProperties={**container, "image": image, "environment": environment},
+            tags=dict(MANAGED_TAGS))["jobDefinitionArn"]
+        job = clients["batch"].submit_job(jobName=name, jobQueue=JOB_QUEUE.name,
+                                          jobDefinition=arn, tags=dict(MANAGED_TAGS))
+        console.done(f"Started Batch job {console.value(job['jobId'])} of "
+                     f"{console.value(name)}.")
+        return follow_job(clients["batch"], session.client("logs", config=RETRIES),
+                          names["log_group"], job["jobId"])
+    finally:
+        if arn is not None:
+            clients["batch"].deregister_job_definition(jobDefinition=arn)
+        clients["ecr"].batch_delete_image(repositoryName=REPOSITORY,
+                                          imageIds=[{"imageTag": tag}])
+        console.done(f"Deleted job definition {console.value(name)} and image tag "
+                     f"{console.value(tag)}.")
+
+
+def follow_job(batch, logs_client, log_group: str, job_id: str) -> int:
+    """Print the log lines of one job as they arrive, and return its exit code."""
+    printed = 0
+    while True:
+        job = batch.describe_jobs(jobs=[job_id])["jobs"][0]
+        run = job_run(job)
+        lines = read_lines(batch, logs_client, log_group, run)
+        for line in lines[printed:]:
+            runs_cli.print_line(line)
+        printed = max(printed, len(lines))
+        if run.status != "running":
+            code = (job.get("container") or {}).get("exitCode")
+            return code if isinstance(code, int) else 1
+        time.sleep(MR_WAIT_SECONDS)
 
 
 def kill(app: dict, session) -> int:

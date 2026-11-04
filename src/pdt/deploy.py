@@ -45,6 +45,9 @@ PROVIDERS = {
 }
 
 
+MR_PROVIDERS = ("aws",)
+
+
 def _load(app_name: str):
     app = config.merged_app(app_name)
     provider = app["platform"].get("provider")
@@ -545,6 +548,21 @@ def pause(app_name: str, paused: bool) -> int:
         lifecycle.emit(lifecycle.JOB_PAUSED if paused else lifecycle.JOB_UNPAUSED,
                        **lifecycle.app_params(app_name, provider), deployed=deployed)
     return code
+
+
+def mr_run(app_name: str, iid: str) -> int:
+    """Run the app of this folder once as the job of merge request `iid` of the deployed app, in
+    the cloud it is deployed to, through the provider verb `mr-run`. The hosted runner calls it."""
+    try:
+        _app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    if provider not in MR_PROVIDERS:
+        console.error(f"The {console.value(provider)} provider has no merge request run on a "
+                      "hosted runner.")
+        return 1
+    return dispatch(provider, "mr-run", app_name, True, [iid])
 
 
 def kill(app_name: str) -> int:

@@ -103,7 +103,7 @@ def send_up(app: str | None, assume_yes: bool) -> int:
         return DECLINED
     for unit, files in units.items():
         with console.waiting(f"sending: {unit} of {name}"):
-            digest = copies.send(registration, name, unit, copies.unit_folder(root, unit), files)
+            digest = copies.send(registration, name, unit, root, files)
         console.done(f"Copied {console.value(unit)} of {console.value(name)} to AutoIDM "
                      f"(SHA-256 {console.value(digest[:12])}).")
     return 0
@@ -140,27 +140,26 @@ def merged_text(local: bytes, copy: bytes, path: str) -> bytes:
 def plan_unit(root: Path, unit: str, staged: Path, files: list[dict]) -> dict[str, bytes | None]:
     """The new bytes of each path of the project that the unit changes, relative to `root`, and
     None for each path it deletes."""
-    folder = copies.unit_folder(root, unit)
-    prefix = "" if unit == copies.ROOT else f"{unit.removeprefix('app=')}/"
-    config_name = MERGED_FILES[copies.ROOT if unit == copies.ROOT else "app"]
+    app = unit.removeprefix("app=") if unit != copies.ROOT else None
+    merged_file = f"{app}/{MERGED_FILES['app']}" if app else MERGED_FILES[copies.ROOT]
     changes: dict[str, bytes | None] = {}
     wanted = set()
     for entry in files:
         wanted.add(entry["path"])
         new = Path(copies.long_path(staged / entry["path"])).read_bytes()
-        target = copies.inside(root, prefix + entry["path"])
+        target = copies.inside(root, entry["path"])
         try:
             current = Path(copies.long_path(target)).read_bytes()
         except FileNotFoundError:
             current = None
-        if current is not None and entry["path"] == config_name:
-            new = merged_text(current, new, prefix + entry["path"])
+        if current is not None and entry["path"] == merged_file:
+            new = merged_text(current, new, entry["path"])
         if current != new:
-            changes[prefix + entry["path"]] = new
-    if unit != copies.ROOT and folder.is_dir():
-        for entry in copies.collect(folder)[0]:
-            if entry["path"] not in wanted:
-                changes[prefix + entry["path"]] = None
+            changes[entry["path"]] = new
+    if app and (root / app).is_dir():
+        for entry in copies.collect(root / app)[0]:
+            if f"{app}/{entry['path']}" not in wanted:
+                changes[f"{app}/{entry['path']}"] = None
     return changes
 
 

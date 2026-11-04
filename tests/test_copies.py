@@ -36,14 +36,14 @@ def test_a_project_splits_into_root_and_one_unit_for_each_app(tmp_path):
     files, left_out = copies.collect(root)
     units = copies.split_units(files, copies.app_names(root))
     assert [entry["path"] for entry in units["root"]] == ["notes.txt", "pdt.yml"]
-    assert [entry["path"] for entry in units["app=hr"]] == ["config.yml", "run.py"]
+    assert [entry["path"] for entry in units["app=hr"]] == ["hr/config.yml", "hr/run.py"]
     assert "hr/.env" in left_out and "data.csv" in left_out
 
 
 def test_the_same_files_give_the_same_zip(tmp_path):
     root = project(tmp_path)
     files = copies.split_units(copies.collect(root)[0], ["hr"])["app=hr"]
-    assert copies.build_zip(root / "hr", files) == copies.build_zip(root / "hr", files)
+    assert copies.build_zip(root, files) == copies.build_zip(root, files)
 
 
 def test_unpack_writes_the_files_of_a_unit(tmp_path):
@@ -91,3 +91,22 @@ def test_a_copy_that_names_another_customer_is_refused():
         b"managed_services:\n  customer: cus_other\n", "cus_mine")
     assert copies.customer_problem(b"platform: {}\n", "cus_mine") == ""
     assert copies.customer_problem(None, "cus_mine") == ""
+
+
+def test_a_second_unit_goes_into_the_same_project_folder_and_overwrites_nothing(tmp_path):
+    root_files = {"pdt.yml": b"apps: []\n"}
+    app_files = {"hr/run.py": b"print(1)\n"}
+    for files in (root_files, app_files):
+        data = zip_of(files)
+        copies.unpack(data, entry_of(data, files), tmp_path / "out")
+    assert (tmp_path / "out" / "hr" / "run.py").is_file()
+    data = zip_of(root_files)
+    with pytest.raises(copies.CopyError, match="exists"):
+        copies.unpack(data, entry_of(data, root_files), tmp_path / "out")
+
+
+def test_an_app_unit_with_a_path_outside_its_folder_writes_nothing(tmp_path):
+    files = {"pdt.yml": b"x"}
+    data = zip_of(files)
+    with pytest.raises(copies.CopyError, match="outside its app folder"):
+        copies.unpack(data, entry_of(data, files, "app=hr"), tmp_path / "out")

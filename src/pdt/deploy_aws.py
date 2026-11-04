@@ -1394,7 +1394,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
         "deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-        "pause", "unpause", "start", "kill"))
+        "pause", "unpause", "start", "kill", "mr-run"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -1423,6 +1423,8 @@ def main() -> int:
             return batch.start(app, ensure_session(app), "--follow" in args.rest)
         if args.command == "kill":
             return batch.kill(app, ensure_session(app))
+        if args.command == "mr-run":
+            return batch.mr_run(app, ensure_session(app), args.rest[0])
         return batch.destroy(app, args.yes)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",

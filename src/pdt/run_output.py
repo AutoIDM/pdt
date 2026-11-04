@@ -42,8 +42,13 @@ def run_folder(app: str, identity: str) -> str | None:
 
 
 def copy(app: str, number: int, target: Path) -> int:
-    """Copy each file of the run's output folder into `target`. Returns the count."""
-    folder = run_folder(app, run_id(app, number))
+    """Copy each file of the output folder of run `number` into `target`. Returns the count."""
+    return copy_run(app, run_id(app, number), target)
+
+
+def copy_run(app: str, identity: str, target: Path) -> int:
+    """Copy each file of the output folder of the run `identity` into `target`."""
+    folder = run_folder(app, identity)
     if folder is None:
         return 0
     count = 0

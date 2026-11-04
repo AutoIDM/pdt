@@ -139,56 +139,57 @@ def google_script() -> str:
     return f"""#!/usr/bin/env bash
 # Lets AutoIDM deploy and run the jobs of pdt in one Google Cloud project (managed-by=pdt).
 # Run it in Cloud Shell with the values from the AutoIDM Connect page:
-#   PROJECT=... EXTERNAL_ID=... AUTOIDM_AWS_ACCOUNT=... AUTOIDM_ROLE=... bash {GOOGLE_FILE}
+#   PDT_PROJECT=... PDT_EXTERNAL_ID=... PDT_AWS_ACCOUNT=... PDT_AWS_ROLE=... bash {GOOGLE_FILE}
 set -euo pipefail
-: "${{PROJECT:?set PROJECT to the Google Cloud project ID}}"
-: "${{EXTERNAL_ID:?set EXTERNAL_ID to the external ID of your AutoIDM customer}}"
-: "${{AUTOIDM_AWS_ACCOUNT:?set AUTOIDM_AWS_ACCOUNT to the AWS account of AutoIDM}}"
-: "${{AUTOIDM_ROLE:?set AUTOIDM_ROLE to the name of the AutoIDM credential role}}"
-NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
-ACCOUNT="{name}@$PROJECT.iam.gserviceaccount.com"
-RUNNER="{runner}@$PROJECT.iam.gserviceaccount.com"
+: "${{PDT_PROJECT:?set PDT_PROJECT to the Google Cloud project ID}}"
+: "${{PDT_EXTERNAL_ID:?set PDT_EXTERNAL_ID to the external ID of your AutoIDM customer}}"
+: "${{PDT_AWS_ACCOUNT:?set PDT_AWS_ACCOUNT to the AWS account of AutoIDM}}"
+: "${{PDT_AWS_ROLE:?set PDT_AWS_ROLE to the name of the AutoIDM credential role}}"
+NUMBER="$(gcloud projects describe "$PDT_PROJECT" --format='value(projectNumber)')"
+ACCOUNT="{name}@$PDT_PROJECT.iam.gserviceaccount.com"
+RUNNER="{runner}@$PDT_PROJECT.iam.gserviceaccount.com"
 POOL="{name}"
-DESCRIPTION="managed-by=pdt {grants.EXTERNAL_ID_TAG}=$EXTERNAL_ID"
+DESCRIPTION="managed-by=pdt {grants.EXTERNAL_ID_TAG}=$PDT_EXTERNAL_ID"
 gcloud services enable iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com \\
-  cloudresourcemanager.googleapis.com --project "$PROJECT"
-if gcloud iam service-accounts describe "$ACCOUNT" --project "$PROJECT" >/dev/null 2>&1; then
-  gcloud iam service-accounts update "$ACCOUNT" --project "$PROJECT" --description "$DESCRIPTION"
+  cloudresourcemanager.googleapis.com --project "$PDT_PROJECT"
+if gcloud iam service-accounts describe "$ACCOUNT" --project "$PDT_PROJECT" >/dev/null 2>&1; then
+  gcloud iam service-accounts update "$ACCOUNT" --project "$PDT_PROJECT" --description "$DESCRIPTION"
 else
-  gcloud iam service-accounts create {name} --project "$PROJECT" \\
+  gcloud iam service-accounts create {name} --project "$PDT_PROJECT" \\
     --display-name "AutoIDM access for pdt" --description "$DESCRIPTION"
 fi
-if ! gcloud iam workload-identity-pools describe "$POOL" --project "$PROJECT" \\
+if ! gcloud iam workload-identity-pools describe "$POOL" --project "$PDT_PROJECT" \\
     --location global >/dev/null 2>&1; then
-  gcloud iam workload-identity-pools create "$POOL" --project "$PROJECT" --location global \\
+  gcloud iam workload-identity-pools create "$POOL" --project "$PDT_PROJECT" --location global \\
     --display-name "AutoIDM" --description "managed-by=pdt"
 fi
-if ! gcloud iam workload-identity-pools providers describe autoidm --project "$PROJECT" \\
+if ! gcloud iam workload-identity-pools providers describe autoidm --project "$PDT_PROJECT" \\
     --location global --workload-identity-pool "$POOL" >/dev/null 2>&1; then
-  gcloud iam workload-identity-pools providers create-aws autoidm --project "$PROJECT" \\
-    --location global --workload-identity-pool "$POOL" --account-id "$AUTOIDM_AWS_ACCOUNT" \\
+  gcloud iam workload-identity-pools providers create-aws autoidm --project "$PDT_PROJECT" \\
+    --location global --workload-identity-pool "$POOL" --account-id "$PDT_AWS_ACCOUNT" \\
     --attribute-mapping "google.subject=assertion.arn,attribute.aws_role=assertion.arn.extract('assumed-role/{{role}}/')" \\
-    --attribute-condition "attribute.aws_role == '$AUTOIDM_ROLE'"
+    --attribute-condition "attribute.aws_role == '$PDT_AWS_ROLE'"
 fi
-gcloud iam service-accounts add-iam-policy-binding "$ACCOUNT" --project "$PROJECT" \\
+gcloud iam service-accounts add-iam-policy-binding "$ACCOUNT" --project "$PDT_PROJECT" \\
   --role roles/iam.workloadIdentityUser \\
-  --member "principalSet://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/$POOL/attribute.aws_role/$AUTOIDM_ROLE"
+  --member "principalSet://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/$POOL/attribute.aws_role/$PDT_AWS_ROLE"
 for role in {roles}; do
-  gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$ACCOUNT" \\
+  gcloud projects add-iam-policy-binding "$PDT_PROJECT" --member "serviceAccount:$ACCOUNT" \\
     --role "$role" --condition=None --format=none
 done
 grant() {{
-  gcloud projects add-iam-policy-binding "$PROJECT" --member "serviceAccount:$ACCOUNT" \\
+  gcloud projects add-iam-policy-binding "$PDT_PROJECT" --member "serviceAccount:$ACCOUNT" \\
     --role "$1" --condition "title=$2,expression=$3" --format=none
 }}
 {conditional.replace("PROJECT_NUMBER", "$NUMBER")}
-if ! gcloud iam service-accounts describe "$RUNNER" --project "$PROJECT" >/dev/null 2>&1; then
-  gcloud iam service-accounts create {runner} --project "$PROJECT" \\
+if ! gcloud iam service-accounts describe "$RUNNER" --project "$PDT_PROJECT" >/dev/null 2>&1; then
+  gcloud iam service-accounts create {runner} --project "$PDT_PROJECT" \\
     --display-name "pdt job runner" --description "managed-by=pdt"
 fi
-gcloud iam service-accounts add-iam-policy-binding "$RUNNER" --project "$PROJECT" \\
+gcloud iam service-accounts add-iam-policy-binding "$RUNNER" --project "$PDT_PROJECT" \\
   --member "serviceAccount:$ACCOUNT" --role roles/iam.serviceAccountUser --format=none
-echo "AutoIDM can now act as $ACCOUNT in $PROJECT. Check the grant on the AutoIDM Connect page."
+echo "AutoIDM can now act as $ACCOUNT in $PDT_PROJECT."
+echo "Project number: $NUMBER. Enter it on the AutoIDM Connect page."
 """
 
 
