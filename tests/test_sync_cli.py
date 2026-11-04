@@ -53,7 +53,7 @@ def test_sync_up_sends_root_and_each_app_and_nothing_secret(project, portal, mon
     assert run(monkeypatch, "sync", "up", "--yes") == 0
     starts = portal.bodies("/v1/copies/start")
     assert [body["unit"] for body in starts] == ["root", "app=hr"]
-    assert [item["path"] for item in starts[1]["files"]] == ["config.yml", "run.py"]
+    assert [item["path"] for item in starts[1]["files"]] == ["hr/config.yml", "hr/run.py"]
     assert [body["unit"] for body in portal.bodies("/v1/copies/finish")] == ["root", "app=hr"]
     assert all(b"secret" not in data for _path, data, _sum in portal.puts)
     for body, (_path, data, checksum) in zip(starts, portal.puts):
@@ -86,7 +86,7 @@ def test_sync_down_backs_up_replaces_and_merges_pdt_yml(project, portal, monkeyp
     portal.serve_copies(
         copy_of("root", {"pdt.yml": b"platform:\n  provider: windows\n  timezone: UTC\n",
                          "README.md": b"new\n"}),
-        copy_of("app=hr", {"config.yml": b"schedule: hourly\n", "run.py": b"print('new')\n"}))
+        copy_of("app=hr", {"hr/config.yml": b"schedule: hourly\n", "hr/run.py": b"print('new')\n"}))
     assert run(monkeypatch, "sync", "down", "--yes") == 0
     merged = yaml.safe_load((project / "pdt.yml").read_text())
     assert merged["managed_services"] == {"customer": CUSTOMER}
@@ -103,8 +103,8 @@ def test_sync_down_backs_up_replaces_and_merges_pdt_yml(project, portal, monkeyp
 
 def test_sync_down_of_one_app_replaces_the_app_folder(project, portal, monkeypatch):
     (project / "hr" / "old.py").write_text("x = 1\n")
-    portal.serve_copies(copy_of("app=hr", {"config.yml": b"schedule: daily\n",
-                                           "run.py": b"print('hi')\n"}))
+    portal.serve_copies(copy_of("app=hr", {"hr/config.yml": b"schedule: daily\n",
+                                           "hr/run.py": b"print('hi')\n"}))
     assert run(monkeypatch, "sync", "down", "hr", "--yes") == 0
     assert not (project / "hr" / "old.py").exists()
     assert (project / "hr" / ".env").is_file()
@@ -114,8 +114,8 @@ def test_sync_down_of_one_app_replaces_the_app_folder(project, portal, monkeypat
 
 
 def test_sync_down_at_a_terminal_asks_once_and_a_no_changes_nothing(project, portal, monkeypatch):
-    portal.serve_copies(copy_of("app=hr", {"config.yml": b"schedule: daily\n",
-                                           "run.py": b"print('new')\n"}))
+    portal.serve_copies(copy_of("app=hr", {"hr/config.yml": b"schedule: daily\n",
+                                           "hr/run.py": b"print('new')\n"}))
     monkeypatch.setattr(sync_cli, "can_prompt", lambda _interactive: True)
     asked = []
     monkeypatch.setattr(sync_cli.console, "confirm", lambda question: asked.append(question))
@@ -160,8 +160,8 @@ def test_a_service_sync_down_makes_a_new_project(tmp_path, portal, monkeypatch):
     monkeypatch.setenv("PDT_SERVICE_PROJECT", "fresh")
     monkeypatch.setenv("PDT_SERVICE_CUSTOMER", CUSTOMER)
     portal.serve_copies(copy_of("root", {"pdt.yml": b"platform:\n  provider: windows\n"}),
-                        copy_of("app=hr", {"config.yml": b"schedule: daily\n",
-                                           "run.py": b"print('hi')\n"}))
+                        copy_of("app=hr", {"hr/config.yml": b"schedule: daily\n",
+                                           "hr/run.py": b"print('hi')\n"}))
     assert run(monkeypatch, "sync", "down", "--yes") == 0
     assert (target / "hr" / "run.py").is_file()
     assert CUSTOMER in (target / "pdt.yml").read_text()

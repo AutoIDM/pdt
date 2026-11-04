@@ -430,8 +430,8 @@ def test_a_staff_install_of_a_new_project_runs_for_real_and_is_served(machine, p
     home = machine.parent
     monkeypatch.setenv(service_runner.PROJECTS_HOME_ENV, str(home))
     portal.serve_copies(copy_of("root", {"pdt.yml": b"apps: []\n"}),
-                        copy_of("app=hr", {"config.yml": b"schedule: daily\n",
-                                           "run.py": b"print('x')\n"}))
+                        copy_of("app=hr", {"hr/config.yml": b"schedule: daily\n",
+                                           "hr/run.py": b"print('x')\n"}))
     answers = [checkin_answer(portal, [{"command_id": COMMAND, "token": token(
         "sync_down", {"project": "third-project"})}])]
     portal.routes["/v1/service/checkin"] = lambda _body: answers.pop(0) if answers else checkin_answer(portal)
