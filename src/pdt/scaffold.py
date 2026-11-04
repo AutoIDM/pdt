@@ -55,15 +55,18 @@ TIMEZONE_QUESTION = ("timezone", "Which time zone should the schedules use?",
 # answer back.
 PROVIDER_QUESTIONS = {
     "azure": [
-        ("region", regions.question("azure"), lambda: regions.suggest_region("azure"), _needed),
+        ("region", regions.question("azure"), lambda: regions.suggest_region("azure"),
+         lambda answer: _needed(answer) or regions.region_problem("azure", answer)),
     ],
     "aws": [
-        ("region", regions.question("aws"), lambda: regions.suggest_region("aws"), _needed),
+        ("region", regions.question("aws"), lambda: regions.suggest_region("aws"),
+         lambda answer: _needed(answer) or regions.region_problem("aws", answer)),
         TIMEZONE_QUESTION,
     ],
     "google-cloud": [
         ("region", regions.question("google-cloud"),
-         lambda: regions.suggest_region("google-cloud"), _needed),
+         lambda: regions.suggest_region("google-cloud"),
+         lambda answer: _needed(answer) or regions.region_problem("google-cloud", answer)),
         TIMEZONE_QUESTION,
     ],
     "windows": [],
@@ -449,7 +452,7 @@ def change_provider(target: Path) -> int:
         here = deploy.describe_place(config.place(deploy.resolved(current)))
         choice = _ask_choice(f"What should happen to the apps currently deployed to {console.escape(here)}?",
                              ["Move all", "Move some",
-                              f"Keep them on {here} (only new apps go to {there})", "Cancel"], 4)
+                              f"Keep them on {here}; only new apps go to {there}", "Cancel"], 4)
         if choice == 1:
             moving = movable
         elif choice == 2:
@@ -495,7 +498,6 @@ def change_provider(target: Path) -> int:
                               "run pdt init again")
         config.write_text_atomically(marker, changed, newline="")
     console.done(f"Saved the {console.value('platform:')} settings to {console.value(PROJECT_FILE)}.")
-    console.say()
     for name in removed:
         if config.place(recorded[name]).get("provider") == provider:
             continue
@@ -593,7 +595,6 @@ def init(directory: str | None, assume_yes: bool) -> int:
     if starting_fresh:
         files.append((f"{STARTER}/", "a working app to run and edit"))
     console.columns(files)
-    console.say()
     steps = []
     if target != here:
         steps.append((f"cd {target.name}", "go to the new project"))
@@ -679,8 +680,8 @@ def new_app(name: str, source: str | None) -> int:
     if needs_secrets:
         files.append((f"{name}/env.template", f"the secrets to copy into {console.value('.env')}"))
     console.columns(files)
-    console.say()
     if needs_secrets:
+        console.say()
         console.styled(f"Open {console.value(f'{name}/env.template')} and copy the names you need "
                        f"into {console.value('.env')}.")
     console.next_steps([("pdt validate", f"check the config and the {console.value('.env')} values"),
@@ -717,7 +718,6 @@ def from_scripts(name: str) -> int:
                  f"scripts in {console.value(f'{name}/')}.")
     console.columns([(f"{name}/requirements.psd1", "the modules pdt installs before the scripts run"),
                      (f"{name}/run.py", "how the scripts run")])
-    console.say()
     console.next_steps([("pdt validate", f"check the config and the {console.value('.env')} values"),
                         (f"pdt run {name}", "run the scripts on this computer")])
     return 0

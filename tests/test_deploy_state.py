@@ -145,6 +145,63 @@ def test_deploy_refuses_a_powershell_app_whose_scripts_certainly_fail(tmp_path, 
     assert "report.ps1:1: Read-Host waits for a person" in capsys.readouterr().out
 
 
+def test_a_config_problem_names_the_app_once(tmp_path, monkeypatch, capsys):
+    project_with_starter(tmp_path, monkeypatch)
+    (tmp_path / "pdt.yml").write_text("platform:\n  provider: azure\n  region: eastu2\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
+    assert deploy.deploy(scaffold.STARTER) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"{scaffold.STARTER}: platform.region in pdt.yml" in out
+    assert f"{scaffold.STARTER}: {scaffold.STARTER}:" not in out
+
+
+@pytest.mark.parametrize("yml,problem", [
+    ("platform:\n  provider: aws\n  region: us-east-1\n  regoin: us-east-1\n",
+     "pdt.yml: platform: unknown key 'regoin'"),
+    ("docker-build: sometimes\nplatform:\n  provider: aws\n  region: us-east-1\n",
+     "pdt.yml: docker-build"),
+])
+def test_a_shared_config_problem_names_the_app_once(tmp_path, monkeypatch, capsys, yml, problem):
+    project_with_starter(tmp_path, monkeypatch)
+    (tmp_path / "pdt.yml").write_text(yml)
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
+    assert deploy.deploy(scaffold.STARTER) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"{scaffold.STARTER}: {problem}" in out
+    assert f"{scaffold.STARTER}: {scaffold.STARTER}" not in out
+
+
+def test_a_config_load_problem_names_the_app(tmp_path, monkeypatch, capsys):
+    project_with_starter(tmp_path, monkeypatch)
+    (tmp_path / "pdt.yml").write_text("platform: azure\n")
+    assert deploy.deploy(scaffold.STARTER) == 1
+    assert f"{scaffold.STARTER}: pdt.yml" in " ".join(capsys.readouterr().out.split())
+
+
+def test_an_apps_entry_problem_names_the_app_once(tmp_path, monkeypatch, capsys):
+    project_with_starter(tmp_path, monkeypatch)
+    (tmp_path / "pdt.yml").write_text(
+        "platform:\n  provider: aws\n  region: us-east-1\n"
+        f"apps:\n  - name: {scaffold.STARTER}\n    docker-build: sometimes\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
+    assert deploy.deploy(scaffold.STARTER) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"error: pdt.yml: apps entry '{scaffold.STARTER}'" in out
+    assert f"{scaffold.STARTER}: pdt.yml: apps entry" not in out
+
+
+@pytest.mark.parametrize("plan_only", [False, True])
+def test_a_wrong_region_in_the_environment_stops_the_deploy(tmp_path, monkeypatch, capsys,
+                                                            plan_only):
+    project_with_starter(tmp_path, monkeypatch)
+    (tmp_path / "pdt.yml").write_text("platform:\n  provider: azure\n")
+    monkeypatch.setenv("PDT_AZURE_REGION", "eastu2")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
+    assert deploy.deploy(scaffold.STARTER, assume_yes=True, plan_only=plan_only) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"{scaffold.STARTER}: the environment variable PDT_AZURE_REGION:" in out
+
+
 def test_a_provider_script_pins_the_version_of_the_pdt_that_ran_it(tmp_path, monkeypatch):
     # From a clone, `uv run --script` imports pdt from src/ with no package
     # metadata beside it, so the version must arrive from the parent.

@@ -27,8 +27,8 @@ def test_each_failed_command_prints_where_to_get_help_once(project, monkeypatch,
     for count in range(2):
         with pytest.raises(SystemExit):
             cli.main()
-        assert len(said) == count + 1
-    assert plain(said) == [f"Get help with pdt at {watch.SUPPORT_URL}"] * 2
+        assert len(said) == 2 * (count + 1)
+    assert plain(said) == ["", f"Get help with pdt at {watch.SUPPORT_URL}"] * 2
 
 
 def test_a_failed_provider_script_gives_one_help_line(project, monkeypatch, said):
@@ -36,7 +36,7 @@ def test_a_failed_provider_script_gives_one_help_line(project, monkeypatch, said
     monkeypatch.setattr("sys.argv", ["pdt", "storage", "hello-world", "ls"])
     monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: 1)
     assert cli.main() == 1
-    assert plain(said) == [f"Get help with pdt storage at {watch.SUPPORT_URL}"]
+    assert plain(said) == ["", f"Get help with pdt storage at {watch.SUPPORT_URL}"]
 
 
 def test_success_interruption_and_a_declined_plan_print_no_help(said):
@@ -50,7 +50,7 @@ def test_a_crash_prints_its_traceback_then_the_help_line(said, capsys):
         raise ValueError("bad 7")
     assert watch.watched(main, {"run"}) == 1
     assert "ValueError: bad 7" in capsys.readouterr().err
-    assert plain(said) == [HELP]
+    assert plain(said) == ["", HELP]
 
 
 def test_json_output_and_a_coding_agent_get_no_help_line(project, monkeypatch):

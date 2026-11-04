@@ -445,6 +445,7 @@ def command(text: str, note: str = "", indent: int = 2) -> None:
 
 def next_steps(rows: list[tuple[str, str]], title: str = "Next steps:") -> None:
     """Commands the user may run next, each with what it does, under `title`."""
+    say()
     heading(title)
     columns(rows)
 
