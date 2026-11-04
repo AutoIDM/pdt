@@ -55,15 +55,18 @@ TIMEZONE_QUESTION = ("timezone", "Which time zone should the schedules use?",
 # answer back.
 PROVIDER_QUESTIONS = {
     "azure": [
-        ("region", regions.question("azure"), lambda: regions.say_suggestion("azure"), _needed),
+        ("region", regions.question("azure"), lambda: regions.suggest_region("azure"),
+         lambda answer: _needed(answer) or regions.region_problem("azure", answer)),
     ],
     "aws": [
-        ("region", regions.question("aws"), lambda: regions.say_suggestion("aws"), _needed),
+        ("region", regions.question("aws"), lambda: regions.suggest_region("aws"),
+         lambda answer: _needed(answer) or regions.region_problem("aws", answer)),
         TIMEZONE_QUESTION,
     ],
     "google-cloud": [
         ("region", regions.question("google-cloud"),
-         lambda: regions.say_suggestion("google-cloud"), _needed),
+         lambda: regions.suggest_region("google-cloud"),
+         lambda answer: _needed(answer) or regions.region_problem("google-cloud", answer)),
         TIMEZONE_QUESTION,
     ],
     "windows": [],
@@ -287,9 +290,9 @@ def ask_settings(provider: str, kept: dict) -> dict | None:
     console.say()
     settings = {"provider": provider, **kept}
     for key, question, default, check in PROVIDER_QUESTIONS[provider]:
-        offered = str(kept.get(key) or default())
         while True:
-            answer = _ask(f"{question} (type cancel to change nothing)", offered)
+            answer = _ask(f"{question} (type cancel to change nothing)",
+                          str(kept.get(key) or default()))
             if answer.strip().lower() == "cancel":
                 return None
             problem = check(answer)

@@ -5,7 +5,7 @@ import yaml
 
 from conftest import add_app
 from pdt import regions
-from pdt.config import merged_app
+from pdt.config import merged_app, validate_app
 
 
 @pytest.fixture(autouse=True)
@@ -173,3 +173,41 @@ def test_choose_region_names_the_cli_settings(project, monkeypatch, tmp_path, ca
     monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
     assert regions.choose_region(merged_app("my-report"), "azure", True) == ""
     assert "northeurope, because defaults.location" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("provider,typo,meant", [
+    ("azure", "eastu2", "eastus2"),
+    ("aws", "us-est-1", "us-east-1"),
+    ("google-cloud", "us-centrl1", "us-central1"),
+])
+def test_validate_rejects_a_region_the_provider_does_not_have(project, provider, typo, meant):
+    (project / "pdt.yml").write_text(f"platform:\n  provider: {provider}\n  region: {typo}\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    problems = [p for p in validate_app("my-report") if "platform.region" in p]
+    assert len(problems) == 1
+    assert all(text in problems[0] for text in (typo, meant, "pdt.yml"))
+
+
+@pytest.mark.parametrize("provider", regions.PROVIDERS)
+def test_every_region_pdt_suggests_is_a_region_it_accepts(provider):
+    index = regions.PROVIDERS.index(provider)
+    suggested = {names[index] for names in [regions.DEFAULT_REGIONS, *regions.COUNTRY_REGIONS.values(),
+                                             *regions.ZONE_REGIONS.values()]}
+    assert suggested <= set(regions.REGIONS[provider])
+
+
+def test_the_aws_regions_match_the_ones_botocore_knows():
+    botocore = pytest.importorskip("botocore.session")
+    partitions = botocore.get_session().get_data("endpoints")["partitions"]
+    aws = next(p for p in partitions if p["partition"] == "aws")
+    assert set(regions.REGIONS["aws"]) == set(aws["regions"])
+
+
+def test_a_mistyped_answer_is_asked_again(project, monkeypatch):
+    add_app(project, "my-report")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Europe/London")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: True)
+    answers = iter(["uksuoth", "ukwest"])
+    monkeypatch.setattr(regions.console, "ask", lambda _question, _default: next(answers))
+    assert regions.choose_region(merged_app("my-report"), "azure", False) == ""
+    assert region_in(project / "pdt.yml") == "ukwest"

@@ -730,11 +730,11 @@ def test_cancel_at_the_region_question_of_a_new_project_writes_nothing(tmp_path,
     assert not (tmp_path / "jobs").exists()
 
 
-def test_the_region_question_of_a_new_project_says_what_pdt_suggests_and_why(tmp_path, monkeypatch,
-                                                                            capsys):
+def test_the_region_question_of_a_new_project_offers_the_suggestion_with_no_lines_above(
+        tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(scaffold.regions, "region_suggestion",
-                        lambda provider, platform=None: ("uksouth", "the time zone is Europe/London"))
+                        lambda provider, platform=None, zone=None: ("uksouth", "the time zone is Europe/London"))
     questions = []
     replies = iter(["1", "cancel"])
     monkeypatch.setattr(scaffold.console, "ask",
@@ -742,8 +742,22 @@ def test_the_region_question_of_a_new_project_says_what_pdt_suggests_and_why(tmp
                         or next(replies))
     with pytest.raises(ConfigError, match="cancelled"):
         scaffold.init(str(tmp_path / "jobs"), assume_yes=False)
-    assert "pdt suggests uksouth, because the time zone is Europe/London." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "pdt suggests" not in out
+    assert "All Azure regions" not in out
     assert questions[-1][1] == "uksouth"
+
+
+def test_a_mistyped_region_in_pdt_init_is_asked_again(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    questions = []
+    replies = iter(["1", "eastu2", "cancel"])
+    monkeypatch.setattr(scaffold.console, "ask",
+                        lambda question, default="": questions.append(question) or next(replies))
+    with pytest.raises(ConfigError, match="cancelled"):
+        scaffold.init(str(tmp_path / "jobs"), assume_yes=False)
+    assert "There is no Azure region named eastu2. Did you mean eastus2" in capsys.readouterr().out
+    assert sum("region" in question for question in questions) == 2
 
 
 @pytest.mark.parametrize("place,text", [
