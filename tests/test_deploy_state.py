@@ -145,6 +145,16 @@ def test_deploy_refuses_a_powershell_app_whose_scripts_certainly_fail(tmp_path, 
     assert "report.ps1:1: Read-Host waits for a person" in capsys.readouterr().out
 
 
+def test_a_config_problem_names_the_app_once(tmp_path, monkeypatch, capsys):
+    project_with_starter(tmp_path, monkeypatch)
+    (tmp_path / "pdt.yml").write_text("platform:\n  provider: azure\n  region: eastu2\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
+    assert deploy.deploy(scaffold.STARTER) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"{scaffold.STARTER}: platform.region in pdt.yml" in out
+    assert f"{scaffold.STARTER}: {scaffold.STARTER}:" not in out
+
+
 def test_a_provider_script_pins_the_version_of_the_pdt_that_ran_it(tmp_path, monkeypatch):
     # From a clone, `uv run --script` imports pdt from src/ with no package
     # metadata beside it, so the version must arrive from the parent.
