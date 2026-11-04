@@ -263,7 +263,7 @@ def approve_in_browser(api_url: str, body: dict) -> tuple[dict | None, str | Non
         return None, None
     console.say("To connect to AutoIDM, open this page and sign in:")
     console.command(codes["url"])
-    console.field("Type this code on the page", codes["user_code"])
+    console.field("Check that the page shows this code", codes["user_code"])
     webbrowser.open(codes["url"])
     answer = wait_for_decision(api_url, codes)
     if answer is None:
