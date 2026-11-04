@@ -399,10 +399,7 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
         if managed_services.monitored("the end of this run", lambda: managed_services.end_run(
                 run, name, {**params, **details, "state": state}, time.monotonic() - began),
                 False):
-            console.error(run.sender.refusal())
-            if code == 0:
-                code = managed_services.UNAUTHORIZED_EXIT
-                name, details = JOB_RUN_FAILED, {"exit_code": code, "reason": "unauthorized"}
+            console.warn(run.sender.refusal())
         emit(name, **params, **details, state=state)
         flush()
     finally:
