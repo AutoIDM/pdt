@@ -559,7 +559,7 @@ def cmd_service(args) -> int:
 
 def cmd_sync(args) -> int:
     actions = {
-        "up": lambda: sync_cli.up(args.yes, args.ref, args.label),
+        "up": lambda: sync_cli.up(args.yes, args.ref, args.label, args.report),
         "down": lambda: sync_cli.down(args.snapshot, args.force),
         "diff": lambda: sync_cli.diff(args.json),
     }
@@ -875,9 +875,11 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     q.add_argument("--ref", help="a Git commit or another name of this version, saved with it")
     q.add_argument("--label", help="a short note saved with the snapshot, such as MR 12")
+    q.add_argument("--report", action="store_true",
+                   help="send a copy for a person to read; the record of this computer stays")
     q = add_action(actions, "down", help="copy a snapshot into this project")
     q.add_argument("--snapshot", metavar="ID",
-                   help="which snapshot (default: the newest copy any computer sent)")
+                   help="which snapshot; leave it off to list the newest ones")
     q.add_argument("--force", action="store_true",
                    help="overwrite each file that changed on this computer")
     q = add_action(actions, "diff", help="list the files that differ from the newest snapshot")
