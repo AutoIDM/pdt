@@ -564,15 +564,14 @@ def output_folder(app_dir: Path, command_id: str) -> Path:
     return app_dir / ".pdt" / "runs" / command_id / "output"
 
 
-def prepare(job: Job, base: dict[str, str], python: str | None = None,
-            allowed: set[str] | None = None) -> Prepared:
+def prepare(job: Job, base: dict[str, str], allowed: set[str] | None = None) -> Prepared:
     """The folder, the env, and the command line of a job."""
     operation = OPERATIONS[job.operation]
     app = job.args.get("app")
     preset = job.preset or {"env": {}, "artifacts": False}
     if job.worker:
-        return prepare_worker(job, base, python)
-    argv = service_commands.command_line(job.operation, job.args, python)
+        return prepare_worker(job, base)
+    argv = service_commands.command_line(job.operation, job.args)
     if operation.from_snapshot:
         work = work_root() / job.command_id
         work.mkdir()
@@ -613,9 +612,9 @@ def prepare(job: Job, base: dict[str, str], python: str | None = None,
     return Prepared(job.project, child_env(base, job.project, preset["env"], extra), argv)
 
 
-def prepare_worker(job: Job, base: dict[str, str], python: str | None) -> Prepared:
+def prepare_worker(job: Job, base: dict[str, str]) -> Prepared:
     from pdt import grants
-    argv = service_commands.command_line(job.operation, job.args, python)
+    argv = service_commands.command_line(job.operation, job.args)
     app = job.args.get("app")
     work = work_root() / job.command_id
     work.mkdir()
@@ -659,12 +658,12 @@ def remove_folder(folder: str | Path | None) -> None:
         shutil.rmtree(snapshots.long_path(Path(folder)), ignore_errors=True)
 
 
-def execute(job: Job, python: str | None = None, allowed: set[str] | None = None) -> None:
+def execute(job: Job, allowed: set[str] | None = None) -> None:
     prepared = None
     try:
         if service_commands.expired(job.claims, job.clock.now()):
             raise Refused("The token expired before the command could start.")
-        prepared = prepare(job, dict(os.environ), python, allowed)
+        prepared = prepare(job, dict(os.environ), allowed)
         run_child(job, prepared)
     except Refused as e:
         finish(job, result_of("refused", message=str(e)))
@@ -779,11 +778,9 @@ class Pool:
     """The commands this service holds: the ones that wait for a free slot, and the ones that run,
     with the ones an earlier service started whose process still runs."""
 
-    def __init__(self, python=None, authors=None) -> None:
+    def __init__(self, authors=None) -> None:
         self.waiting: list[Job] = []
         self.running: dict[str, Job] = {}
-        # The Python of a project's pinned version, and the authors a machine accepts.
-        self.python = python or (lambda job: None)
         self.authors = authors or (lambda job: None)
 
     def ids(self) -> list[str]:
@@ -805,12 +802,7 @@ class Pool:
             job.thread.start()
 
     def start_one(self, job: Job) -> None:
-        try:
-            python = self.python(job)
-        except (OSError, RuntimeError) as e:
-            finish(job, result_of("failed", message=str(e)))
-            return
-        execute(job, python, self.authors(job))
+        execute(job, self.authors(job))
 
     def adopt(self, job: Job) -> None:
         self.running[job.command_id] = job

@@ -22,10 +22,6 @@ from pdt.powershell import quoted
 
 PYPI_URL = "https://pypi.org/pypi/pdt-cli/json"
 PIN = re.compile(r'^(#[^\n]*"pdt-cli(?:\[[^\]]*\])?==)([^"]+)"', re.M)
-# The base64url Ed25519 public key that checks `pdt-cli-<version>.manifest.json.sig` of a release.
-# Empty until the release job signs with PDT_RELEASE_SIGNING_KEY, so the service installs no
-# version other than its own.
-RELEASE_PUBLIC_KEY = ""
 
 
 def upgrade_in_new_window(uv: str, latest: str, environment: dict[str, str], entry: Path) -> None:

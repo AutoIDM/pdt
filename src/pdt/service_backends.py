@@ -2,13 +2,12 @@
 
 Each entry runs `<python> -m pdt.cli service run` as SYSTEM or root, from the program folder under
 the data folder, and each needs administrator rights. `define` writes the definition and starts
-nothing, `start` starts it, and `remove` stops it and deletes the definition. `definition` gives
-the text of the definition for `pdt service diagnose`.
+nothing, `start` starts it, and `remove` stops it and deletes the definition.
 
 A second process of the service exits at once when one runs (`service.one_service`), so a trigger
 that fires while the service runs does nothing. Each entry starts again after a failure: Task
 Scheduler by a repeating trigger each 5 minutes, systemd by its restart rule, launchd by KeepAlive,
-and cron each 5 minutes. After an upgrade, `restart` makes the manager start the new definition.
+and cron each 5 minutes.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ LAUNCHD_PATH = Path("/Library/LaunchDaemons") / f"{LAUNCHD_LABEL}.plist"
 CRON_MARK = "# pdt-service"
 # The env var that moves pdt's data folder, so the service finds the same files as the installer.
 KEPT_ENV = ("PDT_INSTALLATION_DIR",)
-RESTART_DELAY_SECONDS = 2
 
 
 class BackendError(RuntimeError):
@@ -142,14 +140,6 @@ def windows_running() -> bool:
                       "-ErrorAction SilentlyContinue).State").strip() == "Running"
 
 
-def windows_definition(folder: Path) -> str:
-    return task_file(folder).read_text(encoding="utf-16")
-
-
-def windows_restart() -> None:
-    """The service exits after this call, and the trigger each 5 minutes starts the new task."""
-
-
 def systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return run("systemctl", *args, check=check)
 
@@ -179,14 +169,6 @@ def systemd_running() -> bool:
     return systemctl("is-active", "--quiet", f"{NAME}.service", check=False).returncode == 0
 
 
-def systemd_definition(_folder: Path) -> str:
-    return SYSTEMD_PATH.read_text(encoding="utf-8")
-
-
-def systemd_restart() -> None:
-    """The service exits after this call, and Restart=always starts the new definition."""
-
-
 def launchd_define(python: str, folder: Path) -> None:
     LAUNCHD_PATH.parent.mkdir(parents=True, exist_ok=True)
     LAUNCHD_PATH.write_bytes(plistlib.dumps({
@@ -208,19 +190,6 @@ def launchd_remove() -> None:
 
 def launchd_running() -> bool:
     return run("launchctl", "print", f"system/{LAUNCHD_LABEL}", check=False).returncode == 0
-
-
-def launchd_definition(_folder: Path) -> str:
-    return LAUNCHD_PATH.read_text(encoding="utf-8")
-
-
-def launchd_restart() -> None:
-    """launchd keeps the definition it loaded, and `bootout` ends this process, so a process that
-    outlives it does the two steps. AbandonProcessGroup keeps that process alive."""
-    script = (f"sleep {RESTART_DELAY_SECONDS}; launchctl bootout system/{LAUNCHD_LABEL}; "
-              f"launchctl bootstrap system {shlex.quote(str(LAUNCHD_PATH))}")
-    subprocess.Popen(["sh", "-c", script], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def crontab_without_service() -> str:
@@ -256,15 +225,6 @@ def cron_running() -> bool:
     return CRON_MARK in run("crontab", "-l", check=False).stdout
 
 
-def cron_definition(_folder: Path) -> str:
-    return "".join(f"{line}\n" for line in run("crontab", "-l", check=False).stdout.splitlines()
-                   if CRON_MARK in line)
-
-
-def cron_restart() -> None:
-    """The service exits after this call, and cron starts the new line within 5 minutes."""
-
-
 @dataclass(frozen=True)
 class Backend:
     # Whether this manager exists on this computer.
@@ -273,21 +233,17 @@ class Backend:
     start: Callable[[str], None]
     remove: Callable[[], None]
     running: Callable[[], bool]
-    definition: Callable[[Path], str]
-    restart: Callable[[], None]
 
 
 BACKENDS = {
     "windows": Backend(lambda: os.name == "nt", windows_define, windows_start, windows_remove,
-                       windows_running, windows_definition, windows_restart),
+                       windows_running),
     "systemd": Backend(lambda: bool(shutil.which("systemctl")) and Path("/run/systemd/system").is_dir(),
-                       systemd_define, systemd_start, systemd_remove, systemd_running,
-                       systemd_definition, systemd_restart),
+                       systemd_define, systemd_start, systemd_remove, systemd_running),
     "launchd": Backend(lambda: sys.platform == "darwin" and bool(shutil.which("launchctl")),
-                       launchd_define, launchd_start, launchd_remove, launchd_running,
-                       launchd_definition, launchd_restart),
+                       launchd_define, launchd_start, launchd_remove, launchd_running),
     "cron": Backend(lambda: bool(shutil.which("crontab")), cron_define, cron_start, cron_remove,
-                    cron_running, cron_definition, cron_restart),
+                    cron_running),
 }
 
 

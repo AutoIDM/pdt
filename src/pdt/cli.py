@@ -551,9 +551,8 @@ def cmd_service(args) -> int:
         "install": lambda: service.install(args.projects, args.backend, args.proxy, args.ssh_key,
                                            args.known_hosts, args.yes),
         "status": lambda: service.status(args.json),
-        "run": lambda: service.run(args.worker, args.command_id, args.trial),
-        "remove": lambda: service.remove(args.purge, args.yes),
-        "diagnose": service.diagnose,
+        "run": lambda: service.run(args.worker, args.command_id),
+        "remove": lambda: service.remove(args.yes),
         "author": lambda: {"add": lambda: service.author_add(args.project, args.key),
                            "remove": lambda: service.author_remove(args.project, args.key),
                            "list": lambda: service.author_list(args.json)}[args.author_action](),
@@ -879,14 +878,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="act as a cloud worker, with the registration in the environment")
     q.add_argument("--command", metavar="ID", dest="command_id",
                    help="the one command a cloud worker runs")
-    q.add_argument("--trial", action="store_true",
-                   help="check in one time and stop; an upgrade uses it to test a new version")
     q = add_action(actions, "remove", help="stop the service and remove it from this computer")
-    q.add_argument("--purge", action="store_true",
-                   help="also delete pdt's data folder, except each project folder")
     q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
-    add_action(actions, "diagnose", help="write a zip of the service's settings, log, and journal "
-                                         "for AutoIDM support")
     q = add_action(actions, "author", help="choose whose snapshots this computer runs")
     authors = q.add_subparsers(dest="author_action", metavar="<action>", required=True,
                                prog="pdt service author")

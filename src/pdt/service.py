@@ -19,7 +19,6 @@ project from `sync_down` goes there. A command for a project of another customer
 With no administrator rights it runs as that person, in that person's data folder.
 
 `pdt service run --worker --command ID` runs one command on a cloud worker (pdt.worker).
-`pdt service run --trial` only checks in, and an upgrade uses it to test a new version.
 """
 
 from __future__ import annotations
@@ -57,10 +56,7 @@ DOORBELL_TIMEOUT_SECONDS = 10
 CLOCK_WARNING_SECONDS = 60
 CLOCK_WARNING_EVERY_SECONDS = 3600
 FIRST_CHECKIN_SECONDS = 60
-TRIAL_SECONDS = 300
 KEY_SET_EVENT = 1003
-DIAGNOSE_JOURNAL = 100
-DIAGNOSE_EVENTS = 200
 ACCESS_STATEMENT = ("A portal user of your organization and AutoIDM staff can run any program on "
                     "this computer.")
 _said_once: set[str] = set()
@@ -541,7 +537,6 @@ def check_in(served: Served, settings: dict, pool: Pool, state: dict) -> bool:
     if answer.get("ws_url") and served.connection:
         served.connection.keepalive_seconds = served.schedule.ws_keepalive_seconds
         served.connection.start(answer["ws_url"])
-    state["target_pdt_version"] = answer.get("target_pdt_version")
     if answer.get("status") == "pending":
         say_once("A customer administrator must approve this installation. The service keeps "
                  "checking in.")
@@ -618,50 +613,6 @@ def current_settings(last: dict) -> dict | None:
     return last if settings_path().exists() else None
 
 
-def pinned_python(job: Job, settings: dict) -> str | None:
-    """The Python of the version the project pins, or None for this version."""
-    if job.project is None or job.worker:
-        return None
-    pin = service_commands.service_section(job.project).get("pdt_version")
-    if not pin or pin == __version__:
-        return None
-    return str(service_install.python_for(str(pin), settings))
-
-
-def upgrade_due(state: dict, pool: Pool) -> str | None:
-    target = state.get("target_pdt_version")
-    if (not isinstance(target, str) or not target or target == __version__
-            or state.get("upgrade_refused") == target or pool.ids()):
-        return None
-    return target
-
-
-def upgrade(target: str, settings: dict, state: dict) -> bool:
-    """Install `target`, try it, and change the backend. True when the service must exit, so the
-    backend starts the new version. A failure keeps this version and does not try `target` again
-    until the setting changes."""
-    say(f"Upgrading pdt from {__version__} to {target}.")
-    try:
-        python = str(service_install.python_for(target, settings))
-        proc = subprocess.run([python, "-m", "pdt.cli", "service", "run", "--trial"],
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                              timeout=TRIAL_SECONDS)
-        if proc.returncode != 0:
-            raise InstallError(f"Version {target} did not check in: "
-                               f"{(proc.stdout + proc.stderr).strip()[-1000:]}")
-        backend = service_backends.BACKENDS[settings["backend"]]
-        backend.define(python, service_runner.service_folder())
-        write_settings({**settings, "python": python, "pdt_version": target})
-        backend.restart()
-    except (InstallError, service_backends.BackendError, OSError, KeyError,
-            subprocess.SubprocessError) as e:
-        say(f"pdt keeps version {__version__}, because the upgrade to {target} failed: {e}")
-        state["upgrade_refused"] = target
-        return False
-    say(f"The backend now starts version {target}.")
-    return True
-
-
 def loop(served: Served, settings: dict) -> int:
     stopping: list[int] = []
 
@@ -671,8 +622,7 @@ def loop(served: Served, settings: dict) -> int:
     def project_of(name: str) -> Path | None:
         return projects_of(settings).get(name)
 
-    pool = Pool(lambda job: pinned_python(job, settings),
-                lambda job: allowed_authors(job.args["project"], job.registration))
+    pool = Pool(lambda job: allowed_authors(job.args["project"], job.registration))
     previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
     _said_once.clear()
     state = read_state()
@@ -695,10 +645,6 @@ def loop(served: Served, settings: dict) -> int:
                 if time.monotonic() - last_recover >= RECOVER_SECONDS:
                     service_runner.recover(pool, served.registration, served.clock, project_of)
                     last_recover = time.monotonic()
-                target = upgrade_due(state, pool)
-                if target and settings.get("backend") and upgrade(target, settings, state):
-                    write_state(state)
-                    break
             except Exception as e:
                 say(f"One pass of the service failed: {type(e).__name__}: {e}")
             console.drain()
@@ -791,7 +737,7 @@ def write_data_folders() -> None:
     service_access.limit(service_runner.service_folder())
 
 
-def run(worker: bool = False, command_id: str | None = None, trial: bool = False) -> int:
+def run(worker: bool = False, command_id: str | None = None) -> int:
     """`pdt service run`: the foreground loop. It needs only a registration."""
     if worker or command_id:
         if not (worker and command_id):
@@ -803,24 +749,7 @@ def run(worker: bool = False, command_id: str | None = None, trial: bool = False
     settings = settings_to_serve()
     if settings is None:
         return 1
-    if trial:
-        return run_trial(settings)
     return serve(settings)
-
-
-def run_trial(settings: dict) -> int:
-    """The check of a new version: one check-in. It takes no command, and an upgrade starts it
-    while the service runs, so it takes no lock and changes no state."""
-    served = machine_served(settings)
-    if served is None:
-        return 1
-    served.connection = None
-    try:
-        checkin_answer(served, settings, [], [], read_state())
-    except autoidm.AutoidmError as e:
-        console.error(console.escape(str(e)))
-        return 1
-    return 0
 
 
 def serve(settings: dict) -> int:
@@ -1007,38 +936,7 @@ def stop_children(registration: autoidm.Registration | None) -> None:
                     f"{'has' if sent else 'does not have'} the result.")
 
 
-def remove_path(path: Path) -> None:
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(snapshots.long_path(path), ignore_errors=True)
-    else:
-        Path(snapshots.long_path(path)).unlink(missing_ok=True)
-
-
-def purge(settings: dict) -> list[str]:
-    """Delete the data folder, except each project folder. Returns what stayed."""
-    data = autoidm.data_folder()
-    kept = [Path(path).resolve() for path in settings.get("named_projects") or []]
-    kept.extend(folder.resolve() for folder in project_folders(settings))
-    home = projects_folder(settings).resolve()
-    stayed = []
-    for path in sorted(data.iterdir()) if data.is_dir() else []:
-        resolved = path.resolve()
-        if any(resolved == folder or folder.is_relative_to(resolved) for folder in [*kept, home]):
-            if not path.is_dir():
-                continue
-            for inner in sorted(path.iterdir()):
-                inner_path = inner.resolve()
-                if any(inner_path == folder or folder.is_relative_to(inner_path)
-                       for folder in [*kept, home]):
-                    stayed.append(str(inner))
-                else:
-                    remove_path(inner)
-        else:
-            remove_path(path)
-    return stayed
-
-
-def remove(purge_all: bool, assume_yes: bool) -> int:
+def remove(assume_yes: bool) -> int:
     if not require_admin("remove"):
         return 1
     try:
@@ -1088,12 +986,7 @@ def remove(purge_all: bool, assume_yes: bool) -> int:
             path.unlink(missing_ok=True)
     settings_path().unlink(missing_ok=True)
     console.done(f"Removed the pdt service. Backend: {console.value(name or 'none')}.")
-    if purge_all:
-        for path in purge(settings):
-            console.say(f"kept: {console.value(path)}")
-        return 0
-    console.heading("These stay on this computer. To delete them, run pdt service remove --purge "
-                    "before you remove the service:")
+    console.heading("These stay on this computer:")
     console.bullet(f"data folder {console.value(autoidm.data_folder())}")
     console.bullet(f"journal {console.value(service_runner.service_folder() / 'journal')}")
     console.bullet(f"version folders {console.value(service_install.versions_folder())}")
@@ -1103,7 +996,7 @@ def remove(purge_all: bool, assume_yes: bool) -> int:
 
 
 def status_record() -> dict:
-    """What `pdt service status --json` prints, and what `pdt service diagnose` keeps."""
+    """What `pdt service status --json` prints."""
     settings = read_settings()
     if settings is None:
         return {"installed": False}
@@ -1160,83 +1053,6 @@ def status(as_json: bool = False) -> int:
                        for item in found["commands"]], ["bold"])
     else:
         console.field("Running commands", "none")
-    return 0
-
-
-def command_text(args: list[str]) -> str:
-    """What a program printed, or why it did not run. diagnose keeps going either way."""
-    try:
-        proc = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                              timeout=60)
-    except (OSError, subprocess.SubprocessError) as e:
-        return f"{' '.join(args)}: {e}\n"
-    return proc.stdout + proc.stderr
-
-
-def access_text(path: Path) -> str:
-    if os.name == "nt":
-        return command_text(["icacls", str(path)])
-    try:
-        found = path.stat()
-    except OSError as e:
-        return f"{path}: {e}\n"
-    return (f"{path} {oct(found.st_mode & 0o7777)} {service_access.account_name(found.st_uid)} "
-            f"{service_access.group_name(found.st_gid)}\n")
-
-
-def event_lines() -> str:
-    if os.name == "nt":
-        return command_text(["powershell.exe", "-NoProfile", "-Command",
-                             "Get-WinEvent -FilterHashtable @{LogName='Application'; "
-                             f"ProviderName='{service_runner.EVENT_SOURCE}'}} -MaxEvents "
-                             f"{DIAGNOSE_EVENTS} | Format-List TimeCreated, Id, Message"])
-    if shutil.which("journalctl"):
-        return command_text(["journalctl", "-t", service_runner.EVENT_SOURCE, "-n",
-                             str(DIAGNOSE_EVENTS), "--no-pager"])
-    found = command_text(["log", "show", "--style", "syslog", "--last", "30d", "--predicate",
-                          'eventMessage BEGINSWITH "command="'])
-    return "\n".join(found.splitlines()[-DIAGNOSE_EVENTS:]) + "\n"
-
-
-def diagnose() -> int:
-    """`pdt service diagnose`: one zip for AutoIDM support, with no key, no `.env` file, and no
-    output file."""
-    import zipfile
-    try:
-        settings = read_settings() or {}
-    except InstallError as e:
-        settings = {"error": str(e)}
-    proxy = settings.get("proxy")
-    if isinstance(proxy, dict):
-        settings["proxy"] = {name: service_install.split_proxy_password(str(url))[0]
-                             for name, url in proxy.items()}
-    entries = sorted(service_runner.journal_entries(),
-                     key=lambda entry: entry.get("command_id", ""))[-DIAGNOSE_JOURNAL:]
-    journal = [{key: value for key, value in entry.items() if key != "token"}
-               for entry in entries]
-    name = settings.get("backend")
-    definition = ""
-    if name in service_backends.BACKENDS:
-        try:
-            definition = service_backends.BACKENDS[name].definition(service_runner.service_folder())
-        except (service_backends.BackendError, OSError) as e:
-            definition = str(e)
-    paths = [autoidm.data_folder(), service_runner.service_folder(),
-             service_install.versions_folder(), *projects_of(settings).values()]
-    try:
-        log = log_path().read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        log = ""
-    target = Path.cwd() / f"pdt-service-diagnose-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}.zip"
-    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("settings.json", json.dumps(settings, indent=2) + "\n")
-        archive.writestr("service.log", log)
-        archive.writestr("journal.json", json.dumps(journal, indent=2) + "\n")
-        archive.writestr("definition.txt", definition)
-        archive.writestr("status.json", json.dumps(status_record(), indent=2) + "\n")
-        archive.writestr("access.txt", "".join(access_text(path) for path in paths))
-        archive.writestr("events.txt", event_lines())
-    console.done(f"Wrote {console.value(target)}. Send it to AutoIDM support.")
     return 0
 
 

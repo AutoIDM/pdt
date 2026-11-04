@@ -45,7 +45,7 @@ CANCEL_EXPIRES_SECONDS = 25200
 REFUSED_PRESET_NAMES = ("PATH", "PYTHON*", "LD_*", "DYLD_*", "UV_*", "PDT_INSTALLATION*", "GIT_SSH*")
 ALWAYS_ALLOWED_PRESET_NAMES = ("PDT_STEPS",)
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-SERVICE_KEYS = {"snapshot_env", "pdt_version", "presets"}
+SERVICE_KEYS = {"snapshot_env", "presets"}
 
 
 class Refused(Exception):
@@ -144,9 +144,9 @@ def args_problem(name: str, args: object, worker: bool = False) -> str:
     return ""
 
 
-def command_line(operation: str, args: dict, python: str | None = None) -> list[str]:
+def command_line(operation: str, args: dict) -> list[str]:
     """The program and the arguments of a command, for a list form with no shell."""
-    return [python or sys.executable, "-m", "pdt.cli", *OPERATIONS[operation].argv(args)]
+    return [sys.executable, "-m", "pdt.cli", *OPERATIONS[operation].argv(args)]
 
 
 def decoded(token: object, keys: list[dict], audience: str | None = None,
@@ -333,13 +333,11 @@ def section_problems(raw: object) -> list[str]:
     """What `pdt validate` says about the `service` section of pdt.yml."""
     where = f"{config.PROJECT_FILE}: service"
     if not isinstance(raw, dict):
-        return [f"{where} must hold snapshot_env, pdt_version, or presets"]
+        return [f"{where} must hold snapshot_env or presets"]
     problems = [f"{where}: unknown key {key!r}; it takes: {', '.join(sorted(SERVICE_KEYS))}"
                 for key in raw if key not in SERVICE_KEYS]
     if not isinstance(raw.get("snapshot_env", False), bool):
         problems.append(f"{where}: snapshot_env must be true or false")
-    if raw.get("pdt_version") is not None and not isinstance(raw["pdt_version"], str):
-        problems.append(f"{where}: pdt_version must be text, such as \"0.1.14\"")
     if not isinstance(raw.get("presets", {}), dict):
         problems.append(f"{where}: presets must hold named presets")
     return problems
