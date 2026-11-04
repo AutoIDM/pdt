@@ -16,14 +16,11 @@ The region lists the tables below are drawn from:
 - AWS: https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html
   Only Regions enabled by default are suggested, because an opt-in Region is
   a manual step in the AWS console before anything can deploy there.
-  `REGIONS` holds every Region, so a Region the user enabled still passes.
 - Azure: https://learn.microsoft.com/en-us/azure/reliability/regions-list
 - Google Cloud: https://docs.cloud.google.com/run/docs/locations
 
-`region_problem` rejects a name missing from `REGIONS` before any cloud
-call, so a typo stops with the names it is close to. A region a provider
-opens after a pdt release is rejected until `REGIONS` lists it; the tests
-compare the AWS list with the one botocore ships.
+A region that a provider opens after a pdt release fails `region_problem`
+until `REGIONS` lists it.
 
 macOS and Linux name the time zone the IANA way ("Europe/London").
 Windows names it its own way ("GMT Standard Time"); `WINDOWS_ZONES` maps
@@ -57,7 +54,6 @@ REGION_ENV = {
     "google-cloud": ("PDT_GOOGLE_CLOUD_REGION",),
 }
 
-# Every region name each provider accepts, from the lists named above.
 REGIONS = {
     "aws": (
         "af-south-1", "ap-east-1", "ap-east-2", "ap-northeast-1", "ap-northeast-2",
@@ -420,7 +416,6 @@ def local_currency() -> str:
 
 
 def region_problem(provider: str, region: str) -> str:
-    """A problem with a region the user named, or "" when the provider has it."""
     if provider not in PROVIDERS or region == "" or region in REGIONS[provider]:
         return ""
     close = difflib.get_close_matches(region, REGIONS[provider], n=3)

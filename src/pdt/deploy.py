@@ -271,8 +271,6 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
 
 
 def describe_place(place: dict[str, str]) -> str:
-    """`azure (eastus2, subscription 1234)`: the provider, then the region and the other
-    place keys in parentheses."""
     details = [value if key == "region" else f"{key.replace('_', ' ')} {value}"
                for key, value in place.items() if key != "provider"]
     return f"{place['provider']} ({', '.join(details)})" if details else place["provider"]
