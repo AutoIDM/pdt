@@ -1,4 +1,4 @@
-"""`pdt service run --worker --command ID`: run one command in one Fargate task.
+"""`python -m pdt.service_main --worker --command ID`: run one command in one Fargate task.
 
 The task's environment names only the Parameter Store name of the worker's registration,
 PDT_WORKER_PARAMETER. The worker reads it, removes the name from its environment, and keeps the key

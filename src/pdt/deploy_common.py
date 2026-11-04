@@ -13,8 +13,8 @@ it and no other, through `pdt.utils.env_secret`. When the project sets
 registration (registration_secrets, make_registration), which every later
 deploy keeps and `pdt secrets` never shows, copies, or replaces.
 
-A cloud worker (`pdt service run --worker`) deploys with KEEP_SECRET_ENV set. It holds no
-.env, and the grant it acts under cannot open a secret, so a deploy then reads no secret value
+A cloud worker (`python -m pdt.service_main --worker`) deploys with KEEP_SECRET_ENV set. It holds
+no .env, and the grant it acts under cannot open a secret, so a deploy then reads no secret value
 and writes none: `gather_secrets` and `registration_secrets` give nothing, the root skips
 `missing_env`, and each provider keeps the secret the app already has and its reference on the
 job. The next `pdt secrets save` from the customer's computer changes it.
