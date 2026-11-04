@@ -574,6 +574,20 @@ def cmd_sync(args) -> int:
         return 1
 
 
+def cmd_ci(args) -> int:
+    from pdt import ci_cli
+    actions = {
+        "register": lambda: ci_cli.register(args.project, args.target, args.api_url),
+        "rebuild": lambda: ci_cli.rebuild(args.app, args.installation, args.preset,
+                                          args.artifacts, args.ref, args.label, args.request_id),
+    }
+    try:
+        return actions[args.action]()
+    except (autoidm.AutoidmError, snapshots.SnapshotError) as e:
+        console.error(console.escape(str(e)))
+        return 1
+
+
 def cmd_grant(args) -> int:
     actions = {
         "add": lambda: grants.add(args.place, args.yes, args.plan),
@@ -664,7 +678,7 @@ COMMAND_GROUPS = {
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
     "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
-    "Work with the AutoIDM portal": ["service", "sync", "grant"],
+    "Work with the AutoIDM portal": ["service", "sync", "grant", "ci"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
 
@@ -925,6 +939,28 @@ def build_parser() -> argparse.ArgumentParser:
     q = add_action(actions, "list", help="show each place this computer granted")
     q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_grant)
+    p = add_parser("ci", help="rebuild a merge request on a computer with the pdt service")
+    actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt ci")
+    q = add_action(actions, "register", help="make a CI installation for one project, and print "
+                                             "its values for masked CI variables")
+    q.add_argument("--project", required=True, help="the project name, as the portal shows it")
+    q.add_argument("--target", action="append", required=True, metavar="INS",
+                   help="an installation the rebuild may run on; repeat it for more")
+    q.add_argument("--api-url",
+                   help=f"the AutoIDM address (default: PDT_API_URL, else {config.AUTOIDM_API_URL})")
+    q = add_action(actions, "rebuild", help="send this project, run the app on the target, "
+                                            "follow its output, and save its artifacts")
+    q.add_argument("app", help="the app to run")
+    q.add_argument("--installation", required=True, metavar="INS",
+                   help="the computer with the pdt service that runs it")
+    q.add_argument("--preset", help="a service preset in that computer's pdt.yml")
+    q.add_argument("--artifacts", metavar="DIR",
+                   help="where the artifacts and the log go (default: pdt-artifacts)")
+    q.add_argument("--ref", help="the commit of this version (default: CI_COMMIT_SHA)")
+    q.add_argument("--label", help="a short note (default: MR CI_MERGE_REQUEST_IID)")
+    q.add_argument("--request-id", help="repeats with the same value start one command "
+                                        "(default: ci:CI_JOB_ID)")
+    p.set_defaults(func=cmd_ci)
     p = add_parser("gui", help="open the project's dashboard in your web browser")
     p.add_argument("--port", type=int, default=config.GUI_PORT,
                    help=f"the local port to serve on (default: {config.GUI_PORT})")
