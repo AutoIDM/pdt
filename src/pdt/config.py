@@ -932,7 +932,7 @@ def runs_per_month(cron: str) -> float:
     return per_day * days / 12
 
 
-# Set by the pdt service for a child that runs from a snapshot, which holds no .env file. It
+# Set by the pdt service for a child that runs from a copy, which holds no .env file. It
 # names the served project's .env files, whose values the child gets in its environment.
 SERVICE_ENV_FILES_ENV = "PDT_SERVICE_ENV_FILES"
 

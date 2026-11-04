@@ -10,9 +10,8 @@
 | `pdt service status [--json]` | show the service, its last checks, the projects, and the running commands |
 | `pdt service start` | start the installed service through its service manager; on Windows it is the same as `net start pdt-service` |
 | `pdt service remove [--yes]` | stop the service and each command, revoke this installation at AutoIDM, and delete its key |
-| `pdt sync up [--yes] [--ref REF] [--label LABEL]` | copy this project to AutoIDM as a snapshot; `.env` files, keys, and links stay on this computer |
-| `pdt sync down [--snapshot ID] [--force]` | copy a snapshot into this project; it stops when a file changed on this computer |
-| `pdt sync diff [--json]` | list the files that differ from the newest snapshot |
+| `pdt sync up [APP] [--yes]` | send this project, or one app folder, to AutoIDM as its current copy: one zip for the files outside the app folders and one for each app folder; `.env` files, keys, data files, and links stay on this computer |
+| `pdt sync down [APP] [--yes]` | write the current copy at AutoIDM into this project, or one app folder: new files are added, changed files are replaced, and files of an app folder that the copy does not hold are deleted; `pdt.yml` and each `config.yml` are merged, so a key only this computer holds stays; each earlier file goes to `.pdt/backup/<UTC time>/` first; at a terminal it lists the changes and asks once; it stops in a Git clone |
 | `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
 | `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
 | `pdt run APP` | run an app on this machine |

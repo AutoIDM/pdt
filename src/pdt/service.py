@@ -212,15 +212,7 @@ def choose_projects(wanted: str | None, current: dict) -> tuple[str, list[str]]:
 
 def project_record(name: str, root: Path) -> dict:
     """One project of a check-in. AutoIDM refuses a whole check-in that holds one bad value, so
-    a name or a head that fails its rule stays out, and delivery goes on."""
-    head = None
-    try:
-        record = json.loads((root / config.STATE_DIR / "sync.json").read_text(encoding="utf-8"))
-        head = record.get("snapshot_id") if isinstance(record, dict) else None
-    except (OSError, ValueError):
-        pass
-    if not (isinstance(head, str) and service_commands.SNAPSHOT.fullmatch(head)):
-        head = None
+    a name that fails its rule stays out, and delivery goes on."""
     try:
         folders = sorted(root.iterdir())
     except OSError:
@@ -235,7 +227,7 @@ def project_record(name: str, root: Path) -> dict:
             say_once(f"The portal does not show the app folder {folder}: a name holds only "
                      "letters, digits, dots, dashes, and underscores, and does not start with "
                      "a dash. Rename the folder to use it from the portal.")
-    return {"name": name, "head": head, "apps": apps}
+    return {"name": name, "apps": apps}
 
 
 def checkin_projects(settings: dict, customer: str) -> list[dict]:
@@ -306,8 +298,8 @@ def refuse(served: Served, command_id: str, message: str, keep_journal: bool = F
 
 
 def locate(claims: dict, served: Served, settings: dict) -> Path | None:
-    """The project folder of a command on this computer. sync_down and run_snapshot can act on a
-    project that is not here yet. Raises Refused."""
+    """The project folder of a command on this computer. sync_down can act on a project that is
+    not here yet. Raises Refused."""
     project = claims["args"]["project"]
     root = projects_of(settings).get(project)
     if root is not None:
@@ -321,7 +313,7 @@ def locate(claims: dict, served: Served, settings: dict) -> Path | None:
             raise Refused(f"The project {project} names the customer {owner} in "
                           f"{config.PROJECT_FILE}, not {served.customer}.")
         return root
-    if claims["operation"] in ("sync_down", "run_snapshot"):
+    if claims["operation"] == "sync_down":
         return None
     raise Refused(f"This computer does not serve a project named {project}.")
 

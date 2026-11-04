@@ -136,6 +136,9 @@ def main(argv: list[str]) -> int:
                 lease = store.pull("state/", state)
             except storage.StorageLocked as exc:
                 die(1, str(exc))
+            if storage.is_merge_request_run():
+                store.abort(lease)
+                lease = None
         try:
             code = run_entries(pwsh, app_dir, entries, app["continue_on_error"],
                                {**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),

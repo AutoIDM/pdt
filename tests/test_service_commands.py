@@ -9,13 +9,13 @@ from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, generate_pri
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 from service_fixtures import COMMAND, CUSTOMER, INSTALLATION, KEYS, PRIVATE_PEM, claims, sign, token
 
-from pdt import config, service_commands
+from pdt import service_commands
 from pdt.service_commands import OPERATIONS, Refused, command_line, verify
 
 
-def check(signed, worker=False, command_id=COMMAND, keys=KEYS, now=None):
+def check(signed, command_id=COMMAND, keys=KEYS, now=None):
     return verify(signed, command_id, INSTALLATION, CUSTOMER, keys,
-                  time.time() if now is None else now, worker)
+                  time.time() if now is None else now)
 
 
 def test_a_good_token_passes_and_its_limit_never_passes_the_table():
@@ -115,7 +115,16 @@ def test_an_unknown_operation_is_refused(name):
     ("logs", {"project": "example", "app": "hr", "run": "--full"}, "form"),
     ("run", {"project": "example", "app": "hr", "deployed": "yes"}, "true or false"),
     ("run", {"project": "example", "app": "hr"}, "missing"),
-    ("sync_down", {"project": "example", "snapshot_id": "abc"}, "form"),
+    ("sync_down", {"project": "example", "snapshot_id": "a" * 64}, "not one this operation takes"),
+    ("secrets_set", {"project": "example", "app": "hr", "name": "1BAD"}, "form"),
+    ("secrets_set", {"project": "example", "app": "hr", "name": "A" * 129}, "form"),
+    ("run_mr", {"project": "example", "app": "hr", "mr_iid": "12", "sha": "abc"}, "form"),
+    ("run_mr", {"project": "example", "app": "hr", "mr_iid": "x", "sha": "a" * 40}, "form"),
+    ("run_mr", {"project": "example", "app": "hr", "mr_iid": "12", "sha": "a" * 40,
+                "app_args": "--a\n--b"}, "control character"),
+    ("run_mr", {"project": "example", "app": "hr", "mr_iid": "12", "sha": "a" * 40,
+                "app_args": "x" * 1025}, "at most 1024"),
+    ("artifacts", {"project": "example", "app": "hr"}, "missing"),
     ("list", "not an object", "not an object"),
 ])
 def test_a_bad_arg_is_refused(operation, args, says):
@@ -133,100 +142,63 @@ def test_a_bad_arg_is_refused(operation, args, says):
     ("plan", {"project": "p", "app": "hr"}, ["deploy", "hr", "--plan"]),
     ("run", {"project": "p", "app": "hr", "deployed": False}, ["run", "hr"]),
     ("run", {"project": "p", "app": "hr", "deployed": True}, ["run", "hr", "--deployed", "--follow"]),
+    ("kill", {"project": "p", "app": "hr"}, ["run", "hr", "--kill"]),
     ("pause", {"project": "p", "app": "hr"}, ["pause", "hr"]),
     ("unpause", {"project": "p", "app": "hr"}, ["unpause", "hr"]),
-    ("sync_up", {"project": "p"}, ["sync", "up", "--yes", "--report"]),
-    ("sync_down", {"project": "p", "snapshot_id": "a" * 64}, ["sync", "down", "--snapshot", "a" * 64]),
-    ("run_snapshot", {"project": "p", "snapshot_id": "a" * 64, "app": "hr"}, ["run", "hr"]),
     ("deploy", {"project": "p", "app": "hr"}, ["deploy", "hr", "--yes"]),
     ("destroy", {"project": "p", "app": "hr"}, ["destroy", "hr", "--yes"]),
+    ("secrets_set", {"project": "p", "app": "hr", "name": "TOKEN"}, ["secrets", "hr", "set", "TOKEN"]),
+    ("sync_up", {"project": "p"}, ["sync", "up", "--yes"]),
+    ("sync_up", {"project": "p", "app": "hr"}, ["sync", "up", "hr", "--yes"]),
+    ("sync_down", {"project": "p"}, ["sync", "down", "--yes"]),
+    ("sync_down", {"project": "p", "app": "hr"}, ["sync", "down", "hr", "--yes"]),
+    ("run_mr", {"project": "p", "app": "hr", "mr_iid": "12", "sha": "a" * 40,
+                "app_args": "--full"}, ["run", "hr"]),
 ])
 def test_each_operation_maps_to_one_command_line_of_pdt(operation, args, argv):
     assert service_commands.args_problem(operation, args) == ""
     assert command_line(operation, args) == [sys.executable, "-m", "pdt.cli", *argv]
 
 
-def test_the_table_is_the_contract_table():
+def test_artifacts_runs_the_run_output_module():
+    args = {"project": "p", "app": "hr", "run": "3"}
+    assert command_line("artifacts", args) == [sys.executable, "-m", "pdt.run_output", "hr", "3"]
+
+
+def test_the_table_is_the_spec_table():
     rows = {name: (operation.expires_seconds, operation.limit_seconds,
-                   operation.worker_limit_seconds)
+                   operation.runner_limit_seconds)
             for name, operation in OPERATIONS.items()}
     assert rows == {
         "list": (3600, 300, 300), "validate": (3600, 300, 300), "runs": (3600, 300, 300),
-        "logs": (3600, 300, None), "health": (3600, 300, 300), "plan": (3600, 900, 900),
-        "run": (3600, 21600, 900), "pause": (86400, 900, 900), "unpause": (86400, 900, 900),
-        "sync_up": (86400, 900, None), "sync_down": (86400, 900, None),
-        "run_snapshot": (3600, 21600, None), "deploy": (86400, 3600, 3300),
-        "destroy": (900, 3600, 3300)}
+        "logs": (3600, 300, 300), "health": (3600, 300, 300), "artifacts": (3600, 900, 900),
+        "plan": (3600, 900, 900), "run": (3600, 21600, 3300), "kill": (3600, 300, 300),
+        "pause": (86400, 900, 900), "unpause": (86400, 900, 900),
+        "deploy": (86400, 3600, 3300), "destroy": (900, 3600, 3300),
+        "secrets_set": (900, 300, 300), "sync_up": (86400, 900, None),
+        "sync_down": (86400, 900, None), "run_mr": (3600, 21600, 3300)}
+    exclusive = {name for name, operation in OPERATIONS.items() if operation.exclusive}
+    assert exclusive == {"sync_up", "sync_down", "deploy", "destroy"}
 
 
 def test_no_arg_value_reaches_the_command_line_except_the_validated_fields():
-    args = {"project": "PROJECTVALUE", "app": "APPVALUE", "preset": "PRESETVALUE",
-            "deployed": False}
-    assert command_line("run", args)[3:] == ["run", "APPVALUE"]
     for name, operation in OPERATIONS.items():
-        safe = {"project": "projectname", "app": "appname", "run": "12", "deployed": True, "force": True,
-                "snapshot_id": "a" * 64, "preset": "presetname"}
+        safe = {"project": "projectname", "app": "appname", "run": "12", "deployed": True,
+                "name": "TOKEN", "mr_iid": "12", "sha": "a" * 40, "app_args": "APPARGSVALUE"}
         argv = operation.argv({key: safe[key] for key in (*operation.required, *operation.optional)})
         assert "projectname" not in argv, name
-        assert "presetname" not in argv, name
+        assert "APPARGSVALUE" not in argv, name
 
 
 def test_no_service_module_starts_a_shell():
     source = Path(service_commands.__file__).parent
-    for name in ("service.py", "service_commands.py", "service_runner.py", "service_backends.py"):
+    for name in ("service.py", "service_commands.py", "service_runner.py", "service_backends.py",
+                 "hosted_runner.py"):
         for node in ast.walk(ast.parse((source / name).read_text(encoding="utf-8"))):
             if isinstance(node, ast.keyword) and node.arg == "shell":
                 pytest.fail(f"{name} passes shell=")
             if isinstance(node, ast.Attribute) and node.attr in ("system", "popen"):
                 pytest.fail(f"{name} uses os.{node.attr}")
-
-
-def worker_token(operation="deploy", **changes):
-    return token(operation, {"project": "p", "app": "hr", "snapshot_id": "a" * 64},
-                 grant={"place": "aws:123456789012:us-east-2",
-                        "role": "arn:aws:iam::123456789012:role/pdt-autoidm"}, **changes)
-
-
-def test_a_worker_takes_a_grant_and_a_snapshot():
-    assert check(worker_token(), worker=True)["grant"]["role"].endswith("pdt-autoidm")
-
-
-def test_a_machine_refuses_a_token_with_a_grant():
-    with pytest.raises(Refused, match="not one this operation takes"):
-        check(worker_token())
-    with pytest.raises(Refused, match="not a cloud worker"):
-        check(token("deploy", {"project": "p", "app": "hr"}, grant={"place": "x"}))
-
-
-@pytest.mark.parametrize("grant", [
-    None, {"place": "aws:1:r"}, {"place": "bad", "role": "r"}, {"place": "aws:1:r", "role": "a b"}])
-def test_a_worker_refuses_a_token_with_no_valid_grant(grant):
-    args = {"project": "p", "app": "hr", "snapshot_id": "a" * 64}
-    with pytest.raises(Refused, match="no valid grant"):
-        check(token("deploy", args, grant=grant), worker=True)
-
-
-@pytest.mark.parametrize("operation, args", [
-    ("run_snapshot", {"project": "p", "snapshot_id": "a" * 64, "app": "hr"}),
-    ("sync_up", {"project": "p", "snapshot_id": "a" * 64}),
-    ("sync_down", {"project": "p", "snapshot_id": "a" * 64}),
-    ("logs", {"project": "p", "app": "hr", "snapshot_id": "a" * 64}),
-])
-def test_a_worker_does_not_run_customer_code_copy_files_or_open_logs(operation, args):
-    grant = {"place": "aws:1:r", "role": "r"}
-    with pytest.raises(Refused, match="does not run"):
-        check(token(operation, args, grant=grant), worker=True)
-
-
-def test_a_worker_runs_only_the_deployed_job():
-    grant = {"place": "aws:1:r", "role": "r"}
-    args = {"project": "p", "app": "hr", "deployed": False, "snapshot_id": "a" * 64}
-    with pytest.raises(Refused, match="only the deployed job"):
-        check(token("run", args, grant=grant), worker=True)
-
-
-def write_presets(root: Path, text: str) -> None:
-    (root / config.PROJECT_FILE).write_text(f"service:\n  presets:\n{text}", encoding="utf-8")
 
 
 def test_the_private_key_is_not_a_pinned_key():

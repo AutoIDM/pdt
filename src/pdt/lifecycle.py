@@ -108,6 +108,8 @@ EVENTS = (APP_DEPLOY_STARTED, APP_DEPLOY_COMPLETED, APP_DEPLOY_FAILED, JOB_RUN_S
           APP_DESTROY_COMPLETED, APP_DESTROY_FAILED, APP_SECRETS_UPDATED)
 # Set to `manual` for one execution by the pdt command that starts a deployed run.
 TRIGGER_ENV = "PDT_TRIGGER"
+MR_TRIGGER = "mr"
+MR_IID_ENV = "PDT_MR_IID"
 
 
 @dataclass(frozen=True)
@@ -348,10 +350,19 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
             env: dict[str, str] | None = None, deployed: bool = False) -> int:
     """Run `command` as one run of the job. `deployed` is True for the deployed job (a cloud
     image, the Windows task), whose trigger is `manual` when PDT_TRIGGER says so, else
-    `schedule`; a local `pdt run` is always `manual`."""
-    trigger = "manual" if not deployed or os.environ.get(TRIGGER_ENV) == "manual" else "schedule"
+    `schedule`; a local `pdt run` is `manual`. A run of a merge request (PDT_TRIGGER=mr) is `mr`,
+    with the merge request number from PDT_MR_IID as `mr_iid`."""
+    asked = os.environ.get(TRIGGER_ENV)
+    if asked == MR_TRIGGER:
+        trigger = MR_TRIGGER
+    elif not deployed or asked == "manual":
+        trigger = "manual"
+    else:
+        trigger = "schedule"
     params = {**app_params(app, provider), "run_id": storage.RUN_ID, "deployed": deployed,
               "trigger": trigger}
+    if trigger == MR_TRIGGER:
+        params["mr_iid"] = os.environ.get(MR_IID_ENV, "")
     run = managed_services.monitored(
         "this run", lambda: managed_services.start_run(app, storage.RUN_ID, cwd),
         managed_services.Run())

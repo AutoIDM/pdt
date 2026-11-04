@@ -159,6 +159,10 @@ def store(credentials=None) -> Store:
     return Store(root(), credentials)
 
 
+def is_merge_request_run() -> bool:
+    return os.environ.get("PDT_TRIGGER") == "mr"
+
+
 def sync(local: Path | None = None, lock_ttl: timedelta = LOCK_TTL,
          push_state_on_error: bool = False):
     """`store().sync(...)`: the one call most apps need. See Store.sync."""
@@ -474,32 +478,40 @@ class Store:
         keep at any point (a Meltano bookmark, a rotated OAuth token) sets
         push_state_on_error so a failed run keeps what it saved. local
         defaults to .pdt/runs/<run id>/ in the app folder, and is kept.
+
+        A run of a merge request (PDT_TRIGGER=mr) copies state/ under the lock, releases the
+        lock at once, and never writes state/ back, so the deployed job keeps its state.
         """
         local = (Path(local) if local is not None
                  else config.running_app_dir() / ".pdt" / "runs" / RUN_ID)
         state, output = local / "state", local / "output"
         lease = self.pull("state/", state, lock_ttl)
+        merge_request = is_merge_request_run()
+        if merge_request:
+            self.abort(lease)
         run = Run(self, state, output, self.run_folder(), lease)
         output.mkdir(parents=True, exist_ok=True)
         try:
             yield run
         except BaseException:
-            self._end(run, push_state_on_error)
+            self._end(run, push_state_on_error and not merge_request, merge_request)
             raise
-        self._end(run, True)
+        self._end(run, not merge_request, merge_request)
 
-    def _end(self, run: Run, push_state: bool) -> None:
+    def _end(self, run: Run, push_state: bool, released: bool = False) -> None:
         """Upload the run's output, then push state/ or abort. The lock is
-        released on every path, and a failed upload propagates."""
+        released on every path, and a failed upload propagates. `released`
+        means the lock went already."""
         try:
             if any(file.is_file() for file in run.output.rglob("*")):
                 self.push(run.output, run.folder)
             if push_state:
                 self.push(run.state, "state/", run.lease)
         except BaseException:
-            self.abort(run.lease)
+            if not released:
+                self.abort(run.lease)
             raise
-        if not push_state:
+        if not push_state and not released:
             self.abort(run.lease)
 
     def _take_lock(self, backend: Backend, ttl: timedelta) -> dict:

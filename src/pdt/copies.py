@@ -349,3 +349,21 @@ def send(found: autoidm.Registration, project: str, unit: str, folder: Path,
     autoidm.post(found, "/v1/copies/finish",
                  {"version": 1, "project": project, "unit": unit, "sha256": digest})
     return digest
+
+
+def customer_problem(pdt_yml: bytes | None, customer: str) -> str:
+    """Why a copy's pdt.yml must not serve `customer`, or "". A pdt.yml that names no customer
+    is fine: pdt adds the customer after it writes the files."""
+    if pdt_yml is None:
+        return ""
+    import yaml
+    from pdt import managed_services
+    try:
+        found = (yaml.safe_load(pdt_yml.decode("utf-8-sig")) or {}).get(managed_services.KEY)
+    except (yaml.YAMLError, UnicodeDecodeError, AttributeError):
+        return ""
+    named = found.get("customer") if isinstance(found, dict) else None
+    if named is not None and named != customer:
+        return (f"the {config.PROJECT_FILE} of this copy names the customer {named}, and this "
+                f"computer acts for {customer}")
+    return ""

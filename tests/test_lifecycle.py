@@ -419,3 +419,21 @@ def test_pdt_run_names_the_configured_provider(project, monkeypatch):
     assert cli.main() == 0
     assert (seen[0]["provider"], seen[0]["deployed"], seen[0]["trigger"]) == (
         "azure", False, "manual")
+
+
+def test_an_mr_run_sends_the_trigger_mr_and_the_merge_request_number(project, monkeypatch):
+    sent = []
+    monkeypatch.setattr(lifecycle, "emit", lambda name, **params: sent.append((name, params)))
+    monkeypatch.setenv(lifecycle.TRIGGER_ENV, "mr")
+    monkeypatch.setenv(lifecycle.MR_IID_ENV, "12")
+    lifecycle.run_job("report", "windows", [sys.executable, "-c", "raise SystemExit(0)"], project)
+    started = sent[0][1]
+    assert started["trigger"] == "mr" and started["mr_iid"] == "12"
+
+
+def test_a_local_run_has_no_merge_request_number(project, monkeypatch):
+    sent = []
+    monkeypatch.setattr(lifecycle, "emit", lambda name, **params: sent.append((name, params)))
+    monkeypatch.delenv(lifecycle.TRIGGER_ENV, raising=False)
+    lifecycle.run_job("report", "windows", [sys.executable, "-c", "raise SystemExit(0)"], project)
+    assert sent[0][1]["trigger"] == "manual" and "mr_iid" not in sent[0][1]

@@ -1,5 +1,6 @@
 """What the service tests share: a command key, signed tokens, and a local fake of AutoIDM."""
 
+import hashlib
 import io
 import json
 import threading
@@ -9,12 +10,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, generate_private_key
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
     Encoding, NoEncryption, PrivateFormat, PublicFormat)
 
-from pdt import service_commands, snapshots
-from pdt.utils import autoidm
+from pdt import service_commands
 
 CUSTOMER = "cus_7a1c09e4b2"
 INSTALLATION = "ins_4f8a1c2e9b"
@@ -25,7 +24,6 @@ PUBLIC_PEM = SIGNING_KEY.public_key().public_bytes(
     Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
 KEYS = [{"kid": KID, "pem": PUBLIC_PEM}]
 COMMAND = "cmd_20261103T120000Z_0123abcd"
-AUTHOR_KEY = Ed25519PrivateKey.generate()
 
 
 def claims(operation="list", args=None, command_id=COMMAND, **changes) -> dict:
@@ -38,17 +36,6 @@ def claims(operation="list", args=None, command_id=COMMAND, **changes) -> dict:
     return {**found, **changes}
 
 
-def publication(identity, parent=None, project="example", purpose="publish", key=None, ref=None,
-                label=None) -> dict:
-    """A publication of a snapshot, signed as `/v1/snapshots/start` takes it."""
-    key = key or AUTHOR_KEY
-    return {"schema": 1, "installation_id": INSTALLATION, "public_key": autoidm.public_key(key),
-            "ref": ref, "label": label, "parent": parent, "purpose": purpose,
-            "signature": snapshots.sign_publication(key, CUSTOMER, project, identity, purpose, ref,
-                                                    label, parent),
-            "at": "2026-11-04T12:00:00Z"}
-
-
 def sign(payload: dict, key=PRIVATE_PEM, kid=KID, alg="ES256") -> str:
     return jwt.encode(payload, key, algorithm=alg, headers={"kid": kid})
 
@@ -57,23 +44,28 @@ def token(operation="list", args=None, command_id=COMMAND, **changes) -> str:
     return sign(claims(operation, args, command_id, **changes))
 
 
-def snapshot_of(files: dict[str, bytes]) -> tuple[str, dict, bytes]:
-    """The ID, manifest, and zip of a snapshot that holds `files`."""
-    entries = sorted(({"path": path, "sha256": snapshots.content_hash(data), "size": len(data)}
-                      for path, data in files.items()), key=lambda entry: entry["path"])
+def copy_of(unit: str, files: dict[str, bytes]) -> tuple[dict, bytes]:
+    """The answer entry of /v1/copies/get, without its URL, and the zip of a unit that holds
+    `files`."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zipped:
-        for path, data in files.items():
-            zipped.writestr(path, data)
-    return snapshots.snapshot_id(entries), {"files": entries}, buffer.getvalue()
+        for name, data in files.items():
+            zipped.writestr(name, data)
+    data = buffer.getvalue()
+    entry = {"unit": unit, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data),
+             "files": [{"path": name, "size": len(content)}
+                       for name, content in sorted(files.items())],
+             "made_at": "2026-11-04T12:00:00Z"}
+    return entry, data
 
 
 class FakePortal:
     """Answers each POST from `routes`, by path, and records it. GET /doorbell follows ETags,
-    and GET /zip/<id> serves `zips`. POST /bucket takes a presigned upload."""
+    and GET /zip/<id> serves `zips`. POST /bucket takes a presigned upload, and PUT /bucket a
+    copy."""
 
     def __init__(self):
-        self.seen, self.routes, self.zips, self.uploads = [], {}, {}, []
+        self.seen, self.routes, self.zips, self.uploads, self.puts = [], {}, {}, [], []
         self.doorbell_status = None
         self.etag = '"one"'
         self.doorbell_gets = []
@@ -117,6 +109,11 @@ class FakePortal:
                     return self.answer(200, data)
                 return self.answer(404)
 
+            def do_PUT(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                owner.puts.append((self.path, raw, self.headers.get("x-amz-checksum-sha256")))
+                return self.answer(200)
+
             def do_POST(self):
                 raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 if self.path == "/bucket":
@@ -150,15 +147,14 @@ class FakePortal:
         return "".join(body["text"] for body in self.bodies("/v1/commands/report")
                        if body["command_id"] == command_id and body["fact"] == "output")
 
-    def serve_snapshot(self, identity: str, manifest: dict, data: bytes,
-                       publications: list | None = None) -> None:
-        self.zips[identity] = data
-        self.routes["/v1/snapshots/get"] = lambda _body: (
-            200, {"snapshot_id": identity, "url": f"{self.url}/zip/{identity}",
-                  "manifest": manifest, "publications": publications or []})
-        self.routes["/v1/snapshots/heads"] = lambda _body: (
-            200, {"heads": [{"installation_id": INSTALLATION, "snapshot_id": identity,
-                             "at": "2026-11-04T12:00:00Z"}]})
+    def serve_copies(self, *units: tuple[dict, bytes]) -> None:
+        """Answer /v1/copies/get with `units`: the one the body names, or each unit."""
+        entries = []
+        for entry, data in units:
+            self.zips[entry["sha256"]] = data
+            entries.append({**entry, "url": f"{self.url}/zip/{entry['sha256']}"})
+        self.routes["/v1/copies/get"] = lambda body: (200, {"units": [
+            entry for entry in entries if body.get("unit") in (None, entry["unit"])]})
 
     def close(self):
         self.server.shutdown()

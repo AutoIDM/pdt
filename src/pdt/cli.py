@@ -27,8 +27,8 @@ from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh,
-                     register_cli, scaffold, service, snapshots, sync_cli, upgrade)
+    from pdt import (alerts_cli, console, copies, deploy, gui_cli, lifecycle, powershell, pwsh,
+                     register_cli, scaffold, service, sync_cli, upgrade)
     from pdt.utils import autoidm
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -560,13 +560,12 @@ def cmd_service(args) -> int:
 
 def cmd_sync(args) -> int:
     actions = {
-        "up": lambda: sync_cli.up(args.yes, args.ref, args.label, args.report),
-        "down": lambda: sync_cli.down(args.snapshot, args.force),
-        "diff": lambda: sync_cli.diff(args.json),
+        "up": lambda: sync_cli.up(args.app, args.yes),
+        "down": lambda: sync_cli.down(args.app, args.yes),
     }
     try:
         return actions[args.action]()
-    except (autoidm.AutoidmError, snapshots.SnapshotError) as e:
+    except (autoidm.AutoidmError, copies.CopyError) as e:
         console.error(console.escape(str(e)))
         return 1
 
@@ -859,19 +858,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_service)
     p = add_parser("sync", help="copy this project to or from AutoIDM")
     actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt sync")
-    q = add_action(actions, "up", help="copy this project to AutoIDM as a snapshot")
-    q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
-    q.add_argument("--ref", help="a Git commit or another name of this version, saved with it")
-    q.add_argument("--label", help="a short note saved with the snapshot, such as MR 12")
-    q.add_argument("--report", action="store_true",
-                   help="send a copy for a person to read; the record of this computer stays")
-    q = add_action(actions, "down", help="copy a snapshot into this project")
-    q.add_argument("--snapshot", metavar="ID",
-                   help="which snapshot; leave it off to list the newest ones")
-    q.add_argument("--force", action="store_true",
-                   help="overwrite each file that changed on this computer")
-    q = add_action(actions, "diff", help="list the files that differ from the newest snapshot")
-    q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
+    for name, what in (("up", "send this project, or one app, to AutoIDM as its current copy"),
+                       ("down", "write AutoIDM's current copy of this project, or one app, here")):
+        q = add_action(actions, name, help=what)
+        app = q.add_argument("app", nargs="?", help="one app folder; leave it off for the project")
+        app.completer = completion.apps
+        q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     p.set_defaults(func=cmd_sync)
     p = add_parser("gui", help="open the project's dashboard in your web browser")
     p.add_argument("--port", type=int, default=config.GUI_PORT,
