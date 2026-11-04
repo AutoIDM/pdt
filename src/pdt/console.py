@@ -31,7 +31,7 @@ import threading
 from contextlib import contextmanager
 from functools import partial
 from time import monotonic
-from typing import Any, Iterator
+from typing import IO, Any, Iterator
 
 from rich.cells import cell_len
 from rich.console import Console
@@ -168,6 +168,14 @@ def _print(message: str | Text, hang: int | None = None, stderr: bool = False) -
         hang = len(line.plain) - len(line.plain.lstrip(" "))
     for part in _wrap(line, hang, out.width):
         out.print(part)
+
+
+def to_file(file: IO[str]) -> None:
+    """Print every line as plain text to `file` from now on, for a service with no terminal."""
+    global _console, _errors
+    _console = MainThreadConsole(file=file, color_system=None, highlight=False, soft_wrap=True,
+                                 emoji=False)
+    _errors = _console
 
 
 def to_stderr() -> None:

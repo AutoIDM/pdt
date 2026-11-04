@@ -1,18 +1,17 @@
 """The table of service managers: one entry per platform, with the same five functions.
 
-Each entry runs `<python> -m pdt.cli service run` as SYSTEM or root, from the program folder under
+Each entry runs `<python> -m pdt.service_main` as SYSTEM or root, from the program folder under
 the data folder, and each needs administrator rights. `define` writes the definition and starts
 nothing, `start` starts it, and `remove` stops it and deletes the definition.
 
 A second process of the service exits at once when one runs (`service.one_service`), so a trigger
-that fires while the service runs does nothing. Each entry starts again after a failure: Task
-Scheduler by a repeating trigger each 5 minutes, systemd by its restart rule, launchd by KeepAlive,
-and cron each 5 minutes.
+that fires while the service runs does nothing. Each entry starts again after a failure: the
+Windows Service Control Manager by its recovery actions, systemd by its restart rule, launchd by
+KeepAlive, and cron each 5 minutes.
 """
 
 from __future__ import annotations
 
-import html
 import os
 import plistlib
 import shlex
@@ -28,6 +27,9 @@ LAUNCHD_LABEL = "com.autoidm.pdt-service"
 SYSTEMD_PATH = Path("/etc/systemd/system") / f"{NAME}.service"
 LAUNCHD_PATH = Path("/Library/LaunchDaemons") / f"{LAUNCHD_LABEL}.plist"
 CRON_MARK = "# pdt-service"
+# The Service Control Manager takes the last action again for each later failure of the day.
+RECOVERY = "restart/5000/restart/5000/restart/60000"
+RESET_SECONDS = 86400
 # The env var that moves pdt's data folder, so the service finds the same files as the installer.
 KEPT_ENV = ("PDT_INSTALLATION_DIR",)
 
@@ -36,8 +38,8 @@ class BackendError(RuntimeError):
     pass
 
 
-def service_command(python: str, verb: str = "run") -> list[str]:
-    return [python, "-m", "pdt.cli", "service", verb]
+def service_command(python: str) -> list[str]:
+    return [python, "-m", "pdt.service_main"]
 
 
 def kept_env() -> dict[str, str]:
@@ -56,88 +58,40 @@ def run(*args: str, stdin: str | None = None, check: bool = True) -> subprocess.
     return proc
 
 
-def task_xml(command: list[str], folder: Path) -> str:
-    """The task starts at boot with no one signed in, as SYSTEM, has no time limit, and starts
-    again by a trigger each 5 minutes. IgnoreNew does nothing while one instance runs."""
-    arguments = html.escape(subprocess.list2cmdline(command[1:]))
-    return f"""<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>Managed by pdt; runs the pdt service.</Description></RegistrationInfo>
-  <Triggers>
-    <BootTrigger><Enabled>true</Enabled></BootTrigger>
-    <TimeTrigger>
-      <Repetition><Interval>PT5M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
-      <StartBoundary>2000-01-01T00:00:00</StartBoundary>
-      <Enabled>true</Enabled>
-    </TimeTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>5</Priority>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>{html.escape(command[0])}</Command>
-      <Arguments>{arguments}</Arguments>
-      <WorkingDirectory>{html.escape(str(folder))}</WorkingDirectory>
-    </Exec>
-  </Actions>
-</Task>"""
-
-
-def powershell(script: str) -> str:
-    from pdt import deploy_windows
-    found = shutil.which("powershell.exe") or shutil.which("powershell")
-    if found is None:
-        raise BackendError("Windows PowerShell was not found on PATH")
-    try:
-        return deploy_windows._run_output(found, script)
-    except deploy_windows.WindowsDeployError as e:
-        raise BackendError(str(e)) from None
-
-
-def task_file(folder: Path) -> Path:
-    return folder / "task.xml"
-
-
-def windows_define(python: str, folder: Path) -> None:
-    """Task Scheduler reads the definition from a file, because endpoint protection tools flag
-    an encoded script."""
-    path = task_file(folder)
-    path.write_bytes(task_xml(service_command(python), folder).encode("utf-16"))
-    run("schtasks", "/Create", "/TN", NAME, "/XML", str(path), "/F")
+def windows_define(python: str, _folder: Path) -> None:
+    """A service of the Service Control Manager: LocalSystem, started at boot, and started again
+    5 seconds after the first and the second failure of a day, and 60 seconds after each later
+    one. The failure flag also counts an exit with an error code. Each value that `kept_env` names
+    goes in the service's Environment value."""
+    binary = subprocess.list2cmdline(service_command(python))
+    run("sc.exe", "create", NAME, "binPath=", binary, "start=", "auto", "obj=", "LocalSystem",
+        "DisplayName=", "pdt service")
+    run("sc.exe", "description", NAME, "Runs the commands of the AutoIDM portal. Managed by pdt.")
+    run("sc.exe", "failure", NAME, "reset=", str(RESET_SECONDS), "actions=", RECOVERY)
+    run("sc.exe", "failureflag", NAME, "1")
+    environment = r"\0".join(f"{name}={value}" for name, value in kept_env().items())
+    if environment:
+        run("reg.exe", "add", rf"HKLM\SYSTEM\CurrentControlSet\Services\{NAME}", "/v",
+            "Environment", "/t", "REG_MULTI_SZ", "/d", environment, "/f")
 
 
 def windows_start(_python: str) -> None:
-    run("schtasks", "/Run", "/TN", NAME)
+    run("net.exe", "start", NAME)
 
 
 def windows_remove() -> None:
-    if run("schtasks", "/Query", "/TN", NAME, check=False).returncode != 0:
+    """Also deletes the scheduled task `pdt-service` of an earlier pdt."""
+    if run("schtasks.exe", "/Query", "/TN", NAME, check=False).returncode == 0:
+        run("schtasks.exe", "/End", "/TN", NAME, check=False)
+        run("schtasks.exe", "/Delete", "/TN", NAME, "/F")
+    if run("sc.exe", "query", NAME, check=False).returncode != 0:
         return
-    run("schtasks", "/End", "/TN", NAME, check=False)
-    run("schtasks", "/Delete", "/TN", NAME, "/F")
+    run("net.exe", "stop", NAME, check=False)
+    run("sc.exe", "delete", NAME)
 
 
 def windows_running() -> bool:
-    from pdt import deploy_windows
-    name = deploy_windows._ps_string(NAME)
-    return powershell(f"(Get-ScheduledTask -TaskName {name} "
-                      "-ErrorAction SilentlyContinue).State").strip() == "Running"
+    return " RUNNING" in run("sc.exe", "query", NAME, check=False).stdout
 
 
 def systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -256,4 +210,4 @@ def choose(requested: str | None) -> str:
     for name, backend in BACKENDS.items():
         if backend.available():
             return name
-    raise BackendError("this computer has no Task Scheduler, systemd, launchd, or cron")
+    raise BackendError("this computer has no Windows Service Control Manager, systemd, launchd, or cron")

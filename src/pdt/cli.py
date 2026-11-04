@@ -551,7 +551,7 @@ def cmd_service(args) -> int:
         "install": lambda: service.install(args.projects, args.backend, args.proxy, args.ssh_key,
                                            args.known_hosts, args.yes),
         "status": lambda: service.status(args.json),
-        "run": lambda: service.run(args.worker, args.command_id),
+        "start": service.start,
         "remove": lambda: service.remove(args.yes),
         "author": lambda: {"add": lambda: service.author_add(args.project, args.key),
                            "remove": lambda: service.author_remove(args.project, args.key),
@@ -873,11 +873,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("-y", "--yes", action="store_true", help="accept the access statement")
     q = add_action(actions, "status", help="show the service, its last checks, and running commands")
     q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
-    q = add_action(actions, "run", help="run the service in this terminal, with no install")
-    q.add_argument("--worker", action="store_true",
-                   help="act as a cloud worker, with the registration in the environment")
-    q.add_argument("--command", metavar="ID", dest="command_id",
-                   help="the one command a cloud worker runs")
+    add_action(actions, "start", help="start the installed service through its service manager")
     q = add_action(actions, "remove", help="stop the service and remove it from this computer")
     q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
     q = add_action(actions, "author", help="choose whose snapshots this computer runs")

@@ -3,8 +3,8 @@
 The service runs as SYSTEM or root, so a non-administrator who can write its program or a project
 folder could run code as SYSTEM or root. `writable_by_others` names such an account. The install
 and each start of the service refuse such a folder, on each operating system. A person who runs
-`pdt service run` in a terminal with no administrator rights runs code as that person, so that
-start needs no check.
+`python -m pdt.service_main` in a terminal with no administrator rights runs code as that person,
+so that start needs no check.
 
 `limit` sets the access list of a folder under the data folder. On Windows, `%ProgramData%` lets
 each user create files, and a new folder inherits that, so each folder of pdt inherits nothing.

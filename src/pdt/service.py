@@ -2,11 +2,11 @@
 
 The service serves one registration: `<data folder>/service/settings.json` names the customer. A
 job runs as SYSTEM or root and has the identity of the service, so one computer serves one
-customer. `pdt service run` is the only loop. A WebSocket connection on its own thread brings a
-notice (pdt.service_delivery), and the loop reads a presigned doorbell URL and checks in on the
-timers of `Schedule`. A failure of one pass is logged, and the next pass runs. For each command in
-a check-in, the service verifies the token against the pinned keys, writes the journal, claims it,
-and starts it (pdt.service_runner).
+customer. `run` is the only loop, and `python -m pdt.service_main` starts it. A WebSocket
+connection on its own thread brings a notice (pdt.service_delivery), and the loop reads a
+presigned doorbell URL and checks in on the timers of `Schedule`. A failure of one pass is
+logged, and the next pass runs. For each command in a check-in, the service verifies the token
+against the pinned keys, writes the journal, claims it, and starts it (pdt.service_runner).
 
 The service reads the settings at each pass. A change starts a check-in at once. When `pdt service
 remove` deletes the settings, the service stops.
@@ -15,10 +15,8 @@ The service serves each project the settings name, and each folder directly in t
 that holds pdt.yml. The projects folder has a default, `<data folder>/service/projects`, and a new
 project from `sync_down` goes there. A command for a project of another customer is refused.
 
-`pdt service run` needs only a registration, so a person can try the service before an install.
-With no administrator rights it runs as that person, in that person's data folder.
-
-`pdt service run --worker --command ID` runs one command on a cloud worker (pdt.worker).
+`run` needs only a registration, so the loop also runs in a terminal before an install. With no
+administrator rights it runs as that person, in that person's data folder.
 """
 
 from __future__ import annotations
@@ -27,9 +25,9 @@ import json
 import os
 import secrets
 import shutil
-import signal
 import subprocess
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -613,23 +611,17 @@ def current_settings(last: dict) -> dict | None:
     return last if settings_path().exists() else None
 
 
-def loop(served: Served, settings: dict) -> int:
-    stopping: list[int] = []
-
-    def stop(signum: int, _frame: object) -> None:
-        stopping.append(signum)
-
+def loop(served: Served, settings: dict, stop: threading.Event) -> int:
     def project_of(name: str) -> Path | None:
         return projects_of(settings).get(name)
 
     pool = Pool(lambda job: allowed_authors(job.args["project"], job.registration))
-    previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
     _said_once.clear()
     state = read_state()
     last_recover = 0.0
     seen = settings_mark(settings)
     try:
-        while not stopping:
+        while not stop.is_set():
             try:
                 settings = current_settings(settings)
                 if settings is None:
@@ -648,14 +640,12 @@ def loop(served: Served, settings: dict) -> int:
             except Exception as e:
                 say(f"One pass of the service failed: {type(e).__name__}: {e}")
             console.drain()
-            time.sleep(LOOP_SECONDS)
+            stop.wait(LOOP_SECONDS)
     finally:
         served.connection.stop()
         pool.stop_all()
         write_state(state)
         console.drain()
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
     return 0
 
 
@@ -719,7 +709,7 @@ def settings_to_serve() -> dict | None:
                       "customers, and the service serves one. Name it with "
                       f"{console.value('pdt service install')}.")
         return None
-    if needs_admin("run"):
+    if os.name == "nt" and not require_admin("install"):
         return None
     folder, named = choose_projects(None, {})
     settings = {"version": service_install.SETTINGS_VERSION, "customer": found[0],
@@ -737,22 +727,15 @@ def write_data_folders() -> None:
     service_access.limit(service_runner.service_folder())
 
 
-def run(worker: bool = False, command_id: str | None = None) -> int:
-    """`pdt service run`: the foreground loop. It needs only a registration."""
-    if worker or command_id:
-        if not (worker and command_id):
-            console.error(f"{console.value('--worker')} and {console.value('--command')} go "
-                          "together.")
-            return 2
-        from pdt import worker as worker_module
-        return worker_module.run(command_id)
+def run(stop: threading.Event) -> int:
+    """The loop of the service, until `stop` is set. It needs only a registration."""
     settings = settings_to_serve()
     if settings is None:
         return 1
-    return serve(settings)
+    return serve(settings, stop)
 
 
-def serve(settings: dict) -> int:
+def serve(settings: dict, stop: threading.Event) -> int:
     with one_service() as first:
         if not first:
             console.error("A pdt service already runs on this computer. A computer has one "
@@ -769,22 +752,13 @@ def serve(settings: dict) -> int:
             return 1
         config.write_text_atomically(pid_path(), json.dumps({"pid": os.getpid()}) + "\n")
         try:
-            return loop(served, settings)
+            return loop(served, settings, stop)
         finally:
             pid_path().unlink(missing_ok=True)
 
 
 def install_next_step() -> str:
     return "pdt service install" if os.name == "nt" else "sudo pdt service install"
-
-
-def needs_admin(action: str) -> bool:
-    if os.name == "nt" and not service_access.is_admin():
-        console.error(f"pdt service {console.value(action)} changes what the service may do here, "
-                      "which only an administrator can do. Run it in a terminal opened with "
-                      "Run as administrator.")
-        return True
-    return False
 
 
 def require_admin(action: str) -> bool:
@@ -916,6 +890,33 @@ def show_settings(settings: dict) -> None:
     console.field("Projects folder", settings.get("projects", ""))
     for named in settings.get("named_projects") or []:
         console.field("Project", named)
+
+
+def start() -> int:
+    """`pdt service start`: start the installed service through its service manager."""
+    if not require_admin("start"):
+        return 1
+    try:
+        settings = read_settings() or {}
+    except InstallError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    name = settings.get("backend")
+    if name not in service_backends.BACKENDS:
+        console.error("This computer has no installed pdt service.")
+        console.next_steps([(install_next_step(), "install it")])
+        return 1
+    backend = service_backends.BACKENDS[name]
+    try:
+        if backend.running():
+            console.done(f"The pdt service already runs through {console.value(name)}.")
+            return 0
+        backend.start(settings["python"])
+    except service_backends.BackendError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    console.done(f"Started the pdt service through {console.value(name)}.")
+    return 0
 
 
 def stop_children(registration: autoidm.Registration | None) -> None:
@@ -1114,4 +1115,4 @@ def author_list(as_json: bool) -> int:
     return 0
 
 
-__all__ = ["run", "install", "status", "remove", "sys", "service_delivery"]
+__all__ = ["run", "install", "start", "status", "remove", "sys", "service_delivery"]

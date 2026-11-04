@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import signal
@@ -758,21 +759,25 @@ def test_a_cancel_in_a_check_in_stops_the_running_command(machine, portal, monke
     assert portal.result()["outcome"] == "cancelled"
 
 
-def run_loop(monkeypatch, steps):
+class Steps(threading.Event):
+    """A stop event whose each wait runs one step, and which is set after the last one."""
+
+    def __init__(self, steps):
+        super().__init__()
+        self.remaining = list(steps)
+
+    def wait(self, timeout=None):
+        if self.remaining:
+            self.remaining.pop(0)()
+        else:
+            self.set()
+        return self.is_set()
+
+
+def run_loop(steps):
     """Run the real loop in this thread. Each step runs at one pause of the loop, and the loop
     stops after the last one."""
-    remaining = list(steps)
-
-    def pause(_seconds):
-        if remaining:
-            remaining.pop(0)()
-        else:
-            signal.raise_signal(signal.SIGTERM)
-
-    monkeypatch.setattr(service, "time", SimpleNamespace(
-        sleep=pause, time=time.time, monotonic=time.monotonic, strftime=time.strftime,
-        gmtime=time.gmtime))
-    return service.serve(settings())
+    return service.serve(settings(), Steps(steps))
 
 
 def test_a_failed_check_in_after_a_change_stays_due(machine, portal, monkeypatch):
@@ -797,7 +802,7 @@ def test_an_install_that_changes_the_projects_checks_in_at_once(machine, portal,
     def install():
         service.write_settings({**settings(), "named_projects": [str(fresh)]})
 
-    assert run_loop(monkeypatch, [install, lambda: None]) == 0
+    assert run_loop([install, lambda: None]) == 0
     bodies = portal.bodies("/v1/service/checkin")
     assert [item["name"] for item in bodies[-1]["projects"]] == ["example", "named"]
     assert len(bodies) == 2
@@ -809,14 +814,14 @@ def test_the_new_projects_folder_applies_with_no_restart(machine, portal, monkey
     def move():
         service.write_settings({**settings(), "projects": str(tmp_path / "moved")})
 
-    assert run_loop(monkeypatch, [move, lambda: None]) == 0
+    assert run_loop([move, lambda: None]) == 0
     assert os.environ[service_runner.PROJECTS_HOME_ENV] == str(tmp_path / "moved")
 
 
 def test_the_service_stops_when_the_settings_are_gone(machine, portal, monkeypatch, capsys):
     portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
     steps = [lambda: service.settings_path().unlink()]
-    assert run_loop(monkeypatch, steps) == 0
+    assert run_loop(steps) == 0
     assert "settings are gone" in (service_runner.service_folder() / "service.log").read_text()
 
 
@@ -831,8 +836,43 @@ def test_one_service_runs_on_a_computer(machine, portal, capsys):
         assert first
         with service.one_service() as second:
             assert not second
-        assert service.run() == 1
+        assert service.run(threading.Event()) == 1
     assert portal.seen == []
+
+
+def test_start_starts_the_installed_service_through_its_manager(machine, monkeypatch, capsys):
+    started, running = [], [False]
+    monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
+    monkeypatch.setitem(service.service_backends.BACKENDS, "cron", service.service_backends.Backend(
+        lambda: True, lambda _python, _folder: None, started.append, lambda: None,
+        lambda: running[0]))
+    assert service.start() == 0
+    assert started == [None]
+    assert "Started the pdt service through cron." in capsys.readouterr().out
+    running[0] = True
+    assert service.start() == 0
+    assert started == [None]
+    assert "already runs through cron" in capsys.readouterr().out
+    service.write_settings({**settings(), "backend": None})
+    assert service.start() == 1
+    assert "no installed pdt service" in capsys.readouterr().out
+
+
+def test_the_service_program_takes_worker_and_command_together(capsys):
+    from pdt import service_main
+    assert service_main.main(["--worker"]) == 2
+    assert "go together" in capsys.readouterr().out
+
+
+def test_a_service_with_no_terminal_prints_plain_text_to_its_file(monkeypatch):
+    from pdt import console
+    monkeypatch.setattr(console, "_console", console._console)
+    monkeypatch.setattr(console, "_errors", console._errors)
+    found = io.StringIO()
+    console.to_file(found)
+    console.error(f"no registration: run {console.value('pdt register')}")
+    console.warn("a warning")
+    assert found.getvalue() == "error: no registration: run pdt register\na warning\n"
 
 
 def test_status_names_the_service_as_json(machine, portal, monkeypatch, capsys):
@@ -854,7 +894,7 @@ def test_a_service_run_needs_only_a_registration_and_status_sees_it(machine, por
     service.settings_path().unlink()
     portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    proc = subprocess.Popen([sys.executable, "-m", "pdt.cli", "service", "run"],
+    proc = subprocess.Popen([sys.executable, "-m", "pdt.service_main"],
                             cwd=machine, env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -883,7 +923,7 @@ def test_a_service_run_needs_only_a_registration_and_status_sees_it(machine, por
 
 def test_a_service_run_with_no_registration_says_what_to_do(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path / "none"))
-    assert service.run() == 1
+    assert service.run(threading.Event()) == 1
     assert "pdt register" in capsys.readouterr().out
     assert not service.settings_path().exists()
 
