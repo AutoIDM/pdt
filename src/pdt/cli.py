@@ -26,8 +26,8 @@ from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold,
-                     upgrade)
+    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, regions,
+                     scaffold, upgrade)
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -190,6 +190,9 @@ def cmd_validate(args) -> int:
             missing = config.missing_env(app)
             if missing != "":
                 problems.append((name, f"{name}: {missing}"))
+            region_problem = regions.env_region_problem(app["platform"])
+            if region_problem != "":
+                problems.append((name, f"{name}: {region_problem}"))
             if config.uses_email(app):
                 for problem in email_problems(app["config"]):
                     problems.append((name, f"{name}: {problem}"))

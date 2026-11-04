@@ -73,8 +73,8 @@ REGIONS = {
         "japanwest", "koreacentral", "koreasouth", "malaysiawest", "mexicocentral",
         "newzealandnorth", "northcentralus", "northeurope", "norwayeast", "norwaywest",
         "polandcentral", "qatarcentral", "southafricanorth", "southafricawest", "southcentralus",
-        "southeastasia", "southindia", "spaincentral", "swedencentral", "switzerlandnorth",
-        "switzerlandwest", "taiwannorth", "uaecentral", "uaenorth", "uksouth", "ukwest",
+        "southeastasia", "southeastasia3", "southindia", "spaincentral", "swedencentral",
+        "switzerlandnorth", "switzerlandwest", "taiwannorth", "uaecentral", "uaenorth", "uksouth", "ukwest",
         "westcentralus", "westeurope", "westindia", "westus", "westus2", "westus3",
     ),
     "google-cloud": (
@@ -424,6 +424,16 @@ def region_problem(provider: str, region: str) -> str:
             f"All {PROVIDER_NAMES[provider]} regions: {REGION_LISTS[provider]}")
 
 
+def env_region_problem(platform: dict) -> str:
+    """The problem with the region an environment variable sets when the config sets none."""
+    provider = str(platform.get("provider"))
+    if provider not in PROVIDERS or platform.get("region"):
+        return ""
+    name = next((name for name in REGION_ENV[provider] if os.environ.get(name)), "")
+    problem = region_problem(provider, os.environ[name]) if name != "" else ""
+    return f"the environment variable {name}: {problem}" if problem != "" else ""
+
+
 def question(provider: str) -> str:
     return f"Which {PROVIDER_NAMES[provider]} region should hold your jobs?"
 
@@ -440,6 +450,10 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
     if any(os.environ.get(name, "").strip() != "" for name in REGION_ENV[provider]):
         return ""
     region, reason = region_suggestion(provider, app["platform"])
+    problem = region_problem(provider, region)
+    if problem != "" and (assume_yes or not can_prompt(None)):
+        return (f"pdt found the region {region}, because {reason}. {problem} Add the region "
+                f"to use as `region: <name>` under platform: in {config.PROJECT_FILE}.")
     if assume_yes:
         if config.unsaved() is None:
             console.say(f"Using {PROVIDER_NAMES[provider]} region {console.value(region)}, "

@@ -4,7 +4,7 @@ import pytest
 import yaml
 
 from conftest import add_app
-from pdt import regions
+from pdt import cli, regions
 from pdt.config import merged_app, validate_app
 
 
@@ -211,3 +211,42 @@ def test_a_mistyped_answer_is_asked_again(project, monkeypatch):
     monkeypatch.setattr(regions.console, "ask", lambda _question, _default: next(answers))
     assert regions.choose_region(merged_app("my-report"), "azure", False) == ""
     assert region_in(project / "pdt.yml") == "ukwest"
+
+
+@pytest.mark.parametrize("provider,name", [(provider, name) for provider, names
+                                           in regions.REGION_ENV.items() for name in names])
+def test_a_wrong_region_in_the_environment_is_a_problem(monkeypatch, provider, name):
+    monkeypatch.setenv(name, "eastu2")
+    problem = regions.env_region_problem({"provider": provider})
+    assert name in problem and "region named eastu2" in problem
+    assert regions.env_region_problem({"provider": provider, "region": "eastus2"}) == ""
+
+
+def test_validate_checks_the_region_in_the_env_file(project, monkeypatch, capsys):
+    add_app(project, "my-report", "schedule: daily\n")
+    (project / ".env").write_text("PDT_AZURE_REGION=eastu2\n")
+    monkeypatch.setattr("sys.argv", ["pdt", "validate"])
+    assert cli.main() == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "my-report: the environment variable PDT_AZURE_REGION: There is no Azure region" in out
+
+
+@pytest.mark.parametrize("assume_yes", [True, False])
+@pytest.mark.parametrize("provider,typo", [
+    ("aws", "us-est-1"), ("azure", "eastu2"), ("google-cloud", "us-centrl1")])
+def test_a_wrong_region_in_the_cli_settings_is_not_saved(project, monkeypatch, tmp_path,
+                                                         provider, typo, assume_yes):
+    (tmp_path / "aws-config").write_text(f"[default]\nregion = {typo}\n")
+    (tmp_path / "azure").mkdir()
+    (tmp_path / "azure" / "config").write_text(f"[defaults]\nlocation = {typo}\n")
+    (tmp_path / "gcloud" / "configurations").mkdir(parents=True)
+    (tmp_path / "gcloud" / "active_config").write_text("work\n")
+    (tmp_path / "gcloud" / "configurations" / "config_work").write_text(
+        f"[run]\nregion = {typo}\n")
+    (project / "pdt.yml").write_text(f"platform:\n  provider: {provider}\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: False)
+    problem = regions.choose_region(merged_app("my-report"), provider, assume_yes)
+    assert f"region named {typo}" in problem and "pdt.yml" in problem
+    assert region_in(project / "pdt.yml") is None

@@ -175,21 +175,26 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     config.load_env(app["dir"])
     missing = config.missing_env(app)
     if missing != "":
-        problems.append(f"{app_name}: {missing}")
+        problems.append(missing)
+    region_problem = regions.env_region_problem(app["platform"])
+    if region_problem != "":
+        problems.append(region_problem)
     if config.uses_email(app):
-        problems.extend(f"{app_name}: {problem}"
-                        for problem in email_problems(app["config"], check_oauth=False))
+        problems.extend(email_problems(app["config"], check_oauth=False))
     lines = [f"runs {console.value('run.py')}"]
     if config.powershell_scripts(app["dir"]):
         try:
             scan = powershell.scan(app, provider)
-            problems.extend(f"{app_name}: {problem}" for problem in powershell.report(scan)[0])
+            problems.extend(powershell.report(scan)[0])
             lines = powershell.summary_lines(scan)
         except (pwsh.PwshError, powershell.PowerShellError) as e:
-            problems.append(f"{app_name}: {e}")
+            problems.append(str(e))
     if problems:
         for problem in problems:
-            console.error(console.escape(problem))
+            if problem.startswith((f"{app_name}: ", f"{app_name}/")):
+                console.error(console.escape(problem))
+            else:
+                console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
     console.name(app_name)
     for line in [*lines, *config.found_env_lines(app), *sources]:
