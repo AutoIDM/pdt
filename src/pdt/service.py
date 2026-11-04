@@ -36,7 +36,7 @@ from pathlib import Path
 
 from pdt import (__version__, config, console, managed_services, register_cli, service_access,
                  service_backends, service_commands, service_delivery, service_install,
-                 service_runner, snapshots)
+                 service_runner)
 from pdt.service_commands import Clock, Refused
 from pdt.service_delivery import Connection, Schedule
 from pdt.service_install import InstallError
@@ -74,10 +74,6 @@ def pid_path() -> Path:
 
 def log_path() -> Path:
     return service_runner.service_folder() / "service.log"
-
-
-def authors_path() -> Path:
-    return service_runner.service_folder() / "authors.json"
 
 
 def service_account() -> str:
@@ -188,17 +184,6 @@ def projects_of(settings: dict) -> dict[str, Path]:
         else:
             found[name] = folder
     return found
-
-
-def same_name_problem(settings: dict) -> str:
-    seen: dict[str, Path] = {}
-    for folder in project_folders(settings):
-        name = managed_services.backend_name(folder.name)
-        if name in seen and seen[name] != folder:
-            return (f"Two projects have the name {name}: {seen[name]} and {folder}. Rename one of "
-                    "the folders, then run the command again.")
-        seen[name] = folder
-    return ""
 
 
 def choose_projects(wanted: str | None, current: dict) -> tuple[str, list[str]]:
@@ -341,40 +326,6 @@ def locate(claims: dict, served: Served, settings: dict) -> Path | None:
     raise Refused(f"This computer does not serve a project named {project}.")
 
 
-def read_authors() -> dict:
-    try:
-        found = json.loads(authors_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"schema": 1, "projects": {}}
-    if not (isinstance(found, dict) and isinstance(found.get("projects"), dict)):
-        return {"schema": 1, "projects": {}}
-    return found
-
-
-def allowed_authors(project: str, registration: autoidm.Registration) -> set[str]:
-    listed = read_authors()["projects"].get(project)
-    return {autoidm.public_key(registration.key), *(listed if isinstance(listed, list) else [])}
-
-
-def check_author(claims: dict, served: Served) -> None:
-    """A sync_down or a run_snapshot needs a snapshot that a known author signed. Raises Refused
-    for a snapshot it can refuse, and AutoidmError when AutoIDM did not answer."""
-    if claims["operation"] not in ("sync_down", "run_snapshot"):
-        return
-    project, identity = claims["args"]["project"], claims["args"]["snapshot_id"]
-    try:
-        answer = snapshots.get(served.registration, project, identity)
-    except autoidm.AutoidmError as e:
-        if e.status == 0 or e.status >= 500 or e.status == 429:
-            raise
-        raise Refused(str(e)) from None
-    problem = snapshots.author_problem(answer.get("publications"), served.customer, project,
-                                       identity, allowed_authors(project, served.registration))
-    if problem:
-        raise Refused(f"{problem} To accept this author, run pdt service author add {project} KEY "
-                      "as an administrator on this computer.")
-
-
 def accept(item: object, served: Served, settings: dict, pool: Pool) -> bool:
     """Verify, claim, and queue one command of a check-in. False when the claim got no answer,
     so the next check-in names this command in `claiming`."""
@@ -396,28 +347,17 @@ def accept(item: object, served: Served, settings: dict, pool: Pool) -> bool:
         claims = service_commands.verify(token, command_id, served.registration.installation_id,
                                          served.customer, served.keys, served.clock.now())
         root = locate(claims, served, settings)
-        preset = None
-        if claims["args"].get("preset"):
-            if root is None:
-                raise Refused(f"This computer has no project {claims['args']['project']} "
-                              f"to read the preset {claims['args']['preset']} from.")
-            preset = service_commands.load_preset(root, claims["args"]["preset"],
-                                                  claims["args"].get("app"))
-        check_author(claims, served)
     except Refused as e:
-        refuse(served, command_id, str(e), entry is not None and False)
+        refuse(served, command_id, str(e))
         return True
-    except autoidm.AutoidmError as e:
-        say(f"AutoIDM did not answer about the snapshot of {command_id}: {e}")
-        return False
     if entry is None:
         entry = {"schema": service_runner.JOURNAL_SCHEMA, "command_id": command_id, "token": token,
                  "requested_by": claims.get("requested_by"), "operation": claims["operation"],
                  "claim_id": secrets.token_hex(16), "state": "claiming", "pid": None,
                  "process_created": None, "output_seq": 0, "output_offset": 0, "result": None}
         service_runner.journal_write(entry)
-    job = Job(command_id, claims, served.registration, root, served.clock, preset=preset,
-              known_values=service_runner.known_values_of(root, claims["args"].get("app"), preset))
+    job = Job(command_id, claims, served.registration, root, served.clock,
+              known_values=service_runner.known_values_of(root, claims["args"].get("app")))
     return claim(job, entry["claim_id"], pool)
 
 
@@ -613,7 +553,7 @@ def loop(served: Served, settings: dict, stop: threading.Event) -> int:
     def project_of(name: str) -> Path | None:
         return projects_of(settings).get(name)
 
-    pool = Pool(lambda job: allowed_authors(job.args["project"], job.registration))
+    pool = Pool()
     _said_once.clear()
     state = read_state()
     last_recover = 0.0
@@ -713,7 +653,7 @@ def settings_to_serve() -> dict | None:
     settings = {"version": service_install.SETTINGS_VERSION, "customer": found[0],
                 "projects": folder, "named_projects": named, "backend": None,
                 "pdt_version": __version__, "python": None, "proxy": service_install.find_proxy(None),
-                "ssh": None}
+}
     write_data_folders()
     write_settings(settings)
     return settings
@@ -805,8 +745,8 @@ def wait_first_checkin(started: float) -> bool:
     return False
 
 
-def install_for(customer: str, projects: str | None, backend: str | None, proxy: str | None,
-                ssh_key: str | None, known_hosts: str | None) -> int:
+def install_for(customer: str, projects: str | None, backend: str | None,
+                proxy: str | None) -> int:
     """Steps 5 to 10 of the contract's `pdt service install`. It runs again without harm."""
     try:
         current = read_settings() or {}
@@ -823,19 +763,12 @@ def install_for(customer: str, projects: str | None, backend: str | None, proxy:
         settings = {"version": service_install.SETTINGS_VERSION, "customer": customer,
                     "projects": folder, "named_projects": named, "backend": name,
                     "pdt_version": __version__, "python": None,
-                    "proxy": service_install.find_proxy(proxy) or current.get("proxy") or {},
-                    "ssh": current.get("ssh")}
-        problem = same_name_problem(settings)
-        if problem:
-            console.error(console.escape(problem))
-            return 1
+                    "proxy": service_install.find_proxy(proxy) or current.get("proxy") or {}}
         with console.waiting(f"installing: pdt {__version__} under "
                              f"{service_install.versions_folder()}"):
             settings["python"] = str(service_install.install_running(settings))
         if access_problem(settings):
             return 1
-        if ssh_key:
-            settings["ssh"] = service_install.store_ssh_key(ssh_key, known_hosts)
         previous = current.get("backend")
         if previous in service_backends.BACKENDS and previous != name:
             service_backends.BACKENDS[previous].remove()
@@ -859,8 +792,8 @@ def install_for(customer: str, projects: str | None, backend: str | None, proxy:
     return 0
 
 
-def install(projects: str | None, backend: str | None, proxy: str | None, ssh_key: str | None,
-            known_hosts: str | None, assume_yes: bool) -> int:
+def install(projects: str | None, backend: str | None, proxy: str | None,
+            assume_yes: bool) -> int:
     if not require_admin("install"):
         return 1
     if not registrations_here():
@@ -880,7 +813,7 @@ def install(projects: str | None, backend: str | None, proxy: str | None, ssh_ke
     if not ask_access(assume_yes):
         console.next_steps([(install_next_step(), "install it later")])
         return 1
-    return install_for(found[0], projects, backend, proxy, ssh_key, known_hosts)
+    return install_for(found[0], projects, backend, proxy)
 
 
 def show_settings(settings: dict) -> None:
@@ -1059,58 +992,6 @@ def when(stamp: float | None) -> str:
     if not stamp:
         return "never"
     return time.strftime(service_runner.TIME_FORMAT, time.gmtime(stamp))
-
-
-def write_authors(found: dict) -> None:
-    service_access.limit(service_runner.service_folder())
-    config.write_text_atomically(authors_path(), json.dumps(found, indent=2) + "\n")
-
-
-def author_add(project: str, key: str) -> int:
-    if not require_admin("author add"):
-        return 1
-    try:
-        raw = snapshots.from_base64url(key)
-    except ValueError:
-        raw = b""
-    if len(raw) != 32:
-        console.error(f"{console.value(key)} is not a public key: an author's key is the base64url "
-                      "text of 32 bytes.")
-        return 1
-    found = read_authors()
-    keys = found["projects"].setdefault(project, [])
-    if key not in keys:
-        keys.append(key)
-        write_authors(found)
-    console.done(f"This computer accepts snapshots of {console.value(project)} that "
-                 f"{console.value(key)} signed.")
-    return 0
-
-
-def author_remove(project: str, key: str) -> int:
-    if not require_admin("author remove"):
-        return 1
-    found = read_authors()
-    keys = found["projects"].get(project) or []
-    if key in keys:
-        keys.remove(key)
-        write_authors(found)
-    console.done(f"This computer does not accept snapshots of {console.value(project)} that "
-                 f"{console.value(key)} signed.")
-    return 0
-
-
-def author_list(as_json: bool) -> int:
-    found = read_authors()
-    if as_json:
-        console.data(json.dumps(found))
-        return 0
-    rows = [[project, key] for project, keys in sorted(found["projects"].items()) for key in keys]
-    if rows:
-        console.table(["project", "public key"], rows, ["bold"])
-    else:
-        console.say("This computer has no list of authors. It accepts only its own snapshots.")
-    return 0
 
 
 __all__ = ["run", "install", "start", "status", "remove", "sys", "service_delivery"]

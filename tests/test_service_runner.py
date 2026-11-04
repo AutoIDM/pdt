@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from service_fixtures import (
-    AUTHOR_KEY, COMMAND, CUSTOMER, INSTALLATION, KEYS, FakePortal, claims, publication,
+    COMMAND, CUSTOMER, INSTALLATION, KEYS, FakePortal, claims, publication,
     snapshot_of, token)
 
 from pdt import config, register_cli, service, service_commands, service_runner
@@ -19,7 +19,6 @@ from pdt.service_runner import Job, Pool, execute
 from pdt.utils import autoidm
 
 SECOND = "cmd_20261103T120001Z_0123abcd"
-AUTHORS = {autoidm.public_key(AUTHOR_KEY)}
 
 
 @pytest.fixture
@@ -44,10 +43,7 @@ def machine(tmp_path, monkeypatch, portal):
     root = home / "example"
     (root / "hr").mkdir(parents=True)
     (root / "pdt.yml").write_text(f"platform:\n  provider: windows\nmanaged_services:\n"
-                                  f"  customer: {CUSTOMER}\nservice:\n  snapshot_env: true\n"
-                                  "  presets:\n"
-                                  "    rebuild:\n      env:\n        PDT_STEPS: extract\n"
-                                  "      artifacts: true\n    bad:\n      env:\n        PATH: x\n")
+                                  f"  customer: {CUSTOMER}\n")
     (root / "hr" / "config.yml").write_text("schedule: daily\n")
     (root / "hr" / "run.py").write_text("print('hi')\n")
     (root / ".env").write_text("FROM_PROJECT=project-value\nBOTH=project-value\n")
@@ -55,7 +51,7 @@ def machine(tmp_path, monkeypatch, portal):
     service_runner.service_folder().mkdir(parents=True)
     settings = {"version": 1, "customer": CUSTOMER, "projects": str(home),
                 "named_projects": [], "backend": "cron", "pdt_version": None, "python": None,
-                "proxy": {}, "ssh": None}
+                "proxy": {}}
     service.write_settings(settings)
     monkeypatch.setattr(service_runner, "OUTPUT_SECONDS", 0.2)
     monkeypatch.setattr(service_runner, "STOP_SECONDS", 1)
@@ -123,15 +119,11 @@ def journal(command_id=COMMAND, **fields):
                                   **fields})
 
 
-def job(root, operation="run", args=None, limit=300, preset=None, command_id=COMMAND, worker=False):
+def job(root, operation="run", args=None, limit=300, command_id=COMMAND, worker=False):
     args = args or {"project": "example", "app": "hr", "deployed": False}
     found = claims(operation, args, command_id, limit_seconds=limit)
     journal(command_id)
-    return Job(command_id, found, registration(), root, worker=worker, preset=preset)
-
-
-def trust_author(project: str) -> None:
-    service.write_authors({"schema": 1, "projects": {project: [autoidm.public_key(AUTHOR_KEY)]}})
+    return Job(command_id, found, registration(), root, worker=worker)
 
 
 def run_in_thread(item: Job) -> threading.Thread:
@@ -238,16 +230,16 @@ def test_stop_tree_on_windows_uses_taskkill(monkeypatch):
     assert calls == [["taskkill", "/PID", "1234", "/T", "/F"]]
 
 
-def test_a_preset_reaches_the_child_and_its_artifact_goes_up(machine, portal, monkeypatch):
+def test_a_local_run_sends_its_output_folder_as_an_artifact(machine, portal, monkeypatch):
     code = ("import os, pathlib\n"
-            "print(os.environ['PDT_STEPS'])\n"
+            "print('extract')\n"
             "folder = pathlib.Path(os.environ['PDT_OUTPUT_DIR'])\n"
             "folder.mkdir(parents=True, exist_ok=True)\n"
             "(folder / 'report.txt').write_text('made it')\n")
     child(monkeypatch, code)
     portal.routes["/v1/uploads"] = lambda _body: (200, {
         "url": f"{portal.url}/bucket", "fields": {"key": "uploads/a.zip"}, "key": "uploads/a.zip"})
-    execute(job(machine, preset={"env": {"PDT_STEPS": "extract"}, "artifacts": True}))
+    execute(job(machine))
     assert "extract" in portal.output()
     result = portal.result()
     assert result["outcome"] == "done" and result["artifact_key"] == "uploads/a.zip", result["message"]
@@ -276,7 +268,7 @@ def test_run_snapshot_runs_in_a_new_folder_with_the_project_env_and_removes_the_
             "print('cwd', pathlib.Path.cwd())\n"
             "print('file', pathlib.Path('hr/run.py').read_text().strip())\n"
             "print('env', os.path.exists('.env'), os.path.exists('hr/.env'))\n"
-            "print('project', os.environ['FROM_PROJECT'], os.environ['BOTH'], os.environ['PDT_STEPS'])\n"
+            "print('project', os.environ['FROM_PROJECT'], os.environ['BOTH'], 'extract')\n"
             "print('name', pathlib.Path('.pdt-project-name').read_text().strip())\n"
             "print('files', os.environ['PDT_SERVICE_ENV_FILES'])\n"
             "folder = pathlib.Path(os.environ['PDT_OUTPUT_DIR'])\n"
@@ -285,9 +277,7 @@ def test_run_snapshot_runs_in_a_new_folder_with_the_project_env_and_removes_the_
     child(monkeypatch, code)
     portal.routes["/v1/uploads"] = lambda _body: (200, {
         "url": f"{portal.url}/bucket", "fields": {"key": "k"}, "key": "k"})
-    item = job(machine, "run_snapshot", snapshot_args(identity),
-               preset={"env": {"PDT_STEPS": "extract"}, "artifacts": True})
-    execute(item, AUTHORS)
+    execute(job(machine, "run_snapshot", snapshot_args(identity)))
     output = portal.output()
     result = portal.result()
     assert result["outcome"] == "done", output + str(result)
@@ -306,7 +296,7 @@ def test_a_snapshot_of_another_customer_does_not_run(machine, portal, monkeypatc
         "pdt.yml": b"managed_services:\n  customer: cus_0000000000\n", "hr/run.py": b"x"})
     portal.serve_snapshot(identity, manifest, data, [publication(identity)])
     child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)), AUTHORS)
+    execute(job(machine, "run_snapshot", snapshot_args(identity)))
     result = portal.result()
     assert result["outcome"] == "failed" and "cus_0000000000" in result["message"]
     assert "started" not in portal.facts()
@@ -335,7 +325,7 @@ def test_a_bad_snapshot_reports_failed_and_leaves_no_folder(machine, portal, mon
     identity, manifest, _data = snapshot_of({"a.txt": b"x"})
     portal.serve_snapshot(identity, manifest, b"not a zip", [publication(identity)])
     child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)), AUTHORS)
+    execute(job(machine, "run_snapshot", snapshot_args(identity)))
     result = portal.result()
     assert result["outcome"] == "failed" and "zip" in result["message"]
     assert "started" not in portal.facts()
@@ -346,7 +336,7 @@ def test_a_snapshot_with_a_hostile_path_writes_nothing(machine, portal, monkeypa
     identity, manifest, data = snapshot_of({"../../evil.txt": b"evil"})
     portal.serve_snapshot(identity, manifest, data, [publication(identity)])
     child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)), AUTHORS)
+    execute(job(machine, "run_snapshot", snapshot_args(identity)))
     assert portal.result()["outcome"] == "failed"
     assert not list(tmp_path.rglob("evil.txt"))
 
@@ -486,15 +476,6 @@ def test_a_refused_id_is_refused_once(machine, portal):
     assert portal.facts() == ["result"]
 
 
-def test_a_preset_that_breaks_a_rule_is_refused_before_the_claim(machine, portal):
-    pool = Pool()
-    args = {"project": "example", "app": "hr", "deployed": False, "preset": "bad"}
-    assert accept(pool, token("run", args))
-    assert pool.waiting == []
-    assert portal.result()["outcome"] == "refused"
-    assert "may not set" in portal.result()["message"]
-
-
 def test_a_command_for_a_project_of_another_customer_is_refused(machine, portal):
     (machine / "pdt.yml").write_text("managed_services:\n  customer: cus_0000000000\n")
     pool = Pool()
@@ -512,7 +493,6 @@ def test_a_project_with_no_customer_is_refused_with_the_fix(machine, portal):
 def test_sync_down_can_add_the_customer_to_a_project_that_has_none(machine, portal, monkeypatch):
     (machine / "pdt.yml").write_text("apps: []\n")
     identity = serve_snapshot(portal)
-    trust_author("example")
     pool = Pool()
     assert accept(pool, token("sync_down", {"project": "example", "snapshot_id": identity}))
     item = pool.waiting[0]
@@ -529,7 +509,6 @@ def test_a_staff_install_of_a_new_project_runs_for_real_and_is_served(machine, p
                                             "hr/run.py": b"print('x')\n"})
     portal.serve_snapshot(identity, manifest, data,
                           [publication(identity, project="third-project")])
-    trust_author("third-project")
     answers = [checkin_answer(portal, [{"command_id": COMMAND, "token": token(
         "sync_down", {"project": "third-project", "snapshot_id": identity})}])]
     portal.routes["/v1/service/checkin"] = lambda _body: answers.pop(0) if answers else checkin_answer(portal)
@@ -1062,7 +1041,7 @@ def test_an_install_moves_settings_that_named_one_project_as_the_folder(tmp_path
 
 def test_a_child_gets_no_registration_from_the_service_environment(tmp_path):
     env = service_runner.child_env({"PATH": "x", autoidm.KEY_ENV: "key", autoidm.ID_ENV: "id"},
-                                   tmp_path, {}, {})
+                                   tmp_path, {})
     assert autoidm.KEY_ENV not in env and autoidm.ID_ENV not in env
     assert env["PDT_PROJECT"] == str(tmp_path)
 

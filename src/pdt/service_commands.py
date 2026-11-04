@@ -10,7 +10,6 @@ plain message. `Clock` holds the difference from AutoIDM's time, and each check 
 
 from __future__ import annotations
 
-import fnmatch
 import os
 import re
 import sys
@@ -33,7 +32,7 @@ COMMAND_ID = re.compile(r"cmd_\d{8}T\d{6}Z_[0-9a-f]{8}")
 NAME = re.compile(r"(?!\.{1,2}$)(?!-)[A-Za-z0-9._-]{1,128}")
 RUN_NUMBER = re.compile(r"[0-9]{1,6}")
 SNAPSHOT = re.compile(r"[0-9a-f]{64}")
-ARG_RULES = {"project": NAME, "app": NAME, "preset": NAME, "run": RUN_NUMBER,
+ARG_RULES = {"project": NAME, "app": NAME, "run": RUN_NUMBER,
              "snapshot_id": SNAPSHOT}
 BOOLEAN_ARGS = ("deployed", "force")
 PLACE = re.compile(r"(aws|azure|google-cloud):[A-Za-z0-9-]{1,64}:[a-z0-9-]{1,32}")
@@ -42,10 +41,7 @@ HOUR = 3600
 MINUTE = 60
 # The longest run limit plus 1 h: a cancel must reach each command that can still run.
 CANCEL_EXPIRES_SECONDS = 25200
-REFUSED_PRESET_NAMES = ("PATH", "PYTHON*", "LD_*", "DYLD_*", "UV_*", "PDT_INSTALLATION*", "GIT_SSH*")
-ALWAYS_ALLOWED_PRESET_NAMES = ("PDT_STEPS",)
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-SERVICE_KEYS = {"snapshot_env", "presets"}
 
 
 class Refused(Exception):
@@ -93,7 +89,7 @@ OPERATIONS = {
                         5 * MINUTE),
     "plan": Operation(("project", "app"), (), lambda a: ["deploy", a["app"], "--plan"], HOUR,
                       15 * MINUTE, 15 * MINUTE),
-    "run": Operation(("project", "app", "deployed"), ("preset",), run_argv, HOUR, 6 * HOUR,
+    "run": Operation(("project", "app", "deployed"), (), run_argv, HOUR, 6 * HOUR,
                      15 * MINUTE),
     "pause": Operation(("project", "app"), (), lambda a: ["pause", a["app"]], 24 * HOUR,
                        15 * MINUTE, 15 * MINUTE),
@@ -106,7 +102,7 @@ OPERATIONS = {
                            lambda a: ["sync", "down", "--snapshot", a["snapshot_id"],
                                       *(["--force"] if a.get("force") else [])],
                            24 * HOUR, 15 * MINUTE, None, exclusive=True),
-    "run_snapshot": Operation(("project", "snapshot_id", "app"), ("preset",),
+    "run_snapshot": Operation(("project", "snapshot_id", "app"), (),
                               lambda a: ["run", a["app"]], HOUR, 6 * HOUR, None,
                               from_snapshot=True),
     "deploy": Operation(("project", "app"), (), lambda a: ["deploy", a["app"], "--yes"], 24 * HOUR,
@@ -118,14 +114,14 @@ OPERATIONS = {
 
 def args_problem(name: str, args: object, worker: bool = False) -> str:
     """Why `args` do not fit the operation `name`, or "". A worker's project comes from a
-    snapshot, so a worker takes `snapshot_id` on each operation, and it takes no preset."""
+    snapshot, so a worker takes `snapshot_id` on each operation."""
     operation = OPERATIONS[name]
     if not isinstance(args, dict):
         return "the args are not an object"
     allowed = {*operation.required, *operation.optional}
     needed = list(operation.required)
     if worker:
-        allowed = (allowed | {"snapshot_id"}) - {"preset"}
+        allowed = allowed | {"snapshot_id"}
         needed.append("snapshot_id")
     for arg in args:
         if arg not in allowed:
@@ -276,68 +272,3 @@ def env_spec_names(project: Path, app: str) -> set[str]:
     return {str(name) for name in names}
 
 
-def preset_problem(name: str, preset: object, allowed: set[str]) -> str:
-    """Why the machine refuses a preset, or "". Windows ignores the case of an env var name, so
-    the refused names compare in upper case."""
-    if not (isinstance(preset, dict)
-            and isinstance(preset.get("env", {}), dict)
-            and isinstance(preset.get("artifacts", False), bool)
-            and set(preset) <= {"env", "artifacts"}):
-        return (f"The preset {name} in {config.PROJECT_FILE} must hold only env (names and "
-                "values) and artifacts (true or false).")
-    for key, value in preset.get("env", {}).items():
-        if not (isinstance(key, str) and ENV_NAME.fullmatch(key)):
-            return f"The preset {name} sets {key!r}, which is not an env var name."
-        if isinstance(value, (dict, list)) or value is None:
-            return f"The preset {name} sets {key} to something other than one value."
-        if any(fnmatch.fnmatchcase(key.upper(), pattern) for pattern in REFUSED_PRESET_NAMES):
-            return f"The preset {name} sets {key}, which a preset may not set."
-        if key not in allowed:
-            return (f"The preset {name} sets {key}, which is not PDT_STEPS and is not in the env "
-                    "spec of the app.")
-    return ""
-
-
-def service_section(project: Path) -> dict:
-    """The `service` section of a project's pdt.yml on this machine. pdt never reads it from a
-    snapshot. Raises Refused when the file does not parse."""
-    try:
-        root = config.load_yaml(project / config.PROJECT_FILE)
-    except config.ConfigError as e:
-        raise Refused(str(e)) from None
-    section = root.get("service")
-    return section if isinstance(section, dict) else {}
-
-
-def load_preset(project: Path, name: str, app: str | None) -> dict:
-    """The named preset of `service.presets` in the project's pdt.yml, with its env as text.
-    Raises Refused when the project has none, or when the preset breaks a rule."""
-    presets = service_section(project).get("presets")
-    if not isinstance(presets, dict) or name not in presets:
-        raise Refused(f"{project / config.PROJECT_FILE} has no service preset named {name}.")
-    allowed = set(ALWAYS_ALLOWED_PRESET_NAMES)
-    if app:
-        try:
-            allowed |= env_spec_names(project, app)
-        except config.ConfigError as e:
-            raise Refused(str(e)) from None
-    problem = preset_problem(name, presets[name], allowed)
-    if problem:
-        raise Refused(problem)
-    preset = presets[name]
-    return {"env": {key: str(value) for key, value in preset.get("env", {}).items()},
-            "artifacts": preset.get("artifacts", False)}
-
-
-def section_problems(raw: object) -> list[str]:
-    """What `pdt validate` says about the `service` section of pdt.yml."""
-    where = f"{config.PROJECT_FILE}: service"
-    if not isinstance(raw, dict):
-        return [f"{where} must hold snapshot_env or presets"]
-    problems = [f"{where}: unknown key {key!r}; it takes: {', '.join(sorted(SERVICE_KEYS))}"
-                for key in raw if key not in SERVICE_KEYS]
-    if not isinstance(raw.get("snapshot_env", False), bool):
-        problems.append(f"{where}: snapshot_env must be true or false")
-    if not isinstance(raw.get("presets", {}), dict):
-        problems.append(f"{where}: presets must hold named presets")
-    return problems

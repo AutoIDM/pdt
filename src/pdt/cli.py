@@ -548,14 +548,10 @@ def cmd_register(args) -> int:
 
 def cmd_service(args) -> int:
     actions = {
-        "install": lambda: service.install(args.projects, args.backend, args.proxy, args.ssh_key,
-                                           args.known_hosts, args.yes),
+        "install": lambda: service.install(args.projects, args.backend, args.proxy, args.yes),
         "status": lambda: service.status(args.json),
         "start": service.start,
         "remove": lambda: service.remove(args.yes),
-        "author": lambda: {"add": lambda: service.author_add(args.project, args.key),
-                           "remove": lambda: service.author_remove(args.project, args.key),
-                           "list": lambda: service.author_list(args.json)}[args.author_action](),
     }
     return actions[args.action]()
 
@@ -850,30 +846,12 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--proxy", metavar="URL",
                    help="the proxy for the service and its jobs (default: the proxy of this "
                         "computer's settings)")
-    ssh_key = q.add_argument("--ssh-key", metavar="FILE",
-                             help="a private SSH key the jobs use for Git, copied under pdt's data "
-                                  "folder")
-    ssh_key.completer = completion.files
-    known_hosts = q.add_argument("--known-hosts", metavar="FILE",
-                                 help="the known_hosts file for --ssh-key (default: "
-                                      "~/.ssh/known_hosts)")
-    known_hosts.completer = completion.files
     q.add_argument("-y", "--yes", action="store_true", help="accept the access statement")
     q = add_action(actions, "status", help="show the service, its last checks, and running commands")
     q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     add_action(actions, "start", help="start the installed service through its service manager")
     q = add_action(actions, "remove", help="stop the service and remove it from this computer")
     q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
-    q = add_action(actions, "author", help="choose whose snapshots this computer runs")
-    authors = q.add_subparsers(dest="author_action", metavar="<action>", required=True,
-                               prog="pdt service author")
-    for name, what in (("add", "accept snapshots of a project that this key signed"),
-                       ("remove", "stop accepting snapshots that this key signed")):
-        r = add_action(authors, name, help=what)
-        r.add_argument("project", help="the project name, as the portal shows it")
-        r.add_argument("key", help="the author's public key")
-    r = add_action(authors, "list", help="show each accepted author")
-    r.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_service)
     p = add_parser("sync", help="copy this project to or from AutoIDM")
     actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt sync")
