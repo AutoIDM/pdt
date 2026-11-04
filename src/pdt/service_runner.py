@@ -569,8 +569,6 @@ def prepare(job: Job, base: dict[str, str], allowed: set[str] | None = None) -> 
     operation = OPERATIONS[job.operation]
     app = job.args.get("app")
     preset = job.preset or {"env": {}, "artifacts": False}
-    if job.worker:
-        return prepare_worker(job, base)
     argv = service_commands.command_line(job.operation, job.args)
     if operation.from_snapshot:
         work = work_root() / job.command_id
@@ -610,30 +608,6 @@ def prepare(job: Job, base: dict[str, str], allowed: set[str] | None = None) -> 
     if not config.find_env_files(job.project / app if app else job.project):
         extra[config.SERVICE_ENV_FILES_ENV] = ""
     return Prepared(job.project, child_env(base, job.project, preset["env"], extra), argv)
-
-
-def prepare_worker(job: Job, base: dict[str, str]) -> Prepared:
-    from pdt import grants
-    argv = service_commands.command_line(job.operation, job.args)
-    app = job.args.get("app")
-    work = work_root() / job.command_id
-    work.mkdir()
-    write_snapshot_files(job, work, None)
-    project = work / "project"
-    if app:
-        # A record of the deploy lives on the computer that deployed, and a worker has none.
-        state = project / config.STATE_DIR / "state"
-        state.parent.mkdir(exist_ok=True)
-        state.write_text(json.dumps({"deployed": [app]}) + "\n", encoding="utf-8")
-    credentials = grants.credentials(job.claims["grant"], job.registration)
-    if job.operation == "run":
-        # The grant does not read logs, so a worker starts the run and does not follow it.
-        argv = [part for part in argv if part != "--follow"]
-    user = worker_user()
-    if user:
-        give_folder(work, user)
-    return Prepared(project, worker_env(base, project, credentials), argv, None, work,
-                    credentials.get(GRANT_FOLDER_ENV), user)
 
 
 def snapshot_env_on(project: Path | None) -> bool:

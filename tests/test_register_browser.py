@@ -122,44 +122,81 @@ def test_an_answer_with_a_page_that_is_not_https_opens_nothing(portal, capsys):
     assert "not https" in capsys.readouterr().out
 
 
-def test_each_place_chosen_in_the_browser_is_granted(portal, monkeypatch):
-    place = "aws:123456789012:us-east-2"
-    poll_answers(portal, (200, {**APPROVED, "grants": [place]}))
-    added = []
+PLACE = "aws:123456789012:us-east-2"
+CONNECT = "https://portal.example.com/#/connect/aws"
+
+
+def grant_answers(portal, *statuses):
+    remaining = list(statuses)
+    portal.statuses = []
+
+    def status(body):
+        portal.statuses.append(body["place"])
+        found = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return 200, {"status": found, "checked_at": None, "message": None, "connect_url": CONNECT}
+
+    portal.routes["/v1/grants/status"] = status
+
+
+def test_each_place_chosen_in_the_browser_opens_its_connect_page_and_waits(portal, monkeypatch,
+                                                                            capsys):
+    poll_answers(portal, (200, {**APPROVED, "grants": [PLACE]}))
+    grant_answers(portal, "pending", "pending", "active")
     monkeypatch.setattr(register_cli, "can_prompt", lambda _interactive: True)
-    monkeypatch.setattr(grants, "add", lambda *args: added.append(args) or 0)
     assert register_cli.register(None, portal.url) == 0
-    assert added[0][:3] == (place, False, False)
-    assert added[0][3].installation_id == INSTALLATION
+    assert CONNECT in portal.opened
+    assert portal.statuses == [PLACE, PLACE, PLACE]
+    assert "Granted" in capsys.readouterr().out
 
 
-def test_a_person_with_no_places_chosen_gets_the_question(portal, monkeypatch):
-    place = "aws:123456789012:us-east-2"
+def test_a_place_of_the_project_also_gets_its_connect_page(portal, monkeypatch):
     poll_answers(portal, (200, APPROVED))
-    added = []
+    grant_answers(portal, "pending", "active")
     monkeypatch.setattr(register_cli, "can_prompt", lambda _interactive: True)
-    monkeypatch.setattr(grants, "places_of_project", lambda: [place])
-    monkeypatch.setattr(grants, "add", lambda *args: added.append(args) or 0)
+    monkeypatch.setattr(grants, "places_of_project", lambda: [PLACE])
     assert register_cli.register(None, portal.url) == 0
-    assert added[0][:3] == (place, False, False)
+    assert CONNECT in portal.opened
 
 
-def test_yes_prints_the_grant_command_and_grants_nothing(portal, monkeypatch, capsys):
-    place = "aws:123456789012:us-east-2"
+def test_an_active_grant_opens_nothing(portal, monkeypatch, capsys):
     poll_answers(portal, (200, APPROVED))
+    grant_answers(portal, "active")
     monkeypatch.setattr(register_cli, "can_prompt", lambda _interactive: True)
-    monkeypatch.setattr(grants, "places_of_project", lambda: [place])
-    monkeypatch.setattr(grants, "add", lambda *_a: pytest.fail("made a grant"))
+    monkeypatch.setattr(grants, "places_of_project", lambda: [PLACE])
+    assert register_cli.register(None, portal.url) == 0
+    assert CONNECT not in portal.opened
+    assert PLACE in capsys.readouterr().out
+
+
+def test_a_grant_that_never_becomes_active_says_not_granted(portal, monkeypatch, capsys):
+    poll_answers(portal, (200, APPROVED))
+    grant_answers(portal, "pending")
+    clock = iter(range(0, 10 ** 6, 60))
+    monkeypatch.setattr(register_cli.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(register_cli, "can_prompt", lambda _interactive: True)
+    monkeypatch.setattr(grants, "places_of_project", lambda: [PLACE])
+    assert register_cli.register(None, portal.url) == 1
+    assert "Not granted" in capsys.readouterr().out
+
+
+def test_yes_prints_the_connect_page_and_does_not_wait(portal, monkeypatch, capsys):
+    poll_answers(portal, (200, APPROVED))
+    grant_answers(portal, "pending")
+    monkeypatch.setattr(register_cli, "can_prompt", lambda _interactive: True)
+    monkeypatch.setattr(grants, "places_of_project", lambda: [PLACE])
     assert register_cli.register(None, portal.url, True) == 0
-    assert f"pdt grant add {place}" in capsys.readouterr().out
+    assert CONNECT in capsys.readouterr().out
+    assert CONNECT not in portal.opened
+    assert portal.statuses == [PLACE]
 
 
-def test_no_one_at_a_terminal_gets_no_question_and_no_grant(portal, monkeypatch):
+def test_no_one_at_a_terminal_does_not_wait(portal, monkeypatch):
     poll_answers(portal, (200, APPROVED))
+    grant_answers(portal, "pending")
     monkeypatch.setattr(register_cli, "can_prompt", lambda _interactive: False)
-    monkeypatch.setattr(grants, "places_of_project", lambda: ["aws:123456789012:us-east-2"])
-    monkeypatch.setattr(grants, "add", lambda *_a: pytest.fail("made a grant"))
+    monkeypatch.setattr(grants, "places_of_project", lambda: [PLACE])
     assert register_cli.register(None, portal.url) == 0
+    assert portal.statuses == [PLACE]
 
 
 def test_the_code_flow_also_saves_the_command_keys(portal):

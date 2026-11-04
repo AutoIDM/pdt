@@ -11,9 +11,10 @@ After the registration, pdt installs the service when this computer runs the pro
 project has the provider `windows` or no provider, or no project exists) and the process has
 administrator rights and finds a backend. It states the access first, and `--yes` accepts it. With
 no administrator rights it prints the next command. A computer that only deploys to a cloud gets
-no service. Then it asks the grant question for each place of the project, and `--yes` does not
-accept a grant. One computer with the service serves one customer, so a registration of another
-customer revokes the new installation and deletes the new key.
+no service. Then, for each place of the project and each place the person chose in the browser,
+it opens the place's Connect page and waits until AutoIDM finds the grant active. `--yes` prints
+the pages and does not wait. One computer with the service serves one customer, so a
+registration of another customer revokes the new installation and deletes the new key.
 
 The code names the customer, so pdt learns the customer only from the answer.
 It makes the key and writes it as pending-<hash of the code>.key before it
@@ -61,6 +62,8 @@ SYSTEM_READ = "(A;OICI;FR;;;S-1-5-18)"
 FOLDER_ENV = "PDT_REGISTRATIONS_FOLDER"
 DEVICE_KEY = "pending-device.key"
 DEFAULT_POLL_SECONDS = 3
+GRANT_POLL_SECONDS = 5
+GRANT_WAIT_SECONDS = 15 * 60
 PLATFORM_NAMES = {"win32": "windows", "darwin": "macos"}
 
 
@@ -137,7 +140,7 @@ def register(code: str | None, api_url: str | None, assume_yes: bool = False,
     if pending_status:
         console.say(f"A customer administrator must approve the installation "
                     f"{console.value(answer['installation_id'])}. The service keeps checking in.")
-    return ask_grants(answer.get("grants") or [], found, assume_yes, pending_status) or result
+    return connect_places(answer.get("grants") or [], found, assume_yes, pending_status) or result
 
 
 def register_with_code(code: str, api_url: str) -> tuple:
@@ -356,22 +359,53 @@ def install_here(customer: str, assume_yes: bool) -> int:
     return service.install_for(customer, None, None, None, None, None)
 
 
-def ask_grants(chosen: list[str], found: autoidm.Registration, assume_yes: bool,
-               pending: bool) -> int:
-    """The grant question for each place of the project, and each place the person chose in the
-    browser. `--yes` does not accept a grant, and a `pending` installation has no grant right, so
-    each of those prints the next command."""
+def grant_status(found: autoidm.Registration, place: str) -> dict:
+    return autoidm.post(found, "/v1/grants/status", {"version": 1, "place": place})
+
+
+def connect_places(chosen: list[str], found: autoidm.Registration, assume_yes: bool,
+                   pending: bool) -> int:
+    """Open the Connect page of each place that has no active grant, and wait for each. `--yes`,
+    a `pending` installation, and a run with no one to watch print the pages and do not wait."""
     places = sorted({*chosen, *grants.places_of_project()})
-    if not places:
-        return 0
-    if assume_yes or pending or not can_prompt(None):
-        console.next_steps([(f"pdt grant add {place}", "let AutoIDM deploy and run jobs in that place")
-                            for place in places])
-        return 0
-    code = 0
+    waiting: dict[str, str] = {}
     for place in places:
-        code = grants.add(place, False, False, found) or code
-    return code
+        try:
+            status = grant_status(found, place)
+        except autoidm.AutoidmError as e:
+            console.warn(f"AutoIDM did not answer about {console.value(place)}: "
+                         f"{console.escape(str(e))}")
+            continue
+        if status.get("status") == "active":
+            console.done(f"AutoIDM can deploy and run jobs in {console.value(place)}.")
+        elif status.get("connect_url"):
+            waiting[place] = status["connect_url"]
+    if not waiting:
+        return 0
+    console.heading("To let AutoIDM deploy and run jobs in a place, open its Connect page:")
+    for place, url in waiting.items():
+        console.field(place, url)
+    if assume_yes or pending or not can_prompt(None):
+        return 0
+    for url in waiting.values():
+        webbrowser.open(url)
+    deadline = time.monotonic() + GRANT_WAIT_SECONDS
+    with console.waiting("waiting: the Connect pages"):
+        while waiting and time.monotonic() < deadline:
+            time.sleep(GRANT_POLL_SECONDS)
+            for place in list(waiting):
+                try:
+                    status = grant_status(found, place).get("status")
+                except autoidm.AutoidmError:
+                    continue
+                if status == "active":
+                    del waiting[place]
+                    console.done(f"Granted: AutoIDM can deploy and run jobs in "
+                                 f"{console.value(place)}.")
+    for place in waiting:
+        console.warn(f"Not granted: AutoIDM found no active grant for {console.value(place)} "
+                     f"in {console.value(GRANT_WAIT_SECONDS // 60)} minutes.")
+    return 1 if waiting else 0
 
 
 def save_customer(customer: str) -> None:
