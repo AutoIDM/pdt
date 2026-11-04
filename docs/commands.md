@@ -16,8 +16,6 @@
 | `pdt sync down [--snapshot ID] [--force]` | copy a snapshot into this project; it stops when a file changed on this computer |
 | `pdt sync diff [--json]` | list the files that differ from the newest snapshot |
 | `pdt grant add\|remove PLACE [--yes] [--plan]`, `pdt grant list` | let AutoIDM deploy in one cloud place with an identity you can see and delete, or stop it |
-| `pdt ci register --project NAME --target INS [--target INS]` | make a CI installation for one project after a customer administrator approves it in a browser; it prints `PDT_INSTALLATION_ID`, `PDT_INSTALLATION_KEY`, `PDT_API_URL`, and `PDT_CUSTOMER_ID` to store as masked CI variables, and the `pdt service author add` line to run on each target; it writes no file |
-| `pdt ci rebuild APP --installation INS [--preset NAME] [--artifacts DIR]` | in a merge request pipeline: send this project as a snapshot, run the app on that computer with the pdt service, print its output, save its artifacts and log in `DIR` (default `pdt-artifacts`), and exit with the result of the run; an app of a cloud provider has no rebuild |
 | `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
 | `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
 | `pdt run APP` | run an app on this machine |

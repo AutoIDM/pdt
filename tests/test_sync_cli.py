@@ -121,17 +121,6 @@ def test_a_later_publish_names_the_record_as_its_parent(project, portal, monkeyp
     assert portal.bodies("/v1/snapshots/start")[1]["publication"]["parent"] == first
 
 
-def test_a_ci_registration_sends_a_merge_request_and_changes_no_record(project, portal, monkeypatch):
-    key = Ed25519PrivateKey.generate()
-    monkeypatch.setenv(autoidm.ID_ENV, "ins_0000000007")
-    monkeypatch.setenv(autoidm.KEY_ENV, autoidm.private_pem(key).decode())
-    monkeypatch.setenv(autoidm.URL_ENV, portal.url)
-    monkeypatch.setenv(autoidm.CUSTOMER_ENV, CUSTOMER)
-    assert run(monkeypatch, "sync", "up", "--yes") == 0
-    assert portal.bodies("/v1/snapshots/start")[0]["purpose"] == "merge_request"
-    assert sync_cli.read_record(project) == {}
-
-
 def test_sync_up_waits_for_the_check_of_the_zip(project, portal, monkeypatch):
     answers = [(202, {"state": "checking"}), (200, {"state": "ready"})]
     portal.routes["/v1/snapshots/finish"] = lambda _body: answers.pop(0)

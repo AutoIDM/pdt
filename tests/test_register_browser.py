@@ -51,8 +51,7 @@ def test_the_browser_flow_prints_the_code_waits_and_saves_the_keys(portal, capsy
     assert keys_at_start == [register_cli.DEVICE_KEY]
     start_body = portal.bodies("/v1/device/start")[0]
     assert set(start_body) == {"public_key", "hostname", "pdt_version", "platform", "places",
-                               "projects", "kind", "ci"}
-    assert (start_body["kind"], start_body["ci"]) == ("machine", None)
+                               "projects"}
     info, key = autoidm.files(CUSTOMER)
     assert json.loads(info.read_text()) == {
         "installation_id": INSTALLATION, "customer_id": CUSTOMER, "api_url": portal.url,

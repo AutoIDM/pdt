@@ -2,8 +2,7 @@
 
 A snapshot is a zip of the project folder (pdt.snapshots). `.pdt/sync.json` records the last
 snapshot this computer published or received: its ID and each file's hash. `pdt sync up --report`
-sends a copy for a person to read, and it does not change that record. A CI installation sends
-the merge request's files, and it does not change that record either.
+sends a copy for a person to read, and it does not change that record.
 
 `pdt sync down --snapshot ID` uses the record for three rules. It stops when no publication of the
 snapshot has the record's ID as its parent, it deletes a file only when the record lists it and
@@ -123,8 +122,7 @@ def send_up(assume_yes: bool, ref: str | None, label: str | None, report: bool) 
                 return DECLINED
         except EOFError:
             return DECLINED
-    from_ci = registration.source == autoidm.ID_ENV
-    purpose = "merge_request" if from_ci else "report" if report else "publish"
+    purpose = "report" if report else "publish"
     parent = read_record(root).get("snapshot_id")
     with tempfile.TemporaryDirectory(prefix="pdt-sync-") as folder:
         with console.waiting(f"sending: snapshot of {name}"):
