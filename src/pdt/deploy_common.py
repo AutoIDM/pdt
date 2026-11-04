@@ -685,6 +685,14 @@ def keeps_secret() -> bool:
     return os.environ.get(KEEP_SECRET_ENV, "").strip() != ""
 
 
+def keep_paused(app: dict, exists: bool, paused_now: Callable[[], bool]) -> None:
+    """A deploy of the hosted runner keeps a paused job paused. The runner deploys AutoIDM's
+    copy, which holds no `pause: true` of an earlier `pdt pause` on another runner. `paused_now`
+    reads the deployed state, and runs only when that matters."""
+    if keeps_secret() and exists and not app["pause"]:
+        app["pause"] = paused_now()
+
+
 def gather_secrets(app: dict) -> dict[str, str]:
     if keeps_secret():
         return {}

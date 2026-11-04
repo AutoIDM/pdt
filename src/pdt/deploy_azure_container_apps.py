@@ -41,6 +41,7 @@ import gzip
 import hashlib
 import http.client
 import json
+import os
 import re
 import shutil
 import sys
@@ -71,7 +72,7 @@ from pdt.deploy_azure import (
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, gather_secrets,
-    image_action, keeps_secret, make_registration, reads_registration, registration_secrets,
+    image_action, keep_paused, keeps_secret, make_registration, reads_registration, registration_secrets,
     run_build,
     run_secrets, ssh_build_args, store_cost_label, store_kept_line, warn_if_locked)
 
@@ -714,6 +715,53 @@ def kill(app: dict, settings: dict) -> int:
     return 0
 
 
+# The run values an MR run takes from the hosted runner's child env.
+MR_ENV_NAMES = ("PDT_RUN_ID", "PDT_APP_ARGS")
+
+
+def mr_run(app: dict, settings: dict, iid: str) -> int:
+    """Build the app of this folder as image `<app>-mr<iid>`, start one execution of the deployed
+    job with that image and the job's own env, secret, and storage, follow its log, and delete the
+    image, also after a failure. A start override changes no setting of the job."""
+    job, current = find_job(settings, app["name"])
+    if current is None:
+        fail(f"{console.value(app['name'])} has no Container Apps Job yet; run "
+             f"{console.value('pdt deploy ' + app['name'])} first.")
+    cloud = build_in_cloud(app, "ACR Tasks", "linux/amd64")
+    image_name = f"{app['name']}-mr{iid}"
+    image = f"{settings['registry']}.azurecr.io/{image_name}:latest"
+    container = current["properties"]["template"]["containers"][0]
+    skipped = (lifecycle.TRIGGER_ENV, lifecycle.MR_IID_ENV, *MR_ENV_NAMES)
+    env = [f"{var['name']}=secretref:{var['secretRef']}" if "secretRef" in var
+           else f"{var['name']}={var.get('value', '')}"
+           for var in container.get("env") or [] if var["name"] not in skipped]
+    env += [f"{lifecycle.TRIGGER_ENV}={lifecycle.MR_TRIGGER}", f"{lifecycle.MR_IID_ENV}={iid}"]
+    env += [f"{name}={os.environ[name]}" for name in MR_ENV_NAMES if os.environ.get(name)]
+    resources = container.get("resources") or {}
+    try:
+        ensure_image(app, image, "linux/amd64", "ACR Tasks" if cloud else "", None,
+                     lambda: False, lambda stage: build_image(stage, settings, image_name, cloud))
+        output = run_quiet("containerapp", "job", "start", "--name", job,
+                           "--resource-group", settings["resource_group"],
+                           "--container-name", container["name"], "--image", image,
+                           "--cpu", str(resources.get("cpu", CPU)),
+                           "--memory", resources.get("memory", MEMORY),
+                           "--env-vars", *env, "--output", "json",
+                           slow=f"starting: Container Apps Job {console.value(job)}")
+        try:
+            execution = json.loads(output or "null")
+        except ValueError:
+            execution = None
+        name = (execution or {}).get("name")
+        console.done(f"Started execution {console.value(name)} of {console.value(job)} with "
+                     f"image {console.value(image)}.")
+        return logs(app, settings, ["--follow"], new=lambda run: run.id == name)
+    finally:
+        run_quiet("acr", "repository", "delete", "--name", settings["registry"],
+                  "--repository", image_name, "--yes")
+        console.done(f"Deleted image {console.value(image)}.")
+
+
 def start(app: dict, settings: dict, follow: bool = False) -> int:
     job, current = find_job(settings, app["name"])
     if current is None:
@@ -1135,10 +1183,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     missing_locks = state["missing_locks"]
     if not owned_by(legacy_job, name):
         legacy_job = None
-    # The hosted runner deploys AutoIDM's copy, which holds no `pause: true` of an earlier
-    # `pdt pause` on another runner, so a paused job stays paused.
-    if keeps_secret() and current_job and not app["pause"]:
-        app["pause"] = (current_job.get("properties") or {}).get("runningState") == "Suspended"
+    keep_paused(app, bool(current_job), lambda: (current_job.get("properties") or {}).get(
+        "runningState") == "Suspended")
     vault_exists, current_secret = secret_state(settings, sid, name, state["secret"])
     kept_secret = keeps_secret() and bool(state["secret"][2])
     values.update(registration_secrets(current_secret))

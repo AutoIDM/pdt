@@ -85,7 +85,7 @@ from pdt import regions
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
-    ensure_image, fail, fetch_json, gather_secrets, image_action, keeps_secret, make_registration,
+    ensure_image, fail, fetch_json, gather_secrets, image_action, keep_paused, keeps_secret, make_registration,
     registration_secrets, run_build, run_main, run_secrets, secret_contents, ssh_build_args,
     store_cost_label, store_kept_line, store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
@@ -939,10 +939,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         if scheduler is not None and not scheduler_owned(scheduler, name, project, region, sa):
             fail(f"Cloud Scheduler job {console.value(job)} exists but is not managed by PDT")
         sched_exists = scheduler is not None
-        # The hosted runner deploys AutoIDM's copy, which holds no `pause: true` of an earlier
-        # `pdt pause` on another runner, so a paused job stays paused.
-        if keeps_secret() and sched_exists and not app["pause"]:
-            app["pause"] = scheduler.get("state") == "PAUSED"
+        keep_paused(app, sched_exists, lambda: scheduler.get("state") == "PAUSED")
         sid = secret_id(name)
         secret = read_json_or_none("secrets", "describe", sid, "--project", project)
         require_managed(secret, f"Secret Manager secret {console.value(sid)}")
@@ -1487,6 +1484,94 @@ def pause(app: dict, paused: bool, assume_yes: bool) -> int:
     return 0
 
 
+# The run values an MR run takes from the hosted runner's child env.
+MR_ENV_NAMES = ("PDT_RUN_ID", "PDT_APP_ARGS")
+
+
+def mr_job_args(run_job: dict, iid: str) -> tuple[str, list[str], list[str]]:
+    """The service account, the env values, and the secrets of the job of a merge request: those
+    of the deployed job, with the trigger `mr` and the run values of this run."""
+    spec = (run_job.get("spec", {}).get("template", {}).get("spec", {})
+            .get("template", {}).get("spec", {}))
+    container = (spec.get("containers") or [{}])[0]
+    skipped = (lifecycle.TRIGGER_ENV, lifecycle.MR_IID_ENV, *MR_ENV_NAMES)
+    values, secrets = [], []
+    for var in container.get("env") or []:
+        if var.get("name") in skipped:
+            continue
+        reference = (var.get("valueFrom") or {}).get("secretKeyRef")
+        if reference:
+            secrets.append(f"{var['name']}={reference['name']}:{reference.get('key') or 'latest'}")
+        else:
+            values.append(f"{var['name']}={var.get('value', '')}")
+    values += [f"{lifecycle.TRIGGER_ENV}={lifecycle.MR_TRIGGER}", f"{lifecycle.MR_IID_ENV}={iid}"]
+    values += [f"{name}={os.environ[name]}" for name in MR_ENV_NAMES if os.environ.get(name)]
+    return spec.get("serviceAccountName") or "", values, secrets
+
+
+def mr_run(app: dict, assume_yes: bool, iid: str) -> int:
+    """Build the app of this folder as image `<app>-mr<iid>`, create the Cloud Run job
+    `pdt-<app>-mr<iid>` with the deployed job's account, env, secret, and storage and no schedule,
+    run it once, print its log, and delete the job and the image, also after a failure. The
+    deployed job stays as it is."""
+    name = app["name"]
+    project, region = project_region(app)
+    project = preflight(app, project, assume_yes)
+    job = f"pdt-{name}"
+    mr_job = f"{job}-mr{iid}"
+    run_job = read_json_or_none("run", "jobs", "describe", job, "--region", region,
+                                "--project", project)
+    if run_job is None:
+        fail(f"{console.value(name)} has no Cloud Run job {console.value(job)}; deploy it first.")
+    account, values, secrets = mr_job_args(run_job, iid)
+    repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
+    image = f"{region}-docker.pkg.dev/{project}/{repo}/{name}-mr{iid}:latest"
+    cloud = build_in_cloud(app, "Cloud Build", "linux/amd64")
+
+    def build(stage: Path) -> None:
+        if cloud:
+            builder, builds = builder_email(project), build_bucket(project)
+            ensure_builder(project, region, repo, builder, builds,
+                           service_account_or_none(project, builder) is not None,
+                           read_json_or_none("storage", "buckets", "describe",
+                                             f"gs://{builds}") is not None)
+            cloud_build_image(stage, image, project, region, builder, builds)
+        else:
+            build_image(stage, image, region)
+
+    created = False
+    try:
+        ensure_image(app, image, "linux/amd64", "Cloud Build" if cloud else "", None,
+                     lambda: False, build)
+        args = ["run", "jobs", "create", mr_job, "--image", image, "--region", region,
+                "--project", project, "--max-retries", "0", "--labels", "managed-by=pdt",
+                "--set-env-vars", ",".join(values)]
+        if account:
+            args += ["--service-account", account]
+        if secrets:
+            args += ["--set-secrets", ",".join(secrets)]
+        run_quiet(*args, slow=f"creating: Cloud Run job {console.value(mr_job)}")
+        created = True
+        output = run_quiet("run", "jobs", "execute", mr_job, "--region", region, "--project",
+                           project, "--wait", "--format=json",
+                           slow=f"running: Cloud Run job {console.value(mr_job)}")
+        try:
+            execution = execution_run(json.loads(output or "null") or {})
+        except (ValueError, KeyError):
+            fail(f"Cloud Run gave no execution of {console.value(mr_job)}.")
+        for line in read_lines(project, execution.id):
+            runs_cli.print_line(line)
+        return 0 if execution.status == "succeeded" else 1
+    finally:
+        if created:
+            run_quiet("run", "jobs", "delete", mr_job, "--region", region, "--project", project,
+                      "--quiet")
+        run_quiet("artifacts", "docker", "images", "delete", image, "--project", project,
+                  "--delete-tags", "--quiet")
+        console.done(f"Deleted Cloud Run job {console.value(mr_job)} and image "
+                     f"{console.value(image)}.")
+
+
 def kill(app: dict, assume_yes: bool) -> int:
     """Cancel each running execution of the app's Cloud Run job."""
     project, region = project_region(app)
@@ -1557,7 +1642,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-                                 "pause", "unpause", "start", "kill"))
+                                 "pause", "unpause", "start", "kill", "mr-run"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -1582,6 +1667,8 @@ def main() -> int:
         return start(app, args.yes, "--follow" in args.rest)
     if args.command == "kill":
         return kill(app, args.yes)
+    if args.command == "mr-run":
+        return mr_run(app, args.yes, args.rest[0])
     if args.command == "secrets":
         return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":

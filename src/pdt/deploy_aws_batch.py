@@ -60,7 +60,7 @@ from pdt.deploy_aws import (
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, ensure_image, fail, gather_secrets, image_action,
-    keeps_secret, make_registration, registration_secrets, run_build, run_secrets, secret_contents,
+    keep_paused, keeps_secret, make_registration, registration_secrets, run_build, run_secrets, secret_contents,
     ssh_build_args, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked,
 )
@@ -837,11 +837,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         schedule_exists = resource_exists(
             clients["scheduler"], "get_schedule",
             Name=names["schedule"], GroupName=SCHEDULE_GROUP)
-        # The hosted runner deploys AutoIDM's copy, which holds no `pause: true` of an earlier
-        # `pdt pause` on another runner, so a paused job stays paused.
-        if keeps_secret() and schedule_exists and not app["pause"]:
-            app["pause"] = clients["scheduler"].get_schedule(
-                Name=names["schedule"], GroupName=SCHEDULE_GROUP).get("State") == "DISABLED"
+        keep_paused(app, schedule_exists, lambda: clients["scheduler"].get_schedule(
+            Name=names["schedule"], GroupName=SCHEDULE_GROUP).get("State") == "DISABLED")
         secret_exists = resource_exists(
             clients["secretsmanager"], "describe_secret", SecretId=names["secret"])
         current_secret = None

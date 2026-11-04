@@ -45,7 +45,7 @@ PROVIDERS = {
 }
 
 
-MR_PROVIDERS = ("aws",)
+MR_PROVIDERS = ("aws", "azure", "google-cloud")
 
 
 def _load(app_name: str):
