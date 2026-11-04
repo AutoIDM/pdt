@@ -355,7 +355,10 @@ def region_suggestion(provider: str, platform: dict | None = None,
 
 
 def suggest_region(provider: str, zone: str | None = None) -> str:
-    return region_suggestion(provider, zone=zone)[0]
+    region = region_suggestion(provider, zone=zone)[0]
+    if region_problem(provider, region) != "":
+        return DEFAULT_REGIONS[PROVIDERS.index(provider)]
+    return region
 
 
 def windows_currency() -> str:

@@ -279,3 +279,18 @@ def test_no_answer_to_a_wrong_cli_setting_names_a_real_region(project, monkeypat
 
     monkeypatch.setattr(regions.console, "ask", no_answer)
     assert "`region: eastus2`" in regions.choose_region(merged_app("my-report"), "azure", False)
+
+
+@pytest.mark.parametrize("provider,typo,default", [
+    ("aws", "us-est-1", "us-east-1"), ("azure", "eastu2", "eastus2"),
+    ("google-cloud", "us-centrl1", "us-central1")])
+def test_init_never_offers_a_wrong_region_from_the_cli_settings(tmp_path, provider, typo,
+                                                                default):
+    (tmp_path / "aws-config").write_text(f"[default]\nregion = {typo}\n")
+    (tmp_path / "azure").mkdir()
+    (tmp_path / "azure" / "config").write_text(f"[defaults]\nlocation = {typo}\n")
+    (tmp_path / "gcloud" / "configurations").mkdir(parents=True)
+    (tmp_path / "gcloud" / "active_config").write_text("work\n")
+    (tmp_path / "gcloud" / "configurations" / "config_work").write_text(
+        f"[run]\nregion = {typo}\n")
+    assert regions.suggest_region(provider, "Etc/UTC") == default
