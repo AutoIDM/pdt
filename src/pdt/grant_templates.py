@@ -129,10 +129,17 @@ def azure_template() -> dict:
                                  for group in ("pdt", deploy_azure.SHARED_GROUP))]}
 
 
+def shell_quoted(text: str) -> str:
+    """`text` for the inside of a double-quoted bash word, with PROJECT_NUMBER as $NUMBER."""
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
+    return escaped.replace("$", "\\$").replace("PROJECT_NUMBER", "$NUMBER")
+
+
 def google_script() -> str:
     roles = " ".join(deploy_google_cloud.GRANT_ROLES)
+    # Double quotes, so the shell puts the project number in each condition.
     conditional = "\n".join(
-        f'grant {role} "{title}" \'{expression}\''
+        f'grant {role} "{title}" "{shell_quoted(expression)}"'
         for role, title, expression in deploy_google_cloud.GRANT_CONDITIONAL_ROLES)
     name = deploy_google_cloud.GRANT_NAME
     runner = deploy_google_cloud.GRANT_RUNNER
@@ -181,7 +188,7 @@ grant() {{
   gcloud projects add-iam-policy-binding "$PDT_PROJECT" --member "serviceAccount:$ACCOUNT" \\
     --role "$1" --condition "title=$2,expression=$3" --format=none
 }}
-{conditional.replace("PROJECT_NUMBER", "$NUMBER")}
+{conditional}
 if ! gcloud iam service-accounts describe "$RUNNER" --project "$PDT_PROJECT" >/dev/null 2>&1; then
   gcloud iam service-accounts create {runner} --project "$PDT_PROJECT" \\
     --display-name "pdt job runner" --description "managed-by=pdt"

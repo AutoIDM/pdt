@@ -77,8 +77,29 @@ def test_the_google_script_binds_each_role_and_limits_the_secret_roles_to_pdt():
     for role in deploy_google_cloud.GRANT_ROLES:
         assert role in script
     assert "roles/logging.viewer" in script
-    assert 'resource.name.startsWith("projects/$NUMBER/secrets/pdt-")' in script
+    assert 'resource.name.startsWith(\\"projects/$NUMBER/secrets/pdt-\\")' in script
     assert "secretmanager.secretAccessor" in script
     assert "create-aws autoidm" in script and "roles/iam.workloadIdentityUser" in script
     assert "autoidm-external-id=$PDT_EXTERNAL_ID" in script
     assert "Project number: $NUMBER" in script and "$PDT_AWS_ROLE" in script
+
+
+def test_the_shell_puts_the_project_number_in_each_secret_condition(tmp_path):
+    script = grant_templates.google_script()
+    start = script.index("grant() {")
+    lines = script[start:].splitlines()
+    end = next(index for index, line in enumerate(lines) if line.startswith("if ! gcloud iam"))
+    harness = tmp_path / "conditions.sh"
+    harness.write_text(
+        'gcloud() { printf "%s\\n" "$@" | grep "^title="; }\n'
+        "PDT_PROJECT=my-project\nACCOUNT=pdt-autoidm@my-project.iam.gserviceaccount.com\n"
+        "NUMBER=123456789012\n" + "\n".join(lines[:end]) + "\n")
+    proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    conditions = proc.stdout.splitlines()
+    assert conditions == [
+        'title=pdt buckets,expression=resource.name.startsWith("projects/_/buckets/pdt-")',
+        'title=pdt secrets,expression=resource.name.startsWith('
+        '"projects/123456789012/secrets/pdt-")',
+        'title=pdt secrets,expression=resource.name.startsWith('
+        '"projects/123456789012/secrets/pdt-")']
