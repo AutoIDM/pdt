@@ -1,9 +1,11 @@
 """What `pdt service install` puts on a computer: the settings, the program, the proxy, and the key.
 
-The service runs pdt from `<data folder>/versions/<version>`: a virtual environment with its own
-Python from `uv python install`, and a copy of uv, because SYSTEM or root must not run a program
-from a person's own folder. The running version copies its own packages, so an install needs no
-release.
+The service runs pdt from `<data folder>/versions/<version>`: its own Python from `uv python
+install`, and a copy of uv, because SYSTEM or root must not run a program from a person's own
+folder. The running version copies its own packages, so an install needs no release. On Windows
+the packages go into that Python itself, because the `python.exe` of a virtual environment is a
+launcher that starts the real Python as a second process, and the Service Control Manager logs
+event 7039 when that second process connects. Elsewhere they go into a virtual environment.
 
 `service_env` is the environment of the service and of each child: the proxy, the system
 certificates, no uv configuration from a project folder, and the caches.
@@ -44,7 +46,8 @@ def version_folder(version: str) -> Path:
 
 def python_of(folder: Path) -> Path:
     if os.name == "nt":
-        return folder / "venv" / "Scripts" / "python.exe"
+        found = sorted((folder / "python").glob("cpython-*/python.exe"))
+        return found[-1] if found else folder / "python" / "python.exe"
     return folder / "venv" / "bin" / "python"
 
 
@@ -140,12 +143,14 @@ def run_uv(uv: str, *args: str, env: dict[str, str]) -> None:
 
 
 def make_environment(folder: Path, uv: str, python_version: str, settings: dict) -> None:
-    """A copy of uv, Python from uv, and an empty virtual environment."""
+    """A copy of uv, Python from uv, and, off Windows, an empty virtual environment."""
     target_uv = uv_of(folder)
     target_uv.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(uv, target_uv)
     env = {**service_env(settings), "UV_PYTHON_INSTALL_DIR": str(folder / "python")}
     run_uv(str(target_uv), "python", "install", python_version, env=env)
+    if os.name == "nt":
+        return
     run_uv(str(target_uv), "venv", "--python", python_version, "--python-preference", "only-managed",
            "--no-project", str(folder / "venv"), env=env)
 
@@ -191,4 +196,4 @@ def install_running(settings: dict) -> Path:
                      settings)
     copy_running(folder)
     (folder / READY_FILE).write_text(json.dumps({"version": __version__}) + "\n", encoding="utf-8")
-    return python
+    return python_of(folder)
