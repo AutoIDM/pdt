@@ -92,6 +92,7 @@ BATCH_ACTIONS = [
     "batch:RegisterJobDefinition",
     "batch:SubmitJob",
     "batch:TagResource",
+    "batch:TerminateJob",
     "batch:UpdateComputeEnvironment",
     "batch:UpdateJobQueue",
     "ec2:CreateSecurityGroup",
@@ -1307,6 +1308,19 @@ def start(app: dict, session, follow: bool = False) -> int:
     if not follow:
         return 0
     return logs(app, session, ["--follow"], new=lambda run: run.id == response["jobId"])
+
+
+def kill(app: dict, session) -> int:
+    """Terminate each job of the app from SUBMITTED to RUNNING."""
+    batch = session.client("batch", config=RETRIES)
+    job = resource_names(app["name"])["job_definition"]
+    running = [run for run in list_runs(batch, job) if run.status == "running"]
+    for run in running:
+        batch.terminate_job(jobId=run.id, reason="pdt run --kill")
+        console.done(f"Stopped Batch job {console.value(run.id)} of {console.value(app['name'])}.")
+    if not running:
+        console.say(f"No job of {console.value(app['name'])} runs.")
+    return 0
 
 
 def logs(app: dict, session, rest: list[str],

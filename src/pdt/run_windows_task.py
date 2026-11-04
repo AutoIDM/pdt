@@ -8,7 +8,10 @@
 usage: uv run --script run_windows_task.py <app dir> <logs folder> <storage url>
 
 Task Scheduler discards stdout and stderr, so the task `pdt-<app>` runs this
-script instead of run.py. It holds the app's lock (`.pdt/locks/app-<app>.lock` of the project)
+script instead of run.py. It first puts itself in a new Windows job object that ends each
+process in it when the last handle to it closes (`new_job`), so `Stop-ScheduledTask`, a crash of
+this script, or the end of the task stops the app and every process the app started, and the
+app's lock is free only when they all ended. It holds the app's lock (`.pdt/locks/app-<app>.lock` of the project)
 for the run, and when another process holds that lock it writes the fact to the log and exits 1. It sets PDT_STORAGE_URL and PDT_RUN_ID (the UTC start,
 so the app's `runs/` folder is named after the run `pdt runs` lists), runs
 `uv run --script run.py` in the app folder with the uv that started it (or, for
@@ -53,6 +56,8 @@ RUN_SUCCEEDED = 1000
 RUN_FAILED = 1001
 EVENTLOG_ERROR_TYPE = 1
 EVENTLOG_INFORMATION_TYPE = 4
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 
 
 def timed(raw: bytes) -> bytes:
@@ -81,6 +86,80 @@ def report(app: str, log: Path, code: int) -> None:
         advapi.DeregisterEventSource(source)
     except (AttributeError, OSError):
         pass
+
+
+def kernel32():
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+    kernel.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                               wintypes.DWORD)
+    kernel.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    kernel.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    return kernel
+
+
+def new_job() -> int:
+    """A new job object that ends each process in it when its last handle closes. No process in
+    it may leave it (no breakaway flag). Raises OSError."""
+    import ctypes
+
+    class Basic(ctypes.Structure):
+        _fields_ = [("per_process_user_time_limit", ctypes.c_int64),
+                    ("per_job_user_time_limit", ctypes.c_int64),
+                    ("limit_flags", ctypes.c_uint32),
+                    ("minimum_working_set_size", ctypes.c_size_t),
+                    ("maximum_working_set_size", ctypes.c_size_t),
+                    ("active_process_limit", ctypes.c_uint32),
+                    ("affinity", ctypes.c_size_t),
+                    ("priority_class", ctypes.c_uint32),
+                    ("scheduling_class", ctypes.c_uint32)]
+
+    class Extended(ctypes.Structure):
+        _fields_ = [("basic", Basic), ("io", ctypes.c_uint64 * 6),
+                    ("process_memory_limit", ctypes.c_size_t),
+                    ("job_memory_limit", ctypes.c_size_t),
+                    ("peak_process_memory_used", ctypes.c_size_t),
+                    ("peak_job_memory_used", ctypes.c_size_t)]
+
+    kernel = kernel32()
+    job = kernel.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError(ctypes.get_last_error())
+    info = Extended()
+    info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not kernel.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                                          ctypes.byref(info), ctypes.sizeof(info)):
+        error = ctypes.get_last_error()
+        kernel.CloseHandle(job)
+        raise ctypes.WinError(error)
+    return job
+
+
+def assign(job: int, process: int) -> None:
+    """Put the process of the handle `process` in `job`. Raises OSError."""
+    import ctypes
+    if not kernel32().AssignProcessToJobObject(job, process):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def end_job(job: int) -> None:
+    """End each process in `job` now."""
+    kernel32().TerminateJobObject(job, 1)
+
+
+def hold_in_job() -> int | None:
+    """Put this process in a new job object, so each process it starts is in it too. None off
+    Windows."""
+    if os.name != "nt":
+        return None
+    job = new_job()
+    assign(job, kernel32().GetCurrentProcess())
+    return job
 
 
 def take_lock(path: Path, project: Path):
@@ -139,6 +218,13 @@ def main(argv: list[str]) -> int:
         command = [uv, "run", "--script", str(Path(__file__).with_name("run_powershell.py")), app_dir]
     command = [uv, "run", "--script", str(Path(__file__).with_name("lifecycle.py")), "--", *command]
     with log.open("wb") as out:
+        try:
+            job = hold_in_job()
+        except OSError as exc:
+            out.write(timed(f"pdt could not make the job object of this run: {exc}".encode()))
+            out.write(timed(f"{EXIT_MARKER}1".encode()))
+            report(Path(app_dir).name, log, 1)
+            return 1
         try:
             held = app_lock(Path(app_dir))
         except (OSError, RuntimeError) as exc:

@@ -700,6 +700,20 @@ def pause(app: dict, settings: dict, paused: bool) -> int:
     return 0
 
 
+def kill(app: dict, settings: dict) -> int:
+    """Stop each running execution of the app's job."""
+    job = f"pdt-{app['name']}"
+    running = [run for run in list_runs(settings, job) if run.status == "running"]
+    for run in running:
+        run_quiet("containerapp", "job", "stop", "--name", job,
+                  "--resource-group", settings["resource_group"], "--job-execution-name", run.id,
+                  slow=f"stopping: Container Apps Job execution {console.value(run.id)}")
+        console.done(f"Stopped execution {console.value(run.id)} of {console.value(app['name'])}.")
+    if not running:
+        console.say(f"No execution of {console.value(app['name'])} runs.")
+    return 0
+
+
 def start(app: dict, settings: dict, follow: bool = False) -> int:
     job, current = find_job(settings, app["name"])
     if current is None:

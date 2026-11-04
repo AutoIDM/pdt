@@ -48,7 +48,7 @@ def test_the_starter_needs_no_env_vars(tmp_path, monkeypatch):
 def run_app(monkeypatch, name, returncode=0):
     monkeypatch.setattr(lifecycle.subprocess, "Popen",
                         started(lambda *a, **k: SimpleNamespace(returncode=returncode)))
-    return cli.cmd_run(SimpleNamespace(app=name, deployed=False, follow=False))
+    return cli.cmd_run(SimpleNamespace(app=name, deployed=False, follow=False, kill=False))
 
 
 def test_running_the_starter_suggests_deploying_it(tmp_path, monkeypatch, capsys):
