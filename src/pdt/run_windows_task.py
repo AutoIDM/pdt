@@ -7,7 +7,7 @@
 
 usage: uv run --script run_windows_task.py <app dir> <logs folder> <storage url>
 
-Task Scheduler discards stdout and stderr, so the task `pdt-<project>-<app>` runs this
+Task Scheduler discards stdout and stderr, so the task `pdt-<app>` runs this
 script instead of run.py. It holds the app's lock (`.pdt/locks/app-<app>.lock` of the project)
 for the run, and when another process holds that lock it writes the fact to the log and exits 1. It sets PDT_STORAGE_URL and PDT_RUN_ID (the UTC start,
 so the app's `runs/` folder is named after the run `pdt runs` lists), runs

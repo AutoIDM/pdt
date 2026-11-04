@@ -77,7 +77,7 @@ def test_destroy_plans_the_task_the_logs_and_the_kept_storage(project, monkeypat
     assert deploy_windows.destroy(app, assume_yes=True) == 0
 
     out = capsys.readouterr().out
-    assert "delete Windows scheduled task pdt-example-my-report" in out
+    assert "delete Windows scheduled task pdt-my-report" in out
     assert f"delete run logs folder {folder / 'logs'}" in out
     assert f"keep folder {folder / 'storage'} (the app's files)" in out
     assert f"removed: run logs folder {folder / 'logs'}" in out
