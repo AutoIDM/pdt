@@ -1,12 +1,19 @@
-"""`pdt register`: authenticate this computer for AutoIDM managed services.
+"""`pdt register`: connect this computer to AutoIDM, and install what it needs.
 
 With no `--code`, a person approves this computer in a browser: pdt prints the URL and a short
 code, opens the browser, and waits. `pdt register --code CODE` uses a one-time code instead.
 Both follow the rules below. The browser flow's pending key has one fixed name, because its
 code comes from the server after the key exists, so a retry also sends the same public key.
 The registration file also holds `command_keys`, the keys that `pdt service` pins to check
-what the portal signs. After approval, pdt makes each grant the person chose in the browser. A
-person at a terminal who chose none gets one question for each place of the project.
+what the portal signs.
+
+After the registration, pdt installs the service when this computer runs the project's jobs (the
+project has the provider `windows` or no provider, or no project exists) and the process has
+administrator rights and finds a backend. It states the access first, and `--yes` accepts it. With
+no administrator rights it prints the next command. A computer that only deploys to a cloud gets
+no service. Then it asks the grant question for each place of the project, and `--yes` does not
+accept a grant. One computer with the service serves one customer, so a registration of another
+customer revokes the new installation and deletes the new key.
 
 The code names the customer, so pdt learns the customer only from the answer.
 It makes the key and writes it as pending-<hash of the code>.key before it
@@ -29,7 +36,6 @@ command stops and names the file. Either way, in a project whose pdt.yml has no
 
 from __future__ import annotations
 
-import ctypes
 import hashlib
 import json
 import os
@@ -42,7 +48,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from pdt import __version__, config, console, grants, managed_services
+from pdt import __version__, config, console, grants, managed_services, service_access
 from pdt.utils import autoidm
 from pdt.utils.email_auth import can_prompt
 
@@ -56,38 +62,12 @@ FOLDER_ENV = "PDT_REGISTRATIONS_FOLDER"
 DEVICE_KEY = "pending-device.key"
 DEFAULT_POLL_SECONDS = 3
 PLATFORM_NAMES = {"win32": "windows", "darwin": "macos"}
-# .NET calls only, not Get-Acl, Set-Acl, or New-Object: Windows PowerShell started under
-# PowerShell 7 inherits its PSModulePath and cannot load the modules that hold those commands.
-# It prints the access list as .NET holds it before it saves it, then as it reads it back, so
-# both pass through the same .NET form (two-letter SIDs such as LA, merged entries).
-SET_FOLDER_SDDL = ("$ErrorActionPreference = 'Stop'; "
-                   f"$folder = [IO.DirectoryInfo]$env:{FOLDER_ENV}; "
-                   f"$sddl = '{FOLDER_SDDL}'.Replace('{{user}}', "
-                   "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
-                   f".Replace('{SYSTEM_READ}', ''); "
-                   "$acl = $folder.GetAccessControl(); "
-                   "$acl.SetSecurityDescriptorSddlForm($sddl); "
-                   "$acl.GetSecurityDescriptorSddlForm('Owner, Access'); "
-                   "$folder.SetAccessControl($acl); "
-                   "$folder.GetAccessControl().GetSecurityDescriptorSddlForm('Owner, Access')")
 
 
 def restrict_folder(folder: Path) -> None:
-    """On Windows, replace the owner and the whole access list of `folder` with FOLDER_SDDL,
-    so from the moment each file made in it exists, SYSTEM and Administrators can open it and
-    the account that runs this can read it. It reads the folder back and raises RuntimeError
-    when it does not match."""
-    if os.name != "nt":
-        return
-    shown = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                            SET_FOLDER_SDDL], env={**os.environ, FOLDER_ENV: str(folder)},
-                           stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                           check=True).stdout.split()
-    if len(shown) != 2:
-        raise RuntimeError(f"PowerShell printed {' '.join(shown) or 'nothing'}, not the access "
-                           "list pdt set and the one it read back")
-    if shown[0] != shown[1]:
-        raise RuntimeError(f"its owner and access list are {shown[1]}, not {shown[0]}")
+    """`service_access.restrict_folder` with FOLDER_SDDL, so from the moment each file made in it
+    exists, SYSTEM and Administrators can open it and the account that runs this can read it."""
+    service_access.restrict_folder(folder, FOLDER_SDDL)
 
 
 def write_key(path: Path, key: Ed25519PrivateKey) -> None:
@@ -95,10 +75,6 @@ def write_key(path: Path, key: Ed25519PrivateKey) -> None:
     or nothing. The temporary file is readable by its owner alone on POSIX, and takes the
     access list of the folder (`restrict_folder`) on Windows."""
     config.write_text_atomically(path, autoidm.private_pem(key).decode(), newline="\n")
-
-
-def is_admin() -> bool:
-    return bool(ctypes.windll.shell32.IsUserAnAdmin())
 
 
 def limit_folder(folder: Path, what: str) -> int:
@@ -115,7 +91,7 @@ def limit_folder(folder: Path, what: str) -> int:
 
 def prepare_folder() -> int:
     folder = autoidm.folder()
-    if os.name == "nt" and not is_admin():
+    if os.name == "nt" and not service_access.is_admin():
         console.error(f"pdt register writes the key of this computer in {console.value(folder)}, "
                       "which only an administrator can do. Run it in a terminal opened with "
                       "Run as administrator.")
@@ -128,13 +104,45 @@ def default_api_url() -> str:
     return os.environ.get(autoidm.URL_ENV, "").strip() or config.AUTOIDM_API_URL
 
 
-def register(code: str | None, api_url: str | None) -> int:
+def register(code: str | None, api_url: str | None, assume_yes: bool = False,
+             install_service: bool = True) -> int:
     api_url = (api_url or default_api_url()).rstrip("/")
-    code_prepared = prepare_folder()
-    if code_prepared != 0:
-        return code_prepared
+    prepared = prepare_folder()
+    if prepared != 0:
+        return prepared
     if code is None:
-        return register_in_browser(api_url)
+        answer, key, pending, user_code = register_in_browser(api_url)
+    else:
+        answer, key, pending, user_code = register_with_code(code, api_url)
+    if answer is None:
+        return 1
+    customer = answer["customer_id"]
+    other = other_customer(customer)
+    if other is not None:
+        return refuse_second_customer(answer, key, api_url, pending, other)
+    with config.locked(autoidm.folder()):
+        saved = save_registration(answer, key, api_url, pending)
+    if saved != 0:
+        return saved
+    found = autoidm.machine_registration(customer)
+    if user_code is not None:
+        try:
+            autoidm.post(found, "/v1/device/confirm", {"version": 1, "user_code": user_code})
+        except autoidm.AutoidmError as e:
+            console.warn(f"The portal page may not show success: {console.escape(str(e))}")
+    if answer.get("email"):
+        console.field("Signed in as", str(answer["email"]))
+    result = install_here(customer, assume_yes) if install_service else 0
+    pending_status = answer.get("status") == "pending"
+    if pending_status:
+        console.say(f"A customer administrator must approve the installation "
+                    f"{console.value(answer['installation_id'])}. The service keeps checking in.")
+    return ask_grants(answer.get("grants") or [], found, assume_yes, pending_status) or result
+
+
+def register_with_code(code: str, api_url: str) -> tuple:
+    """The answer of /v1/register, the key, the pending key file, and no user code. None as the
+    answer after one error line."""
     folder = autoidm.folder()
     code = code.strip().upper()
     digest = hashlib.sha256(code.replace("-", "").encode()).hexdigest()
@@ -160,15 +168,16 @@ def register(code: str | None, api_url: str | None) -> int:
                               "Ask AutoIDM for a new code.")
             else:
                 console.error(console.escape(str(e)))
-            return 1
-        return save_registration(answer, key, api_url, pending)
+            return None, None, None, None
+    return answer, key, pending, None
 
 
 def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pending: Path) -> int:
     customer = answer["customer_id"]
     info, key_path = autoidm.files(customer)
     saved = {"installation_id": answer["installation_id"], "customer_id": customer,
-             "api_url": api_url, "command_keys": answer.get("command_keys") or []}
+             "api_url": api_url, "command_keys": answer.get("command_keys") or [],
+             "command_keys_version": answer.get("command_keys_version") or 1}
     if info.is_file():
         found = json.loads(info.read_text(encoding="utf-8"))
         try:
@@ -194,21 +203,22 @@ def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pendin
                  f"{console.value(answer['installation_id'])}.")
     console.field("Saved in", str(info))
     save_customer(customer)
-    from pdt import service
-    service.add_registration(customer)
     pending.unlink()
     return 0
 
 
-def device_start_body(key: Ed25519PrivateKey) -> dict:
-    try:
-        projects = [managed_services.backend_name(config.project_name())]
-    except config.ConfigError:
-        projects = []
+def device_start_body(key: Ed25519PrivateKey, kind: str = "machine", ci: dict | None = None) -> dict:
+    places, projects = [], []
+    if kind == "machine":
+        places = grants.places_of_project()
+        try:
+            projects = [managed_services.backend_name(config.project_name())]
+        except config.ConfigError:
+            pass
     return {"public_key": autoidm.public_key(key), "hostname": socket.gethostname(),
             "pdt_version": __version__,
             "platform": PLATFORM_NAMES.get(sys.platform, sys.platform),
-            "places": grants.places_of_project(), "projects": projects}
+            "places": places, "projects": projects, "kind": kind, "ci": ci}
 
 
 def wait_for_decision(api_url: str, codes: dict) -> dict | None:
@@ -224,7 +234,7 @@ def wait_for_decision(api_url: str, codes: dict) -> dict | None:
             except autoidm.AutoidmError as e:
                 if e.code == "unknown_code":
                     break
-                if e.status and e.status < 500:
+                if e.status and e.status < 500 and e.status != 429:
                     console.error(console.escape(str(e)))
                     return None
                 answer = {"state": "waiting"}
@@ -239,7 +249,38 @@ def wait_for_decision(api_url: str, codes: dict) -> dict | None:
     return None
 
 
-def register_in_browser(api_url: str) -> int:
+def approve_in_browser(api_url: str, body: dict) -> tuple[dict | None, str | None]:
+    """The device flow: the codes, the browser, and the wait. Returns the approved answer and the
+    user code, or None after one error line."""
+    data = json.dumps(body).encode()
+    try:
+        codes = autoidm.answered(
+            autoidm.retried(lambda: autoidm.send(f"{api_url}/v1/device/start", data, {})),
+            "/v1/device/start", "user_code", "device_code", "url")
+        autoidm.check_url(codes["url"], "/v1/device/start")
+    except autoidm.AutoidmError as e:
+        console.error(console.escape(str(e)))
+        return None, None
+    console.say("To connect to AutoIDM, open this page and sign in:")
+    console.command(codes["url"])
+    console.field("Type this code on the page", codes["user_code"])
+    webbrowser.open(codes["url"])
+    answer = wait_for_decision(api_url, codes)
+    if answer is None:
+        return None, None
+    try:
+        autoidm.answered(answer, "/v1/device/poll", "installation_id", "customer_id")
+    except autoidm.AutoidmError as e:
+        console.error(console.escape(str(e)))
+        return None, None
+    if not managed_services.CUSTOMER.fullmatch(answer["customer_id"]):
+        console.error(f"AutoIDM answered with the customer ID {console.value(answer['customer_id'])}, "
+                      "which is not one.")
+        return None, None
+    return answer, codes["user_code"]
+
+
+def register_in_browser(api_url: str) -> tuple:
     folder = autoidm.folder()
     pending = folder / DEVICE_KEY
     with config.locked(folder):
@@ -248,55 +289,87 @@ def register_in_browser(api_url: str) -> int:
         except (OSError, ValueError, autoidm.AutoidmError):
             key = Ed25519PrivateKey.generate()
             write_key(pending, key)
-    body = json.dumps(device_start_body(key)).encode()
-    try:
-        codes = autoidm.answered(autoidm.send(f"{api_url}/v1/device/start", body, {}),
-                                 "/v1/device/start", "user_code", "device_code", "url")
-        autoidm.check_url(codes["url"], "/v1/device/start")
-    except autoidm.AutoidmError as e:
-        console.error(console.escape(str(e)))
-        return 1
-    console.say("To connect this computer to AutoIDM, open this page and sign in:")
-    console.command(codes["url"])
-    console.field("Check that the page shows this code", codes["user_code"])
-    webbrowser.open(codes["url"])
-    answer = wait_for_decision(api_url, codes)
-    if answer is None:
-        return 1
-    try:
-        autoidm.answered(answer, "/v1/device/poll", "installation_id", "customer_id")
-    except autoidm.AutoidmError as e:
-        console.error(console.escape(str(e)))
-        return 1
-    if not managed_services.CUSTOMER.fullmatch(answer["customer_id"]):
-        console.error(f"AutoIDM answered with the customer ID {console.value(answer['customer_id'])}, "
-                      "which is not one.")
-        return 1
-    with config.locked(folder):
-        code = save_registration(answer, key, api_url, pending)
-    if code != 0:
-        return code
-    found = autoidm.machine_registration(answer["customer_id"])
-    try:
-        autoidm.post(found, "/v1/device/confirm", {"version": 1, "user_code": codes["user_code"]})
-    except autoidm.AutoidmError as e:
-        console.warn(f"The portal page may not show success: {console.escape(str(e))}")
-    if answer.get("email"):
-        console.field("Signed in as", str(answer["email"]))
-    return make_grants(answer.get("grants") or [], found)
+    answer, user_code = approve_in_browser(api_url, device_start_body(key))
+    return answer, key, pending, user_code
 
 
-def make_grants(chosen: list[str], found: autoidm.Registration) -> int:
-    """Make each grant the person chose in the browser. With none chosen, ask a person at a
-    terminal about each place of this project."""
-    places = list(chosen)
-    if not places and can_prompt(None):
-        for place in grants.places_of_project():
-            try:
-                if console.confirm(f"Let AutoIDM deploy and run pdt jobs in {place}?"):
-                    places.append(place)
-            except EOFError:
-                break
+def other_customer(customer: str) -> str | None:
+    """The customer that stops a registration of `customer`: the one the service settings name,
+    or, when `pdt register` would install the service, another registration of this computer."""
+    from pdt import service, service_install
+    try:
+        settings = service_install.read_settings()
+    except service_install.InstallError:
+        settings = None
+    if settings and settings.get("customer") not in (None, customer):
+        return settings["customer"]
+    if service_wanted() and service_access.is_admin():
+        others = [name for name in service.registrations_here() if name != customer]
+        if others:
+            return others[0]
+    return None
+
+
+def refuse_second_customer(answer: dict, key: Ed25519PrivateKey, api_url: str, pending: Path,
+                           other: str) -> int:
+    """One computer with the service serves one customer. AutoIDM revokes the new installation,
+    and pdt deletes the new key."""
+    from pdt import service
+    new = autoidm.Registration(answer["installation_id"], api_url, key, "new")
+    try:
+        autoidm.post(new, "/v1/service/remove", {"version": 1})
+    except autoidm.AutoidmError as e:
+        console.warn(f"AutoIDM did not revoke the new installation "
+                     f"{console.value(answer['installation_id'])}: {console.escape(str(e))}")
+    pending.unlink(missing_ok=True)
+    console.error(console.escape(service.one_customer_message(other)))
+    return 1
+
+
+def service_wanted() -> bool:
+    """Whether this computer runs the project's jobs: the project has the provider `windows` or no
+    provider, or no project exists. A computer that only deploys to a cloud gets no service."""
+    try:
+        found = config.load_yaml(config.find_project() / config.PROJECT_FILE).get("platform")
+    except config.ConfigError:
+        return True
+    provider = found.get("provider") if isinstance(found, dict) else None
+    return provider in (None, "windows")
+
+
+def install_here(customer: str, assume_yes: bool) -> int:
+    """The automatic install of `pdt register`. A person says yes once, and signs in no more."""
+    from pdt import service, service_backends
+    if not service_wanted():
+        return 0
+    next_command = [(service.install_next_step(),
+                     "run commands from the AutoIDM portal on this computer")]
+    if not service_access.is_admin():
+        console.next_steps(next_command)
+        return 0
+    try:
+        service_backends.choose(None)
+    except service_backends.BackendError as e:
+        console.warn(f"pdt did not install the service: {console.escape(str(e))}")
+        return 0
+    if not service.ask_access(assume_yes):
+        console.next_steps(next_command)
+        return 0
+    return service.install_for(customer, None, None, None, None, None)
+
+
+def ask_grants(chosen: list[str], found: autoidm.Registration, assume_yes: bool,
+               pending: bool) -> int:
+    """The grant question for each place of the project, and each place the person chose in the
+    browser. `--yes` does not accept a grant, and a `pending` installation has no grant right, so
+    each of those prints the next command."""
+    places = sorted({*chosen, *grants.places_of_project()})
+    if not places:
+        return 0
+    if assume_yes or pending or not can_prompt(None):
+        console.next_steps([(f"pdt grant add {place}", "let AutoIDM deploy and run jobs in that place")
+                            for place in places])
+        return 0
     code = 0
     for place in places:
         code = grants.add(place, False, False, found) or code

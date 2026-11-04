@@ -1,14 +1,18 @@
-"""The table of service managers: one entry per platform, each with install, remove, and running.
+"""The table of service managers: one entry per platform, with the same five functions.
 
-Each entry starts `<python> -m pdt.cli service run`, except cron, which starts
-`service tick` each minute and so holds no running process between ticks. On a root account,
-systemd and launchd use the machine's folder, and on another account the user's own: pdt's data
-folder belongs to the account, so the service runs as that account.
+Each entry runs `<python> -m pdt.cli service run` as SYSTEM or root, from the program folder under
+the data folder, and each needs administrator rights. `define` writes the definition and starts
+nothing, `start` starts it, and `remove` stops it and deletes the definition. `definition` gives
+the text of the definition for `pdt service diagnose`.
+
+A second process of the service exits at once when one runs (`service.one_service`), so a trigger
+that fires while the service runs does nothing. Each entry starts again after a failure: Task
+Scheduler by a repeating trigger each 5 minutes, systemd by its restart rule, launchd by KeepAlive,
+and cron each 5 minutes. After an upgrade, `restart` makes the manager start the new definition.
 """
 
 from __future__ import annotations
 
-import base64
 import html
 import os
 import plistlib
@@ -22,17 +26,20 @@ from typing import Callable
 
 NAME = "pdt-service"
 LAUNCHD_LABEL = "com.autoidm.pdt-service"
+SYSTEMD_PATH = Path("/etc/systemd/system") / f"{NAME}.service"
+LAUNCHD_PATH = Path("/Library/LaunchDaemons") / f"{LAUNCHD_LABEL}.plist"
 CRON_MARK = "# pdt-service"
-# The env vars that move pdt's data folder, so the service finds the same files as the installer.
-KEPT_ENV = ("PDT_INSTALLATION_DIR", "XDG_DATA_HOME", "PDT_API_URL")
+# The env var that moves pdt's data folder, so the service finds the same files as the installer.
+KEPT_ENV = ("PDT_INSTALLATION_DIR",)
+RESTART_DELAY_SECONDS = 2
 
 
 class BackendError(RuntimeError):
     pass
 
 
-def service_command(verb: str = "run") -> list[str]:
-    return [sys.executable, "-m", "pdt.cli", "service", verb]
+def service_command(python: str, verb: str = "run") -> list[str]:
+    return [python, "-m", "pdt.cli", "service", verb]
 
 
 def kept_env() -> dict[str, str]:
@@ -41,25 +48,31 @@ def kept_env() -> dict[str, str]:
 
 def run(*args: str, stdin: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
     options = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
-    proc = subprocess.run(list(args), capture_output=True, text=True, **options)
+    try:
+        proc = subprocess.run(list(args), capture_output=True, text=True, **options)
+    except OSError as e:
+        raise BackendError(f"{args[0]} could not start: {e}") from None
     if check and proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()
         raise BackendError(f"{args[0]} failed: {detail or f'exit {proc.returncode}'}")
     return proc
 
 
-def is_root() -> bool:
-    return os.name != "nt" and os.geteuid() == 0
-
-
 def task_xml(command: list[str], folder: Path) -> str:
-    """The task starts at boot with no one signed in, as SYSTEM, and has no time limit. Task
-    Scheduler starts it again each minute after a failure."""
+    """The task starts at boot with no one signed in, as SYSTEM, has no time limit, and starts
+    again by a trigger each 5 minutes. IgnoreNew does nothing while one instance runs."""
     arguments = html.escape(subprocess.list2cmdline(command[1:]))
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>Managed by pdt; runs the pdt service.</Description></RegistrationInfo>
-  <Triggers><BootTrigger><Enabled>true</Enabled></BootTrigger></Triggers>
+  <Triggers>
+    <BootTrigger><Enabled>true</Enabled></BootTrigger>
+    <TimeTrigger>
+      <Repetition><Interval>PT5M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <StartBoundary>2000-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+    </TimeTrigger>
+  </Triggers>
   <Principals>
     <Principal id="Author">
       <UserId>S-1-5-18</UserId>
@@ -76,8 +89,7 @@ def task_xml(command: list[str], folder: Path) -> str:
     <Enabled>true</Enabled>
     <Hidden>false</Hidden>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
-    <Priority>7</Priority>
+    <Priority>5</Priority>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -100,23 +112,27 @@ def powershell(script: str) -> str:
         raise BackendError(str(e)) from None
 
 
-def windows_install(folder: Path) -> None:
-    from pdt import deploy_windows
-    payload = base64.b64encode(task_xml(service_command(), folder).encode("utf-8")).decode("ascii")
-    name = deploy_windows._ps_string(NAME)
-    powershell(
-        "$ErrorActionPreference = 'Stop'; "
-        f"$xml = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{payload}')); "
-        f"Register-ScheduledTask -TaskName {name} -Xml $xml -Force -ErrorAction Stop | Out-Null; "
-        f"Start-ScheduledTask -TaskName {name} -ErrorAction Stop")
+def task_file(folder: Path) -> Path:
+    return folder / "task.xml"
+
+
+def windows_define(python: str, folder: Path) -> None:
+    """Task Scheduler reads the definition from a file, because endpoint protection tools flag
+    an encoded script."""
+    path = task_file(folder)
+    path.write_bytes(task_xml(service_command(python), folder).encode("utf-16"))
+    run("schtasks", "/Create", "/TN", NAME, "/XML", str(path), "/F")
+
+
+def windows_start(_python: str) -> None:
+    run("schtasks", "/Run", "/TN", NAME)
 
 
 def windows_remove() -> None:
-    from pdt import deploy_windows
-    name = deploy_windows._ps_string(NAME)
-    powershell(f"$task = Get-ScheduledTask -TaskName {name} -ErrorAction SilentlyContinue; "
-               f"if ($task) {{ Stop-ScheduledTask -TaskName {name}; "
-               f"Unregister-ScheduledTask -TaskName {name} -Confirm:$false -ErrorAction Stop }}")
+    if run("schtasks", "/Query", "/TN", NAME, check=False).returncode != 0:
+        return
+    run("schtasks", "/End", "/TN", NAME, check=False)
+    run("schtasks", "/Delete", "/TN", NAME, "/F")
 
 
 def windows_running() -> bool:
@@ -126,37 +142,36 @@ def windows_running() -> bool:
                       "-ErrorAction SilentlyContinue).State").strip() == "Running"
 
 
-def systemd_path() -> Path:
-    if is_root():
-        return Path("/etc/systemd/system") / f"{NAME}.service"
-    home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    return home / "systemd" / "user" / f"{NAME}.service"
+def windows_definition(folder: Path) -> str:
+    return task_file(folder).read_text(encoding="utf-16")
+
+
+def windows_restart() -> None:
+    """The service exits after this call, and the trigger each 5 minutes starts the new task."""
 
 
 def systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return run("systemctl", *([] if is_root() else ["--user"]), *args, check=check)
+    return run("systemctl", *args, check=check)
 
 
-def systemd_install(_folder: Path) -> None:
-    target = "multi-user.target" if is_root() else "default.target"
+def systemd_define(python: str, _folder: Path) -> None:
     environment = "".join(f"Environment={shlex.quote(f'{name}={value}')}\n"
                           for name, value in kept_env().items())
-    path = systemd_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("[Unit]\nDescription=pdt service\nAfter=network-online.target\n"
-                    f"\n[Service]\nExecStart={shlex.join(service_command())}\n{environment}"
-                    f"Restart=always\nRestartSec=30\n\n[Install]\nWantedBy={target}\n",
-                    encoding="utf-8")
+    SYSTEMD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SYSTEMD_PATH.write_text("[Unit]\nDescription=pdt service\nAfter=network-online.target\n"
+                            f"\n[Service]\nExecStart={shlex.join(service_command(python))}\n"
+                            f"{environment}Restart=always\nRestartSec=60\n\n"
+                            "[Install]\nWantedBy=multi-user.target\n", encoding="utf-8")
     systemctl("daemon-reload")
+
+
+def systemd_start(_python: str) -> None:
     systemctl("enable", "--now", f"{NAME}.service")
-    if not is_root():
-        # With no linger, a user's manager stops at sign-out and starts only at sign-in.
-        run("loginctl", "enable-linger", check=False)
 
 
 def systemd_remove() -> None:
     systemctl("disable", "--now", f"{NAME}.service", check=False)
-    systemd_path().unlink(missing_ok=True)
+    SYSTEMD_PATH.unlink(missing_ok=True)
     systemctl("daemon-reload", check=False)
 
 
@@ -164,36 +179,48 @@ def systemd_running() -> bool:
     return systemctl("is-active", "--quiet", f"{NAME}.service", check=False).returncode == 0
 
 
-def launchd_path() -> Path:
-    if is_root():
-        return Path("/Library/LaunchDaemons") / f"{LAUNCHD_LABEL}.plist"
-    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+def systemd_definition(_folder: Path) -> str:
+    return SYSTEMD_PATH.read_text(encoding="utf-8")
 
 
-def launchd_domain() -> str:
-    return "system" if is_root() else f"gui/{os.getuid()}"
+def systemd_restart() -> None:
+    """The service exits after this call, and Restart=always starts the new definition."""
 
 
-def launchd_install(folder: Path) -> None:
-    path = launchd_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(plistlib.dumps({
-        "Label": LAUNCHD_LABEL, "ProgramArguments": service_command(), "RunAtLoad": True,
+def launchd_define(python: str, folder: Path) -> None:
+    LAUNCHD_PATH.parent.mkdir(parents=True, exist_ok=True)
+    LAUNCHD_PATH.write_bytes(plistlib.dumps({
+        "Label": LAUNCHD_LABEL, "ProgramArguments": service_command(python), "RunAtLoad": True,
         "KeepAlive": True, "EnvironmentVariables": kept_env(), "WorkingDirectory": str(folder),
-        "StandardOutPath": str(folder / "launchd.log"),
+        "AbandonProcessGroup": True, "StandardOutPath": str(folder / "launchd.log"),
         "StandardErrorPath": str(folder / "launchd.log")}))
-    run("launchctl", "bootout", f"{launchd_domain()}/{LAUNCHD_LABEL}", check=False)
-    run("launchctl", "bootstrap", launchd_domain(), str(path))
+
+
+def launchd_start(_python: str) -> None:
+    run("launchctl", "bootout", f"system/{LAUNCHD_LABEL}", check=False)
+    run("launchctl", "bootstrap", "system", str(LAUNCHD_PATH))
 
 
 def launchd_remove() -> None:
-    run("launchctl", "bootout", f"{launchd_domain()}/{LAUNCHD_LABEL}", check=False)
-    launchd_path().unlink(missing_ok=True)
+    run("launchctl", "bootout", f"system/{LAUNCHD_LABEL}", check=False)
+    LAUNCHD_PATH.unlink(missing_ok=True)
 
 
 def launchd_running() -> bool:
-    return run("launchctl", "print", f"{launchd_domain()}/{LAUNCHD_LABEL}",
-               check=False).returncode == 0
+    return run("launchctl", "print", f"system/{LAUNCHD_LABEL}", check=False).returncode == 0
+
+
+def launchd_definition(_folder: Path) -> str:
+    return LAUNCHD_PATH.read_text(encoding="utf-8")
+
+
+def launchd_restart() -> None:
+    """launchd keeps the definition it loaded, and `bootout` ends this process, so a process that
+    outlives it does the two steps. AbandonProcessGroup keeps that process alive."""
+    script = (f"sleep {RESTART_DELAY_SECONDS}; launchctl bootout system/{LAUNCHD_LABEL}; "
+              f"launchctl bootstrap system {shlex.quote(str(LAUNCHD_PATH))}")
+    subprocess.Popen(["sh", "-c", script], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def crontab_without_service() -> str:
@@ -202,11 +229,23 @@ def crontab_without_service() -> str:
     return "".join(f"{line}\n" for line in lines if CRON_MARK not in line)
 
 
-def cron_install(_folder: Path) -> None:
+def cron_lines(python: str) -> str:
     environment = " ".join(shlex.quote(f"{name}={value}") for name, value in kept_env().items())
     start = f"env {environment} " if environment else ""
-    line = f"* * * * * {start}{shlex.join(service_command('tick'))} >/dev/null 2>&1 {CRON_MARK}\n"
-    run("crontab", "-", stdin=crontab_without_service() + line)
+    command = f"{start}{shlex.join(service_command(python))} >/dev/null 2>&1 {CRON_MARK}\n"
+    return f"@reboot {command}*/5 * * * * {command}"
+
+
+def cron_define(python: str, _folder: Path) -> None:
+    run("crontab", "-", stdin=crontab_without_service() + cron_lines(python))
+
+
+def cron_start(python: str) -> None:
+    """The line each 5 minutes starts it too, but a person who installs it waits for the first
+    check-in, so it starts at once, apart from this process."""
+    subprocess.Popen(service_command(python), env={**os.environ, **kept_env()},
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def cron_remove() -> None:
@@ -217,22 +256,38 @@ def cron_running() -> bool:
     return CRON_MARK in run("crontab", "-l", check=False).stdout
 
 
+def cron_definition(_folder: Path) -> str:
+    return "".join(f"{line}\n" for line in run("crontab", "-l", check=False).stdout.splitlines()
+                   if CRON_MARK in line)
+
+
+def cron_restart() -> None:
+    """The service exits after this call, and cron starts the new line within 5 minutes."""
+
+
 @dataclass(frozen=True)
 class Backend:
     # Whether this manager exists on this computer.
     available: Callable[[], bool]
-    install: Callable[[Path], None]
+    define: Callable[[str, Path], None]
+    start: Callable[[str], None]
     remove: Callable[[], None]
     running: Callable[[], bool]
+    definition: Callable[[Path], str]
+    restart: Callable[[], None]
 
 
 BACKENDS = {
-    "windows": Backend(lambda: os.name == "nt", windows_install, windows_remove, windows_running),
+    "windows": Backend(lambda: os.name == "nt", windows_define, windows_start, windows_remove,
+                       windows_running, windows_definition, windows_restart),
     "systemd": Backend(lambda: bool(shutil.which("systemctl")) and Path("/run/systemd/system").is_dir(),
-                       systemd_install, systemd_remove, systemd_running),
+                       systemd_define, systemd_start, systemd_remove, systemd_running,
+                       systemd_definition, systemd_restart),
     "launchd": Backend(lambda: sys.platform == "darwin" and bool(shutil.which("launchctl")),
-                       launchd_install, launchd_remove, launchd_running),
-    "cron": Backend(lambda: bool(shutil.which("crontab")), cron_install, cron_remove, cron_running),
+                       launchd_define, launchd_start, launchd_remove, launchd_running,
+                       launchd_definition, launchd_restart),
+    "cron": Backend(lambda: bool(shutil.which("crontab")), cron_define, cron_start, cron_remove,
+                    cron_running, cron_definition, cron_restart),
 }
 
 

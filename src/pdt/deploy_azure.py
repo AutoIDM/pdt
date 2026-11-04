@@ -1290,6 +1290,9 @@ def grant_plan(place: str, values: dict) -> list:
         console.Markup(f"create resource groups {console.value('pdt')} and "
                        f"{console.value(SHARED_GROUP)} in {console.value(region)} when missing "
                        "(managed-by=pdt)"),
+        console.Markup(f"tag {console.value('pdt')} with "
+                       f"{console.value(grants.EXTERNAL_ID_TAG + '=' + str(values.get('external_id') or ''))}, "
+                       "so AutoIDM can check the grant"),
         console.Markup(f"assign it {', '.join(console.value(role) for role in GRANT_ROLES)} on those two "
                        "groups only"),
         console.Markup(f"let it assign only {', '.join(console.value(role) for role in GRANT_ASSIGNS)} on "
@@ -1337,6 +1340,8 @@ def grant_create(place: str, values: dict, assume_yes: bool) -> str:
             assign_role(scope, principal["id"], role)
         assign_role(scope, principal["id"], "Role Based Access Control Administrator",
                     condition=grant_condition())
+    run_quiet("group", "update", "--name", "pdt", "--subscription", subscription, "--set",
+              f"tags.{grants.EXTERNAL_ID_TAG}={values.get('external_id') or ''}")
     return principal["id"]
 
 
@@ -1373,25 +1378,35 @@ def subscription_tenant(subscription: str) -> str:
 
 
 def grant_env(place: str, values: dict) -> dict[str, str]:
-    """`az login --service-principal` with AutoIDM's federated token. The CLI keeps its login in
-    AZURE_CONFIG_DIR, so that is a folder in memory, which the worker deletes after the command."""
+    """`az login --service-principal` with the client secret of this customer's AutoIDM
+    application, then a check of the external ID tag on the group `pdt`. The CLI keeps its login
+    in AZURE_CONFIG_DIR, so that is a folder in memory, which the worker deletes after the
+    command."""
     _provider, subscription, _region = grants.split_place(place)
     client = ((values.get("principal") or {}).get("azure") or {}).get("client_id")
-    token_file = os.environ.get("AZURE_FEDERATED_TOKEN_FILE", "").strip()
-    if not (client and token_file):
-        fail("A cloud worker needs AZURE_FEDERATED_TOKEN_FILE, and AutoIDM must name its Azure "
-             "application.")
+    secret = values.get("credential")
+    if not (client and secret):
+        fail("AutoIDM did not name its Azure application and its credential. Run the command "
+             "again.")
     tenant = subscription_tenant(subscription)
     folder = grants.memory_folder("pdt-az-")
+    env = {**os.environ, "AZURE_CONFIG_DIR": str(folder)}
     proc = subprocess.run(
         [*AZ, "login", "--service-principal", "--tenant", tenant, "--username", client,
-         "--federated-token", Path(token_file).read_text(encoding="utf-8").strip(),
-         "--allow-no-subscriptions"],
-        env={**os.environ, "AZURE_CONFIG_DIR": str(folder)}, stdin=subprocess.DEVNULL,
-        capture_output=True, text=True)
+         "--client-secret", secret, "--allow-no-subscriptions"],
+        env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if proc.returncode != 0:
         fail(f"Azure refused the login as {console.value(client)}: "
              f"{console.escape(proc.stderr.strip())}")
+    proc = subprocess.run(
+        [*AZ, "group", "show", "--name", "pdt", "--subscription", subscription, "--query", "tags",
+         "--output", "json"], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    tags = json.loads(proc.stdout or "null") if proc.returncode == 0 else None
+    found = (tags or {}).get(grants.EXTERNAL_ID_TAG)
+    if found != values.get("external_id"):
+        raise grants.Mismatch(f"The resource group pdt in Azure subscription {subscription} has "
+                              f"the tag {grants.EXTERNAL_ID_TAG}={found or 'none'}, which is not "
+                              "the external ID of the grant. Run pdt grant add " + place + ".")
     return {"AZURE_CONFIG_DIR": str(folder), "PDT_GRANT_FOLDER": str(folder)}
 
 

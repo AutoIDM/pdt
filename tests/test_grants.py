@@ -259,22 +259,49 @@ def test_removing_one_aws_region_keeps_the_other_and_the_last_removes_the_identi
     assert iam.policies == {}
 
 
-def test_the_aws_worker_env_assumes_the_role_with_the_external_id(monkeypatch):
-    seen = {}
+def test_the_aws_worker_env_goes_through_the_broker_then_the_role_with_the_external_id(
+        monkeypatch):
+    seen = []
 
     class Sts:
-        def assume_role(self, **kwargs):
-            seen.update(kwargs)
-            return {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "s", "SessionToken": "t"}}
+        def __init__(self, **kwargs):
+            self.login = kwargs.get("aws_session_token")
 
-    monkeypatch.setattr(deploy_aws.boto3, "client", lambda *_a, **_k: Sts())
+        def assume_role(self, **kwargs):
+            seen.append((self.login, kwargs))
+            return {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "s",
+                                    "SessionToken": f"t{len(seen)}"}}
+
+    monkeypatch.setattr(deploy_aws.boto3, "client", lambda *_a, **kwargs: Sts(**kwargs))
     role = f"arn:aws:iam::{ACCOUNT}:role/{GRANT_ROLE}"
-    env = deploy_aws.grant_env(AWS_PLACE, {"role": role, "external_id": "b" * 32})
-    assert seen["RoleArn"] == role and seen["ExternalId"] == "b" * 32
-    assert seen["DurationSeconds"] == 3600
-    assert env["AWS_SECRET_ACCESS_KEY"] == "s" and env["AWS_SESSION_TOKEN"] == "t"
+    broker = "arn:aws:iam::999999999999:role/pdt-backend-grant-broker"
+    env = deploy_aws.grant_env(AWS_PLACE, {"role": role, "external_id": "b" * 32,
+                                           "principal": {"aws": broker}})
+    assert seen[0] == (None, {"RoleArn": broker, "RoleSessionName": "pdt-worker"})
+    login, second = seen[1]
+    assert login == "t1" and second["RoleArn"] == role and second["ExternalId"] == "b" * 32
+    assert second["DurationSeconds"] == 3600
+    assert env["AWS_SECRET_ACCESS_KEY"] == "s" and env["AWS_SESSION_TOKEN"] == "t2"
     assert env["AWS_REGION"] == "us-east-2"
     assert env[deploy_aws.BOUNDARY_ENV].endswith(f"policy/{GRANT_BOUNDARY}")
+
+
+def test_the_aws_worker_env_refuses_a_role_whose_trust_holds_another_external_id(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class Sts:
+        def __init__(self, **kwargs):
+            self.second = "aws_session_token" in kwargs
+
+        def assume_role(self, **_kwargs):
+            if self.second:
+                raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "AssumeRole")
+            return {"Credentials": {"AccessKeyId": "a", "SecretAccessKey": "s", "SessionToken": "t"}}
+
+    monkeypatch.setattr(deploy_aws.boto3, "client", lambda *_a, **kwargs: Sts(**kwargs))
+    with pytest.raises(grants.Mismatch, match="external ID"):
+        deploy_aws.grant_env(AWS_PLACE, {"role": f"arn:aws:iam::{ACCOUNT}:role/{GRANT_ROLE}",
+                                         "external_id": "b" * 32, "principal": {"aws": "broker"}})
 
 
 def test_the_aws_worker_env_refuses_a_role_in_another_account():
@@ -339,26 +366,42 @@ def test_the_azure_remove_deletes_the_identity(monkeypatch):
     assert len(calls.revoked) == 6
 
 
-def test_the_azure_worker_env_keeps_the_login_in_a_memory_folder(monkeypatch, tmp_path):
-    token_file = tmp_path / "token"
-    token_file.write_text("federated-token\n")
-    monkeypatch.setenv("AZURE_FEDERATED_TOKEN_FILE", str(token_file))
+def azure_worker(monkeypatch, tmp_path, tags):
     monkeypatch.setattr(grants, "MEMORY_FOLDER", tmp_path)
-    seen = {}
+    seen = []
 
     def run(args, env=None, **_kwargs):
-        seen.update(args=args, env=env)
+        seen.append((args, env))
+        if "group" in args:
+            return subprocess.CompletedProcess(args, 0, json.dumps(tags), "")
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(deploy_azure.subprocess, "run", run)
     monkeypatch.setattr(deploy_azure, "subscription_tenant", lambda _subscription: "tenant-1")
-    env = deploy_azure.grant_env(AZURE_PLACE, {"role": "object-1", "principal": VALUES["principal"]})
-    assert "--service-principal" in seen["args"] and "federated-token" in seen["args"]
-    assert seen["args"][seen["args"].index("--tenant") + 1] == "tenant-1"
-    assert seen["args"][seen["args"].index("--username") + 1] == "client-1"
-    assert env["AZURE_CONFIG_DIR"] == seen["env"]["AZURE_CONFIG_DIR"]
+    return seen
+
+
+def test_the_azure_worker_env_keeps_the_login_in_a_memory_folder(monkeypatch, tmp_path):
+    seen = azure_worker(monkeypatch, tmp_path, {grants.EXTERNAL_ID_TAG: "e" * 32})
+    env = deploy_azure.grant_env(AZURE_PLACE, {"role": "object-1", "external_id": "e" * 32,
+                                               "principal": VALUES["principal"],
+                                               "credential": "client-secret"})
+    login, login_env = seen[0]
+    assert "--service-principal" in login
+    assert login[login.index("--client-secret") + 1] == "client-secret"
+    assert login[login.index("--tenant") + 1] == "tenant-1"
+    assert login[login.index("--username") + 1] == "client-1"
+    assert env["AZURE_CONFIG_DIR"] == login_env["AZURE_CONFIG_DIR"]
     assert Path(env["AZURE_CONFIG_DIR"]).parent == tmp_path
     assert env["PDT_GRANT_FOLDER"] == env["AZURE_CONFIG_DIR"]
+
+
+def test_the_azure_worker_env_refuses_a_group_with_another_external_id(monkeypatch, tmp_path):
+    azure_worker(monkeypatch, tmp_path, {grants.EXTERNAL_ID_TAG: "other"})
+    with pytest.raises(grants.Mismatch, match="autoidm-external-id=other"):
+        deploy_azure.grant_env(AZURE_PLACE, {"role": "object-1", "external_id": "e" * 32,
+                                             "principal": VALUES["principal"],
+                                             "credential": "client-secret"})
 
 
 def test_a_worker_with_no_memory_folder_stops(monkeypatch, tmp_path):
@@ -381,7 +424,8 @@ def test_the_google_grant_has_named_roles_and_no_project_iam_write(monkeypatch):
     role = deploy_google_cloud.grant_create(GOOGLE_PLACE, VALUES, True)
     assert role == "pdt-autoidm@my-project-1.iam.gserviceaccount.com"
     created = next(args for args in writes if args[:3] == ("iam", "service-accounts", "create"))
-    assert created[3] == "pdt-autoidm" and "managed-by=pdt" in created
+    assert created[3] == "pdt-autoidm"
+    assert created[-1] == f"managed-by=pdt {grants.EXTERNAL_ID_TAG}={VALUES['external_id']}"
     token = next(args for args in writes if "roles/iam.serviceAccountTokenCreator" in args)
     assert f"serviceAccount:{VALUES['principal']['google-cloud']}" in token
     project_roles = [args[args.index("--role") + 1] for args in writes
@@ -398,40 +442,94 @@ def test_the_google_remove_deletes_the_identity(monkeypatch):
     assert writes[-1][:3] == ("iam", "service-accounts", "delete")
 
 
-def test_the_google_worker_env_is_the_documented_impersonation_form(monkeypatch, tmp_path):
-    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/etc/autoidm/key.json")
+def google_worker(monkeypatch, tmp_path, description):
+    from google.oauth2 import service_account
     monkeypatch.setattr(grants, "MEMORY_FOLDER", tmp_path)
-    env = deploy_google_cloud.grant_env(GOOGLE_PLACE, {"role": "pdt-autoidm@x"})
-    assert env["CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT"] == "pdt-autoidm@x"
+
+    class Own:
+        token = "own-token"
+
+        def refresh(self, _request):
+            pass
+
+    monkeypatch.setattr(service_account.Credentials, "from_service_account_info",
+                        lambda info, scopes: Own())
+    seen = []
+
+    def google_json(url, token, body=None):
+        seen.append((url, token, body))
+        if url.endswith(":generateAccessToken"):
+            return {"accessToken": "role-token"}
+        return {"description": description}
+
+    monkeypatch.setattr(deploy_google_cloud, "google_json", google_json)
+    return seen
+
+
+def test_the_google_worker_env_is_a_token_file_for_the_role(monkeypatch, tmp_path):
+    seen = google_worker(monkeypatch, tmp_path, f"managed-by=pdt {grants.EXTERNAL_ID_TAG}=e")
+    env = deploy_google_cloud.grant_env(GOOGLE_PLACE, {"role": "pdt-autoidm@x", "external_id": "e",
+                                                       "credential": "{}"})
+    assert seen[0][0].endswith("/serviceAccounts/pdt-autoidm@x:generateAccessToken")
+    assert seen[0][1] == "own-token" and seen[1][1] == "role-token"
+    assert Path(env["CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"]).read_text() == "role-token"
     assert env["CLOUDSDK_CORE_PROJECT"] == "my-project-1"
     assert Path(env["CLOUDSDK_CONFIG"]).parent == tmp_path
+    assert "GOOGLE_APPLICATION_CREDENTIALS" not in env
 
 
-def test_the_worker_gets_the_external_id_from_autoidm_and_credentials_through_a_pipe(monkeypatch):
+def test_the_google_worker_env_refuses_another_external_id(monkeypatch, tmp_path):
+    google_worker(monkeypatch, tmp_path, "managed-by=pdt")
+    with pytest.raises(grants.Mismatch, match="does not hold"):
+        deploy_google_cloud.grant_env(GOOGLE_PLACE, {"role": "pdt-autoidm@x", "external_id": "e",
+                                                     "credential": "{}"})
+
+
+def grant_values_answer(found, path, body, **changes):
+    return {"role": "r", "external_id": f"from {path} {body['place']}",
+            "principal": VALUES["principal"], "credential_parameter": None, **changes}
+
+
+def test_the_worker_gets_the_grant_values_from_autoidm_and_credentials_through_a_pipe(
+        monkeypatch):
     from pdt.utils import autoidm
-    seen = {}
+    seen = []
 
     def run(args, env=None, **kwargs):
-        seen.update(args=args, env=env, kwargs=kwargs)
+        seen.append((args, env, kwargs))
+        if grants.WORKER_PARAMETER in args:
+            return subprocess.CompletedProcess(args, 0, stdout='{"value": "the-secret"}', stderr="")
         return subprocess.CompletedProcess(args, 0, stdout='{"AWS_SESSION_TOKEN": "t"}', stderr="")
 
     monkeypatch.setattr(grants.subprocess, "run", run)
     monkeypatch.setattr(deploy, "announce_install", lambda _script: None)
-    monkeypatch.setattr(autoidm, "post", lambda found, path, body: {
-        "external_id": f"from {path} {body['place']}", "principal": VALUES["principal"]})
+    monkeypatch.setattr(autoidm, "post", lambda found, path, body: grant_values_answer(
+        found, path, body, credential_parameter="/pdt-backend/grant-identities/c/azure"))
     found = grants.credentials({"place": AWS_PLACE, "role": "r"}, object())
     assert found == {"AWS_SESSION_TOKEN": "t"}
-    assert "grant-env" in seen["args"]
-    assert seen["kwargs"]["capture_output"] is True
-    values = json.loads(seen["env"][grants.GRANT_ENV])
-    assert values["role"] == "r"
-    assert values["external_id"] == f"from /v1/grants/start {AWS_PLACE}"
+    assert seen[0][0][-2:] == [grants.WORKER_PARAMETER, "/pdt-backend/grant-identities/c/azure"]
+    args, env, kwargs = seen[1]
+    assert "grant-env" in args and kwargs["capture_output"] is True
+    values = json.loads(env[grants.GRANT_ENV])
+    assert values["role"] == "r" and values["credential"] == "the-secret"
+    assert values["external_id"] == f"from /v1/grants/values {AWS_PLACE}"
+
+
+def test_a_grant_env_mismatch_refuses_the_command(monkeypatch):
+    from pdt.service_commands import Refused
+    from pdt.utils import autoidm
+    monkeypatch.setattr(grants.subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(
+        args, 0, stdout=json.dumps({grants.REFUSED_KEY: "another external ID"}), stderr=""))
+    monkeypatch.setattr(deploy, "announce_install", lambda _script: None)
+    monkeypatch.setattr(autoidm, "post", grant_values_answer)
+    with pytest.raises(Refused, match="another external ID"):
+        grants.credentials({"place": AWS_PLACE, "role": "r"}, object())
 
 
 def test_a_failed_credentials_call_says_so(monkeypatch):
     from pdt.utils import autoidm
     monkeypatch.setattr(deploy, "announce_install", lambda _script: None)
-    monkeypatch.setattr(autoidm, "post", lambda *_a: {"external_id": "e"})
+    monkeypatch.setattr(autoidm, "post", grant_values_answer)
     monkeypatch.setattr(grants.subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(
         args, 1, stdout="", stderr="AccessDenied"))
     with pytest.raises(RuntimeError, match="AccessDenied"):
@@ -589,6 +687,7 @@ def test_a_worker_login_skips_the_profile_and_the_simulation(monkeypatch):
 
 
 def test_the_root_deploy_skips_the_env_check_for_a_worker(keep, monkeypatch, tmp_path):
+    monkeypatch.setenv(deploy.config.LOCK_PROJECT_ENV, str(tmp_path))
     monkeypatch.setattr(deploy, "_load", lambda _name: (
         {"dir": tmp_path, "name": "hr", "schedule": "daily", "platform": {"provider": "aws"}}, "aws"))
     monkeypatch.setattr(deploy.config, "validate_app", lambda _name: [])

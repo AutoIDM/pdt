@@ -1514,15 +1514,32 @@ def grant_remove(place: str, _values: dict, _assume_yes: bool) -> None:
 
 
 def grant_env(place: str, values: dict) -> dict[str, str]:
-    """STS AssumeRole with the external ID, from AutoIDM's own login, into env values."""
+    """The worker's task role assumes AutoIDM's broker role, and the broker assumes the grant's
+    role with the external ID. A refusal of that second step is the sign of a role whose trust
+    policy holds another external ID."""
     _provider, account, region = grants.split_place(place)
     role = values.get("role") or ""
+    broker = (values.get("principal") or {}).get("aws") or ""
     if not role.startswith(f"arn:aws:iam::{account}:role/"):
         fail(f"The grant names the role {console.value(role)}, which is not in AWS account "
              f"{console.value(account)}.")
-    answer = boto3.client("sts", region_name=region, config=RETRIES).assume_role(
-        RoleArn=role, RoleSessionName="pdt-worker", ExternalId=values.get("external_id") or "",
-        DurationSeconds=GRANT_SESSION_SECONDS)["Credentials"]
+    if not broker:
+        fail("AutoIDM did not name its broker role. Run the command again.")
+    hop = boto3.client("sts", region_name=region, config=RETRIES).assume_role(
+        RoleArn=broker, RoleSessionName="pdt-worker")["Credentials"]
+    sts = boto3.client("sts", region_name=region, config=RETRIES,
+                       aws_access_key_id=hop["AccessKeyId"],
+                       aws_secret_access_key=hop["SecretAccessKey"],
+                       aws_session_token=hop["SessionToken"])
+    try:
+        answer = sts.assume_role(
+            RoleArn=role, RoleSessionName="pdt-worker", ExternalId=values.get("external_id") or "",
+            DurationSeconds=GRANT_SESSION_SECONDS)["Credentials"]
+    except ClientError as exc:
+        if error_code(exc) == "AccessDenied":
+            raise grants.Mismatch(f"AWS refused {role} with the external ID of the grant: "
+                                  f"{exc}") from None
+        raise
     return {"AWS_ACCESS_KEY_ID": answer["AccessKeyId"],
             "AWS_SECRET_ACCESS_KEY": answer["SecretAccessKey"],
             "AWS_SESSION_TOKEN": answer["SessionToken"],
@@ -1545,6 +1562,11 @@ def load_app(app_name: str) -> dict:
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "aws":
         return subprocess.run([*aws_cli(), *sys.argv[2:]]).returncode
+    if len(sys.argv) > 2 and sys.argv[1] == grants.WORKER_PARAMETER:
+        found = boto3.client("ssm", config=RETRIES).get_parameter(
+            Name=sys.argv[2], WithDecryption=True)["Parameter"]["Value"]
+        console.data(json.dumps({"value": found}))
+        return 0
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
         "deploy", "destroy", "login", "storage", "secrets", "runs", "logs",

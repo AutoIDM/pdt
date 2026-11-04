@@ -33,9 +33,8 @@ if not completion.COMPLETING:
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
-# The same names as service_commands.LEVELS and service_backends.BACKENDS. Tab completion builds
-# this parser, and it skips the modules that hold them.
-LEVELS = ("view", "run", "manage")
+# The same names as service_backends.BACKENDS. Tab completion builds this parser, and it skips
+# the module that holds them.
 BACKENDS = ("windows", "systemd", "launchd", "cron")
 CLOUD_CLIS = {
     "aws": "deploy_aws.py",
@@ -544,17 +543,20 @@ def cmd_alerts(args) -> int:
 
 
 def cmd_register(args) -> int:
-    return register_cli.register(args.code, args.api_url)
+    return register_cli.register(args.code, args.api_url, args.yes)
 
 
 def cmd_service(args) -> int:
     actions = {
-        "install": lambda: service.install(args.level, args.projects, args.backend),
+        "install": lambda: service.install(args.projects, args.backend, args.proxy, args.ssh_key,
+                                           args.known_hosts, args.yes),
         "status": lambda: service.status(args.json),
-        "run": lambda: service.run(args.worker, args.level),
-        "tick": service.tick,
-        "remove": service.remove,
-        "allow": lambda: service.allow(args.level),
+        "run": lambda: service.run(args.worker, args.command_id, args.trial),
+        "remove": lambda: service.remove(args.purge, args.yes),
+        "diagnose": service.diagnose,
+        "author": lambda: {"add": lambda: service.author_add(args.project, args.key),
+                           "remove": lambda: service.author_remove(args.project, args.key),
+                           "list": lambda: service.author_list(args.json)}[args.author_action](),
     }
     return actions[args.action]()
 
@@ -839,6 +841,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "off to sign in through a browser")
     p.add_argument("--api-url",
                    help=f"the AutoIDM address (default: PDT_API_URL, else {config.AUTOIDM_API_URL})")
+    p.add_argument("-y", "--yes", action="store_true",
+                   help="accept the access statement of the service install; a grant still asks")
     p.set_defaults(func=cmd_register)
     p = add_parser("service", help="run commands from the AutoIDM portal on this computer")
     actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt service")
@@ -848,9 +852,6 @@ def build_parser() -> argparse.ArgumentParser:
             name, formatter_class=rich_argparse.RawDescriptionRichHelpFormatter, **kwargs)
 
     q = add_action(actions, "install", help="start the service now and at each boot")
-    q.add_argument("--level", choices=LEVELS,
-                   help="the most the portal may ask for: view reads, run also starts jobs, "
-                        "manage also deploys and copies files (default: run)")
     projects = q.add_argument("--projects", metavar="DIR",
                               help="one project to serve, or the folder that holds the projects "
                                    "to serve (default: the current project, and the folder "
@@ -858,18 +859,44 @@ def build_parser() -> argparse.ArgumentParser:
     projects.completer = completion.directories
     q.add_argument("--backend", choices=BACKENDS,
                    help="what keeps the service running (default: the one for this computer; "
-                        "cron starts one check each minute)")
+                        "cron starts the service each 5 minutes when it does not run)")
+    q.add_argument("--proxy", metavar="URL",
+                   help="the proxy for the service and its jobs (default: the proxy of this "
+                        "computer's settings)")
+    ssh_key = q.add_argument("--ssh-key", metavar="FILE",
+                             help="a private SSH key the jobs use for Git, copied under pdt's data "
+                                  "folder")
+    ssh_key.completer = completion.files
+    known_hosts = q.add_argument("--known-hosts", metavar="FILE",
+                                 help="the known_hosts file for --ssh-key (default: "
+                                      "~/.ssh/known_hosts)")
+    known_hosts.completer = completion.files
+    q.add_argument("-y", "--yes", action="store_true", help="accept the access statement")
     q = add_action(actions, "status", help="show the service, its last checks, and running commands")
     q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     q = add_action(actions, "run", help="run the service in this terminal, with no install")
-    q.add_argument("--level", choices=LEVELS,
-                   help="the most the portal may ask for (default: the installed level, else run)")
     q.add_argument("--worker", action="store_true",
                    help="act as a cloud worker, with the registration in the environment")
-    add_action(actions, "tick", help="check once, and stay until no command runs")
-    add_action(actions, "remove", help="stop the service and remove it from this computer")
-    q = add_action(actions, "allow", help="change the most the portal may ask for")
-    q.add_argument("level", choices=LEVELS, help="view, run, or manage")
+    q.add_argument("--command", metavar="ID", dest="command_id",
+                   help="the one command a cloud worker runs")
+    q.add_argument("--trial", action="store_true",
+                   help="check in one time and stop; an upgrade uses it to test a new version")
+    q = add_action(actions, "remove", help="stop the service and remove it from this computer")
+    q.add_argument("--purge", action="store_true",
+                   help="also delete pdt's data folder, except each project folder")
+    q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
+    add_action(actions, "diagnose", help="write a zip of the service's settings, log, and journal "
+                                         "for AutoIDM support")
+    q = add_action(actions, "author", help="choose whose snapshots this computer runs")
+    authors = q.add_subparsers(dest="author_action", metavar="<action>", required=True,
+                               prog="pdt service author")
+    for name, what in (("add", "accept snapshots of a project that this key signed"),
+                       ("remove", "stop accepting snapshots that this key signed")):
+        r = add_action(authors, name, help=what)
+        r.add_argument("project", help="the project name, as the portal shows it")
+        r.add_argument("key", help="the author's public key, as pdt ci register prints it")
+    r = add_action(authors, "list", help="show each accepted author")
+    r.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_service)
     p = add_parser("sync", help="copy this project to or from AutoIDM")
     actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt sync")

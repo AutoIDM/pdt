@@ -2,14 +2,19 @@
 
 A registration is one customer and one installation. `pdt register` writes
 each registration of this computer to `folder()`: <customer_id>.json (the
-installation ID, the customer ID, and the API URL) and <customer_id>.key (the
-Ed25519 private key, PEM). A cloud job has no such folder, so it reads
+installation ID, the customer ID, the API URL, and the command keys) and
+<customer_id>.key (the Ed25519 private key, PEM). `data_folder` is the folder
+that holds them: %ProgramData%\\pdt on Windows, /var/lib/pdt for root on Linux,
+/Library/Application Support/pdt for root on macOS, and the user's own data
+folder for another user. A cloud job and a CI job have no such folder, so each reads
 PDT_INSTALLATION_ID, PDT_INSTALLATION_KEY (the PEM text), PDT_API_URL, and
 PDT_CUSTOMER_ID from its environment, or from the PDT_ENV_JSON secret that
 holds them; when all four are set they win over the files, and a cloud
 registration for another customer is an error, so a job never sends one
 customer's runs under another customer's registration. `post` signs each request with a JWT
-whose `body_sha256` claim holds the SHA-256 of the exact body bytes.
+whose `body_sha256` claim holds the SHA-256 of the exact body bytes, and it sends a request again
+after a 429 or a 503, with a growing wait. `clock_offset` corrects each token for a computer with
+a wrong clock: the pdt service sets it at each check-in, and a 401 sets it from the answer's date.
 """
 
 from __future__ import annotations
@@ -18,7 +23,10 @@ import hashlib
 import http.client
 import json
 import os
+import random
 import secrets
+import sys
+import time as time_module
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,6 +34,7 @@ import uuid
 from base64 import urlsafe_b64encode
 from collections.abc import Iterator
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from time import time
 
@@ -43,10 +52,19 @@ URL_ENV = "PDT_API_URL"
 CUSTOMER_ENV = "PDT_CUSTOMER_ID"
 SECRET_NAMES = (ID_ENV, KEY_ENV, URL_ENV, CUSTOMER_ENV)
 AUDIENCE = "pdt-backend"
+WEBSOCKET_AUDIENCE = "pdt-ws"
 TOKEN_SECONDS = 300
 TIMEOUT_SECONDS = 10
 UPLOAD_TIMEOUT_SECONDS = 15
 UPLOAD_CHUNK_BYTES = 1024 * 1024
+# The answers of API Gateway when a route passes its throttle or the function has no free slot.
+RETRY_STATUSES = (429, 503)
+RETRY_FIRST_SECONDS = 1.0
+RETRY_MOST_SECONDS = 300.0
+RETRY_LIMIT_SECONDS = 600.0
+# What the server allows, so a larger difference needs a correction.
+CLOCK_SKEW_SECONDS = 60
+clock_offset = 0.0
 
 
 class AutoidmError(RuntimeError):
@@ -67,11 +85,20 @@ class Registration:
     source: str
 
 
-def folder() -> Path:
+def data_folder() -> Path:
     override = os.environ.get(DIR_ENV, "").strip()
-    base = (Path(override) if override else
-            config.machine_data_home() if os.name == "nt" else config.data_home() / "pdt")
-    return base / "registrations"
+    if override:
+        return Path(override)
+    if os.name == "nt":
+        return config.machine_data_home()
+    if os.geteuid() == 0:
+        return (Path("/Library/Application Support/pdt") if sys.platform == "darwin"
+                else Path("/var/lib/pdt"))
+    return config.data_home() / "pdt"
+
+
+def folder() -> Path:
+    return data_folder() / "registrations"
 
 
 def files(customer: str) -> tuple[Path, Path]:
@@ -144,11 +171,30 @@ def machine_registration(customer: str) -> Registration | None:
 
 
 def token(found: Registration, data: bytes) -> str:
-    now = int(time())
+    now = int(time() + clock_offset)
     return jwt.encode({"iss": found.installation_id, "aud": AUDIENCE, "iat": now,
                        "exp": now + TOKEN_SECONDS, "jti": secrets.token_hex(16),
                        "body_sha256": hashlib.sha256(data).hexdigest()},
                       found.key, algorithm="EdDSA")
+
+
+def websocket_token(found: Registration) -> str:
+    now = int(time() + clock_offset)
+    return jwt.encode({"iss": found.installation_id, "aud": WEBSOCKET_AUDIENCE, "iat": now,
+                       "exp": now + TOKEN_SECONDS, "jti": secrets.token_hex(16)},
+                      found.key, algorithm="EdDSA")
+
+
+def correct_clock(date: str | None) -> None:
+    """A 401 can mean a wrong clock, and with a wrong clock no check-in can bring the time. The
+    answer's date corrects the next token."""
+    global clock_offset
+    try:
+        difference = parsedate_to_datetime(date).timestamp() - time()
+    except (TypeError, ValueError):
+        return
+    if abs(difference - clock_offset) > CLOCK_SKEW_SECONDS:
+        clock_offset = difference
 
 
 def send(url: str, data: bytes | Iterator[bytes], headers: dict[str, str],
@@ -165,6 +211,8 @@ def send(url: str, data: bytes | Iterator[bytes], headers: dict[str, str],
             answer = {}
         answer = answer if isinstance(answer, dict) else {}
         code = str(answer.get("error") or "")
+        if e.code == 401:
+            correct_clock(e.headers.get("Date"))
         raise AutoidmError(f"AutoIDM answered HTTP {e.code}: "
                            f"{answer.get('message') or code or e.reason}", e.code, code) from None
     except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
@@ -188,7 +236,8 @@ def answered(answer: dict, what: str, *names: str) -> dict:
 
 def register(api_url: str, body: dict) -> dict:
     from pdt import managed_services
-    answer = answered(send(f"{api_url.rstrip('/')}/v1/register", json.dumps(body).encode(), {}),
+    data = json.dumps(body).encode()
+    answer = answered(retried(lambda: send(f"{api_url.rstrip('/')}/v1/register", data, {})),
                       "/v1/register", "installation_id", "customer_id")
     if not managed_services.CUSTOMER.fullmatch(answer["customer_id"]):
         raise AutoidmError(f"AutoIDM answered /v1/register with the customer ID "
@@ -196,9 +245,25 @@ def register(api_url: str, body: dict) -> dict:
     return answer
 
 
-def post(found: Registration, path: str, body: dict) -> dict:
+def retried(call, retry: bool = True) -> dict:
+    """`call`, again after a 429 or a 503, with a growing random wait."""
+    deadline = time_module.monotonic() + RETRY_LIMIT_SECONDS
+    wait = RETRY_FIRST_SECONDS
+    while True:
+        try:
+            return call()
+        except AutoidmError as e:
+            if not retry or e.status not in RETRY_STATUSES or time_module.monotonic() > deadline:
+                raise
+        time_module.sleep(random.uniform(wait / 2, wait))
+        wait = min(wait * 2, RETRY_MOST_SECONDS)
+
+
+def post(found: Registration, path: str, body: dict, retry: bool = True) -> dict:
+    """A signed POST. A new try needs a new token, because a token holds a single-use `jti`."""
     data = json.dumps(body).encode()
-    return send(found.api_url + path, data, {"Authorization": f"Bearer {token(found, data)}"})
+    return retried(lambda: send(found.api_url + path, data,
+                                {"Authorization": f"Bearer {token(found, data)}"}), retry)
 
 
 def check_url(url: object, what: str) -> str:
@@ -250,10 +315,11 @@ def post_file(place: dict, filename: str, data: bytes | Path, what: str) -> None
         send(url, head + data + tail, headers, UPLOAD_TIMEOUT_SECONDS)
 
 
-def upload(found: Registration, body: dict, data: bytes) -> str:
+def upload(found: Registration, body: dict, data: bytes | Path) -> str:
     """Ask /v1/uploads for a place for one file (`body` has its kind, project, app, run_id,
     and filename), send `data` there, and return its key."""
-    place = answered(post(found, "/v1/uploads", {"version": 1, **body, "size": len(data)}),
+    size = data.stat().st_size if isinstance(data, Path) else len(data)
+    place = answered(post(found, "/v1/uploads", {"version": 1, **body, "size": size}),
                      "/v1/uploads", "url", "key")
     post_file(place, body["filename"], data, "/v1/uploads")
     return place["key"]

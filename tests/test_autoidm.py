@@ -254,9 +254,8 @@ def test_the_registering_account_gets_read_unless_it_is_system(user, sddl):
     rule = (register_cli.FOLDER_SDDL.replace("{user}", user)
             .replace(register_cli.SYSTEM_READ, ""))
     assert rule == sddl
-    assert (f"$sddl = '{register_cli.FOLDER_SDDL}'.Replace('{{user}}', "
-            "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
-            f".Replace('{register_cli.SYSTEM_READ}', '');" in register_cli.SET_FOLDER_SDDL)
+    assert f"$sddl = $env:{register_cli.service_access.SDDL_ENV}.Replace('{{user}}', " in (
+        register_cli.service_access.SET_FOLDER_SDDL)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the access list is real on Windows")
@@ -376,7 +375,7 @@ def test_register_writes_a_pending_key_before_the_request_then_the_customer_file
     info, key = autoidm.files(CUSTOMER)
     assert json.loads(info.read_text()) == {
         "installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER, "api_url": url,
-        "command_keys": []}
+        "command_keys": [], "command_keys_version": 1}
     assert sorted(p.name for p in info.parent.iterdir()) == [info.name, key.name]
     assert os.name == "nt" or key.stat().st_mode & 0o777 == 0o600
     assert autoidm.registration(CUSTOMER).installation_id == "ins_4f8a1c2e9b"

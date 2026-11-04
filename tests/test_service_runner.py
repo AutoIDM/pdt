@@ -11,13 +11,16 @@ from types import SimpleNamespace
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from service_fixtures import (
-    COMMAND, CUSTOMER, INSTALLATION, KEYS, FakePortal, claims, snapshot_of, token)
+    AUTHOR_KEY, COMMAND, CUSTOMER, INSTALLATION, KEYS, FakePortal, claims, publication,
+    snapshot_of, token)
 
 from pdt import config, register_cli, service, service_commands, service_runner
+from pdt.service_commands import Clock
 from pdt.service_runner import Job, Pool, execute
 from pdt.utils import autoidm
 
 SECOND = "cmd_20261103T120001Z_0123abcd"
+AUTHORS = {autoidm.public_key(AUTHOR_KEY)}
 
 
 @pytest.fixture
@@ -42,7 +45,8 @@ def machine(tmp_path, monkeypatch, portal):
     root = home / "example"
     (root / "hr").mkdir(parents=True)
     (root / "pdt.yml").write_text(f"platform:\n  provider: windows\nmanaged_services:\n"
-                                  f"  customer: {CUSTOMER}\nservice:\n  presets:\n"
+                                  f"  customer: {CUSTOMER}\nservice:\n  snapshot_env: true\n"
+                                  "  presets:\n"
                                   "    rebuild:\n      env:\n        PDT_STEPS: extract\n"
                                   "      artifacts: true\n    bad:\n      env:\n        PATH: x\n")
     (root / "hr" / "config.yml").write_text("schedule: daily\n")
@@ -50,13 +54,56 @@ def machine(tmp_path, monkeypatch, portal):
     (root / ".env").write_text("FROM_PROJECT=project-value\nBOTH=project-value\n")
     (root / "hr" / ".env").write_text("BOTH=app-value\n")
     service_runner.service_folder().mkdir(parents=True)
-    settings = {"level": "manage", "projects": str(home), "registrations": [CUSTOMER],
-                "backend": "cron", "uv": None}
+    settings = {"version": 1, "customer": CUSTOMER, "projects": str(home),
+                "named_projects": [], "backend": "cron", "pdt_version": None, "python": None,
+                "proxy": {}, "ssh": None}
     service.write_settings(settings)
     monkeypatch.setattr(service_runner, "OUTPUT_SECONDS", 0.2)
     monkeypatch.setattr(service_runner, "STOP_SECONDS", 1)
     monkeypatch.setattr(service, "LOOP_SECONDS", 0.05)
+    TICKS.clear()
     return root
+
+
+class NoConnection:
+    def read(self):
+        return False, 0, None
+
+    def clear_wanted(self):
+        pass
+
+    def start(self, _url):
+        pass
+
+    def stop(self):
+        pass
+
+
+TICKS: dict = {}
+
+
+def tick() -> int:
+    """One pass of the loop, with the same Served across passes, and wait for each command."""
+    if "served" not in TICKS:
+        TICKS["served"] = service.machine_served(settings())
+        TICKS["served"].connection = NoConnection()
+        TICKS["pool"] = Pool()
+    found, pool = TICKS["served"], TICKS["pool"]
+    state = service.read_state()
+    service.check(found, settings(), pool, state)
+    service.write_state(state)
+    deadline = time.monotonic() + 20
+    while (pool.waiting or pool.running) and time.monotonic() < deadline:
+        pool.start_ready()
+        pool.reap()
+        time.sleep(0.05)
+    return 0
+
+
+def due() -> None:
+    """The next pass checks in."""
+    TICKS["served"].schedule.wanted = True
+    TICKS["served"].schedule.last_checkin = 0
 
 
 def registration():
@@ -65,19 +112,27 @@ def registration():
 
 def child(monkeypatch, code: str):
     monkeypatch.setattr(service_commands, "command_line",
-                        lambda _operation, _args: [sys.executable, "-c", code])
+                        lambda _operation, _args, _python=None: [sys.executable, "-c", code])
 
 
 def journal(command_id=COMMAND, **fields):
-    service_runner.journal_begin({"command_id": command_id, "customer_id": CUSTOMER,
-                                  "phase": "claimed", **fields})
+    service_runner.journal_write({"schema": 1, "command_id": command_id, "state": "claimed",
+                                  "claim_id": "0" * 32, "pid": None, "process_created": None,
+                                  "output_seq": 0, "output_offset": 0, "result": None,
+                                  "token": token("run", {"project": "example", "app": "hr",
+                                                         "deployed": False}, command_id),
+                                  **fields})
 
 
 def job(root, operation="run", args=None, limit=300, preset=None, command_id=COMMAND, worker=False):
     args = args or {"project": "example", "app": "hr", "deployed": False}
     found = claims(operation, args, command_id, limit_seconds=limit)
     journal(command_id)
-    return Job(command_id, found, registration(), root, worker, preset)
+    return Job(command_id, found, registration(), root, worker=worker, preset=preset)
+
+
+def trust_author(project: str) -> None:
+    service.write_authors({"schema": 1, "projects": {project: [autoidm.public_key(AUTHOR_KEY)]}})
 
 
 def run_in_thread(item: Job) -> threading.Thread:
@@ -91,7 +146,8 @@ def test_a_child_gets_a_list_of_arguments_and_no_shell(machine, portal, monkeypa
     real = subprocess.Popen
 
     def popen(args, **kwargs):
-        seen.update(args=args, kwargs=kwargs)
+        seen.setdefault("args", args)
+        seen.setdefault("kwargs", kwargs)
         return real([sys.executable, "-c", "pass"], **kwargs)
 
     monkeypatch.setattr(service_runner.subprocess, "Popen", popen)
@@ -155,9 +211,10 @@ def test_cancel_stops_the_whole_process_tree(machine, portal, monkeypatch):
     item = job(machine)
     thread = run_in_thread(item)
     deadline = time.monotonic() + 10
-    while not item.output and time.monotonic() < deadline:
+    printed = service_runner.output_path(COMMAND)
+    while not (printed.is_file() and printed.read_text().strip()) and time.monotonic() < deadline:
         time.sleep(0.05)
-    grandchild = int(item.output.decode().strip())
+    grandchild = int(printed.read_text().strip())
     item.cancel.set()
     thread.join(15)
     assert portal.result()["outcome"] == "cancelled"
@@ -182,20 +239,11 @@ def test_stop_tree_on_windows_uses_taskkill(monkeypatch):
     assert calls == [["taskkill", "/PID", "1234", "/T", "/F"]]
 
 
-def test_process_runs_on_windows_asks_tasklist_and_sends_no_signal(monkeypatch):
-    monkeypatch.setattr(service_runner.os, "name", "nt")
-    monkeypatch.setattr(service_runner.os, "kill", lambda *_a: pytest.fail("os.kill ends a process"))
-    monkeypatch.setattr(service_runner.subprocess, "run", lambda *_a, **_k: subprocess.CompletedProcess(
-        [], 0, stdout='"python.exe","1234","Services","0","10 K"\n'))
-    assert service_runner.process_runs(1234)
-    assert not service_runner.process_runs(123)
-
-
 def test_a_preset_reaches_the_child_and_its_artifact_goes_up(machine, portal, monkeypatch):
     code = ("import os, pathlib\n"
             "print(os.environ['PDT_STEPS'])\n"
             "folder = pathlib.Path(os.environ['PDT_OUTPUT_DIR'])\n"
-            "folder.mkdir(parents=True)\n"
+            "folder.mkdir(parents=True, exist_ok=True)\n"
             "(folder / 'report.txt').write_text('made it')\n")
     child(monkeypatch, code)
     portal.routes["/v1/uploads"] = lambda _body: (200, {
@@ -203,11 +251,11 @@ def test_a_preset_reaches_the_child_and_its_artifact_goes_up(machine, portal, mo
     execute(job(machine, preset={"env": {"PDT_STEPS": "extract"}, "artifacts": True}))
     assert "extract" in portal.output()
     result = portal.result()
-    assert result["outcome"] == "done" and result["artifact_key"] == "uploads/a.zip"
-    upload = portal.bodies("/v1/uploads")[0]
+    assert result["outcome"] == "done" and result["artifact_key"] == "uploads/a.zip", result["message"]
+    upload = next(body for body in portal.bodies("/v1/uploads") if body["kind"] == "artifact")
     assert (upload["kind"], upload["run_id"]) == ("artifact", COMMAND)
-    assert upload["filename"] == f"{COMMAND}.zip"
-    assert len(portal.uploads) == 1
+    assert upload["filename"] == service_runner.ARTIFACT_NAME
+    assert len(portal.uploads) == 2
 
 
 def snapshot_args(identity):
@@ -218,7 +266,7 @@ def serve_snapshot(portal):
     identity, manifest, data = snapshot_of({
         "pdt.yml": f"managed_services:\n  customer: {CUSTOMER}\n".encode(),
         "hr/config.yml": b"schedule: daily\n", "hr/run.py": b"print('snapshot')\n"})
-    portal.serve_snapshot(identity, manifest, data)
+    portal.serve_snapshot(identity, manifest, data, [publication(identity)])
     return identity
 
 
@@ -233,14 +281,14 @@ def test_run_snapshot_runs_in_a_new_folder_with_the_project_env_and_removes_the_
             "print('name', pathlib.Path('.pdt-project-name').read_text().strip())\n"
             "print('files', os.environ['PDT_SERVICE_ENV_FILES'])\n"
             "folder = pathlib.Path(os.environ['PDT_OUTPUT_DIR'])\n"
-            "folder.mkdir(parents=True)\n"
+            "folder.mkdir(parents=True, exist_ok=True)\n"
             "(folder / 'out.txt').write_text('made')\n")
     child(monkeypatch, code)
     portal.routes["/v1/uploads"] = lambda _body: (200, {
         "url": f"{portal.url}/bucket", "fields": {"key": "k"}, "key": "k"})
     item = job(machine, "run_snapshot", snapshot_args(identity),
                preset={"env": {"PDT_STEPS": "extract"}, "artifacts": True})
-    execute(item)
+    execute(item, None, AUTHORS)
     output = portal.output()
     result = portal.result()
     assert result["outcome"] == "done", output + str(result)
@@ -257,9 +305,9 @@ def test_run_snapshot_runs_in_a_new_folder_with_the_project_env_and_removes_the_
 def test_a_snapshot_of_another_customer_does_not_run(machine, portal, monkeypatch):
     identity, manifest, data = snapshot_of({
         "pdt.yml": b"managed_services:\n  customer: cus_0000000000\n", "hr/run.py": b"x"})
-    portal.serve_snapshot(identity, manifest, data)
+    portal.serve_snapshot(identity, manifest, data, [publication(identity)])
     child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)))
+    execute(job(machine, "run_snapshot", snapshot_args(identity)), None, AUTHORS)
     result = portal.result()
     assert result["outcome"] == "failed" and "cus_0000000000" in result["message"]
     assert "started" not in portal.facts()
@@ -286,9 +334,9 @@ def test_a_missing_var_in_a_snapshot_run_names_the_served_project(tmp_path, monk
 
 def test_a_bad_snapshot_reports_failed_and_leaves_no_folder(machine, portal, monkeypatch):
     identity, manifest, _data = snapshot_of({"a.txt": b"x"})
-    portal.serve_snapshot(identity, manifest, b"not a zip")
+    portal.serve_snapshot(identity, manifest, b"not a zip", [publication(identity)])
     child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)))
+    execute(job(machine, "run_snapshot", snapshot_args(identity)), None, AUTHORS)
     result = portal.result()
     assert result["outcome"] == "failed" and "zip" in result["message"]
     assert "started" not in portal.facts()
@@ -297,9 +345,9 @@ def test_a_bad_snapshot_reports_failed_and_leaves_no_folder(machine, portal, mon
 
 def test_a_snapshot_with_a_hostile_path_writes_nothing(machine, portal, monkeypatch, tmp_path):
     identity, manifest, data = snapshot_of({"../../evil.txt": b"evil"})
-    portal.serve_snapshot(identity, manifest, data)
+    portal.serve_snapshot(identity, manifest, data, [publication(identity)])
     child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)))
+    execute(job(machine, "run_snapshot", snapshot_args(identity)), None, AUTHORS)
     assert portal.result()["outcome"] == "failed"
     assert not list(tmp_path.rglob("evil.txt"))
 
@@ -346,7 +394,7 @@ def test_restart_reports_interrupted_when_the_process_is_gone(machine, portal, m
     proc.wait()
     journal(pid=proc.pid, phase="running", operation="run")
     pool = Pool()
-    service_runner.recover(pool, {CUSTOMER: registration()})
+    service_runner.recover(pool, registration(), Clock(), lambda name: machine)
     assert portal.result()["outcome"] == "interrupted"
     assert service_runner.journal_read(COMMAND)["reported"] is True
     assert pool.ids() == []
@@ -356,9 +404,10 @@ def test_restart_leaves_a_command_whose_process_runs_and_cancel_can_stop_it(mach
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
                             start_new_session=True)
     try:
-        journal(pid=proc.pid, phase="running")
+        journal(pid=proc.pid, state="started",
+                process_created=service_runner.process_created(proc.pid))
         pool = Pool()
-        service_runner.recover(pool, {CUSTOMER: registration()})
+        service_runner.recover(pool, registration(), Clock(), lambda name: machine)
         assert portal.bodies("/v1/commands/report") == []
         assert pool.ids() == [COMMAND]
         reaper = threading.Thread(target=proc.wait, daemon=True)
@@ -366,8 +415,9 @@ def test_restart_leaves_a_command_whose_process_runs_and_cancel_can_stop_it(mach
         pool.cancel(COMMAND)
         reaper.join(5)
         assert proc.poll() is not None
-        service_runner.recover(pool, {CUSTOMER: registration()})
-        assert portal.result()["outcome"] == "interrupted"
+        pool.running[COMMAND].thread.join(10)
+        assert portal.result()["outcome"] == "cancelled"
+        pool.reap()
         assert pool.ids() == []
     finally:
         proc.kill()
@@ -376,7 +426,7 @@ def test_restart_leaves_a_command_whose_process_runs_and_cancel_can_stop_it(mach
 def test_restart_sends_a_result_that_autoidm_did_not_get(machine, portal):
     result = {"outcome": "done", "exit_code": 0, "message": None, "run_id": None, "artifact_key": None}
     journal(result=result, reported=False, phase="finished")
-    service_runner.recover(Pool(), {CUSTOMER: registration()})
+    service_runner.recover(Pool(), registration(), Clock(), lambda name: machine)
     assert portal.result()["outcome"] == "done"
     assert service_runner.journal_read(COMMAND)["reported"] is True
 
@@ -385,7 +435,7 @@ def test_autoidm_holding_the_result_counts_as_sent(machine, portal):
     portal.routes["/v1/commands/report"] = lambda _body: (409, {"error": "already_finished"})
     result = {"outcome": "done", "exit_code": 0, "message": None, "run_id": None, "artifact_key": None}
     journal(result=result, reported=False, phase="finished")
-    service_runner.recover(Pool(), {CUSTOMER: registration()})
+    service_runner.recover(Pool(), registration(), Clock(), lambda name: machine)
     assert service_runner.journal_read(COMMAND)["reported"] is True
 
 
@@ -398,7 +448,7 @@ def settings():
 
 
 def accept(pool, signed, command_id=COMMAND):
-    return service.accept({"command_id": command_id, "token": signed}, served(), settings(), False, pool)
+    return service.accept({"command_id": command_id, "token": signed}, served(), settings(), pool)
 
 
 def test_accept_claims_and_queues_a_good_command(machine, portal):
@@ -407,7 +457,7 @@ def test_accept_claims_and_queues_a_good_command(machine, portal):
     assert portal.facts() == ["claimed"]
     assert [item.command_id for item in pool.waiting] == [COMMAND]
     assert pool.waiting[0].project == machine
-    assert service_runner.journal_read(COMMAND)["phase"] == "claimed"
+    assert service_runner.journal_read(COMMAND)["state"] == "claimed"
 
 
 def test_a_repeated_id_is_refused_and_starts_nothing(machine, portal):
@@ -420,19 +470,18 @@ def test_a_repeated_id_is_refused_and_starts_nothing(machine, portal):
 
 
 def test_a_refused_command_reports_refused_with_a_plain_message_and_no_claim(machine, portal):
-    service.write_settings({**settings(), "level": "view"})
     pool = Pool()
-    assert accept(pool, token("deploy", {"project": "example", "app": "hr"}))
+    assert accept(pool, token("list", grant={"place": "aws:123456789012:us-east-2",
+                                             "role": "arn:aws:iam::123456789012:role/x"}))
     assert pool.waiting == []
     assert portal.facts() == ["result"]
     result = portal.result()
     assert result["outcome"] == "refused"
-    assert "at most the level view" in result["message"]
+    assert "not a cloud worker" in result["message"]
 
 
 def test_a_refused_id_is_refused_once(machine, portal):
-    service.write_settings({**settings(), "level": "view"})
-    signed = token("deploy", {"project": "example", "app": "hr"})
+    signed = token("list", {"project": "other"})
     accept(Pool(), signed)
     accept(Pool(), signed)
     assert portal.facts() == ["result"]
@@ -463,8 +512,10 @@ def test_a_project_with_no_customer_is_refused_with_the_fix(machine, portal):
 
 def test_sync_down_can_add_the_customer_to_a_project_that_has_none(machine, portal, monkeypatch):
     (machine / "pdt.yml").write_text("apps: []\n")
+    identity = serve_snapshot(portal)
+    trust_author("example")
     pool = Pool()
-    assert accept(pool, token("sync_down", {"project": "example", "snapshot_id": "a" * 64}))
+    assert accept(pool, token("sync_down", {"project": "example", "snapshot_id": identity}))
     item = pool.waiting[0]
     assert item.project == machine
     prepared = service_runner.prepare(item, dict(os.environ))
@@ -477,17 +528,17 @@ def test_a_staff_install_of_a_new_project_runs_for_real_and_is_served(machine, p
     monkeypatch.setenv(service_runner.PROJECTS_HOME_ENV, str(home))
     identity, manifest, data = snapshot_of({"pdt.yml": b"apps: []\n", "hr/config.yml": b"schedule: daily\n",
                                             "hr/run.py": b"print('x')\n"})
-    portal.serve_snapshot(identity, manifest, data)
+    portal.serve_snapshot(identity, manifest, data,
+                          [publication(identity, project="third-project")])
+    trust_author("third-project")
     answers = [checkin_answer(portal, [{"command_id": COMMAND, "token": token(
         "sync_down", {"project": "third-project", "snapshot_id": identity})}])]
     portal.routes["/v1/service/checkin"] = lambda _body: answers.pop(0) if answers else checkin_answer(portal)
-    assert service.tick() == 0
+    assert tick() == 0
     assert portal.result()["outcome"] == "done", portal.output()
     assert service.project_customer(home / "third-project") == CUSTOMER
-    state = service.read_state()
-    state[CUSTOMER]["last_checkin"] = 0
-    service.write_state(state)
-    assert service.tick() == 0
+    due()
+    assert tick() == 0
     names = [item["name"] for item in portal.bodies("/v1/service/checkin")[-1]["projects"]]
     assert "third-project" in names
 
@@ -513,23 +564,21 @@ def test_a_lost_claim_keeps_the_cursor_and_a_retry_sends_the_same_claim_id(machi
 
 def test_a_doorbell_with_no_object_yet_means_no_change(machine, portal):
     portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
-    assert service.tick() == 0
+    assert tick() == 0
     portal.doorbell_status = 404
     before = len(portal.bodies("/v1/service/checkin"))
-    assert service.tick() == 0
+    assert tick() == 0
     assert len(portal.bodies("/v1/service/checkin")) == before
 
 
 def test_the_newest_doorbell_url_replaces_the_last(machine, portal):
     answers = [checkin_answer(portal, doorbell_url=f"{portal.url}/doorbell?v=1")]
     portal.routes["/v1/service/checkin"] = lambda _body: answers.pop(0) if answers else checkin_answer(portal)
-    assert service.tick() == 0
-    assert service.read_state()[CUSTOMER]["doorbell_url"].endswith("v=1")
-    state = service.read_state()
-    state[CUSTOMER]["last_checkin"] = 0
-    service.write_state(state)
-    assert service.tick() == 0
-    assert service.read_state()[CUSTOMER]["doorbell_url"] == f"{portal.url}/doorbell"
+    assert tick() == 0
+    assert service.read_state()["doorbell_url"].endswith("v=1")
+    due()
+    assert tick() == 0
+    assert service.read_state()["doorbell_url"] == f"{portal.url}/doorbell"
 
 
 def test_a_check_in_lists_at_most_100_running_ids_with_the_running_ones_first(machine, portal):
@@ -538,7 +587,7 @@ def test_a_check_in_lists_at_most_100_running_ids_with_the_running_ones_first(ma
         pool.waiting.append(job(machine, command_id=f"cmd_20261103T12{index:04d}Z_0123abcd"))
     pool.running[SECOND] = pool.waiting[0]
     portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
-    service.check_in(served(), settings(), False, pool, {})
+    service.check_in(served(), settings(), pool, {})
     running = portal.bodies("/v1/service/checkin")[0]["running"]
     assert len(running) == 100
     assert running[0] == SECOND
@@ -547,14 +596,14 @@ def test_a_check_in_lists_at_most_100_running_ids_with_the_running_ones_first(ma
 def test_output_of_escaped_text_is_split_with_no_loss(machine, portal, monkeypatch):
     item = job(machine)
     text = "é€" * 60000 + "\x01" * 40000 + "end"
-    item.output.extend(text.encode("utf-8"))
-    while item.output:
-        service_runner.send_output(item)
+    service_runner.output_path(COMMAND).parent.mkdir(parents=True, exist_ok=True)
+    service_runner.output_path(COMMAND).write_bytes(text.encode("utf-8"))
+    service_runner.send_all_output(item)
     bodies = [body for body in portal.bodies("/v1/commands/report") if body["fact"] == "output"]
     assert len(bodies) > 1
     assert all(len(json.dumps(body)) < 256 * 1024 for body in bodies)
     assert "".join(body["text"] for body in bodies) == text
-    assert [body["seq"] for body in bodies] == list(range(1, len(bodies) + 1))
+    assert [body["seq"] for body in bodies] == list(range(len(bodies)))
 
 
 def test_a_character_that_a_chunk_boundary_would_cut_stays_whole(monkeypatch):
@@ -573,7 +622,7 @@ def test_a_long_message_stays_under_the_limit(machine, portal):
     result = {"outcome": "failed", "exit_code": 1, "message": "x" * 9000, "run_id": None,
               "artifact_key": None}
     journal(result=result, reported=False, phase="finished")
-    service_runner.recover(Pool(), {CUSTOMER: registration()})
+    service_runner.recover(Pool(), registration(), Clock(), lambda name: machine)
     assert len(portal.result()["message"]) == 4096
 
 
@@ -583,7 +632,7 @@ def test_a_result_autoidm_refuses_for_good_stops_the_retries(machine, portal, st
     portal.routes["/v1/commands/report"] = lambda _body: (status, {"error": "x"})
     result = {"outcome": "done", "exit_code": 0, "message": None, "run_id": None, "artifact_key": None}
     journal(result=result, reported=False, phase="finished")
-    service_runner.recover(Pool(), {CUSTOMER: registration()})
+    service_runner.recover(Pool(), registration(), Clock(), lambda name: machine)
     assert service_runner.journal_read(COMMAND)["reported"] is stops
 
 
@@ -596,67 +645,32 @@ def test_a_claim_another_writer_won_starts_nothing(machine, portal):
 
 @pytest.mark.parametrize("command_id", ["../../evil", "x", None, 5])
 def test_a_command_id_that_could_name_a_path_writes_no_journal_file(machine, portal, command_id, tmp_path):
-    assert service.accept({"command_id": command_id, "token": token()}, served(), settings(), False, Pool())
+    assert service.accept({"command_id": command_id, "token": token()}, served(), settings(), Pool())
     assert portal.bodies("/v1/commands/report") == []
     assert not (service_runner.service_folder().parent / "evil.json").exists()
 
 
 def checkin_answer(portal, commands=(), cancels=(), **changes):
     return (200, {"doorbell_url": f"{portal.url}/doorbell", "poll_seconds": 30,
-                  "checkin_seconds": 900, "commands": list(commands), "cancels": list(cancels),
-                  **changes})
-
-
-def test_tick_runs_a_real_command_and_exits_when_none_runs(machine, portal, capsys):
-    answers = [checkin_answer(portal, [{"command_id": COMMAND, "token": token()}])]
-    portal.routes["/v1/service/checkin"] = lambda _body: answers.pop(0) if answers else checkin_answer(portal)
-    assert service.tick() == 0
-    assert portal.facts() == ["claimed", "started", "output", "result"]
-    assert portal.result()["outcome"] == "done"
-    body = portal.bodies("/v1/service/checkin")[0]
-    assert body["maximum_level"] == "manage"
-    assert body["after"] is None
-    assert body["projects"] == [{"name": "example", "apps": ["hr"], "head": None}]
-    assert '"name": "hr"' in portal.output()
-    state = service.read_state()[CUSTOMER]
-    assert state["after"] == COMMAND and state["last_checkin"]
-
-
-def test_a_second_tick_reads_only_the_doorbell(machine, portal):
-    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
-    assert service.tick() == 0
-    first = len(portal.bodies("/v1/service/checkin"))
-    assert service.tick() == 0
-    assert service.tick() == 0
-    assert len(portal.bodies("/v1/service/checkin")) == first + 1
-    assert portal.doorbell_gets[-1] == '"one"'
+                  "checkin_seconds": 900, "min_checkin_seconds": 0, "commands": list(commands),
+                  "cancels": list(cancels), **changes})
 
 
 def test_a_403_from_the_doorbell_checks_in(machine, portal):
     portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
-    assert service.tick() == 0
+    assert tick() == 0
     portal.doorbell_status = 403
     before = len(portal.bodies("/v1/service/checkin"))
-    assert service.tick() == 0
+    assert tick() == 0
     assert len(portal.bodies("/v1/service/checkin")) == before + 1
-
-
-def test_a_check_in_that_fails_does_not_lose_the_ring(machine, portal):
-    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
-    assert service.tick() == 0
-    state = service.read_state()
-    state[CUSTOMER]["etag"] = '"older"'
-    service.write_state(state)
-    portal.routes["/v1/service/checkin"] = lambda _body: (500, {"error": "boom"})
-    assert service.tick() == 0
-    assert service.read_state()[CUSTOMER]["etag"] == '"older"'
 
 
 def test_a_full_answer_checks_in_again(machine, portal):
     answers = [checkin_answer(portal, [{"command_id": f"cmd_20261103T1200{index:02d}Z_0123abcd",
                                         "token": "bad"} for index in range(20)])]
     portal.routes["/v1/service/checkin"] = lambda _body: answers.pop(0) if answers else checkin_answer(portal)
-    assert service.tick() == 0
+    assert tick() == 0
+    assert tick() == 0
     assert len(portal.bodies("/v1/service/checkin")) >= 2
 
 
@@ -678,7 +692,7 @@ def test_an_app_folder_with_a_bad_name_stays_out_and_delivery_goes_on(machine, p
         return answers.pop(0) if answers else checkin_answer(portal)
 
     portal.routes["/v1/service/checkin"] = answer
-    assert service.tick() == 0
+    assert tick() == 0
     assert portal.result()["outcome"] == "done"
     assert portal.bodies("/v1/service/checkin")[0]["projects"][0]["apps"] == ["hr"]
     log = (service_runner.service_folder() / "service.log").read_text()
@@ -695,10 +709,11 @@ def test_a_bad_name_warns_one_time_at_each_start(machine, portal):
     item = served()
     pool = Pool()
     service._said_once.clear()
-    service.check_in(item, settings(), False, pool, {})
-    service.check_in(item, settings(), False, pool, {})
+    service.check_in(item, settings(), pool, {})
+    service.check_in(item, settings(), pool, {})
     assert (service_runner.service_folder() / "service.log").read_text().count("My App") == 1
-    assert service.tick() == 0
+    service._said_once.clear()
+    assert tick() == 0
     assert (service_runner.service_folder() / "service.log").read_text().count("My App") == 2
 
 
@@ -717,7 +732,6 @@ def test_a_project_folder_with_a_leading_dash_stays_out(machine, portal):
 
 def test_a_cancel_in_a_check_in_stops_the_running_command(machine, portal, monkeypatch):
     child(monkeypatch, TREE)
-    monkeypatch.setattr(service, "MINIMUM_POLL_SECONDS", 0)
     calls = []
 
     def answer(body):
@@ -727,10 +741,20 @@ def test_a_cancel_in_a_check_in_stops_the_running_command(machine, portal, monke
             return checkin_answer(portal, [{"command_id": COMMAND, "token": token(
                 "run", {"project": "example", "app": "hr", "deployed": False})}], poll_seconds=0.1)
         running = body["running"]
-        return checkin_answer(portal, cancels=running, poll_seconds=0.1)
+        return checkin_answer(portal, cancels=[
+            {"command_id": command_id, "token": token("cancel", command_id=command_id)}
+            for command_id in running], poll_seconds=0.1)
 
     portal.routes["/v1/service/checkin"] = answer
-    assert service.tick() == 0
+    item, pool = served(), Pool()
+    service.check_in(item, settings(), pool, {})
+    pool.start_ready()
+    printed = service_runner.output_path(COMMAND)
+    deadline = time.monotonic() + 10
+    while not (printed.is_file() and printed.read_text().strip()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    service.check_in(item, settings(), pool, {})
+    pool.running[COMMAND].thread.join(15)
     assert portal.result()["outcome"] == "cancelled"
 
 
@@ -748,25 +772,19 @@ def run_loop(monkeypatch, steps):
     monkeypatch.setattr(service, "time", SimpleNamespace(
         sleep=pause, time=time.time, monotonic=time.monotonic, strftime=time.strftime,
         gmtime=time.gmtime))
-    return service.serve(settings(), worker=False, once=False)
-
-
-def test_pdt_service_allow_checks_in_at_once(machine, portal, monkeypatch, capsys):
-    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
-    assert run_loop(monkeypatch, [lambda: service.allow("view"), lambda: None]) == 0
-    bodies = portal.bodies("/v1/service/checkin")
-    assert [body["maximum_level"] for body in bodies] == ["manage", "view"]
+    return service.serve(settings())
 
 
 def test_a_failed_check_in_after_a_change_stays_due(machine, portal, monkeypatch):
     item = served()
-    item.due = True
+    item.connection = NoConnection()
     portal.routes["/v1/service/checkin"] = lambda _body: (500, {"error": "boom"})
-    service.check(item, settings(), False, Pool(), {})
-    assert item.due is True
+    service.check(item, settings(), Pool(), {})
+    assert item.schedule.wanted is True and item.schedule.retry_at > time.time()
+    item.schedule.retry_at = 0
     portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
-    service.check(item, settings(), False, Pool(), {})
-    assert item.due is False
+    service.check(item, settings(), Pool(), {})
+    assert item.schedule.wanted is False
 
 
 def test_an_install_that_changes_the_projects_checks_in_at_once(machine, portal, monkeypatch, tmp_path):
@@ -795,37 +813,6 @@ def test_the_new_projects_folder_applies_with_no_restart(machine, portal, monkey
     assert os.environ[service_runner.PROJECTS_HOME_ENV] == str(tmp_path / "moved")
 
 
-def test_a_new_registration_is_served_with_no_restart(machine, portal, monkeypatch):
-    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
-    other = "cus_00000000aa"
-
-    def register():
-        folder = autoidm.folder()
-        register_cli.write_key(folder / f"{other}.key", Ed25519PrivateKey.generate())
-        (folder / f"{other}.json").write_text(json.dumps({
-            "installation_id": "ins_00000000bb", "customer_id": other, "api_url": portal.url,
-            "command_keys": KEYS}))
-        service.add_registration(other)
-
-    assert run_loop(monkeypatch, [register, lambda: None]) == 0
-    assert settings()["registrations"] == [CUSTOMER, other]
-    assert set(service.read_state()) == {CUSTOMER, other}
-
-
-def test_add_registration_with_no_service_writes_nothing(tmp_path, monkeypatch):
-    monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path / "none"))
-    service.add_registration(CUSTOMER)
-    assert not service.settings_path().exists()
-
-
-def test_a_removed_registration_stops_being_served(machine, portal, monkeypatch):
-    item = served()
-    found = {CUSTOMER: item, "cus_00000000aa": served()}
-    service.apply_settings(found, settings())
-    assert list(found) == [CUSTOMER]
-    assert item.due is True and item.next_poll == 0.0
-
-
 def test_the_service_stops_when_the_settings_are_gone(machine, portal, monkeypatch, capsys):
     portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
     steps = [lambda: service.settings_path().unlink()]
@@ -844,32 +831,31 @@ def test_one_service_runs_on_a_computer(machine, portal, capsys):
         assert first
         with service.one_service() as second:
             assert not second
-        assert service.tick() == 0
-        assert "already runs" in capsys.readouterr().err + "already runs"
         assert service.run() == 1
     assert portal.seen == []
 
 
 def test_status_names_the_service_as_json(machine, portal, monkeypatch, capsys):
     monkeypatch.setitem(service.service_backends.BACKENDS, "cron", service.service_backends.Backend(
-        lambda: True, lambda _folder: None, lambda: None, lambda: True))
-    journal(operation="run", args={"project": "example", "app": "hr"}, phase="running")
+        lambda: True, lambda _python, _folder: None, lambda: None, lambda: None, lambda: True,
+        lambda _folder: "", lambda: None))
+    journal(operation="run", state="started")
     assert service.status(as_json=True) == 0
     found = json.loads(capsys.readouterr().out)
     assert found["backend"] == "cron" and found["running"] is True and found["installed"] is True
-    assert found["level"] == "manage" and found["projects"] == ["example"]
+    assert found["projects"] == ["example"]
     assert found["commands"][0]["command_id"] == COMMAND
-    assert found["registrations"][0]["customer_id"] == CUSTOMER
+    assert found["customer"] == CUSTOMER
     assert service.status() == 0
     out = capsys.readouterr().out
-    assert "cron (running)" in out and "last check-in" in out and COMMAND in out
+    assert "cron (running)" in out and "Last check-in" in out and COMMAND in out
 
 
 def test_a_service_run_needs_only_a_registration_and_status_sees_it(machine, portal, capsys):
     service.settings_path().unlink()
     portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal, poll_seconds=900)
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    proc = subprocess.Popen([sys.executable, "-m", "pdt.cli", "service", "run", "--level", "view"],
+    proc = subprocess.Popen([sys.executable, "-m", "pdt.cli", "service", "run"],
                             cwd=machine, env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -877,10 +863,9 @@ def test_a_service_run_needs_only_a_registration_and_status_sees_it(machine, por
         while not portal.bodies("/v1/service/checkin") and time.monotonic() < deadline:
             time.sleep(0.05)
         body = portal.bodies("/v1/service/checkin")[0]
-        assert body["maximum_level"] == "view"
         assert [item["name"] for item in body["projects"]] == ["example"]
         found = settings()
-        assert found["backend"] is None and found["registrations"] == [CUSTOMER]
+        assert found["backend"] is None and found["customer"] == CUSTOMER
         assert found["named_projects"] == [str(machine.resolve())]
         assert service.status() == 0
         assert f"Backend: none (running in the foreground, PID {proc.pid})" in capsys.readouterr().out
@@ -904,17 +889,6 @@ def test_a_service_run_with_no_registration_says_what_to_do(tmp_path, monkeypatc
     assert not service.settings_path().exists()
 
 
-def test_a_service_run_with_a_level_changes_the_settings(machine):
-    assert service.settings_to_serve("view", "run")["level"] == "view"
-    assert settings()["level"] == "view"
-    assert service.settings_to_serve(None, "run")["level"] == "view"
-
-
-def test_a_service_run_with_no_level_takes_the_default(machine):
-    service.settings_path().unlink()
-    assert service.settings_to_serve(None, "run")["level"] == service_commands.DEFAULT_LEVEL
-
-
 def test_a_pid_file_of_a_process_that_ended_means_not_running(machine):
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     proc.wait()
@@ -926,11 +900,15 @@ def test_a_pid_file_of_a_process_that_ended_means_not_running(machine):
     assert service.running_pid() == os.getpid()
 
 
-def test_remove_of_a_foreground_service_deletes_the_settings(machine, portal, capsys):
+def test_remove_of_a_foreground_service_deletes_the_settings(machine, portal, capsys,
+                                                             monkeypatch):
     service.write_settings({**settings(), "backend": None})
-    assert service.remove() == 0
+    portal.routes["/v1/service/remove"] = lambda _body: (200, {"children": 0})
+    monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
+    assert service.remove(False, True) == 0
     assert settings() is None
-    assert service.remove() == 0
+    assert not autoidm.files(CUSTOMER)[0].exists()
+    assert service.remove(False, True) == 0
     assert "no pdt service" in capsys.readouterr().out
 
 
@@ -938,11 +916,6 @@ def test_status_with_no_service_says_so(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path / "none"))
     assert service.status() == 0
     assert "pdt service install" in capsys.readouterr().out
-
-
-def test_allow_changes_the_maximum_level(machine, capsys):
-    assert service.allow("view") == 0
-    assert settings()["level"] == "view"
 
 
 def grant_claims(identity):
@@ -973,7 +946,7 @@ def test_a_worker_passes_credentials_only_to_the_child_and_writes_none_to_disk(
     child(monkeypatch, code)
     found = {**claims("deploy", limit_seconds=300), **grant_claims(identity)}
     journal()
-    execute(Job(COMMAND, found, registration(), None, True, None))
+    execute(Job(COMMAND, found, registration(), None, worker=True))
     result = portal.result()
     output = portal.output()
     assert result["outcome"] == "done", output + str(result)
@@ -997,7 +970,7 @@ def test_a_worker_run_starts_the_job_and_does_not_follow_the_log(machine, portal
     real = subprocess.Popen
 
     def popen(args, **kwargs):
-        seen["args"] = args
+        seen.setdefault("args", args)
         return real([sys.executable, "-c", "pass"], **kwargs)
 
     monkeypatch.setattr(service_runner.subprocess, "Popen", popen)
@@ -1005,7 +978,7 @@ def test_a_worker_run_starts_the_job_and_does_not_follow_the_log(machine, portal
     found.update(grant_claims(identity))
     found["args"]["deployed"] = True
     journal()
-    execute(Job(COMMAND, found, registration(), None, True, None))
+    execute(Job(COMMAND, found, registration(), None, worker=True))
     assert seen["args"][3:] == ["run", "hr", "--deployed"]
 
 
@@ -1020,28 +993,59 @@ def test_a_worker_with_no_credentials_starts_nothing(machine, portal, monkeypatc
     child(monkeypatch, "raise SystemExit('this must not run')")
     found = {**claims("deploy", limit_seconds=300), **grant_claims(identity)}
     journal()
-    execute(Job(COMMAND, found, registration(), None, True, None))
+    execute(Job(COMMAND, found, registration(), None, worker=True))
     result = portal.result()
     assert result["outcome"] == "failed" and "no access" in result["message"]
     assert "started" not in portal.facts()
 
 
-def test_a_worker_needs_its_registration_and_keys_in_its_environment(monkeypatch, tmp_path):
-    monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path))
-    for name in (*autoidm.SECRET_NAMES, "PDT_ENV_JSON"):
-        monkeypatch.delenv(name, raising=False)
-    with pytest.raises(service.config.ConfigError, match="PDT_INSTALLATION_ID"):
-        service.worker_served()
+def test_a_worker_reads_its_registration_from_the_parameter_and_forgets_the_name(
+        monkeypatch, tmp_path):
+    from pdt import grants, worker
     pem = autoidm.private_pem(Ed25519PrivateKey.generate()).decode()
-    monkeypatch.setenv(autoidm.ID_ENV, INSTALLATION)
-    monkeypatch.setenv(autoidm.KEY_ENV, pem)
-    monkeypatch.setenv(autoidm.URL_ENV, "https://api.example/")
-    monkeypatch.setenv(autoidm.CUSTOMER_ENV, CUSTOMER)
-    with pytest.raises(service.config.ConfigError, match="PDT_COMMAND_KEYS"):
-        service.worker_served()
-    monkeypatch.setenv(service.COMMAND_KEYS_ENV, json.dumps(KEYS))
-    found = service.worker_served()[CUSTOMER]
-    assert found.keys == KEYS and found.registration.api_url == "https://api.example"
+    seen = []
+
+    def script_json(args, values, what):
+        seen.append(args)
+        return {"value": json.dumps({
+            "installation_id": INSTALLATION, "customer_id": CUSTOMER,
+            "api_url": "https://api.example/", "private_key_pem": pem, "command_keys": KEYS,
+            "command_keys_version": 2})}
+
+    monkeypatch.setattr(grants, "script_json", script_json)
+    monkeypatch.delenv(worker.PARAMETER_ENV, raising=False)
+    with pytest.raises(autoidm.AutoidmError, match=worker.PARAMETER_ENV):
+        worker.registration()
+    monkeypatch.setenv(worker.PARAMETER_ENV, "/pdt-backend/workers/ins_x")
+    found = worker.registration()
+    assert worker.PARAMETER_ENV not in os.environ
+    assert seen[0][-2:] == [grants.WORKER_PARAMETER, "/pdt-backend/workers/ins_x"]
+    assert found.worker and found.keys == KEYS and found.keys_version == 2
+    assert found.registration.api_url == "https://api.example"
+
+
+def test_a_worker_with_no_command_to_run_exits_0(machine, portal, monkeypatch):
+    from pdt import worker
+    served_one = served()
+    served_one.worker = True
+    monkeypatch.setattr(worker, "registration", lambda: served_one)
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
+    assert worker.run(COMMAND) == 0
+    assert portal.bodies("/v1/service/checkin")[0]["only"] == COMMAND
+    assert portal.bodies("/v1/commands/report") == []
+
+
+def test_a_worker_refuses_a_command_with_no_grant(machine, portal, monkeypatch):
+    from pdt import worker
+    served_one = served()
+    served_one.worker = True
+    monkeypatch.setattr(worker, "registration", lambda: served_one)
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(
+        portal, [{"command_id": COMMAND, "token": token("deploy", {
+            "project": "p", "app": "hr", "snapshot_id": "a" * 64})}])
+    assert worker.run(COMMAND) == 0
+    assert portal.facts() == ["result"]
+    assert "no valid grant" in portal.result()["message"]
 
 
 def test_a_new_project_for_sync_down_goes_under_the_projects_folder(machine, portal, monkeypatch):
@@ -1093,11 +1097,11 @@ def test_a_new_project_in_the_projects_folder_is_served_with_no_restart(machine,
     portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
     state = {}
     pool = Pool()
-    service.check_in(served(), settings(), False, pool, state)
+    service.check_in(served(), settings(), pool, state)
     fresh = machine.parent / "second-project"
     (fresh / "hr").mkdir(parents=True)
     (fresh / "pdt.yml").write_text(f"managed_services:\n  customer: {CUSTOMER}\n")
-    service.check_in(served(), settings(), False, pool, state)
+    service.check_in(served(), settings(), pool, state)
     bodies = portal.bodies("/v1/service/checkin")
     assert [item["name"] for item in bodies[0]["projects"]] == ["example"]
     assert [item["name"] for item in bodies[1]["projects"]] == ["example", "second-project"]

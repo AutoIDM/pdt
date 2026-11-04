@@ -1522,7 +1522,9 @@ def grant_plan(place: str, values: dict) -> list:
     principal = (values.get("principal") or {}).get("google-cloud") or "the service account of AutoIDM"
     return [
         console.Markup(f"create service account {console.value(GRANT_NAME)} in Google Cloud project "
-                       f"{console.value(project)} (description managed-by=pdt)"),
+                       f"{console.value(project)} (description "
+                       f"{console.value('managed-by=pdt ' + grants.EXTERNAL_ID_TAG + '=' + str(values.get('external_id') or ''))}, "
+                       "so AutoIDM can check the grant)"),
         console.Markup(f"let {console.value(principal)} act as it "
                        f"({console.value('roles/iam.serviceAccountTokenCreator')})"),
         console.Markup(f"give it {', '.join(console.value(role) for role in GRANT_ROLES)}. It gets no project "
@@ -1550,10 +1552,14 @@ def grant_create(place: str, values: dict, assume_yes: bool) -> str:
     grant_login(project, assume_yes)
     email = grant_email(GRANT_NAME, project)
     member = f"serviceAccount:{email}"
+    description = f"managed-by=pdt {grants.EXTERNAL_ID_TAG}={values.get('external_id') or ''}"
     if service_account_or_none(project, email) is None:
         console.step(f"creating service account {console.value(email)}")
         run_quiet("iam", "service-accounts", "create", GRANT_NAME, "--project", project,
-                  "--display-name", "AutoIDM access for pdt", "--description", "managed-by=pdt")
+                  "--display-name", "AutoIDM access for pdt", "--description", description)
+    else:
+        run_quiet("iam", "service-accounts", "update", email, "--project", project,
+                  "--description", description)
     run_quiet("iam", "service-accounts", "add-iam-policy-binding", email, "--project", project,
               "--member", f"serviceAccount:{principal}",
               "--role", "roles/iam.serviceAccountTokenCreator")
@@ -1585,19 +1591,55 @@ def grant_remove(place: str, _values: dict, assume_yes: bool) -> None:
 
 
 def grant_env(place: str, values: dict) -> dict[str, str]:
-    """The documented impersonation env var. gcloud reads AutoIDM's own login from the key file
-    and keeps its tokens in CLOUDSDK_CONFIG, so that is a folder in memory, which the worker
-    deletes after the command."""
+    """An access token for the grant's service account, made by impersonation from this
+    customer's AutoIDM service account, after a check of the external ID in its description.
+    The child gets only the token, in a file in a memory folder, which the worker deletes after
+    the command. It never gets AutoIDM's key."""
+    from google.auth.transport.requests import Request
+    from google.oauth2 import service_account
     _provider, project, _region = grants.split_place(place)
     role = values.get("role") or ""
-    key_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    if not (role and key_file):
-        fail("A cloud worker needs GOOGLE_APPLICATION_CREDENTIALS and a grant that names a "
-             "service account.")
+    key = values.get("credential")
+    if not (role and key):
+        fail("AutoIDM did not name the service account of the grant and its credential. Run the "
+             "command again.")
+    own = service_account.Credentials.from_service_account_info(
+        json.loads(key), scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    own.refresh(Request())
+    answer = google_json(f"{IAM_CREDENTIALS_API}/projects/-/serviceAccounts/{role}"
+                         ":generateAccessToken", own.token,
+                         {"scope": ["https://www.googleapis.com/auth/cloud-platform"],
+                          "lifetime": f"{GRANT_TOKEN_SECONDS}s"})
+    token = answer["accessToken"]
+    described = google_json(f"{IAM_API}/projects/-/serviceAccounts/{role}", token).get(
+        "description") or ""
+    wanted = f"{grants.EXTERNAL_ID_TAG}={values.get('external_id') or ''}"
+    if wanted not in described.split():
+        raise grants.Mismatch(f"The service account {role} has the description {described!r}, "
+                              f"which does not hold {wanted}. Run pdt grant add {place}.")
     folder = grants.memory_folder("pdt-gcloud-")
-    return {"CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT": role, "CLOUDSDK_CORE_PROJECT": project,
-            "CLOUDSDK_CONFIG": str(folder), "GOOGLE_APPLICATION_CREDENTIALS": key_file,
-            "PDT_GRANT_FOLDER": str(folder)}
+    token_file = folder / "token"
+    token_file.write_text(token, encoding="utf-8")
+    return {"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE": str(token_file), "CLOUDSDK_CORE_PROJECT": project,
+            "CLOUDSDK_CONFIG": str(folder), "PDT_GRANT_FOLDER": str(folder)}
+
+
+IAM_CREDENTIALS_API = "https://iamcredentials.googleapis.com/v1"
+IAM_API = "https://iam.googleapis.com/v1"
+# The deploy and destroy limit on a worker is 55 min.
+GRANT_TOKEN_SECONDS = 3600
+
+
+def google_json(url: str, token: str, body: dict | None = None) -> dict:
+    request = urllib.request.Request(
+        url, data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as e:
+        fail(f"Google Cloud answered {console.value(e.code)} for {console.value(url)}: "
+             f"{console.escape(e.read().decode(errors='replace')[:500])}")
 
 
 GRANT = grants.ProviderGrant(grant_plan, grant_remove_plan, grant_create, grant_remove, grant_env)
