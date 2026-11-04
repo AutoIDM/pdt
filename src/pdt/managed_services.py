@@ -38,9 +38,9 @@ Every event and upload names the project and the app by `backend_name`.
 
 A network error, an HTTP 5xx, a file pdt cannot read or zip, or a late send is
 one warning, and the run goes on with its own exit code. A 401 means AutoIDM
-refused the registration: the sender sends nothing more, the run's work still
-completes, and run_job ends the run with UNAUTHORIZED_EXIT and a message that
-names the registration (`refusal`).
+refused the registration, as it does for a job whose parent installation was
+revoked: the sender sends nothing more, and run_job prints one warning that names
+the registration (`refusal`). The run keeps its own exit code.
 
 This module is in deploy_common.LIFECYCLE_MODULES, so it imports only what
 lifecycle.py's script header installs.
@@ -66,9 +66,6 @@ from pdt import config, console
 KEY = "managed_services"
 SEND_DEFAULTS = {"send_run_history": True, "send_logs": False, "send_artifacts": False}
 CUSTOMER = re.compile(r"cus_[0-9a-f]{10}")
-# The exit code of a run whose work succeeded while AutoIDM refused its registration.
-# pdt uses it for nothing else; 77 is EX_NOPERM in sysexits.h.
-UNAUTHORIZED_EXIT = 77
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 WARNED_ENV = "PDT_MANAGED_SERVICES_WARNED"
 JOB_RUN_STARTED = "job:run-started"

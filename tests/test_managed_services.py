@@ -244,22 +244,22 @@ def test_an_event_with_no_app_is_a_warning_and_emit_returns(project, warned, cap
         capsys.readouterr().out.split())
 
 
-def test_a_refused_registration_completes_the_work_then_exits_with_its_own_code(
+def test_a_refused_registration_completes_the_work_and_keeps_its_exit_code(
         project, backend, warned, capsys):
     url, seen, answers = backend
     project_with(project, ALL_ON)
     registered(url)
     answers.append((401, {"error": "unauthorized"}))
-    assert run(project) == managed_services.UNAUTHORIZED_EXIT
+    assert run(project) == 0
     assert list((project / "report" / ".pdt" / "runs" / storage.RUN_ID / "output").iterdir())
     assert paths(seen) == ["/v1/events"]
     out = " ".join(capsys.readouterr().out.split())
     info = autoidm.files(CUSTOMER)[0]
     assert f"AutoIDM refused the registration ins_4f8a1c2e9b in {info}" in out
-    assert "Run of report failed (unauthorized, exit code 77)" in out
+    assert "failed" not in out
 
 
-def test_a_refusal_at_the_first_upload_fails_the_run_unauthorized(project, backend, warned,
+def test_a_refusal_at_the_first_upload_does_not_fail_the_run(project, backend, warned,
                                                                   monkeypatch, capsys):
     url, seen, answers = backend
     project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n"
@@ -270,15 +270,11 @@ def test_a_refusal_at_the_first_upload_fails_the_run_unauthorized(project, backe
     emit = lifecycle.emit
     monkeypatch.setattr(lifecycle, "emit", lambda name, **params: events.append(
         (name, emit(name, **params).params)))
-    assert run(project) == managed_services.UNAUTHORIZED_EXIT
+    assert run(project) == 0
     assert paths(seen) == ["/v1/uploads"]
     name, params = events[-1]
-    assert (name, params["reason"], params["exit_code"]) == (
-        "job:run-failed", "unauthorized", managed_services.UNAUTHORIZED_EXIT)
-    out = " ".join(capsys.readouterr().out.split())
-    assert "AutoIDM refused the registration" in out
-    assert "Run of report failed (unauthorized, exit code 77)" in out
-    assert "completed" not in out
+    assert (name, params["exit_code"]) == ("job:run-completed", 0)
+    assert "AutoIDM refused the registration" in capsys.readouterr().out
 
 
 def test_starting_a_run_does_not_wait_for_the_send_and_the_end_keeps_the_order(
@@ -419,7 +415,7 @@ def test_a_cloud_job_sends_with_the_registration_in_its_secret(project, backend,
         autoidm.KEY_ENV: pem(Ed25519PrivateKey.generate()).decode()}))
     answers.append((401, {"error": "unauthorized"}))
     assert lifecycle.run_job("report", "aws", [sys.executable, "-c", WORK, "0"],
-                             project / "report", deployed=True) == 77
+                             project / "report", deployed=True) == 0
     assert seen[0]["body"]["event"]["params"]["deployed"] is True
     out = " ".join(capsys.readouterr().out.split())
     assert ("AutoIDM refused the cloud registration ins_0000000007 of report "
