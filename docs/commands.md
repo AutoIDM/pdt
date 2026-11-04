@@ -30,7 +30,7 @@
 | `pdt secrets APP` | show which `.env` values differ from the deployed app |
 | `pdt secrets APP save` | send your `.env` values to the deployed app; the next run uses them |
 | `pdt secrets APP get` | copy the deployed values into a `.env.<provider>` file |
-| `pdt secrets APP set NAME` | put one value, read from stdin, into the deployed app's secrets |
+| `pdt secrets APP set NAME` | put one value, read from stdin, into the deployed app's secrets; with the `windows` provider it adds or replaces the `NAME=` line of the app folder's `.env` file |
 | `pdt login APP` | sign in again to the app's platform |
 | `pdt storage APP ls\|get\|query\|unlock\|destroy` | look at, fetch, query, unlock, or delete the app's stored files; `ls` shows the number of files and the size under each folder; `ls PATH --recursive` lists every file under a folder, and `ls --json` prints the list as JSON; on Windows, Tab completes the path after `ls` and `get`; `--open` opens the app's storage folder (File Explorer on Windows, the cloud console otherwise), and `get PATH --open` opens the saved file |
 | `pdt runs APP` | list the deployed app's runs with each run's exit code: the 10 newest, or with `--since 3d` (or `12h`, `2w`, `2026-09-20`, `2026-09-20T14:00`) every run since then, `--span 1d` keeping only the runs within that long after `--since` and `--count N` keeping only the N newest; a run's number is its place among every run pdt can still find, so it stays the same whichever runs print; `--open` opens the runs in Task Scheduler on Windows, or in the cloud console |

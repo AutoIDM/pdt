@@ -1524,8 +1524,19 @@ GRANT_NAME = "pdt-autoidm"
 # Named roles, and no project IAM write: the identity cannot give itself or anyone more.
 GRANT_ROLES = ("roles/run.admin", "roles/cloudscheduler.admin", "roles/artifactregistry.admin",
                "roles/secretmanager.viewer", "roles/cloudbuild.builds.editor",
-               "roles/iam.serviceAccountViewer", "roles/serviceusage.serviceUsageConsumer")
+               "roles/iam.serviceAccountViewer", "roles/serviceusage.serviceUsageConsumer",
+               "roles/logging.viewer")
 GRANT_RUNNER = "pdt-runner"
+# Each role with the condition that limits it to pdt's own resources. PROJECT_NUMBER stands for
+# the project number, which a secret's resource name holds.
+GRANT_CONDITIONAL_ROLES = (
+    ("roles/storage.admin", "pdt buckets",
+     'resource.name.startsWith("projects/_/buckets/pdt-")'),
+    ("roles/secretmanager.secretAccessor", "pdt secrets",
+     'resource.name.startsWith("projects/PROJECT_NUMBER/secrets/pdt-")'),
+    ("roles/secretmanager.secretVersionManager", "pdt secrets",
+     'resource.name.startsWith("projects/PROJECT_NUMBER/secrets/pdt-")'),
+)
 
 
 def grant_email(name: str, project: str) -> str:

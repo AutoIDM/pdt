@@ -54,6 +54,7 @@ import base64
 import ctypes
 import html
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -755,6 +756,34 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
     return found
 
 
+def env_line(name: str, value: str) -> str:
+    """A .env line that python-dotenv reads back as `value`."""
+    quoted = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'{name}="{quoted}"'
+
+
+def set_env_line(app: dict, name: str | None) -> int:
+    """Write one value, read from stdin, into the `.env` file of the app folder: it replaces the
+    line of that name, or adds one. The task reads the file at each run."""
+    if not name:
+        console.error(f"{console.value('pdt secrets <app> set')} needs the env var name, "
+                      "with the value on stdin.")
+        return 1
+    value = sys.stdin.read().strip()
+    if value == "":
+        console.error(f"no value for {console.value(name)} on stdin.")
+        return 1
+    path = Path(app["dir"]) / ".env"
+    lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
+    pattern = re.compile(rf"\s*(export\s+)?{re.escape(name)}\s*=")
+    kept = [line for line in lines if not pattern.match(line)]
+    replaced = len(kept) != len(lines)
+    config.write_text_atomically(path, "\n".join([*kept, env_line(name, value)]) + "\n")
+    console.done(f"{'Replaced' if replaced else 'Added'} {console.value(name)} in "
+                 f"{console.value(path)}. The next run reads it.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
@@ -779,8 +808,10 @@ def main() -> int:
         console.note("the windows provider deploys to this computer, so it needs no login.")
         return 0
     if args.command == "secrets":
+        if args.rest[:1] == ["set"]:
+            return set_env_line(app, args.rest[1] if len(args.rest) > 1 else None)
         console.note("the windows provider reads your .env file at every run, "
-                     "so there is nothing to compare, save, get, or set.")
+                     "so there is nothing to compare, save, or get.")
         return 0
     config.load_env(app["dir"])
     if args.command == "storage":

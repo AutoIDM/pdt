@@ -1,7 +1,9 @@
 import base64
+import io
 from pathlib import Path
 
 import pytest
+from dotenv import dotenv_values
 
 from conftest import add_app, plain
 from pdt import config, deploy_windows
@@ -298,3 +300,24 @@ def test_a_deploy_moves_the_earlier_folder(project):
 
 def test_the_task_has_the_name_of_the_app(project):
     assert deploy_windows._task_name("my-report") == "pdt-my-report"
+
+
+def test_secrets_set_adds_then_replaces_one_line_of_the_app_env(project, monkeypatch, capsys):
+    app = windows_app(project)
+    env = app["dir"] / ".env"
+    env.write_text("OTHER=keep\nTOKEN=first\nexport TOKEN=again\n")
+    monkeypatch.setattr("sys.stdin", io.StringIO('new "value" \\ here\n'))
+    assert deploy_windows.set_env_line(app, "TOKEN") == 0
+    assert env.read_text() == 'OTHER=keep\nTOKEN="new \\"value\\" \\\\ here"\n'
+    assert dotenv_values(env)["TOKEN"] == 'new "value" \\ here'
+    monkeypatch.setattr("sys.stdin", io.StringIO("third\n"))
+    assert deploy_windows.set_env_line(app, "NEW_NAME") == 0
+    assert env.read_text().splitlines()[-1] == 'NEW_NAME="third"'
+    assert "Added NEW_NAME" in capsys.readouterr().out
+
+
+def test_secrets_set_with_no_value_changes_nothing(project, monkeypatch):
+    app = windows_app(project)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert deploy_windows.set_env_line(app, "TOKEN") == 1
+    assert not (app["dir"] / ".env").exists()

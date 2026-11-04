@@ -1258,7 +1258,8 @@ def main() -> int:
 
 
 GRANT_NAME = "pdt-autoidm"
-GRANT_ROLES = ("Contributor", "Key Vault Reader")
+# Key Vault Secrets Officer reads and writes the secrets of pdt's own vaults in the two groups.
+GRANT_ROLES = ("Contributor", "Key Vault Reader", "Key Vault Secrets Officer")
 GRANT_ASSIGNS = ("AcrPull", "Key Vault Secrets User", "Key Vault Secrets Officer",
                  "Storage Blob Data Contributor")
 ROLE_WRITE = "Microsoft.Authorization/roleAssignments"

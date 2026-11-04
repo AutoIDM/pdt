@@ -1284,10 +1284,10 @@ def delete_role(iam, name: str) -> None:
 GRANT_ROLE = "pdt-autoidm"
 GRANT_BOUNDARY = "pdt-autoidm-boundary"
 GRANT_SESSION_SECONDS = 3600
-# What panel safety section 4 takes out of the printed deployer policy: a grant does not open a
-# secret, a log, or a data file, and it does not simulate the policy of the login it holds.
-GRANT_LEFT_OUT = {"secretsmanager:GetSecretValue", "s3:GetObject", "logs:GetLogEvents",
-                  "logs:FilterLogEvents", "logs:StartLiveTail", "iam:SimulatePrincipalPolicy"}
+# What the grant takes out of the printed deployer policy: it does not simulate the policy of the
+# login it holds. It reads and writes pdt's own secrets, logs, and data files, which the printed
+# policy scopes to names that start with pdt.
+GRANT_LEFT_OUT = {"iam:SimulatePrincipalPolicy"}
 # Each of these needs the boundary named in the request, so no role exceeds the fixed maximum.
 GRANT_BOUNDED = ["iam:CreateRole", "iam:DeleteRolePolicy", "iam:PutRolePermissionsBoundary",
                  "iam:PutRolePolicy"]
