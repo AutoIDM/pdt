@@ -288,7 +288,7 @@ def test_run_snapshot_runs_in_a_new_folder_with_the_project_env_and_removes_the_
         "url": f"{portal.url}/bucket", "fields": {"key": "k"}, "key": "k"})
     item = job(machine, "run_snapshot", snapshot_args(identity),
                preset={"env": {"PDT_STEPS": "extract"}, "artifacts": True})
-    execute(item, None, AUTHORS)
+    execute(item, AUTHORS)
     output = portal.output()
     result = portal.result()
     assert result["outcome"] == "done", output + str(result)
@@ -307,7 +307,7 @@ def test_a_snapshot_of_another_customer_does_not_run(machine, portal, monkeypatc
         "pdt.yml": b"managed_services:\n  customer: cus_0000000000\n", "hr/run.py": b"x"})
     portal.serve_snapshot(identity, manifest, data, [publication(identity)])
     child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)), None, AUTHORS)
+    execute(job(machine, "run_snapshot", snapshot_args(identity)), AUTHORS)
     result = portal.result()
     assert result["outcome"] == "failed" and "cus_0000000000" in result["message"]
     assert "started" not in portal.facts()
@@ -336,7 +336,7 @@ def test_a_bad_snapshot_reports_failed_and_leaves_no_folder(machine, portal, mon
     identity, manifest, _data = snapshot_of({"a.txt": b"x"})
     portal.serve_snapshot(identity, manifest, b"not a zip", [publication(identity)])
     child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)), None, AUTHORS)
+    execute(job(machine, "run_snapshot", snapshot_args(identity)), AUTHORS)
     result = portal.result()
     assert result["outcome"] == "failed" and "zip" in result["message"]
     assert "started" not in portal.facts()
@@ -347,7 +347,7 @@ def test_a_snapshot_with_a_hostile_path_writes_nothing(machine, portal, monkeypa
     identity, manifest, data = snapshot_of({"../../evil.txt": b"evil"})
     portal.serve_snapshot(identity, manifest, data, [publication(identity)])
     child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)), None, AUTHORS)
+    execute(job(machine, "run_snapshot", snapshot_args(identity)), AUTHORS)
     assert portal.result()["outcome"] == "failed"
     assert not list(tmp_path.rglob("evil.txt"))
 
@@ -837,8 +837,7 @@ def test_one_service_runs_on_a_computer(machine, portal, capsys):
 
 def test_status_names_the_service_as_json(machine, portal, monkeypatch, capsys):
     monkeypatch.setitem(service.service_backends.BACKENDS, "cron", service.service_backends.Backend(
-        lambda: True, lambda _python, _folder: None, lambda: None, lambda: None, lambda: True,
-        lambda _folder: "", lambda: None))
+        lambda: True, lambda _python, _folder: None, lambda: None, lambda: None, lambda: True))
     journal(operation="run", state="started")
     assert service.status(as_json=True) == 0
     found = json.loads(capsys.readouterr().out)
@@ -905,10 +904,10 @@ def test_remove_of_a_foreground_service_deletes_the_settings(machine, portal, ca
     service.write_settings({**settings(), "backend": None})
     portal.routes["/v1/service/remove"] = lambda _body: (200, {"children": 0})
     monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
-    assert service.remove(False, True) == 0
+    assert service.remove(True) == 0
     assert settings() is None
     assert not autoidm.files(CUSTOMER)[0].exists()
-    assert service.remove(False, True) == 0
+    assert service.remove(True) == 0
     assert "no pdt service" in capsys.readouterr().out
 
 

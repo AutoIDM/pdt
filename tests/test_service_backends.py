@@ -61,7 +61,6 @@ def test_the_windows_task_comes_from_a_file_and_remove_ends_it(calls, tmp_path):
     BACKENDS["windows"].define(PYTHON, tmp_path)
     assert programs(found) == [["schtasks", "/Create", "/TN", "pdt-service", "/XML",
                                 str(tmp_path / "task.xml"), "/F"]]
-    assert "service run" in BACKENDS["windows"].definition(tmp_path)
     found.clear()
     BACKENDS["windows"].remove()
     assert [args[1] for args in programs(found)] == ["/Query", "/End", "/Delete"]
@@ -123,7 +122,7 @@ def test_choose_takes_the_one_asked_for_and_else_the_first_here(monkeypatch):
     for name, backend in BACKENDS.items():
         monkeypatch.setitem(BACKENDS, name, service_backends.Backend(
             (lambda found=name: found in ("launchd", "cron")), backend.define, backend.start,
-            backend.remove, backend.running, backend.definition, backend.restart))
+            backend.remove, backend.running))
     assert service_backends.choose(None) == "launchd"
     assert service_backends.choose("cron") == "cron"
     with pytest.raises(BackendError, match="systemd does not exist"):

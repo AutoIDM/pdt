@@ -57,25 +57,3 @@ def test_failed_check_ins_wait_longer_each_time():
     schedule.checkin_failed(0.0)
     assert 0 < first <= 2 and schedule.retry_at >= 4
     assert schedule.wanted
-
-
-def test_diagnose_holds_no_token_no_key_and_no_proxy_password(tmp_path, monkeypatch):
-    monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path / "data"))
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(service, "event_lines", lambda: "command=x fact=result\n")
-    service.write_settings({"version": 1, "customer": CUSTOMER, "projects": None,
-                            "named_projects": [], "backend": None,
-                            "proxy": {"HTTPS_PROXY": "http://user:hunter22@proxy:8080"}})
-    service_runner.journal_write({"schema": 1, "command_id": COMMAND, "state": "finished",
-                                  "token": token(), "result": None})
-    assert service.diagnose() == 0
-    [found] = tmp_path.glob("pdt-service-diagnose-*.zip")
-    with zipfile.ZipFile(found) as archive:
-        names = set(archive.namelist())
-        text = b"".join(archive.read(name) for name in names)
-        journal = json.loads(archive.read("journal.json"))
-    assert {"settings.json", "service.log", "journal.json", "definition.txt", "status.json",
-            "access.txt", "events.txt"} == names
-    assert b"hunter22" not in text
-    assert token().encode() not in text
-    assert journal[0]["command_id"] == COMMAND and "token" not in journal[0]

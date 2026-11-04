@@ -1,12 +1,9 @@
 """What `pdt service install` puts on a computer: the settings, the program, the proxy, and the key.
 
-Each version of pdt lives in `<data folder>/versions/<version>`: a virtual environment with its
-own Python from `uv python install`, and a copy of uv, because SYSTEM or root must not run a
-program from a person's own folder. The running version copies its own packages, so an install
-needs no release of it. Another version, for a project's pin or an upgrade, comes from a signed
-release: `pdt-cli-<version>.manifest.json` lists each file's hash, its `.sig` is the Ed25519
-signature, `upgrade.RELEASE_PUBLIC_KEY` checks it, and uv installs from the release's locked
-requirements with `--require-hashes`.
+The service runs pdt from `<data folder>/versions/<version>`: a virtual environment with its own
+Python from `uv python install`, and a copy of uv, because SYSTEM or root must not run a program
+from a person's own folder. The running version copies its own packages, so an install needs no
+release.
 
 `service_env` is the environment of the service and of each child: the proxy, the system
 certificates, no uv configuration from a project folder, the SSH key, and the caches.
@@ -14,30 +11,22 @@ certificates, no uv configuration from a project folder, the SSH key, and the ca
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import sysconfig
-import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
-from pdt import __version__, config, service_access, upgrade
+from pdt import __version__, config, service_access
 from pdt.utils import autoidm
 
 SETTINGS_VERSION = 1
 UV_TIMEOUT_SECONDS = 900
-DOWNLOAD_TIMEOUT_SECONDS = 120
 SKIPPED_PACKAGES = ("__pycache__", "*.pth", "*.pyc")
-RELEASE_FILES_URL = "https://github.com/AutoIDM/pdt/releases/download/v{version}/{name}"
 READY_FILE = "ready.json"
 
 
@@ -232,73 +221,3 @@ def install_running(settings: dict) -> Path:
     copy_running(folder)
     (folder / READY_FILE).write_text(json.dumps({"version": __version__}) + "\n", encoding="utf-8")
     return python
-
-
-def download(url: str) -> bytes:
-    try:
-        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
-            return response.read()
-    except (urllib.error.URLError, OSError) as e:
-        raise InstallError(f"pdt could not download {url}: {getattr(e, 'reason', e)}") from None
-
-
-def release_files(version: str, work: Path) -> dict[str, Path]:
-    """Download the files of a release to `work`, and check the signature and each hash."""
-    public = upgrade.RELEASE_PUBLIC_KEY
-    if not public:
-        raise InstallError("This build of pdt has no release key, so it installs no other "
-                           f"version than {__version__}.")
-    name = f"pdt-cli-{version}.manifest.json"
-    manifest = download(RELEASE_FILES_URL.format(version=version, name=name))
-    signature = download(RELEASE_FILES_URL.format(version=version, name=f"{name}.sig"))
-    try:
-        key = Ed25519PublicKey.from_public_bytes(base64.urlsafe_b64decode(public + "=" * (-len(public) % 4)))
-        key.verify(base64.urlsafe_b64decode(signature.strip() + b"=" * (-len(signature.strip()) % 4)),
-                   manifest)
-    except (InvalidSignature, ValueError) as e:
-        raise InstallError(f"The signature of {name} is not valid: {e}") from None
-    found = json.loads(manifest)
-    if found.get("version") != version or not isinstance(found.get("files"), dict):
-        raise InstallError(f"{name} does not describe version {version}.")
-    paths = {}
-    for file_name, digest in found["files"].items():
-        if Path(file_name).name != file_name:
-            raise InstallError(f"{name} names the file {file_name}, which is not a plain name.")
-        data = download(RELEASE_FILES_URL.format(version=version, name=file_name))
-        if hashlib.sha256(data).hexdigest() != digest:
-            raise InstallError(f"The hash of {file_name} differs from {name}.")
-        paths[file_name] = work / file_name
-        paths[file_name].write_bytes(data)
-    return paths
-
-
-def install_release(version: str, settings: dict) -> Path:
-    """The Python of another version in the data folder, from its signed release."""
-    folder = version_folder(version)
-    python = python_of(folder)
-    if (folder / READY_FILE).is_file() and python.is_file():
-        return python
-    if folder.exists():
-        shutil.rmtree(folder)
-    service_access.limit(versions_folder(), private=False)
-    folder.mkdir(parents=True)
-    make_environment(folder, find_uv(), f"{sys.version_info.major}.{sys.version_info.minor}",
-                     settings)
-    work = folder / "release"
-    work.mkdir()
-    paths = release_files(version, work)
-    wheel = next((path for name, path in paths.items() if name.endswith(".whl")), None)
-    lock = next((path for name, path in paths.items() if name.endswith(".lock.txt")), None)
-    if wheel is None or lock is None:
-        raise InstallError(f"The release of version {version} holds no wheel or no lock file.")
-    uv = str(uv_of(folder))
-    env = service_env(settings)
-    run_uv(uv, "pip", "install", "--python", str(python), "--require-hashes", "-r", str(lock), env=env)
-    run_uv(uv, "pip", "install", "--python", str(python), "--no-deps", str(wheel), env=env)
-    shutil.rmtree(work)
-    (folder / READY_FILE).write_text(json.dumps({"version": version}) + "\n", encoding="utf-8")
-    return python
-
-
-def python_for(version: str, settings: dict) -> Path:
-    return install_running(settings) if version == __version__ else install_release(version, settings)

@@ -9,8 +9,7 @@
 | `pdt service install [--projects DIR] [--backend NAME] [--proxy URL] [--ssh-key FILE] [--known-hosts FILE] [--yes]` | run commands from the AutoIDM portal on this computer as SYSTEM or root, now and at each boot, with no open port; it states that a portal user of your organization and AutoIDM staff can run any program on this computer, and asks once; one computer serves one customer; run it again to repair the service |
 | `pdt service status [--json]` | show the service, its last checks, the projects, and the running commands |
 | `pdt service run` | run it in this terminal; it needs only a registration, so you can try it before an install |
-| `pdt service remove [--purge] [--yes]` | stop the service and each command, revoke this installation at AutoIDM, and delete its key; `--purge` also deletes pdt's data folder, except each project folder |
-| `pdt service diagnose` | write `pdt-service-diagnose-<time>.zip` for AutoIDM support: the settings with no proxy password, the log, the journal with no tokens, the task definition, the folder access lists, and the event lines; no key, no `.env` file, and no output |
+| `pdt service remove [--yes]` | stop the service and each command, revoke this installation at AutoIDM, and delete its key |
 | `pdt service author add\|remove PROJECT KEY`, `pdt service author list [--json]` | choose whose snapshots of a project this computer runs; it always accepts its own |
 | `pdt sync up [--yes] [--ref REF] [--label LABEL]` | copy this project to AutoIDM as a snapshot; `.env` files, keys, and links stay on this computer |
 | `pdt sync down [--snapshot ID] [--force]` | copy a snapshot into this project; it stops when a file changed on this computer |
