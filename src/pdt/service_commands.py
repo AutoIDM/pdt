@@ -31,17 +31,16 @@ COMMAND_ID = re.compile(r"cmd_\d{8}T\d{6}Z_[0-9a-f]{8}")
 # The contract's ARG_NAME_RE: `--all` or `--plan` as an app name would reach pdt as a flag.
 NAME = re.compile(r"(?!\.{1,2}$)(?!-)[A-Za-z0-9._-]{1,128}")
 RUN_NUMBER = re.compile(r"[0-9]{1,6}")
-SNAPSHOT = re.compile(r"[0-9a-f]{64}")
-ARG_RULES = {"project": NAME, "app": NAME, "run": RUN_NUMBER,
-             "snapshot_id": SNAPSHOT}
-BOOLEAN_ARGS = ("deployed", "force")
+ENV_VAR = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
+ARG_RULES = {"project": NAME, "app": NAME, "run": RUN_NUMBER, "name": ENV_VAR,
+             "mr_iid": re.compile(r"[0-9]{1,9}"), "sha": re.compile(r"[0-9a-f]{40}")}
+BOOLEAN_ARGS = ("deployed",)
+MAX_APP_ARGS = 1024
 PLACE = re.compile(r"(aws|azure|google-cloud):[A-Za-z0-9-]{1,64}:[a-z0-9-]{1,32}")
-ROLE = re.compile(r"[A-Za-z0-9:/@._-]{1,256}")
 HOUR = 3600
 MINUTE = 60
 # The longest run limit plus 1 h: a cancel must reach each command that can still run.
 CANCEL_EXPIRES_SECONDS = 25200
-ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 class Refused(Exception):
@@ -61,6 +60,10 @@ def run_argv(args: dict) -> list[str]:
     return ["run", args["app"], *(["--deployed", "--follow"] if args["deployed"] else [])]
 
 
+def app_option(args: dict) -> list[str]:
+    return [args["app"]] if "app" in args else []
+
+
 @dataclass(frozen=True)
 class Operation:
     required: tuple[str, ...]
@@ -68,12 +71,14 @@ class Operation:
     argv: Callable[[dict], list[str]]
     expires_seconds: int
     limit_seconds: int
-    # None: a worker does not run this operation.
-    worker_limit_seconds: int | None
+    # None: the hosted runner does not run this operation.
+    runner_limit_seconds: int | None
     # Holds the project's lock for the full command.
     exclusive: bool = False
-    # A snapshot supplies the project: a new temporary folder, not the project on the machine.
-    from_snapshot: bool = False
+    # The copy of a merge request supplies the project: a new work folder with its own locks.
+    from_copy: bool = False
+    # The module the child runs, with `argv` as its arguments.
+    module: str = "pdt.cli"
 
 
 OPERATIONS = {
@@ -84,55 +89,61 @@ OPERATIONS = {
                       5 * MINUTE, 5 * MINUTE),
     "logs": Operation(("project", "app"), ("run",),
                       lambda a: ["logs", a["app"], *([a["run"]] if "run" in a else [])],
-                      HOUR, 5 * MINUTE, None),
+                      HOUR, 5 * MINUTE, 5 * MINUTE),
     "health": Operation(("project",), (), lambda a: ["health", "--json"], HOUR, 5 * MINUTE,
                         5 * MINUTE),
+    # The child adds the folder that goes up as the artifact.
+    "artifacts": Operation(("project", "app", "run"), (), lambda a: [a["app"], a["run"]], HOUR,
+                           15 * MINUTE, 15 * MINUTE, module="pdt.run_output"),
     "plan": Operation(("project", "app"), (), lambda a: ["deploy", a["app"], "--plan"], HOUR,
                       15 * MINUTE, 15 * MINUTE),
-    "run": Operation(("project", "app", "deployed"), (), run_argv, HOUR, 6 * HOUR,
-                     15 * MINUTE),
+    "run": Operation(("project", "app", "deployed"), (), run_argv, HOUR, 6 * HOUR, 55 * MINUTE),
+    "kill": Operation(("project", "app"), (), lambda a: ["run", a["app"], "--kill"], HOUR,
+                      5 * MINUTE, 5 * MINUTE),
     "pause": Operation(("project", "app"), (), lambda a: ["pause", a["app"]], 24 * HOUR,
                        15 * MINUTE, 15 * MINUTE),
     "unpause": Operation(("project", "app"), (), lambda a: ["unpause", a["app"]], 24 * HOUR,
                          15 * MINUTE, 15 * MINUTE),
-    # The child has no terminal, so `--yes` stands in for the question `pdt sync up` asks.
-    "sync_up": Operation(("project",), (), lambda a: ["sync", "up", "--yes", "--report"], 24 * HOUR,
-                         15 * MINUTE, None, exclusive=True),
-    "sync_down": Operation(("project", "snapshot_id"), ("force",),
-                           lambda a: ["sync", "down", "--snapshot", a["snapshot_id"],
-                                      *(["--force"] if a.get("force") else [])],
-                           24 * HOUR, 15 * MINUTE, None, exclusive=True),
-    "run_snapshot": Operation(("project", "snapshot_id", "app"), (),
-                              lambda a: ["run", a["app"]], HOUR, 6 * HOUR, None,
-                              from_snapshot=True),
     "deploy": Operation(("project", "app"), (), lambda a: ["deploy", a["app"], "--yes"], 24 * HOUR,
                         HOUR, 55 * MINUTE, exclusive=True),
     "destroy": Operation(("project", "app"), (), lambda a: ["destroy", a["app"], "--yes"],
                          15 * MINUTE, HOUR, 55 * MINUTE, exclusive=True),
+    # The value comes on stdin, from the command input.
+    "secrets_set": Operation(("project", "app", "name"), (),
+                             lambda a: ["secrets", a["app"], "set", a["name"]], 15 * MINUTE,
+                             5 * MINUTE, 5 * MINUTE),
+    # The child has no terminal, so `--yes` stands in for the question `pdt sync` asks.
+    "sync_up": Operation(("project",), ("app",), lambda a: ["sync", "up", *app_option(a), "--yes"],
+                         24 * HOUR, 15 * MINUTE, None, exclusive=True),
+    "sync_down": Operation(("project",), ("app",),
+                           lambda a: ["sync", "down", *app_option(a), "--yes"],
+                           24 * HOUR, 15 * MINUTE, None, exclusive=True),
+    "run_mr": Operation(("project", "app", "mr_iid", "sha"), ("app_args",),
+                        lambda a: ["run", a["app"]], HOUR, 6 * HOUR, 55 * MINUTE, from_copy=True),
 }
 
 
-def args_problem(name: str, args: object, worker: bool = False) -> str:
-    """Why `args` do not fit the operation `name`, or "". A worker's project comes from a
-    snapshot, so a worker takes `snapshot_id` on each operation."""
+def args_problem(name: str, args: object) -> str:
+    """Why `args` do not fit the operation `name`, or ""."""
     operation = OPERATIONS[name]
     if not isinstance(args, dict):
         return "the args are not an object"
-    allowed = {*operation.required, *operation.optional}
-    needed = list(operation.required)
-    if worker:
-        allowed = allowed | {"snapshot_id"}
-        needed.append("snapshot_id")
     for arg in args:
-        if arg not in allowed:
+        if arg not in (*operation.required, *operation.optional):
             return f"the arg {arg!r} is not one this operation takes"
-    for arg in needed:
+    for arg in operation.required:
         if arg not in args:
             return f"the arg {arg} is missing"
     for arg, value in args.items():
         if arg in BOOLEAN_ARGS:
             if not isinstance(value, bool):
                 return f"the arg {arg} is not true or false"
+        elif arg == "app_args":
+            if not (isinstance(value, str) and len(value) <= MAX_APP_ARGS
+                    and not any(ord(character) < 32 or ord(character) == 127
+                                for character in value)):
+                return (f"the arg app_args is not text of at most {MAX_APP_ARGS} characters with "
+                        "no control character")
         elif not (isinstance(value, str) and ARG_RULES[arg].fullmatch(value)):
             return f"the arg {arg} does not have the form this operation takes"
     if args.get("project") == RESERVED_PROJECT:
@@ -142,7 +153,8 @@ def args_problem(name: str, args: object, worker: bool = False) -> str:
 
 def command_line(operation: str, args: dict) -> list[str]:
     """The program and the arguments of a command, for a list form with no shell."""
-    return [sys.executable, "-m", "pdt.cli", *OPERATIONS[operation].argv(args)]
+    found = OPERATIONS[operation]
+    return [sys.executable, "-m", found.module, *found.argv(args)]
 
 
 def decoded(token: object, keys: list[dict], audience: str | None = None,
@@ -184,7 +196,7 @@ def check_times(claims: dict, now: float, longest: int) -> None:
 
 
 def verify(token: str, command_id: str, installation_id: str, customer_id: str, keys: list[dict],
-           now: float, worker: bool = False) -> dict:
+           now: float) -> dict:
     """The claims of a command's token, when every check passes. Raises Refused otherwise."""
     if not COMMAND_ID.fullmatch(str(command_id)):
         raise Refused("The command ID does not have the form pdt expects.")
@@ -198,26 +210,13 @@ def verify(token: str, command_id: str, installation_id: str, customer_id: str, 
         raise Refused(f"pdt does not know the operation {name!r}.")
     operation = OPERATIONS[name]
     check_times(claims, now, operation.expires_seconds)
-    problem = args_problem(name, claims.get("args"), worker)
+    problem = args_problem(name, claims.get("args"))
     if problem:
         raise Refused(f"The {name} command was refused: {problem}.")
     limit = claims.get("limit_seconds")
     if not (type(limit) is int and 0 < limit):
         raise Refused("The command has no run limit.")
-    most = operation.worker_limit_seconds if worker else operation.limit_seconds
-    if most is None:
-        raise Refused(f"A cloud worker does not run {name}.")
-    claims["limit_seconds"] = min(limit, most)
-    grant = claims.get("grant")
-    if worker:
-        if name == "run" and not claims["args"]["deployed"]:
-            raise Refused("A cloud worker runs only the deployed job.")
-        if not (isinstance(grant, dict)
-                and isinstance(grant.get("place"), str) and PLACE.fullmatch(grant["place"])
-                and isinstance(grant.get("role"), str) and ROLE.fullmatch(grant["role"])):
-            raise Refused("The command has no valid grant for a cloud worker.")
-    elif grant is not None:
-        raise Refused("This computer is not a cloud worker, and the command names a grant.")
+    claims["limit_seconds"] = min(limit, operation.limit_seconds)
     return claims
 
 

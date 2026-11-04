@@ -19,8 +19,9 @@ check-in names it so AutoIDM sends the token again. A file that does not parse r
 command, and the service keeps the file. At a start, `recover` follows each process that still
 runs (both the PID and the creation time match), and reports `interrupted` for the others.
 
-A cloud worker's child gets a short allow list of env vars and the credentials of the grant,
-and nothing else from the worker's environment. pdt writes them to no file.
+`run_mr` runs the app from the copy of a merge request in a work folder of its own, so it takes
+the locks of that folder and none of the project on this computer. `secrets_set` gets its value
+from `/v1/commands/input` once and gives it to the child on stdin.
 """
 
 from __future__ import annotations
@@ -42,8 +43,7 @@ from pathlib import Path
 import jwt
 from dotenv import dotenv_values
 
-from pdt import config, managed_services, run_windows_task, service_commands, snapshots
-from pdt.deploy_common import KEEP_SECRET_ENV
+from pdt import config, copies, managed_services, run_windows_task, service_commands
 from pdt.service_commands import OPERATIONS, Clock, Refused
 from pdt.utils import autoidm
 
@@ -60,18 +60,12 @@ SECRET_MASK = b"***"
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 SERVICE_PROJECT_ENV = "PDT_SERVICE_PROJECT"
 SERVICE_CUSTOMER_ENV = "PDT_SERVICE_CUSTOMER"
-GRANT_FOLDER_ENV = "PDT_GRANT_FOLDER"
 PROJECTS_HOME_ENV = "PDT_SERVICE_PROJECTS"
 ARTIFACT_NAME = "artifacts.zip"
 EVENT_SOURCE = "pdt-service"
 EVENT_IDS = {"claimed": 1000, "started": 1001, "result": 1002}
 EVENTLOG_INFORMATION_TYPE = 4
-WORKER_ENV_KEEP = ("PATH", "PATHEXT", "HOME", "USERPROFILE", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP",
-                   "TMPDIR", "LANG", "LC_ALL", "PROGRAMDATA", "LOCALAPPDATA", "APPDATA",
-                   "XDG_DATA_HOME", "XDG_CACHE_HOME", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR",
-                   "UV_TOOL_DIR", "UV_SYSTEM_CERTS", "SSL_CERT_FILE")
-NOT_FOR_A_CHILD = {*autoidm.SECRET_NAMES, "PDT_WORKER_PARAMETER"}
-WORKER_USER = "pdtjob"
+NOT_FOR_A_CHILD = set(autoidm.SECRET_NAMES)
 # OS values of the Windows process calls.
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 CREATE_SUSPENDED = 0x4
@@ -248,16 +242,6 @@ def child_env(base: dict[str, str], project: Path | None,
     return {**env, **extra}
 
 
-def worker_env(base: dict[str, str], project: Path, credentials: dict[str, str]) -> dict[str, str]:
-    """The env of a worker's child. The worker's own cloud login and registration stay out."""
-    wanted = {name.upper() for name in WORKER_ENV_KEEP}
-    kept = {name: value for name, value in base.items() if name.upper() in wanted}
-    # A snapshot holds customer files, so a uv.toml in one must not choose a package index.
-    return {**kept, **credentials, "PDT_PROJECT": str(project), "PYTHONUTF8": "1",
-            "UV_NO_CONFIG": "1", "CI": "pdt-service", KEEP_SECRET_ENV: "1",
-            config.SERVICE_CHILD_ENV: "1", config.SERVICE_ENV_FILES_ENV: ""}
-
-
 def env_files(project: Path | None, app: str | None) -> list[Path]:
     """The served project's .env files, nearest first, as `pdt run` reads them."""
     if project is None:
@@ -267,8 +251,8 @@ def env_files(project: Path | None, app: str | None) -> list[Path]:
 
 
 def env_file_values(project: Path | None, app: str | None) -> dict[str, str]:
-    """The values of `env_files`. A snapshot holds no .env, so the service passes them to the
-    child in its environment when the project allows it."""
+    """The values of `env_files`. A copy holds no .env, so the service passes them to the child
+    of `run_mr` in its environment."""
     values: dict[str, str] = {}
     for path in env_files(project, app):
         for name, value in dotenv_values(path, encoding="utf-8-sig").items():
@@ -332,7 +316,6 @@ class Job:
     registration: autoidm.Registration
     project: Path | None
     clock: Clock = field(default_factory=Clock)
-    worker: bool = False
     # Values to mask, for what the child prints.
     known_values: list[str] = field(default_factory=list)
     cancel: threading.Event = field(default_factory=threading.Event)
@@ -408,7 +391,7 @@ def send_output(job: Job, final: bool = False) -> bool:
     longest = max((len(secret) for secret in secrets), default=0)
     wanted = OUTPUT_LIMIT + longest
     try:
-        with open(snapshots.long_path(output_path(job.command_id)), "rb") as out:
+        with open(copies.long_path(output_path(job.command_id)), "rb") as out:
             out.seek(job.offset)
             data = out.read(wanted)
     except OSError:
@@ -435,7 +418,7 @@ def send_all_output(job: Job) -> None:
 
 def masked_log(job: Job) -> bytes:
     secrets = secret_values(job.known_values)
-    return mask(Path(snapshots.long_path(output_path(job.command_id))).read_bytes(), secrets)
+    return mask(Path(copies.long_path(output_path(job.command_id))).read_bytes(), secrets)
 
 
 def log_tail(job: Job) -> str:
@@ -498,14 +481,45 @@ def work_root() -> Path:
     return folder
 
 
-def write_snapshot_files(job: Job, work: Path) -> None:
-    """Fetch the snapshot into `work`, and name the project as the portal names it, because the
-    folder's own name is a command ID."""
+def write_copy_files(job: Job, work: Path) -> Path:
+    """Write the copy of the merge request into `work/project`, and name the project as the
+    portal names it, because the folder's own name is a command ID."""
     target = work / "project"
-    target.mkdir()
-    snapshots.fetch(job.registration, job.args["project"], job.args["snapshot_id"], target,
-                    job.claims["customer_id"])
+    unit = f"mr={job.args['mr_iid']}"
+    found = copies.get(job.registration, job.args["project"], unit)
+    if not found:
+        raise Refused(f"AutoIDM holds no copy {unit} of {job.args['project']}.")
+    copies.fetch(found[0], target)
+    pdt_yml = target / config.PROJECT_FILE
+    problem = copies.customer_problem(pdt_yml.read_bytes() if pdt_yml.is_file() else None,
+                                      job.claims["customer_id"])
+    if problem:
+        raise copies.CopyError(problem)
     (target / config.PROJECT_NAME_FILE).write_text(job.args["project"] + "\n", encoding="utf-8")
+    return target
+
+
+def deployed_storage_url(project: Path, app: str) -> dict[str, str]:
+    """PDT_STORAGE_URL of the app deployed on this computer, so an MR run reads its state/."""
+    if deployed_platform_of(project, app).get("provider") != "windows":
+        return {}
+    from pdt import deploy_windows
+    with service_commands.in_project(project):
+        return {"PDT_STORAGE_URL": deploy_windows.storage_url(app)}
+
+
+def command_input(job: Job) -> str:
+    """The value of a `secrets_set`, which AutoIDM gives once to the claim holder."""
+    entry = journal_read(job.command_id) or {}
+    try:
+        answer = autoidm.post(job.registration, "/v1/commands/input", {
+            "version": 1, "command_id": job.command_id, "claim_id": entry.get("claim_id")})
+    except autoidm.AutoidmError as e:
+        raise Refused(f"AutoIDM gave no value for this command: {e}") from None
+    value = answer.get("value")
+    if not isinstance(value, str):
+        raise Refused("AutoIDM gave no value for this command.")
+    return value
 
 
 def deployed_platform_of(project: Path | None, app: str) -> dict:
@@ -545,21 +559,8 @@ class Prepared:
     # PDT_OUTPUT_DIR of the run, when its folder goes up as an artifact.
     output: Path | None = None
     work: Path | None = None
-    grant_folder: str | None = None
-    user: str | None = None
-
-
-def worker_user() -> str | None:
-    """The account of a worker's child: the parent stays root, so the child cannot read the
-    parent's memory or environment."""
-    return WORKER_USER if os.name != "nt" and os.geteuid() == 0 else None
-
-
-def give_folder(folder: Path, user: str) -> None:
-    for parent, dirs, files in os.walk(folder):
-        shutil.chown(parent, user=user)
-        for name in [*dirs, *files]:
-            shutil.chown(Path(parent, name), user=user, follow_symlinks=False)
+    # What the child reads on stdin.
+    stdin: bytes | None = None
 
 
 def output_folder(app_dir: Path, command_id: str) -> Path:
@@ -571,16 +572,18 @@ def prepare(job: Job, base: dict[str, str]) -> Prepared:
     operation = OPERATIONS[job.operation]
     app = job.args.get("app")
     argv = service_commands.command_line(job.operation, job.args)
-    if operation.from_snapshot:
+    if operation.from_copy:
         work = work_root() / job.command_id
         work.mkdir()
-        write_snapshot_files(job, work)
-        project = work / "project"
+        project = write_copy_files(job, work)
         values = env_file_values(job.project, app)
-        extra = {"PDT_RUN_ID": job.command_id, config.SERVICE_ENV_FILES_ENV: os.pathsep.join(
-            str(path) for path in env_files(job.project, app)) if values else ""}
-        if job.project is not None:
-            extra[config.LOCK_PROJECT_ENV] = str(job.project)
+        extra = {"PDT_RUN_ID": job.command_id, "PDT_TRIGGER": "mr",
+                 "PDT_MR_IID": job.args["mr_iid"],
+                 config.SERVICE_ENV_FILES_ENV: os.pathsep.join(
+                     str(path) for path in env_files(job.project, app)) if values else "",
+                 **deployed_storage_url(job.project, app)}
+        if "app_args" in job.args:
+            extra["PDT_APP_ARGS"] = job.args["app_args"]
         output = output_folder(project / app, job.command_id)
         output.mkdir(parents=True, exist_ok=True)
         extra["PDT_OUTPUT_DIR"] = str(output)
@@ -605,7 +608,19 @@ def prepare(job: Job, base: dict[str, str]) -> Prepared:
     extra = {}
     if not config.find_env_files(job.project / app if app else job.project):
         extra[config.SERVICE_ENV_FILES_ENV] = ""
-    return Prepared(job.project, child_env(base, job.project, extra), argv)
+    env = child_env(base, job.project, extra)
+    if job.operation == "artifacts":
+        work = work_root() / job.command_id
+        output = work / "output"
+        output.mkdir(parents=True)
+        return Prepared(job.project, env, [*argv, str(output)], output, work)
+    if job.operation == "secrets_set":
+        if job.args["name"] not in service_commands.env_spec_names(job.project, app):
+            raise Refused(f"{job.args['name']} is not in the env spec of {app}.")
+        value = command_input(job)
+        job.known_values.append(value)
+        return Prepared(job.project, env, argv, stdin=value.encode())
+    return Prepared(job.project, env, argv)
 
 
 def known_values_of(project: Path | None, app: str | None) -> list[str]:
@@ -620,7 +635,7 @@ def known_values_of(project: Path | None, app: str | None) -> list[str]:
 
 def remove_folder(folder: str | Path | None) -> None:
     if folder is not None:
-        shutil.rmtree(snapshots.long_path(Path(folder)), ignore_errors=True)
+        shutil.rmtree(copies.long_path(Path(folder)), ignore_errors=True)
 
 
 def execute(job: Job) -> None:
@@ -632,11 +647,10 @@ def execute(job: Job) -> None:
         run_child(job, prepared)
     except Refused as e:
         finish(job, result_of("refused", message=str(e)))
-    except (snapshots.SnapshotError, autoidm.AutoidmError, OSError, RuntimeError, ValueError) as e:
+    except (copies.CopyError, autoidm.AutoidmError, OSError, RuntimeError, ValueError) as e:
         finish(job, result_of("failed", message=str(e)))
     finally:
         if prepared is not None:
-            remove_folder(prepared.grant_folder)
             remove_folder(prepared.work)
         else:
             remove_folder(work_root() / job.command_id)
@@ -646,15 +660,16 @@ def start_child(job: Job, prepared: Prepared) -> tuple[subprocess.Popen, int | N
     """The child, and on Windows the job object that holds it and each process it starts."""
     path = output_path(job.command_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(snapshots.long_path(path), "ab") as out:
+    with open(copies.long_path(path), "ab") as out:
         options = dict(tree_options())
-        if prepared.user:
-            options["user"] = prepared.user
         if os.name == "nt":
             options["creationflags"] |= CREATE_SUSPENDED
         proc = subprocess.Popen(prepared.argv, cwd=prepared.cwd, env=prepared.env,
-                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                **options)
+                                stdin=subprocess.DEVNULL if prepared.stdin is None else subprocess.PIPE,
+                                stdout=out, stderr=subprocess.STDOUT, **options)
+    if prepared.stdin is not None:
+        proc.stdin.write(prepared.stdin)
+        proc.stdin.close()
     if os.name != "nt":
         return proc, None
     import ctypes
@@ -730,14 +745,18 @@ def run_child(job: Job, prepared: Prepared) -> None:
 
 def final_result(job: Job, outcome: str, code: int | None, message: str | None,
                  prepared: Prepared) -> dict:
-    """The result, with the keys of the log and the artifact of a `run` or a `run_snapshot`."""
+    """The result, with the keys of the log and the artifact of a `run` or a `run_mr`, and the
+    artifact of `artifacts`."""
     log_key, artifact = None, None
-    if job.operation in ("run", "run_snapshot") and job.args.get("app") and outcome != "refused":
+    if job.operation in ("run", "run_mr") and outcome != "refused":
         log_key, problem = upload_log(job)
         message = message or problem
         if prepared.output is not None and outcome in ("done", "failed"):
             artifact, problem = artifact_key(job, prepared.output)
             message = message or problem
+    if job.operation == "artifacts" and outcome == "done":
+        artifact, problem = artifact_key(job, prepared.output)
+        message = message or problem
     run_id = job.command_id if "PDT_RUN_ID" in prepared.env else None
     return result_of(outcome, code, message, run_id, artifact, log_key)
 
@@ -889,5 +908,5 @@ def remove_old_output(command_id: str, entry: dict, now: float) -> None:
     except ValueError:
         return
     if now - finished > OUTPUT_KEEP_SECONDS:
-        Path(snapshots.long_path(path)).unlink(missing_ok=True)
+        Path(copies.long_path(path)).unlink(missing_ok=True)
 

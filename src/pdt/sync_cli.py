@@ -1,36 +1,38 @@
-"""`pdt sync up|down|diff`: copy a project to AutoIDM, copy a snapshot back, and compare.
+"""`pdt sync up|down [APP]`: send this project's copy to AutoIDM, or write AutoIDM's copy here.
 
-A snapshot is a zip of the project folder (pdt.snapshots). `.pdt/sync.json` records the last
-snapshot this computer published or received: its ID and each file's hash. `pdt sync up --report`
-sends a copy for a person to read, and it does not change that record.
-
-`pdt sync down --snapshot ID` uses the record for three rules. It stops when no publication of the
-snapshot has the record's ID as its parent, it deletes a file only when the record lists it and
-the new snapshot does not, and it stops when a file it would overwrite or delete changed on this
-computer since the record. `--force` passes the first and the last rule. Files are checked first,
-and written after every check passes. It stops in a Git clone, because Git owns those files.
+A copy is the current zip of each unit of the project (pdt.copies): `root`, and `app=<name>` for
+each app folder. `pdt sync up` sends each unit, or one app's unit. `pdt sync down` writes each
+unit, or one app's unit, into this project: it adds each new file, replaces each changed file, and
+deletes each file of an app folder that the copy does not hold. It never touches a file that a
+copy leaves out, such as `.env`. It merges `pdt.yml` and each `config.yml`: the copy's value wins
+for each key it holds, and a key only this computer holds stays. Before it changes a file, it
+saves the file in `.pdt/backup/<UTC time>/`. At a terminal it lists the changes and asks one
+question; `--yes` and a run with no terminal do not ask. It stops in a Git clone, because Git
+owns those files.
 
 The pdt service starts `pdt sync down` in the project's folder, new or not. PDT_SERVICE_PROJECT
 and PDT_SERVICE_CUSTOMER name the project and its customer, because a new folder has no pdt.yml
 to read. After the copy, `pdt sync down` adds `managed_services:` to a pdt.yml that has none, as
-`pdt register` does, and it refuses a snapshot whose pdt.yml names another customer.
+`pdt register` does, and it refuses a copy whose pdt.yml names another customer.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import tempfile
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
-from pdt import config, console, managed_services, register_cli, service_runner, snapshots
+import yaml
+
+from pdt import config, console, copies, managed_services, register_cli, service_runner
 from pdt.deploy import DECLINED
 from pdt.utils import autoidm
 from pdt.utils.email_auth import can_prompt
 
-RECORD = "sync.json"
+MERGED_FILES = {copies.ROOT: config.PROJECT_FILE, "app": "config.yml"}
 
 
 def context() -> tuple[Path, str, str, autoidm.Registration]:
@@ -55,227 +57,187 @@ def context() -> tuple[Path, str, str, autoidm.Registration]:
     return root, name, customer, registration
 
 
-def read_record(root: Path) -> dict:
+def ask(question: str, assume_yes: bool) -> bool:
+    """One `[y/N]` question at a terminal. `--yes` and a run with no terminal do not ask."""
+    if assume_yes or not can_prompt(None):
+        return True
     try:
-        found = json.loads((root / config.STATE_DIR / RECORD).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return found if isinstance(found, dict) else {}
+        return console.confirm(question)
+    except EOFError:
+        return False
 
 
-def write_record(root: Path, identity: str, files: list[dict]) -> None:
-    folder = root / config.STATE_DIR
-    folder.mkdir(exist_ok=True)
-    (folder / ".gitignore").write_text("*\n", encoding="utf-8")
-    config.write_text_atomically(folder / RECORD, json.dumps({
-        "snapshot_id": identity, "files": {entry["path"]: entry["sha256"] for entry in files},
-    }, indent=2) + "\n")
-
-
-def file_hash(path: Path) -> str | None:
-    try:
-        return snapshots.content_hash(Path(snapshots.long_path(path)).read_bytes())
-    except OSError:
+def chosen_units(root: Path, app: str | None) -> dict[str, list[dict]] | None:
+    files, left_out = copies.collect(root)
+    apps = copies.app_names(root)
+    if app is not None and app not in apps:
+        console.error(f"{console.value(root)} has no app folder {console.value(app)}.")
         return None
-
-
-def show_files(name: str, files: list[dict], left_out: dict[str, str]) -> None:
-    console.heading(f"pdt will copy these files of {console.value(name)} to AutoIDM:")
-    counts = Counter(entry["path"].split("/")[0] if "/" in entry["path"] else "."
-                     for entry in files)
-    for folder, count in sorted(counts.items()):
-        console.bullet(f"{console.value(folder)}  {console.value(count)} "
-                       f"file{'' if count == 1 else 's'}")
+    units = copies.split_units(files, apps)
+    if app is not None:
+        units = {f"app={app}": units[f"app={app}"]}
     for path, why in left_out.items():
         console.detail(f"left out: {console.value(path)} ({console.escape(why)})", 2)
+    return units
 
 
-def up(assume_yes: bool, ref: str | None, label: str | None, report: bool = False) -> int:
+def up(app: str | None, assume_yes: bool) -> int:
     with config.project_lock():
-        return send_up(assume_yes, ref, label, report)
+        return send_up(app, assume_yes)
 
 
-def send_up(assume_yes: bool, ref: str | None, label: str | None, report: bool) -> int:
-    root, name, customer, registration = context()
-    files, left_out = snapshots.collect(root)
-    if not files:
-        console.error(f"{console.value(root)} holds no file to send.")
+def send_up(app: str | None, assume_yes: bool) -> int:
+    root, name, _customer, registration = context()
+    console.heading(f"pdt will copy these files of {console.value(name)} to AutoIDM:")
+    units = chosen_units(root, app)
+    if units is None:
         return 1
-    for text in (ref, label):
-        if text is not None and len(text) > snapshots.MAX_NOTE_CHARACTERS:
-            console.error(f"--ref and --label each hold at most "
-                          f"{console.value(snapshots.MAX_NOTE_CHARACTERS)} characters.")
-            return 1
-    if len(json.dumps({"files": files})) > snapshots.MAX_BODY_BYTES - 1024:
-        console.error(f"{console.value(name)} holds {console.value(len(files))} files, and AutoIDM "
-                      "takes a list of about 2000 files. Delete files the project does not need, "
-                      "then run the command again.")
-        return 1
-    show_files(name, files, left_out)
-    if not assume_yes:
-        if not can_prompt(None):
-            console.warn("There is no one to answer. Run this in a terminal, or add --yes.")
-            return 1
-        try:
-            if not console.confirm("Copy these files?"):
-                console.say("Cancelled. Nothing left this computer.")
-                return DECLINED
-        except EOFError:
-            return DECLINED
-    purpose = "report" if report else "publish"
-    parent = read_record(root).get("snapshot_id")
-    with tempfile.TemporaryDirectory(prefix="pdt-sync-") as folder:
-        with console.waiting(f"sending: snapshot of {name}"):
-            identity = snapshots.publish(registration, customer, name, root, files, purpose, ref,
-                                         label, parent, Path(folder))
-    if purpose == "publish":
-        write_record(root, identity, files)
-    console.done(f"Copied {console.value(name)} to AutoIDM as snapshot {console.value(identity)}.")
+    for unit, files in units.items():
+        counts = Counter(entry["path"].split("/")[0] if "/" in entry["path"] else "."
+                         for entry in files)
+        console.bullet(f"{console.value(unit)}  {console.value(len(files))} "
+                       f"file{'' if len(files) == 1 else 's'} in {console.value(len(counts))} "
+                       f"folder{'' if len(counts) == 1 else 's'}")
+    if not ask("Copy these files?", assume_yes):
+        console.say("Cancelled. Nothing left this computer.")
+        return DECLINED
+    for unit, files in units.items():
+        with console.waiting(f"sending: {unit} of {name}"):
+            digest = copies.send(registration, name, unit, copies.unit_folder(root, unit), files)
+        console.done(f"Copied {console.value(unit)} of {console.value(name)} to AutoIDM "
+                     f"(SHA-256 {console.value(digest[:12])}).")
     return 0
 
 
-def plan_down(root: Path, files: list[dict], known: dict) -> tuple[list[str], list[str], list[str],
-                                                                  list[str]]:
-    """The added, changed, and deleted paths, and each path whose change on this computer the
-    sync would lose: it differs from the record, or the record does not know it."""
-    wanted = {entry["path"]: entry["sha256"] for entry in files}
-    added, changed, conflicts = [], [], []
-    for path, digest in sorted(wanted.items()):
-        local = file_hash(snapshots.inside(root, path))
-        if local == digest:
+def merged(local: dict, copy: dict) -> dict:
+    """`local` with each key of `copy`: the copy's value wins, and a key only `local` holds
+    stays. Mappings merge key by key."""
+    result = dict(local)
+    for key, value in copy.items():
+        if isinstance(value, dict) and isinstance(local.get(key), dict):
+            result[key] = merged(local[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def merged_text(local: bytes, copy: bytes, path: str) -> bytes:
+    """The merged config file. When the merge changes nothing of the copy, the copy's text stays,
+    with its comments."""
+    try:
+        mine = yaml.safe_load(local.decode("utf-8-sig")) or {}
+        theirs = yaml.safe_load(copy.decode("utf-8-sig")) or {}
+    except (yaml.YAMLError, UnicodeDecodeError) as e:
+        raise copies.CopyError(f"{path} does not parse, so pdt cannot merge it: {e}") from None
+    if not (isinstance(mine, dict) and isinstance(theirs, dict)):
+        return copy
+    both = merged(mine, theirs)
+    if both == theirs:
+        return copy
+    return yaml.safe_dump(both, sort_keys=False, allow_unicode=True).encode("utf-8")
+
+
+def plan_unit(root: Path, unit: str, staged: Path, files: list[dict]) -> dict[str, bytes | None]:
+    """The new bytes of each path of the project that the unit changes, relative to `root`, and
+    None for each path it deletes."""
+    folder = copies.unit_folder(root, unit)
+    prefix = "" if unit == copies.ROOT else f"{unit.removeprefix('app=')}/"
+    config_name = MERGED_FILES[copies.ROOT if unit == copies.ROOT else "app"]
+    changes: dict[str, bytes | None] = {}
+    wanted = set()
+    for entry in files:
+        wanted.add(entry["path"])
+        new = Path(copies.long_path(staged / entry["path"])).read_bytes()
+        target = copies.inside(root, prefix + entry["path"])
+        try:
+            current = Path(copies.long_path(target)).read_bytes()
+        except FileNotFoundError:
+            current = None
+        if current is not None and entry["path"] == config_name:
+            new = merged_text(current, new, prefix + entry["path"])
+        if current != new:
+            changes[prefix + entry["path"]] = new
+    if unit != copies.ROOT and folder.is_dir():
+        for entry in copies.collect(folder)[0]:
+            if entry["path"] not in wanted:
+                changes[prefix + entry["path"]] = None
+    return changes
+
+
+def back_up(root: Path, paths: list[str]) -> Path | None:
+    """Copy each existing file of `paths` to `.pdt/backup/<UTC time>/`."""
+    existing = [path for path in paths if (root / path).is_file()]
+    if not existing:
+        return None
+    folder = root / config.STATE_DIR / "backup" / datetime.now(timezone.utc).strftime(
+        "%Y%m%dT%H%M%SZ")
+    for path in existing:
+        target = folder / path
+        Path(copies.long_path(target.parent)).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(copies.long_path(root / path), copies.long_path(target))
+    (root / config.STATE_DIR / ".gitignore").write_text("*\n", encoding="utf-8")
+    return folder
+
+
+def write_changes(root: Path, changes: dict[str, bytes | None]) -> None:
+    for path, data in changes.items():
+        target = copies.inside(root, path)
+        if data is None:
+            Path(copies.long_path(target)).unlink(missing_ok=True)
             continue
-        if local is None:
-            added.append(path)
-            continue
-        changed.append(path)
-        if local != known.get(path):
-            conflicts.append(path)
-    deleted = []
-    for path in sorted(set(known) - set(wanted)):
-        if snapshots.path_problem(path):
-            continue
-        target = snapshots.inside(root, path)
-        local = file_hash(target)
-        if local is None:
-            continue
-        deleted.append(path)
-        if local != known[path]:
-            conflicts.append(path)
-    return added, changed, deleted, sorted(conflicts)
+        Path(copies.long_path(target.parent)).mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + ".pdt-sync")
+        Path(copies.long_path(temporary)).write_bytes(data)
+        os.replace(copies.long_path(temporary), copies.long_path(target))
 
 
-def show_heads(registration: autoidm.Registration, name: str) -> int:
-    """`pdt sync down` with no ID: it copies nothing, because a computer takes one named version."""
-    found = snapshots.heads(registration, name)
-    if not found:
-        console.error(f"AutoIDM holds no snapshot of {console.value(name)}.")
-        return 1
-    console.error(f"{console.value('pdt sync down')} needs the ID of a snapshot of "
-                  f"{console.value(name)}. These are the newest:")
-    console.table(["snapshot", "installation", "time"],
-                  [[head["snapshot_id"], str(head.get("installation_id") or "-"),
-                    str(head.get("at") or "-")] for head in found], ["bold"])
-    console.next_steps([(f"pdt sync down --snapshot {found[0]['snapshot_id']}",
-                         "copy the newest snapshot into this project")])
-    return 1
-
-
-def parent_problem(known_id: object, identity: str, publications: list) -> bool:
-    if not known_id or known_id == identity:
-        return False
-    return not any(isinstance(item, dict) and item.get("parent") == known_id
-                   for item in publications)
-
-
-def down(wanted: str | None, force: bool) -> int:
+def down(app: str | None, assume_yes: bool) -> int:
     root, name, customer, registration = context()
-    if wanted is None:
-        return show_heads(registration, name)
-    if snapshots.in_clone(root):
+    if copies.in_clone(root):
         console.error(f"{console.value(root)} is a Git clone, so {console.value('pdt sync down')} "
                       "changed nothing. Update this folder with Git.")
         return 1
-    apps = [folder.name for folder in root.iterdir() if folder.is_dir() and config.is_app(folder)]
     os.environ[config.LOCK_PROJECT_ENV] = str(root)
-    with config.project_lock(apps):
-        return copy_down(root, name, customer, registration, wanted, force)
+    with config.project_lock(copies.app_names(root)):
+        return copy_down(root, name, customer, registration, app, assume_yes)
 
 
 def copy_down(root: Path, name: str, customer: str, registration: autoidm.Registration,
-              wanted: str, force: bool) -> int:
-    with tempfile.TemporaryDirectory(prefix="pdt-sync-") as folder:
-        staged = Path(folder) / "files"
-        staged.mkdir()
-        with console.waiting(f"reading: snapshot of {name}"):
-            identity, files, publications = snapshots.fetch(registration, name, wanted, staged,
-                                                            customer)
-        if not (root / config.PROJECT_FILE).is_file() and not (staged / config.PROJECT_FILE).is_file():
-            console.error(f"Snapshot {console.value(identity)} holds no "
-                          f"{console.value(config.PROJECT_FILE)}, so it is not a project.")
-            return 1
-        record = read_record(root)
-        if parent_problem(record.get("snapshot_id"), identity, publications) and not force:
-            console.error(f"This computer holds snapshot {console.value(record['snapshot_id'])}, "
-                          f"and no publication of snapshot {console.value(identity)} names it as "
-                          f"the parent, so {console.value('pdt sync down')} changed nothing.")
-            console.next_steps([(f"pdt sync down --snapshot {identity} --force",
-                                 "copy this snapshot over the current files")])
-            return 1
-        known = record.get("files") or {}
-        added, changed, deleted, conflicts = plan_down(root, files, known)
-        if conflicts and not force:
-            console.error(f"These files changed on this computer since the last snapshot, so "
-                          f"{console.value('pdt sync down')} changed nothing:")
-            for path in conflicts:
-                console.name(path)
-            console.next_steps([("pdt sync diff", "show what changed"),
-                                (f"pdt sync down --snapshot {identity} --force",
-                                 "overwrite these files with the snapshot")])
-            return 1
-        for path in [*added, *changed]:
-            target = snapshots.inside(root, path)
-            Path(snapshots.long_path(target.parent)).mkdir(parents=True, exist_ok=True)
-            temporary = target.with_name(target.name + ".pdt-sync")
-            shutil.copyfile(snapshots.long_path(staged / path), snapshots.long_path(temporary))
-            os.replace(snapshots.long_path(temporary), snapshots.long_path(target))
-        for path in deleted:
-            Path(snapshots.long_path(snapshots.inside(root, path))).unlink(missing_ok=True)
-    register_cli.save_customer(customer)
-    # The customer line is pdt's own edit, so a later sync does not read it as a change here.
-    write_record(root, identity, [
-        {**entry, "sha256": file_hash(root / entry["path"])}
-        if entry["path"] == config.PROJECT_FILE else entry for entry in files])
-    for label, paths in (("added", added), ("changed", changed), ("deleted", deleted)):
-        for path in paths:
-            console.say(f"{console.escape(label)}: {console.value(path)}")
-    if added or changed or deleted:
-        console.done(f"{console.value(name)} now holds snapshot {console.value(identity)}.")
-    else:
-        console.done(f"{console.value(name)} already holds snapshot {console.value(identity)}.")
-    return 0
-
-
-def diff(as_json: bool) -> int:
-    root, name, _customer, registration = context()
-    found = snapshots.heads(registration, name)
-    if not found:
-        console.error(f"AutoIDM holds no snapshot of {console.value(name)} to compare with.")
+              app: str | None, assume_yes: bool) -> int:
+    units = copies.get(registration, name, f"app={app}" if app else None)
+    units = [entry for entry in units if not entry["unit"].startswith("mr=")]
+    if not units:
+        what = f"app {app} of {name}" if app else name
+        console.error(f"AutoIDM holds no copy of {console.value(what)}.")
         return 1
-    identity, files = snapshots.read_manifest(registration, name, found[0]["snapshot_id"])
-    local = {entry["path"]: entry["sha256"] for entry in snapshots.collect(root)[0]}
-    head = {entry["path"]: entry["sha256"] for entry in files}
-    added = sorted(set(local) - set(head))
-    removed = sorted(set(head) - set(local))
-    changed = sorted(path for path in set(local) & set(head) if local[path] != head[path])
-    if as_json:
-        console.data(json.dumps({"snapshot_id": identity, "added": added, "removed": removed,
-                                 "changed": changed}))
+    changes: dict[str, bytes | None] = {}
+    with tempfile.TemporaryDirectory(prefix="pdt-sync-") as folder:
+        for entry in units:
+            staged = Path(folder) / entry["unit"].replace("=", "-")
+            with console.waiting(f"reading: {entry['unit']} of {name}"):
+                files = copies.fetch(entry, staged)
+            changes.update(plan_unit(root, entry["unit"], staged, files))
+    if not (root / config.PROJECT_FILE).is_file() and config.PROJECT_FILE not in changes:
+        console.error(f"The copy of {console.value(name)} holds no "
+                      f"{console.value(config.PROJECT_FILE)}, so it is not a project.")
+        return 1
+    problem = copies.customer_problem(changes.get(config.PROJECT_FILE), customer)
+    if problem:
+        console.error(console.escape(problem[0].upper() + problem[1:] + "."))
+        return 1
+    if not changes:
+        console.done(f"{console.value(name)} already holds the copy at AutoIDM.")
         return 0
-    console.field("Compared with snapshot", identity)
-    for label, paths in (("only here", added), ("only in the snapshot", removed),
-                         ("changed", changed)):
-        for path in paths:
-            console.say(f"{console.escape(label)}: {console.value(path)}")
-    if not (added or removed or changed):
-        console.done("This folder matches the snapshot.")
+    for path, data in sorted(changes.items()):
+        label = "delete" if data is None else "change" if (root / path).is_file() else "add"
+        console.say(f"{console.escape(label)}: {console.value(path)}")
+    if not ask("Write these changes?", assume_yes):
+        console.say("Cancelled. pdt changed nothing.")
+        return DECLINED
+    backup = back_up(root, list(changes))
+    write_changes(root, changes)
+    register_cli.save_customer(customer)
+    if backup is not None:
+        console.field("Saved the earlier files in", str(backup))
+    console.done(f"{console.value(name)} now holds the copy at AutoIDM.")
     return 0

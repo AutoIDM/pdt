@@ -10,8 +10,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from service_fixtures import (
-    COMMAND, CUSTOMER, INSTALLATION, KEYS, FakePortal, claims, publication,
-    snapshot_of, token)
+    COMMAND, CUSTOMER, INSTALLATION, KEYS, FakePortal, claims, copy_of, token)
 
 from pdt import config, register_cli, service, service_commands, service_runner
 from pdt.service_commands import Clock
@@ -119,11 +118,11 @@ def journal(command_id=COMMAND, **fields):
                                   **fields})
 
 
-def job(root, operation="run", args=None, limit=300, command_id=COMMAND, worker=False):
+def job(root, operation="run", args=None, limit=300, command_id=COMMAND):
     args = args or {"project": "example", "app": "hr", "deployed": False}
     found = claims(operation, args, command_id, limit_seconds=limit)
     journal(command_id)
-    return Job(command_id, found, registration(), root, worker=worker)
+    return Job(command_id, found, registration(), root)
 
 
 def run_in_thread(item: Job) -> threading.Thread:
@@ -249,60 +248,7 @@ def test_a_local_run_sends_its_output_folder_as_an_artifact(machine, portal, mon
     assert len(portal.uploads) == 2
 
 
-def snapshot_args(identity):
-    return {"project": "example", "app": "hr", "snapshot_id": identity}
-
-
-def serve_snapshot(portal):
-    identity, manifest, data = snapshot_of({
-        "pdt.yml": f"managed_services:\n  customer: {CUSTOMER}\n".encode(),
-        "hr/config.yml": b"schedule: daily\n", "hr/run.py": b"print('snapshot')\n"})
-    portal.serve_snapshot(identity, manifest, data, [publication(identity)])
-    return identity
-
-
-def test_run_snapshot_runs_in_a_new_folder_with_the_project_env_and_removes_the_folder(
-        machine, portal, monkeypatch):
-    identity = serve_snapshot(portal)
-    code = ("import os, pathlib\n"
-            "print('cwd', pathlib.Path.cwd())\n"
-            "print('file', pathlib.Path('hr/run.py').read_text().strip())\n"
-            "print('env', os.path.exists('.env'), os.path.exists('hr/.env'))\n"
-            "print('project', os.environ['FROM_PROJECT'], os.environ['BOTH'], 'extract')\n"
-            "print('name', pathlib.Path('.pdt-project-name').read_text().strip())\n"
-            "print('files', os.environ['PDT_SERVICE_ENV_FILES'])\n"
-            "folder = pathlib.Path(os.environ['PDT_OUTPUT_DIR'])\n"
-            "folder.mkdir(parents=True, exist_ok=True)\n"
-            "(folder / 'out.txt').write_text('made')\n")
-    child(monkeypatch, code)
-    portal.routes["/v1/uploads"] = lambda _body: (200, {
-        "url": f"{portal.url}/bucket", "fields": {"key": "k"}, "key": "k"})
-    execute(job(machine, "run_snapshot", snapshot_args(identity)))
-    output = portal.output()
-    result = portal.result()
-    assert result["outcome"] == "done", output + str(result)
-    assert "file print('snapshot')" in output
-    assert "env False False" in output
-    assert "project project-value app-value extract" in output
-    assert "name example" in output
-    assert "files " + os.pathsep.join([str(machine / "hr" / ".env"), str(machine / ".env")]) in output
-    assert result["artifact_key"] == "k"
-    assert not (service_runner.service_folder() / "work" / COMMAND).exists()
-    assert (machine / "hr" / "run.py").read_text() == "print('hi')\n"
-
-
-def test_a_snapshot_of_another_customer_does_not_run(machine, portal, monkeypatch):
-    identity, manifest, data = snapshot_of({
-        "pdt.yml": b"managed_services:\n  customer: cus_0000000000\n", "hr/run.py": b"x"})
-    portal.serve_snapshot(identity, manifest, data, [publication(identity)])
-    child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)))
-    result = portal.result()
-    assert result["outcome"] == "failed" and "cus_0000000000" in result["message"]
-    assert "started" not in portal.facts()
-
-
-def test_the_env_line_of_a_snapshot_run_states_where_the_values_came_from(tmp_path, monkeypatch):
+def test_the_env_line_of_an_mr_run_states_where_the_values_came_from(tmp_path, monkeypatch):
     monkeypatch.setenv(config.SERVICE_ENV_FILES_ENV, str(tmp_path / ".env"))
     line = " ".join(config.env_file_lines(tmp_path))
     assert "the pdt service passed the values" in line and str(tmp_path / ".env") in line
@@ -312,33 +258,13 @@ def test_the_env_line_of_a_snapshot_run_states_where_the_values_came_from(tmp_pa
     assert "the pdt service started this command" in line and "terminal" not in line
 
 
-def test_a_missing_var_in_a_snapshot_run_names_the_served_project(tmp_path, monkeypatch):
+def test_a_missing_var_in_an_mr_run_names_the_served_project(tmp_path, monkeypatch):
     monkeypatch.setenv(config.SERVICE_ENV_FILES_ENV, "")
     monkeypatch.delenv("NEEDED", raising=False)
     message = config.missing_env({"dir": tmp_path, "name": "hr", "config": {},
                                   "env": {"required": ["NEEDED"]}})
     assert "project that the service serves" in message
     assert str(tmp_path) not in message
-
-
-def test_a_bad_snapshot_reports_failed_and_leaves_no_folder(machine, portal, monkeypatch):
-    identity, manifest, _data = snapshot_of({"a.txt": b"x"})
-    portal.serve_snapshot(identity, manifest, b"not a zip", [publication(identity)])
-    child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)))
-    result = portal.result()
-    assert result["outcome"] == "failed" and "zip" in result["message"]
-    assert "started" not in portal.facts()
-    assert not (service_runner.service_folder() / "work" / COMMAND).exists()
-
-
-def test_a_snapshot_with_a_hostile_path_writes_nothing(machine, portal, monkeypatch, tmp_path):
-    identity, manifest, data = snapshot_of({"../../evil.txt": b"evil"})
-    portal.serve_snapshot(identity, manifest, data, [publication(identity)])
-    child(monkeypatch, "raise SystemExit('this must not run')")
-    execute(job(machine, "run_snapshot", snapshot_args(identity)))
-    assert portal.result()["outcome"] == "failed"
-    assert not list(tmp_path.rglob("evil.txt"))
 
 
 def test_the_pool_runs_at_most_four_commands_and_one_for_each_app(machine, portal, monkeypatch):
@@ -460,13 +386,12 @@ def test_a_repeated_id_is_refused_and_starts_nothing(machine, portal):
 
 def test_a_refused_command_reports_refused_with_a_plain_message_and_no_claim(machine, portal):
     pool = Pool()
-    assert accept(pool, token("list", grant={"place": "aws:123456789012:us-east-2",
-                                             "role": "arn:aws:iam::123456789012:role/x"}))
+    assert accept(pool, token("list", {"project": "example", "command": "whoami"}))
     assert pool.waiting == []
     assert portal.facts() == ["result"]
     result = portal.result()
     assert result["outcome"] == "refused"
-    assert "not a cloud worker" in result["message"]
+    assert "not one this operation takes" in result["message"]
 
 
 def test_a_refused_id_is_refused_once(machine, portal):
@@ -492,9 +417,8 @@ def test_a_project_with_no_customer_is_refused_with_the_fix(machine, portal):
 
 def test_sync_down_can_add_the_customer_to_a_project_that_has_none(machine, portal, monkeypatch):
     (machine / "pdt.yml").write_text("apps: []\n")
-    identity = serve_snapshot(portal)
     pool = Pool()
-    assert accept(pool, token("sync_down", {"project": "example", "snapshot_id": identity}))
+    assert accept(pool, token("sync_down", {"project": "example"}))
     item = pool.waiting[0]
     assert item.project == machine
     prepared = service_runner.prepare(item, dict(os.environ))
@@ -505,12 +429,11 @@ def test_sync_down_can_add_the_customer_to_a_project_that_has_none(machine, port
 def test_a_staff_install_of_a_new_project_runs_for_real_and_is_served(machine, portal, monkeypatch):
     home = machine.parent
     monkeypatch.setenv(service_runner.PROJECTS_HOME_ENV, str(home))
-    identity, manifest, data = snapshot_of({"pdt.yml": b"apps: []\n", "hr/config.yml": b"schedule: daily\n",
-                                            "hr/run.py": b"print('x')\n"})
-    portal.serve_snapshot(identity, manifest, data,
-                          [publication(identity, project="third-project")])
+    portal.serve_copies(copy_of("root", {"pdt.yml": b"apps: []\n"}),
+                        copy_of("app=hr", {"config.yml": b"schedule: daily\n",
+                                           "run.py": b"print('x')\n"}))
     answers = [checkin_answer(portal, [{"command_id": COMMAND, "token": token(
-        "sync_down", {"project": "third-project", "snapshot_id": identity})}])]
+        "sync_down", {"project": "third-project"})}])]
     portal.routes["/v1/service/checkin"] = lambda _body: answers.pop(0) if answers else checkin_answer(portal)
     assert tick() == 0
     assert portal.result()["outcome"] == "done", portal.output()
@@ -693,12 +616,6 @@ def test_a_bad_name_warns_one_time_at_each_start(machine, portal):
     service._said_once.clear()
     assert tick() == 0
     assert (service_runner.service_folder() / "service.log").read_text().count("My App") == 2
-
-
-def test_a_bad_head_in_the_record_stays_out(machine):
-    (machine / ".pdt").mkdir()
-    (machine / ".pdt" / "sync.json").write_text('{"snapshot_id": "not a hash"}')
-    assert service.project_record("example", machine)["head"] is None
 
 
 def test_a_project_folder_with_a_leading_dash_stays_out(machine, portal):
@@ -928,20 +845,13 @@ def test_status_with_no_service_says_so(tmp_path, monkeypatch, capsys):
     assert "pdt service install" in capsys.readouterr().out
 
 
-def grant_claims(identity):
-    return {"grant": {"place": "aws:123456789012:us-east-2",
-                      "role": "arn:aws:iam::123456789012:role/pdt-autoidm"},
-            "args": {"project": "example", "app": "hr", "snapshot_id": identity}}
-
-
 SECRET_VALUE = "SECRETSECRETSECRET"
 
 
 def test_a_new_project_for_sync_down_goes_under_the_projects_folder(machine, portal, monkeypatch):
     monkeypatch.setenv(service_runner.PROJECTS_HOME_ENV, str(machine.parent))
-    identity = "a" * 64
-    args = {"project": "fresh", "snapshot_id": identity}
-    prepared = service_runner.prepare(job(None, "sync_down", args), dict(os.environ))
+    prepared = service_runner.prepare(job(None, "sync_down", {"project": "fresh"}),
+                                      dict(os.environ))
     assert prepared.cwd == machine.parent / "fresh"
     assert prepared.cwd.is_dir()
     assert prepared.env[service_runner.SERVICE_PROJECT_ENV] == "fresh"
@@ -1050,3 +960,121 @@ def test_the_module_paths_stay_in_the_data_folder(tmp_path, monkeypatch):
     monkeypatch.setenv(autoidm.DIR_ENV, str(tmp_path))
     assert service_runner.journal_path(COMMAND) == Path(tmp_path, "service", "journal", f"{COMMAND}.json")
     assert service.settings_path() == Path(tmp_path, "service", "settings.json")
+
+
+MR_ARGS = {"project": "example", "app": "hr", "mr_iid": "12", "sha": "a" * 40,
+           "app_args": "--full"}
+
+
+def serve_mr(portal, files=None):
+    portal.serve_copies(copy_of("mr=12", files or {
+        "pdt.yml": f"managed_services:\n  customer: {CUSTOMER}\n".encode(),
+        "hr/config.yml": b"schedule: daily\n", "hr/run.py": b"print('mr')\n"}))
+
+
+def test_run_mr_runs_the_copy_in_its_own_folder_with_the_project_env(machine, portal,
+                                                                       monkeypatch):
+    serve_mr(portal)
+    code = ("import os, pathlib\n"
+            "print('file', pathlib.Path('hr/run.py').read_text().strip())\n"
+            "print('env', os.path.exists('.env'), os.path.exists('hr/.env'))\n"
+            "print('project', os.environ['FROM_PROJECT'], os.environ['BOTH'])\n"
+            "print('name', pathlib.Path('.pdt-project-name').read_text().strip())\n"
+            "print('trigger', os.environ['PDT_TRIGGER'], os.environ['PDT_MR_IID'])\n"
+            "print('args', os.environ['PDT_APP_ARGS'], os.environ['PDT_RUN_ID'])\n"
+            "print('lock', os.environ.get('PDT_LOCK_PROJECT'))\n"
+            "folder = pathlib.Path(os.environ['PDT_OUTPUT_DIR'])\n"
+            "folder.mkdir(parents=True, exist_ok=True)\n"
+            "(folder / 'out.txt').write_text('made')\n")
+    child(monkeypatch, code)
+    monkeypatch.setenv(config.LOCK_PROJECT_ENV, str(machine))
+    portal.routes["/v1/uploads"] = lambda _body: (200, {
+        "url": f"{portal.url}/bucket", "fields": {"key": "k"}, "key": "k"})
+    execute(job(machine, "run_mr", MR_ARGS))
+    output = portal.output()
+    result = portal.result()
+    assert result["outcome"] == "done", output + str(result)
+    assert "file print('mr')" in output
+    assert "env False False" in output
+    assert "project project-value app-value" in output
+    assert "name example" in output
+    assert "trigger mr 12" in output
+    assert f"args --full {COMMAND}" in output
+    assert "lock None" in output
+    assert result["artifact_key"] == "k" and result["log_key"] == "k"
+    assert portal.bodies("/v1/copies/get")[0]["unit"] == "mr=12"
+    assert not (service_runner.service_folder() / "work" / COMMAND).exists()
+    assert (machine / "hr" / "run.py").read_text() == "print('hi')\n"
+
+
+def test_a_scheduled_run_and_an_mr_run_of_one_app_hold_their_locks_at_once(machine, portal,
+                                                                            monkeypatch):
+    serve_mr(portal)
+    prepared = service_runner.prepare(job(machine, "run_mr", MR_ARGS), dict(os.environ))
+    assert config.LOCK_PROJECT_ENV not in prepared.env
+    assert prepared.cwd != machine
+    monkeypatch.setenv(config.LOCK_PROJECT_ENV, str(machine))
+    with config.run_lock("hr"):
+        monkeypatch.setenv(config.LOCK_PROJECT_ENV, prepared.env["PDT_PROJECT"])
+        with config.run_lock("hr"):
+            pass
+
+
+def test_an_mr_copy_of_another_customer_does_not_run(machine, portal, monkeypatch):
+    serve_mr(portal, {"pdt.yml": b"managed_services:\n  customer: cus_0000000000\n",
+                      "hr/run.py": b"x"})
+    child(monkeypatch, "raise SystemExit('this must not run')")
+    execute(job(machine, "run_mr", MR_ARGS))
+    result = portal.result()
+    assert result["outcome"] == "failed" and "cus_0000000000" in result["message"]
+    assert "started" not in portal.facts()
+
+
+def test_an_mr_with_no_copy_is_refused(machine, portal, monkeypatch):
+    portal.serve_copies()
+    child(monkeypatch, "raise SystemExit('this must not run')")
+    execute(job(machine, "run_mr", MR_ARGS))
+    result = portal.result()
+    assert result["outcome"] == "refused" and "mr=12" in result["message"]
+
+
+def test_a_bad_mr_zip_reports_failed_and_leaves_no_folder(machine, portal, monkeypatch):
+    entry, _data = copy_of("mr=12", {"a.txt": b"x"})
+    portal.zips[entry["sha256"]] = b"not a zip"
+    portal.routes["/v1/copies/get"] = lambda _body: (200, {"units": [
+        {**entry, "url": f"{portal.url}/zip/{entry['sha256']}"}]})
+    child(monkeypatch, "raise SystemExit('this must not run')")
+    execute(job(machine, "run_mr", MR_ARGS))
+    result = portal.result()
+    assert result["outcome"] == "failed"
+    assert not (service_runner.service_folder() / "work" / COMMAND).exists()
+
+
+def test_secrets_set_gets_the_value_once_and_gives_it_on_stdin_masked(machine, portal, monkeypatch):
+    (machine / "hr" / "config.yml").write_text("schedule: daily\nenv:\n  required: [TOKEN]\n")
+    portal.routes["/v1/commands/input"] = lambda _body: (200, {"value": "hunter2-secret"})
+    child(monkeypatch, "import sys\nprint('got', sys.stdin.read())\n")
+    execute(job(machine, "secrets_set", {"project": "example", "app": "hr", "name": "TOKEN"}))
+    asked = portal.bodies("/v1/commands/input")
+    assert asked == [{"version": 1, "command_id": COMMAND, "claim_id": "0" * 32}]
+    assert portal.result()["outcome"] == "done"
+    assert "got ***" in portal.output() and "hunter2" not in portal.output()
+
+
+def test_secrets_set_of_a_name_outside_the_env_spec_is_refused(machine, portal, monkeypatch):
+    child(monkeypatch, "raise SystemExit('this must not run')")
+    execute(job(machine, "secrets_set", {"project": "example", "app": "hr", "name": "PATH"}))
+    result = portal.result()
+    assert result["outcome"] == "refused" and "env spec" in result["message"]
+    assert portal.bodies("/v1/commands/input") == []
+
+
+def test_artifacts_uploads_the_folder_that_the_child_fills(machine, portal, monkeypatch):
+    child(monkeypatch, "import pathlib, sys\n"
+                       "(pathlib.Path(sys.argv[1]) / 'report.csv').write_text('a,b')\n")
+    portal.routes["/v1/uploads"] = lambda _body: (200, {
+        "url": f"{portal.url}/bucket", "fields": {"key": "art"}, "key": "art"})
+    execute(job(machine, "artifacts", {"project": "example", "app": "hr", "run": "3"}))
+    result = portal.result()
+    assert result["outcome"] == "done" and result["artifact_key"] == "art"
+    assert not (service_runner.service_folder() / "work" / COMMAND).exists()
