@@ -48,8 +48,8 @@ def test_pause_disables_and_unpause_enables_the_task(project, monkeypatch, capsy
     scripts = fake_task(monkeypatch, "managed")
     assert deploy_windows.pause({"name": "my-report"}, True) == 0
     assert deploy_windows.pause({"name": "my-report"}, False) == 0
-    assert scripts[0][0].startswith("Disable-ScheduledTask -TaskName 'pdt-example-my-report'")
-    assert scripts[1][0].startswith("Enable-ScheduledTask -TaskName 'pdt-example-my-report'")
+    assert scripts[0][0].startswith("Disable-ScheduledTask -TaskName 'pdt-my-report'")
+    assert scripts[1][0].startswith("Enable-ScheduledTask -TaskName 'pdt-my-report'")
     assert all(kwargs == {"elevate": True} for _script, kwargs in scripts)
     out = capsys.readouterr().out
     assert "Paused my-report" in out
@@ -61,7 +61,7 @@ def test_start_runs_the_task_now_and_marks_the_run_manual(project, monkeypatch, 
     scripts = fake_task(monkeypatch, "managed")
     assert deploy_windows.start({"name": "my-report"}) == 0
     assert (deploy_windows.logs_folder("my-report") / "manual-start").is_file()
-    assert scripts[0][0].startswith("Start-ScheduledTask -TaskName 'pdt-example-my-report'")
+    assert scripts[0][0].startswith("Start-ScheduledTask -TaskName 'pdt-my-report'")
     assert scripts[0][1] == {"elevate": True}
     assert "Started my-report" in capsys.readouterr().out
 

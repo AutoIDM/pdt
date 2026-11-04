@@ -256,7 +256,7 @@ def test_list_runs_reads_only_the_end_of_each_log_and_asks_only_about_the_newest
     found = deploy_windows.list_runs("my-report")
 
     assert [run.status for run in found] == ["running", "succeeded", "failed"]
-    assert asked == ["pdt-example-my-report"]
+    assert asked == ["pdt-my-report"]
     assert max(reads) < deploy_windows.EXIT_LINE_BYTES
 
 

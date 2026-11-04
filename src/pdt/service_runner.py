@@ -526,7 +526,7 @@ def stop_deployed(job: Job) -> str:
     if platform.get("provider") != "windows":
         return "The job continues where it is deployed."
     from pdt import service_backends
-    name = f"pdt-{managed_services.backend_name(job.args['project'])}-{app}"
+    name = f"pdt-{app}"
     try:
         service_backends.powershell(f"Stop-ScheduledTask -TaskName '{name}' -ErrorAction Stop")
     except service_backends.BackendError as e:
