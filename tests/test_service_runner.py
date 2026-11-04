@@ -1,13 +1,11 @@
 import io
 import json
 import os
-import signal
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -858,12 +856,6 @@ def test_start_starts_the_installed_service_through_its_manager(machine, monkeyp
     assert "no installed pdt service" in capsys.readouterr().out
 
 
-def test_the_service_program_takes_worker_and_command_together(capsys):
-    from pdt import service_main
-    assert service_main.main(["--worker"]) == 2
-    assert "go together" in capsys.readouterr().out
-
-
 def test_a_service_with_no_terminal_prints_plain_text_to_its_file(monkeypatch):
     from pdt import console
     monkeypatch.setattr(console, "_console", console._console)
@@ -964,127 +956,6 @@ def grant_claims(identity):
 
 
 SECRET_VALUE = "SECRETSECRETSECRET"
-
-
-def test_a_worker_passes_credentials_only_to_the_child_and_writes_none_to_disk(
-        machine, portal, monkeypatch, tmp_path):
-    identity = serve_snapshot(portal)
-    from pdt import grants
-    monkeypatch.setattr(grants, "credentials", lambda grant, _found: {"AWS_SESSION_TOKEN": SECRET_VALUE})
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "WORKERS_OWN_LOGIN")
-    monkeypatch.setenv(autoidm.KEY_ENV, "WORKERS_OWN_KEY")
-    monkeypatch.setenv("SOME_OTHER_ENV", "NOT_FOR_A_CHILD")
-    code = ("import os, pathlib\n"
-            "env = os.environ\n"
-            "print('token', env.get('AWS_SESSION_TOKEN') == 'SECRETSECRETSECRET')\n"
-            "print('own login', env.get('AWS_SECRET_ACCESS_KEY'), env.get('PDT_INSTALLATION_KEY'))\n"
-            "print('other', env.get('SOME_OTHER_ENV'))\n"
-            "print('keep', env.get('PDT_KEEP_DEPLOYED_SECRET'), env.get('UV_NO_CONFIG'), env.get('CI'))\n"
-            "print('state', pathlib.Path('.pdt/state').read_text().strip())\n"
-            "print('files', sorted(p.name for p in pathlib.Path('hr').iterdir()))\n")
-    child(monkeypatch, code)
-    found = {**claims("deploy", limit_seconds=300), **grant_claims(identity)}
-    journal()
-    execute(Job(COMMAND, found, registration(), None, worker=True))
-    result = portal.result()
-    output = portal.output()
-    assert result["outcome"] == "done", output + str(result)
-    assert "token True" in output
-    assert "own login None None" in output
-    assert "other None" in output
-    assert "keep 1 1 pdt-service" in output
-    assert 'state {"deployed": ["hr"]}' in output
-    assert SECRET_VALUE not in output
-    assert not (service_runner.service_folder() / "work" / COMMAND).exists()
-    for path in tmp_path.rglob("*"):
-        if path.is_file():
-            assert SECRET_VALUE.encode() not in path.read_bytes(), path
-
-
-def test_a_worker_run_starts_the_job_and_does_not_follow_the_log(machine, portal, monkeypatch):
-    identity = serve_snapshot(portal)
-    from pdt import grants
-    monkeypatch.setattr(grants, "credentials", lambda grant, _found: {})
-    seen = {}
-    real = subprocess.Popen
-
-    def popen(args, **kwargs):
-        seen.setdefault("args", args)
-        return real([sys.executable, "-c", "pass"], **kwargs)
-
-    monkeypatch.setattr(service_runner.subprocess, "Popen", popen)
-    found = claims("run", limit_seconds=300)
-    found.update(grant_claims(identity))
-    found["args"]["deployed"] = True
-    journal()
-    execute(Job(COMMAND, found, registration(), None, worker=True))
-    assert seen["args"][3:] == ["run", "hr", "--deployed"]
-
-
-def test_a_worker_with_no_credentials_starts_nothing(machine, portal, monkeypatch):
-    identity = serve_snapshot(portal)
-    from pdt import grants
-
-    def refuse(_grant, _found):
-        raise RuntimeError("no access")
-
-    monkeypatch.setattr(grants, "credentials", refuse)
-    child(monkeypatch, "raise SystemExit('this must not run')")
-    found = {**claims("deploy", limit_seconds=300), **grant_claims(identity)}
-    journal()
-    execute(Job(COMMAND, found, registration(), None, worker=True))
-    result = portal.result()
-    assert result["outcome"] == "failed" and "no access" in result["message"]
-    assert "started" not in portal.facts()
-
-
-def test_a_worker_reads_its_registration_from_the_parameter_and_forgets_the_name(
-        monkeypatch, tmp_path):
-    from pdt import grants, worker
-    pem = autoidm.private_pem(Ed25519PrivateKey.generate()).decode()
-    seen = []
-
-    def script_json(args, values, what):
-        seen.append(args)
-        return {"value": json.dumps({
-            "installation_id": INSTALLATION, "customer_id": CUSTOMER,
-            "api_url": "https://api.example/", "private_key_pem": pem, "command_keys": KEYS,
-            "command_keys_version": 2})}
-
-    monkeypatch.setattr(grants, "script_json", script_json)
-    monkeypatch.delenv(worker.PARAMETER_ENV, raising=False)
-    with pytest.raises(autoidm.AutoidmError, match=worker.PARAMETER_ENV):
-        worker.registration()
-    monkeypatch.setenv(worker.PARAMETER_ENV, "/pdt-backend/workers/ins_x")
-    found = worker.registration()
-    assert worker.PARAMETER_ENV not in os.environ
-    assert seen[0][-2:] == [grants.WORKER_PARAMETER, "/pdt-backend/workers/ins_x"]
-    assert found.worker and found.keys == KEYS and found.keys_version == 2
-    assert found.registration.api_url == "https://api.example"
-
-
-def test_a_worker_with_no_command_to_run_exits_0(machine, portal, monkeypatch):
-    from pdt import worker
-    served_one = served()
-    served_one.worker = True
-    monkeypatch.setattr(worker, "registration", lambda: served_one)
-    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
-    assert worker.run(COMMAND) == 0
-    assert portal.bodies("/v1/service/checkin")[0]["only"] == COMMAND
-    assert portal.bodies("/v1/commands/report") == []
-
-
-def test_a_worker_refuses_a_command_with_no_grant(machine, portal, monkeypatch):
-    from pdt import worker
-    served_one = served()
-    served_one.worker = True
-    monkeypatch.setattr(worker, "registration", lambda: served_one)
-    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(
-        portal, [{"command_id": COMMAND, "token": token("deploy", {
-            "project": "p", "app": "hr", "snapshot_id": "a" * 64})}])
-    assert worker.run(COMMAND) == 0
-    assert portal.facts() == ["result"]
-    assert "no valid grant" in portal.result()["message"]
 
 
 def test_a_new_project_for_sync_down_goes_under_the_projects_folder(machine, portal, monkeypatch):

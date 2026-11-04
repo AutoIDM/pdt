@@ -80,7 +80,6 @@ os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
 from pdt import config
 from pdt import console
 from pdt import gcloud_sdk
-from pdt import grants
 from pdt import lifecycle
 from pdt import regions
 from pdt.deploy import DECLINED, confirm, show_plan
@@ -1517,134 +1516,6 @@ def grant_email(name: str, project: str) -> str:
     return f"{name}@{project}.iam.gserviceaccount.com"
 
 
-def grant_plan(place: str, values: dict) -> list:
-    _provider, project, _region = grants.split_place(place)
-    principal = (values.get("principal") or {}).get("google-cloud") or "the service account of AutoIDM"
-    return [
-        console.Markup(f"create service account {console.value(GRANT_NAME)} in Google Cloud project "
-                       f"{console.value(project)} (description "
-                       f"{console.value('managed-by=pdt ' + grants.EXTERNAL_ID_TAG + '=' + str(values.get('external_id') or ''))}, "
-                       "so AutoIDM can check the grant)"),
-        console.Markup(f"let {console.value(principal)} act as it "
-                       f"({console.value('roles/iam.serviceAccountTokenCreator')})"),
-        console.Markup(f"give it {', '.join(console.value(role) for role in GRANT_ROLES)}. It gets no project "
-                       "IAM write"),
-        console.Markup(f"create service account {console.value(GRANT_RUNNER)} when missing, and "
-                       "let it run jobs as that account only"),
-    ]
-
-
-def grant_remove_plan(place: str, _values: dict) -> list:
-    _provider, project, _region = grants.split_place(place)
-    return [console.Markup(f"delete service account {console.value(GRANT_NAME)} and its roles "
-                           f"from Google Cloud project {console.value(project)}")]
-
-
-def grant_login(project: str, assume_yes: bool) -> None:
-    preflight({"name": GRANT_NAME, "platform": {}}, project, assume_yes)
-
-
-def grant_create(place: str, values: dict, assume_yes: bool) -> str:
-    _provider, project, _region = grants.split_place(place)
-    principal = (values.get("principal") or {}).get("google-cloud")
-    if not principal:
-        fail("AutoIDM did not name its Google Cloud service account. Run the command again.")
-    grant_login(project, assume_yes)
-    email = grant_email(GRANT_NAME, project)
-    member = f"serviceAccount:{email}"
-    description = f"managed-by=pdt {grants.EXTERNAL_ID_TAG}={values.get('external_id') or ''}"
-    if service_account_or_none(project, email) is None:
-        console.step(f"creating service account {console.value(email)}")
-        run_quiet("iam", "service-accounts", "create", GRANT_NAME, "--project", project,
-                  "--display-name", "AutoIDM access for pdt", "--description", description)
-    else:
-        run_quiet("iam", "service-accounts", "update", email, "--project", project,
-                  "--description", description)
-    run_quiet("iam", "service-accounts", "add-iam-policy-binding", email, "--project", project,
-              "--member", f"serviceAccount:{principal}",
-              "--role", "roles/iam.serviceAccountTokenCreator")
-    for role in GRANT_ROLES:
-        run_quiet("projects", "add-iam-policy-binding", project, "--member", member,
-                  "--role", role, "--condition=None", "--format=none")
-    runner = grant_email(GRANT_RUNNER, project)
-    if service_account_or_none(project, runner) is None:
-        run_quiet("iam", "service-accounts", "create", GRANT_RUNNER, "--project", project,
-                  "--display-name", "pdt job runner", "--description", "managed-by=pdt")
-    run_quiet("iam", "service-accounts", "add-iam-policy-binding", runner, "--project", project,
-              "--member", member, "--role", "roles/iam.serviceAccountUser")
-    return email
-
-
-def grant_remove(place: str, _values: dict, assume_yes: bool) -> None:
-    _provider, project, _region = grants.split_place(place)
-    grant_login(project, assume_yes)
-    email = grant_email(GRANT_NAME, project)
-    if service_account_or_none(project, email) is None:
-        console.say(f"Google Cloud project {console.value(project)} has no service account "
-                    f"{console.value(email)}.")
-        return
-    for role in GRANT_ROLES:
-        run_quiet("projects", "remove-iam-policy-binding", project,
-                  "--member", f"serviceAccount:{email}", "--role", role,
-                  "--condition=None", "--format=none")
-    run_quiet("iam", "service-accounts", "delete", email, "--project", project, "--quiet")
-
-
-def grant_env(place: str, values: dict) -> dict[str, str]:
-    """An access token for the grant's service account, made by impersonation from this
-    customer's AutoIDM service account, after a check of the external ID in its description.
-    The child gets only the token, in a file in a memory folder, which the worker deletes after
-    the command. It never gets AutoIDM's key."""
-    from google.auth.transport.requests import Request
-    from google.oauth2 import service_account
-    _provider, project, _region = grants.split_place(place)
-    role = values.get("role") or ""
-    key = values.get("credential")
-    if not (role and key):
-        fail("AutoIDM did not name the service account of the grant and its credential. Run the "
-             "command again.")
-    own = service_account.Credentials.from_service_account_info(
-        json.loads(key), scopes=["https://www.googleapis.com/auth/cloud-platform"])
-    own.refresh(Request())
-    answer = google_json(f"{IAM_CREDENTIALS_API}/projects/-/serviceAccounts/{role}"
-                         ":generateAccessToken", own.token,
-                         {"scope": ["https://www.googleapis.com/auth/cloud-platform"],
-                          "lifetime": f"{GRANT_TOKEN_SECONDS}s"})
-    token = answer["accessToken"]
-    described = google_json(f"{IAM_API}/projects/-/serviceAccounts/{role}", token).get(
-        "description") or ""
-    wanted = f"{grants.EXTERNAL_ID_TAG}={values.get('external_id') or ''}"
-    if wanted not in described.split():
-        raise grants.Mismatch(f"The service account {role} has the description {described!r}, "
-                              f"which does not hold {wanted}. Run pdt grant add {place}.")
-    folder = grants.memory_folder("pdt-gcloud-")
-    token_file = folder / "token"
-    token_file.write_text(token, encoding="utf-8")
-    return {"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE": str(token_file), "CLOUDSDK_CORE_PROJECT": project,
-            "CLOUDSDK_CONFIG": str(folder), "PDT_GRANT_FOLDER": str(folder)}
-
-
-IAM_CREDENTIALS_API = "https://iamcredentials.googleapis.com/v1"
-IAM_API = "https://iam.googleapis.com/v1"
-# The deploy and destroy limit on a worker is 55 min.
-GRANT_TOKEN_SECONDS = 3600
-
-
-def google_json(url: str, token: str, body: dict | None = None) -> dict:
-    request = urllib.request.Request(
-        url, data=json.dumps(body).encode() if body is not None else None,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.loads(response.read())
-    except urllib.error.HTTPError as e:
-        fail(f"Google Cloud answered {console.value(e.code)} for {console.value(url)}: "
-             f"{console.escape(e.read().decode(errors='replace')[:500])}")
-
-
-GRANT = grants.ProviderGrant(grant_plan, grant_remove_plan, grant_create, grant_remove, grant_env)
-
-
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "gcloud":
         try:
@@ -1655,14 +1526,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-                                 "pause", "unpause", "start", *grants.COMMANDS))
+                                 "pause", "unpause", "start"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_intermixed_args()
-    if args.command in grants.COMMANDS:
-        return grants.run_verb(args.command, args.app, args.yes, args.plan, GRANT)
     try:
         app = config.merged_app(args.app)
     except config.ConfigError as exc:

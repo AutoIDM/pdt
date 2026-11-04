@@ -7,8 +7,6 @@ A stop or a shutdown from the SCM ends the loop as SIGTERM does elsewhere. The c
 `windows.log` in the service folder, as they go to `launchd.log` on macOS. From a terminal, the
 dispatcher fails with ERROR_FAILED_SERVICE_CONTROLLER_CONNECT, and the loop runs in the foreground.
 https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-startservicectrldispatcherw
-
-`--worker --command ID` runs one command on a cloud worker (pdt.worker).
 """
 
 from __future__ import annotations
@@ -98,19 +96,7 @@ def windows_service(run: Callable[[threading.Event], int]) -> int | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m pdt.service_main")
-    parser.add_argument("--worker", action="store_true",
-                        help="act as a cloud worker, with the registration in the environment")
-    parser.add_argument("--command", metavar="ID", dest="command_id",
-                        help="the one command a cloud worker runs")
-    args = parser.parse_args(argv)
-    if args.worker or args.command_id:
-        if not (args.worker and args.command_id):
-            console.error(f"{console.value('--worker')} and {console.value('--command')} go "
-                          "together.")
-            return 2
-        from pdt import worker
-        return worker.run(args.command_id)
+    argparse.ArgumentParser(prog="python -m pdt.service_main").parse_args(argv)
     if os.name == "nt":
         code = windows_service(service.run)
         if code is not None:

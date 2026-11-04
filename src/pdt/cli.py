@@ -3,8 +3,8 @@
 Inside an app folder, leave <app> off any command that takes one and pdt uses that app.
 Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
-Every command except init, examples, upgrade, completion, register, service, grant, aws, az, and
-gcloud needs a project.
+Every command except init, examples, upgrade, completion, register, service, aws, az, and gcloud
+needs a project.
 pdt finds it by walking up from the working directory to the nearest pdt.yml.
 """
 
@@ -27,7 +27,7 @@ from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import (alerts_cli, console, deploy, grants, gui_cli, lifecycle, powershell, pwsh,
+    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh,
                      register_cli, scaffold, service, snapshots, sync_cli, upgrade)
     from pdt.utils import autoidm
     from pdt.utils.email_auth import can_prompt
@@ -573,19 +573,6 @@ def cmd_sync(args) -> int:
         return 1
 
 
-def cmd_grant(args) -> int:
-    actions = {
-        "add": lambda: grants.add(args.place, args.yes, args.plan),
-        "list": lambda: grants.show(args.json),
-        "remove": lambda: grants.remove(args.place, args.yes, args.plan),
-    }
-    try:
-        return actions[args.action]()
-    except autoidm.AutoidmError as e:
-        console.error(console.escape(str(e)))
-        return 1
-
-
 def cmd_gui(args) -> int:
     return gui_cli.main(args.port, args.background, args.no_browser, args.stop)
 
@@ -663,7 +650,7 @@ COMMAND_GROUPS = {
     "Deploy": ["deploy", "destroy", "login", "pause", "unpause"],
     "Check a deployed app": ["health", "runs", "logs", "alerts", "gui"],
     "Manage app data": ["secrets", "storage"],
-    "Work with the AutoIDM portal": ["service", "sync", "grant"],
+    "Work with the AutoIDM portal": ["service", "sync"],
     "Cloud CLIs": ["aws", "az", "gcloud"],
 }
 
@@ -841,7 +828,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--api-url",
                    help=f"the AutoIDM address (default: PDT_API_URL, else {config.AUTOIDM_API_URL})")
     p.add_argument("-y", "--yes", action="store_true",
-                   help="accept the access statement of the service install; a grant still asks")
+                   help="accept the access statement of the service install, and do not wait "
+                        "for the Connect pages")
     p.set_defaults(func=cmd_register)
     p = add_parser("service", help="run commands from the AutoIDM portal on this computer")
     actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt service")
@@ -903,17 +891,6 @@ def build_parser() -> argparse.ArgumentParser:
     q = add_action(actions, "diff", help="list the files that differ from the newest snapshot")
     q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
     p.set_defaults(func=cmd_sync)
-    p = add_parser("grant", help="let AutoIDM deploy in a cloud account, or stop it")
-    actions = p.add_subparsers(dest="action", metavar="<action>", required=True, prog="pdt grant")
-    for name, what in (("add", "create the AutoIDM identity in a place"),
-                       ("remove", "delete the AutoIDM identity from a place")):
-        q = add_action(actions, name, help=what)
-        q.add_argument("place", help="such as aws:123456789012:us-east-2")
-        q.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
-        q.add_argument("--plan", action="store_true", help="show the resources, then stop")
-    q = add_action(actions, "list", help="show each place this computer granted")
-    q.add_argument("--json", action="store_true", help="print JSON for a script or an agent")
-    p.set_defaults(func=cmd_grant)
     p = add_parser("gui", help="open the project's dashboard in your web browser")
     p.add_argument("--port", type=int, default=config.GUI_PORT,
                    help=f"the local port to serve on (default: {config.GUI_PORT})")

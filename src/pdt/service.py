@@ -275,9 +275,7 @@ class Served:
     clock: Clock = field(default_factory=Clock)
     schedule: Schedule = field(default_factory=Schedule)
     connection: Connection | None = None
-    # Where key sets go: None on a worker, whose keys stay in memory.
     keys_file: Path | None = None
-    worker: bool = False
     clock_warned_at: float = 0.0
 
 
@@ -504,17 +502,17 @@ def apply_key_sets(served: Served, key_sets: object) -> None:
 
 
 def checkin_answer(served: Served, settings: dict, running: list[str], claiming: list[str],
-                   state: dict, only: str | None = None) -> dict:
+                   state: dict) -> dict:
     connected = served.connection.read()[0] if served.connection else False
     now = time.time()
     interval = served.schedule.checkin_interval(connected, now)
     answer = autoidm.post(served.registration, "/v1/service/checkin", {
-        "version": 1, "pdt_version": __version__, "after": state.get("after"), "only": only,
+        "version": 1, "pdt_version": __version__, "after": state.get("after"),
         "running": running[:MAX_LISTED_IDS], "claiming": claiming[:MAX_LISTED_IDS],
         "interval_seconds": max(60, min(86400, interval)),
         "clock_offset_seconds": round(served.clock.offset),
         "command_keys_version": served.keys_version,
-        "projects": checkin_projects(settings, served.customer) if not served.worker else []},
+        "projects": checkin_projects(settings, served.customer)},
         retry=False)
     if answer.get("schema") not in (None, 1):
         raise autoidm.AutoidmError(f"AutoIDM answered /v1/service/checkin with the schema "

@@ -5,7 +5,7 @@
 | `pdt init [DIR]` | create a project here, or in DIR |
 | `pdt examples` | list the example apps bundled with pdt |
 | `pdt new APP` | add an empty app to the project |
-| `pdt register [--code CODE] [--yes]` | authenticate this computer for AutoIDM managed services: approve it in a browser, or pass `--code CODE` with a one-time enrollment code from AutoIDM; on a computer that runs the project's jobs (provider `windows`, or no cloud provider), an administrator also gets the service, after one question that `--yes` accepts; then it asks the grant question for each cloud place of the project |
+| `pdt register [--code CODE] [--yes]` | authenticate this computer for AutoIDM managed services: approve it in a browser, or pass `--code CODE` with a one-time enrollment code from AutoIDM; on a computer that runs the project's jobs (provider `windows`, or no cloud provider), an administrator also gets the service, after one question that `--yes` accepts; then it opens the portal Connect page of each cloud place of the project that has no active grant, and waits until AutoIDM finds the grant active; `--yes` prints the pages and does not wait |
 | `pdt service install [--projects DIR] [--backend NAME] [--proxy URL] [--ssh-key FILE] [--known-hosts FILE] [--yes]` | run commands from the AutoIDM portal on this computer as SYSTEM or root, now and at each boot, with no open port; on Windows it is the Windows service `pdt-service` (LocalSystem, automatic start, started again 5 seconds after a failure, and 60 seconds after the third failure of a day and each later one), and elsewhere a systemd unit, a launchd daemon, or a cron line; it states that a portal user of your organization and AutoIDM staff can run any program on this computer, and asks once; one computer serves one customer; run it again to repair the service |
 | `pdt service status [--json]` | show the service, its last checks, the projects, and the running commands |
 | `pdt service start` | start the installed service through its service manager; on Windows it is the same as `net start pdt-service` |
@@ -14,7 +14,6 @@
 | `pdt sync up [--yes] [--ref REF] [--label LABEL]` | copy this project to AutoIDM as a snapshot; `.env` files, keys, and links stay on this computer |
 | `pdt sync down [--snapshot ID] [--force]` | copy a snapshot into this project; it stops when a file changed on this computer |
 | `pdt sync diff [--json]` | list the files that differ from the newest snapshot |
-| `pdt grant add\|remove PLACE [--yes] [--plan]`, `pdt grant list` | let AutoIDM deploy in one cloud place with an identity you can see and delete, or stop it |
 | `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
 | `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
 | `pdt run APP` | run an app on this machine |
