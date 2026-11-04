@@ -356,7 +356,7 @@ def install_here(customer: str, assume_yes: bool) -> int:
     if not service.ask_access(assume_yes):
         console.next_steps(next_command)
         return 0
-    return service.install_for(customer, None, None, None, None, None)
+    return service.install_for(customer, None, None, None)
 
 
 def grant_status(found: autoidm.Registration, place: str) -> dict:

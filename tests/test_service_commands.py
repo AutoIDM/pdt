@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption,
 from service_fixtures import COMMAND, CUSTOMER, INSTALLATION, KEYS, PRIVATE_PEM, claims, sign, token
 
 from pdt import config, service_commands
-from pdt.service_commands import OPERATIONS, Refused, command_line, load_preset, verify
+from pdt.service_commands import OPERATIONS, Refused, command_line, verify
 
 
 def check(signed, worker=False, command_id=COMMAND, keys=KEYS, now=None):
@@ -229,55 +229,7 @@ def write_presets(root: Path, text: str) -> None:
     (root / config.PROJECT_FILE).write_text(f"service:\n  presets:\n{text}", encoding="utf-8")
 
 
-@pytest.mark.parametrize("name", [
-    "PATH", "Path", "PYTHONPATH", "PYTHONHOME", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES",
-    "UV_INDEX_URL", "PDT_INSTALLATION_KEY", "PDT_INSTALLATION_ID", "pythonpath"])
-def test_the_preset_refusal_list(tmp_path, monkeypatch, name):
-    monkeypatch.setattr(service_commands, "env_spec_names", lambda project, app: {name})
-    write_presets(tmp_path, f"    bad:\n      env:\n        {name}: x\n")
-    with pytest.raises(Refused, match="may not set"):
-        load_preset(tmp_path, "bad", "hr")
-
-
-def test_a_preset_gives_fixed_values_and_says_whether_it_sends_artifacts(tmp_path,
-                                                                         monkeypatch):
-    monkeypatch.setattr(service_commands, "env_spec_names", lambda project, app: {"COUNT"})
-    write_presets(tmp_path, "    rebuild:\n      env:\n        PDT_STEPS: extract transform\n"
-                            "        COUNT: 5\n      artifacts: true\n")
-    assert load_preset(tmp_path, "rebuild", "hr") == {
-        "env": {"PDT_STEPS": "extract transform", "COUNT": "5"}, "artifacts": True}
-
-
-@pytest.mark.parametrize("text, says", [
-    ("    other:\n      artifacts: true\n", "no service preset named wanted"),
-    ("    wanted:\n      artifacts: maybe\n", "must hold only"),
-    ("    wanted:\n      command: whoami\n", "must hold only"),
-    ("    wanted:\n      env:\n        A: [1, 2]\n", "other than one value"),
-    ("    wanted:\n      env:\n        A-B: x\n", "not an env var name"),
-])
-def test_a_preset_that_breaks_a_rule_is_refused(tmp_path, monkeypatch, text, says):
-    monkeypatch.setattr(service_commands, "env_spec_names", lambda project, app: {"A", "A-B"})
-    write_presets(tmp_path, text)
-    with pytest.raises(Refused, match=says):
-        load_preset(tmp_path, "wanted", "hr")
-
-
-def test_a_project_with_no_service_section_has_no_preset(tmp_path):
-    (tmp_path / config.PROJECT_FILE).write_text("apps: []\n", encoding="utf-8")
-    with pytest.raises(Refused, match="no service preset"):
-        load_preset(tmp_path, "wanted", "hr")
-
-
-def test_validation_takes_a_service_section():
-    assert "service" in config.ROOT_KEYS
-
-
 def test_the_private_key_is_not_a_pinned_key():
     assert all(PRIVATE_PEM.decode() != key["pem"] for key in KEYS)
 
 
-def test_a_preset_sets_only_pdt_steps_and_names_of_the_env_spec(tmp_path, monkeypatch):
-    monkeypatch.setattr(service_commands, "env_spec_names", lambda project, app: {"COUNT"})
-    write_presets(tmp_path, "    wanted:\n      env:\n        OTHER: x\n")
-    with pytest.raises(Refused, match="OTHER, which is not PDT_STEPS and is not in the env spec"):
-        load_preset(tmp_path, "wanted", "hr")

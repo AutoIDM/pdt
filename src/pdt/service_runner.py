@@ -234,7 +234,7 @@ def tree_options() -> dict:
     return {"start_new_session": True}
 
 
-def child_env(base: dict[str, str], project: Path | None, preset: dict[str, str],
+def child_env(base: dict[str, str], project: Path | None,
               extra: dict[str, str]) -> dict[str, str]:
     env = {name: value for name, value in base.items() if name not in NOT_FOR_A_CHILD}
     env["PYTHONUTF8"] = "1"
@@ -242,7 +242,7 @@ def child_env(base: dict[str, str], project: Path | None, preset: dict[str, str]
     env.pop(config.LOCK_PROJECT_ENV, None)
     if project is not None:
         env["PDT_PROJECT"] = str(project)
-    return {**env, **extra, **preset}
+    return {**env, **extra}
 
 
 def worker_env(base: dict[str, str], project: Path, credentials: dict[str, str]) -> dict[str, str]:
@@ -330,7 +330,6 @@ class Job:
     project: Path | None
     clock: Clock = field(default_factory=Clock)
     worker: bool = False
-    preset: dict | None = None
     # Values to mask, for what the child prints.
     known_values: list[str] = field(default_factory=list)
     cancel: threading.Event = field(default_factory=threading.Event)
@@ -496,13 +495,13 @@ def work_root() -> Path:
     return folder
 
 
-def write_snapshot_files(job: Job, work: Path, allowed: set[str] | None) -> None:
+def write_snapshot_files(job: Job, work: Path) -> None:
     """Fetch the snapshot into `work`, and name the project as the portal names it, because the
     folder's own name is a command ID."""
     target = work / "project"
     target.mkdir()
     snapshots.fetch(job.registration, job.args["project"], job.args["snapshot_id"], target,
-                    job.claims["customer_id"], allowed, check_author=True)
+                    job.claims["customer_id"])
     (target / config.PROJECT_NAME_FILE).write_text(job.args["project"] + "\n", encoding="utf-8")
 
 
@@ -564,18 +563,17 @@ def output_folder(app_dir: Path, command_id: str) -> Path:
     return app_dir / ".pdt" / "runs" / command_id / "output"
 
 
-def prepare(job: Job, base: dict[str, str], allowed: set[str] | None = None) -> Prepared:
+def prepare(job: Job, base: dict[str, str]) -> Prepared:
     """The folder, the env, and the command line of a job."""
     operation = OPERATIONS[job.operation]
     app = job.args.get("app")
-    preset = job.preset or {"env": {}, "artifacts": False}
     argv = service_commands.command_line(job.operation, job.args)
     if operation.from_snapshot:
         work = work_root() / job.command_id
         work.mkdir()
-        write_snapshot_files(job, work, allowed)
+        write_snapshot_files(job, work)
         project = work / "project"
-        values = (env_file_values(job.project, app) if snapshot_env_on(job.project) else {})
+        values = env_file_values(job.project, app)
         extra = {"PDT_RUN_ID": job.command_id, config.SERVICE_ENV_FILES_ENV: os.pathsep.join(
             str(path) for path in env_files(job.project, app)) if values else ""}
         if job.project is not None:
@@ -583,12 +581,12 @@ def prepare(job: Job, base: dict[str, str], allowed: set[str] | None = None) -> 
         output = output_folder(project / app, job.command_id)
         output.mkdir(parents=True, exist_ok=True)
         extra["PDT_OUTPUT_DIR"] = str(output)
-        return Prepared(project, child_env({**values, **base}, project, preset["env"], extra), argv,
+        return Prepared(project, child_env({**values, **base}, project, extra), argv,
                         output, work)
     if job.operation == "sync_down":
         target = job.project or Path(base[PROJECTS_HOME_ENV]) / job.args["project"]
         target.mkdir(parents=True, exist_ok=True)
-        env = child_env(base, None, {}, {SERVICE_PROJECT_ENV: job.args["project"],
+        env = child_env(base, None, {SERVICE_PROJECT_ENV: job.args["project"],
                                          SERVICE_CUSTOMER_ENV: job.claims["customer_id"]})
         env.pop("PDT_PROJECT", None)
         return Prepared(target, env, argv)
@@ -597,29 +595,19 @@ def prepare(job: Job, base: dict[str, str], allowed: set[str] | None = None) -> 
         extra = {"PDT_RUN_ID": job.command_id}
         if not config.find_env_files(app_dir):
             extra[config.SERVICE_ENV_FILES_ENV] = ""
-        output = None
-        if preset["artifacts"]:
-            output = output_folder(app_dir, job.command_id)
-            output.mkdir(parents=True, exist_ok=True)
-            extra["PDT_OUTPUT_DIR"] = str(output)
-        return Prepared(job.project, child_env(base, job.project, preset["env"], extra), argv,
-                        output)
+        output = output_folder(app_dir, job.command_id)
+        output.mkdir(parents=True, exist_ok=True)
+        extra["PDT_OUTPUT_DIR"] = str(output)
+        return Prepared(job.project, child_env(base, job.project, extra), argv, output)
     extra = {}
     if not config.find_env_files(job.project / app if app else job.project):
         extra[config.SERVICE_ENV_FILES_ENV] = ""
-    return Prepared(job.project, child_env(base, job.project, preset["env"], extra), argv)
+    return Prepared(job.project, child_env(base, job.project, extra), argv)
 
 
-def snapshot_env_on(project: Path | None) -> bool:
-    return project is not None and service_commands.service_section(project).get("snapshot_env") is True
-
-
-def known_values_of(project: Path | None, app: str | None, preset: dict | None) -> list[str]:
-    """The values to mask: the .env values of the project, the preset values, and the proxy
-    password."""
+def known_values_of(project: Path | None, app: str | None) -> list[str]:
+    """The values to mask: the .env values of the project, and the proxy password."""
     values = list(env_file_values(project, app).values())
-    if preset:
-        values.extend(preset["env"].values())
     from pdt import service_install
     password = service_install.proxy_password()
     if password:
@@ -632,12 +620,12 @@ def remove_folder(folder: str | Path | None) -> None:
         shutil.rmtree(snapshots.long_path(Path(folder)), ignore_errors=True)
 
 
-def execute(job: Job, allowed: set[str] | None = None) -> None:
+def execute(job: Job) -> None:
     prepared = None
     try:
         if service_commands.expired(job.claims, job.clock.now()):
             raise Refused("The token expired before the command could start.")
-        prepared = prepare(job, dict(os.environ), allowed)
+        prepared = prepare(job, dict(os.environ))
         run_child(job, prepared)
     except Refused as e:
         finish(job, result_of("refused", message=str(e)))
@@ -752,10 +740,9 @@ class Pool:
     """The commands this service holds: the ones that wait for a free slot, and the ones that run,
     with the ones an earlier service started whose process still runs."""
 
-    def __init__(self, authors=None) -> None:
+    def __init__(self) -> None:
         self.waiting: list[Job] = []
         self.running: dict[str, Job] = {}
-        self.authors = authors or (lambda job: None)
 
     def ids(self) -> list[str]:
         return [*sorted(self.running), *(job.command_id for job in self.waiting)]
@@ -776,7 +763,7 @@ class Pool:
             job.thread.start()
 
     def start_one(self, job: Job) -> None:
-        execute(job, self.authors(job))
+        execute(job)
 
     def adopt(self, job: Job) -> None:
         self.running[job.command_id] = job
@@ -825,16 +812,10 @@ def job_of_entry(entry: dict, registration: autoidm.Registration, clock: Clock,
         return None
     claims["limit_seconds"] = min(claims.get("limit_seconds") or 0, operation.limit_seconds)
     app = claims["args"].get("app")
-    preset = None
-    if project is not None and claims["args"].get("preset"):
-        try:
-            preset = service_commands.load_preset(project, claims["args"]["preset"], app)
-        except Refused:
-            preset = None
     job = Job(entry["command_id"], claims, registration, project, clock,
               offset=entry.get("output_offset") or 0, seq=entry.get("output_seq") or 0,
               adopted_pid=entry.get("pid"))
-    job.known_values = known_values_of(project, app, preset)
+    job.known_values = known_values_of(project, app)
     return job
 
 

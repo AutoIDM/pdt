@@ -6,7 +6,7 @@ from a person's own folder. The running version copies its own packages, so an i
 release.
 
 `service_env` is the environment of the service and of each child: the proxy, the system
-certificates, no uv configuration from a project folder, the SSH key, and the caches.
+certificates, no uv configuration from a project folder, and the caches.
 """
 
 from __future__ import annotations
@@ -111,14 +111,6 @@ def find_proxy(wanted: str | None) -> dict[str, str]:
             "https": found.get("https") or found.get("http"), "no": no_proxy}
 
 
-def ssh_command(settings: dict) -> str | None:
-    ssh = settings.get("ssh")
-    if not ssh:
-        return None
-    return (f"ssh -i {ssh['key']} -o UserKnownHostsFile={ssh['known_hosts']} "
-            "-o StrictHostKeyChecking=yes -o IdentitiesOnly=yes")
-
-
 def service_env(settings: dict) -> dict[str, str]:
     """The env values the service sets for itself and for each child."""
     data = autoidm.data_folder()
@@ -131,31 +123,10 @@ def service_env(settings: dict) -> dict[str, str]:
     if proxy.get("https"):
         env.update({"HTTP_PROXY": proxy["http"], "HTTPS_PROXY": proxy["https"],
                     "NO_PROXY": proxy.get("no") or ""})
-    command = ssh_command(settings)
-    if command:
-        env["GIT_SSH_COMMAND"] = command
     folder = version_folder(settings.get("pdt_version") or __version__)
     if uv_of(folder).is_file():
         env["PATH"] = str(folder / "bin") + os.pathsep + os.environ.get("PATH", "")
     return env
-
-
-def store_ssh_key(key_file: str, known_hosts: str | None) -> dict[str, str]:
-    """Copy the key and known_hosts to `<data folder>/ssh`. A missing file stops the command."""
-    source_hosts = Path(known_hosts) if known_hosts else Path.home() / ".ssh" / "known_hosts"
-    key, hosts = Path(key_file).expanduser(), source_hosts.expanduser()
-    for path in (key, hosts):
-        if not path.is_file():
-            raise InstallError(f"The file {path} does not exist. Name it with --ssh-key or "
-                               "--known-hosts, then run the command again.")
-    folder = autoidm.data_folder() / "ssh"
-    service_access.limit(folder)
-    target_key, target_hosts = folder / "id_key", folder / "known_hosts"
-    shutil.copyfile(key, target_key)
-    shutil.copyfile(hosts, target_hosts)
-    if os.name != "nt":
-        os.chmod(target_key, 0o600)
-    return {"key": str(target_key), "known_hosts": str(target_hosts)}
 
 
 def run_uv(uv: str, *args: str, env: dict[str, str]) -> None:
