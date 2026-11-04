@@ -611,6 +611,20 @@ def pause(app: dict, paused: bool) -> int:
     return 0
 
 
+def kill(app: dict) -> int:
+    """Stop the task. Its wrapper holds the run in a job object that ends the whole process tree
+    when the wrapper ends (run_windows_task.py)."""
+    try:
+        powershell, name = _managed_task(app)
+        _run(powershell, f"Stop-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
+             elevate=True)
+    except WindowsDeployError as exc:
+        console.error(console.escape(str(exc)))
+        return 1
+    console.done(f"Stopped {console.value(app['name'])}: Windows task {console.value(name)}.")
+    return 0
+
+
 def start(app: dict, follow: bool = False) -> int:
     before = {run.id for run in list_runs(app["name"])}
     try:
@@ -745,7 +759,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets",
-                                 "runs", "logs", "pause", "unpause", "start"))
+                                 "runs", "logs", "pause", "unpause", "start", "kill"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -782,6 +796,8 @@ def main() -> int:
         return pause(app, args.command == "pause")
     if args.command == "start":
         return start(app, "--follow" in args.rest)
+    if args.command == "kill":
+        return kill(app)
     if args.command == "deploy":
         return deploy(app, args.yes, args.plan)
     return destroy(app, args.yes)

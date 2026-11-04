@@ -102,7 +102,8 @@ def test_the_aws_policy_names_resources_and_no_wildcard_action():
         assert all(not action.endswith("*") for action in statement["Action"])
         for resource in statement["Resource"]:
             assert resource == "*" or "pdt" in resource or "service-role" in resource \
-                or ":vpc/" in resource or ":security-group/" in resource, resource
+                or ":vpc/" in resource or ":security-group/" in resource or ":job/" in resource, \
+                resource
 
 
 def test_each_new_role_needs_the_boundary():

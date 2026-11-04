@@ -18,6 +18,7 @@
 | `pdt run APP` | run an app on this machine |
 | `pdt run APP --deployed` | start one run of the deployed job now, on its platform |
 | `pdt run APP --deployed --follow` | start one run of the deployed job, follow its log, and exit 0 when it succeeds or 1 when it fails |
+| `pdt run APP --kill` | stop each run of the deployed job that runs now: AWS terminates each Batch job from `SUBMITTED` to `RUNNING`, Azure stops each running execution, Google Cloud cancels each running execution, and Windows stops the task `pdt-APP`, whose job object ends every process the run started; exits 0 also when nothing runs |
 | `pdt deploy APP` | deploy an app to its configured platform, then ask whether to start a run and follow its log |
 | `pdt deploy APP --run` | deploy, then start a run and follow its log with no question |
 | `pdt deploy APP --rebuild` | deploy, and build and push the image even when the app did not change |

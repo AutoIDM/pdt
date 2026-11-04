@@ -547,6 +547,21 @@ def pause(app_name: str, paused: bool) -> int:
     return code
 
 
+def kill(app_name: str) -> int:
+    """Stop each run of the deployed job that runs now."""
+    try:
+        app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    if not config.is_deployed(app_name):
+        console.error(f"{console.value(app_name)} is not deployed; "
+                      f"run {console.value(f'pdt deploy {app_name}')} first")
+        return 1
+    config.load_env(app["dir"])
+    return dispatch(provider, "kill", app_name, False)
+
+
 def start(app_name: str, follow: bool = False) -> int:
     """Start one run of the deployed job now."""
     try:

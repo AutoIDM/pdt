@@ -7,7 +7,9 @@ survives a restart of the service. The journal moves `output_offset` and `output
 AutoIDM answers 2xx, so a failed send goes again. Before output leaves the computer, `mask`
 replaces each known secret value, and a chunk never ends inside one.
 
-A cancel, the run limit, or a stop of the service ends the whole process tree. At most MAX_RUNNING
+A cancel, the run limit, or a stop of the service ends the whole process tree. On Windows each
+child starts suspended in a job object of its own, which ends the tree when the service cancels
+it or when the service ends for any reason. At most MAX_RUNNING
 commands run at once. A command that conflicts with a running one waits in the Pool. A lock of
 another process gives the outcome `refused`.
 
@@ -40,7 +42,7 @@ from pathlib import Path
 import jwt
 from dotenv import dotenv_values
 
-from pdt import config, managed_services, service_commands, snapshots
+from pdt import config, managed_services, run_windows_task, service_commands, snapshots
 from pdt.deploy_common import KEEP_SECRET_ENV
 from pdt.service_commands import OPERATIONS, Clock, Refused
 from pdt.utils import autoidm
@@ -72,6 +74,7 @@ NOT_FOR_A_CHILD = {*autoidm.SECRET_NAMES, "PDT_WORKER_PARAMETER"}
 WORKER_USER = "pdtjob"
 # OS values of the Windows process calls.
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+CREATE_SUSPENDED = 0x4
 STILL_ACTIVE = 259
 
 
@@ -639,16 +642,31 @@ def execute(job: Job) -> None:
             remove_folder(work_root() / job.command_id)
 
 
-def start_child(job: Job, prepared: Prepared) -> subprocess.Popen:
+def start_child(job: Job, prepared: Prepared) -> tuple[subprocess.Popen, int | None]:
+    """The child, and on Windows the job object that holds it and each process it starts."""
     path = output_path(job.command_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(snapshots.long_path(path), "ab") as out:
         options = dict(tree_options())
         if prepared.user:
             options["user"] = prepared.user
-        return subprocess.Popen(prepared.argv, cwd=prepared.cwd, env=prepared.env,
+        if os.name == "nt":
+            options["creationflags"] |= CREATE_SUSPENDED
+        proc = subprocess.Popen(prepared.argv, cwd=prepared.cwd, env=prepared.env,
                                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                                 **options)
+    if os.name != "nt":
+        return proc, None
+    import ctypes
+    try:
+        handle = run_windows_task.new_job()
+        run_windows_task.assign(handle, proc._handle)
+    except OSError:
+        proc.kill()
+        proc.wait()
+        raise
+    ctypes.WinDLL("ntdll").NtResumeProcess(ctypes.c_void_p(int(proc._handle)))
+    return proc, handle
 
 
 def wait_for(job: Job, running, stop) -> tuple[str | None, str | None]:
@@ -676,7 +694,7 @@ def wait_for(job: Job, running, stop) -> tuple[str | None, str | None]:
 
 
 def run_child(job: Job, prepared: Prepared) -> None:
-    proc = start_child(job, prepared)
+    proc, handle = start_child(job, prepared)
     created = process_created(proc.pid)
     journal_update(job.command_id, state="started", pid=proc.pid, process_created=created,
                    started_at=now_text())
@@ -687,10 +705,15 @@ def run_child(job: Job, prepared: Prepared) -> None:
         pass
 
     def stop() -> None:
-        stop_tree(proc.pid, lambda: proc.poll() is not None)
+        if handle is not None:
+            run_windows_task.end_job(handle)
+        else:
+            stop_tree(proc.pid, lambda: proc.poll() is not None)
         proc.wait()
 
     outcome, message = wait_for(job, lambda: proc.poll() is None, stop)
+    if handle is not None:
+        run_windows_task.kernel32().CloseHandle(handle)
     send_all_output(job)
     code = proc.returncode
     if outcome == "cancelled" and job.operation == "run" and job.args.get("deployed"):

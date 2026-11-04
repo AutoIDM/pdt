@@ -215,6 +215,8 @@ POLICY_SCOPES = [
      "Resource": [BATCH_ARNS["job_definition"], BATCH_ARNS["job_definition_revision"],
                   BATCH_ARNS["job_queue"]]},
     {"Action": ["batch:TagResource"], "Resource": list(BATCH_ARNS.values())},
+    # A Batch job ARN holds the job ID, not its name, so `pdt run --kill` names every job.
+    {"Action": ["batch:TerminateJob"], "Resource": ["arn:aws:batch:{region}:{account}:job/*"]},
     # Destroy still clears the cluster a Fargate deployment of the same app left behind.
     {"Action": ["ecs:DeleteCluster", "ecs:DescribeClusters"],
      "Resource": ["arn:aws:ecs:{region}:{account}:cluster/pdt"]},
@@ -1392,7 +1394,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
         "deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-        "pause", "unpause", "start"))
+        "pause", "unpause", "start", "kill"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -1419,6 +1421,8 @@ def main() -> int:
             return batch.pause(app, ensure_session(app), args.command == "pause")
         if args.command == "start":
             return batch.start(app, ensure_session(app), "--follow" in args.rest)
+        if args.command == "kill":
+            return batch.kill(app, ensure_session(app))
         return batch.destroy(app, args.yes)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",

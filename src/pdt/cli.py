@@ -236,6 +236,8 @@ def cmd_run(args) -> int:
     name = choose_app(args.app, "run")
     if name is None:
         return 1
+    if args.kill:
+        return deploy.kill(name)
     if args.deployed:
         return deploy.start(name, args.follow)
     app = config.merged_app(name)
@@ -703,6 +705,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--follow", action="store_true",
                    help="print the run's log until it ends and exit with the run's result; "
                         "a run on this machine always does")
+    p.add_argument("--kill", action="store_true",
+                   help="stop each run of the deployed job that runs now, with its child processes")
     p.set_defaults(func=cmd_run)
     p = add_parser("deploy", help="deploy an app")
     app = p.add_argument("app", nargs="?", help=APP_HELP)

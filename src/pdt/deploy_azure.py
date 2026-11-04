@@ -1242,7 +1242,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-                                 "pause", "unpause", "start"))
+                                 "pause", "unpause", "start", "kill"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -1293,6 +1293,8 @@ def run_command(app: dict, args: argparse.Namespace) -> int:
         return module.pause(app, preflight(app, azure_settings(app)), args.command == "pause")
     if args.command == "start":
         return module.start(app, preflight(app, azure_settings(app)), "--follow" in args.rest)
+    if args.command == "kill":
+        return module.kill(app, preflight(app, azure_settings(app)))
     if app["timezone"] not in ("Etc/UTC", "UTC"):
         fail("Azure evaluates cron schedules only in UTC; set "
              f"{console.value('timezone: Etc/UTC')}")

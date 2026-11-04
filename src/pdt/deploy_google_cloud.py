@@ -1483,6 +1483,22 @@ def pause(app: dict, paused: bool, assume_yes: bool) -> int:
     return 0
 
 
+def kill(app: dict, assume_yes: bool) -> int:
+    """Cancel each running execution of the app's Cloud Run job."""
+    project, region = project_region(app)
+    project = preflight(app, project, assume_yes)
+    job = f"pdt-{app['name']}"
+    running = [run for run in list_runs(project, region, job) if run.status == "running"]
+    for run in running:
+        run_quiet("run", "jobs", "executions", "cancel", run.id, "--region", region,
+                  "--project", project, "--quiet",
+                  slow=f"stopping: Cloud Run execution {console.value(run.id)}")
+        console.done(f"Stopped execution {console.value(run.id)} of {console.value(app['name'])}.")
+    if not running:
+        console.say(f"No execution of {console.value(app['name'])} runs.")
+    return 0
+
+
 def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
     project, region = project_region(app)
     project = preflight(app, project, assume_yes)
@@ -1526,7 +1542,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-                                 "pause", "unpause", "start"))
+                                 "pause", "unpause", "start", "kill"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -1549,6 +1565,8 @@ def main() -> int:
         return pause(app, args.command == "pause", args.yes)
     if args.command == "start":
         return start(app, args.yes, "--follow" in args.rest)
+    if args.command == "kill":
+        return kill(app, args.yes)
     if args.command == "secrets":
         return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":
