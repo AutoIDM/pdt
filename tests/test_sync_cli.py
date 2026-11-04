@@ -3,7 +3,7 @@ import os
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from service_fixtures import CUSTOMER, INSTALLATION, FakePortal, snapshot_of
+from service_fixtures import CUSTOMER, INSTALLATION, FakePortal, publication, snapshot_of
 
 from pdt import cli, config, register_cli, snapshots, sync_cli
 from pdt.utils import autoidm
@@ -51,7 +51,13 @@ def test_sync_up_lists_the_files_sends_nothing_secret_and_records_the_snapshot(p
     start = portal.bodies("/v1/snapshots/start")[0]
     paths = [entry["path"] for entry in start["manifest"]["files"]]
     assert paths == ["hr/run.py", "pdt.yml"]
-    assert start["manifest"]["ref"] == "abc" and start["manifest"]["label"] == "MR 12"
+    assert start["publication"]["ref"] == "abc" and start["publication"]["label"] == "MR 12"
+    assert start["purpose"] == "publish" and start["publication"]["parent"] is None
+    assert set(start["manifest"]) == {"files"}
+    assert snapshots.publication_valid(
+        {**start["publication"], "purpose": "publish",
+         "public_key": autoidm.public_key(autoidm.machine_registration(CUSTOMER).key)},
+        CUSTOMER, "example", start["snapshot_id"])
     assert start["snapshot_id"] == snapshots.snapshot_id(start["manifest"]["files"])
     assert b"secret" not in portal.uploads[0]
     assert portal.bodies("/v1/snapshots/finish")[0]["snapshot_id"] == start["snapshot_id"]
@@ -90,6 +96,56 @@ def test_a_repeat_sync_up_sends_no_zip(project, portal, monkeypatch, capsys):
     assert run(monkeypatch, "sync", "up", "--yes") == 0
     assert portal.uploads == []
     assert "already holds" in capsys.readouterr().err + "already holds"
+
+
+def test_sync_up_names_each_file_it_left_out(project, portal, monkeypatch, capsys):
+    (project / "prod.env").write_text("TOKEN=secret\n")
+    (project / "people.csv").write_text("a,b\n")
+    assert run(monkeypatch, "sync", "up", "--yes") == 0
+    out = capsys.readouterr().out
+    assert "left out: prod.env" in out and "left out: people.csv" in out
+    assert "left out: hr/.env" in out
+
+
+def test_a_report_changes_no_record_and_names_its_purpose(project, portal, monkeypatch):
+    assert run(monkeypatch, "sync", "up", "--yes", "--report") == 0
+    assert portal.bodies("/v1/snapshots/start")[0]["purpose"] == "report"
+    assert sync_cli.read_record(project) == {}
+
+
+def test_a_later_publish_names_the_record_as_its_parent(project, portal, monkeypatch):
+    assert run(monkeypatch, "sync", "up", "--yes") == 0
+    first = sync_cli.read_record(project)["snapshot_id"]
+    (project / "hr" / "run.py").write_text("print('later')\n")
+    assert run(monkeypatch, "sync", "up", "--yes") == 0
+    assert portal.bodies("/v1/snapshots/start")[1]["publication"]["parent"] == first
+
+
+def test_a_ci_registration_sends_a_merge_request_and_changes_no_record(project, portal, monkeypatch):
+    key = Ed25519PrivateKey.generate()
+    monkeypatch.setenv(autoidm.ID_ENV, "ins_0000000007")
+    monkeypatch.setenv(autoidm.KEY_ENV, autoidm.private_pem(key).decode())
+    monkeypatch.setenv(autoidm.URL_ENV, portal.url)
+    monkeypatch.setenv(autoidm.CUSTOMER_ENV, CUSTOMER)
+    assert run(monkeypatch, "sync", "up", "--yes") == 0
+    assert portal.bodies("/v1/snapshots/start")[0]["purpose"] == "merge_request"
+    assert sync_cli.read_record(project) == {}
+
+
+def test_sync_up_waits_for_the_check_of_the_zip(project, portal, monkeypatch):
+    answers = [(202, {"state": "checking"}), (200, {"state": "ready"})]
+    portal.routes["/v1/snapshots/finish"] = lambda _body: answers.pop(0)
+    monkeypatch.setattr(snapshots, "CHECK_SECONDS", 0)
+    assert run(monkeypatch, "sync", "up", "--yes") == 0
+    assert len(portal.bodies("/v1/snapshots/finish")) == 2
+
+
+def test_a_rejected_snapshot_stops_sync_up_with_its_message(project, portal, monkeypatch, capsys):
+    portal.routes["/v1/snapshots/finish"] = lambda _body: (
+        422, {"error": "snapshot_rejected", "message": "the zip holds a link"})
+    assert run(monkeypatch, "sync", "up", "--yes") == 1
+    assert "the zip holds a link" in capsys.readouterr().out
+    assert sync_cli.read_record(project) == {}
 
 
 def test_sync_up_with_no_one_to_answer_sends_nothing(project, portal, monkeypatch, capsys):
@@ -131,9 +187,9 @@ def test_sync_up_needs_managed_services(project, monkeypatch, capsys):
     assert "pdt register" in capsys.readouterr().out
 
 
-def serve(portal, files):
+def serve(portal, files, parent=None):
     identity, manifest, data = snapshot_of(files)
-    portal.serve_snapshot(identity, manifest, data)
+    portal.serve_snapshot(identity, manifest, data, [publication(identity, parent)])
     return identity
 
 
@@ -152,22 +208,44 @@ def test_sync_down_writes_the_snapshot_and_keeps_a_file_it_does_not_list(project
     assert (project / "kept.txt").read_text() == "mine\n"
     assert (project / "hr" / ".env").read_text() == "TOKEN=secret\n"
     assert sync_cli.read_record(project)["snapshot_id"] == identity
-    assert portal.bodies("/v1/snapshots/finish")[0]["snapshot_id"] == identity
+    assert portal.bodies("/v1/snapshots/finish") == []
     assert "added: hr/run.py" in capsys.readouterr().out
 
 
-def test_sync_down_with_no_id_asks_for_the_newest_head(project, portal, monkeypatch):
+def test_sync_down_with_no_id_prints_the_heads_and_stops(project, portal, monkeypatch, capsys):
     (project / "hr" / "run.py").unlink()
-    serve(portal, BASE)
-    assert run(monkeypatch, "sync", "down") == 0
-    assert portal.bodies("/v1/snapshots/get")[0]["snapshot_id"] is None
+    identity = serve(portal, BASE)
+    assert run(monkeypatch, "sync", "down") == 1
+    assert portal.bodies("/v1/snapshots/get") == []
+    assert not (project / "hr" / "run.py").exists()
+    assert f"pdt sync down --snapshot {identity}" in " ".join(capsys.readouterr().out.split())
+
+
+def test_sync_down_stops_in_a_clone(project, portal, monkeypatch, capsys):
+    (project / ".git").mkdir()
+    identity = serve(portal, BASE)
+    assert run(monkeypatch, "sync", "down", "--snapshot", identity, "--force") == 1
+    assert "Git clone" in capsys.readouterr().out
+    assert portal.bodies("/v1/snapshots/get") == []
+
+
+def test_a_snapshot_with_another_parent_stops_sync_down(project, portal, monkeypatch, capsys):
+    sync_cli.write_record(project, "old", [])
+    (project / "hr" / "run.py").unlink()
+    identity = serve(portal, BASE, parent="other")
+    assert run(monkeypatch, "sync", "down", "--snapshot", identity) == 1
+    assert not (project / "hr" / "run.py").exists()
+    out = " ".join(capsys.readouterr().out.split())
+    assert "no publication of snapshot" in out and "--force" in out
+    assert run(monkeypatch, "sync", "down", "--snapshot", identity, "--force") == 0
+    assert (project / "hr" / "run.py").is_file()
 
 
 def test_a_file_changed_here_stops_sync_down_and_changes_nothing(project, portal, monkeypatch, capsys):
     sync_cli.write_record(project, "old", [
         {"path": "hr/run.py", "sha256": sync_cli.file_hash(project / "hr" / "run.py"), "size": 1}])
     (project / "hr" / "run.py").write_text("print('edited here')\n")
-    identity = serve(portal, BASE)
+    identity = serve(portal, BASE, parent="old")
     assert run(monkeypatch, "sync", "down", "--snapshot", identity) == 1
     assert (project / "hr" / "run.py").read_text() == "print('edited here')\n"
     assert not (project / "hr" / "new.py").exists()
@@ -196,7 +274,7 @@ def test_sync_down_deletes_only_what_the_last_snapshot_held(project, portal, mon
         {"path": "hr/run.py", "sha256": sync_cli.file_hash(project / "hr" / "run.py"), "size": 1},
         {"path": "hr/gone.py", "sha256": sync_cli.file_hash(gone), "size": 1}])
     (project / "untracked.txt").write_text("mine\n")
-    identity = serve(portal, BASE)
+    identity = serve(portal, BASE, parent="old")
     assert run(monkeypatch, "sync", "down", "--snapshot", identity) == 0
     assert not gone.exists()
     assert (project / "untracked.txt").is_file()
@@ -209,7 +287,7 @@ def test_a_changed_file_the_snapshot_would_delete_stops_sync_down(project, porta
         {"path": "hr/gone.py", "sha256": sync_cli.file_hash(gone), "size": 1}])
     gone.write_text("edited\n")
     (project / "hr" / "run.py").unlink()
-    identity = serve(portal, BASE)
+    identity = serve(portal, BASE, parent="old")
     assert run(monkeypatch, "sync", "down", "--snapshot", identity) == 1
     assert gone.read_text() == "edited\n"
 
@@ -230,7 +308,7 @@ def test_a_record_with_a_hostile_path_deletes_nothing_outside(project, portal, m
     (project / ".pdt" / "sync.json").write_text(json.dumps({
         "snapshot_id": "old", "files": {"../victim.txt": sync_cli.file_hash(victim)}}))
     (project / "hr" / "run.py").unlink()
-    identity = serve(portal, BASE)
+    identity = serve(portal, BASE, parent="old")
     assert run(monkeypatch, "sync", "down", "--snapshot", identity) == 0
     assert victim.is_file()
 
@@ -273,7 +351,8 @@ def test_the_customer_line_is_not_a_change_at_the_next_sync(tmp_path, portal, mo
     new = new_project(tmp_path, monkeypatch)
     identity = serve(portal, {"pdt.yml": b"apps: []\n", "hr/run.py": b"print('new')\n"})
     assert sync_cli.down(identity, False) == 0
-    newer = serve(portal, {"pdt.yml": b"apps: [hr]\n", "hr/run.py": b"print('newer')\n"})
+    newer = serve(portal, {"pdt.yml": b"apps: [hr]\n", "hr/run.py": b"print('newer')\n"},
+                  parent=identity)
     assert sync_cli.down(newer, False) == 0
     assert (new / "hr" / "run.py").read_bytes() == b"print('newer')\n"
     assert managed_services_customer(new) == CUSTOMER
@@ -322,5 +401,5 @@ def test_sync_diff_says_when_the_folder_matches(project, portal, monkeypatch, ca
 
 def test_the_excludes_are_the_build_excludes():
     from pdt.deploy_common import BUILD_EXCLUDES
-    assert set(BUILD_EXCLUDES) <= set(snapshots.SNAPSHOT_EXCLUDES)
+    assert set(BUILD_EXCLUDES) <= set(snapshots.LEFT_OUT)
     assert config.STATE_DIR == ".pdt"

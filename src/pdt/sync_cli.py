@@ -1,10 +1,15 @@
 """`pdt sync up|down|diff`: copy a project to AutoIDM, copy a snapshot back, and compare.
 
 A snapshot is a zip of the project folder (pdt.snapshots). `.pdt/sync.json` records the last
-snapshot this computer sent or received: its ID and each file's hash. `pdt sync down` uses the
-record for two rules: it deletes a file only when the record lists it and the new snapshot does
-not, and it stops when a file it would overwrite or delete changed on this computer since the
-record. Files are checked first, and written after every check passes.
+snapshot this computer published or received: its ID and each file's hash. `pdt sync up --report`
+sends a copy for a person to read, and it does not change that record. A CI installation sends
+the merge request's files, and it does not change that record either.
+
+`pdt sync down --snapshot ID` uses the record for three rules. It stops when no publication of the
+snapshot has the record's ID as its parent, it deletes a file only when the record lists it and
+the new snapshot does not, and it stops when a file it would overwrite or delete changed on this
+computer since the record. `--force` passes the first and the last rule. Files are checked first,
+and written after every check passes. It stops in a Git clone, because Git owns those files.
 
 The pdt service starts `pdt sync down` in the project's folder, new or not. PDT_SERVICE_PROJECT
 and PDT_SERVICE_CUSTOMER name the project and its customer, because a new folder has no pdt.yml
@@ -14,7 +19,6 @@ to read. After the copy, `pdt sync down` adds `managed_services:` to a pdt.yml t
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -71,15 +75,34 @@ def write_record(root: Path, identity: str, files: list[dict]) -> None:
 
 def file_hash(path: Path) -> str | None:
     try:
-        with open(snapshots.long_path(path), "rb") as handle:
-            return hashlib.file_digest(handle, "sha256").hexdigest()
+        return snapshots.content_hash(Path(snapshots.long_path(path)).read_bytes())
     except OSError:
         return None
 
 
-def up(assume_yes: bool, ref: str | None, label: str | None) -> int:
-    root, name, _customer, registration = context()
-    files, large = snapshots.collect(root)
+def show_files(name: str, files: list[dict], left_out: dict[str, str]) -> None:
+    console.heading(f"pdt will copy these files of {console.value(name)} to AutoIDM:")
+    counts = Counter(entry["path"].split("/")[0] if "/" in entry["path"] else "."
+                     for entry in files)
+    for folder, count in sorted(counts.items()):
+        console.bullet(f"{console.value(folder)}  {console.value(count)} "
+                       f"file{'' if count == 1 else 's'}")
+    for path, why in left_out.items():
+        console.detail(f"left out: {console.value(path)} ({console.escape(why)})", 2)
+
+
+def size_problem(name: str, files: list[dict]) -> str:
+    """Why /v1/snapshots/start cannot take this list, or "". Each entry grows in the JSON form."""
+    if len(json.dumps({"files": files})) > snapshots.MAX_BODY_BYTES - 1024:
+        return (f"{console.value(name)} holds {console.value(len(files))} files, and AutoIDM "
+                "takes a list of about 2000 files. Delete files the project does not need, "
+                "then run the command again.")
+    return ""
+
+
+def up(assume_yes: bool, ref: str | None, label: str | None, report: bool = False) -> int:
+    root, name, customer, registration = context()
+    files, left_out = snapshots.collect(root)
     if not files:
         console.error(f"{console.value(root)} holds no file to send.")
         return 1
@@ -88,24 +111,11 @@ def up(assume_yes: bool, ref: str | None, label: str | None) -> int:
             console.error(f"--ref and --label each hold at most "
                           f"{console.value(snapshots.MAX_NOTE_CHARACTERS)} characters.")
             return 1
-    identity = snapshots.snapshot_id(files)
-    manifest = {"files": files, "ref": ref, "label": label}
-    if len(json.dumps(manifest)) > snapshots.MAX_BODY_BYTES - 1024:
-        console.error(f"{console.value(name)} holds {console.value(len(files))} files, and AutoIDM "
-                      "takes a list of about 2000 files. Delete files the project does not need, "
-                      "then run the command again.")
+    problem = size_problem(name, files)
+    if problem:
+        console.error(problem)
         return 1
-    console.heading(f"pdt will copy these files of {console.value(name)} to AutoIDM:")
-    counts = Counter(entry["path"].split("/")[0] if "/" in entry["path"] else "."
-                     for entry in files)
-    for folder, count in sorted(counts.items()):
-        console.bullet(f"{console.value(folder)}  {console.value(count)} "
-                       f"file{'' if count == 1 else 's'}")
-    console.detail(f"Never copied: {console.value('.env')}, keys, {console.value('.pdt')}, "
-                   "and each link.", 2)
-    for path in large:
-        console.warn(f"Left out {console.value(path)}: it is larger than "
-                     f"{console.value(console.size(snapshots.MAX_FILE_BYTES))}.")
+    show_files(name, files, left_out)
     if not assume_yes:
         if not can_prompt(None):
             console.warn("There is no one to answer. Run this in a terminal, or add --yes.")
@@ -116,27 +126,15 @@ def up(assume_yes: bool, ref: str | None, label: str | None) -> int:
                 return DECLINED
         except EOFError:
             return DECLINED
+    from_ci = registration.source == autoidm.ID_ENV
+    purpose = "merge_request" if from_ci else "report" if report else "publish"
+    parent = read_record(root).get("snapshot_id")
     with tempfile.TemporaryDirectory(prefix="pdt-sync-") as folder:
-        archive = Path(folder) / f"{identity}.zip"
-        snapshots.build_zip(root, files, archive)
-        size = archive.stat().st_size
-        if size > snapshots.MAX_SNAPSHOT_BYTES:
-            console.error(f"The zip of {console.value(name)} is {console.value(console.size(size))}, "
-                          f"over the "
-                          f"{console.value(console.size(snapshots.MAX_SNAPSHOT_BYTES))} limit.")
-            return 1
-        answer = autoidm.post(registration, "/v1/snapshots/start", {
-            "version": 1, "project": name, "snapshot_id": identity, "size": size,
-            "manifest": manifest})
-        place = answer.get("upload")
-        if place:
-            with console.waiting(f"sending: snapshot of {name}"):
-                autoidm.post_file(place, archive.name, archive, "/v1/snapshots/start")
-        else:
-            console.status("AutoIDM already holds these files.")
-    autoidm.post(registration, "/v1/snapshots/finish",
-                 {"version": 1, "project": name, "snapshot_id": identity})
-    write_record(root, identity, files)
+        with console.waiting(f"sending: snapshot of {name}"):
+            identity = snapshots.publish(registration, customer, name, root, files, purpose, ref,
+                                         label, parent, Path(folder))
+    if purpose == "publish":
+        write_record(root, identity, files)
     console.done(f"Copied {console.value(name)} to AutoIDM as snapshot {console.value(identity)}.")
     return 0
 
@@ -171,18 +169,56 @@ def plan_down(root: Path, files: list[dict], known: dict) -> tuple[list[str], li
     return added, changed, deleted, sorted(conflicts)
 
 
+def show_heads(registration: autoidm.Registration, name: str) -> int:
+    """`pdt sync down` with no ID: it copies nothing, because a computer takes one named version."""
+    found = snapshots.heads(registration, name)
+    if not found:
+        console.error(f"AutoIDM holds no snapshot of {console.value(name)}.")
+        return 1
+    console.error(f"{console.value('pdt sync down')} needs the ID of a snapshot of "
+                  f"{console.value(name)}. These are the newest:")
+    console.table(["snapshot", "installation", "time"],
+                  [[head["snapshot_id"], str(head.get("installation_id") or "-"),
+                    str(head.get("at") or "-")] for head in found], ["bold"])
+    console.next_steps([(f"pdt sync down --snapshot {found[0]['snapshot_id']}",
+                         "copy the newest snapshot into this project")])
+    return 1
+
+
+def parent_problem(known_id: object, identity: str, publications: list) -> bool:
+    if not known_id or known_id == identity:
+        return False
+    return not any(isinstance(item, dict) and item.get("parent") == known_id
+                   for item in publications)
+
+
 def down(wanted: str | None, force: bool) -> int:
     root, name, customer, registration = context()
+    if wanted is None:
+        return show_heads(registration, name)
+    if snapshots.in_clone(root):
+        console.error(f"{console.value(root)} is a Git clone, so {console.value('pdt sync down')} "
+                      "changed nothing. Update this folder with Git.")
+        return 1
     with tempfile.TemporaryDirectory(prefix="pdt-sync-") as folder:
         staged = Path(folder) / "files"
         staged.mkdir()
         with console.waiting(f"reading: snapshot of {name}"):
-            identity, files = snapshots.fetch(registration, name, wanted, staged, customer)
+            identity, files, publications = snapshots.fetch(registration, name, wanted, staged,
+                                                            customer)
         if not (root / config.PROJECT_FILE).is_file() and not (staged / config.PROJECT_FILE).is_file():
             console.error(f"Snapshot {console.value(identity)} holds no "
                           f"{console.value(config.PROJECT_FILE)}, so it is not a project.")
             return 1
-        known = read_record(root).get("files") or {}
+        record = read_record(root)
+        if parent_problem(record.get("snapshot_id"), identity, publications) and not force:
+            console.error(f"This computer holds snapshot {console.value(record['snapshot_id'])}, "
+                          f"and no publication of snapshot {console.value(identity)} names it as "
+                          f"the parent, so {console.value('pdt sync down')} changed nothing.")
+            console.next_steps([(f"pdt sync down --snapshot {identity} --force",
+                                 "copy this snapshot over the current files")])
+            return 1
+        known = record.get("files") or {}
         added, changed, deleted, conflicts = plan_down(root, files, known)
         if conflicts and not force:
             console.error(f"These files changed on this computer since the last snapshot, so "
@@ -209,8 +245,6 @@ def down(wanted: str | None, force: bool) -> int:
     for label, paths in (("added", added), ("changed", changed), ("deleted", deleted)):
         for path in paths:
             console.say(f"{console.escape(label)}: {console.value(path)}")
-    autoidm.post(registration, "/v1/snapshots/finish",
-                 {"version": 1, "project": name, "snapshot_id": identity})
     if added or changed or deleted:
         console.done(f"{console.value(name)} now holds snapshot {console.value(identity)}.")
     else:
@@ -220,7 +254,11 @@ def down(wanted: str | None, force: bool) -> int:
 
 def diff(as_json: bool) -> int:
     root, name, _customer, registration = context()
-    identity, files = snapshots.read_manifest(registration, name, None)
+    found = snapshots.heads(registration, name)
+    if not found:
+        console.error(f"AutoIDM holds no snapshot of {console.value(name)} to compare with.")
+        return 1
+    identity, files = snapshots.read_manifest(registration, name, found[0]["snapshot_id"])
     local = {entry["path"]: entry["sha256"] for entry in snapshots.collect(root)[0]}
     head = {entry["path"]: entry["sha256"] for entry in files}
     added = sorted(set(local) - set(head))

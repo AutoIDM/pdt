@@ -9,10 +9,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import jwt
 from cryptography.hazmat.primitives.asymmetric.ec import SECP256R1, generate_private_key
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
     Encoding, NoEncryption, PrivateFormat, PublicFormat)
 
 from pdt import service_commands, snapshots
+from pdt.utils import autoidm
 
 CUSTOMER = "cus_7a1c09e4b2"
 INSTALLATION = "ins_4f8a1c2e9b"
@@ -23,6 +25,7 @@ PUBLIC_PEM = SIGNING_KEY.public_key().public_bytes(
     Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
 KEYS = [{"kid": KID, "pem": PUBLIC_PEM}]
 COMMAND = "cmd_20261103T120000Z_0123abcd"
+AUTHOR_KEY = Ed25519PrivateKey.generate()
 
 
 def claims(operation="list", args=None, command_id=COMMAND, **changes) -> dict:
@@ -35,6 +38,17 @@ def claims(operation="list", args=None, command_id=COMMAND, **changes) -> dict:
     return {**found, **changes}
 
 
+def publication(identity, parent=None, project="example", purpose="publish", key=None, ref=None,
+                label=None) -> dict:
+    """A publication of a snapshot, signed as `/v1/snapshots/start` takes it."""
+    key = key or AUTHOR_KEY
+    return {"schema": 1, "installation_id": INSTALLATION, "public_key": autoidm.public_key(key),
+            "ref": ref, "label": label, "parent": parent, "purpose": purpose,
+            "signature": snapshots.sign_publication(key, CUSTOMER, project, identity, purpose, ref,
+                                                    label, parent),
+            "at": "2026-11-04T12:00:00Z"}
+
+
 def sign(payload: dict, key=PRIVATE_PEM, kid=KID, alg="ES256") -> str:
     return jwt.encode(payload, key, algorithm=alg, headers={"kid": kid})
 
@@ -45,14 +59,13 @@ def token(operation="list", args=None, command_id=COMMAND, **changes) -> str:
 
 def snapshot_of(files: dict[str, bytes]) -> tuple[str, dict, bytes]:
     """The ID, manifest, and zip of a snapshot that holds `files`."""
-    import hashlib
-    entries = sorted(({"path": path, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+    entries = sorted(({"path": path, "sha256": snapshots.content_hash(data), "size": len(data)}
                       for path, data in files.items()), key=lambda entry: entry["path"])
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zipped:
         for path, data in files.items():
             zipped.writestr(path, data)
-    return snapshots.snapshot_id(entries), {"files": entries, "ref": None, "label": None}, buffer.getvalue()
+    return snapshots.snapshot_id(entries), {"files": entries}, buffer.getvalue()
 
 
 class FakePortal:
@@ -64,6 +77,7 @@ class FakePortal:
         self.doorbell_status = None
         self.etag = '"one"'
         self.doorbell_gets = []
+        self.ranges, self.zip_cut_after = [], []
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -85,7 +99,22 @@ class FakePortal:
                         return self.answer(304)
                     return self.answer(200, b"{}", {"ETag": owner.etag})
                 if self.path.startswith("/zip/"):
-                    return self.answer(200, owner.zips[self.path[len("/zip/"):]])
+                    data = owner.zips.get(self.path[len("/zip/"):])
+                    sent = self.headers.get("Range")
+                    owner.ranges.append(sent)
+                    if data is None:
+                        return self.answer(500)
+                    if sent:
+                        return self.answer(206, data[int(sent[6:-1]):])
+                    if owner.zip_cut_after:
+                        cut = owner.zip_cut_after.pop(0)
+                        self.send_response(200)
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data[:cut])
+                        self.close_connection = True
+                        return None
+                    return self.answer(200, data)
                 return self.answer(404)
 
             def do_POST(self):
@@ -121,10 +150,15 @@ class FakePortal:
         return "".join(body["text"] for body in self.bodies("/v1/commands/report")
                        if body["command_id"] == command_id and body["fact"] == "output")
 
-    def serve_snapshot(self, identity: str, manifest: dict, data: bytes) -> None:
+    def serve_snapshot(self, identity: str, manifest: dict, data: bytes,
+                       publications: list | None = None) -> None:
         self.zips[identity] = data
         self.routes["/v1/snapshots/get"] = lambda _body: (
-            200, {"url": f"{self.url}/zip/{identity}", "manifest": manifest})
+            200, {"snapshot_id": identity, "url": f"{self.url}/zip/{identity}",
+                  "manifest": manifest, "publications": publications or []})
+        self.routes["/v1/snapshots/heads"] = lambda _body: (
+            200, {"heads": [{"installation_id": INSTALLATION, "snapshot_id": identity,
+                             "at": "2026-11-04T12:00:00Z"}]})
 
     def close(self):
         self.server.shutdown()
