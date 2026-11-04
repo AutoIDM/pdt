@@ -91,16 +91,12 @@ def show_files(name: str, files: list[dict], left_out: dict[str, str]) -> None:
         console.detail(f"left out: {console.value(path)} ({console.escape(why)})", 2)
 
 
-def size_problem(name: str, files: list[dict]) -> str:
-    """Why /v1/snapshots/start cannot take this list, or "". Each entry grows in the JSON form."""
-    if len(json.dumps({"files": files})) > snapshots.MAX_BODY_BYTES - 1024:
-        return (f"{console.value(name)} holds {console.value(len(files))} files, and AutoIDM "
-                "takes a list of about 2000 files. Delete files the project does not need, "
-                "then run the command again.")
-    return ""
-
-
 def up(assume_yes: bool, ref: str | None, label: str | None, report: bool = False) -> int:
+    with config.project_lock():
+        return send_up(assume_yes, ref, label, report)
+
+
+def send_up(assume_yes: bool, ref: str | None, label: str | None, report: bool) -> int:
     root, name, customer, registration = context()
     files, left_out = snapshots.collect(root)
     if not files:
@@ -111,9 +107,10 @@ def up(assume_yes: bool, ref: str | None, label: str | None, report: bool = Fals
             console.error(f"--ref and --label each hold at most "
                           f"{console.value(snapshots.MAX_NOTE_CHARACTERS)} characters.")
             return 1
-    problem = size_problem(name, files)
-    if problem:
-        console.error(problem)
+    if len(json.dumps({"files": files})) > snapshots.MAX_BODY_BYTES - 1024:
+        console.error(f"{console.value(name)} holds {console.value(len(files))} files, and AutoIDM "
+                      "takes a list of about 2000 files. Delete files the project does not need, "
+                      "then run the command again.")
         return 1
     show_files(name, files, left_out)
     if not assume_yes:
@@ -200,6 +197,14 @@ def down(wanted: str | None, force: bool) -> int:
         console.error(f"{console.value(root)} is a Git clone, so {console.value('pdt sync down')} "
                       "changed nothing. Update this folder with Git.")
         return 1
+    apps = [folder.name for folder in root.iterdir() if folder.is_dir() and config.is_app(folder)]
+    os.environ[config.LOCK_PROJECT_ENV] = str(root)
+    with config.project_lock(apps):
+        return copy_down(root, name, customer, registration, wanted, force)
+
+
+def copy_down(root: Path, name: str, customer: str, registration: autoidm.Registration,
+              wanted: str, force: bool) -> int:
     with tempfile.TemporaryDirectory(prefix="pdt-sync-") as folder:
         staged = Path(folder) / "files"
         staged.mkdir()

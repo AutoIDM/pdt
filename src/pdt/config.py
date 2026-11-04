@@ -547,6 +547,74 @@ def locked(path: Path):
                 fcntl.flock(fd, fcntl.LOCK_UN)
 
 
+# The exit code of a command that the pdt service started, when another process holds a lock.
+LOCKED_EXIT = 75
+SERVICE_CHILD_ENV = "PDT_SERVICE_CHILD"
+# Names the project folder whose locks a run takes, for a service run from a temporary folder.
+LOCK_PROJECT_ENV = "PDT_LOCK_PROJECT"
+
+
+class LockHeld(ConfigError):
+    """Another process holds a lock of this project."""
+
+
+def try_lock(path: Path, project: Path):
+    """An open file that holds an exclusive lock on `path`, or LockHeld. Closing it releases
+    the lock."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "w")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise LockHeld(f"Another process holds the lock {path} of the project {project.name}.") from None
+    return handle
+
+
+def lock_folder() -> tuple[Path, Path]:
+    """The folder of this project's locks, and the project folder."""
+    project = Path(os.environ.get(LOCK_PROJECT_ENV, "").strip() or find_project())
+    state = project / STATE_DIR
+    state.mkdir(exist_ok=True)
+    (state / ".gitignore").write_text("*\n")
+    return state / "locks", project
+
+
+@contextmanager
+def run_lock(app: str):
+    """A run holds the lock of its app, and the project's lock only while it takes that lock."""
+    folder, project = lock_folder()
+    whole = try_lock(folder / "project.lock", project)
+    try:
+        own = try_lock(folder / f"app-{app}.lock", project)
+    finally:
+        whole.close()
+    try:
+        yield
+    finally:
+        own.close()
+
+
+@contextmanager
+def project_lock(apps: list[str] | tuple[str, ...] = ()):
+    """`sync_down`, `sync_up`, `deploy`, and `destroy` hold the project's lock for the full
+    command, and the lock of each app in `apps`."""
+    folder, project = lock_folder()
+    held = [try_lock(folder / "project.lock", project)]
+    try:
+        for app in apps:
+            held.append(try_lock(folder / f"app-{app}.lock", project))
+        yield
+    finally:
+        for handle in held:
+            handle.close()
+
+
 STATE_DIR = ".pdt"
 
 

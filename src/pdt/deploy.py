@@ -210,7 +210,8 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     if config.uses_email(app) and not keeps_secret():
         prepare_email_auth(auth_env_file(app["dir"]))
     alerts_cli.offer(app_name, assume_yes)
-    code = provider_step("deploy", provider, app_name, assume_yes, rebuild)
+    with config.project_lock():
+        code = provider_step("deploy", provider, app_name, assume_yes, rebuild)
     if code != 0:
         return code
     run_code = offer_run(app_name, provider, assume_yes, run)
@@ -634,13 +635,15 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
         return 1
     config.load_env(app["dir"])
     recorded = config.deployed_platform(app_name)
-    if recorded is None:
-        return provider_step("destroy", provider, app_name, assume_yes)
-    if moved(recorded, app["platform"]):
-        say_places(app, recorded)
-        console.say(f"pdt destroys it where it is deployed: "
-                    f"{console.value(describe_place(config.place(recorded)))}.")
-    return provider_step("destroy", recorded["provider"], app_name, assume_yes, platform=recorded)
+    with config.project_lock([app_name]):
+        if recorded is None:
+            return provider_step("destroy", provider, app_name, assume_yes)
+        if moved(recorded, app["platform"]):
+            say_places(app, recorded)
+            console.say(f"pdt destroys it where it is deployed: "
+                        f"{console.value(describe_place(config.place(recorded)))}.")
+        return provider_step("destroy", recorded["provider"], app_name, assume_yes,
+                             platform=recorded)
 
 
 # The exit code of a provider script whose plan the user declined, so provider_step can

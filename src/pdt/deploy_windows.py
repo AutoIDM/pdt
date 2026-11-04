@@ -14,10 +14,12 @@
 # ///
 """Deploy an app locally as a Windows Task Scheduler task.
 
-Per app on this PC there is one folder, `%ProgramData%\\pdt\\<app>\\`, with
+Per app on this PC there is one folder, `%ProgramData%\\pdt\\apps\\<project>\\<app>\\`, with
 `storage\\` (the app's files, kept after destroy) and `logs\\` (one log per
-run, removed on destroy), and one scheduled task `pdt-<app>` whose action
-runs `run_windows_task.py` through uv. The runner sets PDT_STORAGE_URL to the
+run, removed on destroy), and one scheduled task `pdt-<project>-<app>` whose action
+runs `run_windows_task.py` through uv. `apps\\<project>\\project.txt` names the project folder,
+so a second project with the same name stops the deploy. A deploy removes a task with the earlier
+name `pdt-<app>`, and it moves the earlier folder `%ProgramData%\\pdt\\<app>`. The runner sets PDT_STORAGE_URL to the
 storage folder, runs the app in its folder, and writes both output streams
 to `logs\\<UTC start>.log`, each line after its time, ending with
 `pdt: exit N`; `pdt runs` and `pdt logs` read those files. A run is
@@ -32,8 +34,9 @@ that started it in `UV`, so the runner never looks uv up again.
 The task runs as the SYSTEM account, so it does not depend on a user being
 logged on. Registering or removing it needs administrator rights; a
 non-elevated shell gets one UAC prompt. The same elevated script creates the
-app folder and gives SYSTEM full control and the deploying user modify
-rights, so that user can delete what the task wrote. Deploy always registers
+app folder. SYSTEM and Administrators have full control, the deploying user can
+read it, and the deploying user can write only `logs\\`, because `pdt run --deployed`
+leaves a mark there. Deploy always registers
 the complete desired task definition with -Force, so rerunning it safely
 reconciles changes to the schedule or repository path.
 
@@ -62,7 +65,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, grants, regions, runs_cli
+from pdt import config, console, grants, managed_services, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import CostEstimate, run_main, warn_if_locked
@@ -160,10 +163,35 @@ def schedule_trigger(cron: str) -> tuple[str, str]:
     )
 
 
+# The folders of %ProgramData%\\pdt that pdt itself owns, so an earlier app folder has no such name.
+OWN_FOLDERS = {"apps", "cache", "pwsh", "registrations", "service", "ssh", "versions"}
+
+
+def project_folder_name() -> str:
+    return managed_services.backend_name(config.project_name())
+
+
 def app_folder(app_name: str) -> Path:
-    """The app's folder under %ProgramData%\\pdt; the task name is unique per PC, so the
-    app name is too."""
-    return config.machine_data_home() / app_name
+    """The app's folder under %ProgramData%\\pdt, by project, because two projects can name an
+    app the same."""
+    return config.machine_data_home() / "apps" / project_folder_name() / app_name
+
+
+def project_record() -> Path:
+    return config.machine_data_home() / "apps" / project_folder_name() / "project.txt"
+
+
+def same_name_problem() -> str:
+    """Why this project may not use its folder under `apps`: another project has its name."""
+    try:
+        other = project_record().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    here = str(config.find_project().resolve())
+    if not other or other == here:
+        return ""
+    return (f"Two projects have the name {project_folder_name()}: {other} and {here}. "
+            "Rename one of the folders, then run the command again.")
 
 
 def storage_folder(app_name: str) -> Path:
@@ -175,7 +203,7 @@ def logs_folder(app_name: str) -> Path:
 
 
 def _task_name(app_name: str) -> str:
-    name = f"pdt-{app_name}"
+    name = f"pdt-{project_folder_name()}-{app_name}"
     if any(char in FORBIDDEN_TASK_NAME_CHARS or ord(char) < 32 for char in name):
         raise WindowsDeployError(
             f"app name {app_name!r} contains characters Windows forbids in task names")
@@ -240,7 +268,7 @@ def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
     <Enabled>{"false" if app.get("pause") else "true"}</Enabled>
     <Hidden>false</Hidden>
     <ExecutionTimeLimit>{RUN_TIME_LIMIT}</ExecutionTimeLimit>
-    <Priority>7</Priority>
+    <Priority>5</Priority>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -326,19 +354,43 @@ def _deploying_user() -> str:
 
 
 def _folder_script(app: dict, user: str) -> str:
-    """Create the app folder with the two rules its files need: SYSTEM (the task) has full
-    control, and the deploying user can change and delete what SYSTEM writes."""
+    """Create the app folder with its rules: only SYSTEM (the task) and Administrators can write
+    it, the deploying user can read it and can write `logs`, and it inherits nothing from
+    %ProgramData%, which lets each user create files."""
     folders = [app_folder(app["name"]), logs_folder(app["name"])]
     if app["storage"]:
         folders.append(storage_folder(app["name"]))
     paths = ", ".join(_ps_string(str(folder)) for folder in folders)
+    earlier = config.machine_data_home() / app["name"]
+    move = ""
+    if app["name"] not in OWN_FOLDERS:
+        move = (f"if ((Test-Path {_ps_string(str(earlier))}) -and -not "
+                f"(Test-Path {_ps_string(str(app_folder(app['name'])))})) {{ "
+                f"New-Item -ItemType Directory -Force -Path "
+                f"{_ps_string(str(app_folder(app['name']).parent))} | Out-Null; "
+                f"Move-Item -Path {_ps_string(str(earlier))} "
+                f"-Destination {_ps_string(str(app_folder(app['name'])))} -ErrorAction Stop }}; ")
     return (
+        f"{move}"
         f"$folder = {_ps_string(str(app_folder(app['name'])))}; "
         f"New-Item -ItemType Directory -Force -Path {paths} | Out-Null; "
-        f"icacls $folder /grant '*S-1-5-18:(OI)(CI)F' {_ps_string(user + ':(OI)(CI)M')} "
+        f"icacls $folder /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "
+        f"{_ps_string(user + ':(OI)(CI)RX')} | Out-Null; "
+        "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+        f"icacls {_ps_string(str(logs_folder(app['name'])))} /grant {_ps_string(user + ':(OI)(CI)M')} "
         "| Out-Null; "
         "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+        f"Set-Content -Path {_ps_string(str(project_record()))} "
+        f"-Value {_ps_string(str(config.find_project().resolve()))} -Encoding UTF8 -ErrorAction Stop; "
     )
+
+
+def _earlier_task_script(powershell: str, app_name: str) -> str:
+    """Remove the task of the earlier name, when pdt made it."""
+    earlier = f"pdt-{app_name}"
+    if _task_state(powershell, earlier) != "managed":
+        return ""
+    return f"Unregister-ScheduledTask -TaskName {_ps_string(earlier)} -Confirm:$false -ErrorAction Stop; "
 
 
 def _task_state(powershell: str, name: str) -> str:
@@ -452,6 +504,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     try:
         powershell, uv = _preflight()
         assert uv is not None
+        problem = same_name_problem()
+        if problem:
+            raise WindowsDeployError(problem)
         on_machine_path = uv_on_machine_path()
         name = _task_name(app["name"])
         console.status(f"Checking Windows scheduled task {console.value(name)}...")
@@ -486,6 +541,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                    "with exit $LASTEXITCODE\" }; ")
     script = (
         f"{_folder_script(app, user)}"
+        f"{_earlier_task_script(powershell, app['name'])}"
         f"{install}"
         f"if (-not [Diagnostics.EventLog]::SourceExists({_ps_string(EVENT_SOURCE)})) {{ "
         f"New-EventLog -LogName Application -Source {_ps_string(EVENT_SOURCE)} }}; "

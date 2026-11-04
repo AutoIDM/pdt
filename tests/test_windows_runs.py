@@ -12,6 +12,7 @@ from pdt import config, deploy_windows, runs_cli
 def project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     (tmp_path / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    (tmp_path / ".pdt-project-name").write_text("example\n")
     monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -27,7 +28,7 @@ def test_task_action_runs_the_runner_through_uv(project):
     description, xml = deploy_windows.task_xml(app, "uv.exe", False)
     assert description == "hourly at minute 00"
     runner = Path(deploy_windows.__file__).resolve().with_name("run_windows_task.py")
-    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report"
     assert f"<Command>{Path('uv.exe').resolve()}</Command>" in xml
     assert (f"<Arguments>run --script {runner} {app['dir']} {folder / 'logs'} "
             f"{(folder / 'storage').as_uri()}/</Arguments>") in xml
@@ -52,7 +53,7 @@ def test_task_arguments_quote_a_folder_with_a_space(project):
 
 def test_storage_url_is_the_file_uri_with_a_trailing_slash(project):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "storage"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "storage"
     assert deploy_windows.storage_url("my-report") == folder.as_uri() + "/"
     assert deploy_windows.storage_url("my-report").startswith("file://")
 
@@ -89,7 +90,7 @@ def test_uv_is_never_on_the_machine_path_off_windows():
 
 def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T090000Z.log").write_text("10:00:00 INFO   starting\npdt: exit 0\n")
     (folder / "20260923T100000Z.log").write_text("10:00:00 INFO   starting\n")
@@ -111,7 +112,7 @@ def test_list_runs_reads_a_finished_and_an_unfinished_file(project, monkeypatch)
 
 def test_list_runs_without_a_running_task_is_failed(project, monkeypatch):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T100000Z.log").write_text("10:00:00 ERROR   boom\n")
     monkeypatch.setattr(deploy_windows.shutil, "which", lambda name: "powershell.exe")
@@ -124,7 +125,7 @@ def test_list_runs_without_a_running_task_is_failed(project, monkeypatch):
 
 def test_list_runs_reads_an_exit_line_written_while_it_checks_the_task(project, monkeypatch):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     log = folder / "20261020T132758Z.log"
     log.write_bytes(b"2026-10-20T13:29:24.100Z 06:29:24 INFO    Hello, world!\r\n")
@@ -145,7 +146,7 @@ def test_list_runs_reads_an_exit_line_written_while_it_checks_the_task(project, 
 
 def test_list_runs_keeps_every_file(project):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     for minute in range(60):
         (folder / f"20260923T10{minute:02d}00Z.log").write_text("pdt: exit 0\n")
@@ -160,7 +161,7 @@ def test_list_runs_with_no_folder_is_empty(project):
 
 def test_read_lines_parses_the_log_file(project):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T100000Z.log").write_text("10:00:00 INFO   starting\npdt: exit 0\n")
     run = runs_cli.Run("20260923T100000Z", datetime.now(timezone.utc), None, "succeeded")
@@ -182,7 +183,7 @@ def test_read_lines_with_no_file_is_empty(project):
 
 def test_read_lines_takes_each_line_time_from_the_runner(project):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T100000Z.log").write_bytes(
         b"2026-09-23T10:00:01.250Z \xef\xbb\xbf10:00:01 INFO     starting\n"
@@ -198,7 +199,7 @@ def test_read_lines_takes_each_line_time_from_the_runner(project):
 
 def test_follow_reads_each_line_the_runner_adds_until_the_exit_line(project, monkeypatch):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     log = folder / "20260923T100000Z.log"
     log.write_bytes(b"2026-09-23T10:00:01.000Z first\n2026-09-23T10:00:02.000Z sec")
@@ -220,7 +221,7 @@ def test_follow_reads_each_line_the_runner_adds_until_the_exit_line(project, mon
 
 def test_follow_ends_when_the_log_stays_quiet(project, monkeypatch):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T100000Z.log").write_bytes(b"2026-09-23T10:00:01.000Z first\n")
     clock = [0.0]
@@ -238,7 +239,7 @@ def test_follow_ends_when_the_log_stays_quiet(project, monkeypatch):
 def test_list_runs_reads_only_the_end_of_each_log_and_asks_only_about_the_newest(
         project, monkeypatch):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T090000Z.log").write_text("x" * 10_000 + "\n10:00:00 ERROR boom\n")
     (folder / "20260923T100000Z.log").write_text("x" * 10_000 + "\npdt: exit 0\n")
@@ -255,13 +256,13 @@ def test_list_runs_reads_only_the_end_of_each_log_and_asks_only_about_the_newest
     found = deploy_windows.list_runs("my-report")
 
     assert [run.status for run in found] == ["running", "succeeded", "failed"]
-    assert asked == ["pdt-my-report"]
+    assert asked == ["pdt-example-my-report"]
     assert max(reads) < deploy_windows.EXIT_LINE_BYTES
 
 
 def test_list_runs_does_not_take_an_exit_marker_from_the_middle_of_a_line(project, monkeypatch):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     line = "2026-09-23T10:00:01.000Z said " + "x" * 300 + " pdt: exit 0 " + "y" * 200 + "\n"
     (folder / "20260923T100000Z.log").write_text(line)
@@ -275,7 +276,7 @@ def test_list_runs_does_not_take_an_exit_marker_from_the_middle_of_a_line(projec
 
 def test_a_read_of_a_running_log_holds_back_a_line_the_runner_has_not_ended(project):
     windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T100000Z.log").write_bytes(
         b"2026-09-23T10:00:01.000Z first\n2026-09-23T10:00:02.000Z sec")
@@ -286,7 +287,7 @@ def test_a_read_of_a_running_log_holds_back_a_line_the_runner_has_not_ended(proj
 
 def two_logs(project, monkeypatch):
     app = windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     folder.mkdir(parents=True)
     (folder / "20260923T090000Z.log").write_bytes(b"10:00:00 INFO   starting\npdt: exit 3\n")
     (folder / "20260923T100000Z.log").write_bytes(b"10:00:00 INFO   starting\n")

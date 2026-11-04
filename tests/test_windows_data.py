@@ -21,6 +21,7 @@ def test_machine_data_home_falls_back_to_the_system_drive(monkeypatch):
 def project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     (tmp_path / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    (tmp_path / ".pdt-project-name").write_text("example\n")
     monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -55,7 +56,7 @@ def test_local_windows_commands_stop_off_windows(
 
 
 def test_app_folders_live_under_the_machine_data_home(project):
-    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report"
     assert deploy_windows.app_folder("my-report") == folder
     assert deploy_windows.storage_folder("my-report") == folder / "storage"
     assert deploy_windows.logs_folder("my-report") == folder / "logs"
@@ -63,11 +64,11 @@ def test_app_folders_live_under_the_machine_data_home(project):
 
 def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
     app = windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report"
     actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
                                   "uv.exe", False)
     assert plain(actions) == [
-        "create Windows scheduled task pdt-my-report (runs as SYSTEM)",
+        "create Windows scheduled task pdt-example-my-report (runs as SYSTEM)",
         "run my-report hourly at minute 00 (machine local time)",
         f"working directory: {app['dir']}",
         f"run uv from {project / 'uv.exe'}",
@@ -88,13 +89,40 @@ def test_plan_without_storage_has_no_storage_line(project):
 
 def test_folder_script_creates_the_folders_and_grants_the_two_rules(project):
     app = windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report"
     script = deploy_windows._folder_script(app, r"PC\jon")
     assert (f"New-Item -ItemType Directory -Force -Path '{folder}', "
             f"'{folder / 'logs'}', '{folder / 'storage'}'") in script
-    assert "icacls $folder /grant '*S-1-5-18:(OI)(CI)F' 'PC\\jon:(OI)(CI)M'" in script
-    assert script.count("/grant") == 1
-    assert "/inheritance" not in script
+    assert ("icacls $folder /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' "
+            "'*S-1-5-32-544:(OI)(CI)F' 'PC\\jon:(OI)(CI)RX'") in script
+    assert f"icacls '{folder / 'logs'}' /grant 'PC\\jon:(OI)(CI)M'" in script
+    assert "project.txt" in script
+
+
+def test_a_second_project_with_the_same_name_stops_the_deploy(project, monkeypatch, capsys):
+    windows_app(project)
+    record = deploy_windows.project_record()
+    record.parent.mkdir(parents=True)
+    record.write_text("D:\\jobs\\example\n")
+    monkeypatch.setattr(deploy_windows, "_preflight",
+                        lambda require_uv=True: ("powershell.exe", "uv.exe"))
+    assert deploy_windows.deploy(config.merged_app("my-report"), True) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "D:\\jobs\\example" in out and str(project.resolve()) in out
+
+
+def test_a_deploy_moves_the_earlier_folder_and_removes_the_earlier_task(project, monkeypatch):
+    app = windows_app(project)
+    assert f"Move-Item -Path '{project / 'ProgramData' / 'pdt' / 'my-report'}'" in (
+        deploy_windows._folder_script(app, "PC\\jon"))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda _powershell, name: "managed")
+    assert "Unregister-ScheduledTask -TaskName 'pdt-my-report'" in (
+        deploy_windows._earlier_task_script("powershell.exe", "my-report"))
+
+
+def test_an_app_named_for_a_folder_of_pdt_moves_nothing(project):
+    add_app(project, "service", "schedule: hourly\ntimezone: local\n")
+    assert "Move-Item" not in deploy_windows._folder_script(config.merged_app("service"), "PC\\jon")
 
 
 def test_deploy_creates_the_folders_before_registering_the_task(project, monkeypatch):
@@ -135,8 +163,8 @@ def test_deploy_says_what_it_does_before_each_slow_step(project, monkeypatch, ca
     monkeypatch.setattr(deploy_windows, "_run", lambda powershell, script, **kw: True)
     assert deploy_windows.deploy(app, assume_yes=True) == 0
     out, err = capsys.readouterr()
-    assert out.index("Checking Windows scheduled task pdt-my-report") < out.index("Plan")
-    assert err == "updating: Windows scheduled task pdt-my-report\n"
+    assert out.index("Checking Windows scheduled task pdt-example-my-report") < out.index("Plan")
+    assert err == "updating: Windows scheduled task pdt-example-my-report\n"
 
 @pytest.fixture
 def powershell_deploy(project, monkeypatch):
