@@ -252,7 +252,8 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
             settings["subscription"], "--query",
             "{id:id,name:name,provisioningState:properties.provisioningState,"
             "environmentId:properties.environmentId,identityType:identity.type,"
-            "userAssignedIdentities:identity.userAssignedIdentities,tags:tags}")
+            "userAssignedIdentities:identity.userAssignedIdentities,tags:tags}",
+            refused_is_missing=True)
     except Exception:
         data = None
     if not isinstance(data, dict):
@@ -279,7 +280,8 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
             "--offset", "1h", "--query",
             "[].{eventTimestamp:eventTimestamp,operationName:operationName.value,"
             "status:status.value,subStatus:subStatus.value,correlationId:"
-            "correlationId,resourceId:resourceId,statusMessage:properties.statusMessage}")
+            "correlationId,resourceId:resourceId,statusMessage:properties.statusMessage}",
+            refused_is_missing=True)
     except Exception:
         events = None
     if not isinstance(events, list):
@@ -759,7 +761,8 @@ def mr_run(app: dict, settings: dict, iid: str) -> int:
                 "--resource-group", settings["resource_group"], "--job-execution-name", name)
         shown = name and az_json("containerapp", "job", "execution", "show", "--name", job,
                                  "--resource-group", settings["resource_group"],
-                                 "--job-execution-name", name)
+                                 "--job-execution-name", name,
+                                 refused_is_missing=True)
         if shown and RUN_STATUS.get((shown.get("properties") or {}).get("status")) == "running":
             run_quiet(*stop, slow=f"stopping: Container Apps Job execution {console.value(name)}")
         elif name and shown is None and az(*stop).returncode != 0:
@@ -1494,7 +1497,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             group_read.result(), resources_read.result(), others)
         if deletable:
             release_read = pool.submit(environment_release, settings)
-            if not group_exists:
+            if not group_exists or retained(group_read.result()):
                 vault_read = pool.submit(deleted_vault, settings)
         else:
             # The Azure CLI runs in this process, so its one read here stays on this thread.
@@ -1516,7 +1519,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     held = held_read.result()
     unlock = [console.Markup(f"remove lock {console.value(lock.name)} from {lock.label}")
               for lock in held]
-    # A run stopped between the group delete and the purge leaves the vault
+    # A run stopped between the vault delete and the purge leaves the vault
     # soft-deleted, still holding its global name.
     orphan_vault = vault_read is not None and managed_by_pdt(
         (vault_read.result() or {}).get("properties"))

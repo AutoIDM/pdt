@@ -1165,7 +1165,7 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
     with console.waiting("reading: resources"):
         secret = read_json_or_none("secrets", "describe", sid, "--project", project)
         require_managed(secret, f"Secret Manager secret {console.value(sid)}")
-        current = value_read() if secret else None
+        current = secret_value(project, sid) if secret else None
 
     def write(values: dict[str, str]) -> None:
         console.step(f"updating secret {console.value(sid)}")

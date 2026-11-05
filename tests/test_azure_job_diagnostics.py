@@ -16,7 +16,7 @@ SETTINGS = {
 def test_failed_job_diagnostics_project_only_safe_fields(monkeypatch, capsys):
     calls = []
 
-    def read(*args):
+    def read(*args, **kwargs):
         calls.append(args)
         if args[:3] == ("containerapp", "job", "show"):
             return {
@@ -63,7 +63,7 @@ def test_failed_job_diagnostics_project_only_safe_fields(monkeypatch, capsys):
 
 
 def test_diagnostic_query_failure_does_not_raise(monkeypatch, capsys):
-    def read(*args):
+    def read(*args, **kwargs):
         raise RuntimeError("secret")
 
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
@@ -79,7 +79,7 @@ def test_diagnostic_query_failure_does_not_raise(monkeypatch, capsys):
 def test_malformed_job_fields_do_not_raise(monkeypatch, capsys):
     monkeypatch.setattr(
         deploy_azure_container_apps, "az_json",
-        lambda *args: {"tags": "malformed", "userAssignedIdentities": "malformed"}
+        lambda *args, **kwargs: {"tags": "malformed", "userAssignedIdentities": "malformed"}
         if args[:3] == ("containerapp", "job", "show") else [])
 
     deploy_azure_container_apps.report_job_failure(SETTINGS, "pdt-report")

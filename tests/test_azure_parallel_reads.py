@@ -212,7 +212,8 @@ def test_destroy_of_the_last_app_in_a_group_the_grant_made_plans_each_delete(mon
         {"name": JOB, "type": "Microsoft.App/jobs", "tags": MANAGED["tags"]}]})
     monkeypatch.setattr(azure, "environment_release",
                         lambda settings: azure.Release(environment=True))
-    opener(monkeypatch)
+    monkeypatch.setitem(FOUND, "/deletedVaults/pdt-vault", {})
+    opener(monkeypatch, {"/deletedVaults/pdt-vault": 404})
     plan = destroy(monkeypatch, confirmed=False)[0]
     assert f"delete {JOB} (Microsoft.App/jobs)" in plan
     assert "delete pdtregistry (Microsoft.ContainerRegistry/registries)" in plan
