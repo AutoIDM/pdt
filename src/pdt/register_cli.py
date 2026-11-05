@@ -154,7 +154,7 @@ def register_with_code(code: str, api_url: str) -> tuple:
                 "hostname": socket.gethostname(), "pdt_version": __version__})
         except autoidm.AutoidmError as e:
             if e.code in ("unknown_code", "code_used"):
-                pending.unlink()
+                pending.unlink(missing_ok=True)
             if e.code == "unknown_code":
                 console.error(f"AutoIDM does not know the code {console.value(code)}, or it "
                               "expired. Ask AutoIDM for a new code.")
@@ -198,7 +198,7 @@ def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pendin
                  f"{console.value(answer['installation_id'])}.")
     console.field("Saved in", str(info))
     save_customer(customer)
-    pending.unlink()
+    pending.unlink(missing_ok=True)
     return 0
 
 

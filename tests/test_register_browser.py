@@ -217,6 +217,15 @@ def test_a_retry_of_the_same_registration_adds_the_keys(portal):
     assert json.loads(autoidm.files(CUSTOMER)[0].read_text())["command_keys"] == KEYS
 
 
+def test_a_second_register_whose_pending_key_the_first_deleted_still_succeeds(portal):
+    answer = {"installation_id": INSTALLATION, "customer_id": CUSTOMER}
+    portal.routes["/v1/register"] = lambda _body: (200, answer)
+    assert register_cli.register("KQ7M-2RTX", portal.url) == 0
+    key = autoidm.load_key(autoidm.files(CUSTOMER)[1].read_bytes())
+    gone = autoidm.folder() / "pending-gone.key"
+    assert register_cli.save_registration(answer, key, portal.url, gone) == 0
+
+
 def test_a_registration_of_another_customer_than_the_service_is_revoked(portal, capsys):
     from pdt import service
     service.write_settings({"version": 1, "customer": "cus_0000000000", "projects": None,
