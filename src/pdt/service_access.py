@@ -35,10 +35,8 @@ ALLOWED_SIDS = ("S-1-5-18", "S-1-5-32-544", "S-1-3-0",
 WRITE_RIGHTS = 0xD0046
 INHERIT_ONLY = 2
 WALK_LIMIT = 50000
-SKIPPED_FOLDERS = {".git", ".venv", "__pycache__", ".pdt"}
 FIND_WRITER = ("$ErrorActionPreference = 'Stop'; "
                f"$allowed = @({', '.join(repr(sid) for sid in ALLOWED_SIDS)}); "
-               f"$skipped = @({', '.join(repr(name) for name in sorted(SKIPPED_FOLDERS))}); "
                "$sid = [Security.Principal.SecurityIdentifier]; "
                "$items = [Collections.Generic.Queue[IO.FileSystemInfo]]::new(); "
                f"$items.Enqueue([IO.DirectoryInfo]$env:{PATH_ENV}); $checked = 0; "
@@ -57,8 +55,8 @@ FIND_WRITER = ("$ErrorActionPreference = 'Stop'; "
                "+ \"`t\" + $path; exit 0 } }; "
                "if ($item -is [IO.DirectoryInfo] -and ($checked -eq 1 -or "
                "-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint))) { "
-               "foreach ($child in $item.GetFileSystemInfos()) { "
-               "if ($skipped -notcontains $child.Name) { $items.Enqueue($child) } } } }")
+               "foreach ($child in $item.GetFileSystemInfos()) { $items.Enqueue($child) } } }; "
+               "if ($items.Count -gt 0) { \"`t\" + $items.Peek().FullName }")
 # .NET calls only, not Get-Acl, Set-Acl, or New-Object: Windows PowerShell started under
 # PowerShell 7 inherits its PSModulePath and cannot load the modules that hold those commands.
 # It prints the access list as .NET holds it before it saves it, then as it reads it back, so
@@ -160,15 +158,15 @@ def posix_writable(folder: Path) -> tuple[str, Path] | None:
         if account:
             return account, parent
     for parent, dirs, names in os.walk(folder):
-        dirs[:] = [name for name in dirs if name not in SKIPPED_FOLDERS]
         for name in [*dirs, *names]:
+            if checked >= WALK_LIMIT:
+                raise AccessError(f"{folder} holds more than {WALK_LIMIT} files and folders, so "
+                                  "pdt could not check who can change each one.")
             path = Path(parent, name)
             account = posix_writer(path)
             if account:
                 return account, path
             checked += 1
-            if checked >= WALK_LIMIT:
-                return None
     return None
 
 
@@ -177,10 +175,13 @@ def windows_writable(folder: Path) -> tuple[str, Path] | None:
     or each thing below it, because an item can hold a right of its own that it did not inherit.
     A folder above does not count, because Windows gives a right on a folder only to that
     folder's own list."""
-    shown = run_powershell(FIND_WRITER, {PATH_ENV: str(folder)}).strip()
+    shown = run_powershell(FIND_WRITER, {PATH_ENV: str(folder)}).rstrip()
     if not shown:
         return None
     account, _, path = shown.partition("\t")
+    if not account:
+        raise AccessError(f"{folder} holds more than {WALK_LIMIT} files and folders, so pdt "
+                          "could not check who can change each one.")
     return account, Path(path)
 
 
