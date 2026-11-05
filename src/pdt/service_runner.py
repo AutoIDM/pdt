@@ -38,7 +38,6 @@ import subprocess
 import tempfile
 import threading
 import time
-import tomllib
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -75,10 +74,8 @@ STILL_ACTIVE = 259
 # The first pdt-cli whose storage keeps the state of a merge request run apart from the state of
 # the deployed job. An app runs with the pdt-cli its run.py pins.
 MR_STATE_VERSION = "0.1.14"
-SCRIPT_BLOCK = re.compile(r"(?m)^# /// script[ \t]*\n((?:#(?: .*)?\n)+?)# ///[ \t]*$")
-PDT_REQUIREMENT = re.compile(r"\s*pdt[-_.]cli\s*(?:\[[^\]]*\])?\s*([<>=!~;@].*)?", re.I)
-# The bounds that can hold an app below MR_STATE_VERSION.
-UPPER_BOUND = re.compile(r"(===|==|<=|<)\s*([0-9][^\s,;]*)")
+RESOLVED_PDT = re.compile(r"^pdt-cli==(\S+)", re.M)
+PDT_NAME = re.compile(r"pdt[-_.]+cli", re.I)
 
 
 def now_text() -> str:
@@ -492,26 +489,29 @@ def mr_copy_problem(entry: dict, project: Path, app: str, sha: str) -> str:
         text = run_py.read_text(encoding="utf-8-sig")
     except (FileNotFoundError, UnicodeError):
         return ""
-    block = SCRIPT_BLOCK.search(text)
-    if block is None:
+    if "# /// script" not in text:
         return ""
-    try:
-        metadata = tomllib.loads("".join(line[2:] for line in block.group(1).splitlines(True)))
-    except tomllib.TOMLDecodeError:
-        return ""
+    # uv resolves the script metadata as `uv run --script` does, so its answer is the pdt-cli
+    # that the run would get.
+    resolved = subprocess.run(
+        ["uv", "export", "--script", str(run_py), "--no-header", "--no-hashes", "--no-annotate",
+         "--format", "requirements-txt"],
+        cwd=run_py.parent, env={**os.environ, "UV_NO_CONFIG": "1"}, capture_output=True,
+        text=True, encoding="utf-8", errors="replace", timeout=300)
+    if resolved.returncode != 0:
+        return (f"pdt could not read which pdt-cli {app}/run.py runs with: "
+                f"{resolved.stderr.strip()[-MAX_MESSAGE // 2:]}")
     least = version_parts(MR_STATE_VERSION)
-    old = None
-    for dependency in metadata.get("dependencies") or []:
-        found = PDT_REQUIREMENT.fullmatch(dependency) if isinstance(dependency, str) else None
-        for operator, version in UPPER_BOUND.findall(((found and found.group(1)) or "").split(";")[0]):
-            if version_parts(version) < least or (operator == "<" and version_parts(version) == least):
-                old = (dependency, version)
-    if old is None:
+    old = [version for version in RESOLVED_PDT.findall(resolved.stdout)
+           if version_parts(version) < least]
+    if not old:
         return ""
-    first = text.count("\n", 0, block.start()) + 1
-    rows = block.group(0).splitlines()
-    line = first + next((index for index, row in enumerate(rows) if old[1] in row and "pdt" in row.lower()), 0)
-    return (f"{app}/run.py line {line} pins pdt-cli {old[1]}. A merge request run needs "
+    rows = text.splitlines()
+    start = rows.index("# /// script") if "# /// script" in rows else 0
+    line = next((number for number, row in enumerate(rows[start:], start + 1)
+                 if PDT_NAME.search(row) and not row.removeprefix("#").lstrip().startswith("#")),
+                start + 1)
+    return (f"{app}/run.py line {line} pins pdt-cli {old[0]}. A merge request run needs "
             f"pdt-cli {MR_STATE_VERSION} or newer, which keeps the state of the run apart from "
             "the state of the deployed job.\nNext steps:\n"
             "  pdt upgrade  move pdt, and the pdt version each app pins, to the newest release; "
