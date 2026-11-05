@@ -216,15 +216,15 @@ def test_a_retry_after_a_crash_before_pdt_yml_is_saved_finishes_with_the_same_ke
     project.mkdir()
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
     monkeypatch.chdir(project)
-    save = config.save_managed_customer
+    save = config.save_managed_services
     crashes = [KeyboardInterrupt]
 
-    def crash_once(customer):
+    def crash_once(customer, sends):
         if crashes:
             raise crashes.pop()
-        save(customer)
+        save(customer, sends)
 
-    monkeypatch.setattr(config, "save_managed_customer", crash_once)
+    monkeypatch.setattr(config, "save_managed_services", crash_once)
     for _ in range(2):
         answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
     with pytest.raises(KeyboardInterrupt):
@@ -439,11 +439,67 @@ def test_register_in_a_project_adds_managed_services_to_pdt_yml(backend, tmp_pat
     answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
     assert register_cli.register("KQ7M-2RTX", url) == 0
     assert (project / "pdt.yml").read_text() == (
-        f"# keep\nplatform:\n  provider: windows\n\nmanaged_services:\n  customer: {CUSTOMER}\n")
+        f"# keep\nplatform:\n  provider: windows\n\nmanaged_services:\n  customer: {CUSTOMER}\n"
+        "  send_run_history: true\n  send_logs: true\n  send_artifacts: false\n")
     assert "Saved managed_services: with customer: " in " ".join(capsys.readouterr().out.split())
     answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
     assert register_cli.register("KQ7M-2RTX", url) == 1
     assert (project / "pdt.yml").read_text().count("managed_services:") == 1
+
+
+def answer_questions(monkeypatch, answers):
+    asked = []
+
+    def confirm(question, default=False, choices=""):
+        asked.append((question, default))
+        return answers.pop(0)
+
+    monkeypatch.setattr(register_cli, "can_prompt", lambda _interactive: True)
+    monkeypatch.setattr(register_cli.console, "confirm", confirm)
+    return asked
+
+
+def register_in(monkeypatch, project, url, answers, text, assume_yes=False):
+    project.mkdir()
+    (project / "pdt.yml").write_text(text)
+    monkeypatch.chdir(project)
+    answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
+    assert register_cli.register("KQ7M-2RTX", url, assume_yes, install_service=False) == 0
+    return config.load_yaml(project / "pdt.yml")["managed_services"]
+
+
+def test_register_asks_what_to_send_and_saves_each_answer(backend, tmp_path, monkeypatch):
+    url, _seen, answers = backend
+    asked = answer_questions(monkeypatch, [False, True, True])
+    found = register_in(monkeypatch, tmp_path / "project", url, answers, "apps: []\n")
+    assert asked == [("Send the start, the end, and the result of each run to AutoIDM?", True),
+                     ("Send the log of each run to AutoIDM?", True),
+                     ("Send the output files of each run to AutoIDM?", False)]
+    assert found == {"customer": CUSTOMER, "send_run_history": False, "send_logs": True,
+                     "send_artifacts": True}
+
+
+def test_register_with_yes_asks_nothing_and_takes_the_defaults(backend, tmp_path, monkeypatch):
+    url, _seen, answers = backend
+    asked = answer_questions(monkeypatch, [])
+    found = register_in(monkeypatch, tmp_path / "project", url, answers, "apps: []\n", assume_yes=True)
+    assert asked == []
+    assert found == {"customer": CUSTOMER, "send_run_history": True, "send_logs": True,
+                     "send_artifacts": False}
+
+
+def test_register_keeps_each_send_key_pdt_yml_has_and_asks_only_the_rest(backend, tmp_path,
+                                                                         monkeypatch):
+    url, _seen, answers = backend
+    asked = answer_questions(monkeypatch, [False])
+    found = register_in(monkeypatch, tmp_path / "project", url, answers,
+                        f"managed_services:\n    customer: {CUSTOMER}\n    send_logs: [report]\n"
+                        "    send_artifacts: true  # keep\n\napps: []\n")
+    assert asked == [("Send the start, the end, and the result of each run to AutoIDM?", True)]
+    assert found == {"customer": CUSTOMER, "send_logs": ["report"], "send_artifacts": True,
+                     "send_run_history": False}
+    assert "send_artifacts: true  # keep\n    send_run_history: false\n\napps: []\n" in (
+        tmp_path / "project" / "pdt.yml").read_text()
 
 
 def test_register_keeps_a_pdt_yml_that_names_another_customer(backend, tmp_path, monkeypatch,
@@ -453,6 +509,7 @@ def test_register_keeps_a_pdt_yml_that_names_another_customer(backend, tmp_path,
     project.mkdir()
     text = "managed_services:\n  customer: cus_0000000002\n"
     (project / "pdt.yml").write_text(text)
+    monkeypatch.chdir(project)
     monkeypatch.chdir(project)
     answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
     assert register_cli.register("KQ7M-2RTX", url) == 0
