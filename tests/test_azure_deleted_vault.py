@@ -63,7 +63,8 @@ def test_destroy_does_not_purge_another_groups_legacy_vault(monkeypatch):
     monkeypatch.setattr(deploy_azure, "delete_unless_locked",
                         lambda *args, **kwargs: calls.append(args) or "")
     assert deploy_azure.destroy_group(settings, "report") is True
-    assert reads == [("keyvault", "show-deleted", "--name", "pdt-current")]
+    assert [args for args in reads if args[0] == "keyvault"] == [
+        ("keyvault", "show-deleted", "--name", "pdt-current")]
     assert calls == [
         ("group", "delete", "--name", "pdt-verify", "--yes"),
         ("keyvault", "purge", "--name", "pdt-current"),

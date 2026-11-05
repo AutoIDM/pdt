@@ -1018,7 +1018,7 @@ def platform_side_resource(resource: dict) -> bool:
 
 
 def group_can_be_deleted(group: dict | None, resources: list | None, others: list[str]) -> bool:
-    if others or not managed_by_pdt(group) or retained(group) or resources is None:
+    if others or not managed_by_pdt(group) or resources is None:
         return False
     # Older pdt versions left the plans, alert rules, and action group that
     # Azure creates beside a Function App untagged; they go with the group.
@@ -1039,26 +1039,48 @@ def purge_secret(settings: dict[str, str], sid: str) -> None:
                   settings["vault"], "--name", sid, retry_access=True)
 
 
+def kept_group_deletes(resources: list) -> list[dict]:
+    """What destroy deletes one by one in a group that the grant keeps: each pdt resource but
+    the grant's own identity, the jobs first because they use the others."""
+    return sorted((resource for resource in resources
+                   if managed_by_pdt(resource) and resource.get("name") != GRANT_NAME),
+                  key=lambda resource: str(resource.get("type")).lower() != "microsoft.app/jobs")
+
+
 def destroy_group(settings: dict[str, str], app_name: str) -> bool:
-    """Delete the project's group. False means another app holds it, so it stays."""
+    """Delete the project's group, or each pdt resource in it when the grant keeps the group.
+    False means another app holds it, so it stays."""
     rg = settings["resource_group"]
-    others = other_pdt_apps(az_json("resource", "list", "--resource-group", rg) or [], app_name)
+    resources = az_json("resource", "list", "--resource-group", rg) or []
+    others = other_pdt_apps(resources, app_name)
     if others:
         console.note(f"kept: resource group {console.value(rg)} (apps deployed since the plan: "
                      f"{', '.join(console.value(other) for other in others)})")
         return False
-    console.step(f"deleting resource group {console.value(rg)} (takes a few minutes)")
-    locked = delete_unless_locked("group", "delete", "--name", rg, "--yes",
-                                  slow=f"deleting: resource group {console.value(rg)}")
-    if locked:
-        console.note(f"kept: resource group {console.value(rg)} with its ACR and Key Vault "
-                     f"(locked by {console.value(locked)})")
-        return False
+    kept = retained(az_json("group", "show", "--name", rg))
+    if kept:
+        for resource in kept_group_deletes(resources):
+            name = console.value(resource.get("name"))
+            console.step(f"deleting {name}")
+            locked = delete_unless_locked("resource", "delete", "--ids", resource["id"],
+                                          slow=f"deleting: {name}")
+            if locked:
+                console.note(f"kept: {name} (locked by {console.value(locked)})")
+    else:
+        console.step(f"deleting resource group {console.value(rg)} (takes a few minutes)")
+        locked = delete_unless_locked("group", "delete", "--name", rg, "--yes",
+                                      slow=f"deleting: resource group {console.value(rg)}")
+        if locked:
+            console.note(f"kept: resource group {console.value(rg)} with its ACR and Key Vault "
+                         f"(locked by {console.value(locked)})")
+            return False
     if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
         console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
         run_quiet("keyvault", "purge", "--name", settings["vault"],
                   slow=f"purging: Key Vault {console.value(settings['vault'])}")
-    if az_tsv("group", "exists", "--name", rg) == "false":
+    if kept:
+        list_remaining(rg)
+    elif az_tsv("group", "exists", "--name", rg) == "false":
         console.done(f"Nothing remains in resource group {console.value(rg)}.")
     return True
 

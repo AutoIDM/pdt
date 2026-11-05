@@ -121,7 +121,7 @@ AZURE_JOB = {"properties": {"template": {"containers": [{
             {"name": "PDT_TRIGGER", "value": "manual"}]}]}}}
 
 
-def azure(monkeypatch, fail_start=False):
+def azure(monkeypatch, fail_start=False, status="Succeeded"):
     calls = []
 
     def run_quiet(*args, **_kwargs):
@@ -136,6 +136,8 @@ def azure(monkeypatch, fail_start=False):
     monkeypatch.setattr(deploy_azure_container_apps, "ensure_image",
                         lambda app, image, *args: calls.append(("build", image)))
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet", run_quiet)
+    monkeypatch.setattr(deploy_azure_container_apps, "az_json",
+                        lambda *args: {"properties": {"status": status}})
     monkeypatch.setattr(deploy_azure_container_apps, "logs", lambda *args, **kwargs: 0)
     monkeypatch.setenv("PDT_RUN_ID", "cmd_1")
     monkeypatch.setenv("PDT_APP_ARGS", "--full")
@@ -169,7 +171,7 @@ def test_azure_mr_run_deletes_the_image_after_a_failure(monkeypatch):
 
 
 def test_azure_mr_run_stops_its_execution_when_the_follow_fails(monkeypatch):
-    calls = azure(monkeypatch)
+    calls = azure(monkeypatch, status="Running")
 
     def broken(*args, **kwargs):
         raise RuntimeError("log read failed")
@@ -180,6 +182,21 @@ def test_azure_mr_run_stops_its_execution_when_the_follow_fails(monkeypatch):
     assert ("containerapp", "job", "stop", "--name", "pdt-hr", "--resource-group", "pdt",
             "--job-execution-name", "pdt-hr-x1") in calls
     assert calls[-1][:3] == ("acr", "repository", "delete")
+
+
+def test_azure_mr_run_stops_its_execution_when_the_follow_is_interrupted(monkeypatch):
+    calls = azure(monkeypatch, status="Running")
+    monkeypatch.setattr(deploy_azure_container_apps, "logs", lambda *args, **kwargs: 130)
+    assert deploy_azure_container_apps.mr_run({"name": "hr"}, SETTINGS, "12") == 130
+    assert [call[:3] for call in calls[-2:]] == [("containerapp", "job", "stop"),
+                                                  ("acr", "repository", "delete")]
+
+
+def test_azure_mr_run_leaves_a_finished_execution_alone(monkeypatch):
+    calls = azure(monkeypatch, status="Failed")
+    monkeypatch.setattr(deploy_azure_container_apps, "logs", lambda *args, **kwargs: 1)
+    assert deploy_azure_container_apps.mr_run({"name": "hr"}, SETTINGS, "12") == 1
+    assert ("containerapp", "job", "stop") not in [call[:3] for call in calls]
 
 
 GOOGLE_JOB = {"spec": {"template": {"spec": {"template": {"spec": {

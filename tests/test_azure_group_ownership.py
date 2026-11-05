@@ -20,6 +20,33 @@ def test_another_app_or_a_group_pdt_did_not_make_blocks_deletion():
     assert not deploy_azure.group_can_be_deleted(GROUP, None, [])
 
 
-def test_a_group_the_grant_made_is_never_deleted():
+def test_destroy_empties_a_group_the_grant_made_and_keeps_the_group_and_its_identity(
+        monkeypatch):
     granted = {"name": "pdt", "tags": {"managed-by": "pdt", "pdt-lifecycle": "retain"}}
-    assert not deploy_azure.group_can_be_deleted(granted, [OWNED], [])
+    tagged = {"managed-by": "pdt"}
+    resources = [
+        {"id": "acr", "name": "pdtabc", "type": "Microsoft.ContainerRegistry/registries",
+         "tags": tagged},
+        {"id": "grant", "name": deploy_azure.GRANT_NAME,
+         "type": "Microsoft.ManagedIdentity/userAssignedIdentities", "tags": tagged},
+        {"id": "runner", "name": "pdt-runner",
+         "type": "Microsoft.ManagedIdentity/userAssignedIdentities", "tags": tagged},
+        {**OWNED, "id": "vault"},
+        {"id": "job", "name": "pdt-hr", "type": "Microsoft.App/jobs",
+         "tags": {**tagged, "pdt-app": "hr"}},
+    ]
+    reads = {("resource", "list"): resources, ("group", "show"): granted,
+             ("keyvault", "show-deleted"): {"name": "pdt-x"}}
+    deleted, purged, listed = [], [], []
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: reads.get(args[:2]))
+    monkeypatch.setattr(deploy_azure, "delete_unless_locked",
+                        lambda *args, **kwargs: deleted.append(args) and "")
+    monkeypatch.setattr(deploy_azure, "run_quiet",
+                        lambda *args, **kwargs: purged.append(args[:2]) or "")
+    monkeypatch.setattr(deploy_azure, "list_remaining", listed.append)
+    settings = {"resource_group": "pdt", "vault": "pdt-x"}
+    assert deploy_azure.destroy_group(settings, "hr") is True
+    assert [args[3] for args in deleted] == ["job", "acr", "runner", "vault"]
+    assert all(args[:2] == ("resource", "delete") for args in deleted)
+    assert purged == [("keyvault", "purge")]
+    assert listed == ["pdt"]

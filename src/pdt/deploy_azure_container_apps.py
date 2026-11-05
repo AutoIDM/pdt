@@ -55,14 +55,14 @@ from typing import Callable, Iterator
 from pdt import config, console, lifecycle, regions, runs_cli
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_azure import (
-    COMMON_PROVIDERS, ENVIRONMENT_TYPE, JOBS_API_VERSION, MANAGEMENT_API, RECENT_RUNS, SECRET_ROLE,
-    STORAGE_RESOURCE, STORE_ROLE, VAULT_RESOURCE, access_token, arm_get, arm_list, arm_url,
-    assign_role, az, az_json, az_tsv,
+    COMMON_PROVIDERS, ENVIRONMENT_TYPE, GRANT_NAME, JOBS_API_VERSION, MANAGEMENT_API, RECENT_RUNS,
+    SECRET_ROLE, STORAGE_RESOURCE, STORE_ROLE, VAULT_RESOURCE, access_token, arm_get, arm_list,
+    arm_url, assign_role, az, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cli_credential_store, cost_estimate,
     deleted_vault, delete_unless_locked,
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
     ensure_secret, ensure_store, ensure_workspace, granted_secret_value, group_can_be_deleted,
-    held_token_store, list_remaining,
+    held_token_store, kept_group_deletes, list_remaining,
     managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
     portal_url, purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
     retained, revoke_role, run_basis, run_quiet, secret_actions, secret_name,
@@ -733,6 +733,7 @@ def mr_run(app: dict, settings: dict, iid: str) -> int:
     env += [f"{lifecycle.TRIGGER_ENV}={lifecycle.MR_TRIGGER}", f"{lifecycle.MR_IID_ENV}={iid}"]
     env += [f"{name}={os.environ[name]}" for name in MR_ENV_NAMES if os.environ.get(name)]
     resources = container.get("resources") or {}
+    name = None
     try:
         ensure_image(app, image, "linux/amd64", "ACR Tasks" if cloud else "", None,
                      lambda: False, lambda stage: build_image(stage, settings, image_name, cloud))
@@ -750,16 +751,16 @@ def mr_run(app: dict, settings: dict, iid: str) -> int:
         name = (execution or {}).get("name")
         console.done(f"Started execution {console.value(name)} of {console.value(job)} with "
                      f"image {console.value(image)}.")
-        try:
-            return logs(app, settings, ["--follow"], new=lambda run: run.id == name)
-        except BaseException:
-            if name:
-                run_quiet("containerapp", "job", "stop", "--name", job,
-                          "--resource-group", settings["resource_group"],
-                          "--job-execution-name", name,
-                          slow=f"stopping: Container Apps Job execution {console.value(name)}")
-            raise
+        return logs(app, settings, ["--follow"], new=lambda run: run.id == name)
     finally:
+        shown = name and az_json("containerapp", "job", "execution", "show", "--name", job,
+                                 "--resource-group", settings["resource_group"],
+                                 "--job-execution-name", name)
+        if shown and RUN_STATUS.get((shown.get("properties") or {}).get("status")) == "running":
+            run_quiet("containerapp", "job", "stop", "--name", job,
+                      "--resource-group", settings["resource_group"],
+                      "--job-execution-name", name,
+                      slow=f"stopping: Container Apps Job execution {console.value(name)}")
         run_quiet("acr", "repository", "delete", "--name", settings["registry"],
                   "--repository", image_name, "--yes")
         console.done(f"Deleted image {console.value(image)}.")
@@ -1516,7 +1517,15 @@ def destroy(app: dict, assume_yes: bool) -> int:
         actions = unlock[:]
         if grant:
             actions.append(grant)
-        if group_exists:
+        if group_exists and retained(group_read.result()):
+            actions += [console.Markup(
+                f"delete{' and purge' if resource.get('name') == settings['vault'] else ''} "
+                f"{console.value(resource.get('name'))} "
+                f"({console.escape(str(resource.get('type')))})")
+                for resource in kept_group_deletes(resources_read.result())]
+            console.note(f"resource group {console.value(rg)} and managed identity "
+                         f"{console.value(GRANT_NAME)} stay, because the AutoIDM grant uses them")
+        elif group_exists:
             actions += [
                 console.Markup(f"delete resource group {console.value(rg)} and everything in "
                                "it: the job and the shared ACR (with images), managed identity, "
