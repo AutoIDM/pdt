@@ -194,7 +194,9 @@ def repair_commands(folder: Path) -> list[tuple[str, str]]:
         return [(f'icacls "{folder}" /setowner *S-1-5-32-544 /T',
                  "make Administrators the owner"),
                 (f'icacls "{folder}" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F '
-                 "*S-1-5-32-544:(OI)(CI)F /T",
-                 "let only SYSTEM and Administrators change it")]
+                 "*S-1-5-32-544:(OI)(CI)F",
+                 "let only SYSTEM and Administrators change it"),
+                (f'icacls "{folder}\\*" /reset /T',
+                 "give each file and folder in it the same access")]
     return [(f'sudo chown -R root "{folder}"', "make root the owner"),
             (f'sudo chmod -R go-w "{folder}"', "let only root change it")]
