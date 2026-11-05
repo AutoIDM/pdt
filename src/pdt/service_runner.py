@@ -31,6 +31,7 @@ from __future__ import annotations
 import codecs
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -70,6 +71,10 @@ NOT_FOR_A_CHILD = set(autoidm.SECRET_NAMES)
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 CREATE_SUSPENDED = 0x4
 STILL_ACTIVE = 259
+# The first pdt-cli whose storage keeps the state of a merge request run apart from the state of
+# the deployed job. An app runs with the pdt-cli its run.py pins.
+MR_STATE_VERSION = "0.1.14"
+PDT_PIN = re.compile(r'^#[^\n]*"pdt-cli(?:\[[^\]]*\])?==([^"]+)"', re.M)
 
 
 def now_text() -> str:
@@ -468,6 +473,31 @@ def work_root() -> Path:
     return folder
 
 
+def version_parts(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", version)[:3])
+
+
+def mr_copy_problem(entry: dict, project: Path, app: str, sha: str) -> str:
+    """Why a `run_mr` must not run this copy: it is not of the signed commit, or the app pins a
+    pdt-cli that writes the run's state over the state of the deployed job."""
+    if entry.get("commit") != sha:
+        return (f"The copy {entry.get('unit')} is of commit {entry.get('commit') or 'unknown'}, "
+                f"and the command names commit {sha}. Run the merge request pipeline again.")
+    run_py = project / app / "run.py"
+    try:
+        text = run_py.read_text(encoding="utf-8-sig")
+    except (FileNotFoundError, UnicodeError):
+        return ""
+    pin = PDT_PIN.search(text)
+    if pin is None or version_parts(pin.group(1)) >= version_parts(MR_STATE_VERSION):
+        return ""
+    line = text.count("\n", 0, pin.start()) + 1
+    return (f"{app}/run.py line {line} pins pdt-cli {pin.group(1)}. A merge request run needs "
+            f"pdt-cli {MR_STATE_VERSION} or newer, which keeps the state of the run apart from "
+            f"the state of the deployed job. Raise the pin in that line to {MR_STATE_VERSION} or "
+            "newer, and push the change.")
+
+
 def write_copy_files(job: Job, work: Path) -> Path:
     target = work / "project"
     unit = f"mr={job.args['mr_iid']}"
@@ -480,6 +510,9 @@ def write_copy_files(job: Job, work: Path) -> Path:
                                       job.claims["customer_id"])
     if problem:
         raise copies.CopyError(problem)
+    problem = mr_copy_problem(found[0], target, job.args["app"], job.args["sha"])
+    if problem:
+        raise Refused(problem)
     (target / config.PROJECT_NAME_FILE).write_text(job.args["project"] + "\n", encoding="utf-8")
     return target
 
