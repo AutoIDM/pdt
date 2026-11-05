@@ -197,16 +197,21 @@ def test_azure_mr_run_stops_its_execution_when_the_follow_is_interrupted(monkeyp
                                                   ("acr", "repository", "delete")]
 
 
-def test_azure_mr_run_stops_its_execution_when_the_status_read_fails(monkeypatch):
+@pytest.mark.parametrize("code, warned", [(0, False), (1, True)])
+def test_azure_mr_run_stops_its_execution_when_the_status_read_fails(monkeypatch, capsys, code,
+                                                                      warned):
     calls = azure(monkeypatch)
     stops = []
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args: None)
-    monkeypatch.setattr(deploy_azure_container_apps, "az", lambda *args: stops.append(args))
+    monkeypatch.setattr(deploy_azure_container_apps, "az", lambda *args: (
+        stops.append(args) or subprocess.CompletedProcess(args, code, "", "")))
     monkeypatch.setattr(deploy_azure_container_apps, "logs", lambda *args, **kwargs: 130)
     assert deploy_azure_container_apps.mr_run({"name": "hr"}, SETTINGS, "12") == 130
     assert stops == [("containerapp", "job", "stop", "--name", "pdt-hr", "--resource-group", "pdt",
                       "--job-execution-name", "pdt-hr-x1")]
     assert calls[-1][:3] == ("acr", "repository", "delete")
+    output = capsys.readouterr()
+    assert ("could not read or stop execution pdt-hr-x1" in output.out + output.err) == warned
 
 
 def test_azure_mr_run_leaves_a_finished_execution_alone(monkeypatch):
@@ -311,16 +316,20 @@ def sigterm_handler():
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the hosted runner stops a process group on Linux")
-def test_a_sigterm_to_the_group_runs_the_mr_run_clean_up_before_the_runner_kills_it(tmp_path):
+@pytest.mark.parametrize("run_seconds, stop_after", [(60, "started"), (0, "cleaning")])
+def test_a_sigterm_to_the_group_runs_the_mr_run_clean_up_before_the_runner_kills_it(
+        tmp_path, run_seconds, stop_after):
     marker = tmp_path / "marker"
     child = ("import sys, time\n"
              "from pdt import deploy_common\n"
              "deploy_common.stop_on_sigterm()\n"
              "try:\n"
              "    open(sys.argv[1], 'w').write('started\\n')\n"
-             "    time.sleep(60)\n"
+             f"    time.sleep({run_seconds})\n"
              "finally:\n"
-             "    time.sleep(1)\n"
+             "    deploy_common.ignore_sigterm()\n"
+             "    open(sys.argv[1], 'a').write('cleaning\\n')\n"
+             "    time.sleep(2)\n"
              "    open(sys.argv[1], 'a').write('cleaned\\n')\n")
     parent = ("import signal, subprocess, sys\n"
               "signal.signal(signal.SIGTERM, lambda _signum, _frame: None)\n"
@@ -328,9 +337,10 @@ def test_a_sigterm_to_the_group_runs_the_mr_run_clean_up_before_the_runner_kills
     proc = subprocess.Popen([sys.executable, "-c", parent, child, str(marker)],
                             start_new_session=True)
     deadline = time.monotonic() + 30
-    while not marker.exists() and time.monotonic() < deadline:
+    while (not (marker.exists() and stop_after in marker.read_text())
+           and time.monotonic() < deadline):
         time.sleep(0.05)
     os.killpg(proc.pid, signal.SIGTERM)
     service_runner.stop_tree(proc.pid, lambda: proc.poll() is not None, 30)
     proc.wait(10)
-    assert marker.read_text() == "started\ncleaned\n"
+    assert marker.read_text() == "started\ncleaning\ncleaned\n"
