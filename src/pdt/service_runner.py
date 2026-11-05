@@ -513,8 +513,9 @@ def mr_copy_problem(entry: dict, project: Path, app: str, sha: str) -> str:
     line = first + next((index for index, row in enumerate(rows) if old[1] in row and "pdt" in row.lower()), 0)
     return (f"{app}/run.py line {line} pins pdt-cli {old[1]}. A merge request run needs "
             f"pdt-cli {MR_STATE_VERSION} or newer, which keeps the state of the run apart from "
-            f"the state of the deployed job. Raise the pin in that line to {MR_STATE_VERSION} or "
-            "newer, and push the change.")
+            "the state of the deployed job.\nNext steps:\n"
+            "  pdt upgrade  move pdt, and the pdt version each app pins, to the newest release; "
+            "then push the change")
 
 
 def write_copy_files(job: Job, work: Path) -> Path:
