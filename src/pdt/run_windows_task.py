@@ -14,7 +14,7 @@ this script, or the end of the task stops the app and every process the app star
 app's lock is free only when they all ended. It holds the app's lock (`.pdt/locks/app-<app>.lock` of the project)
 for the run, and when another process holds that lock it writes the fact to the log and exits 1. It sets PDT_STORAGE_URL and PDT_RUN_ID (the UTC start,
 so the app's `runs/` folder is named after the run `pdt runs` lists), runs
-`uv run --script run.py` in the app folder with the uv that started it (or, for
+`uv run --script run.py` (`script_command`) in the app folder with the uv that started it (or, for
 an app with no run.py, `uv run --script run_powershell.py <app dir>`) inside
 `lifecycle.py`, which adds the job's lifecycle events to the log (with
 PDT_TRIGGER=manual when it finds MANUAL_START), writes
@@ -162,6 +162,18 @@ def hold_in_job() -> int | None:
     return job
 
 
+def script_command(uv: str, folder: Path, script: str = "run.py") -> list[str]:
+    """`uv run` of the app's script in `folder`. uv runs a script with inline metadata in an
+    environment of its own. A script with none would run in a `.venv` that uv finds in a parent
+    folder, so it gets `--isolated`, which uv reports as a no-op for a script with metadata."""
+    try:
+        text = (folder / script).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    isolated = [] if "# /// script" in text else ["--isolated"]
+    return [uv, "run", *isolated, "--script", script]
+
+
 def take_lock(path: Path, project: Path):
     """The same rule as pdt.config.try_lock, because this script imports nothing from pdt."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,7 +225,7 @@ def main(argv: list[str]) -> int:
     env.setdefault("PYTHONUNBUFFERED", "1")
     uv = os.environ.get("UV") or "uv"
     if (Path(app_dir) / "run.py").is_file():
-        command = [uv, "run", "--script", "run.py"]
+        command = script_command(uv, Path(app_dir))
     else:
         command = [uv, "run", "--script", str(Path(__file__).with_name("run_powershell.py")), app_dir]
     command = [uv, "run", "--script", str(Path(__file__).with_name("lifecycle.py")), "--", *command]

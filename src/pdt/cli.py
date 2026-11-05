@@ -28,7 +28,7 @@ from pdt.config import ConfigError
 
 if not completion.COMPLETING:
     from pdt import (alerts_cli, console, copies, deploy, gui_cli, lifecycle, powershell, pwsh,
-                     register_cli, scaffold, service, sync_cli, upgrade)
+                     register_cli, run_windows_task, scaffold, service, sync_cli, upgrade)
     from pdt.utils import autoidm
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
@@ -266,7 +266,8 @@ def cmd_run(args) -> int:
     provider = app["platform"].get("provider", "")
     with config.run_lock(name):
         if (app["dir"] / "run.py").is_file():
-            code = lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"])
+            code = lifecycle.run_job(name, provider,
+                                     run_windows_task.script_command("uv", app["dir"]), app["dir"])
         else:
             wrapper = Path(__file__).with_name("run_powershell.py")
             code = lifecycle.run_job(

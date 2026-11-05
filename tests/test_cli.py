@@ -283,7 +283,7 @@ def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
     monkeypatch.setattr(lifecycle.subprocess, "Popen", started(lambda command, **kwargs: calls.append(
         (command, kwargs)) or subprocess.CompletedProcess(command, 0)))
     assert run_cli(monkeypatch, "run", "ps-report") == 0
-    assert calls == [(["uv", "run", "--script", "run.py"],
+    assert calls == [(["uv", "run", "--isolated", "--script", "run.py"],
                       {"cwd": folder, "env": dict(os.environ, PDT_RUN_ID=lifecycle.storage.RUN_ID)})]
     assert os.environ["PSModulePath"] == "MODULE-PATH"
 
