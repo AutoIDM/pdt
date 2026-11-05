@@ -466,6 +466,18 @@ def test_every_run_keeps_the_files_of_its_output_folder_in_the_store(
     assert f"kept 2 output file(s) in {store.as_uri()}/runs/{folder}/" in capsys.readouterr().out
 
 
+def test_the_output_folder_that_managed_services_names_exists_before_the_command(
+        project, monkeypatch):
+    app = add_app(project, "report")
+    named = app / ".pdt" / "runs" / lifecycle.storage.RUN_ID / "output"
+    monkeypatch.setattr(lifecycle.managed_services, "start_run",
+                        lambda *args: lifecycle.managed_services.Run(output=named))
+    monkeypatch.setenv("PDT_STORAGE_URL", (project / "store").as_uri() + "/")
+    assert lifecycle.run_job("report", "aws", [sys.executable, "-c", WRITE_OUTPUT], app) == 0
+    assert (named / "report.csv").read_text() == "a,b\n"
+    assert len(kept_runs(project / "store")) == 3
+
+
 def test_a_run_with_no_storage_url_keeps_its_files_in_the_project_store(project):
     app = add_app(project, "report")
     assert lifecycle.run_job("report", "local", [sys.executable, "-c", WRITE_OUTPUT], app) == 0

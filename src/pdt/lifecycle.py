@@ -356,12 +356,13 @@ def app_params(app: str, provider: str) -> dict[str, object]:
     return {"project": config.project_name(), "app": app, "provider": provider}
 
 
-def output_folder(app_dir: Path) -> Path | None:
-    """The run's PDT_OUTPUT_DIR, made empty for the command: .pdt/runs/<run id>/output in the
-    app folder, or a temporary folder when pdt cannot write there."""
+def output_folder(app_dir: Path, folder: Path | None) -> Path | None:
+    """The run's PDT_OUTPUT_DIR, made before the command starts: `folder` that managed_services
+    named, else .pdt/runs/<run id>/output in the app folder, or a temporary folder when pdt
+    cannot write there."""
     fallback = Path(tempfile.gettempdir()) / f"pdt-{storage.RUN_ID}" / "output"
     try:
-        folder = managed_services.output_folder(app_dir, storage.RUN_ID, fallback)
+        folder = folder or managed_services.output_folder(app_dir, storage.RUN_ID, fallback)
         folder.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         console.warn(f"pdt cannot make the output folder of this run: "
@@ -410,7 +411,7 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     run = managed_services.monitored(
         "this run", lambda: managed_services.start_run(app, storage.RUN_ID, cwd),
         managed_services.Run())
-    output = run.output or output_folder(cwd)
+    output = output_folder(cwd, run.output)
     emit(JOB_RUN_STARTED, **params)
     began = time.monotonic()
     stopped: list[int] = []
