@@ -5,8 +5,11 @@
   policies of `deploy_aws.grant_policy_parts` for every region, and the boundary
   `pdt-autoidm-boundary` that each role it makes must carry.
 - `azure-grant.json`: an ARM template at subscription scope with the resource groups `pdt` and
-  `pdt-shared`, the external ID tag on `pdt`, and the role assignments of the grant on both groups
-  for the service principal `principalObjectId`.
+  `pdt-shared`, the external ID tag on `pdt`, the managed identity `pdt-autoidm` in `pdt` with a
+  federated credential for AutoIDM's token of this customer only (`pdtIssuer`, `pdtSubject`), and
+  the role assignments of the grant on both groups for that identity. AutoIDM's multi-tenant
+  service principal `principalObjectId` gets only Reader on `pdt`, so a token for another
+  customer cannot act here. The output `identityClientId` names the identity.
 - `google-cloud-grant.sh`: a Cloud Shell script that makes the service account `pdt-autoidm` with
   the external ID in its description, a workload identity pool with a provider for AutoIDM's AWS
   account, the binding that lets AutoIDM's credential role act as the account, and `GRANT_ROLES`.
@@ -27,6 +30,11 @@ AWS_FILE = "aws-grant.yaml"
 AZURE_FILE = "azure-grant.json"
 GOOGLE_FILE = "google-cloud-grant.sh"
 MANAGED_TAG = {"Key": "managed-by", "Value": "pdt"}
+IDENTITY = "pdt-autoidm"
+IDENTITY_DEPLOYMENT = "pdt-autoidm-identity"
+IDENTITY_OUTPUT = ("[reference(resourceId('pdt', 'Microsoft.Resources/deployments', "
+                   f"'{IDENTITY_DEPLOYMENT}'), '2022-09-01').outputs.{{}}.value]")
+NESTED_SCHEMA = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
 
 
 def substituted(value: object) -> object:
@@ -73,36 +81,66 @@ def aws_template() -> dict:
         "Outputs": {"RoleArn": {"Value": {"Fn::GetAtt": ["Role", "Arn"]}}}}
 
 
+def role_assignment(role: str, principal: str, name: str, condition: str | None = None) -> dict:
+    role_id = deploy_azure.ROLE_IDS[role]
+    properties = {
+        "roleDefinitionId": f"[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', "
+                            f"'{role_id}')]",
+        "principalId": principal, "principalType": "ServicePrincipal"}
+    if condition:
+        properties.update({"condition": condition, "conditionVersion": "2.0"})
+    return {"type": "Microsoft.Authorization/roleAssignments", "apiVersion": "2022-04-01",
+            "name": f"[guid(resourceGroup().id, {name}, '{role_id}')]", "properties": properties}
+
+
+def nested(name: str, group: str, depends: list[str], parameters: dict[str, str],
+           resources: list[dict], outputs: dict | None = None) -> dict:
+    template = {"$schema": NESTED_SCHEMA, "contentVersion": "1.0.0.0",
+                "parameters": {key: {"type": "string"} for key in parameters},
+                "resources": resources}
+    if outputs:
+        template["outputs"] = outputs
+    return {
+        "type": "Microsoft.Resources/deployments", "apiVersion": "2022-09-01",
+        "name": name, "resourceGroup": group, "dependsOn": depends,
+        "properties": {
+            "mode": "Incremental", "expressionEvaluationOptions": {"scope": "inner"},
+            "parameters": {key: {"value": value} for key, value in parameters.items()},
+            "template": template}}
+
+
+def azure_identity() -> dict:
+    identity_id = f"[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', '{IDENTITY}')]"
+    return nested(
+        IDENTITY_DEPLOYMENT, "pdt",
+        ["[subscriptionResourceId('Microsoft.Resources/resourceGroups', 'pdt')]"],
+        {"issuer": "[parameters('pdtIssuer')]", "subject": "[parameters('pdtSubject')]",
+         "principalObjectId": "[parameters('principalObjectId')]"},
+        [{"type": "Microsoft.ManagedIdentity/userAssignedIdentities", "apiVersion": "2023-01-31",
+          "name": IDENTITY, "location": "[resourceGroup().location]",
+          "tags": {"managed-by": "pdt"}},
+         {"type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials",
+          "apiVersion": "2023-01-31", "name": f"{IDENTITY}/autoidm", "dependsOn": [identity_id],
+          "properties": {"issuer": "[parameters('issuer')]", "subject": "[parameters('subject')]",
+                         "audiences": ["api://AzureADTokenExchange"]}},
+         role_assignment("Reader", "[parameters('principalObjectId')]",
+                         "parameters('principalObjectId')")],
+        {"principalId": {"type": "string",
+                         "value": f"[reference({identity_id[1:-1]}, '2023-01-31').principalId]"},
+         "clientId": {"type": "string",
+                      "value": f"[reference({identity_id[1:-1]}, '2023-01-31').clientId]"}})
+
+
 def azure_assignments(group: str) -> dict:
     roles = [(role, None) for role in deploy_azure.GRANT_ROLES]
     roles.append(("Role Based Access Control Administrator", deploy_azure.grant_condition()))
-    resources = []
-    for role, condition in roles:
-        definition = ("[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', "
-                      f"'{deploy_azure.ROLE_IDS[role]}')]")
-        properties = {"roleDefinitionId": definition,
-                      "principalId": "[parameters('principalObjectId')]",
-                      "principalType": "ServicePrincipal"}
-        if condition:
-            properties.update({"condition": condition, "conditionVersion": "2.0"})
-        resources.append({
-            "type": "Microsoft.Authorization/roleAssignments", "apiVersion": "2022-04-01",
-            "name": f"[guid(resourceGroup().id, parameters('principalObjectId'), "
-                    f"'{deploy_azure.ROLE_IDS[role]}')]",
-            "properties": properties})
-    return {
-        "type": "Microsoft.Resources/deployments", "apiVersion": "2022-09-01",
-        "name": f"pdt-autoidm-{group}", "resourceGroup": group,
-        "dependsOn": [f"[subscriptionResourceId('Microsoft.Resources/resourceGroups', '{group}')]"],
-        "properties": {
-            "mode": "Incremental", "expressionEvaluationOptions": {"scope": "inner"},
-            "parameters": {"principalObjectId": {"value": "[parameters('principalObjectId')]"}},
-            "template": {
-                "$schema": "https://schema.management.azure.com/schemas/2019-04-01/"
-                           "deploymentTemplate.json#",
-                "contentVersion": "1.0.0.0",
-                "parameters": {"principalObjectId": {"type": "string"}},
-                "resources": resources}}}
+    return nested(
+        f"pdt-autoidm-{group}", group,
+        [f"[subscriptionResourceId('Microsoft.Resources/resourceGroups', '{group}')]",
+         f"[resourceId('pdt', 'Microsoft.Resources/deployments', '{IDENTITY_DEPLOYMENT}')]"],
+        {"identityPrincipalId": IDENTITY_OUTPUT.format("principalId")},
+        [role_assignment(role, "[parameters('identityPrincipalId')]", f"'{IDENTITY}'", condition)
+         for role, condition in roles])
 
 
 def azure_template() -> dict:
@@ -122,9 +160,15 @@ def azure_template() -> dict:
                 "description": "The object ID of AutoIDM's service principal in your tenant"}},
             "externalId": {"type": "string", "metadata": {
                 "description": "The external ID of your AutoIDM customer"}},
+            "pdtIssuer": {"type": "string", "metadata": {
+                "description": "The issuer of AutoIDM's AWS identity tokens"}},
+            "pdtSubject": {"type": "string", "metadata": {
+                "description": "The subject of AutoIDM's identity tokens for your customer"}},
             "location": {"type": "string", "defaultValue": "[deployment().location]"}},
-        "resources": [*groups, *(azure_assignments(group)
-                                 for group in ("pdt", deploy_azure.SHARED_GROUP))]}
+        "resources": [*groups, azure_identity(),
+                      *(azure_assignments(group) for group in ("pdt", deploy_azure.SHARED_GROUP))],
+        "outputs": {"identityClientId": {"type": "string",
+                                         "value": IDENTITY_OUTPUT.format("clientId")}}}
 
 
 def shell_quoted(text: str) -> str:
@@ -133,10 +177,13 @@ def shell_quoted(text: str) -> str:
 
 
 def google_script() -> str:
-    roles = " ".join(deploy_google_cloud.GRANT_ROLES)
+    roles = " ".join(deploy_google_cloud.GRANT_ROLES).replace("PROJECT_ID", "$PDT_PROJECT")
     conditional = "\n".join(
-        f'grant {role} "{title}" "{shell_quoted(expression)}"'
+        f'grant {role.replace("PROJECT_ID", "$PDT_PROJECT")} "{title}" "{shell_quoted(expression)}"'
         for role, title, expression in deploy_google_cloud.GRANT_CONDITIONAL_ROLES)
+    custom = "\n".join(
+        f"custom_role {role} {','.join(permissions)}"
+        for role, permissions in deploy_google_cloud.GRANT_CUSTOM_ROLES.items())
     name = deploy_google_cloud.GRANT_NAME
     runner = deploy_google_cloud.GRANT_RUNNER
     return f"""#!/usr/bin/env bash
@@ -176,6 +223,15 @@ fi
 gcloud iam service-accounts add-iam-policy-binding "$ACCOUNT" --project "$PDT_PROJECT" \\
   --role roles/iam.workloadIdentityUser \\
   --member "principalSet://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/$POOL/attribute.aws_role/$PDT_AWS_ROLE"
+custom_role() {{
+  if gcloud iam roles describe "$1" --project "$PDT_PROJECT" >/dev/null 2>&1; then
+    gcloud iam roles update "$1" --project "$PDT_PROJECT" --permissions "$2" --quiet --format=none
+  else
+    gcloud iam roles create "$1" --project "$PDT_PROJECT" --title "$1" \\
+      --description "managed-by=pdt" --permissions "$2" --stage GA --format=none
+  fi
+}}
+{custom}
 for role in {roles}; do
   gcloud projects add-iam-policy-binding "$PDT_PROJECT" --member "serviceAccount:$ACCOUNT" \\
     --role "$role" --condition=None --format=none
