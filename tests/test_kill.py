@@ -79,12 +79,26 @@ def test_windows_kill_stops_the_task(monkeypatch, capsys):
     scripts = []
     monkeypatch.setattr(deploy_windows, "_preflight", lambda require_uv=True: ("powershell.exe", None))
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: True)
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kwargs: scripts.append((script, kwargs)) or True)
     assert deploy_windows.kill({"name": "hr"}) == 0
     assert scripts == [("Stop-ScheduledTask -TaskName 'pdt-hr' -ErrorAction Stop",
                         {"elevate": True})]
     assert "Stopped hr" in capsys.readouterr().out
+
+
+def test_windows_kill_of_a_task_that_is_not_running_stops_nothing(monkeypatch, capsys):
+    scripts = []
+    monkeypatch.setattr(deploy_windows, "_preflight", lambda require_uv=True: ("powershell.exe", None))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: False)
+    monkeypatch.setattr(deploy_windows, "_run",
+                        lambda powershell, script, **kwargs: scripts.append((script, kwargs)) or True)
+    assert deploy_windows.kill({"name": "hr"}) == 0
+    assert scripts == []
+    output = capsys.readouterr().out
+    assert "Stopped" not in output and "No run of hr runs" in output
 
 
 def test_pdt_run_kill_sends_kill_to_the_provider(monkeypatch):
