@@ -587,7 +587,12 @@ def access_problem(settings: dict) -> bool:
     for folder in folders:
         if not folder.exists():
             continue
-        found = service_access.writable_by_others(folder)
+        try:
+            found = service_access.writable_by_others(folder)
+        except service_access.AccessError as e:
+            console.error(console.escape(str(e)))
+            say(f"{e} The service stopped.")
+            return True
         if found:
             account, path = found
             console.error(f"The account {console.value(account)} can change "

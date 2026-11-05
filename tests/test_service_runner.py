@@ -1215,3 +1215,11 @@ def test_the_start_check_covers_the_projects_folder(machine, monkeypatch):
     checked = admin_check(monkeypatch, None)
     assert service.access_problem(settings()) is False
     assert checked == [machine.parent]
+
+
+def test_a_start_check_that_cannot_finish_stops_the_service(machine, monkeypatch):
+    def too_many(folder):
+        raise service.service_access.AccessError(f"{folder} holds more than 50000 files")
+    monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
+    monkeypatch.setattr(service.service_access, "writable_by_others", too_many)
+    assert service.access_problem(settings()) is True
