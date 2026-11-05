@@ -1,5 +1,8 @@
+import hashlib
+import io
 import signal
 import sys
+import zipfile
 
 import pytest
 from service_fixtures import COMMAND, CUSTOMER, FakePortal, copy_of
@@ -246,3 +249,50 @@ def test_the_mr_child_runs_the_provider_verb_and_copies_its_output(monkeypatch, 
     monkeypatch.setattr(hosted_runner.signal, "signal", lambda signum, handler: calls.append(signum))
     assert hosted_runner.main(["mr-run", "hr", "12"]) == 0
     assert calls == [signal.SIGTERM, ("hr", "12"), ("hr", COMMAND, tmp_path)]
+
+
+def copy_routes(portal, status=200):
+    portal.routes["/v1/runner/copies/start"] = lambda _body: (status, {
+        "upload": {"url": f"{portal.url}/put", "headers": {}}} if status == 200 else {
+        "error": "conflict", "message": "the copy changed since you read it"})
+
+
+def test_a_config_change_of_the_child_goes_back_to_the_copy_it_came_from(portal, monkeypatch):
+    claim(portal, "deploy", {"project": "example", "app": "hr"})
+    (base,) = portal.zips
+    copy_routes(portal)
+    child(monkeypatch, "import pathlib\n"
+                       "path = pathlib.Path('pdt.yml')\n"
+                       "path.write_text(path.read_text() + '  timezone: America/Chicago\\n')\n")
+    assert hosted_runner.main([]) == 0
+    text = b"platform:\n  provider: aws\n  timezone: America/Chicago\n"
+    (start,) = portal.bodies("/v1/runner/copies/start")
+    assert start["base_sha256"] == base and start["unit"] == "root"
+    assert start["files"] == [{"path": "pdt.yml", "size": len(text)}]
+    ((path, data, _checksum),) = portal.puts
+    assert path == "/put" and hashlib.sha256(data).hexdigest() == start["sha256"]
+    assert zipfile.ZipFile(io.BytesIO(data)).read("pdt.yml") == text
+    assert portal.bodies("/v1/runner/copies/finish") == [
+        {"version": 1, "command_id": COMMAND, "unit": "root", "sha256": start["sha256"]}]
+    assert b"pdt saved pdt.yml in the AutoIDM copy of the project." in portal.uploads[0]
+    assert result(portal)["outcome"] == "done"
+
+
+def test_a_run_that_changes_no_config_sends_no_copy(portal, monkeypatch):
+    claim(portal, "deploy", {"project": "example", "app": "hr"})
+    copy_routes(portal)
+    child(monkeypatch, "print('nothing to save')\n")
+    assert hosted_runner.main([]) == 0
+    assert portal.bodies("/v1/runner/copies/start") == []
+
+
+def test_a_copy_that_changed_meanwhile_keeps_its_change_and_the_result_says_so(portal,
+                                                                             monkeypatch):
+    claim(portal, "pause", {"project": "example", "app": "hr"})
+    copy_routes(portal, 409)
+    child(monkeypatch, "import pathlib\npathlib.Path('pdt.yml').write_text('platform: {}\\n')\n")
+    assert hosted_runner.main([]) == 0
+    assert portal.bodies("/v1/runner/copies/finish") == []
+    found = result(portal)
+    assert found["outcome"] == "done"
+    assert found["message"].startswith("pdt could not save pdt.yml in the AutoIDM copy")

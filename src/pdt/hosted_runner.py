@@ -7,7 +7,8 @@ token, one hour of credentials for the one place, the current copy of the projec
 input. It writes the copy into a new folder and runs pdt there as a child, as USER when it runs as
 root, with an allow list of env vars and the credentials, and nothing else of its own environment.
 It sends the output each OUTPUT_SECONDS to `/v1/runner/report`, stops the child when the answer
-says `cancel`, uploads the log and, for `artifacts` and `run_mr`, the output folder, and reports
+says `cancel`, sends AutoIDM each unit of the copy whose `pdt.yml` or `<app>/config.yml` the
+child changed (`save_config`), uploads the log and, for `artifacts` and `run_mr`, the output folder, and reports
 the result. A hard timer ends the process at the run limit plus GRACE_SECONDS. Exit code 0 means
 that AutoIDM has the result.
 
@@ -18,6 +19,7 @@ job of the merge request through the provider verb `mr-run`, and copies that run
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -218,11 +220,15 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
         base["HOME"] = user_home(user)
     log = work / "output.log"
     secrets = service_runner.secret_values([value] if isinstance(value, str) else [])
+    units = [] if operation == "run_mr" else (answer.get("copy") or {}).get("units") or []
+    before = read_config(project, units)
     try:
         code, outcome, message = run_child(runner, argv, project, child_env(
             base, project, credentials, extra), log, value, user, limit, secrets)
     finally:
         service_runner.remove_folder(credentials.get(grants.GRANT_FOLDER_ENV))
+    problem = save_config(runner, project, units, before, log)
+    message = message or problem
     size = log.stat().st_size if log.is_file() else 0
     upload = size <= managed_services.MAX_UPLOAD_BYTES
     keep = size if upload else service_runner.MAX_MESSAGE + max(map(len, secrets), default=0)
@@ -244,6 +250,54 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
             artifact_key = runner.upload("artifact", service_runner.ARTIFACT_NAME, zipped)
     return service_runner.result_of(outcome, code, message, runner.command_id, artifact_key,
                                     log_key)
+
+
+def config_path(unit: str) -> str:
+    return "pdt.yml" if unit == copies.ROOT else f"{unit.removeprefix('app=')}/config.yml"
+
+
+def read_config(project: Path, units: list[dict]) -> dict[str, bytes | None]:
+    found = {}
+    for entry in units:
+        path = project / config_path(entry["unit"])
+        found[entry["unit"]] = path.read_bytes() if path.is_file() else None
+    return found
+
+
+def save_config(runner: Runner, project: Path, units: list[dict],
+                before: dict[str, bytes | None], log: Path) -> str | None:
+    """Send AutoIDM each unit of the copy whose config file pdt changed in the run, such as the
+    time zone a first deploy saves, as pdt run by a person keeps it in the project folder. The
+    copy must still be the one the runner got, so a change made in the meantime stays. Returns
+    the problem when a unit could not be saved."""
+    problem = None
+    for entry in units:
+        unit, relative = entry["unit"], config_path(entry["unit"])
+        path = project / relative
+        text = path.read_bytes() if path.is_file() else None
+        if text == before[unit]:
+            continue
+        try:
+            paths = {item["path"] for item in entry["files"]} - {relative}
+            if text is not None:
+                paths.add(relative)
+            files = [{"path": name, "size": (project / name).stat().st_size}
+                     for name in sorted(paths)]
+            data = copies.build_zip(project, files)
+            digest = hashlib.sha256(data).hexdigest()
+            body = {"command_id": runner.command_id, "unit": unit, "sha256": digest}
+            answer = runner.post("/v1/runner/copies/start", {
+                **body, "size": len(data), "files": files, "base_sha256": entry["sha256"]})
+            if answer.get("upload"):
+                copies.put(answer["upload"], data, digest)
+            runner.post("/v1/runner/copies/finish", body)
+            line = f"pdt saved {relative} in the AutoIDM copy of the project."
+        except (copies.CopyError, autoidm.AutoidmError, OSError) as e:
+            line = f"pdt could not save {relative} in the AutoIDM copy of the project: {e}"
+            problem = problem or line
+        with log.open("a", encoding="utf-8") as out:
+            out.write(line + "\n")
+    return problem
 
 
 def run_child(runner: Runner, argv: list[str], project: Path, env: dict[str, str], log: Path,
