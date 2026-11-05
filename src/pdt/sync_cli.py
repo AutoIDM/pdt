@@ -150,8 +150,9 @@ def plan_unit(root: Path, unit: str, staged: Path, files: list[dict]) -> dict[st
             changes[entry["path"]] = new
     if app and (root / app).is_dir():
         for entry in copies.collect(root / app)[0]:
-            if f"{app}/{entry['path']}" not in wanted:
-                changes[f"{app}/{entry['path']}"] = None
+            path = f"{app}/{entry['path']}"
+            if path not in wanted and path != merged_file:
+                changes[path] = None
     return changes
 
 
@@ -160,7 +161,7 @@ def back_up(root: Path, paths: list[str]) -> Path | None:
     if not existing:
         return None
     folder = root / config.STATE_DIR / "backup" / datetime.now(timezone.utc).strftime(
-        "%Y%m%dT%H%M%SZ")
+        "%Y%m%dT%H%M%S.%fZ")
     for path in existing:
         target = folder / path
         Path(copies.long_path(target.parent)).mkdir(parents=True, exist_ok=True)
@@ -176,9 +177,12 @@ def write_changes(root: Path, changes: dict[str, bytes | None]) -> None:
             Path(copies.long_path(target)).unlink(missing_ok=True)
             continue
         Path(copies.long_path(target.parent)).mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(target.name + ".pdt-sync")
-        Path(copies.long_path(temporary)).write_bytes(data)
-        os.replace(copies.long_path(temporary), copies.long_path(target))
+        temporary = copies.long_path(target.with_name(target.name + ".pdt-sync"))
+        Path(temporary).unlink(missing_ok=True)
+        handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
+        with os.fdopen(handle, "wb") as file:
+            file.write(data)
+        os.replace(temporary, copies.long_path(target))
 
 
 def down(app: str | None, assume_yes: bool) -> int:

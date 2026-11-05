@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import sys
 
 import pytest
 import yaml
@@ -111,6 +112,39 @@ def test_sync_down_of_one_app_replaces_the_app_folder(project, portal, monkeypat
     assert portal.bodies("/v1/copies/get")[0]["unit"] == "app=hr"
     backup = next((project / ".pdt" / "backup").iterdir())
     assert (backup / "hr" / "old.py").read_text() == "x = 1\n"
+
+
+def test_sync_down_of_an_app_copy_with_no_config_yml_keeps_the_local_one(project, portal,
+                                                                        monkeypatch):
+    portal.serve_copies(copy_of("app=hr", {"hr/run.py": b"print('new')\n"}))
+    assert run(monkeypatch, "sync", "down", "hr", "--yes") == 0
+    assert (project / "hr" / "config.yml").read_text() == "schedule: daily\n"
+    assert (project / "hr" / "run.py").read_text() == "print('new')\n"
+
+
+def test_two_sync_downs_keep_two_backups(project, portal, monkeypatch):
+    portal.serve_copies(copy_of("app=hr", {"hr/config.yml": b"schedule: daily\n",
+                                           "hr/run.py": b"print('second')\n"}))
+    (project / "hr" / "run.py").write_text("print('first')\n")
+    assert run(monkeypatch, "sync", "down", "hr", "--yes") == 0
+    (project / "hr" / "run.py").write_text("print('third')\n")
+    assert run(monkeypatch, "sync", "down", "hr", "--yes") == 0
+    backups = sorted((project / ".pdt" / "backup").iterdir())
+    assert [(backup / "hr" / "run.py").read_text() for backup in backups] == [
+        "print('first')\n", "print('third')\n"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a file link needs an administrator on Windows")
+def test_sync_down_never_writes_through_a_link_at_the_temporary_name(project, portal, monkeypatch,
+                                                                     tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep\n")
+    (project / "hr" / "run.py.pdt-sync").symlink_to(outside)
+    portal.serve_copies(copy_of("app=hr", {"hr/config.yml": b"schedule: daily\n",
+                                           "hr/run.py": b"print('new')\n"}))
+    assert run(monkeypatch, "sync", "down", "hr", "--yes") == 0
+    assert outside.read_text() == "keep\n"
+    assert (project / "hr" / "run.py").read_text() == "print('new')\n"
 
 
 def test_sync_down_at_a_terminal_asks_once_and_a_no_changes_nothing(project, portal, monkeypatch):
