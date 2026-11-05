@@ -38,6 +38,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -46,7 +47,7 @@ from pathlib import Path
 import jwt
 from dotenv import dotenv_values
 
-from pdt import config, copies, managed_services, run_windows_task, service_commands
+from pdt import config, copies, deploy_common, managed_services, run_windows_task, service_commands
 from pdt.service_commands import OPERATIONS, Clock, Refused
 from pdt.utils import autoidm
 
@@ -74,8 +75,9 @@ STILL_ACTIVE = 259
 # The first pdt-cli whose storage keeps the state of a merge request run apart from the state of
 # the deployed job. An app runs with the pdt-cli its run.py pins.
 MR_STATE_VERSION = "0.1.14"
-RESOLVED_PDT = re.compile(r"^pdt-cli==(\S+)", re.M)
-PDT_NAME = re.compile(r"pdt[-_.]+cli", re.I)
+# A requirement of the script metadata: its name, its extras, and its specifiers before any marker.
+REQUIREMENT = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*\(?([^;@)]*)\)?")
+SPECIFIER = re.compile(r"(===|==|<=|<)\s*v?([0-9][0-9A-Za-z.*+!-]*)")
 
 
 def now_text() -> str:
@@ -478,6 +480,26 @@ def version_parts(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", version)[:3])
 
 
+def old_pdt_bound(requirement: object) -> tuple[str, str] | None:
+    """The requirement and its version when it is pdt-cli and its bounds keep out every release
+    from MR_STATE_VERSION up, so uv picks an older one."""
+    found = REQUIREMENT.match(requirement) if isinstance(requirement, str) else None
+    if found is None or re.sub(r"[-_.]+", "-", found.group(1)).lower() != "pdt-cli":
+        return None
+    least = version_parts(MR_STATE_VERSION)
+    for operator, version in SPECIFIER.findall(found.group(2)):
+        parts = version_parts(version)
+        if version.endswith(".*"):
+            below = parts < least[:len(parts)]
+        elif operator == "<":
+            below = parts <= least
+        else:
+            below = parts < least or (parts == least and not re.fullmatch(r"[0-9.]+", version))
+        if below:
+            return requirement, version
+    return None
+
+
 def mr_copy_problem(entry: dict, project: Path, app: str, sha: str) -> str:
     """Why a `run_mr` must not run this copy: it is not of the signed commit, or the app pins a
     pdt-cli that writes the run's state over the state of the deployed job."""
@@ -489,29 +511,25 @@ def mr_copy_problem(entry: dict, project: Path, app: str, sha: str) -> str:
         text = run_py.read_text(encoding="utf-8-sig")
     except (FileNotFoundError, UnicodeError):
         return ""
-    if "# /// script" not in text:
+    # Read, never resolve: resolving runs build hooks of the customer's code. The check is for an
+    # app whose pin is old by mistake; the code of an MR run can write any state on purpose.
+    block = deploy_common.SCRIPT_HEADER.search(text)
+    if block is None:
         return ""
-    # uv resolves the script metadata as `uv run --script` does, so its answer is the pdt-cli
-    # that the run would get.
-    resolved = subprocess.run(
-        ["uv", "export", "--script", str(run_py), "--no-header", "--no-hashes", "--no-annotate",
-         "--format", "requirements-txt"],
-        cwd=run_py.parent, env={**os.environ, "UV_NO_CONFIG": "1"}, capture_output=True,
-        text=True, encoding="utf-8", errors="replace", timeout=300)
-    if resolved.returncode != 0:
-        return (f"pdt could not read which pdt-cli {app}/run.py runs with: "
-                f"{resolved.stderr.strip()[-MAX_MESSAGE // 2:]}")
-    least = version_parts(MR_STATE_VERSION)
-    old = [version for version in RESOLVED_PDT.findall(resolved.stdout)
-           if version_parts(version) < least]
+    try:
+        metadata = tomllib.loads("".join(row[2:] for row in block.group(0).splitlines(True)[1:-1]))
+    except tomllib.TOMLDecodeError:
+        return ""
+    dependencies = metadata.get("dependencies")
+    old = [found for found in (old_pdt_bound(item) for item in
+                               (dependencies if isinstance(dependencies, list) else []))
+           if found]
     if not old:
         return ""
-    rows = text.splitlines()
-    start = rows.index("# /// script") if "# /// script" in rows else 0
-    line = next((number for number, row in enumerate(rows[start:], start + 1)
-                 if PDT_NAME.search(row) and not row.removeprefix("#").lstrip().startswith("#")),
-                start + 1)
-    return (f"{app}/run.py line {line} pins pdt-cli {old[0]}. A merge request run needs "
+    first = text.count("\n", 0, block.start())
+    line = first + 1 + next((index for index, row in enumerate(block.group(0).splitlines())
+                             if old[0][0] in row and not row[1:].lstrip().startswith("#")), 0)
+    return (f"{app}/run.py line {line} pins pdt-cli {old[0][1]}. A merge request run needs "
             f"pdt-cli {MR_STATE_VERSION} or newer, which keeps the state of the run apart from "
             "the state of the deployed job.\nNext steps:\n"
             "  pdt upgrade  move pdt, and the pdt version each app pins, to the newest release; "

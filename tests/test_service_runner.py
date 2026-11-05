@@ -1048,7 +1048,6 @@ def test_an_mr_run_of_an_app_that_pins_an_older_pdt_is_refused(machine, portal, 
     serve_mr(portal, {"pdt.yml": f"managed_services:\n  customer: {CUSTOMER}\n".encode(),
                       "hr/config.yml": b"schedule: daily\n", "hr/run.py": run_py})
     child(monkeypatch, "pass")
-    resolving(monkeypatch, f"pdt-cli=={pin}\n")
     portal.routes["/v1/uploads"] = lambda _body: (200, {
         "url": f"{portal.url}/bucket", "fields": {"key": "k"}, "key": "k"})
     execute(job(machine, "run_mr", MR_ARGS))
@@ -1062,57 +1061,39 @@ def test_an_mr_run_of_an_app_that_pins_an_older_pdt_is_refused(machine, portal, 
     assert "\nNext steps:\n  pdt upgrade  " in result["message"]
 
 
-def resolving(monkeypatch, stdout, code=0):
-    """uv export answers `stdout`; every other subprocess.run call runs as usual."""
-    real = service_runner.subprocess.run
-    seen = []
-
-    def run(argv, *args, **kwargs):
-        if argv[:2] != ["uv", "export"]:
-            return real(argv, *args, **kwargs)
-        seen.append(argv)
-        return subprocess.CompletedProcess(argv, code, stdout, "error: no solution")
-
-    monkeypatch.setattr(service_runner.subprocess, "run", run)
-    return seen
-
-
-@pytest.mark.parametrize("stdout, old", [
-    ("anyio==4.0\npdt-cli==0.1.13\n", "0.1.13"),
-    ("pdt-cli==0.1.13 ; sys_platform == 'win32'\npdt-cli==0.1.14 ; sys_platform != 'win32'\n",
-     "0.1.13"),
-    ("pdt-cli==0.1.14\n", None),
-    ("pdt-cli==0.2.0\n", None),
-    ("requests==2.32.0\n", None),
+@pytest.mark.parametrize("dependencies, old", [
+    ("dependencies = ['pdt-cli[apps]==0.1.13']", "0.1.13"),
+    ('dependencies = ["pdt--cli (==0.1.13)"]', "0.1.13"),
+    ('dependencies = ["PDT_cli[apps] === v0.1.9 ; python_version >= \'3.12\'"]', "0.1.9"),
+    ('dependencies = ["pdt-cli<=0.1.12"]', "0.1.12"),
+    ('dependencies = ["pdt-cli<0.1.14"]', "0.1.14"),
+    ('dependencies = ["pdt-cli<=0.1.14rc1"]', "0.1.14rc1"),
+    ('dependencies = ["pdt-cli==0.0.*"]', "0.0.*"),
+    ('dependencies = ["pdt-cli>=0.1.14,==0.1.*"]', None),
+    ('dependencies = ["pdt-cli<=0.1.14"]', None),
+    ('dependencies = ["pdt-cli>=0.1.10"]', None),
+    ('dependencies = ["pdt-cli~=0.1.13"]', None),
+    ('dependencies = ["pdt-cli-extra==0.1.0"]', None),
+    ('dependencies = ["pdt-cli[apps]==0.1.14"]', None),
 ])
-def test_the_mr_pin_check_uses_the_pdt_cli_that_uv_resolves(tmp_path, monkeypatch, stdout, old):
+def test_the_mr_pin_check_reads_the_script_metadata(tmp_path, dependencies, old):
     (tmp_path / "hr").mkdir()
     (tmp_path / "hr" / "run.py").write_text(
         "import os\n# /// script\n# # pdt-cli==0.1.12 was the pin before\n"
-        "# dependencies = ['pdt--cli (==0.1.13)']\n# ///\n# pdt-cli is used below\n",
-        encoding="utf-8")
-    seen = resolving(monkeypatch, stdout)
+        f"# {dependencies}\n# [tool.example]\n# text = \"\"\"\n# ///\n# \"\"\"\n# ///\n"
+        "print('# /// script')\n", encoding="utf-8")
     problem = service_runner.mr_copy_problem({"commit": "a" * 40}, tmp_path, "hr", "a" * 40)
-    assert seen[0][2:4] == ["--script", str(tmp_path / "hr" / "run.py")]
     if old is None:
         assert problem == ""
         return
     assert problem.startswith(f"hr/run.py line 4 pins pdt-cli {old}.")
 
 
-def test_the_mr_pin_check_refuses_when_uv_cannot_resolve(tmp_path, monkeypatch):
+@pytest.mark.parametrize("text", ["print('# /// script')\n",
+                                  "# /// script\n# dependencies = [\n# ///\n"])
+def test_the_mr_pin_check_runs_a_script_with_no_valid_metadata(tmp_path, text):
     (tmp_path / "hr").mkdir()
-    (tmp_path / "hr" / "run.py").write_text("# /// script\n# dependencies = ['x']\n# ///\n",
-                                            encoding="utf-8")
-    resolving(monkeypatch, "", code=1)
-    problem = service_runner.mr_copy_problem({"commit": "a" * 40}, tmp_path, "hr", "a" * 40)
-    assert problem == "pdt could not read which pdt-cli hr/run.py runs with: error: no solution"
-
-
-def test_the_mr_pin_check_skips_a_script_with_no_metadata(tmp_path, monkeypatch):
-    (tmp_path / "hr").mkdir()
-    (tmp_path / "hr" / "run.py").write_text("print('hi')\n", encoding="utf-8")
-    assert resolving(monkeypatch, "") == []
+    (tmp_path / "hr" / "run.py").write_text(text, encoding="utf-8")
     assert service_runner.mr_copy_problem({"commit": "a" * 40}, tmp_path, "hr", "a" * 40) == ""
 
 
