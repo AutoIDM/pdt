@@ -1,8 +1,10 @@
 import hashlib
 import io
+import json
 import signal
 import sys
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 from service_fixtures import COMMAND, CUSTOMER, FakePortal, copy_of
@@ -242,13 +244,17 @@ def test_a_log_over_the_upload_limit_is_not_read_whole(portal, monkeypatch):
 def test_the_mr_child_runs_the_provider_verb_and_copies_its_output(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(hosted_runner.deploy, "mr_run", lambda app, iid: calls.append((app, iid)) or 0)
-    monkeypatch.setattr(hosted_runner.run_output, "copy_run",
-                        lambda app, identity, target: calls.append((app, identity, target)) or 1)
+    listing = json.dumps([{"name": "runs/20261105T000000Z-other/", "type": "directory"},
+                          {"name": f"runs/20261105T000001Z-{COMMAND}", "type": "directory"}])
+    monkeypatch.setattr("subprocess.run", lambda argv, **kwargs: calls.append(argv[3:]) or
+                        SimpleNamespace(returncode=0, stdout=listing, stderr=""))
     monkeypatch.setenv("PDT_RUN_ID", COMMAND)
     monkeypatch.setenv("PDT_OUTPUT_DIR", str(tmp_path))
     monkeypatch.setattr(hosted_runner.signal, "signal", lambda signum, handler: calls.append(signum))
     assert hosted_runner.main(["mr-run", "hr", "12"]) == 0
-    assert calls == [signal.SIGTERM, ("hr", "12"), ("hr", COMMAND, tmp_path)]
+    assert calls == [signal.SIGTERM, ("hr", "12"), ["storage", "hr", "ls", "runs", "--json"],
+                     ["storage", "hr", "get", f"runs/20261105T000001Z-{COMMAND}", str(tmp_path),
+                      "--yes"]]
 
 
 def copy_routes(portal, status=200):
