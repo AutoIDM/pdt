@@ -192,6 +192,18 @@ def test_azure_mr_run_stops_its_execution_when_the_follow_is_interrupted(monkeyp
                                                   ("acr", "repository", "delete")]
 
 
+def test_azure_mr_run_stops_its_execution_when_the_status_read_fails(monkeypatch):
+    calls = azure(monkeypatch)
+    stops = []
+    monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args: None)
+    monkeypatch.setattr(deploy_azure_container_apps, "az", lambda *args: stops.append(args))
+    monkeypatch.setattr(deploy_azure_container_apps, "logs", lambda *args, **kwargs: 130)
+    assert deploy_azure_container_apps.mr_run({"name": "hr"}, SETTINGS, "12") == 130
+    assert stops == [("containerapp", "job", "stop", "--name", "pdt-hr", "--resource-group", "pdt",
+                      "--job-execution-name", "pdt-hr-x1")]
+    assert calls[-1][:3] == ("acr", "repository", "delete")
+
+
 def test_azure_mr_run_leaves_a_finished_execution_alone(monkeypatch):
     calls = azure(monkeypatch, status="Failed")
     monkeypatch.setattr(deploy_azure_container_apps, "logs", lambda *args, **kwargs: 1)
