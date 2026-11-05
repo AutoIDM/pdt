@@ -105,16 +105,33 @@ def test_the_aws_policy_names_resources_and_no_wildcard_action():
                 resource
 
 
-def test_each_new_role_needs_the_boundary():
+def allows(policy, action):
+    return [item for item in statements(policy)
+            if item["Effect"] == "Allow" and action in item["Action"]]
+
+
+def test_each_new_role_needs_the_boundary_and_the_managed_tag():
     policy = deploy_aws.grant_policy(ACCOUNT, "us-east-2")
-    bounded = next(item for item in statements(policy) if "iam:CreateRole" in item["Action"])
-    assert bounded["Condition"]["StringEquals"]["iam:PermissionsBoundary"] == (
-        f"arn:aws:iam::{ACCOUNT}:policy/{GRANT_BOUNDARY}")
-    assert "iam:PutRolePolicy" in bounded["Action"]
-    others = [item for item in statements(policy)
-              if item["Effect"] == "Allow" and item is not bounded]
-    assert not any("iam:CreateRole" in item["Action"] or "iam:PutRolePolicy" in item["Action"]
-                   for item in others)
+    boundary = f"arn:aws:iam::{ACCOUNT}:policy/{GRANT_BOUNDARY}"
+    [create] = allows(policy, "iam:CreateRole")
+    assert create["Condition"]["StringEquals"] == {
+        "iam:PermissionsBoundary": boundary, "aws:RequestTag/managed-by": ["pdt"]}
+    for action in ["iam:CreateRole", "iam:TagRole"]:
+        [statement] = allows(policy, action)
+        assert statement["Condition"]["ForAllValues:StringEquals"] == {
+            "aws:TagKeys": ["managed-by"]}
+    [bounded] = allows(policy, "iam:PutRolePolicy")
+    assert bounded["Condition"] == {"StringEquals": {"iam:PermissionsBoundary": boundary}}
+
+
+@pytest.mark.parametrize("action", deploy_aws.GRANT_TAGGED)
+def test_a_role_without_the_managed_tag_cannot_be_deleted_trusted_or_passed(action):
+    for document in [deploy_aws.grant_policy(ACCOUNT, "us-east-2"),
+                     deploy_aws.grant_boundary(ACCOUNT)]:
+        for statement in allows(document, action):
+            assert statement["Condition"]["StringEquals"]["aws:ResourceTag/managed-by"] == ["pdt"]
+    [passing] = allows(deploy_aws.grant_policy(ACCOUNT, "us-east-2"), "iam:PassRole")
+    assert "iam:PassedToService" in passing["Condition"]["StringEquals"]
 
 
 @pytest.mark.parametrize("document", [
@@ -124,6 +141,7 @@ def test_no_action_changes_the_identity_or_the_boundary(document):
     resources = {resource for item in denies for resource in item["Resource"]}
     assert f"arn:aws:iam::{ACCOUNT}:role/{GRANT_ROLE}" in resources
     assert f"arn:aws:iam::{ACCOUNT}:policy/{GRANT_ROLE}*" in resources
+    assert f"arn:aws:iam::{ACCOUNT}:role/pdt-backend-*" in resources
     assert any(item["Action"] == ["iam:DeleteRolePermissionsBoundary"] for item in denies)
 
 

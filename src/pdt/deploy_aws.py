@@ -1287,34 +1287,56 @@ GRANT_ROLE = "pdt-autoidm"
 GRANT_BOUNDARY = "pdt-autoidm-boundary"
 GRANT_SESSION_SECONDS = 3600
 GRANT_LEFT_OUT = {"iam:SimulatePrincipalPolicy"}
-GRANT_BOUNDED = ["iam:CreateRole", "iam:DeleteRolePolicy", "iam:PutRolePermissionsBoundary",
-                 "iam:PutRolePolicy"]
+GRANT_BOUNDED = ["iam:DeleteRolePolicy", "iam:PutRolePermissionsBoundary", "iam:PutRolePolicy"]
+GRANT_TAGGED = ["iam:DeleteRole", "iam:PassRole", "iam:UpdateAssumeRolePolicy"]
+GRANT_CREATE = ["iam:CreateRole", "iam:TagRole"]
+# AutoIDM's own roles in an account that also holds a grant.
+BACKEND_ROLES = "pdt-backend-*"
+MANAGED_TAG_CONDITION = {"aws:ResourceTag/managed-by": ["pdt"]}
+# CreateRole with tags also needs TagRole, and AWS sets no resource tag before the role exists,
+# so TagRole can only be held to the managed-by tag and value it writes.
+CREATE_TAG_CONDITION = {"StringEquals": {"aws:RequestTag/managed-by": ["pdt"]},
+                        "ForAllValues:StringEquals": {"aws:TagKeys": list(MANAGED_TAGS)}}
 
 
 def grant_arns(account: str) -> dict[str, str]:
     return {"role": f"arn:aws:iam::{account}:role/{GRANT_ROLE}",
             "boundary": f"arn:aws:iam::{account}:policy/{GRANT_BOUNDARY}",
-            "policies": f"arn:aws:iam::{account}:policy/{GRANT_ROLE}*"}
+            "policies": f"arn:aws:iam::{account}:policy/{GRANT_ROLE}*",
+            "backend": f"arn:aws:iam::{account}:role/{BACKEND_ROLES}"}
 
 
 def grant_denies(account: str) -> list[dict]:
     arns = grant_arns(account)
-    return [{"Effect": "Deny", "Action": ["iam:*"], "Resource": [arns["role"], arns["policies"]]},
+    return [{"Effect": "Deny", "Action": ["iam:*"],
+             "Resource": [arns["role"], arns["policies"], arns["backend"]]},
             {"Effect": "Deny", "Action": ["iam:DeleteRolePermissionsBoundary"], "Resource": ["*"]}]
 
 
 def grant_policy(account: str, region: str) -> dict:
     from pdt.deploy_aws_batch import DEPLOYER_ACTIONS
     actions = sorted(set(DEPLOYER_ACTIONS) - GRANT_LEFT_OUT)
+    reshaped = {*GRANT_BOUNDED, *GRANT_TAGGED, *GRANT_CREATE}
+    roles = [ROLE_ARN.format(account=account)]
     statements = []
     for statement in deployer_policy(actions, account, region)["Statement"]:
-        rest = [action for action in statement["Action"] if action not in GRANT_BOUNDED]
+        rest = [action for action in statement["Action"] if action not in reshaped]
         if rest:
             statements.append({**statement, "Action": rest})
-    statements.append({"Effect": "Allow", "Action": GRANT_BOUNDED,
-                       "Resource": [ROLE_ARN.format(account=account)],
-                       "Condition": {"StringEquals": {
-                           "iam:PermissionsBoundary": grant_arns(account)["boundary"]}}})
+        tagged = [action for action in statement["Action"] if action in GRANT_TAGGED]
+        if tagged:
+            condition = statement.get("Condition", {})
+            statements.append({**statement, "Action": tagged, "Condition": {
+                **condition, "StringEquals": {**condition.get("StringEquals", {}),
+                                              **MANAGED_TAG_CONDITION}}})
+    boundary = {"iam:PermissionsBoundary": grant_arns(account)["boundary"]}
+    statements.append({"Effect": "Allow", "Action": ["iam:CreateRole"], "Resource": roles,
+                       "Condition": {**CREATE_TAG_CONDITION, "StringEquals": {
+                           **CREATE_TAG_CONDITION["StringEquals"], **boundary}}})
+    statements.append({"Effect": "Allow", "Action": ["iam:TagRole"], "Resource": roles,
+                       "Condition": CREATE_TAG_CONDITION})
+    statements.append({"Effect": "Allow", "Action": GRANT_BOUNDED, "Resource": roles,
+                       "Condition": {"StringEquals": boundary}})
     return {"Version": "2012-10-17", "Statement": [*statements, *grant_denies(account)]}
 
 
@@ -1346,7 +1368,8 @@ def grant_boundary(account: str) -> dict:
          "Resource": [f"arn:aws:batch:*:{account}:job/*"],
          "Condition": {"StringEquals": {"aws:RequestTag/managed-by": ["pdt"]}}},
         {"Effect": "Allow", "Action": ["iam:PassRole"],
-         "Resource": [ROLE_ARN.format(account=account)]},
+         "Resource": [ROLE_ARN.format(account=account)],
+         "Condition": {"StringEquals": MANAGED_TAG_CONDITION}},
         *grant_denies(account)]}
 
 
