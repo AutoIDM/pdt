@@ -51,6 +51,8 @@ KEY_ENV = "PDT_INSTALLATION_KEY"
 URL_ENV = "PDT_API_URL"
 CUSTOMER_ENV = "PDT_CUSTOMER_ID"
 SECRET_NAMES = (ID_ENV, KEY_ENV, URL_ENV, CUSTOMER_ENV)
+# The hosted runner gives a deploy its command ID and run token, to make the cloud registration.
+RUNNER_ENV = "PDT_RUNNER_REGISTRATION"
 AUDIENCE = "pdt-backend"
 WEBSOCKET_AUDIENCE = "pdt-ws"
 TOKEN_SECONDS = 300
@@ -242,6 +244,18 @@ def register(api_url: str, body: dict) -> dict:
         raise AutoidmError(f"AutoIDM answered /v1/register with the customer ID "
                            f"{answer['customer_id']!r}, which is not one")
     return answer
+
+
+def runner_installation(runner: dict, public_key_text: str) -> tuple[dict, str]:
+    """The cloud registration that a hosted runner deploy makes with the command's run token,
+    and the API URL it uses. `runner` holds api_url, command_id, and run_token."""
+    api_url = runner["api_url"].rstrip("/")
+    data = json.dumps({"version": 1, "command_id": runner["command_id"],
+                       "public_key": public_key_text}).encode()
+    answer = answered(retried(lambda: send(f"{api_url}/v1/runner/installations", data,
+                                           {"Authorization": f"Bearer {runner['run_token']}"})),
+                      "/v1/runner/installations", "installation_id", "customer_id")
+    return answer, api_url
 
 
 def retried(call, retry: bool = True) -> dict:

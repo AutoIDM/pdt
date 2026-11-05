@@ -16,7 +16,10 @@ deploy keeps and `pdt secrets` never shows, copies, or replaces.
 The hosted runner (`python -m pdt.hosted_runner`) deploys with KEEP_SECRET_ENV set. Its copy of
 the project holds no .env, so a deploy then reads no secret value and writes none: `gather_secrets` and `registration_secrets` give nothing, the root skips
 `missing_env`, and each provider keeps the secret the app already has and its reference on the
-job. The next `pdt secrets save` from the customer's computer changes it.
+job. The next `pdt secrets save` from the customer's computer changes it. When that secret holds no
+cloud registration, the deploy then runs the provider's `secrets` with REGISTER_ACTION, which
+makes one with the command's run token (autoidm.RUNNER_ENV) and adds it to the secret, as a deploy
+from a registered computer does.
 
 A build context holds the app directory, pdt.yml, config.PROJECT_NAME_FILE
 (the name of the project folder, since the image's project folder is
@@ -152,6 +155,8 @@ BUILD_EXCLUDES = (
 BUILD_TAG = "pdt-build"
 REBUILD_ENV = "PDT_REBUILD"
 KEEP_SECRET_ENV = "PDT_KEEP_DEPLOYED_SECRET"
+# The provider `secrets` action of a hosted runner deploy that adds the cloud registration.
+REGISTER_ACTION = "register"
 STORE_PREFIX = "pdt-data"
 STORE_TAGS = {"managed-by": "pdt", "pdt-lifecycle": "retain"}
 
@@ -802,24 +807,32 @@ def make_registration(values: dict[str, str], platform: dict) -> dict[str, str]:
     rest = {name: value for name, value in values.items() if name not in autoidm.SECRET_NAMES}
     place = managed_services.place(platform)
     customer = managed_services.settings()["customer"]
-    machine = autoidm.machine_registration(customer)
+    runner = os.environ.pop(autoidm.RUNNER_ENV, "")
+    machine = None if runner else autoidm.machine_registration(customer)
     key = Ed25519PrivateKey.generate()
     try:
-        answer = autoidm.answered(autoidm.post(machine, "/v1/installations", {
-            "version": 1, "public_key": autoidm.public_key(key), "place": place,
-            "hostname": None}), "/v1/installations", "installation_id")
+        if runner:
+            answer, api_url = autoidm.runner_installation(json.loads(runner), autoidm.public_key(key))
+            if answer["customer_id"] != customer:
+                raise autoidm.AutoidmError(f"the command is for {answer['customer_id']}, and "
+                                           f"pdt.yml names {customer}")
+        else:
+            answer = autoidm.answered(autoidm.post(machine, "/v1/installations", {
+                "version": 1, "public_key": autoidm.public_key(key), "place": place,
+                "hostname": None}), "/v1/installations", "installation_id")
+            api_url = machine.api_url
     except autoidm.AutoidmError as e:
         console.warn(f"AutoIDM did not make a cloud registration for {console.value(place)}: "
                      f"{console.escape(str(e))}. The job sends nothing to AutoIDM until a "
                      "deploy makes one.")
-        if e.status == 401:
+        if e.status == 401 and machine is not None:
             console.warn(f"AutoIDM refused the registration in {console.value(machine.source)}. "
                          "Ask AutoIDM whether it was revoked.")
         return rest
     console.step(f"made AutoIDM cloud registration {console.value(answer['installation_id'])} "
                  f"for {console.value(place)}")
     return {**rest, autoidm.ID_ENV: answer["installation_id"],
-            autoidm.KEY_ENV: autoidm.private_pem(key).decode(), autoidm.URL_ENV: machine.api_url,
+            autoidm.KEY_ENV: autoidm.private_pem(key).decode(), autoidm.URL_ENV: api_url,
             autoidm.CUSTOMER_ENV: customer}
 
 
@@ -864,6 +877,13 @@ def run_secrets(action: str, app: dict, current: str | None,
     from pdt.deploy import proceed
     from pdt.utils import autoidm
     kept, current = split_registration(current)
+    if action == REGISTER_ACTION:
+        if kept.get(autoidm.ID_ENV) or not reads_registration():
+            return 0
+        made = make_registration(dict.fromkeys(autoidm.SECRET_NAMES, ""), app["platform"])
+        if made.get(autoidm.ID_ENV):
+            write({**json.loads(current or "{}"), **made})
+        return 0
     if action == "set" and name in autoidm.SECRET_NAMES:
         fail(f"pdt keeps {console.value(name)} in the secret itself, so "
              f"{console.value('pdt secrets ' + app['name'] + ' set')} does not change it.")

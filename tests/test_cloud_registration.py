@@ -154,6 +154,28 @@ def test_a_deploy_makes_a_cloud_registration_signed_by_this_computer(project, ba
     assert sorted(path.suffix for path in autoidm.folder().iterdir()) == [".json", ".key"]
 
 
+def test_a_runner_deploy_adds_a_registration_made_with_the_run_token(project, backend, warned,
+                                                                       monkeypatch):
+    url, seen, answers = backend
+    managed(project)
+    monkeypatch.setenv(autoidm.RUNNER_ENV, json.dumps(
+        {"api_url": url, "command_id": "cmd_1", "run_token": "run-token"}))
+    answers.append((200, {"installation_id": "ins_0000000009", "customer_id": CUSTOMER}))
+    written = []
+
+    assert deploy_common.run_secrets(deploy_common.REGISTER_ACTION, app(project),
+                                     json.dumps({"A": "1"}), written.append, True) == 0
+
+    assert seen[0]["path"] == "/v1/runner/installations"
+    assert seen[0]["authorization"] == "Bearer run-token"
+    assert seen[0]["body"]["command_id"] == "cmd_1"
+    assert written[0]["A"] == "1"
+    assert (written[0][autoidm.ID_ENV], written[0][autoidm.URL_ENV]) == ("ins_0000000009", url)
+    deploy_common.run_secrets(deploy_common.REGISTER_ACTION, app(project),
+                              json.dumps(written[0]), written.append, True)
+    assert len(seen) == 1 and len(written) == 1
+
+
 def test_a_refused_cloud_registration_is_a_warning_and_the_deploy_goes_on(project, backend,
                                                                           warned, capsys):
     url, _seen, answers = backend
