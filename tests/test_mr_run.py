@@ -1,10 +1,15 @@
 import json
+import os
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 
 from pdt import (deploy, deploy_aws_batch, deploy_azure_container_apps, deploy_google_cloud,
-                 lifecycle, runs_cli)
+                 lifecycle, runs_cli, service_runner)
 
 PRODUCTION = {"jobDefinitionArn": "arn:def:1", "revision": 1,
               "tags": {"managed-by": "pdt"},
@@ -296,3 +301,36 @@ def test_google_mr_run_stops_its_execution_when_the_run_fails(monkeypatch):
     assert ("run", "jobs", "executions", "cancel", "pdt-hr-mr12-abc") in [call[:5] for call in calls]
     assert [call[:3] for call in calls[-2:]] == [("run", "jobs", "delete"),
                                                   ("artifacts", "docker", "images")]
+
+
+@pytest.fixture(autouse=True)
+def sigterm_handler():
+    before = signal.getsignal(signal.SIGTERM)
+    yield
+    signal.signal(signal.SIGTERM, before)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the hosted runner stops a process group on Linux")
+def test_a_sigterm_to_the_group_runs_the_mr_run_clean_up_before_the_runner_kills_it(tmp_path):
+    marker = tmp_path / "marker"
+    child = ("import sys, time\n"
+             "from pdt import deploy_common\n"
+             "deploy_common.stop_on_sigterm()\n"
+             "try:\n"
+             "    open(sys.argv[1], 'w').write('started\\n')\n"
+             "    time.sleep(60)\n"
+             "finally:\n"
+             "    time.sleep(1)\n"
+             "    open(sys.argv[1], 'a').write('cleaned\\n')\n")
+    parent = ("import signal, subprocess, sys\n"
+              "signal.signal(signal.SIGTERM, lambda _signum, _frame: None)\n"
+              "subprocess.run([sys.executable, '-c', sys.argv[1], sys.argv[2]])\n")
+    proc = subprocess.Popen([sys.executable, "-c", parent, child, str(marker)],
+                            start_new_session=True)
+    deadline = time.monotonic() + 30
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    os.killpg(proc.pid, signal.SIGTERM)
+    service_runner.stop_tree(proc.pid, lambda: proc.poll() is not None, 30)
+    proc.wait(10)
+    assert marker.read_text() == "started\ncleaned\n"

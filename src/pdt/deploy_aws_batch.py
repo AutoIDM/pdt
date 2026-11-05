@@ -61,7 +61,7 @@ from pdt.deploy_aws import (
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, ensure_image, fail, gather_secrets, image_action,
     keep_paused, keeps_secret, make_registration, registration_secrets, run_build, run_secrets, secret_contents,
-    ssh_build_args, store_kept_line,
+    ssh_build_args, stop_on_sigterm, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked,
 )
 
@@ -1318,6 +1318,7 @@ MR_WAIT_SECONDS = 10
 
 
 def mr_run(app: dict, session, iid: str) -> int:
+    stop_on_sigterm()
     clients = batch_clients(session)
     names = resource_names(app["name"])
     revisions = [item for item in active_job_definitions(clients["batch"], names["job_definition"])

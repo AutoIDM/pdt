@@ -314,6 +314,17 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def stop_on_sigterm() -> None:
+    """Take the first SIGTERM as a Ctrl+C, so the `finally` clean-up of an `mr-run` runs, and
+    ignore the next ones. A cancel or the run limit of the hosted runner sends SIGTERM to the
+    whole process group, and uv passes one more on to this script."""
+    def stop(_signum, _frame) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    signal.signal(signal.SIGTERM, stop)
+
+
 def run_main(main: Callable[[], int]) -> None:
     """Exit with main's code, or with 130 at once after a Ctrl+C. A normal exit waits for
     every worker thread, and a worker that waits on the network keeps the script running.
