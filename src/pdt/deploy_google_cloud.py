@@ -1623,6 +1623,12 @@ def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
 
 
 GRANT_NAME = "pdt-autoidm"
+# Cloud Run, Artifact Registry, Cloud Build, and Cloud Scheduler do not support resource
+# attributes in IAM conditions (docs.cloud.google.com/iam/docs/conditions-resource-attributes),
+# so these roles hold for the whole project. A build can act only as pdt-builder or pdt-runner,
+# the two accounts the grant gets roles/iam.serviceAccountUser on, except in a project whose
+# first build ran before Cloud Build changed its default account: there a build that names no
+# account runs as the legacy Cloud Build account, and only an organization policy stops that.
 GRANT_ROLES = ("roles/run.admin", "roles/cloudscheduler.admin", "roles/artifactregistry.admin",
                "roles/secretmanager.viewer", "roles/cloudbuild.builds.editor",
                "roles/iam.serviceAccountViewer", "roles/serviceusage.serviceUsageConsumer",
