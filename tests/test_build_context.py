@@ -18,7 +18,7 @@ def stage_in_tmp(tmp_path_factory, monkeypatch):
 
 def app_in(project):
     folder = add_app(project, "my-report")
-    return {"name": "my-report", "dir": folder}
+    return {"name": "my-report", "dir": folder, "platform": {"provider": "aws"}}
 
 
 def test_credential_files_stay_out_of_the_build_context(project):
@@ -71,7 +71,22 @@ def test_the_context_carries_this_pdts_lifecycle_outside_the_app_folder(project)
     app = app_in(project)
     vendored = stage_build_context(app) / ".pdt-lifecycle" / "pdt"
     for module in LIFECYCLE_MODULES:
-        assert (vendored / module).read_bytes() == (Path(pdt.__file__).parent / module).read_bytes()
+        if module != "lifecycle.py":
+            assert (vendored / module).read_bytes() == (Path(pdt.__file__).parent / module).read_bytes()
+
+
+@pytest.mark.parametrize("provider", sorted(deploy_common.STORE_PACKAGES))
+def test_the_lifecycle_copy_gets_the_store_packages_of_its_provider(project, provider):
+    app = {**app_in(project), "platform": {"provider": provider}}
+    copy = (stage_build_context(app) / ".pdt-lifecycle" / "pdt" / "lifecycle.py").read_text()
+    header = deploy_common.SCRIPT_HEADER.search(copy).group(0)
+    names = deploy_common.STORE_PACKAGES[provider]
+    assert all(f'"{name}"' in header for name in ("fsspec", *names))
+    others = {name for packages in deploy_common.STORE_PACKAGES.values() for name in packages}
+    assert not any(f'"{name}"' in header for name in others - set(names))
+    original = (Path(pdt.__file__).parent / "lifecycle.py").read_text()
+    assert copy.replace(header, "") == original.replace(
+        deploy_common.SCRIPT_HEADER.search(original).group(0), "")
 
 
 def fingerprint_of(app, image_platform="linux/amd64"):

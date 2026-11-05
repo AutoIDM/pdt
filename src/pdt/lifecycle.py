@@ -7,6 +7,7 @@
 #     "rich",
 #     "cryptography",
 #     "pyjwt",
+#     "fsspec",
 # ]
 # ///
 """Lifecycle events: a name, the UTC time, and a few parameters.
@@ -61,6 +62,12 @@ script around the app's command, from the app folder, so the events land in
 the run's log. A SIGKILL, a Windows task that Task Scheduler ends, or a
 power loss stops pdt at once, so no event fires.
 
+Every run gets an empty output folder in PDT_OUTPUT_DIR (`output_folder`). When the command
+ends, `keep_output` copies the files it left there to runs/<time>-<run id>/ of the app's store,
+so a Python app keeps its files the same way as a PowerShell app on every provider. The image of
+a cloud provider gets the store packages of that provider in this file's script header
+(deploy_common.STORE_PACKAGES).
+
 When the project sets `managed_services`, `run_job` gives the run to
 pdt.managed_services, the same way on every provider: the end event, the
 command's output (which it then also writes to a file as it prints it), and the
@@ -78,6 +85,7 @@ import queue
 import shutil
 import signal
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -346,6 +354,41 @@ def app_params(app: str, provider: str) -> dict[str, object]:
     return {"project": config.project_name(), "app": app, "provider": provider}
 
 
+def output_folder(app_dir: Path) -> Path | None:
+    """The run's PDT_OUTPUT_DIR, made empty for the command: .pdt/runs/<run id>/output in the
+    app folder, or a temporary folder when pdt cannot write there."""
+    fallback = Path(tempfile.gettempdir()) / f"pdt-{storage.RUN_ID}" / "output"
+    try:
+        folder = managed_services.output_folder(app_dir, storage.RUN_ID, fallback)
+        folder.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        console.warn(f"pdt cannot make the output folder of this run: "
+                     f"{console.escape(f'{type(e).__name__}: {e}')}")
+        return None
+    return folder
+
+
+def keep_output(app: str, output: Path) -> None:
+    """Copy the files the command left in `output` to runs/<time>-<run id>/ of the app's store,
+    as run_powershell.py does for a PowerShell app. When this run's folder is in the store
+    already, the command sent it itself (storage.sync, run_powershell.py), and nothing goes up
+    twice. A store pdt cannot reach costs only these files, never the run."""
+    try:
+        files = [path for path in output.rglob("*") if path.is_file()]
+        if not files or not config.merged_app(app)["storage"]:
+            return
+        store = storage.Store(storage.root(app))
+        if store.has_run_folder():
+            return
+        folder = store.run_folder()
+        store.push(output, folder)
+    except Exception as e:
+        console.warn(f"pdt did not keep the output files of this run: "
+                     f"{console.escape(f'{type(e).__name__}: {e}')}")
+        return
+    console.note(f"kept {len(files)} output file(s) in {store.url}{folder}")
+
+
 def run_job(app: str, provider: str, command: list[str], cwd: Path,
             env: dict[str, str] | None = None, deployed: bool = False) -> int:
     """Run `command` as one run of the job. `deployed` is True for the deployed job (a cloud
@@ -365,6 +408,7 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     run = managed_services.monitored(
         "this run", lambda: managed_services.start_run(app, storage.RUN_ID, cwd),
         managed_services.Run())
+    output = run.output or output_folder(cwd)
     emit(JOB_RUN_STARTED, **params)
     began = time.monotonic()
     stopped: list[int] = []
@@ -380,8 +424,8 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
     previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
     try:
         child_env = {**(env or os.environ), "PDT_RUN_ID": storage.RUN_ID}
-        if run.output is not None:
-            child_env["PDT_OUTPUT_DIR"] = str(run.output)
+        if output is not None:
+            child_env["PDT_OUTPUT_DIR"] = str(output)
         children: queue.Queue[subprocess.Popen] = queue.Queue(1)
         copier = None if run.log is None else copy_output(children, run.log)
         if copier is None:
@@ -397,6 +441,8 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
             copier.join(DRAIN_SECONDS)
         if code < 0:
             code = 128 - code
+        if output is not None:
+            keep_output(app, output)
         state = f"runs/*-{storage.RUN_ID}/"
         if stopped:
             name = JOB_RUN_FAILED

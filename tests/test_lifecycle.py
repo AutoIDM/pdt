@@ -437,3 +437,80 @@ def test_a_local_run_has_no_merge_request_number(project, monkeypatch):
     monkeypatch.delenv(lifecycle.TRIGGER_ENV, raising=False)
     lifecycle.run_job("report", "windows", [sys.executable, "-c", "raise SystemExit(0)"], project)
     assert sent[0][1]["trigger"] == "manual" and "mr_iid" not in sent[0][1]
+
+
+WRITE_OUTPUT = ("import os, pathlib; out = pathlib.Path(os.environ['PDT_OUTPUT_DIR']); "
+                "(out / 'report.csv').write_text('a,b\\n'); (out / 'notes').mkdir(); "
+                "(out / 'notes' / 'summary.txt').write_text('done')")
+
+
+def kept_runs(store_folder):
+    return sorted(path.relative_to(store_folder / "runs").as_posix()
+                  for path in (store_folder / "runs").rglob("*") if path.is_file())
+
+
+@pytest.mark.parametrize(("provider", "code"), [("windows", 0), ("aws", 0), ("local", 4)])
+def test_every_run_keeps_the_files_of_its_output_folder_in_the_store(
+        project, monkeypatch, capsys, provider, code):
+    app = add_app(project, "report")
+    store = project / "store"
+    monkeypatch.setenv("PDT_STORAGE_URL", store.as_uri() + "/")
+    command = [sys.executable, "-c", f"{WRITE_OUTPUT}; raise SystemExit({code})"]
+    assert lifecycle.run_job("report", provider, command, app) == code
+    run = f"{lifecycle.storage.RUN_ID}"
+    kept = kept_runs(store)
+    folder = kept[0].split("/")[0]
+    assert folder.endswith(f"-{run}")
+    assert kept == [f"{folder}/_done", f"{folder}/notes/summary.txt", f"{folder}/report.csv"]
+    assert (app / ".pdt" / "runs" / run / "output" / "report.csv").read_text() == "a,b\n"
+    assert f"kept 2 output file(s) in {store.as_uri()}/runs/{folder}/" in capsys.readouterr().out
+
+
+def test_a_run_with_no_storage_url_keeps_its_files_in_the_project_store(project):
+    app = add_app(project, "report")
+    assert lifecycle.run_job("report", "local", [sys.executable, "-c", WRITE_OUTPUT], app) == 0
+    assert len(kept_runs(project / ".pdt" / "storage" / "report")) == 3
+
+
+def test_a_run_that_sent_its_own_run_folder_is_not_sent_again(project, monkeypatch):
+    app = add_app(project, "report")
+    store = project / "store"
+    monkeypatch.setenv("PDT_STORAGE_URL", store.as_uri() + "/")
+    sent_by_the_app = (f"{WRITE_OUTPUT}; from pdt.utils import storage; s = storage.store(); "
+                       "s.push(out, s.run_folder() + 'output/')")
+    pushes = []
+    original = lifecycle.storage.Store.push
+    monkeypatch.setattr(lifecycle.storage.Store, "push",
+                        lambda self, *args, **kwargs: pushes.append(args) or original(self, *args, **kwargs))
+    monkeypatch.setenv("PYTHONPATH", str(lifecycle.Path(lifecycle.__file__).resolve().parent.parent))
+    assert lifecycle.run_job("report", "windows", [sys.executable, "-c", sent_by_the_app], app) == 0
+    assert pushes == []
+    assert [path.split("/", 1)[1] for path in kept_runs(store)] == [
+        "output/_done", "output/notes/summary.txt", "output/report.csv"]
+
+
+def test_an_app_with_storage_off_keeps_nothing(project, monkeypatch):
+    app = add_app(project, "report", "storage: false\n")
+    store = project / "store"
+    monkeypatch.setenv("PDT_STORAGE_URL", store.as_uri() + "/")
+    assert lifecycle.run_job("report", "aws", [sys.executable, "-c", WRITE_OUTPUT], app) == 0
+    assert not store.exists()
+
+
+def test_a_store_pdt_cannot_reach_is_a_warning_and_keeps_the_exit_code(project, monkeypatch, capsys):
+    app = add_app(project, "report")
+    monkeypatch.setenv("PDT_STORAGE_URL", "nope://bucket/report/")
+    command = [sys.executable, "-c", f"{WRITE_OUTPUT}; raise SystemExit(5)"]
+    assert lifecycle.run_job("report", "aws", command, app) == 5
+    assert "pdt did not keep the output files of this run: KeyError" in " ".join(
+        capsys.readouterr().out.split())
+
+
+def test_an_empty_output_folder_reaches_no_store(project, monkeypatch):
+    app = add_app(project, "report")
+    monkeypatch.setenv("PDT_STORAGE_URL", "nope://bucket/report/")
+    seen = []
+    monkeypatch.setattr(lifecycle.storage, "Store", lambda *args: seen.append(args))
+    command = [sys.executable, "-c", "import os, sys; sys.exit(0 if os.environ['PDT_OUTPUT_DIR'] else 1)"]
+    assert lifecycle.run_job("report", "windows", command, app) == 0
+    assert seen == []

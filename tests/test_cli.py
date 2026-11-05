@@ -265,9 +265,10 @@ def test_run_starts_a_powershell_app_through_the_wrapper(project, monkeypatch):
                        str(Path(cli.__file__).with_name("run_powershell.py")), str(folder)]
     assert kwargs["cwd"] == folder
     assert kwargs["env"]["PDT_PROJECT"] == str(project)
+    output = folder / ".pdt" / "runs" / lifecycle.storage.RUN_ID / "output"
     assert os.environ["PSModulePath"] == "MODULE-PATH"
     assert kwargs["env"] == dict(os.environ, PDT_PROJECT=str(project),
-                                 PDT_RUN_ID=lifecycle.storage.RUN_ID)
+                                 PDT_RUN_ID=lifecycle.storage.RUN_ID, PDT_OUTPUT_DIR=str(output))
 
 
 def test_run_stops_when_a_powershell_module_does_not_install(project, monkeypatch, capsys):
@@ -297,8 +298,10 @@ def test_run_starts_the_run_py_that_replaces_the_wrapper(project, monkeypatch):
     monkeypatch.setattr(lifecycle.subprocess, "Popen", started(lambda command, **kwargs: calls.append(
         (command, kwargs)) or subprocess.CompletedProcess(command, 0)))
     assert run_cli(monkeypatch, "run", "ps-report") == 0
+    output = folder / ".pdt" / "runs" / lifecycle.storage.RUN_ID / "output"
     assert calls == [(["uv", "run", "--isolated", "--script", "run.py"],
-                      {"cwd": folder, "env": dict(os.environ, PDT_RUN_ID=lifecycle.storage.RUN_ID)})]
+                      {"cwd": folder, "env": dict(os.environ, PDT_RUN_ID=lifecycle.storage.RUN_ID,
+                                                  PDT_OUTPUT_DIR=str(output))})]
     assert os.environ["PSModulePath"] == "MODULE-PATH"
 
 

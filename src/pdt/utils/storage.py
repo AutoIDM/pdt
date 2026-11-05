@@ -148,11 +148,11 @@ def reclaimable(held: dict) -> bool:
     return same_machine and isinstance(pid, int) and not _process_alive(pid)
 
 
-def root() -> str:
+def root(app: str | None = None) -> str:
     url = os.environ.get("PDT_STORAGE_URL", "").strip()
     if url != "":
         return url
-    folder = config.find_project() / ".pdt" / "storage" / config.running_app_dir().name
+    folder = config.find_project() / ".pdt" / "storage" / (app or config.running_app_dir().name)
     return folder.as_uri() + "/"
 
 
@@ -397,6 +397,10 @@ class Store:
 
     def run_folder(self) -> str:
         return f"runs/{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{RUN_ID}/"
+
+    def has_run_folder(self) -> bool:
+        """Whether a runs/<time>-<run id>/ folder of this run exists already."""
+        return bool(self.fs().glob(f"runs/*-{RUN_ID}"))
 
     def usage(self) -> tuple[int, int]:
         """Object count and total bytes under the app folder."""

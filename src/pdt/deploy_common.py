@@ -142,6 +142,9 @@ NO_METADATA_HEADER = "# /// script\n# dependencies = []\n# ///\n"
 LIFECYCLE_MODULES = ("__init__.py", "alert_message.py", "config.py", "console.py",
                      "lifecycle.py", "managed_services.py", "slack.py", "teams.py",
                      "utils/__init__.py", "utils/autoidm.py", "utils/storage.py")
+# What lifecycle.keep_output needs to reach the store of each cloud provider in its image.
+STORE_PACKAGES = {"aws": ("boto3", "s3fs>=2024"), "google-cloud": ("gcsfs", "google-cloud-storage"),
+                  "azure": ("adlfs", "azure-identity", "azure-storage-blob")}
 # Secret shapes and local state that never belong in an image. The version-control names are
 # the ones `az acr build` always leaves out, so every build place gets the same context.
 BUILD_EXCLUDES = (
@@ -1010,6 +1013,11 @@ def stage_build_context(app: dict) -> Path:
             target = stage / ".pdt-lifecycle" / "pdt" / module
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(Path(__file__).parent / module, target)
+        lifecycle_copy = stage / ".pdt-lifecycle" / "pdt" / "lifecycle.py"
+        packages = "".join(f'#     "{name}",\n'
+                           for name in STORE_PACKAGES.get(app["platform"].get("provider"), ()))
+        lifecycle_copy.write_text(lifecycle_copy.read_text(encoding="utf-8").replace(
+            '#     "fsspec",\n', '#     "fsspec",\n' + packages, 1), encoding="utf-8")
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
