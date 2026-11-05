@@ -422,6 +422,9 @@ def ensure_roles(iam, names: dict[str, str], account: str, region: str,
         iam, names["scheduler_role"], "scheduler.amazonaws.com", "pdt-scheduler", [
             {"Effect": "Allow", "Action": ["batch:SubmitJob"],
              "Resource": submit_job_resources(names, account, region)},
+            {"Effect": "Allow", "Action": ["batch:TagResource"],
+             "Resource": f"arn:aws:batch:{region}:{account}:job/*",
+             "Condition": {"StringEquals": {"aws:RequestTag/managed-by": "pdt"}}},
         ])
     return execution, job, scheduler
 
@@ -543,6 +546,7 @@ def submit_job_target(names: dict[str, str]) -> dict:
             "JobName": names["job_definition"],
             "JobQueue": JOB_QUEUE.name,
             "JobDefinition": names["job_definition"],
+            "Tags": MANAGED_TAGS,
         }, sort_keys=True),
     }
 

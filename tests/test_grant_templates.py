@@ -45,6 +45,21 @@ def test_the_aws_grant_can_kill_and_read_and_write_only_pdt_secrets():
     assert {"logs:GetLogEvents", "s3:GetObject"} <= set(found)
 
 
+def test_the_aws_grant_kills_and_tags_only_jobs_with_the_pdt_tag():
+    statements = [statement for resource in grant_templates.aws_template()["Resources"].values()
+                  for statement in resource["Properties"].get("PolicyDocument", {}).get(
+                      "Statement", [])
+                  if statement["Effect"] == "Allow"]
+    job = {"Fn::Sub": "arn:aws:batch:*:${AWS::AccountId}:job/*"}
+    kill = [statement for statement in statements if "batch:TerminateJob" in statement["Action"]]
+    assert kill and all(statement["Condition"] == {
+        "StringEquals": {"aws:ResourceTag/managed-by": ["pdt"]}} for statement in kill)
+    tagging = [statement for statement in statements if job in statement["Resource"]
+               and "batch:TagResource" in statement["Action"]]
+    assert tagging and all(statement["Condition"] == {
+        "StringEquals": {"aws:RequestTag/managed-by": ["pdt"]}} for statement in tagging)
+
+
 def test_each_account_value_is_a_substitution():
     text = json.dumps(grant_templates.aws_template())
     assert "${AWS::AccountId}" in text

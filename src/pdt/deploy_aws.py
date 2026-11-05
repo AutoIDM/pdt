@@ -141,6 +141,7 @@ BATCH_ARNS = {
     "job_definition": "arn:aws:batch:{region}:{account}:job-definition/pdt-*",
     "job_definition_revision": "arn:aws:batch:{region}:{account}:job-definition/pdt-*:*",
 }
+BATCH_JOB_ARN = "arn:aws:batch:{region}:{account}:job/*"
 SECURITY_GROUP_ARN = "arn:aws:ec2:{region}:{account}:security-group/*"
 BUILD_BUCKET_PREFIX = "pdt-build"
 # Each action pdt calls, grouped with the ARNs of the pdt resources it touches.
@@ -215,8 +216,12 @@ POLICY_SCOPES = [
      "Resource": [BATCH_ARNS["job_definition"], BATCH_ARNS["job_definition_revision"],
                   BATCH_ARNS["job_queue"]]},
     {"Action": ["batch:TagResource"], "Resource": list(BATCH_ARNS.values())},
-    # A Batch job ARN holds the job ID, not its name, so `pdt run --kill` names every job.
-    {"Action": ["batch:TerminateJob"], "Resource": ["arn:aws:batch:{region}:{account}:job/*"]},
+    # A Batch job ARN holds the job ID, not its name, so the managed-by tag scopes a job. A job
+    # gets the tag in its SubmitJob, and AWS checks TagResource for the tags of a SubmitJob.
+    {"Action": ["batch:TagResource"], "Resource": [BATCH_JOB_ARN],
+     "Condition": {"StringEquals": {"aws:RequestTag/managed-by": ["pdt"]}}},
+    {"Action": ["batch:TerminateJob"], "Resource": [BATCH_JOB_ARN],
+     "Condition": {"StringEquals": {"aws:ResourceTag/managed-by": ["pdt"]}}},
     # Destroy still clears the cluster a Fargate deployment of the same app left behind.
     {"Action": ["ecs:DeleteCluster", "ecs:DescribeClusters"],
      "Resource": ["arn:aws:ecs:{region}:{account}:cluster/pdt"]},
@@ -1337,6 +1342,9 @@ def grant_boundary(account: str) -> dict:
         {"Effect": "Allow", "Action": ["batch:SubmitJob"],
          "Resource": [f"arn:aws:batch:*:{account}:job-definition/pdt-*",
                       f"arn:aws:batch:*:{account}:job-queue/pdt"]},
+        {"Effect": "Allow", "Action": ["batch:TagResource"],
+         "Resource": [f"arn:aws:batch:*:{account}:job/*"],
+         "Condition": {"StringEquals": {"aws:RequestTag/managed-by": ["pdt"]}}},
         {"Effect": "Allow", "Action": ["iam:PassRole"],
          "Resource": [ROLE_ARN.format(account=account)]},
         *grant_denies(account)]}
