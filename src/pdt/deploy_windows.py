@@ -615,6 +615,10 @@ def pause(app: dict, paused: bool) -> int:
 def kill(app: dict) -> int:
     try:
         powershell, name = _managed_task(app)
+        if not _task_running(powershell, name):
+            console.say(f"No run of {console.value(app['name'])} runs: Windows task "
+                        f"{console.value(name)} is not running.")
+            return 0
         _run(powershell, f"Stop-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
              elevate=True)
     except WindowsDeployError as exc:
