@@ -443,6 +443,18 @@ def test_a_deploy_sends_app_deployed_with_the_schedule_and_the_place(project, ba
                                "place": "aws:123456789012:us-east-2"}
 
 
+def test_a_destroy_sends_app_destroy_completed(project, backend, warned, monkeypatch):
+    url, seen, _answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
+    registered(url)
+    monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: 0)
+    assert deploy.provider_step("destroy", "windows", "report", True) == 0
+    managed_services.wait()
+    assert [entry["body"]["event"]["name"] for entry in seen] == ["app:destroy-completed"]
+    assert seen[0]["body"]["event"]["params"] == {"project": project.name, "app": "report",
+                                                  "provider": "windows"}
+
+
 def test_a_windows_app_has_no_place_and_its_time_zone_is_the_computers(project, monkeypatch):
     project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n")
     monkeypatch.setattr("pdt.regions.local_timezone", lambda: "Europe/Berlin")
