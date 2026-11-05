@@ -19,6 +19,7 @@ dependencies = [
     "cryptography",
     "pyjwt",
     "websockets>=17.4",
+    "fsspec",
 ]
 
 [project.urls]

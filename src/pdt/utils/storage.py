@@ -463,6 +463,10 @@ class Store:
     def run_folder(self) -> str:
         return f"runs/{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{RUN_ID}/"
 
+    def has_run_folder(self) -> bool:
+        """Whether a runs/<time>-<run id>/ folder of this run exists already."""
+        return bool(self.fs().glob(f"runs/*-{RUN_ID}"))
+
     def usage(self) -> tuple[int, int]:
         """Object count and total bytes under the app folder."""
         files = [entry for entry in self.fs().find("", detail=True).values()

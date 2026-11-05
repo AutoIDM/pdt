@@ -87,7 +87,7 @@ ALL_ON = (f"managed_services:\n  customer: {CUSTOMER}\n  send_logs: true\n"
           "  send_artifacts: true\n")
 WORK = ("import os, pathlib, sys\n"
         "out = pathlib.Path('.pdt/runs', os.environ['PDT_RUN_ID'], 'output')\n"
-        "out.mkdir(parents=True)\n"
+        "out.mkdir(parents=True, exist_ok=True)\n"
         "(out / 'report.csv').write_text('a,b\\n')\n"
         "print('hello from the app')\n"
         "sys.exit(int(sys.argv[1]))\n")
@@ -242,7 +242,7 @@ def test_registration_metadata_of_the_wrong_shape_is_a_warning(project, folder, 
 
 
 @pytest.mark.parametrize(("target", "warnings"), [
-    ("find_sender", 1), ("start_run", 1), ("accept", 2), ("output_folder", 1), ("end_run", 1)])
+    ("find_sender", 1), ("start_run", 1), ("accept", 2), ("output_folder", 2), ("end_run", 1)])
 def test_an_unexpected_error_in_monitoring_is_a_warning_and_keeps_the_exit_code(
         project, backend, warned, monkeypatch, capfd, target, warnings):
     url, _seen, _answers = backend
