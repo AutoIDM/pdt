@@ -250,6 +250,34 @@ def test_destroy_with_the_project_group_already_gone_purges_its_soft_deleted_vau
     assert purged == [("keyvault", "purge", "--name", "pdt-vault")]
 
 
+def test_destroy_in_a_kept_group_purges_the_vault_an_earlier_destroy_only_deleted(monkeypatch):
+    monkeypatch.setattr(deploy_azure, "az", lambda *args: subprocess.CompletedProcess(args, 1, "", ""))
+    plans, purged, destroyed = [], [], []
+    granted = {"tags": {"managed-by": "pdt", "pdt-lifecycle": "retain"}}
+    deleted_vaults = [{"name": "pdt-vault", "properties": {"tags": {"managed-by": "pdt"}}}]
+
+    def read(*args):
+        if args[:2] == ("group", "show"):
+            return granted
+        if args[:2] == ("resource", "list"):
+            return []
+        return deleted_vaults if args[:2] == ("keyvault", "show-deleted") else None
+
+    monkeypatch.setattr(deploy_azure_container_apps, "preflight",
+                        lambda app, requested: deploy_settings(OWN))
+    monkeypatch.setattr(deploy_azure_container_apps, "azure_settings", lambda app: {})
+    fake_azure_reads(monkeypatch, read)
+    monkeypatch.setattr(deploy_azure_container_apps, "confirm",
+                        lambda actions, *args: plans.append(plain(actions)) or True)
+    monkeypatch.setattr(deploy_azure_container_apps, "run_quiet",
+                        lambda *args, **kwargs: purged.append(args) or "")
+    monkeypatch.setattr(deploy_azure_container_apps, "destroy_group",
+                        lambda settings, name: destroyed.append(name) or True)
+    assert deploy_azure_container_apps.destroy({"name": "report", "storage": False}, True) == 0
+    assert plans == [["purge the soft-deleted Key Vault pdt-vault"]]
+    assert purged == [("keyvault", "purge", "--name", "pdt-vault")]
+
+
 def test_destroy_leaves_a_soft_deleted_vault_pdt_did_not_make(monkeypatch):
     monkeypatch.setattr(deploy_azure, "az", lambda *args: subprocess.CompletedProcess(args, 1, "", ""))
     monkeypatch.setattr(deploy_azure_container_apps, "preflight",

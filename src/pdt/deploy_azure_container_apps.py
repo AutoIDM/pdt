@@ -1489,7 +1489,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             group_read.result(), resources_read.result(), others)
         if deletable:
             release_read = pool.submit(environment_release, settings)
-            if not group_exists:
+            if not group_exists or retained(group_read.result()):
                 vault_read = pool.submit(deleted_vault, settings)
         else:
             # The Azure CLI runs in this process, so its one read here stays on this thread.
@@ -1511,7 +1511,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     held = held_read.result()
     unlock = [console.Markup(f"remove lock {console.value(lock.name)} from {lock.label}")
               for lock in held]
-    # A run stopped between the group delete and the purge leaves the vault
+    # A run stopped between the vault delete and the purge leaves the vault
     # soft-deleted, still holding its global name.
     orphan_vault = vault_read is not None and managed_by_pdt(
         (vault_read.result() or {}).get("properties"))
