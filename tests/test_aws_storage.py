@@ -11,7 +11,7 @@ if "botocore.exceptions" not in sys.modules:
     sys.modules.setdefault("botocore", botocore)
     sys.modules["botocore.exceptions"] = exceptions
 
-from pdt.deploy_aws import store_statements, store_url
+from pdt.deploy_aws import COMMON_ACTIONS, store_statements, store_url
 from pdt.deploy_common import store_name, store_suffix
 
 ACCOUNT = "123456789012"
@@ -28,9 +28,18 @@ def test_the_job_sees_its_own_folder_with_a_trailing_slash():
 
 
 def test_the_grant_stops_at_the_app_folder():
-    objects, listing = store_statements("pdt-data-abc", "hello-world")
+    objects, listing = store_statements("pdt-data-abc", "hello-world", ACCOUNT)
+    owner = {"s3:ResourceAccount": ACCOUNT}
+    assert objects["Condition"] == {"StringEquals": owner}
     assert objects["Resource"] == "arn:aws:s3:::pdt-data-abc/hello-world/*"
     assert set(objects["Action"]) == {"s3:GetObject", "s3:PutObject", "s3:DeleteObject"}
     assert listing["Resource"] == "arn:aws:s3:::pdt-data-abc"
     assert listing["Action"] == ["s3:ListBucket"]
-    assert listing["Condition"] == {"StringLike": {"s3:prefix": ["hello-world/*"]}}
+    assert listing["Condition"] == {"StringEquals": owner,
+                                    "StringLike": {"s3:prefix": ["hello-world/*"]}}
+
+
+def test_the_deployer_policy_covers_the_bucket_calls():
+    for action in ("s3:CreateBucket", "s3:PutBucketTagging", "s3:GetBucketTagging",
+                   "s3:PutBucketPublicAccessBlock", "s3:ListBucket"):
+        assert action in COMMON_ACTIONS
