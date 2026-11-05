@@ -62,19 +62,51 @@ def test_the_azure_template_assigns_the_roles_on_the_two_groups_only():
     assert groups[0]["tags"]["autoidm-external-id"] == "[parameters('externalId')]"
     deployments = [item for item in template["resources"]
                    if item["type"] == "Microsoft.Resources/deployments"]
-    assert [item["resourceGroup"] for item in deployments] == ["pdt", deploy_azure.SHARED_GROUP]
-    roles = [assignment["properties"]["roleDefinitionId"]
-             for assignment in deployments[0]["properties"]["template"]["resources"]]
-    assert len(roles) == len(deploy_azure.GRANT_ROLES) + 1
-    assert any(deploy_azure.ROLE_IDS["Key Vault Secrets Officer"] in role for role in roles)
-    administrator = deployments[0]["properties"]["template"]["resources"][-1]["properties"]
-    assert administrator["condition"] == deploy_azure.grant_condition()
+    assert [item["resourceGroup"] for item in deployments] == [
+        "pdt", "pdt", deploy_azure.SHARED_GROUP]
+    for deployment in deployments[1:]:
+        assignments = deployment["properties"]["template"]["resources"]
+        roles = [assignment["properties"]["roleDefinitionId"] for assignment in assignments]
+        assert len(roles) == len(deploy_azure.GRANT_ROLES) + 1
+        assert any(deploy_azure.ROLE_IDS["Key Vault Secrets Officer"] in role for role in roles)
+        assert {assignment["properties"]["principalId"] for assignment in assignments} == {
+            "[parameters('identityPrincipalId')]"}
+        assert assignments[-1]["properties"]["condition"] == deploy_azure.grant_condition()
+        assert deployment["properties"]["parameters"]["identityPrincipalId"]["value"] == \
+            grant_templates.IDENTITY_OUTPUT.format("principalId")
+
+
+def test_the_azure_identity_trusts_only_this_customers_subject_and_the_app_only_reads():
+    template = grant_templates.azure_template()
+    assert {"pdtIssuer", "pdtSubject", "principalObjectId"} <= set(template["parameters"])
+    identity = next(item for item in template["resources"]
+                    if item.get("name") == grant_templates.IDENTITY_DEPLOYMENT)
+    assert identity["properties"]["parameters"]["subject"] == {"value": "[parameters('pdtSubject')]"}
+    assert identity["properties"]["parameters"]["issuer"] == {"value": "[parameters('pdtIssuer')]"}
+    resources = identity["properties"]["template"]["resources"]
+    created, credential, reader = resources
+    assert created["type"] == "Microsoft.ManagedIdentity/userAssignedIdentities"
+    assert created["name"] == "pdt-autoidm"
+    assert credential["properties"] == {"issuer": "[parameters('issuer')]",
+                                        "subject": "[parameters('subject')]",
+                                        "audiences": ["api://AzureADTokenExchange"]}
+    assert reader["properties"]["principalId"] == "[parameters('principalObjectId')]"
+    assert deploy_azure.ROLE_IDS["Reader"] in reader["properties"]["roleDefinitionId"]
+    app_assignments = [
+        assignment for item in template["resources"]
+        if item["type"] == "Microsoft.Resources/deployments"
+        for assignment in item["properties"]["template"]["resources"]
+        if assignment["type"] == "Microsoft.Authorization/roleAssignments"
+        and assignment["properties"]["principalId"] == "[parameters('principalObjectId')]"]
+    assert app_assignments == [reader]
+    assert template["outputs"]["identityClientId"]["value"] == \
+        grant_templates.IDENTITY_OUTPUT.format("clientId")
 
 
 def test_the_google_script_binds_each_role_and_limits_the_secret_roles_to_pdt():
     script = grant_templates.google_script()
     for role in deploy_google_cloud.GRANT_ROLES:
-        assert role in script
+        assert role.replace("PROJECT_ID", "$PDT_PROJECT") in script
     assert "roles/logging.viewer" in script
     assert 'resource.name.startsWith(\\"projects/$NUMBER/secrets/pdt-\\")' in script
     assert "secretmanager.secretAccessor" in script
@@ -98,7 +130,38 @@ def test_the_shell_puts_the_project_number_in_each_secret_condition(tmp_path):
     conditions = proc.stdout.splitlines()
     assert conditions == [
         'title=pdt buckets,expression=resource.name.startsWith("projects/_/buckets/pdt-")',
-        'title=pdt secrets,expression=resource.name.startsWith('
-        '"projects/123456789012/secrets/pdt-")',
-        'title=pdt secrets,expression=resource.name.startsWith('
-        '"projects/123456789012/secrets/pdt-")']
+        *['title=pdt secrets,expression=resource.name.startsWith('
+          '"projects/123456789012/secrets/pdt-")'] * 3]
+
+
+def test_the_google_grant_creates_and_writes_pdt_secrets_and_reads_no_other(tmp_path):
+    script = grant_templates.google_script()
+    start = script.index("custom_role() {")
+    lines = script[start:].splitlines()
+    end = next(index for index, line in enumerate(lines)
+               if line.startswith('if ! gcloud iam service-accounts describe "$RUNNER"'))
+    harness = tmp_path / "roles.sh"
+    harness.write_text(
+        'gcloud() { [ "$1 $2 $3" = "iam roles describe" ] && return 1; echo "$*"; }\n'
+        "PDT_PROJECT=my-project\nACCOUNT=pdt-autoidm@my-project.iam.gserviceaccount.com\n"
+        "NUMBER=123456789012\n" + "\n".join(lines[:end]) + "\n")
+    proc = subprocess.run(["bash", str(harness)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    calls = proc.stdout.splitlines()
+    created = {call.split()[3]: call.split("--permissions ")[1].split()[0]
+               for call in calls if call.startswith("iam roles create")}
+    assert created == {
+        "pdtAutoidmSecretCreate": "secretmanager.secrets.create",
+        "pdtAutoidmSecretPolicy": "secretmanager.secrets.getIamPolicy,"
+                                  "secretmanager.secrets.setIamPolicy"}
+    bindings = {call.split("--role ")[1].split()[0]: call.split("--condition")[1]
+                for call in calls if call.startswith("projects add-iam-policy-binding")}
+    secrets_only = ' title=pdt secrets,expression=resource.name.startsWith(' \
+                   '"projects/123456789012/secrets/pdt-") --format=none'
+    assert bindings["projects/my-project/roles/pdtAutoidmSecretCreate"] == "=None --format=none"
+    assert bindings["roles/secretmanager.editor"] == secrets_only
+    assert bindings["projects/my-project/roles/pdtAutoidmSecretPolicy"] == secrets_only
+    assert bindings["roles/secretmanager.secretAccessor"] == secrets_only
+    assert "roles/secretmanager.admin" not in bindings
+    unconditional = [role for role, condition in bindings.items() if condition.startswith("=None")]
+    assert not any("secretAccessor" in role or role.endswith("Policy") for role in unconditional)

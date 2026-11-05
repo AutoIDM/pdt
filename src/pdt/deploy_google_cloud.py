@@ -1603,16 +1603,25 @@ GRANT_NAME = "pdt-autoidm"
 GRANT_ROLES = ("roles/run.admin", "roles/cloudscheduler.admin", "roles/artifactregistry.admin",
                "roles/secretmanager.viewer", "roles/cloudbuild.builds.editor",
                "roles/iam.serviceAccountViewer", "roles/serviceusage.serviceUsageConsumer",
-               "roles/logging.viewer")
+               "roles/logging.viewer", "projects/PROJECT_ID/roles/pdtAutoidmSecretCreate")
+# IAM checks a secret create on the project, so a condition on the secret name cannot limit it.
+# The unconditional role holds only that one permission, and it reads no secret.
+GRANT_CUSTOM_ROLES = {
+    "pdtAutoidmSecretCreate": ("secretmanager.secrets.create",),
+    "pdtAutoidmSecretPolicy": ("secretmanager.secrets.getIamPolicy",
+                               "secretmanager.secrets.setIamPolicy"),
+}
 GRANT_RUNNER = "pdt-runner"
 # Each role with the condition that limits it to pdt's own resources. PROJECT_NUMBER stands for
-# the project number, which a secret's resource name holds.
+# the project number, which a secret's resource name holds, and PROJECT_ID for the project ID.
 GRANT_CONDITIONAL_ROLES = (
     ("roles/storage.admin", "pdt buckets",
      'resource.name.startsWith("projects/_/buckets/pdt-")'),
     ("roles/secretmanager.secretAccessor", "pdt secrets",
      'resource.name.startsWith("projects/PROJECT_NUMBER/secrets/pdt-")'),
-    ("roles/secretmanager.secretVersionManager", "pdt secrets",
+    ("roles/secretmanager.editor", "pdt secrets",
+     'resource.name.startsWith("projects/PROJECT_NUMBER/secrets/pdt-")'),
+    ("projects/PROJECT_ID/roles/pdtAutoidmSecretPolicy", "pdt secrets",
      'resource.name.startsWith("projects/PROJECT_NUMBER/secrets/pdt-")'),
 )
 

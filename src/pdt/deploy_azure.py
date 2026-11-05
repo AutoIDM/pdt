@@ -122,6 +122,7 @@ ROLE_IDS = {
     "Contributor": "b24988ac-6180-42a0-ab88-20f7382dd24c",
     "Key Vault Reader": "21090545-7ca7-4776-b22c-e363652d74d2",
     "Role Based Access Control Administrator": "f58310d9-a9f6-439a-9e8d-f62e7b41a168",
+    "Reader": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
 }
 STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
 STORE_METADATA_ARGS = tuple(
