@@ -154,6 +154,36 @@ def test_destroy_releases_the_shared_group_when_the_environment_is_already_gone(
     assert release == deploy_azure_container_apps.Release(group=True)
 
 
+def test_destroy_keeps_a_shared_group_the_grant_made(monkeypatch):
+    granted = {"tags": {"managed-by": "pdt", "pdt-lifecycle": "retain"}}
+
+    def read(*args):
+        if args[:2] == ("group", "show"):
+            return granted
+        if args[:3] == ("containerapp", "env", "show"):
+            return TAGGED
+        return [job_in("pdt", SHARED)] if args[:3] == ("containerapp", "job", "list") else []
+
+    fake_azure_reads(monkeypatch, read)
+    monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
+    release = deploy_azure_container_apps.environment_release(deploy_settings(SHARED))
+    assert release == deploy_azure_container_apps.Release(environment=True, group=False)
+
+
+def test_destroy_keeps_a_shared_group_the_grant_made_when_the_environment_is_gone(monkeypatch):
+    granted = {"tags": {"managed-by": "pdt", "pdt-lifecycle": "retain"}}
+
+    def read(*args):
+        if args[:2] == ("group", "show"):
+            return granted
+        return None if args[:3] == ("containerapp", "env", "show") else []
+
+    fake_azure_reads(monkeypatch, read)
+    monkeypatch.setattr(deploy_azure_container_apps, "az_json", read)
+    release = deploy_azure_container_apps.environment_release(deploy_settings(SHARED))
+    assert release == deploy_azure_container_apps.Release()
+
+
 def test_destroy_keeps_the_shared_group_while_another_region_has_an_environment(monkeypatch):
     release = release_with(monkeypatch, [], other_environments=["pdt-westus"])
     assert release == deploy_azure_container_apps.Release(environment=True, group=False)
