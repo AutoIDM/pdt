@@ -20,7 +20,10 @@ pdt sends the same things for a scheduled run on every provider and for a
 `pdt run` on this computer:
 
 - send_run_history: the job:run-started event, then job:run-completed or
-  job:run-failed with exit_code and duration_seconds, and app:deployed after
+  job:run-failed with exit_code, duration_seconds, and artifacts: the path and size
+  of each file in the run's output folder, also with send_artifacts off, at most
+  MAX_LISTED_ARTIFACTS, with artifacts_more for the rest (`artifact_list`). So
+  the run always gets an output folder in PDT_OUTPUT_DIR. And app:deployed after
   each deploy, with the schedule, its time zone, the provider, and the place.
   app:destroy-completed after each destroy, so AutoIDM forgets the app.
 - send_logs: the run's output as one upload, <run_id>.log. run_job writes the
@@ -68,6 +71,7 @@ KEY = "managed_services"
 SEND_DEFAULTS = {"send_run_history": True, "send_logs": False, "send_artifacts": False}
 CUSTOMER = re.compile(r"cus_[0-9a-f]{10}")
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+MAX_LISTED_ARTIFACTS = 500
 WARNED_ENV = "PDT_MANAGED_SERVICES_WARNED"
 JOB_RUN_STARTED = "job:run-started"
 APP_DEPLOY_COMPLETED = "app:deploy-completed"
@@ -94,6 +98,37 @@ def output_folder(app_dir: Path, run_id: str, fallback: Path) -> Path:
         fallback.parent.mkdir(parents=True, exist_ok=True)
         return fallback
     return folder
+
+
+def artifact_files(output: Path) -> list[Path]:
+    if not output.is_dir():
+        return []
+    if output.is_symlink() or output.is_junction():
+        console.warn(f"AutoIDM did not get the artifacts of this run: {console.value(output)} "
+                     "links to another place.")
+        return []
+    root = output.resolve()
+    files = []
+    for path in sorted(output.rglob("*")):
+        try:
+            inside = path.resolve().is_relative_to(root)
+        except (OSError, RuntimeError):
+            inside = False
+        if not inside:
+            console.warn(f"AutoIDM did not get {console.value(path)}: it links to a place "
+                         f"outside {console.value(output)}, or into a loop.")
+        elif path.is_file():
+            files.append(path)
+    return files
+
+
+def artifact_list(output: Path, files: list[Path]) -> dict[str, object]:
+    paths = sorted(path.relative_to(output).as_posix() for path in files)
+    listed = {"artifacts": [{"path": path, "size": (output / path).stat().st_size}
+                            for path in paths[:MAX_LISTED_ARTIFACTS]]}
+    if len(paths) > MAX_LISTED_ARTIFACTS:
+        listed["artifacts_more"] = len(paths) - MAX_LISTED_ARTIFACTS
+    return listed
 
 
 def parse(raw: object, where: str) -> dict:
@@ -231,23 +266,8 @@ class Sender:
         if data:
             self.upload("log", data, filename, params)
 
-    def upload_artifacts(self, output: Path, filename: str, params: dict) -> None:
-        if output.is_symlink() or output.is_junction():
-            console.warn(f"AutoIDM did not get the artifacts {console.value(filename)}: "
-                         f"{console.value(output)} links to another place.")
-            return
-        root = output.resolve()
-        files = []
-        for path in sorted(output.rglob("*")):
-            try:
-                inside = path.resolve().is_relative_to(root)
-            except (OSError, RuntimeError):
-                inside = False
-            if not inside:
-                console.warn(f"AutoIDM did not get {console.value(path)}: it links to a place "
-                             f"outside {console.value(output)}, or into a loop.")
-            elif path.is_file():
-                files.append(path)
+    def upload_artifacts(self, output: Path, files: list[Path], filename: str,
+                         params: dict) -> None:
         if not files:
             return
         with tempfile.TemporaryDirectory(prefix="pdt-artifacts-") as folder:
@@ -419,7 +439,7 @@ class Run:
 
 def start_run(app: str, run_id: str, app_dir: Path) -> Run:
     found = sender(app)
-    if found is None or not (found.wants("send_logs") or found.wants("send_artifacts")):
+    if found is None or not any(found.wants(key) for key in SEND_DEFAULTS):
         return Run(found)
     try:
         scratch = Path(tempfile.mkdtemp(prefix=f"pdt-{run_id}-"))
@@ -429,7 +449,7 @@ def start_run(app: str, run_id: str, app_dir: Path) -> Run:
         return Run(found)
     log = scratch / f"{run_id}.log" if found.wants("send_logs") else None
     output = None
-    if found.wants("send_artifacts"):
+    if found.wants("send_run_history") or found.wants("send_artifacts"):
         output = monitored("the artifacts of this run",
                            lambda: output_folder(app_dir, run_id, scratch / "output"))
     return Run(found, scratch, log, output)
@@ -440,21 +460,23 @@ def end_run(run: Run, name: str, params: dict, duration: float) -> bool:
     if found is None:
         return False
     run_id = str(params["run_id"])
+    files = None
+    if run.output is not None:
+        files = monitored("the artifacts of this run", lambda: artifact_files(run.output))
     if found.wants("send_run_history"):
         at = datetime.now(timezone.utc).strftime(TIME_FORMAT)
         ended = {**params, "duration_seconds": round(duration, 1)}
+        if files is not None:
+            ended.update(monitored("the artifact list of this run",
+                                   lambda: artifact_list(run.output, files), {}))
         queue_send(found, f"the {console.value(name)} event", lambda: found.event(name, at, ended))
     if run.log is not None:
         filename = f"{run_id}.log"
         queue_send(found, f"the log {console.value(filename)}",
                    lambda: found.upload_log(run.log, filename, params))
-    if run.output is not None:
+    if files and found.wants("send_artifacts"):
         zipname = f"{run_id}.zip"
-
-        def send_artifacts() -> None:
-            if run.output.is_dir():
-                found.upload_artifacts(run.output, zipname, params)
-
-        queue_send(found, f"the artifacts {console.value(zipname)}", send_artifacts)
+        queue_send(found, f"the artifacts {console.value(zipname)}",
+                   lambda: found.upload_artifacts(run.output, files, zipname, params))
     wait()
     return found.refused
