@@ -74,7 +74,7 @@ from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, gather_secrets,
     image_action, keep_paused, keeps_secret, make_registration, reads_registration, registration_secrets,
     run_build,
-    run_secrets, ssh_build_args, stop_on_sigterm, store_cost_label, store_kept_line, warn_if_locked)
+    ignore_sigterm, run_secrets, ssh_build_args, stop_on_sigterm, store_cost_label, store_kept_line, warn_if_locked)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -754,6 +754,7 @@ def mr_run(app: dict, settings: dict, iid: str) -> int:
                      f"image {console.value(image)}.")
         return logs(app, settings, ["--follow"], new=lambda run: run.id == name)
     finally:
+        ignore_sigterm()
         stop = ("containerapp", "job", "stop", "--name", job,
                 "--resource-group", settings["resource_group"], "--job-execution-name", name)
         shown = name and az_json("containerapp", "job", "execution", "show", "--name", job,
@@ -761,9 +762,11 @@ def mr_run(app: dict, settings: dict, iid: str) -> int:
                                  "--job-execution-name", name)
         if shown and RUN_STATUS.get((shown.get("properties") or {}).get("status")) == "running":
             run_quiet(*stop, slow=f"stopping: Container Apps Job execution {console.value(name)}")
-        elif name and shown is None:
-            # The status is unknown; a stop of an execution that already ended fails harmlessly.
-            az(*stop)
+        elif name and shown is None and az(*stop).returncode != 0:
+            # The status is unknown, and a stop of an execution that already ended also fails.
+            console.warn(f"pdt could not read or stop execution {console.value(name)} of "
+                         f"{console.value(job)}; if it still runs, stop it with "
+                         f"{console.value('pdt az containerapp job stop')}.")
         run_quiet("acr", "repository", "delete", "--name", settings["registry"],
                   "--repository", image_name, "--yes")
         console.done(f"Deleted image {console.value(image)}.")

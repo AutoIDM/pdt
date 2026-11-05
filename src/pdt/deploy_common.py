@@ -325,6 +325,12 @@ def stop_on_sigterm() -> None:
     signal.signal(signal.SIGTERM, stop)
 
 
+def ignore_sigterm() -> None:
+    """Called first in the clean-up of an `mr-run`, so a SIGTERM cannot cut it short. The
+    programs that the clean-up starts ignore SIGTERM too."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+
 def run_main(main: Callable[[], int]) -> None:
     """Exit with main's code, or with 130 at once after a Ctrl+C. A normal exit waits for
     every worker thread, and a worker that waits on the network keeps the script running.

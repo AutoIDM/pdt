@@ -61,7 +61,7 @@ from pdt.deploy_aws import (
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, ensure_image, fail, gather_secrets, image_action,
     keep_paused, keeps_secret, make_registration, registration_secrets, run_build, run_secrets, secret_contents,
-    ssh_build_args, stop_on_sigterm, store_kept_line,
+    ignore_sigterm, ssh_build_args, stop_on_sigterm, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked,
 )
 
@@ -1367,6 +1367,7 @@ def mr_run(app: dict, session, iid: str) -> int:
         job_id = None
         return code
     finally:
+        ignore_sigterm()
         if job_id is not None:
             clients["batch"].terminate_job(jobId=job_id, reason="pdt mr-run stopped")
         if arn is not None:

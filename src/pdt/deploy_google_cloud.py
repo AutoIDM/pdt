@@ -85,7 +85,7 @@ from pdt import regions
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
-    ensure_image, fail, fetch_json, gather_secrets, image_action, keep_paused, keeps_secret, make_registration,
+    ensure_image, fail, fetch_json, gather_secrets, ignore_sigterm, image_action, keep_paused, keeps_secret, make_registration,
     registration_secrets, run_build, run_main, run_secrets, secret_contents, ssh_build_args, stop_on_sigterm,
     store_cost_label, store_kept_line, store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
@@ -1559,6 +1559,7 @@ def mr_run(app: dict, assume_yes: bool, iid: str) -> int:
             runs_cli.print_line(line)
         return 0 if execution.status == "succeeded" else 1
     finally:
+        ignore_sigterm()
         if created and not finished:
             for run in list_runs(project, region, mr_job):
                 if run.status == "running":
