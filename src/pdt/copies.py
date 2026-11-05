@@ -5,7 +5,8 @@ A unit is `root` (the project files outside the app folders), `app=<name>` (one 
 folder, so the zip of `app=hr` holds `hr/...`. A copy has no history and no per-file hash:
 `sha256` is the SHA-256 of the zip bytes.
 
-In a Git clone, a copy holds only tracked files. Otherwise it leaves out each LEFT_OUT pattern.
+In a Git clone, a copy holds only tracked files, less each SECRETS_OUT pattern. Otherwise it
+leaves out each LEFT_OUT pattern.
 In both cases it leaves out each link, each file larger than MAX_FILE_BYTES, and each ALWAYS_OUT
 name. The zip has one fixed date, so the same files give the same zip.
 
@@ -42,8 +43,8 @@ ROOT = "root"
 UNIT = re.compile(r"root|app=(?!\.{1,2}$)(?!-)[A-Za-z0-9._-]{1,128}|mr=[0-9]{1,9}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 ALWAYS_OUT = (".git", ".pdt", ".env", ".pdt-state", ".pdt-project-name", "*.yml.lock")
-LEFT_OUT = (*BUILD_EXCLUDES, *ALWAYS_OUT, "*.env", "*.csv", "*.tsv", "*.xlsx", "*.ppk",
-            "known_hosts", ".secrets*", "artifacts")
+SECRETS_OUT = (*BUILD_EXCLUDES, "*.env", "*.ppk", "known_hosts", ".secrets*")
+LEFT_OUT = (*SECRETS_OUT, *ALWAYS_OUT, "*.csv", "*.tsv", "*.xlsx", "artifacts")
 WINDOWS_DEVICES = {"con", "prn", "aux", "nul",
                    *(f"com{number}" for number in range(10)),
                    *(f"lpt{number}" for number in range(10))}
@@ -96,7 +97,7 @@ def is_link(path: Path) -> bool:
 
 def entry_of(root: Path, relative: str) -> tuple[dict | None, str]:
     path = Path(long_path(root / relative))
-    if is_link(path):
+    if is_link(path) or not (root / relative).resolve().is_relative_to(root.resolve()):
         return None, "a link"
     if not path.is_file():
         return None, "not a file"
@@ -142,6 +143,9 @@ def collect_tracked(root: Path) -> tuple[list[dict], dict[str, str]]:
     for relative in git_paths(root):
         if any(matches(part, ALWAYS_OUT) for part in relative.split("/")):
             left_out[relative] = "pdt's own state"
+            continue
+        if any(matches(part, SECRETS_OUT) for part in relative.split("/")):
+            left_out[relative] = "a name that a copy leaves out"
             continue
         entry, why = entry_of(root, relative)
         if entry is None:

@@ -42,6 +42,45 @@ def test_a_project_splits_into_root_and_one_unit_for_each_app(tmp_path):
     assert "hr/.env" in left_out and "data.csv" in left_out
 
 
+def test_a_clone_copy_leaves_out_tracked_secret_files_and_keeps_tracked_data(tmp_path):
+    root = project(tmp_path)
+    (root / "hr" / ".env.aws").write_text("KEY=secret\n")
+    (root / "hr" / "token.key").write_text("secret\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    for args in (["init", "-q"], ["add", "-f", "."], ["commit", "-q", "-m", "x"]):
+        subprocess.run(["git", "-C", str(root), *args], check=True, env=env)
+
+    files, left_out = copies.collect(root)
+
+    assert [entry["path"] for entry in files] == ["data.csv", "hr/config.yml", "hr/run.py",
+                                                  "notes.txt", "pdt.yml"]
+    assert {"hr/.env", "hr/.env.aws", "hr/token.key"} <= set(left_out)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a folder link needs an administrator on Windows")
+def test_a_clone_copy_leaves_out_a_tracked_file_under_a_linked_folder(tmp_path):
+    (tmp_path / "project").mkdir()
+    root = project(tmp_path / "project")
+    (root / "shared").mkdir()
+    (root / "shared" / "settings.json").write_text("{}\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    for args in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "x"]):
+        subprocess.run(["git", "-C", str(root), *args], check=True, env=env)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "settings.json").write_text("secret\n")
+    (root / "shared" / "settings.json").unlink()
+    (root / "shared").rmdir()
+    (root / "shared").symlink_to(outside, target_is_directory=True)
+
+    files, left_out = copies.collect(root)
+
+    assert "shared/settings.json" not in [entry["path"] for entry in files]
+    assert left_out["shared/settings.json"] == "a link"
+
+
 def test_the_same_files_give_the_same_zip(tmp_path):
     root = project(tmp_path)
     files = copies.split_units(copies.collect(root)[0], ["hr"])["app=hr"]
