@@ -25,8 +25,9 @@ def portal(monkeypatch):
     found.close()
 
 
-def claim(portal, operation="list", args=None, value=None, limit=300):
+def claim(portal, operation="list", args=None, value=None, limit=300, commit=None):
     unit, data = copy_of("root", {"pdt.yml": b"platform:\n  provider: aws\n"})
+    unit["commit"] = commit
     portal.zips[unit["sha256"]] = data
     unit["url"] = f"{portal.url}/zip/{unit['sha256']}"
     portal.routes["/v1/runner/claim"] = lambda _body: (200, {
@@ -111,7 +112,7 @@ def test_a_claim_that_is_gone_exits_0(portal):
 
 def test_an_mr_run_runs_the_mr_child_with_the_output_folder(portal, monkeypatch):
     claim(portal, "run_mr", {"project": "example", "app": "hr", "mr_iid": "12", "sha": "a" * 40,
-                             "app_args": "--full"})
+                             "app_args": "--full"}, commit="a" * 40)
     seen = {}
     real = hosted_runner.run_child
 
@@ -128,6 +129,15 @@ def test_an_mr_run_runs_the_mr_child_with_the_output_folder(portal, monkeypatch)
     assert seen["env"]["PDT_APP_ARGS"] == "--full" and seen["env"]["PDT_RUN_ID"] == COMMAND
     found = result(portal)
     assert found["outcome"] == "done" and found["artifact_key"] == "k/artifact"
+
+
+def test_an_mr_run_of_a_copy_of_another_commit_is_refused(portal, monkeypatch):
+    claim(portal, "run_mr", {"project": "example", "app": "hr", "mr_iid": "12", "sha": "a" * 40},
+          commit="b" * 40)
+    child(monkeypatch, "raise SystemExit('this must not run')")
+    assert hosted_runner.main([]) == 0
+    found = result(portal)
+    assert found["outcome"] == "refused" and f"names commit {'a' * 40}" in found["message"]
 
 
 @pytest.mark.parametrize("operation, args, kept", [

@@ -176,6 +176,11 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
     project = work / "project"
     project.mkdir()
     write_copy(answer, project)
+    if operation == "run_mr":
+        units = (answer.get("copy") or {}).get("units") or [{}]
+        problem = service_runner.mr_copy_problem(units[0], project, args["app"], args["sha"])
+        if problem:
+            raise Refused(problem)
     (project / config.PROJECT_NAME_FILE).write_text(args["project"] + "\n", encoding="utf-8")
     app = args.get("app")
     if app:

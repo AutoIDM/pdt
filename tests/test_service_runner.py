@@ -964,10 +964,11 @@ MR_ARGS = {"project": "example", "app": "hr", "mr_iid": "12", "sha": "a" * 40,
            "app_args": "--full"}
 
 
-def serve_mr(portal, files=None):
-    portal.serve_copies(copy_of("mr=12", files or {
+def serve_mr(portal, files=None, commit=MR_ARGS["sha"]):
+    entry, data = copy_of("mr=12", files or {
         "pdt.yml": f"managed_services:\n  customer: {CUSTOMER}\n".encode(),
-        "hr/config.yml": b"schedule: daily\n", "hr/run.py": b"print('mr')\n"}))
+        "hr/config.yml": b"schedule: daily\n", "hr/run.py": b"print('mr')\n"})
+    portal.serve_copies(({**entry, "commit": commit}, data))
 
 
 def test_run_mr_runs_the_copy_in_its_own_folder_with_the_project_env(machine, portal,
@@ -1026,6 +1027,37 @@ def test_an_mr_copy_of_another_customer_does_not_run(machine, portal, monkeypatc
     result = portal.result()
     assert result["outcome"] == "failed" and "cus_0000000000" in result["message"]
     assert "started" not in portal.facts()
+
+
+@pytest.mark.parametrize("commit", [None, "b" * 40])
+def test_an_mr_copy_of_another_commit_does_not_run(machine, portal, monkeypatch, commit):
+    serve_mr(portal, commit=commit)
+    child(monkeypatch, "raise SystemExit('this must not run')")
+    execute(job(machine, "run_mr", MR_ARGS))
+    result = portal.result()
+    assert result["outcome"] == "refused"
+    assert f"names commit {MR_ARGS['sha']}" in result["message"]
+    assert "started" not in portal.facts()
+
+
+@pytest.mark.parametrize("pin, runs", [("0.1.13", False), ("0.1.14", True), ("0.2.0", True)])
+def test_an_mr_run_of_an_app_that_pins_an_older_pdt_is_refused(machine, portal, monkeypatch,
+                                                                pin, runs):
+    run_py = (f'# /// script\n# dependencies = ["pdt-cli[apps]=={pin}"]\n# ///\n'
+              "print('mr')\n").encode()
+    serve_mr(portal, {"pdt.yml": f"managed_services:\n  customer: {CUSTOMER}\n".encode(),
+                      "hr/config.yml": b"schedule: daily\n", "hr/run.py": run_py})
+    child(monkeypatch, "pass")
+    portal.routes["/v1/uploads"] = lambda _body: (200, {
+        "url": f"{portal.url}/bucket", "fields": {"key": "k"}, "key": "k"})
+    execute(job(machine, "run_mr", MR_ARGS))
+    result = portal.result()
+    if runs:
+        assert result["outcome"] == "done", result
+        return
+    assert result["outcome"] == "refused"
+    assert result["message"].startswith(f"hr/run.py line 2 pins pdt-cli {pin}.")
+    assert f"pdt-cli {service_runner.MR_STATE_VERSION} or newer" in result["message"]
 
 
 def test_an_mr_with_no_copy_is_refused(machine, portal, monkeypatch):
