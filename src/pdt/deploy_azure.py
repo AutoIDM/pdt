@@ -1060,12 +1060,12 @@ def destroy_group(settings: dict[str, str], app_name: str) -> bool:
     kept = retained(az_json("group", "show", "--name", rg))
     if kept:
         for resource in kept_group_deletes(resources):
-            name = console.value(resource.get("name"))
-            console.step(f"deleting {name}")
+            name = resource.get("name")
+            console.step(f"deleting {console.value(name)}")
             locked = delete_unless_locked("resource", "delete", "--ids", resource["id"],
-                                          slow=f"deleting: {name}")
+                                          slow=f"deleting: {console.value(name)}")
             if locked:
-                console.note(f"kept: {name} (locked by {console.value(locked)})")
+                console.note(f"kept: {console.value(name)} (locked by {console.value(locked)})")
     else:
         console.step(f"deleting resource group {console.value(rg)} (takes a few minutes)")
         locked = delete_unless_locked("group", "delete", "--name", rg, "--yes",
