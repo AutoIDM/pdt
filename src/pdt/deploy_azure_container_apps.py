@@ -753,14 +753,16 @@ def mr_run(app: dict, settings: dict, iid: str) -> int:
                      f"image {console.value(image)}.")
         return logs(app, settings, ["--follow"], new=lambda run: run.id == name)
     finally:
+        stop = ("containerapp", "job", "stop", "--name", job,
+                "--resource-group", settings["resource_group"], "--job-execution-name", name)
         shown = name and az_json("containerapp", "job", "execution", "show", "--name", job,
                                  "--resource-group", settings["resource_group"],
                                  "--job-execution-name", name)
         if shown and RUN_STATUS.get((shown.get("properties") or {}).get("status")) == "running":
-            run_quiet("containerapp", "job", "stop", "--name", job,
-                      "--resource-group", settings["resource_group"],
-                      "--job-execution-name", name,
-                      slow=f"stopping: Container Apps Job execution {console.value(name)}")
+            run_quiet(*stop, slow=f"stopping: Container Apps Job execution {console.value(name)}")
+        elif name and shown is None:
+            # The status is unknown; a stop of an execution that already ended fails harmlessly.
+            az(*stop)
         run_quiet("acr", "repository", "delete", "--name", settings["registry"],
                   "--repository", image_name, "--yes")
         console.done(f"Deleted image {console.value(image)}.")
