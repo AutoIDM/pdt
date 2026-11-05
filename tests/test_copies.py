@@ -1,5 +1,7 @@
 import hashlib
 import io
+import os
+import subprocess
 import zipfile
 
 import pytest
@@ -110,3 +112,47 @@ def test_an_app_unit_with_a_path_outside_its_folder_writes_nothing(tmp_path):
     data = zip_of(files)
     with pytest.raises(copies.CopyError, match="outside its app folder"):
         copies.unpack(data, entry_of(data, files, "app=hr"), tmp_path / "out")
+
+
+def git_archive_zip(tmp_path) -> bytes:
+    """The zip of a commit as `git archive --format=zip` writes it, with folder entries."""
+    repo = tmp_path / "repo"
+    (repo / "hr").mkdir(parents=True)
+    (repo / "pdt.yml").write_text("apps: []\n")
+    (repo / "hr" / "run.py").write_text("print(1)\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    for args in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "x"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, env=env)
+    return subprocess.run(["git", "-C", str(repo), "archive", "--format=zip", "HEAD"],
+                          check=True, capture_output=True).stdout
+
+
+def test_a_git_archive_zip_with_folder_entries_unpacks(tmp_path):
+    data = git_archive_zip(tmp_path)
+    assert "hr/" in zipfile.ZipFile(io.BytesIO(data)).namelist()
+    files = {"pdt.yml": b"apps: []\n", "hr/run.py": b"print(1)\n"}
+    copies.unpack(data, entry_of(data, files, "mr=12"), tmp_path / "out")
+    assert (tmp_path / "out" / "hr" / "run.py").read_bytes() == b"print(1)\n"
+
+
+def test_a_folder_entry_that_leaves_the_folder_writes_nothing(tmp_path):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zipped:
+        zipped.writestr("../escape/", b"")
+        zipped.writestr("pdt.yml", b"x")
+    data = buffer.getvalue()
+    with pytest.raises(copies.CopyError, match="leaves the folder"):
+        copies.unpack(data, entry_of(data, {"pdt.yml": b"x"}), tmp_path / "out")
+    assert not (tmp_path / "out" / "pdt.yml").exists()
+
+
+def test_a_file_outside_the_copy_is_still_refused_next_to_folder_entries(tmp_path):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zipped:
+        zipped.writestr("hr/", b"")
+        zipped.writestr("hr/run.py", b"x")
+        zipped.writestr("hr/extra.py", b"y")
+    data = buffer.getvalue()
+    with pytest.raises(copies.CopyError, match="exactly"):
+        copies.unpack(data, entry_of(data, {"hr/run.py": b"x"}), tmp_path / "out")
