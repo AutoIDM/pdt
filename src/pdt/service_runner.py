@@ -609,12 +609,13 @@ def stop_deployed(job: Job) -> str:
         return f"The job continues in {place}."
     if platform.get("provider") != "windows":
         return "The job continues where it is deployed."
-    from pdt import service_backends
+    from pdt import deploy_windows
     name = f"pdt-{app}"
     try:
-        service_backends.run("powershell", "-NoProfile", "-NonInteractive", "-Command",
-                             f"Stop-ScheduledTask -TaskName '{name}' -ErrorAction Stop")
-    except service_backends.BackendError as e:
+        with service_commands.in_project(job.project):
+            logs = deploy_windows.logs_folder(app)
+        deploy_windows.stop_task(name, logs)
+    except deploy_windows.WindowsDeployError as e:
         return f"The job continues on this computer, because pdt could not stop the task {name}: {e}"
     return f"pdt stopped the Windows task {name}."
 

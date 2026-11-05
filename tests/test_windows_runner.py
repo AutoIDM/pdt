@@ -28,7 +28,8 @@ def folders(tmp_path):
 def fake_popen(calls, output: bytes, code: int):
     def popen(command, **kwargs):
         calls.append((command, kwargs))
-        return types.SimpleNamespace(stdout=io.BytesIO(output), wait=lambda: code)
+        return types.SimpleNamespace(stdout=io.BytesIO(output), wait=lambda: code,
+                                     poll=lambda: code)
     return popen
 
 
@@ -134,6 +135,25 @@ def test_runner_process_exit_code_is_the_child_exit_code(folders, tmp_path):
     assert proc.stdout == b"" and proc.stderr == b""
     assert untimed(only_log(logs)) == (f"args: run --script {LIFECYCLE} -- {fake_uv} run --isolated --script run.py"
                                           "\noops\npdt: exit 5\n")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake uv is a shell script")
+def test_runner_stops_its_child_on_a_stop_request_and_keeps_the_end(folders, tmp_path):
+    app_dir, logs, url = folders
+    logs.mkdir()
+    (logs / run_windows_task.STOP_REQUEST).touch()
+    fake_uv = tmp_path / "uv"
+    fake_uv.write_text("#!/bin/sh\ntrap 'echo stopped; exit 7' TERM\necho started\n"
+                       f"touch '{logs / run_windows_task.STOP_REQUEST}'\n"
+                       "while true; do sleep 0.1; done\n")
+    fake_uv.chmod(0o755)
+
+    proc = subprocess.run([sys.executable, str(RUNNER), str(app_dir), str(logs), url],
+                          env={**os.environ, "UV": str(fake_uv)}, capture_output=True, timeout=30)
+
+    assert proc.returncode == 7
+    assert untimed(only_log(logs)) == "started\nstopped\npdt: exit 7\n"
+    assert not (logs / run_windows_task.STOP_REQUEST).exists()
 
 
 @pytest.mark.parametrize(("age", "trigger"), [(0, "manual"), (600, None)])

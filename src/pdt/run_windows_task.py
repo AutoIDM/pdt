@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -49,6 +50,10 @@ MISSING_UV = 127
 # MANUAL_START_SECONDS old, is manual.
 MANUAL_START = "manual-start"
 MANUAL_START_SECONDS = 300
+# A stop of the run (`deploy_windows.stop_run`) writes this file in the logs folder. The runner
+# then sends a Ctrl+Break to lifecycle.py, which sends the end event before the command ends.
+# Task Scheduler's own stop ends every process at once.
+STOP_REQUEST = "stop-request"
 LINE_TIME = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z) ")
 DRAIN_SECONDS = 2
 EVENT_SOURCE = "pdt"
@@ -195,6 +200,15 @@ def app_lock(app_dir: Path):
         whole.close()
 
 
+def stop_on_request(request: Path, child: subprocess.Popen) -> None:
+    while child.poll() is None:
+        if request.is_file():
+            request.unlink(missing_ok=True)
+            child.send_signal(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
+            return
+        time.sleep(1)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 3:
         sys.stderr.write(USAGE + "\n")
@@ -210,6 +224,8 @@ def main(argv: list[str]) -> int:
         if time.time() - marker.stat().st_mtime < MANUAL_START_SECONDS:
             env["PDT_TRIGGER"] = "manual"
         marker.unlink(missing_ok=True)
+    request = folder / STOP_REQUEST
+    request.unlink(missing_ok=True)
     env.setdefault("PYTHONIOENCODING", "utf-8")
     # Python holds stdout written to a file or pipe until a buffer fills, so a print()
     # line would land after a later stderr line. The cloud images set the same.
@@ -238,7 +254,8 @@ def main(argv: list[str]) -> int:
         try:
             child = subprocess.Popen(
                 command, cwd=app_dir, env=env,
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         except OSError as exc:
             out.write(timed(f"{uv} could not be started: {exc}".encode()))
             code = MISSING_UV
@@ -262,6 +279,7 @@ def main(argv: list[str]) -> int:
                         out.flush()
             reader = threading.Thread(target=copy, daemon=True)
             reader.start()
+            threading.Thread(target=stop_on_request, args=(request, child), daemon=True).start()
             try:
                 code = child.wait()
             except BaseException:

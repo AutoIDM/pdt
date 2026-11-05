@@ -75,11 +75,31 @@ def test_google_kill_cancels_each_running_execution(monkeypatch):
                       "--project", "proj", "--quiet")]
 
 
-def test_windows_kill_stops_the_task(monkeypatch, capsys):
+def test_windows_kill_asks_the_run_to_stop_so_it_sends_its_end_event(monkeypatch, capsys,
+                                                                     tmp_path):
+    scripts = []
+    running = iter([True, True, False])
+    monkeypatch.setattr(deploy_windows, "_preflight", lambda require_uv=True: ("powershell.exe", None))
+    monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
+    monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: next(running))
+    monkeypatch.setattr(deploy_windows, "logs_folder", lambda name: tmp_path)
+    monkeypatch.setattr(deploy_windows.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(deploy_windows, "_run",
+                        lambda powershell, script, **kwargs: scripts.append((script, kwargs)) or True)
+    assert deploy_windows.kill({"name": "hr"}) == 0
+    assert (tmp_path / run_windows_task.STOP_REQUEST).is_file()
+    assert scripts == []
+    assert "Stopped hr" in capsys.readouterr().out
+
+
+def test_windows_kill_ends_the_task_when_the_run_does_not_stop_in_time(monkeypatch, capsys,
+                                                                       tmp_path):
     scripts = []
     monkeypatch.setattr(deploy_windows, "_preflight", lambda require_uv=True: ("powershell.exe", None))
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "managed")
     monkeypatch.setattr(deploy_windows, "_task_running", lambda powershell, name: True)
+    monkeypatch.setattr(deploy_windows, "logs_folder", lambda name: tmp_path)
+    monkeypatch.setattr(deploy_windows, "STOP_SECONDS", 0)
     monkeypatch.setattr(deploy_windows, "_run",
                         lambda powershell, script, **kwargs: scripts.append((script, kwargs)) or True)
     assert deploy_windows.kill({"name": "hr"}) == 0
