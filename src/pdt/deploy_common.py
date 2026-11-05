@@ -135,6 +135,7 @@ WORKDIR /workspace/{app}
 """ + ENTRYPOINT
 # The PEP 723 script block, with the reference regex of the PEP.
 SCRIPT_HEADER = re.compile(r"(?m)^# /// script$\s(?:^#(?:| .*)$\s)+^# ///$")
+NO_METADATA_HEADER = "# /// script\n# dependencies = []\n# ///\n"
 LIFECYCLE_MODULES = ("__init__.py", "alert_message.py", "config.py", "console.py",
                      "lifecycle.py", "managed_services.py", "slack.py", "teams.py",
                      "utils/__init__.py", "utils/autoidm.py", "utils/storage.py")
@@ -210,12 +211,14 @@ def write_dockerfile(stage: Path, app: dict) -> None:
 def stage_script_header(stage: Path, app_dir: Path) -> None:
     """uv keeps a script's environment per script path, so the Dockerfile copies the
     folder to the app's own path, and `uv run --script run.py` finds that environment.
+    `uv sync --script` refuses a script with no metadata, which the Windows task runs, so such
+    a script gets an empty header here.
     """
     folder = stage / ".pdt-script"
     folder.mkdir()
     text = (app_dir / "run.py").read_text()
     header = SCRIPT_HEADER.search(text)
-    (folder / "run.py").write_text(header.group(0) + "\n" if header else text)
+    (folder / "run.py").write_text(header.group(0) + "\n" if header else NO_METADATA_HEADER)
     lock = app_dir / "run.py.lock"
     if lock.is_file():
         shutil.copy(lock, folder / lock.name)
