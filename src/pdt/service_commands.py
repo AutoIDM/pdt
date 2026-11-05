@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ PLACE = re.compile(r"(aws|azure|google-cloud):[A-Za-z0-9-]{1,64}:[a-z0-9-]{1,32}
 HOUR = 3600
 MINUTE = 60
 CANCEL_EXPIRES_SECONDS = 25200
+PROJECT_ENV_LOCK = threading.Lock()
 
 
 class Refused(Exception):
@@ -231,15 +233,16 @@ def next_key_set(token: object, version: int, keys: list[dict],
 
 @contextmanager
 def in_project(project: Path):
-    before = os.environ.get("PDT_PROJECT")
-    os.environ["PDT_PROJECT"] = str(project)
-    try:
-        yield
-    finally:
-        if before is None:
-            del os.environ["PDT_PROJECT"]
-        else:
-            os.environ["PDT_PROJECT"] = before
+    with PROJECT_ENV_LOCK:
+        before = os.environ.get("PDT_PROJECT")
+        os.environ["PDT_PROJECT"] = str(project)
+        try:
+            yield
+        finally:
+            if before is None:
+                del os.environ["PDT_PROJECT"]
+            else:
+                os.environ["PDT_PROJECT"] = before
 
 
 def env_spec_names(project: Path, app: str) -> set[str]:

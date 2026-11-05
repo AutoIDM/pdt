@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 
@@ -86,9 +87,13 @@ def test_the_locks_of_another_project_folder_can_be_named(project, monkeypatch, 
 
 
 def holder(project, name):
-    code = ("import fcntl, sys, time; "
+    if os.name == "nt":
+        take = "import msvcrt; msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)"
+    else:
+        take = "import fcntl; fcntl.flock(handle.fileno(), fcntl.LOCK_EX)"
+    code = ("import time; "
             f"handle = open({str(locks(project) / name)!r}, 'w'); "
-            "fcntl.flock(handle.fileno(), fcntl.LOCK_EX); print('held', flush=True); time.sleep(60)")
+            f"{take}; print('held', flush=True); time.sleep(60)")
     locks(project).mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE)
     assert proc.stdout.readline().strip() == b"held"
