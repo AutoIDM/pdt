@@ -22,6 +22,7 @@ pdt sends the same things for a scheduled run on every provider and for a
 - send_run_history: the job:run-started event, then job:run-completed or
   job:run-failed with exit_code and duration_seconds, and app:deployed after
   each deploy, with the schedule, its time zone, the provider, and the place.
+  app:destroy-completed after each destroy, so AutoIDM forgets the app.
 - send_logs: the run's output as one upload, <run_id>.log. run_job writes the
   command's output to a file as it prints it, because a cloud job's output goes
   from the container to the cloud's log service, and the run cannot read it
@@ -71,6 +72,7 @@ WARNED_ENV = "PDT_MANAGED_SERVICES_WARNED"
 JOB_RUN_STARTED = "job:run-started"
 APP_DEPLOY_COMPLETED = "app:deploy-completed"
 APP_DEPLOYED = "app:deployed"
+APP_DESTROY_COMPLETED = "app:destroy-completed"
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 EXIT_WAIT_SECONDS = 15.0
 WAIT_STEP_SECONDS = 0.1
@@ -382,14 +384,14 @@ def wait(seconds: float | None = None) -> None:
 
 
 def accept(event) -> None:
-    if event.name not in (JOB_RUN_STARTED, APP_DEPLOY_COMPLETED):
+    if event.name not in (JOB_RUN_STARTED, APP_DEPLOY_COMPLETED, APP_DESTROY_COMPLETED):
         return
     app = str(event.params["app"])
     found = sender(app)
     if found is None or not found.wants("send_run_history"):
         return
     at = event.at.strftime(TIME_FORMAT)
-    if event.name == JOB_RUN_STARTED:
+    if event.name in (JOB_RUN_STARTED, APP_DESTROY_COMPLETED):
         queue_send(found, f"the {console.value(event.name)} event",
                    lambda: found.event(event.name, at, event.params))
     else:
