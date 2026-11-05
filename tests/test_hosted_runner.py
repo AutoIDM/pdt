@@ -143,7 +143,7 @@ def test_an_mr_run_runs_the_mr_child_with_the_output_folder(portal, monkeypatch)
 
     monkeypatch.setattr(hosted_runner, "run_child", spy)
     assert hosted_runner.main([]) == 0
-    assert seen["argv"][1:] == ["-m", "pdt.hosted_runner", "mr-run", "hr", "12"]
+    assert seen["argv"][1:] == ["-I", "-m", "pdt.hosted_runner", "mr-run", "hr", "12"]
     assert seen["env"]["PDT_APP_ARGS"] == "--full" and seen["env"]["PDT_RUN_ID"] == COMMAND
     found = result(portal)
     assert found["outcome"] == "done" and found["artifact_key"] == "k/artifact"

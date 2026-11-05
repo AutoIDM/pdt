@@ -145,7 +145,7 @@ def args_problem(name: str, args: object) -> str:
 
 def command_line(operation: str, args: dict) -> list[str]:
     found = OPERATIONS[operation]
-    return [sys.executable, "-m", found.module, *found.argv(args)]
+    return [sys.executable, "-I", "-m", found.module, *found.argv(args)]
 
 
 def decoded(token: object, keys: list[dict], audience: str | None = None,
