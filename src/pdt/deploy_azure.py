@@ -1057,7 +1057,11 @@ def destroy_group(settings: dict[str, str], app_name: str) -> bool:
         console.note(f"kept: resource group {console.value(rg)} (apps deployed since the plan: "
                      f"{', '.join(console.value(other) for other in others)})")
         return False
-    kept = retained(az_json("group", "show", "--name", rg))
+    group = az_json("group", "show", "--name", rg)
+    if group is None:
+        fail(f"pdt could not read resource group {console.value(rg)}, so it deleted nothing "
+             "in it. Run the destroy again.")
+    kept = retained(group)
     if kept:
         for resource in kept_group_deletes(resources):
             name = resource.get("name")
@@ -1065,7 +1069,9 @@ def destroy_group(settings: dict[str, str], app_name: str) -> bool:
             locked = delete_unless_locked("resource", "delete", "--ids", resource["id"],
                                           slow=f"deleting: {console.value(name)}")
             if locked:
-                console.note(f"kept: {console.value(name)} (locked by {console.value(locked)})")
+                console.note(f"kept: {console.value(name)} and the rest of resource group "
+                             f"{console.value(rg)} (locked by {console.value(locked)})")
+                return False
     else:
         console.step(f"deleting resource group {console.value(rg)} (takes a few minutes)")
         locked = delete_unless_locked("group", "delete", "--name", rg, "--yes",

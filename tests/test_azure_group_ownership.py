@@ -1,3 +1,5 @@
+import pytest
+
 from pdt import deploy_azure
 
 GROUP = {"name": "pdt", "tags": {"managed-by": "pdt"}}
@@ -50,3 +52,39 @@ def test_destroy_empties_a_group_the_grant_made_and_keeps_the_group_and_its_iden
     assert all(args[:2] == ("resource", "delete") for args in deleted)
     assert purged == [("keyvault", "purge")]
     assert listed == ["pdt"]
+
+
+def test_destroy_deletes_nothing_when_it_cannot_read_the_group(monkeypatch):
+    resources = [{"id": "job", "name": "pdt-hr", "type": "Microsoft.App/jobs",
+                  "tags": {"managed-by": "pdt", "pdt-app": "hr"}}]
+    deleted = []
+    monkeypatch.setattr(deploy_azure, "az_json",
+                        lambda *args: resources if args[:2] == ("resource", "list") else None)
+    monkeypatch.setattr(deploy_azure, "delete_unless_locked",
+                        lambda *args, **kwargs: deleted.append(args) and "")
+    with pytest.raises(SystemExit):
+        deploy_azure.destroy_group({"resource_group": "pdt", "vault": "pdt-x"}, "hr")
+    assert deleted == []
+
+
+def test_a_lock_on_one_resource_of_a_retained_group_stops_the_shared_deletes(monkeypatch):
+    granted = {"name": "pdt", "tags": {"managed-by": "pdt", "pdt-lifecycle": "retain"}}
+    tagged = {"managed-by": "pdt"}
+    resources = [
+        {"id": "acr", "name": "pdtabc", "type": "Microsoft.ContainerRegistry/registries",
+         "tags": tagged},
+        {**OWNED, "id": "vault"},
+        {"id": "job", "name": "pdt-hr", "type": "Microsoft.App/jobs",
+         "tags": {**tagged, "pdt-app": "hr"}},
+    ]
+    reads = {("resource", "list"): resources, ("group", "show"): granted}
+    deleted = []
+
+    def delete(*args, **kwargs):
+        deleted.append(args[3])
+        return "pdt-other" if args[3] == "acr" else ""
+
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: reads.get(args[:2]))
+    monkeypatch.setattr(deploy_azure, "delete_unless_locked", delete)
+    assert deploy_azure.destroy_group({"resource_group": "pdt", "vault": "pdt-x"}, "hr") is False
+    assert deleted == ["job", "acr"]
