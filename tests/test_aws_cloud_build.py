@@ -110,11 +110,19 @@ class FakeCodeBuild:
         if self.polls == 1:
             return {"builds": [{"id": "pdt:1", "buildComplete": False, "logs": logs}]}
         phases = [{"phaseType": "PRE_BUILD", "phaseStatus": "SUCCEEDED"}]
+        if self.status == "ROLE_NOT_READY" and len(self.started) == 1:
+            self.polls = 0
+            return {"builds": [{"id": "pdt:1", "buildComplete": True, "buildStatus": "FAILED",
+                                "logs": {}, "phases": [{"phaseType": "QUEUED", "phaseStatus": "FAILED",
+                                "contexts": [{"message": "Service role arn:aws:iam::1:role/pdt-codebuild "
+                                              "does not allow AWS CodeBuild to create Amazon "
+                                              "CloudWatch Logs log streams"}]}]}]}
         if self.status == "FAILED":
             phases.append({"phaseType": "BUILD", "phaseStatus": "FAILED", "contexts": [
                 {"statusCode": "COMMAND_EXECUTION_ERROR",
                  "message": "Error while executing command: docker build. Reason: exit status 1"}]})
-        return {"builds": [{"id": "pdt:1", "buildComplete": True, "buildStatus": self.status,
+        status = "SUCCEEDED" if self.status == "ROLE_NOT_READY" else self.status
+        return {"builds": [{"id": "pdt:1", "buildComplete": True, "buildStatus": status,
                             "phases": phases, "logs": logs}]}
 
 
@@ -329,6 +337,13 @@ def test_a_failed_build_stops_once_with_its_phase_reason_and_log(deploy, capsys)
     assert "Reason: exit status 1" in out
     assert out.index("last line") < out.index("failed in phase BUILD")
     assert fakes["s3"].buckets[BUCKET] == {}
+
+
+def test_a_build_that_the_new_service_role_cannot_start_yet_starts_again(deploy, monkeypatch):
+    monkeypatch.setattr(batch_deploy.time, "sleep", lambda seconds: None)
+    code, fakes, _commands, _roles, _logs = deploy(cloud=True, status="ROLE_NOT_READY")
+    assert code == 0
+    assert len(fakes["codebuild"].started) == 2
 
 
 def test_a_local_build_never_touches_codebuild_or_the_build_bucket(deploy):

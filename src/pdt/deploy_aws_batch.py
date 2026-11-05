@@ -56,7 +56,8 @@ from pdt.deploy_aws import (
     console_note, console_url, log_group_url,
     delete_if_present, error_code, not_found,
     delete_schedule_group, other_schedules, preflight, resource_exists, retry, secret_statements,
-    store_cost, store_exists, store_statements, store_url, with_role_propagation_retry,
+    ROLE_PROPAGATION_DELAYS, store_cost, store_exists, store_statements, store_url,
+    with_role_propagation_retry,
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, ensure_image, fail, gather_secrets, image_action,
@@ -689,6 +690,14 @@ def failed_phase(build: dict) -> tuple[str, str]:
     return build.get("currentPhase", "unknown"), build.get("buildStatus", "unknown")
 
 
+def role_not_ready(build: dict) -> bool:
+    """IAM takes some seconds to give a new service role its rights, and until then CodeBuild
+    fails the build while it is queued."""
+    phase, reason = failed_phase(build)
+    return (build.get("buildStatus") != "SUCCEEDED" and phase == "QUEUED"
+            and "service role" in reason.lower())
+
+
 def codebuild_build(stage: Path, image: str, clients: dict, bucket: str, app_name: str) -> None:
     """Build and push `image` from `stage` with one CodeBuild build."""
     key = f"{app_name}/{uuid.uuid4().hex}.zip"
@@ -698,13 +707,20 @@ def codebuild_build(stage: Path, image: str, clients: dict, bucket: str, app_nam
     finally:
         archive.unlink(missing_ok=True)
     try:
-        build = clients["codebuild"].start_build(
-            projectName=BUILD_PROJECT, sourceTypeOverride="S3",
-            sourceLocationOverride=f"{bucket}/{key}", buildspecOverride=BUILDSPEC,
-            environmentVariablesOverride=[{"name": "IMAGE", "value": image,
-                                           "type": "PLAINTEXT"}])["build"]
-        console.status(f"CodeBuild build {console.value(build['id'])} started; its log follows.")
-        build = follow_build(clients["codebuild"], clients["logs"], build["id"])
+        for delay in (*ROLE_PROPAGATION_DELAYS, None):
+            build = clients["codebuild"].start_build(
+                projectName=BUILD_PROJECT, sourceTypeOverride="S3",
+                sourceLocationOverride=f"{bucket}/{key}", buildspecOverride=BUILDSPEC,
+                environmentVariablesOverride=[{"name": "IMAGE", "value": image,
+                                               "type": "PLAINTEXT"}])["build"]
+            console.status(f"CodeBuild build {console.value(build['id'])} started; "
+                           "its log follows.")
+            build = follow_build(clients["codebuild"], clients["logs"], build["id"])
+            if delay is None or not role_not_ready(build):
+                break
+            console.status(f"The new CodeBuild service role is not ready yet, so pdt starts "
+                           f"the build again in {delay} seconds.")
+            time.sleep(delay)
     finally:
         clients["s3"].delete_object(Bucket=bucket, Key=key)
     if build["buildStatus"] != "SUCCEEDED":
