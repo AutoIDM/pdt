@@ -8,7 +8,9 @@
   `pdt-shared`, and `pdt-data`, tagged `pdt-lifecycle=retain` so that no destroy deletes them, the
   external ID tag on `pdt`, the managed identity `pdt-autoidm` in `pdt` with a federated credential
   for AutoIDM's token of this customer only (`pdtIssuer`, `pdtSubject`), and the role assignments
-  of the grant on the three groups for that identity. AutoIDM's multi-tenant
+  of the grant on the three groups for that identity. The custom role
+  `pdt-autoidm-locks-<subscription>` (role names are unique in a tenant) adds the management
+  lock rights on `pdt` and `pdt-shared` only, the groups of the locks deploy holds. AutoIDM's multi-tenant
   service principal `principalObjectId` gets only Reader on `pdt`, so a token for another
   customer cannot act here. The output `identityClientId` names the identity.
 - `google-cloud-grant.sh`: a Cloud Shell script that makes the service account `pdt-autoidm` with
@@ -33,6 +35,8 @@ GOOGLE_FILE = "google-cloud-grant.sh"
 MANAGED_TAG = {"Key": "managed-by", "Value": "pdt"}
 IDENTITY = "pdt-autoidm"
 IDENTITY_DEPLOYMENT = "pdt-autoidm-identity"
+LOCK_ROLE = "pdt-autoidm-locks"
+LOCK_ROLE_ID = f"guid(subscription().id, '{LOCK_ROLE}')"
 IDENTITY_OUTPUT = ("[reference(resourceId('pdt', 'Microsoft.Resources/deployments', "
                    f"'{IDENTITY_DEPLOYMENT}'), '2022-09-01').outputs.{{}}.value]")
 NESTED_SCHEMA = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
@@ -82,16 +86,32 @@ def aws_template() -> dict:
         "Outputs": {"RoleArn": {"Value": {"Fn::GetAtt": ["Role", "Arn"]}}}}
 
 
+def lock_role() -> dict:
+    scopes = [f"[format('{{0}}/resourceGroups/{group}', subscription().id)]"
+              for group in deploy_azure.GRANT_LOCK_GROUPS]
+    return {
+        "type": "Microsoft.Authorization/roleDefinitions", "apiVersion": "2022-04-01",
+        "name": f"[{LOCK_ROLE_ID}]",
+        "dependsOn": [f"[subscriptionResourceId('Microsoft.Resources/resourceGroups', '{group}')]"
+                      for group in deploy_azure.GRANT_LOCK_GROUPS],
+        "properties": {
+            "roleName": f"[format('{LOCK_ROLE}-{{0}}', subscription().subscriptionId)]",
+            "description": "Lets pdt-autoidm hold the delete locks of pdt deploys (managed-by=pdt)",
+            "type": "CustomRole",
+            "permissions": [{"actions": list(deploy_azure.GRANT_LOCK_ACTIONS), "notActions": []}],
+            "assignableScopes": scopes}}
+
+
 def role_assignment(role: str, principal: str, name: str, condition: str | None = None) -> dict:
-    role_id = deploy_azure.ROLE_IDS[role]
+    role_id = LOCK_ROLE_ID if role == LOCK_ROLE else f"'{deploy_azure.ROLE_IDS[role]}'"
     properties = {
         "roleDefinitionId": f"[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', "
-                            f"'{role_id}')]",
+                            f"{role_id})]",
         "principalId": principal, "principalType": "ServicePrincipal"}
     if condition:
         properties.update({"condition": condition, "conditionVersion": "2.0"})
     return {"type": "Microsoft.Authorization/roleAssignments", "apiVersion": "2022-04-01",
-            "name": f"[guid(resourceGroup().id, {name}, '{role_id}')]", "properties": properties}
+            "name": f"[guid(resourceGroup().id, {name}, {role_id})]", "properties": properties}
 
 
 def nested(name: str, group: str, depends: list[str], parameters: dict[str, str],
@@ -134,11 +154,15 @@ def azure_identity() -> dict:
 
 def azure_assignments(group: str) -> dict:
     roles = [(role, None) for role in deploy_azure.GRANT_ROLES]
+    depends = [f"[subscriptionResourceId('Microsoft.Resources/resourceGroups', '{group}')]",
+               f"[resourceId('pdt', 'Microsoft.Resources/deployments', '{IDENTITY_DEPLOYMENT}')]"]
+    if group in deploy_azure.GRANT_LOCK_GROUPS:
+        roles.append((LOCK_ROLE, None))
+        depends.append(f"[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', "
+                       f"{LOCK_ROLE_ID})]")
     roles.append(("Role Based Access Control Administrator", deploy_azure.grant_condition()))
     return nested(
-        f"pdt-autoidm-{group}", group,
-        [f"[subscriptionResourceId('Microsoft.Resources/resourceGroups', '{group}')]",
-         f"[resourceId('pdt', 'Microsoft.Resources/deployments', '{IDENTITY_DEPLOYMENT}')]"],
+        f"pdt-autoidm-{group}", group, depends,
         {"identityPrincipalId": IDENTITY_OUTPUT.format("principalId")},
         [role_assignment(role, "[parameters('identityPrincipalId')]", f"'{IDENTITY}'", condition)
          for role, condition in roles])
@@ -166,7 +190,7 @@ def azure_template() -> dict:
             "pdtSubject": {"type": "string", "metadata": {
                 "description": "The subject of AutoIDM's identity tokens for your customer"}},
             "location": {"type": "string", "defaultValue": "[deployment().location]"}},
-        "resources": [*groups, azure_identity(),
+        "resources": [*groups, lock_role(), azure_identity(),
                       *(azure_assignments(group) for group in deploy_azure.GRANT_GROUPS)],
         "outputs": {"identityClientId": {"type": "string",
                                          "value": IDENTITY_OUTPUT.format("clientId")}}}
