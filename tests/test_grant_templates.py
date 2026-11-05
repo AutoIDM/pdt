@@ -2,7 +2,7 @@ import json
 import subprocess
 import sys
 
-from pdt import deploy_aws, deploy_azure, deploy_google_cloud, grant_templates
+from pdt import deploy_aws, deploy_azure, deploy_azure_container_apps, deploy_google_cloud, grant_templates
 
 
 def actions(template: dict) -> dict[str, list]:
@@ -70,13 +70,33 @@ def test_the_azure_template_assigns_the_roles_on_the_three_groups_only():
     for deployment in deployments[1:]:
         assignments = deployment["properties"]["template"]["resources"]
         roles = [assignment["properties"]["roleDefinitionId"] for assignment in assignments]
-        assert len(roles) == len(deploy_azure.GRANT_ROLES) + 1
+        locks = deployment["resourceGroup"] in deploy_azure.GRANT_LOCK_GROUPS
+        assert len(roles) == len(deploy_azure.GRANT_ROLES) + 1 + locks
+        assert any(grant_templates.LOCK_ROLE_ID in role for role in roles) == locks
         assert any(deploy_azure.ROLE_IDS["Key Vault Secrets Officer"] in role for role in roles)
         assert {assignment["properties"]["principalId"] for assignment in assignments} == {
             "[parameters('identityPrincipalId')]"}
         assert assignments[-1]["properties"]["condition"] == deploy_azure.grant_condition()
         assert deployment["properties"]["parameters"]["identityPrincipalId"]["value"] == \
             grant_templates.IDENTITY_OUTPUT.format("principalId")
+
+
+def test_the_azure_lock_role_holds_only_lock_rights_on_the_groups_that_deploy_locks():
+    [role] = [item for item in grant_templates.azure_template()["resources"]
+              if item["type"] == "Microsoft.Authorization/roleDefinitions"]
+    assert role["name"] == f"[{grant_templates.LOCK_ROLE_ID}]"
+    assert "subscriptionId" in role["properties"]["roleName"]
+    assert role["properties"]["permissions"] == [{"actions": [
+        "Microsoft.Authorization/locks/read", "Microsoft.Authorization/locks/write",
+        "Microsoft.Authorization/locks/delete"], "notActions": []}]
+    assert role["properties"]["assignableScopes"] == [
+        "[format('{0}/resourceGroups/pdt', subscription().id)]",
+        f"[format('{{0}}/resourceGroups/{deploy_azure.SHARED_GROUP}', subscription().id)]"]
+    settings = {"registry": "r", "resource_group": "pdt", "subscription": "s",
+                "environment": deploy_azure.parse_environment("", "eastus")}
+    groups = {lock.resource.split("/resourceGroups/")[1].split("/")[0]
+              for lock in deploy_azure_container_apps.shared_locks(settings, "pdt-app")}
+    assert groups == set(deploy_azure.GRANT_LOCK_GROUPS)
 
 
 def test_the_azure_identity_trusts_only_this_customers_subject_and_the_app_only_reads():

@@ -1295,6 +1295,11 @@ GRANT_ASSIGNS = ("AcrPull", "Key Vault Secrets User", "Key Vault Secrets Officer
                  "Storage Blob Data Contributor")
 ROLE_WRITE = "Microsoft.Authorization/roleAssignments"
 GRANT_GROUPS = ("pdt", SHARED_GROUP, STORE_GROUP)
+# Contributor cannot write locks. Deploy locks the registry in `pdt` and the shared environment
+# in `pdt-shared` (deploy_azure_container_apps.shared_locks), so only those two groups get them.
+GRANT_LOCK_ACTIONS = ("Microsoft.Authorization/locks/read", "Microsoft.Authorization/locks/write",
+                      "Microsoft.Authorization/locks/delete")
+GRANT_LOCK_GROUPS = ("pdt", SHARED_GROUP)
 
 
 def grant_groups(subscription: str) -> list[str]:
