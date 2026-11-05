@@ -567,6 +567,23 @@ def test_a_403_from_the_doorbell_checks_in(machine, portal):
     assert len(portal.bodies("/v1/service/checkin")) == before + 1
 
 
+def test_a_checkin_names_the_boot_time_the_service_start_and_the_os(machine, portal):
+    portal.routes["/v1/service/checkin"] = lambda _body: checkin_answer(portal)
+    before = time.strftime(service_runner.TIME_FORMAT, time.gmtime(time.time() - 1))
+    assert tick() == 0
+    body = portal.bodies("/v1/service/checkin")[-1]
+    assert body["service_started"] >= before
+    assert body["service_started"].endswith("Z")
+    assert body["boot_time"] is None or body["boot_time"] < body["service_started"]
+    assert 0 < len(body["os"]) <= 200
+
+
+@pytest.mark.skipif(os.name == "nt", reason="reads /proc/stat")
+def test_the_boot_time_is_null_when_pdt_cannot_read_it(monkeypatch):
+    monkeypatch.setattr(service.Path, "read_text", lambda *_args, **_kwargs: "cpu 1 2 3\n")
+    assert service.boot_time() is None
+
+
 def test_a_full_answer_checks_in_again(machine, portal):
     answers = [checkin_answer(portal, [{"command_id": f"cmd_20261103T1200{index:02d}Z_0123abcd",
                                         "token": "bad"} for index in range(20)])]

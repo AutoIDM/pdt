@@ -230,6 +230,45 @@ def checkin_projects(settings: dict, customer: str) -> list[dict]:
     return records
 
 
+def boot_time() -> str | None:
+    try:
+        if os.name == "nt":
+            import ctypes
+            ticks = ctypes.windll.kernel32.GetTickCount64
+            ticks.restype = ctypes.c_uint64
+            booted = time.time() - ticks() / 1000
+        else:
+            booted = next(float(line.split()[1]) for line in
+                          Path("/proc/stat").read_text(encoding="utf-8").splitlines()
+                          if line.startswith("btime "))
+    except (OSError, StopIteration, ValueError, AttributeError):
+        return None
+    return when(booted)
+
+
+def os_name() -> str:
+    import platform
+    if os.name == "nt":
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion") as key:
+                product = str(winreg.QueryValueEx(key, "ProductName")[0])
+        except OSError:
+            product = None
+        if product is not None:
+            version = platform.version()
+            # Windows 11 kept the ProductName of Windows 10; build 22000 is the first Windows 11.
+            if product.startswith("Windows 10 ") and int(version.split(".")[-1]) >= 22000:
+                product = "Windows 11 " + product.removeprefix("Windows 10 ")
+            return f"{product} {version}"[:200]
+    return platform.platform()[:200]
+
+
+def computer_facts() -> dict[str, str | None]:
+    return {"boot_time": boot_time(), "service_started": when(time.time()), "os": os_name()}
+
+
 @dataclass
 class Served:
     customer: str
@@ -242,6 +281,7 @@ class Served:
     keys_file: Path | None = None
     clock_warned_at: float = 0.0
     checked_projects: set[Path] = field(default_factory=set)
+    facts: dict[str, str | None] = field(default_factory=computer_facts)
 
 
 def read_saved(customer: str) -> dict:
@@ -430,7 +470,7 @@ def checkin_answer(served: Served, settings: dict, running: list[str], claiming:
         "interval_seconds": max(60, min(86400, interval)),
         "clock_offset_seconds": round(served.clock.offset),
         "command_keys_version": served.keys_version,
-        "projects": checkin_projects(settings, served.customer)},
+        "projects": checkin_projects(settings, served.customer), **served.facts},
         retry=False)
     if answer.get("schema") not in (None, 1):
         raise autoidm.AutoidmError(f"AutoIDM answered /v1/service/checkin with the schema "
