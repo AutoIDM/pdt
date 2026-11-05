@@ -159,7 +159,10 @@ def main() -> int:
         output, state = output_folder(app_dir, Path(local)), Path(local) / "state"
         state.mkdir()
         lease = store.pull("state/", state) if store is not None and reads_state(files) else None
-        env = {**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
+        if lease is not None and storage.is_merge_request_run():
+            store.abort(lease)
+            lease = None
+        env ={**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
                "PDT_CONFIG_JSON": json.dumps(app["config"], default=str)}
         try:
             for script in entries:
