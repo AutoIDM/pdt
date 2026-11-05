@@ -389,7 +389,7 @@ def keep_output(app: str, output: Path) -> None:
         console.warn(f"pdt did not keep the output files of this run: "
                      f"{console.escape(f'{type(e).__name__}: {e}')}")
         return
-    console.note(f"kept {len(files)} output file(s) in {store.url}{folder}")
+    console.note(f"kept {len(files)} output file(s) in {console.value(f'{store.url}{folder}')}")
 
 
 def run_job(app: str, provider: str, command: list[str], cwd: Path,
