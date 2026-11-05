@@ -200,6 +200,7 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     if problem != "":
         console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
+    choose_timezone(app, provider)
     code = leave_old_place(app_name, assume_yes)
     if code != 0:
         return code
@@ -230,6 +231,8 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
 
 # The schedule a deploy suggests for an app that sets none.
 DEFAULT_SCHEDULE = "daily"
+# The time zone of the person's browser, which the hosted runner gives a portal deploy.
+TIMEZONE_ENV = "PDT_TIMEZONE"
 
 
 def choose_schedule(app: dict, assume_yes: bool) -> str:
@@ -277,6 +280,22 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
         console.note(f"Using schedule {console.value(schedule)}. A deploy saves it to "
                      f"{console.value(saved)}; this plan changes no file.")
     return ""
+
+
+def choose_timezone(app: dict, provider: str) -> None:
+    """When the app has a schedule and no time zone, save one in the app's config.yml, so every
+    later deploy uses the same one: the time zone in TIMEZONE_ENV (the person's browser, for a
+    portal deploy by the hosted runner), else this computer's. A Windows task runs on local time."""
+    if provider == "windows" or app["schedule"] is None or app["timezone_set"]:
+        return
+    zone = os.environ.get(TIMEZONE_ENV, "").strip() or regions.local_timezone()
+    saved = config.save_app_key(app, "timezone", zone).relative_to(config.find_project())
+    app["timezone"] = zone
+    if config.unsaved() is None:
+        console.done(f"Saved time zone {console.value(zone)} to {console.value(saved)}.")
+    else:
+        console.note(f"Using time zone {console.value(zone)}. A deploy saves it to "
+                     f"{console.value(saved)}; this plan changes no file.")
 
 
 def describe_place(place: dict[str, str]) -> str:

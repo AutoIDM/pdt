@@ -315,7 +315,8 @@ def merged_app(name: str) -> dict:
         "name": name,
         "dir": app_dir,
         "schedule": plan.get("schedule", own.get("schedule", entry.get("schedule"))),
-        "timezone": timezone,
+        "timezone": plan.get("timezone", timezone),
+        "timezone_set": any("timezone" in section for section in (own, entry, platform, plan)),
         "platform": platform,
         "platform_from": platform_from,
         "config": {

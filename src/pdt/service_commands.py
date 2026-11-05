@@ -33,7 +33,8 @@ NAME = re.compile(r"(?!\.{1,2}$)(?!-)[A-Za-z0-9._-]{1,128}")
 RUN_NUMBER = re.compile(r"[0-9]{1,6}")
 ENV_VAR = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 ARG_RULES = {"project": NAME, "app": NAME, "run": RUN_NUMBER, "name": ENV_VAR,
-             "mr_iid": re.compile(r"[0-9]{1,9}"), "sha": re.compile(r"[0-9a-f]{40}")}
+             "mr_iid": re.compile(r"[0-9]{1,9}"), "sha": re.compile(r"[0-9a-f]{40}"),
+             "timezone": re.compile(r"[A-Za-z][A-Za-z0-9_+/-]{0,63}")}
 BOOLEAN_ARGS = ("deployed",)
 MAX_APP_ARGS = 1024
 PLACE = re.compile(r"(aws|azure|google-cloud):[A-Za-z0-9-]{1,64}:[a-z0-9-]{1,32}")
@@ -98,8 +99,8 @@ OPERATIONS = {
                        15 * MINUTE, 15 * MINUTE),
     "unpause": Operation(("project", "app"), (), lambda a: ["unpause", a["app"]], 24 * HOUR,
                          15 * MINUTE, 15 * MINUTE),
-    "deploy": Operation(("project", "app"), (), lambda a: ["deploy", a["app"], "--yes"], 24 * HOUR,
-                        HOUR, 55 * MINUTE, exclusive=True),
+    "deploy": Operation(("project", "app"), ("timezone",), lambda a: ["deploy", a["app"], "--yes"],
+                        24 * HOUR, HOUR, 55 * MINUTE, exclusive=True),
     "destroy": Operation(("project", "app"), (), lambda a: ["destroy", a["app"], "--yes"],
                          15 * MINUTE, HOUR, 55 * MINUTE, exclusive=True),
     "secrets_set": Operation(("project", "app", "name"), (),

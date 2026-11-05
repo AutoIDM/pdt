@@ -70,3 +70,34 @@ def test_a_set_schedule_is_never_asked_again(project, monkeypatch):
     monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: pytest.fail("asked"))
     assert deploy.choose_schedule(merged_app("my-report"), False) == ""
     assert schedule_in(folder) == "hourly"
+
+
+def timezone_in(folder):
+    return yaml.safe_load((folder / "config.yml").read_text()).get("timezone")
+
+
+def test_the_first_deploy_saves_this_computers_time_zone(project, monkeypatch):
+    folder = add_app(project, "my-report", "schedule: hourly\n")
+    monkeypatch.delenv(deploy.TIMEZONE_ENV, raising=False)
+    monkeypatch.setattr(deploy.regions, "local_timezone", lambda: "Europe/Berlin")
+    deploy.choose_timezone(merged_app("my-report"), "azure")
+    assert timezone_in(folder) == "Europe/Berlin"
+    assert merged_app("my-report")["timezone"] == "Europe/Berlin"
+    monkeypatch.setenv(deploy.TIMEZONE_ENV, "America/Chicago")
+    deploy.choose_timezone(merged_app("my-report"), "azure")
+    assert timezone_in(folder) == "Europe/Berlin"
+
+
+def test_a_hosted_runner_deploy_saves_the_browser_time_zone(project, monkeypatch):
+    folder = add_app(project, "my-report", "schedule: hourly\n")
+    monkeypatch.setenv(deploy.TIMEZONE_ENV, "America/Chicago")
+    deploy.choose_timezone(merged_app("my-report"), "aws")
+    assert timezone_in(folder) == "America/Chicago"
+
+
+def test_no_time_zone_is_saved_for_windows_or_a_set_one(project, monkeypatch):
+    folder = add_app(project, "my-report", "schedule: hourly\n")
+    deploy.choose_timezone(merged_app("my-report"), "windows")
+    (project / "pdt.yml").write_text("platform:\n  provider: azure\n  timezone: Asia/Tokyo\n")
+    deploy.choose_timezone(merged_app("my-report"), "azure")
+    assert timezone_in(folder) is None
