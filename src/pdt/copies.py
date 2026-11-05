@@ -97,7 +97,9 @@ def is_link(path: Path) -> bool:
 
 def entry_of(root: Path, relative: str) -> tuple[dict | None, str]:
     path = Path(long_path(root / relative))
-    if is_link(path) or not (root / relative).resolve().is_relative_to(root.resolve()):
+    parts = Path(relative).parts
+    if any(is_link(Path(long_path(root.joinpath(*parts[:end]))))
+           for end in range(1, len(parts) + 1)):
         return None, "a link"
     if not path.is_file():
         return None, "not a file"

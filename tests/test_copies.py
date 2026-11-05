@@ -81,6 +81,28 @@ def test_a_clone_copy_leaves_out_a_tracked_file_under_a_linked_folder(tmp_path):
     assert left_out["shared/settings.json"] == "a link"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="a folder link needs an administrator on Windows")
+def test_a_clone_copy_leaves_out_a_tracked_file_under_a_folder_linked_inside_the_project(
+        tmp_path):
+    root = project(tmp_path)
+    (root / "shared").mkdir()
+    (root / "shared" / "settings.json").write_text("{}\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    for args in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "x"]):
+        subprocess.run(["git", "-C", str(root), *args], check=True, env=env)
+    (root / ".secrets").mkdir()
+    (root / ".secrets" / "settings.json").write_text("secret\n")
+    (root / "shared" / "settings.json").unlink()
+    (root / "shared").rmdir()
+    (root / "shared").symlink_to(root / ".secrets", target_is_directory=True)
+
+    files, left_out = copies.collect(root)
+
+    assert "shared/settings.json" not in [entry["path"] for entry in files]
+    assert left_out["shared/settings.json"] == "a link"
+
+
 def test_the_same_files_give_the_same_zip(tmp_path):
     root = project(tmp_path)
     files = copies.split_units(copies.collect(root)[0], ["hr"])["app=hr"]
