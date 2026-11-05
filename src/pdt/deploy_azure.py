@@ -1041,10 +1041,13 @@ def purge_secret(settings: dict[str, str], sid: str) -> None:
 
 def kept_group_deletes(resources: list) -> list[dict]:
     """What destroy deletes one by one in a group that the grant keeps: each pdt resource but
-    the grant's own identity, the jobs first because they use the others."""
+    the grant's own identity. The registry goes first, because a deploy that runs at the same
+    time locks it; a refusal then leaves everything for remove_app, as a sibling app would.
+    The jobs go next, because they use the others."""
+    order = {"microsoft.containerregistry/registries": 0, "microsoft.app/jobs": 1}
     return sorted((resource for resource in resources
                    if managed_by_pdt(resource) and resource.get("name") != GRANT_NAME),
-                  key=lambda resource: str(resource.get("type")).lower() != "microsoft.app/jobs")
+                  key=lambda resource: order.get(str(resource.get("type")).lower(), 2))
 
 
 def destroy_group(settings: dict[str, str], app_name: str) -> bool:

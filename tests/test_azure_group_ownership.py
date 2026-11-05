@@ -48,7 +48,7 @@ def test_destroy_empties_a_group_the_grant_made_and_keeps_the_group_and_its_iden
     monkeypatch.setattr(deploy_azure, "list_remaining", listed.append)
     settings = {"resource_group": "pdt", "vault": "pdt-x"}
     assert deploy_azure.destroy_group(settings, "hr") is True
-    assert [args[3] for args in deleted] == ["job", "acr", "runner", "vault"]
+    assert [args[3] for args in deleted] == ["acr", "job", "runner", "vault"]
     assert all(args[:2] == ("resource", "delete") for args in deleted)
     assert purged == [("keyvault", "purge")]
     assert listed == ["pdt"]
@@ -87,4 +87,4 @@ def test_a_lock_on_one_resource_of_a_retained_group_stops_the_shared_deletes(mon
     monkeypatch.setattr(deploy_azure, "az_json", lambda *args: reads.get(args[:2]))
     monkeypatch.setattr(deploy_azure, "delete_unless_locked", delete)
     assert deploy_azure.destroy_group({"resource_group": "pdt", "vault": "pdt-x"}, "hr") is False
-    assert deleted == ["job", "acr"]
+    assert deleted == ["acr"]
