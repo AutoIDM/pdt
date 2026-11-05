@@ -1058,6 +1058,7 @@ def test_an_mr_run_of_an_app_that_pins_an_older_pdt_is_refused(machine, portal, 
     assert result["outcome"] == "refused"
     assert result["message"].startswith(f"hr/run.py line 2 pins pdt-cli {pin}.")
     assert f"pdt-cli {service_runner.MR_STATE_VERSION} or newer" in result["message"]
+    assert "\nNext steps:\n  pdt upgrade  " in result["message"]
 
 
 @pytest.mark.parametrize("dependencies, old", [
