@@ -153,3 +153,14 @@ def test_choose_takes_the_one_asked_for_and_else_the_first_here(monkeypatch):
     assert service_backends.choose("cron") == "cron"
     with pytest.raises(BackendError, match="systemd does not exist"):
         service_backends.choose("systemd")
+
+
+def test_cron_runs_only_while_the_service_process_runs(calls):
+    _found, answers = calls
+    answers[("crontab", "-l")] = subprocess.CompletedProcess(
+        [], 0, stdout=f"@reboot {PYTHON} -m pdt.service_main {service_backends.CRON_MARK}\n",
+        stderr="")
+    answers[("pgrep",)] = subprocess.CompletedProcess([], 1, stdout="", stderr="")
+    assert BACKENDS["cron"].running() is False
+    answers[("pgrep",)] = subprocess.CompletedProcess([], 0, stdout="4120\n", stderr="")
+    assert BACKENDS["cron"].running() is True

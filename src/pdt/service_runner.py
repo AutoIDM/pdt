@@ -10,8 +10,10 @@ replaces each known secret value, and a chunk never ends inside one.
 A cancel, the run limit, or a stop of the service ends the whole process tree. On Windows each
 child starts suspended in a job object of its own, which ends the tree when the service cancels
 it or when the service ends for any reason. At most MAX_RUNNING
-commands run at once. A command that conflicts with a running one waits in the Pool. A lock of
-another process gives the outcome `refused`.
+commands run at once. A command that conflicts with a running one waits in the Pool. A `kill`
+conflicts with no command, and it has one more place than MAX_RUNNING. A lock of
+another process gives the outcome `refused`. The result goes to AutoIDM only after the output, and
+each report is one request, so a busy AutoIDM does not hold up a cancel or the run limit.
 
 The journal is one file per command in `<data folder>/service/journal/`. Its state is `claiming`,
 `claimed`, `started`, or `finished`. `claiming` holds a command whose claim got no answer, and the
@@ -308,6 +310,7 @@ class Job:
     offset: int = 0
     seq: int = 0
     adopted_pid: int | None = None
+    output_waits: bool = False
 
     @property
     def operation(self) -> str:
@@ -324,13 +327,19 @@ class Job:
     def conflicts_with(self, other: "Job") -> bool:
         if self.args["project"] != other.args["project"]:
             return False
+        if "kill" in (self.operation, other.operation):
+            return False
         return (self.exclusive or other.exclusive
                 or self.args.get("app") == other.args.get("app"))
 
 
 def report(registration: autoidm.Registration, command_id: str, **facts) -> dict:
     return autoidm.post(registration, "/v1/commands/report",
-                        {"version": 1, "command_id": command_id, **facts})
+                        {"version": 1, "command_id": command_id, **facts}, retry=False)
+
+
+def sent_again_later(error: autoidm.AutoidmError) -> bool:
+    return error.status in (0, 401, 429) or error.status >= 500
 
 
 def send_result(registration: autoidm.Registration, command_id: str, result: dict) -> bool:
@@ -339,7 +348,7 @@ def send_result(registration: autoidm.Registration, command_id: str, result: dic
     try:
         report(registration, command_id, fact="result", **sent)
     except autoidm.AutoidmError as e:
-        if e.status == 0 or e.status == 401 or e.status >= 500:
+        if sent_again_later(e):
             return False
     if journal_path(command_id).is_file():
         try:
@@ -361,7 +370,8 @@ def finish(job: Job, result: dict) -> None:
                    reported=False)
     write_event(job.command_id, "result", job.operation, job.claims.get("requested_by"),
                 result["outcome"])
-    send_result(job.registration, job.command_id, result)
+    if send_all_output(job):
+        send_result(job.registration, job.command_id, result)
 
 
 def send_output(job: Job, final: bool = False) -> bool:
@@ -381,17 +391,20 @@ def send_output(job: Job, final: bool = False) -> bool:
         return False
     try:
         report(job.registration, job.command_id, fact="output", seq=job.seq, text=text)
-    except autoidm.AutoidmError:
+    except autoidm.AutoidmError as e:
+        job.output_waits = sent_again_later(e)
         return False
+    job.output_waits = False
     job.offset += used
     job.seq += 1
     journal_update(job.command_id, output_seq=job.seq, output_offset=job.offset)
     return True
 
 
-def send_all_output(job: Job) -> None:
+def send_all_output(job: Job) -> bool:
     while send_output(job, final=True):
         pass
+    return not job.output_waits
 
 
 def masked_log(job: Job) -> bytes:
@@ -514,7 +527,8 @@ def stop_deployed(job: Job) -> str:
     from pdt import service_backends
     name = f"pdt-{app}"
     try:
-        service_backends.powershell(f"Stop-ScheduledTask -TaskName '{name}' -ErrorAction Stop")
+        service_backends.run("powershell", "-NoProfile", "-NonInteractive", "-Command",
+                             f"Stop-ScheduledTask -TaskName '{name}' -ErrorAction Stop")
     except service_backends.BackendError as e:
         return f"The job continues on this computer, because pdt could not stop the task {name}: {e}"
     return f"pdt stopped the Windows task {name}."
@@ -608,6 +622,7 @@ def execute(job: Job) -> None:
     try:
         if service_commands.expired(job.claims, job.clock.now()):
             raise Refused("The token expired before the command could start.")
+        job.known_values.extend(known_values_of(job.project, job.args.get("app")))
         prepared = prepare(job, dict(os.environ))
         run_child(job, prepared)
     except Refused as e:
@@ -631,20 +646,20 @@ def start_child(job: Job, prepared: Prepared) -> tuple[subprocess.Popen, int | N
         proc = subprocess.Popen(prepared.argv, cwd=prepared.cwd, env=prepared.env,
                                 stdin=subprocess.DEVNULL if prepared.stdin is None else subprocess.PIPE,
                                 stdout=out, stderr=subprocess.STDOUT, **options)
+    handle = None
+    if os.name == "nt":
+        import ctypes
+        try:
+            handle = run_windows_task.new_job()
+            run_windows_task.assign(handle, proc._handle)
+        except OSError:
+            proc.kill()
+            proc.wait()
+            raise
+        ctypes.WinDLL("ntdll").NtResumeProcess(ctypes.c_void_p(int(proc._handle)))
     if prepared.stdin is not None:
         proc.stdin.write(prepared.stdin)
         proc.stdin.close()
-    if os.name != "nt":
-        return proc, None
-    import ctypes
-    try:
-        handle = run_windows_task.new_job()
-        run_windows_task.assign(handle, proc._handle)
-    except OSError:
-        proc.kill()
-        proc.wait()
-        raise
-    ctypes.WinDLL("ntdll").NtResumeProcess(ctypes.c_void_p(int(proc._handle)))
     return proc, handle
 
 
@@ -708,12 +723,13 @@ def run_child(job: Job, prepared: Prepared) -> None:
 def final_result(job: Job, outcome: str, code: int | None, message: str | None,
                  prepared: Prepared) -> dict:
     log_key, artifact = None, None
-    if job.operation in ("run", "run_mr") and outcome != "refused":
+    if job.operation in ("run", "run_mr", "artifacts") and outcome != "refused":
         log_key, problem = upload_log(job)
         message = message or problem
-        if prepared.output is not None and outcome in ("done", "failed"):
-            artifact, problem = artifact_key(job, prepared.output)
-            message = message or problem
+    if (job.operation in ("run", "run_mr") and prepared.output is not None
+            and outcome in ("done", "failed")):
+        artifact, problem = artifact_key(job, prepared.output)
+        message = message or problem
     if job.operation == "artifacts" and outcome == "done":
         artifact, problem = artifact_key(job, prepared.output)
         message = message or problem
@@ -751,8 +767,9 @@ class Pool:
     def start_ready(self) -> None:
         self.reap()
         for job in list(self.waiting):
-            if len(self.running) >= MAX_RUNNING:
-                return
+            limit = MAX_RUNNING + 1 if job.operation == "kill" else MAX_RUNNING
+            if len(self.running) >= limit:
+                continue
             if any(job.conflicts_with(other) for other in self.running.values()):
                 continue
             self.waiting.remove(job)
@@ -822,8 +839,8 @@ def recover(pool: Pool, registration: autoidm.Registration, clock: Clock, projec
         if command_id in held or entry.get("state") == "claiming":
             continue
         if entry.get("result"):
-            if not entry.get("reported"):
-                send_late_output(entry, registration, clock, project_of)
+            if (not entry.get("reported")
+                    and send_late_output(entry, registration, clock, project_of)):
                 send_result(registration, command_id, entry["result"])
             remove_old_output(command_id, entry, now)
             continue
@@ -838,16 +855,15 @@ def recover(pool: Pool, registration: autoidm.Registration, clock: Clock, projec
                        reported=False)
         write_event(command_id, "result", entry.get("operation") or "-",
                     entry.get("requested_by"), "interrupted")
-        send_late_output(entry, registration, clock, project_of)
-        send_result(registration, command_id, result)
+        if send_late_output(entry, registration, clock, project_of):
+            send_result(registration, command_id, result)
         remove_folder(work_root() / command_id)
 
 
 def send_late_output(entry: dict, registration: autoidm.Registration, clock: Clock,
-                     project_of) -> None:
+                     project_of) -> bool:
     job = job_of_entry(entry, registration, clock, project_of)
-    if job is not None:
-        send_all_output(job)
+    return job is None or send_all_output(job)
 
 
 def remove_old_output(command_id: str, entry: dict, now: float) -> None:

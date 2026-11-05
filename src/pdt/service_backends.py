@@ -172,7 +172,8 @@ def cron_remove() -> None:
 
 
 def cron_running() -> bool:
-    return CRON_MARK in run("crontab", "-l", check=False).stdout
+    return (CRON_MARK in run("crontab", "-l", check=False).stdout
+            and run("pgrep", "-f", "pdt[.]service_main", check=False).returncode == 0)
 
 
 @dataclass(frozen=True)

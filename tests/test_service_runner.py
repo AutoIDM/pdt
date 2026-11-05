@@ -526,8 +526,11 @@ def test_a_long_message_stays_under_the_limit(machine, portal):
 
 
 @pytest.mark.parametrize("status, stops", [(400, True), (404, True), (409, True), (401, False),
+                                           (429, False),
                                            (500, False)])
-def test_a_result_autoidm_refuses_for_good_stops_the_retries(machine, portal, status, stops):
+def test_a_result_autoidm_refuses_for_good_stops_the_retries(machine, portal, monkeypatch, status,
+                                                             stops):
+    monkeypatch.setattr(autoidm, "RETRY_LIMIT_SECONDS", 0)
     portal.routes["/v1/commands/report"] = lambda _body: (status, {"error": "x"})
     result = {"outcome": "done", "exit_code": 0, "message": None, "run_id": None, "artifact_key": None}
     journal(result=result, reported=False, phase="finished")
@@ -973,7 +976,7 @@ def test_run_mr_runs_the_copy_in_its_own_folder_with_the_project_env(machine, po
     code = ("import os, pathlib\n"
             "print('file', pathlib.Path('hr/run.py').read_text().strip())\n"
             "print('env', os.path.exists('.env'), os.path.exists('hr/.env'))\n"
-            "print('project', os.environ['FROM_PROJECT'], os.environ['BOTH'])\n"
+            "print('project', os.environ['FROM_PROJECT'][::-1], os.environ['BOTH'][::-1])\n"
             "print('name', pathlib.Path('.pdt-project-name').read_text().strip())\n"
             "print('trigger', os.environ['PDT_TRIGGER'], os.environ['PDT_MR_IID'])\n"
             "print('args', os.environ['PDT_APP_ARGS'], os.environ['PDT_RUN_ID'])\n"
@@ -991,7 +994,7 @@ def test_run_mr_runs_the_copy_in_its_own_folder_with_the_project_env(machine, po
     assert result["outcome"] == "done", output + str(result)
     assert "file print('mr')" in output
     assert "env False False" in output
-    assert "project project-value app-value" in output
+    assert "project eulav-tcejorp eulav-ppa" in output
     assert "name example" in output
     assert "trigger mr 12" in output
     assert f"args --full {COMMAND}" in output
@@ -1073,3 +1076,142 @@ def test_artifacts_uploads_the_folder_that_the_child_fills(machine, portal, monk
     result = portal.result()
     assert result["outcome"] == "done" and result["artifact_key"] == "art"
     assert not (service_runner.service_folder() / "work" / COMMAND).exists()
+
+
+def test_masking_reads_the_env_files_again_when_the_command_starts(machine, portal, monkeypatch):
+    item = job(machine)
+    item.known_values = service_runner.known_values_of(machine, "hr")
+    (machine / "hr" / ".env").write_text("BOTH=set-after-the-claim\n")
+    child(monkeypatch, "print('new set-after-the-claim old app-value')")
+    execute(item)
+    assert "new *** old ***" in portal.output()
+
+
+def test_a_secret_larger_than_a_pipe_reaches_the_child(machine, portal, monkeypatch):
+    (machine / "hr" / "config.yml").write_text("schedule: daily\nenv:\n  required: [TOKEN]\n")
+    portal.routes["/v1/commands/input"] = lambda _body: (200, {"value": "k" * 32768})
+    child(monkeypatch, "import sys\nprint('got', len(sys.stdin.read()))\n")
+    thread = run_in_thread(job(machine, "secrets_set",
+                               {"project": "example", "app": "hr", "name": "TOKEN"}))
+    thread.join(20)
+    assert not thread.is_alive()
+    assert "got 32768" in portal.output()
+
+
+def test_cancel_of_a_deployed_windows_run_stops_its_task(machine, monkeypatch):
+    (machine / ".pdt").mkdir(exist_ok=True)
+    (machine / ".pdt" / "state").write_text(json.dumps({"platforms": {"hr": {"provider": "windows"}}}))
+    calls = []
+    monkeypatch.setattr(service_runner.subprocess, "run", lambda args, **_kwargs: (
+        calls.append(args) or subprocess.CompletedProcess(args, 0, stdout="", stderr="")))
+    found = job(machine, args={"project": "example", "app": "hr", "deployed": True})
+    assert service_runner.stop_deployed(found) == "pdt stopped the Windows task pdt-hr."
+    assert "Stop-ScheduledTask -TaskName 'pdt-hr' -ErrorAction Stop" in calls[0]
+
+
+def test_kill_starts_beside_a_run_of_its_app_and_beside_four_commands(machine, portal,
+                                                                      monkeypatch):
+    pool = Pool()
+    release = threading.Event()
+    monkeypatch.setattr(service_runner, "execute", lambda _job: release.wait(10))
+    ids = [f"cmd_20261103T12000{index}Z_0123abcd" for index in range(5)]
+    for command_id, app in zip(ids, ["hr", "b", "c", "d"]):
+        pool.add(job(machine, args={"project": "example", "app": app, "deployed": False},
+                     command_id=command_id))
+    pool.add(job(machine, "kill", {"project": "example", "app": "hr"}, command_id=ids[4]))
+    pool.start_ready()
+    assert sorted(pool.running) == sorted(ids)
+    release.set()
+    for item in list(pool.running.values()):
+        item.thread.join(5)
+
+
+def test_in_project_holds_one_project_at_a_time(tmp_path, monkeypatch):
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    entered = threading.Event()
+    seen = []
+
+    def first():
+        with service_commands.in_project(tmp_path / "a"):
+            entered.set()
+            time.sleep(0.5)
+            seen.append(os.environ["PDT_PROJECT"])
+
+    thread = threading.Thread(target=first)
+    thread.start()
+    entered.wait(5)
+    with service_commands.in_project(tmp_path / "b"):
+        time.sleep(1)
+    thread.join(5)
+    assert seen == [str(tmp_path / "a")]
+
+
+def test_a_result_waits_until_its_output_is_sent(machine, portal, monkeypatch):
+    down = [True]
+    portal.routes["/v1/commands/report"] = lambda body: (
+        (500, {"error": "x"}) if body["fact"] == "output" and down[0] else (200, {}))
+    child(monkeypatch, "print('the last line')")
+    execute(job(machine))
+    assert "result" not in portal.facts()
+    service_runner.recover(Pool(), registration(), Clock(), lambda name: machine)
+    assert "result" not in portal.facts()
+    assert service_runner.journal_read(COMMAND)["reported"] is False
+    down[0] = False
+    service_runner.recover(Pool(), registration(), Clock(), lambda name: machine)
+    assert "the last line" in portal.output()
+    assert portal.facts()[-1] == "result"
+    assert service_runner.journal_read(COMMAND)["reported"] is True
+
+
+def test_a_report_answered_503_returns_at_once(machine, portal, monkeypatch):
+    monkeypatch.setattr(autoidm, "RETRY_LIMIT_SECONDS", 2)
+    portal.routes["/v1/commands/report"] = lambda _body: (503, {"error": "busy"})
+    item = job(machine)
+    service_runner.output_path(COMMAND).parent.mkdir(parents=True, exist_ok=True)
+    service_runner.output_path(COMMAND).write_text("line\n")
+    started = time.monotonic()
+    assert service_runner.send_output(item, final=True) is False
+    assert time.monotonic() - started < 1
+
+
+def test_artifacts_uploads_its_log(machine, portal, monkeypatch):
+    child(monkeypatch, "import pathlib, sys\n"
+                       "print('wrote report.csv')\n"
+                       "(pathlib.Path(sys.argv[1]) / 'report.csv').write_text('a,b')\n")
+    portal.routes["/v1/uploads"] = lambda body: (200, {
+        "url": f"{portal.url}/bucket", "fields": {"key": body["kind"]}, "key": body["kind"]})
+    execute(job(machine, "artifacts", {"project": "example", "app": "hr", "run": "3"}))
+    result = portal.result()
+    assert (result["artifact_key"], result["log_key"]) == ("artifact", "log")
+
+
+def admin_check(monkeypatch, answer):
+    checked = []
+    monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
+    monkeypatch.setattr(service.service_access, "writable_by_others",
+                        lambda folder: checked.append(folder) or answer)
+    return checked
+
+
+def test_a_project_that_another_account_can_change_is_refused(machine, portal, monkeypatch):
+    admin_check(monkeypatch, ("BUILTIN\\Users", machine / "hr" / "run.py"))
+    pool = Pool()
+    assert accept(pool, token())
+    assert pool.waiting == []
+    assert str(machine / "hr" / "run.py") in portal.result()["message"]
+
+
+def test_a_project_is_checked_before_its_first_command_only(machine, portal, monkeypatch):
+    checked = admin_check(monkeypatch, None)
+    found, pool = served(), Pool()
+    for command_id in (COMMAND, SECOND):
+        service.accept({"command_id": command_id, "token": token(command_id=command_id)}, found,
+                       settings(), pool)
+    assert len(pool.waiting) == 2
+    assert checked == [machine]
+
+
+def test_the_start_check_covers_the_projects_folder(machine, monkeypatch):
+    checked = admin_check(monkeypatch, None)
+    assert service.access_problem(settings()) is False
+    assert checked == [machine.parent]
