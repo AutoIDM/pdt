@@ -56,6 +56,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import posixpath
 import socket
 import sys
 import uuid
@@ -514,7 +515,7 @@ class Store:
     def push(self, local: Path, remote: str, lease: Lease | None = None) -> None:
         self._refuse_write()
         backend = self.backend()
-        if remote.startswith("state") and is_merge_request_run():
+        if posixpath.normpath(remote).lstrip("/").startswith("state") and is_merge_request_run():
             if lease is not None:
                 self._release_lock(backend, lease)
             return
