@@ -2,7 +2,8 @@
 
 The service runs as SYSTEM or root, so a non-administrator who can write its program or a project
 folder could run code as SYSTEM or root. `writable_by_others` names such an account. The install
-and each start of the service refuse such a folder, on each operating system. A person who runs
+and each start of the service refuse such a folder, on each operating system, and the service
+checks each project again before its first command after a start. A person who runs
 `python -m pdt.service_main` in a terminal with no administrator rights runs code as that person,
 so that start needs no check.
 
@@ -13,14 +14,13 @@ each user create files, and a new folder inherits that, so each folder of pdt in
 from __future__ import annotations
 
 import ctypes
-import json
 import os
 import stat
 import subprocess
 import sys
 from pathlib import Path
 
-PATHS_ENV = "PDT_ACCESS_PATHS"
+PATH_ENV = "PDT_ACCESS_PATH"
 SDDL_ENV = "PDT_FOLDER_SDDL"
 # Owner Administrators, and an access list that inherits nothing. SYSTEM and Administrators have
 # full control, and Users can read, which a `pdt run` from a terminal needs for pwsh and logs.
@@ -34,13 +34,17 @@ ALLOWED_SIDS = ("S-1-5-18", "S-1-5-32-544", "S-1-3-0",
 # FILE_WRITE_DATA, FILE_APPEND_DATA, FILE_DELETE_CHILD, DELETE, WRITE_DAC, WRITE_OWNER.
 WRITE_RIGHTS = 0xD0046
 INHERIT_ONLY = 2
+WALK_LIMIT = 50000
+SKIPPED_FOLDERS = {".git", ".venv", "__pycache__", ".pdt"}
 FIND_WRITER = ("$ErrorActionPreference = 'Stop'; "
                f"$allowed = @({', '.join(repr(sid) for sid in ALLOWED_SIDS)}); "
-               f"foreach ($path in (ConvertFrom-Json $env:{PATHS_ENV})) {{ "
-               "if ([IO.Directory]::Exists($path)) { $item = [IO.DirectoryInfo]$path } "
-               "else { $item = [IO.FileInfo]$path }; "
-               "$acl = $item.GetAccessControl(); "
+               f"$skipped = @({', '.join(repr(name) for name in sorted(SKIPPED_FOLDERS))}); "
                "$sid = [Security.Principal.SecurityIdentifier]; "
+               "$items = [Collections.Generic.Queue[IO.FileSystemInfo]]::new(); "
+               f"$items.Enqueue([IO.DirectoryInfo]$env:{PATH_ENV}); $checked = 0; "
+               f"while ($items.Count -gt 0 -and $checked -lt {WALK_LIMIT}) {{ "
+               "$item = $items.Dequeue(); $checked++; $path = $item.FullName; "
+               "$acl = $item.GetAccessControl(); "
                "$owner = $acl.GetOwner($sid).Value; "
                "if ($allowed -notcontains $owner) { "
                "$acl.GetOwner([Security.Principal.NTAccount]).Value + \"`t\" + $path; exit 0 }; "
@@ -50,7 +54,11 @@ FIND_WRITER = ("$ErrorActionPreference = 'Stop'; "
                "if ($allowed -contains $rule.IdentityReference.Value) { continue }; "
                f"if (([int]$rule.FileSystemRights -band {WRITE_RIGHTS}) -ne 0) {{ "
                "$rule.IdentityReference.Translate([Security.Principal.NTAccount]).Value "
-               "+ \"`t\" + $path; exit 0 } } }")
+               "+ \"`t\" + $path; exit 0 } }; "
+               "if ($item -is [IO.DirectoryInfo] -and ($checked -eq 1 -or "
+               "-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint))) { "
+               "foreach ($child in $item.GetFileSystemInfos()) { "
+               "if ($skipped -notcontains $child.Name) { $items.Enqueue($child) } } } }")
 # .NET calls only, not Get-Acl, Set-Acl, or New-Object: Windows PowerShell started under
 # PowerShell 7 inherits its PSModulePath and cannot load the modules that hold those commands.
 # It prints the access list as .NET holds it before it saves it, then as it reads it back, so
@@ -66,8 +74,6 @@ SET_FOLDER_SDDL = ("$ErrorActionPreference = 'Stop'; "
                    "$folder.SetAccessControl($acl); "
                    "$folder.GetAccessControl().GetSecurityDescriptorSddlForm('Owner, Access')")
 MACOS_ADMIN_GROUP = 80
-POSIX_WALK_LIMIT = 50000
-SKIPPED_FOLDERS = {".git", ".venv", "__pycache__", ".pdt"}
 
 
 class AccessError(RuntimeError):
@@ -161,22 +167,17 @@ def posix_writable(folder: Path) -> tuple[str, Path] | None:
             if account:
                 return account, path
             checked += 1
-            if checked >= POSIX_WALK_LIMIT:
+            if checked >= WALK_LIMIT:
                 return None
     return None
 
 
 def windows_writable(folder: Path) -> tuple[str, Path] | None:
     """The account and the path of the first thing that a non-administrator can change: `folder`
-    or each thing directly in it, because the items below them inherit from them. A folder above
-    does not count, because Windows gives a right on a folder only to that folder's own list."""
-    paths = [str(folder)]
-    try:
-        paths.extend(str(path) for path in sorted(folder.iterdir())
-                     if path.name not in SKIPPED_FOLDERS)
-    except OSError:
-        pass
-    shown = run_powershell(FIND_WRITER, {PATHS_ENV: json.dumps(paths)}).strip()
+    or each thing below it, because an item can hold a right of its own that it did not inherit.
+    A folder above does not count, because Windows gives a right on a folder only to that
+    folder's own list."""
+    shown = run_powershell(FIND_WRITER, {PATH_ENV: str(folder)}).strip()
     if not shown:
         return None
     account, _, path = shown.partition("\t")
