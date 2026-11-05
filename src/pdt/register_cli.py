@@ -32,7 +32,10 @@ without Run as administrator can read the key. The command needs an administrato
 terminal. Each run replaces the access list, so only the last account to run it reads.
 A computer that already holds another registration for the customer keeps it; the
 command stops and names the file. Either way, in a project whose pdt.yml has no
-`managed_services`, it adds `managed_services:` with the customer.
+`managed_services`, it adds `managed_services:` with the customer. A registration that
+succeeds also asks one yes/no question for each send key (SEND_QUESTIONS) that the
+customer's `managed_services` does not have, and writes the answer; `--yes` and a run
+with no one to answer take the default of the question. A key that pdt.yml has stays.
 """
 
 from __future__ import annotations
@@ -65,6 +68,11 @@ DEFAULT_POLL_SECONDS = 3
 GRANT_POLL_SECONDS = 5
 GRANT_WAIT_SECONDS = 15 * 60
 PLATFORM_NAMES = {"win32": "windows", "darwin": "macos"}
+SEND_QUESTIONS = {
+    "send_run_history": ("Send the start, the end, and the result of each run to AutoIDM?", True),
+    "send_logs": ("Send the log of each run to AutoIDM?", True),
+    "send_artifacts": ("Send the output files of each run to AutoIDM?", False),
+}
 
 
 def restrict_folder(folder: Path) -> None:
@@ -118,7 +126,7 @@ def register(code: str | None, api_url: str | None, assume_yes: bool = False,
     if other is not None:
         return refuse_second_customer(answer, key, api_url, pending, other)
     with config.locked(autoidm.folder()):
-        saved = save_registration(answer, key, api_url, pending)
+        saved = save_registration(answer, key, api_url, pending, assume_yes)
     if saved != 0:
         return saved
     found = autoidm.machine_registration(customer)
@@ -167,7 +175,8 @@ def register_with_code(code: str, api_url: str) -> tuple:
     return answer, key, pending, None
 
 
-def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pending: Path) -> int:
+def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pending: Path,
+                      assume_yes: bool = False) -> int:
     customer = answer["customer_id"]
     info, key_path = autoidm.files(customer)
     saved = {"installation_id": answer["installation_id"], "customer_id": customer,
@@ -197,7 +206,7 @@ def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pendin
     console.done(f"Registered this computer to AutoIDM for {console.value(customer)} as "
                  f"{console.value(answer['installation_id'])}.")
     console.field("Saved in", str(info))
-    save_customer(customer)
+    save_customer(customer, assume_yes)
     pending.unlink(missing_ok=True)
     return 0
 
@@ -387,7 +396,19 @@ def connect_places(chosen: list[str], found: autoidm.Registration, assume_yes: b
     return 1 if waiting else 0
 
 
-def save_customer(customer: str) -> None:
+def ask_send(key: str, assume_yes: bool) -> bool:
+    question, default = SEND_QUESTIONS[key]
+    if assume_yes or not can_prompt(None):
+        return default
+    try:
+        return console.confirm(question, default)
+    except EOFError:
+        return default
+
+
+def save_customer(customer: str, assume_yes: bool | None = None) -> None:
+    """With `assume_yes` None (pdt sync), pdt.yml gets only the customer. pdt register asks for
+    each key of SEND_QUESTIONS that pdt.yml does not have."""
     try:
         path = config.find_project() / config.PROJECT_FILE
     except config.ConfigError:
@@ -396,11 +417,18 @@ def save_customer(customer: str) -> None:
                                         "run history of a project to AutoIDM")])
         return
     found = config.load_yaml(path).get(managed_services.KEY)
-    if found is None:
-        config.save_managed_customer(customer)
-        console.done(f"Saved {console.value('managed_services:')} with "
-                     f"{console.value('customer: ' + customer)} to {console.value(path)}.")
-    elif not isinstance(found, dict) or found.get("customer") != customer:
+    if found is not None and (not isinstance(found, dict) or found.get("customer") != customer):
         console.warn(f"{console.value(path)} names another customer in "
                      f"{console.value('managed_services:')}, so this project does not send to "
                      f"AutoIDM for {console.value(customer)}.")
+        return
+    asked = [] if assume_yes is None else [key for key in SEND_QUESTIONS
+                                           if key not in (found or {})]
+    sends = {key: ask_send(key, assume_yes) for key in asked}
+    if found is None or sends:
+        config.save_managed_services(customer, sends)
+        saved = [f"customer: {customer}"] if found is None else []
+        saved += [f"{key}: {'true' if value else 'false'}" for key, value in sends.items()]
+        console.done(f"Saved {console.value('managed_services:')} with "
+                     f"{', '.join(console.value(item) for item in saved)} to "
+                     f"{console.value(path)}.")

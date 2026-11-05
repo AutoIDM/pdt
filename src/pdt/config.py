@@ -468,14 +468,34 @@ def save_root_alerts(alerts: list[dict]) -> Path:
     return path
 
 
-def save_managed_customer(customer: str) -> Path:
+def save_managed_services(customer: str, sends: dict[str, bool]) -> Path:
+    """Add a managed_services block with the customer and `sends`, or add `sends` to the block
+    that pdt.yml has. A block on one line (`managed_services: {...}`) stays as it is."""
     path = find_project() / PROJECT_FILE
     with locked(path):
         lines = path.read_text(encoding="utf-8-sig").splitlines()
-        if not any(line.split("#")[0].rstrip() == "managed_services:" for line in lines):
+        start = next((i for i, line in enumerate(lines)
+                      if line.split("#")[0].rstrip() == "managed_services:"), None)
+        if start is None and any(line.startswith("managed_services:") for line in lines):
+            return path
+        if start is None:
             lines += ([""] if lines and lines[-1].strip() else []) + [
-                "managed_services:", f"  customer: {_yaml_scalar(customer)}"]
-            write_text_atomically(path, "\n".join(lines) + "\n")
+                "managed_services:", f"  customer: {_yaml_scalar(customer)}",
+                *(f"  {key}: {'true' if value else 'false'}" for key, value in sends.items())]
+        elif sends:
+            end = start + 1
+            while end < len(lines) and (lines[end].startswith((" ", "\t")) or not lines[end].strip()):
+                end += 1
+            while end > start + 1 and not lines[end - 1].strip():
+                end -= 1
+            first = next((i for i in range(start + 1, end)
+                          if lines[i].strip() and not lines[i].strip().startswith("#")), None)
+            indent = _indent(lines[first]) if first is not None else "  "
+            lines[end:end] = [f"{indent}{key}: {'true' if value else 'false'}"
+                              for key, value in sends.items()]
+        else:
+            return path
+        write_text_atomically(path, "\n".join(lines) + "\n")
     return path
 
 
