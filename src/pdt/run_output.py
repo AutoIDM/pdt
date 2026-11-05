@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from pdt import console
+from pdt.utils import storage
 
 
 def pdt_json(*args: str) -> object:
@@ -55,7 +56,7 @@ def copy_run(app: str, identity: str, target: Path) -> int:
         name = str(entry["name"])
         relative = Path(name).relative_to(folder) if name.startswith(folder + "/") else Path(
             Path(name).name)
-        if ".." in relative.parts:
+        if ".." in relative.parts or relative.name == storage.DONE:
             continue
         destination = target / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
