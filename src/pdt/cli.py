@@ -92,16 +92,19 @@ APP_HELP = ("the app's folder name; leave it off inside an app folder to use tha
             "or anywhere else to see the choices")
 
 
-def choose_app(name: str | None, command: str, quiet: bool = False) -> str | None:
+def choose_app(name: str | None, command: str, quiet: bool = False,
+               deployed_too: bool = False) -> str | None:
     """Return the app `pdt <command>` should act on, or None after guiding the user.
 
     Every command that takes an app name goes through here. Inside an app folder
     a missing name means that app. Elsewhere, leaving the name off or mistyping
     it gives the same answer everywhere: the apps this project has, and the
     exact command to run next. `quiet` keeps --json output free of the line
-    that names the app pdt picked.
+    that names the app pdt picked. `deployed_too` also offers a disabled app that is
+    deployed, as `destroy` does, so `pdt run APP --kill` can stop its job.
     """
-    apps = config.destroyable_apps() if command == "destroy" else config.find_apps()
+    apps = (config.destroyable_apps() if command == "destroy" or deployed_too
+            else config.find_apps())
     if not apps:
         say_no_apps()
         return None
@@ -231,7 +234,7 @@ def powershell_problems(name: str, app: dict, quiet: bool = False) -> list[str]:
 
 
 def cmd_run(args) -> int:
-    name = choose_app(args.app, "run")
+    name = choose_app(args.app, "run", deployed_too=args.kill)
     if name is None:
         return 1
     if args.kill:
