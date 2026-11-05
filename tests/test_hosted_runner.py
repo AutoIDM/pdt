@@ -1,3 +1,4 @@
+import signal
 import sys
 
 import pytest
@@ -217,5 +218,6 @@ def test_the_mr_child_runs_the_provider_verb_and_copies_its_output(monkeypatch, 
                         lambda app, identity, target: calls.append((app, identity, target)) or 1)
     monkeypatch.setenv("PDT_RUN_ID", COMMAND)
     monkeypatch.setenv("PDT_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(hosted_runner.signal, "signal", lambda signum, handler: calls.append(signum))
     assert hosted_runner.main(["mr-run", "hr", "12"]) == 0
-    assert calls == [("hr", "12"), ("hr", COMMAND, tmp_path)]
+    assert calls == [signal.SIGTERM, ("hr", "12"), ("hr", COMMAND, tmp_path)]

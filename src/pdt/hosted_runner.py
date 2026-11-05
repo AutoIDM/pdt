@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import sys
 import tempfile
 import threading
@@ -38,6 +39,8 @@ CLAIM_ENV = "PDT_RUNNER_CLAIM"
 COMMAND_ENV = "PDT_COMMAND_ID"
 OUTPUT_SECONDS = 10
 GRACE_SECONDS = 300
+# An `mr-run` deletes its cloud job and image after the SIGTERM of a cancel or of the run limit.
+STOP_SECONDS = 120
 TIMEOUT_EXIT = 124
 ENV_KEEP = ("PATH", "PATHEXT", "HOME", "USERPROFILE", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP",
             "TMPDIR", "LANG", "LC_ALL", "PROGRAMDATA", "LOCALAPPDATA", "APPDATA", "XDG_DATA_HOME",
@@ -260,7 +263,7 @@ def run_child(runner: Runner, argv: list[str], project: Path, env: dict[str, str
         elif time.monotonic() >= deadline:
             outcome, message = "failed", f"The command passed its run limit of {limit} seconds."
         if outcome is not None:
-            service_runner.stop_tree(proc.pid, lambda: proc.poll() is not None)
+            service_runner.stop_tree(proc.pid, lambda: proc.poll() is not None, STOP_SECONDS)
             proc.wait()
             break
         time.sleep(0.2)
@@ -269,6 +272,9 @@ def run_child(runner: Runner, argv: list[str], project: Path, env: dict[str, str
 
 
 def mr_run(app: str, iid: str) -> int:
+    # The provider script cleans up after the SIGTERM of the group; this process waits for it.
+    # A handler, unlike SIG_IGN, does not pass on to the programs this process starts.
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: None)
     code = deploy.mr_run(app, iid)
     try:
         run_output.copy_run(app, os.environ["PDT_RUN_ID"], Path(os.environ["PDT_OUTPUT_DIR"]))

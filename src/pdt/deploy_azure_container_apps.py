@@ -74,7 +74,7 @@ from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, gather_secrets,
     image_action, keep_paused, keeps_secret, make_registration, reads_registration, registration_secrets,
     run_build,
-    run_secrets, ssh_build_args, store_cost_label, store_kept_line, warn_if_locked)
+    run_secrets, ssh_build_args, stop_on_sigterm, store_cost_label, store_kept_line, warn_if_locked)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -718,6 +718,7 @@ MR_ENV_NAMES = ("PDT_RUN_ID", "PDT_APP_ARGS")
 
 
 def mr_run(app: dict, settings: dict, iid: str) -> int:
+    stop_on_sigterm()
     job, current = find_job(settings, app["name"])
     if current is None:
         fail(f"{console.value(app['name'])} has no Container Apps Job yet; run "

@@ -200,9 +200,9 @@ def is_same_process(pid: object, created: object) -> bool:
             and process_created(pid) == created)
 
 
-def stop_tree(pid: int, finished) -> None:
+def stop_tree(pid: int, finished, seconds: float = STOP_SECONDS) -> None:
     """End the process `pid` and each process it started. POSIX gets a stop request first and
-    STOP_SECONDS to act on it. Windows has no such request for a process with no console."""
+    `seconds` to act on it. Windows has no such request for a process with no console."""
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                        stdin=subprocess.DEVNULL, capture_output=True, check=False)
@@ -211,7 +211,7 @@ def stop_tree(pid: int, finished) -> None:
         os.killpg(pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         return
-    deadline = time.monotonic() + STOP_SECONDS
+    deadline = time.monotonic() + seconds
     while time.monotonic() < deadline and not finished():
         time.sleep(0.1)
     try:
