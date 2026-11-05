@@ -53,6 +53,21 @@ def child(monkeypatch, code):
                         lambda _operation, _args: [sys.executable, "-c", code])
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the runner image is Linux")
+def test_give_folder_changes_the_owner_and_not_a_link_target(tmp_path):
+    import getpass
+    import os
+    outside = tmp_path / "outside"
+    outside.write_text("x")
+    work = tmp_path / "work"
+    (work / "app").mkdir(parents=True)
+    (work / "app" / "run.py").write_text("")
+    (work / "app" / "link").symlink_to(outside)
+    hosted_runner.give_folder(work, getpass.getuser())
+    assert (work / "app" / "run.py").stat().st_uid == os.getuid()
+    assert (work / "app" / "link").lstat().st_uid == os.getuid()
+
+
 def test_the_runner_claims_runs_list_with_the_credentials_and_reports(portal, monkeypatch):
     claim(portal)
     child(monkeypatch, "import os, pathlib\n"

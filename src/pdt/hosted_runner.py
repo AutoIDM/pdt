@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import signal
 import sys
 import tempfile
@@ -135,10 +134,12 @@ def user_home(user: str) -> str:
 
 
 def give_folder(folder: Path, user: str) -> None:
+    import pwd
+    uid = pwd.getpwnam(user).pw_uid
     for parent, dirs, files in os.walk(folder):
-        shutil.chown(parent, user=user)
+        os.chown(parent, uid, -1)
         for name in [*dirs, *files]:
-            shutil.chown(Path(parent, name), user=user, follow_symlinks=False)
+            os.chown(Path(parent, name), uid, -1, follow_symlinks=False)
 
 
 def zipped_folder(folder: Path) -> bytes | None:
