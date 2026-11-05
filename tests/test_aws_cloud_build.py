@@ -9,7 +9,7 @@ import yaml
 from botocore.exceptions import ClientError
 
 from conftest import add_app, plain
-from pdt import deploy_aws_batch as batch_deploy
+from pdt import deploy_aws, deploy_aws_batch as batch_deploy
 from pdt.deploy_aws import deployer_policy
 from pdt.deploy_common import BUILD_TAG, REBUILD_ENV
 from pdt.deploy_aws_batch import (
@@ -36,9 +36,11 @@ class FakeS3:
         self.calls = []
         self.uploaded = {}
 
-    def head_bucket(self, Bucket):
+    def head_bucket(self, Bucket, ExpectedBucketOwner):
         if Bucket not in self.buckets:
             raise client_error("404")
+        if self.buckets[Bucket].get("owner", ACCOUNT) != ExpectedBucketOwner:
+            raise client_error("403")
 
     def create_bucket(self, Bucket, **kwargs):
         self.calls.append("create_bucket")
@@ -324,6 +326,15 @@ def test_a_cloud_deploy_creates_the_build_resources_tagged_and_scoped(deploy):
                          f"arn:aws:logs:{REGION}:{ACCOUNT}:log-group:{BUILD_LOG_GROUP}:*",
                          f"arn:aws:s3:::{BUCKET}/*", f"arn:aws:s3:::{BUCKET}"]
     assert fakes["codebuild"].calls == ["create_project"]
+
+
+def test_a_bucket_of_pdt_name_and_tag_in_another_account_is_refused(capsys):
+    s3 = FakeS3(present=True)
+    s3.buckets[BUCKET]["owner"] = "210987654321"
+    with pytest.raises(SystemExit):
+        deploy_aws.ensure_store(s3, BUCKET, ACCOUNT, REGION)
+    assert "does not own it" in capsys.readouterr().out
+    assert s3.calls == []
 
 
 def test_a_failed_build_stops_once_with_its_phase_reason_and_log(deploy, capsys):

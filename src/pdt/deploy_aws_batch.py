@@ -621,7 +621,7 @@ def desired_build_project(role_arn: str) -> dict:
 def ensure_build_resources(clients: dict, account: str, region: str, bucket: str,
                            project: dict | None) -> None:
     ensure_log_group(clients["logs"], BUILD_LOG_GROUP)
-    ensure_store(clients["s3"], bucket, region, MANAGED_TAGS)
+    ensure_store(clients["s3"], bucket, account, region, MANAGED_TAGS)
     clients["s3"].put_bucket_lifecycle_configuration(Bucket=bucket, LifecycleConfiguration={
         "Rules": [{"ID": "pdt-expire-build-uploads", "Status": "Enabled",
                    "Filter": {"Prefix": ""}, "Expiration": {"Days": 1}}]})
@@ -729,7 +729,7 @@ def codebuild_build(stage: Path, image: str, clients: dict, bucket: str, app_nam
              f"{console.value(phase)}: {console.escape(reason)}. The build log is above.")
 
 
-def build_cleanup(clients: dict, bucket: str) -> list[tuple[str, Callable]]:
+def build_cleanup(clients: dict, account: str, bucket: str) -> list[tuple[str, Callable]]:
     """One plan line and its action per CodeBuild resource that exists and that pdt manages."""
     plan = []
     project = build_project(clients["codebuild"])
@@ -742,18 +742,18 @@ def build_cleanup(clients: dict, bucket: str) -> list[tuple[str, Callable]]:
     if resource_exists(clients["iam"], "get_role", RoleName=BUILD_ROLE):
         plan.append((console.Markup(f"delete tagged IAM role {console.value(BUILD_ROLE)}"),
                      lambda: delete_role(clients["iam"], BUILD_ROLE)))
-    if store_exists(clients["s3"], bucket):
+    if store_exists(clients["s3"], bucket, account):
         plan.append((console.Markup(f"delete tagged S3 bucket {console.value(bucket)} and the "
                                     "build uploads in it"),
-                     lambda: delete_build_bucket(clients["s3"], bucket)))
+                     lambda: delete_build_bucket(clients["s3"], bucket, account)))
     if find_log_group(clients["logs"], BUILD_LOG_GROUP) is not None:
         plan.append((console.Markup(f"delete tagged log group {console.value(BUILD_LOG_GROUP)}"),
                      lambda: delete_log_group(clients["logs"], BUILD_LOG_GROUP)))
     return plan
 
 
-def delete_build_bucket(s3, name: str) -> None:
-    if not store_exists(s3, name):
+def delete_build_bucket(s3, name: str, account: str) -> None:
+    if not store_exists(s3, name, account):
         return
     if not has_managed_tag(s3.get_bucket_tagging(Bucket=name).get("TagSet", []), "Key", "Value"):
         return
@@ -845,7 +845,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     console.status(f"Checking current state in account {console.value(account)} "
                    f"({console.value(region)})...")
     with console.waiting("reading: resources"):
-        store_present = store_exists(clients["s3"], bucket) if store else False
+        store_present = store_exists(clients["s3"], bucket, account) if store else False
         usage = (store.usage() if store_present else (0, 0)) if store else None
         vpc_id, subnets = default_network(clients["ec2"])
         group = find_security_group(clients["ec2"], vpc_id)
@@ -878,7 +878,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         if cloud:
             project = build_project(clients["codebuild"])
             build_role_exists = resource_exists(clients["iam"], "get_role", RoleName=BUILD_ROLE)
-            uploads_present = store_exists(clients["s3"], uploads)
+            uploads_present = store_exists(clients["s3"], uploads, account)
             build_log_present = find_log_group(clients["logs"], BUILD_LOG_GROUP) is not None
     actions = [
         console.Markup(f"reconcile shared ECR repository {console.value(REPOSITORY)}, Batch "
@@ -953,9 +953,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     environment = {"PDT_ENV_SECRET_RESOURCE": secret_arn}
     grants = []
     if store:
-        ensure_store(clients["s3"], bucket, region)
+        ensure_store(clients["s3"], bucket, account, region)
         environment["PDT_STORAGE_URL"] = store_url(bucket, app["name"])
-        grants = store_statements(bucket, app["name"])
+        grants = store_statements(bucket, app["name"], account)
     execution, job_role, scheduler_role = ensure_roles(
         clients["iam"], names, account, region, secret_arn, grants)
     image = f"{repository_uri}:{names['image_tag']}"
@@ -1120,7 +1120,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         # With the repository already gone, an earlier destroy stopped before the build resources.
         if repository_unused or not resource_exists(
                 clients["ecr"], "describe_repositories", repositoryNames=[REPOSITORY]):
-            plan += build_cleanup(clients, build_bucket(account, region))
+            plan += build_cleanup(clients, account, build_bucket(account, region))
         if repository_unused:
             plan.append((console.Markup(f"delete ECR repository {console.value(REPOSITORY)} "
                                         "(no other apps use it)"),
@@ -1130,7 +1130,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
                              force=True))))
         bucket = store_name(account)
         store = deployer_store(app, session, account) if app["storage"] else None
-        store_present = store_exists(clients["s3"], bucket) if store else False
+        store_present = store_exists(clients["s3"], bucket, account) if store else False
         if store_present:
             warn_if_locked(store, app["name"])
     wait_for_permissions()

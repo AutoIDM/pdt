@@ -12,6 +12,7 @@ from pdt.deploy_common import BUILD_TAG, LIFECYCLE_MODULES, CostEstimate, store_
 IMAGE = "us-central1-docker.pkg.dev/my-project/pdt/report:latest"
 BUILDER = "pdt-builder@my-project.iam.gserviceaccount.com"
 BUILDS = f"pdt-build-{store_suffix('my-project')}"
+PROJECT_NUMBER = "123456789"
 
 
 def pinned(digest):
@@ -319,6 +320,7 @@ def test_a_changed_app_or_a_gone_image_builds(project, monkeypatch):
 
 def destroy_fake(builder=True, bucket=True, other_jobs=()):
     found = {("artifacts", "repositories", "describe"): {"labels": {"managed-by": "pdt"}},
+             ("projects", "describe"): int(PROJECT_NUMBER),
              ("run", "jobs", "list"): [{"metadata": {"name": job, "labels": {
                  "managed-by": "pdt", "cloud.googleapis.com/location": "us-central1"}}}
                  for job in other_jobs],
@@ -326,7 +328,7 @@ def destroy_fake(builder=True, bucket=True, other_jobs=()):
                  {"email": BUILDER, "displayName": google.BUILDER_DISPLAY_NAME}] if builder else []}
     if bucket:
         found[("storage", "buckets", "describe", f"gs://{BUILDS}")] = {
-            "labels": {"managed-by": "pdt"}}
+            "labels": {"managed-by": "pdt"}, "projectNumber": PROJECT_NUMBER}
     return FakeGcloud(found=found)
 
 
@@ -364,6 +366,18 @@ def test_destroy_without_a_cloud_build_ever_tolerates_their_absence(project, mon
 
 def test_destroy_keeps_a_bucket_pdt_does_not_manage(project, monkeypatch):
     fake = destroy_fake()
-    fake.found[("storage", "buckets", "describe", f"gs://{BUILDS}")] = {"labels": {}}
+    fake.found[("storage", "buckets", "describe", f"gs://{BUILDS}")] = {
+        "labels": {}, "projectNumber": PROJECT_NUMBER}
     google.destroy(destroy_app(project, monkeypatch, fake), True)
+    assert fake.ran("storage", "rm") == []
+
+
+def test_a_bucket_of_pdt_name_and_label_in_another_project_is_refused(project, monkeypatch,
+                                                                      capsys):
+    fake = destroy_fake()
+    fake.found[("storage", "buckets", "describe", f"gs://{BUILDS}")] = {
+        "labels": {"managed-by": "pdt"}, "projectNumber": "999"}
+    with pytest.raises(SystemExit):
+        google.destroy(destroy_app(project, monkeypatch, fake), True)
+    assert "does not own it" in capsys.readouterr().out
     assert fake.ran("storage", "rm") == []

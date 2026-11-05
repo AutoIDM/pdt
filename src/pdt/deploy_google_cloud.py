@@ -230,6 +230,19 @@ def require_managed(resource: dict | None, label: str) -> None:
         fail(f"{label} exists but is not managed by PDT")
 
 
+def pdt_bucket(project: str, bucket: str) -> dict | None:
+    """The bucket, or None when it does not exist. Bucket names are global, so another project
+    can hold one of pdt's name and label; pdt refuses it."""
+    described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}", "--raw")
+    if described is None:
+        return None
+    number = run_quiet("projects", "describe", project, "--format=value(projectNumber)")
+    if str(described.get("projectNumber")) != number.strip():
+        fail(f"bucket {console.value(bucket)} exists, but project {console.value(project)} "
+             "does not own it, so pdt does not use it.")
+    return described
+
+
 def can_ask() -> bool:
     return email_auth.can_prompt(None)
 
@@ -917,12 +930,12 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             if builder_account is not None and not builder_owned(builder_account):
                 fail(f"service account {console.value(builder)} exists but is not managed by PDT")
             builder_exists = builder_account is not None
-            described = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+            described = pdt_bucket(project, builds)
             require_managed(described, f"bucket {console.value(builds)}")
             builds_exists = described is not None
         bucket_exists = False
         if store:
-            described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
+            described = pdt_bucket(project, bucket)
             require_managed(described, f"bucket {console.value(bucket)}")
             bucket_exists = described is not None
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
@@ -1157,8 +1170,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         service_account = service_account_or_none(project, sa)
         bucket = store_bucket(project)
         store = deployer_store(project, name) if app["storage"] else None
-        store_present = store is not None and read_json_or_none(
-            "storage", "buckets", "describe", f"gs://{bucket}") is not None
+        store_present = store is not None and pdt_bucket(project, bucket) is not None
         revoke_folder = store_present and folder_grant_exists(bucket, name, sa)
         revoke_bucket = store_present and bucket_grant_exists(bucket, name, sa)
         revoke_grant = revoke_folder or revoke_bucket
@@ -1173,7 +1185,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
-        builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+        builds_bucket = pdt_bucket(project, builds)
         last_app = not other_project_jobs and not unmanaged_app_resource
         delete_builder = last_app and builder_owned(builder_account) and not granted
         delete_builds = last_app and managed_by_pdt(builds_bucket)
@@ -1300,6 +1312,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
 def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
     project, _ = project_region(app)
     project = preflight(app, project, assume_yes)
+    pdt_bucket(project, store_bucket(project))
     return storage_cli.run(deployer_store(project, app["name"]), app, rest, assume_yes,
                            f"https://console.cloud.google.com/storage/browser/"
                            f"{store_bucket(project)}/{app['name']}?project={project}")
@@ -1528,8 +1541,7 @@ def mr_run(app: dict, assume_yes: bool, iid: str) -> int:
             builder, builds = builder_email(project), build_bucket(project)
             ensure_builder(project, region, repo, builder, builds,
                            service_account_or_none(project, builder) is not None,
-                           read_json_or_none("storage", "buckets", "describe",
-                                             f"gs://{builds}") is not None)
+                           pdt_bucket(project, builds) is not None)
             cloud_build_image(stage, image, project, region, builder, builds)
         else:
             build_image(stage, image, region)

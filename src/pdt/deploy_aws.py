@@ -958,29 +958,36 @@ def secret_statements(secret_arn: str) -> list[dict]:
              "Resource": secret_arn}]
 
 
-def store_statements(bucket: str, app_name: str) -> list[dict]:
+def store_statements(bucket: str, app_name: str, account: str) -> list[dict]:
+    """S3 bucket names are global, so each statement also names the account that must own it."""
+    owner = {"StringEquals": {"s3:ResourceAccount": account}}
     return [
         {"Effect": "Allow",
          "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-         "Resource": f"arn:aws:s3:::{bucket}/{app_name}/*"},
+         "Resource": f"arn:aws:s3:::{bucket}/{app_name}/*", "Condition": owner},
         {"Effect": "Allow", "Action": ["s3:ListBucket"],
          "Resource": f"arn:aws:s3:::{bucket}",
-         "Condition": {"StringLike": {"s3:prefix": [f"{app_name}/*"]}}},
+         "Condition": {**owner, "StringLike": {"s3:prefix": [f"{app_name}/*"]}}},
     ]
 
 
-def store_exists(s3, name: str) -> bool:
+def store_exists(s3, name: str, account: str) -> bool:
+    """Another account can create a bucket of pdt's name and tag, so S3 checks the owner."""
     try:
-        s3.head_bucket(Bucket=name)
+        s3.head_bucket(Bucket=name, ExpectedBucketOwner=account)
         return True
     except ClientError as exc:
         if error_code(exc) == "404":
             return False
+        if error_code(exc) == "403":
+            fail(f"S3 bucket {console.value(name)} exists, but account {console.value(account)} "
+                 "does not own it, so pdt does not use it.")
         raise
 
 
-def ensure_store(s3, name: str, region: str, tags: dict[str, str] = STORE_TAGS) -> None:
-    if store_exists(s3, name):
+def ensure_store(s3, name: str, account: str, region: str,
+                 tags: dict[str, str] = STORE_TAGS) -> None:
+    if store_exists(s3, name, account):
         tags = s3.get_bucket_tagging(Bucket=name).get("TagSet", [])
         if not has_managed_tag(tags, "Key", "Value"):
             fail(f"S3 bucket {console.value(name)} exists but is not managed by PDT")
@@ -1007,6 +1014,7 @@ def deployer_store(app: dict, session, account: str) -> Store:
 
 
 def storage(app: dict, session, account: str, rest: list[str], assume_yes: bool) -> int:
+    store_exists(session.client("s3"), store_name(account), account)
     return storage_cli.run(deployer_store(app, session, account), app, rest, assume_yes,
                            console_url(session,
                                        f"https://s3.console.aws.amazon.com/s3/buckets/"
