@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import io
 from pathlib import Path
 
@@ -98,6 +99,7 @@ def test_folder_script_creates_the_folders_and_grants_the_two_rules(project):
     assert ("icacls $folder /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' "
             "'*S-1-5-32-544:(OI)(CI)F' 'PC\\jon:(OI)(CI)RX'") in script
     assert f"icacls '{folder / 'logs'}' /grant 'PC\\jon:(OI)(CI)M'" in script
+    assert f"icacls '{folder / 'storage'}' /grant 'PC\\jon:(OI)(CI)M'" in script
 
 
 def test_an_app_named_for_a_folder_of_pdt_moves_nothing(project):
@@ -314,6 +316,30 @@ def test_secrets_set_adds_then_replaces_one_line_of_the_app_env(project, monkeyp
     assert deploy_windows.set_env_line(app, "NEW_NAME") == 0
     assert env.read_text().splitlines()[-1] == 'NEW_NAME="third"'
     assert "Added NEW_NAME" in capsys.readouterr().out
+
+
+def test_secrets_set_holds_the_env_lock_while_it_reads_and_writes(project, monkeypatch):
+    app = windows_app(project)
+    env = app["dir"] / ".env"
+    env.write_text("OTHER=keep\n")
+    events = []
+    real_locked, real_read = config.locked, Path.read_text
+
+    @contextlib.contextmanager
+    def locked(path):
+        events.append(("lock", path))
+        with real_locked(path):
+            yield
+        events.append(("unlock", path))
+
+    monkeypatch.setattr(config, "locked", locked)
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: events.append(("read", self))
+                        or real_read(self, *a, **k))
+    monkeypatch.setattr(config, "write_text_atomically",
+                        lambda path, text: events.append(("write", path)))
+    monkeypatch.setattr("sys.stdin", io.StringIO("v\n"))
+    assert deploy_windows.set_env_line(app, "TOKEN") == 0
+    assert [kind for kind, path in events if path == env] == ["lock", "read", "write", "unlock"]
 
 
 def test_secrets_set_with_no_value_changes_nothing(project, monkeypatch):

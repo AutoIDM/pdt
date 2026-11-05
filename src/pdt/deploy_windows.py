@@ -34,7 +34,8 @@ logged on. Registering or removing it needs administrator rights; a
 non-elevated shell gets one UAC prompt. The same elevated script creates the
 app folder. SYSTEM and Administrators have full control, the deploying user can
 read it, and the deploying user can write only `logs\\`, because `pdt run --deployed`
-leaves a mark there. Deploy always registers
+leaves a mark there, and `storage\\`, because `pdt storage APP unlock` and `destroy` run
+without elevation. Deploy always registers
 the complete desired task definition with -Force, so rerunning it safely
 reconciles changes to the schedule or repository path.
 
@@ -334,7 +335,7 @@ def _deploying_user() -> str:
 
 def _folder_script(app: dict, user: str) -> str:
     """Create the app folder with its rules: only SYSTEM (the task) and Administrators can write
-    it, the deploying user can read it and can write `logs`, and it inherits nothing from
+    it, the deploying user can read it and can write `logs` and `storage`, and it inherits nothing from
     %ProgramData%, which lets each user create files."""
     folders = [app_folder(app["name"]), logs_folder(app["name"])]
     if app["storage"]:
@@ -356,9 +357,11 @@ def _folder_script(app: dict, user: str) -> str:
         f"icacls $folder /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "
         f"{_ps_string(user + ':(OI)(CI)RX')} | Out-Null; "
         "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
-        f"icacls {_ps_string(str(logs_folder(app['name'])))} /grant {_ps_string(user + ':(OI)(CI)M')} "
-        "| Out-Null; "
-        "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+        + "".join(
+            f"icacls {_ps_string(str(folder))} /grant {_ps_string(user + ':(OI)(CI)M')} "
+            "| Out-Null; "
+            "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+            for folder in folders[1:])
     )
 
 
@@ -766,11 +769,12 @@ def set_env_line(app: dict, name: str | None) -> int:
         console.error(f"no value for {console.value(name)} on stdin.")
         return 1
     path = Path(app["dir"]) / ".env"
-    lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
     pattern = re.compile(rf"\s*(export\s+)?{re.escape(name)}\s*=")
-    kept = [line for line in lines if not pattern.match(line)]
-    replaced = len(kept) != len(lines)
-    config.write_text_atomically(path, "\n".join([*kept, env_line(name, value)]) + "\n")
+    with config.locked(path):
+        lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
+        kept = [line for line in lines if not pattern.match(line)]
+        replaced = len(kept) != len(lines)
+        config.write_text_atomically(path, "\n".join([*kept, env_line(name, value)]) + "\n")
     console.done(f"{'Replaced' if replaced else 'Added'} {console.value(name)} in "
                  f"{console.value(path)}. The next run reads it.")
     return 0
