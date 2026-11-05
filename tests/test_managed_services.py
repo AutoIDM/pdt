@@ -129,6 +129,63 @@ def test_a_manual_run_sends_its_events_log_and_artifacts(project, backend, warne
     raw = seen[5]["raw"]
     data = raw[raw.index(b"PK\x03\x04"):raw.rindex(b"\r\n--")]
     assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["report.csv"]
+    assert end["params"]["artifacts"] == [{"path": "report.csv", "size": 4}]
+
+
+def write_outputs(count):
+    return ("import os, pathlib\n"
+            "out = pathlib.Path(os.environ['PDT_OUTPUT_DIR'])\n"
+            "(out / 'sub').mkdir(parents=True, exist_ok=True)\n"
+            f"for index in range({count}):\n"
+            "    (out / 'sub' / f'{index:04d}.csv').write_text('x' * index)\n")
+
+
+def end_event(project, url, seen, text, count):
+    project_with(project, text)
+    registered(url)
+    assert lifecycle.run_job("report", "windows", [sys.executable, "-c", write_outputs(count)],
+                             project / "report") == 0
+    return [request["body"]["event"] for request in seen if request["path"] == "/v1/events"][-1]
+
+
+def test_a_run_lists_its_artifacts_with_send_artifacts_off(project, backend, warned):
+    url, seen, _answers = backend
+    end = end_event(project, url, seen, f"managed_services:\n  customer: {CUSTOMER}\n", 2)
+    assert end["params"]["artifacts"] == [{"path": "sub/0000.csv", "size": 0},
+                                          {"path": "sub/0001.csv", "size": 1}]
+    assert "artifacts_more" not in end["params"]
+    assert "/v1/uploads" not in paths(seen)
+
+
+def test_a_run_lists_at_most_500_artifacts_and_counts_the_rest(project, backend, warned):
+    url, seen, _answers = backend
+    end = end_event(project, url, seen, ALL_ON, 503)
+    listed = end["params"]["artifacts"]
+    assert len(listed) == 500
+    assert listed[0] == {"path": "sub/0000.csv", "size": 0}
+    assert listed[-1] == {"path": "sub/0499.csv", "size": 499}
+    assert end["params"]["artifacts_more"] == 3
+    artifact = [request for request in seen if request["path"] == "/v1/uploads"][-1]["body"]
+    assert artifact["kind"] == "artifact"
+
+
+def test_a_run_with_no_output_lists_no_artifacts(project, backend, warned):
+    url, seen, _answers = backend
+    end = end_event(project, url, seen, ALL_ON, 0)
+    assert end["params"]["artifacts"] == []
+    assert [request["body"]["kind"] for request in seen
+            if request["path"] == "/v1/uploads"] == []
+
+
+def test_no_run_history_means_no_artifact_list(project, backend, warned):
+    url, seen, _answers = backend
+    project_with(project, f"managed_services:\n  customer: {CUSTOMER}\n"
+                          "  send_run_history: false\n  send_artifacts: true\n")
+    registered(url)
+    assert run(project) == 0
+    assert "/v1/events" not in paths(seen)
+    assert [request["body"]["kind"] for request in seen
+            if request["path"] == "/v1/uploads"] == ["artifact"]
 
 
 def test_only_the_apps_a_list_names_send(project, backend, warned):
@@ -602,7 +659,7 @@ def test_a_link_out_of_the_output_folder_is_not_uploaded(project, backend, warne
     output.mkdir()
     (output / "report.csv").write_text("a,b\n")
     (output / "creds").symlink_to(secret)
-    sender.upload_artifacts(output, "r1.zip", PARAMS)
+    sender.upload_artifacts(output, managed_services.artifact_files(output), "r1.zip", PARAMS)
     raw = seen[1]["raw"]
     data = raw[raw.index(b"PK\x03\x04"):raw.rindex(b"\r\n--")]
     assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["report.csv"]
@@ -633,7 +690,8 @@ def test_artifacts_that_cannot_be_zipped_are_a_warning_and_keep_the_exit_code(
     monkeypatch.setattr(owner, method, refused)
     assert run(project, 3) == 3
     out = " ".join(capsys.readouterr().out.split())
-    assert f"AutoIDM did not get the artifacts {storage.RUN_ID}.zip: " in out
+    which = "of this run" if method == "is_dir" else f"{storage.RUN_ID}.zip"
+    assert f"AutoIDM did not get the artifacts {which}: " in out
     assert said in out
 
 
@@ -750,7 +808,7 @@ def test_an_output_folder_that_is_a_link_sends_nothing(project, backend, warned,
     (elsewhere / "credentials").write_text("key")
     output = tmp_path / "output"
     output.symlink_to(elsewhere)
-    sender.upload_artifacts(output, "r1.zip", PARAMS)
+    sender.upload_artifacts(output, managed_services.artifact_files(output), "r1.zip", PARAMS)
     assert seen == []
     assert "links to another place" in " ".join(capsys.readouterr().out.split())
 
@@ -763,7 +821,7 @@ def test_an_output_folder_that_is_a_junction_sends_nothing(project, backend, war
     output.mkdir()
     (output / "credentials").write_text("key")
     monkeypatch.setattr(type(output), "is_junction", lambda self: self == output)
-    sender.upload_artifacts(output, "r1.zip", PARAMS)
+    sender.upload_artifacts(output, managed_services.artifact_files(output), "r1.zip", PARAMS)
     assert seen == []
     assert "links to another place" in " ".join(capsys.readouterr().out.split())
 
@@ -785,7 +843,7 @@ def test_an_entry_pdt_cannot_resolve_is_skipped_and_the_rest_is_sent(project, ba
         return real_resolve(self, *args, **kwargs)
 
     monkeypatch.setattr(type(output), "resolve", resolve)
-    sender.upload_artifacts(output, "r1.zip", PARAMS)
+    sender.upload_artifacts(output, managed_services.artifact_files(output), "r1.zip", PARAMS)
     raw = seen[1]["raw"]
     data = raw[raw.index(b"PK\x03\x04"):raw.rindex(b"\r\n--")]
     assert zipfile.ZipFile(io.BytesIO(data)).namelist() == ["report.csv"]
