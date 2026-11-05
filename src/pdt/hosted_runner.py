@@ -197,7 +197,7 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
     if operation == "artifacts":
         argv.append(str(output))
     if operation == "run_mr":
-        argv = [sys.executable, "-m", "pdt.hosted_runner", MR_RUN, args["app"], args["mr_iid"]]
+        argv = [sys.executable, "-I", "-m", "pdt.hosted_runner", MR_RUN, args["app"], args["mr_iid"]]
         extra["PDT_OUTPUT_DIR"] = str(output)
     output.mkdir()
     if "app_args" in args:

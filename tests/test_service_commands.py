@@ -1,4 +1,5 @@
 import ast
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -157,12 +158,22 @@ def test_a_bad_arg_is_refused(operation, args, says):
 ])
 def test_each_operation_maps_to_one_command_line_of_pdt(operation, args, argv):
     assert service_commands.args_problem(operation, args) == ""
-    assert command_line(operation, args) == [sys.executable, "-m", "pdt.cli", *argv]
+    assert command_line(operation, args) == [sys.executable, "-I", "-m", "pdt.cli", *argv]
+
+
+def test_a_module_in_the_working_folder_does_not_replace_pdt(tmp_path):
+    (tmp_path / "pdt").mkdir()
+    (tmp_path / "pdt" / "__init__.py").write_text("raise SystemExit('the copy ran')\n")
+    argv = command_line("artifacts", {"project": "p", "app": "hr", "run": "3"})
+    proc = subprocess.run([*argv[:argv.index("-m")], "-c", "import pdt; print(pdt.__file__)"],
+                          cwd=tmp_path, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert str(tmp_path) not in proc.stdout
 
 
 def test_artifacts_runs_the_run_output_module():
     args = {"project": "p", "app": "hr", "run": "3"}
-    assert command_line("artifacts", args) == [sys.executable, "-m", "pdt.run_output", "hr", "3"]
+    assert command_line("artifacts", args) == [sys.executable, "-I", "-m", "pdt.run_output", "hr", "3"]
 
 
 def test_the_table_is_the_spec_table():

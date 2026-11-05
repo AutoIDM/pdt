@@ -140,7 +140,7 @@ def test_a_child_gets_a_list_of_arguments_and_no_shell(machine, portal, monkeypa
 
     monkeypatch.setattr(service_runner.subprocess, "Popen", popen)
     execute(job(machine))
-    assert seen["args"] == [sys.executable, "-m", "pdt.cli", "run", "hr"]
+    assert seen["args"] == [sys.executable, "-I", "-m", "pdt.cli", "run", "hr"]
     assert "shell" not in seen["kwargs"]
     assert seen["kwargs"]["stdin"] == subprocess.DEVNULL
     assert seen["kwargs"]["cwd"] == machine
