@@ -698,7 +698,8 @@ def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
     from pdt import storage_cli
 
     return storage_cli.run(_store(app["name"]), app, rest, assume_yes,
-                           str(storage_folder(app["name"])))
+                           str(storage_folder(app["name"])),
+                           list_runs=lambda: list_runs(app["name"]))
 
 
 def parse_line(raw: bytes) -> runs_cli.Line:

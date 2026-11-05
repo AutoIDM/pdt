@@ -30,7 +30,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from pdt import (config, console, copies, deploy, grants, managed_services, run_output,
+from pdt import (config, console, copies, deploy, grants, managed_services,
                  service_commands, service_runner)
 from pdt.deploy_common import KEEP_SECRET_ENV
 from pdt.service_commands import OPERATIONS, Refused
@@ -341,10 +341,21 @@ def mr_run(app: str, iid: str) -> int:
     # A handler, unlike SIG_IGN, does not pass on to the programs this process starts.
     signal.signal(signal.SIGTERM, lambda _signum, _frame: None)
     code = deploy.mr_run(app, iid)
-    try:
-        run_output.copy_run(app, os.environ["PDT_RUN_ID"], Path(os.environ["PDT_OUTPUT_DIR"]))
-    except (RuntimeError, ValueError, KeyError) as e:
-        console.warn(f"pdt could not copy the output of the run: {console.escape(str(e))}")
+    import subprocess
+
+    pdt = [sys.executable, "-m", "pdt.cli", "storage", app]
+    listed = subprocess.run([*pdt, "ls", "runs", "--json"], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, check=False)
+    if listed.returncode != 0:
+        console.warn("pdt could not copy the output of the run: "
+                     f"{console.escape(listed.stderr.strip()[-500:])}")
+        return code
+    for entry in json.loads(listed.stdout or "[]"):
+        name = entry["name"].rstrip("/")
+        if entry["type"] == "directory" and name.endswith(f"-{os.environ['PDT_RUN_ID']}"):
+            subprocess.run([*pdt, "get", name, os.environ["PDT_OUTPUT_DIR"], "--yes"],
+                           stdin=subprocess.DEVNULL, check=False)
+            break
     return code
 
 

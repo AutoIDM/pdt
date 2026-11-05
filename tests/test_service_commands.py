@@ -171,9 +171,10 @@ def test_a_module_in_the_working_folder_does_not_replace_pdt(tmp_path):
     assert str(tmp_path) not in proc.stdout
 
 
-def test_artifacts_runs_the_run_output_module():
+def test_artifacts_runs_storage_get_of_the_run():
     args = {"project": "p", "app": "hr", "run": "3"}
-    assert command_line("artifacts", args) == [sys.executable, "-I", "-m", "pdt.run_output", "hr", "3"]
+    assert command_line("artifacts", args) == [sys.executable, "-I", "-m", "pdt.cli", "storage", "hr",
+                                               "get", "--run", "3", "--yes"]
 
 
 def test_the_table_is_the_spec_table():

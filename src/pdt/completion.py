@@ -57,6 +57,12 @@ def storage_args(prefix: str, parsed_args, **_kwargs) -> list[str]:
     rest = parsed_args.rest or []
     if not rest:
         return [name for name in config.STORAGE_COMMANDS if name.startswith(prefix)]
+    if rest[0] == "get" and prefix.startswith("-") and "--run" not in rest:
+        return ["--run"] if "--run".startswith(prefix) else []
+    if rest[0] == "get" and rest[-1] == "--run":
+        return []
+    if rest[0] == "get" and "--run" in rest:
+        return files(prefix) if len(rest) == 3 else []
     if rest[0] in ("ls", "get") and len(rest) == 1:
         try:
             app = parsed_args.app or config.current_app()

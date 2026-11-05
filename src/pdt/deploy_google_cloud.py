@@ -1310,12 +1310,13 @@ def destroy(app: dict, assume_yes: bool) -> int:
 
 
 def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
-    project, _ = project_region(app)
+    project, region = project_region(app)
     project = preflight(app, project, assume_yes)
     pdt_bucket(project, store_bucket(project))
     return storage_cli.run(deployer_store(project, app["name"]), app, rest, assume_yes,
                            f"https://console.cloud.google.com/storage/browser/"
-                           f"{store_bucket(project)}/{app['name']}?project={project}")
+                           f"{store_bucket(project)}/{app['name']}?project={project}",
+                           list_runs=lambda: list_runs(project, region, f"pdt-{app['name']}"))
 
 
 def execution_run(execution: dict) -> runs_cli.Run:

@@ -764,8 +764,10 @@ def build_parser() -> argparse.ArgumentParser:
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     rest = p.add_argument("rest", nargs=argparse.REMAINDER,
-                          help="ls [PATH] [--recursive] [--json], get PATH [DEST], query SQL, "
-                               "unlock [--yes], destroy [--yes], or --open (after get: open the file)")
+                          help="ls [PATH] [--recursive] [--json], get PATH [DEST] (a file or a "
+                               "folder), get --run N [DEST] (the output folder of run N of pdt "
+                               "runs), query SQL, unlock [--yes], destroy [--yes], or --open "
+                               "(after get: open what get saved)")
     rest.completer = completion.storage_args
     p.set_defaults(func=cmd_storage)
     p = add_parser("runs", help="list a deployed app's recent runs")

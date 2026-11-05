@@ -1255,8 +1255,13 @@ def storage(app: dict, settings: dict[str, str], rest: list[str], assume_yes: bo
     page = portal_url(settings, "blade/Microsoft_Azure_Storage/ContainerMenuBlade/overview/"
                       f"storageAccountId/{urllib.parse.quote(store['account_id'], safe='')}/path/"
                       f"{urllib.parse.quote(store['container'] + '/' + app['name'], safe='')}")
+
+    def list_runs() -> list:
+        from pdt import deploy_azure_container_apps as jobs
+        return jobs.list_runs(settings, jobs.find_job(settings, app["name"])[0])
+
     return storage_cli.run(cli_credential_store(settings, app["name"]), app, rest, assume_yes,
-                           page)
+                           page, list_runs=list_runs)
 
 
 def run_basis(seconds: float | None) -> tuple[float, str]:

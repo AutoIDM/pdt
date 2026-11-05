@@ -74,7 +74,6 @@ class Operation:
     runner_limit_seconds: int | None
     exclusive: bool = False
     from_copy: bool = False
-    module: str = "pdt.cli"
 
 
 OPERATIONS = {
@@ -88,8 +87,9 @@ OPERATIONS = {
                       HOUR, 5 * MINUTE, 5 * MINUTE),
     "health": Operation(("project",), (), lambda a: ["health", "--json"], HOUR, 5 * MINUTE,
                         5 * MINUTE),
-    "artifacts": Operation(("project", "app", "run"), (), lambda a: [a["app"], a["run"]], HOUR,
-                           15 * MINUTE, 15 * MINUTE, module="pdt.run_output"),
+    "artifacts": Operation(("project", "app", "run"), (),
+                           lambda a: ["storage", a["app"], "get", "--run", a["run"], "--yes"],
+                           HOUR, 15 * MINUTE, 15 * MINUTE),
     "plan": Operation(("project", "app"), (), lambda a: ["deploy", a["app"], "--plan"], HOUR,
                       15 * MINUTE, 15 * MINUTE),
     "run": Operation(("project", "app", "deployed"), (), run_argv, HOUR, 6 * HOUR, 55 * MINUTE),
@@ -145,7 +145,7 @@ def args_problem(name: str, args: object) -> str:
 
 def command_line(operation: str, args: dict) -> list[str]:
     found = OPERATIONS[operation]
-    return [sys.executable, "-I", "-m", found.module, *found.argv(args)]
+    return [sys.executable, "-I", "-m", "pdt.cli", *found.argv(args)]
 
 
 def decoded(token: object, keys: list[dict], audience: str | None = None,

@@ -1015,12 +1015,18 @@ def deployer_store(app: dict, session, account: str) -> Store:
 
 def storage(app: dict, session, account: str, rest: list[str], assume_yes: bool) -> int:
     store_exists(session.client("s3"), store_name(account), account)
+
+    def list_runs() -> list:
+        from pdt import deploy_aws_batch as batch
+        return batch.list_runs(session.client("batch", config=RETRIES),
+                               batch.resource_names(app["name"])["job_definition"])
+
     return storage_cli.run(deployer_store(app, session, account), app, rest, assume_yes,
                            console_url(session,
                                        f"https://s3.console.aws.amazon.com/s3/buckets/"
                                        f"{store_name(account)}?region={session.region_name}"
                                        f"&prefix={app['name']}/"),
-                           console_note(app, session))
+                           console_note(app, session), list_runs=list_runs)
 
 
 def sso_role(profile: str) -> tuple[str, str, str] | None:
