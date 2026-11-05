@@ -391,6 +391,14 @@ def test_an_mr_run_never_writes_state_through_another_spelling(store, tmp_path, 
     assert store.open("state/count.txt").read() == b"1"
 
 
+def test_an_mr_run_never_writes_the_done_marker_into_state(store, tmp_path, monkeypatch):
+    write(store, "state/_done", "keep")
+    monkeypatch.setenv("PDT_TRIGGER", "mr")
+    (tmp_path / "empty").mkdir()
+    store.push(tmp_path / "empty", "runs/../state/")
+    assert store.open("state/_done").read() == b"keep"
+
+
 def test_an_mr_run_never_writes_state_from_a_state_folder_under_an_empty_remote(
         store, tmp_path, monkeypatch):
     write(store, "state/count.txt", "1")

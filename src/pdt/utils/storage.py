@@ -450,6 +450,8 @@ class Store:
         backend = self.backend()
         paths = [(remote + file.relative_to(local).as_posix(), file)
                  for file in sorted(local.rglob("*")) if file.is_file()]
+        if remote.startswith("runs/"):
+            paths.append((remote + DONE, None))
         if is_merge_request_run() and any(
                 posixpath.normpath(path.replace("\\", "/")).lstrip("/").lower().split("/")[0]
                 == "state" for path, _file in paths):
@@ -457,9 +459,7 @@ class Store:
                 self._release_lock(backend, lease)
             return
         fs = backend.dirfs()
-        files = [(path, file.read_bytes()) for path, file in paths]
-        if remote.startswith("runs/"):
-            files.append((remote + DONE, b""))
+        files = [(path, b"" if file is None else file.read_bytes()) for path, file in paths]
         for path, data in files:
             if lease is None:
                 fs.pipe_file(path, data)
