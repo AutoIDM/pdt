@@ -16,6 +16,10 @@ dependencies = [
     "rich-argparse>=1.8.0",
     "argcomplete",
     "shellingham",
+    "cryptography",
+    "pyjwt",
+    "websockets>=17.4",
+    "fsspec",
 ]
 
 [project.urls]

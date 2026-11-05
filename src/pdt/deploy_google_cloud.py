@@ -12,6 +12,8 @@
 #     "google-auth",
 #     "google-cloud-logging==3.17.0",
 #     "duckdb",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Deploy an app to Google Cloud as a scheduled Cloud Run job.
@@ -83,9 +85,9 @@ from pdt import regions
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
-    ensure_image, fail, fetch_json, gather_secrets, image_action, run_build,
-    run_main, run_secrets, secret_contents, ssh_build_args, store_cost_label, store_kept_line,
-    store_name, store_plan_lines, store_suffix, warn_if_locked)
+    ensure_image, fail, fetch_json, gather_secrets, ignore_sigterm, image_action, keep_paused, keeps_secret, make_registration,
+    registration_secrets, run_build, run_main, run_secrets, secret_contents, ssh_build_args, stop_on_sigterm,
+    store_cost_label, store_kept_line, store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -226,6 +228,19 @@ def managed_by_pdt(resource: dict | None) -> bool:
 def require_managed(resource: dict | None, label: str) -> None:
     if resource is not None and not managed_by_pdt(resource):
         fail(f"{label} exists but is not managed by PDT")
+
+
+def pdt_bucket(project: str, bucket: str) -> dict | None:
+    """The bucket, or None when it does not exist. Bucket names are global, so another project
+    can hold one of pdt's name and label; pdt refuses it."""
+    described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}", "--raw")
+    if described is None:
+        return None
+    number = run_quiet("projects", "describe", project, "--format=value(projectNumber)")
+    if str(described.get("projectNumber")) != number.strip():
+        fail(f"bucket {console.value(bucket)} exists, but project {console.value(project)} "
+             "does not own it, so pdt does not use it.")
+    return described
 
 
 def can_ask() -> bool:
@@ -554,9 +569,14 @@ def secret_value(project: str, sid: str) -> str | None:
         [GCLOUD, "secrets", "versions", "access", "latest",
          "--secret", sid, "--project", project],
         stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    if proc.returncode != 0:
+    if proc.returncode == 0:
+        return proc.stdout
+    if not_found(proc.stderr):
         return None
-    return proc.stdout
+    console.say(console.escape(proc.stderr.strip()))
+    fail(f"pdt could not read Secret Manager secret {console.value(sid)}. The current login "
+         f"needs {console.value('secretmanager.versions.access')} on it, for example through "
+         f"the role {console.value('roles/secretmanager.secretAccessor')}.")
 
 
 def build_image(stage: Path, image: str, region: str) -> None:
@@ -910,12 +930,12 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             if builder_account is not None and not builder_owned(builder_account):
                 fail(f"service account {console.value(builder)} exists but is not managed by PDT")
             builder_exists = builder_account is not None
-            described = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+            described = pdt_bucket(project, builds)
             require_managed(described, f"bucket {console.value(builds)}")
             builds_exists = described is not None
         bucket_exists = False
         if store:
-            described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
+            described = pdt_bucket(project, bucket)
             require_managed(described, f"bucket {console.value(bucket)}")
             bucket_exists = described is not None
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
@@ -930,16 +950,19 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         if scheduler is not None and not scheduler_owned(scheduler, name, project, region, sa):
             fail(f"Cloud Scheduler job {console.value(job)} exists but is not managed by PDT")
         sched_exists = scheduler is not None
+        keep_paused(app, sched_exists, lambda: scheduler.get("state") == "PAUSED")
         sid = secret_id(name)
         secret = read_json_or_none("secrets", "describe", sid, "--project", project)
         require_managed(secret, f"Secret Manager secret {console.value(sid)}")
+        current = secret_value(project, sid) if secret and not keeps_secret() else None
+        kept_secret = keeps_secret() and secret is not None
+        values.update(registration_secrets(current))
         payload = json.dumps(values, sort_keys=True)
         secret_state = None
         if values:
             if secret is None:
                 secret_state = "create"
             else:
-                current = secret_value(project, sid)
                 secret_state = "unchanged" if current == payload else "update"
 
     actions = [console.Markup(("use existing" if repo_exists else "create")
@@ -959,6 +982,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     if secret_state:
         actions.append(console.Markup(f"{secret_state} secret {console.value(sid)} "
                                       f"({secret_contents(values)}, as one json blob)"))
+    if kept_secret:
+        actions.append(console.Markup(f"keep secret {console.value(sid)} as it is"))
     if values:
         actions.append(console.Markup(f"allow {console.value(job)} to update its own secret "
                                       f"{console.value(sid)}"))
@@ -1022,6 +1047,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             run_quiet("storage", "buckets", "update", f"gs://{bucket}", "--update-labels",
                       ",".join(f"{key}={value}" for key, value in STORE_TAGS.items()))
         grant_store_access(bucket, name, sa)
+    values = make_registration(values, {"provider": "google-cloud", "project": project,
+                                        "region": region})
+    payload = json.dumps(values, sort_keys=True)
     if secret_state:
         if secret_state == "create":
             console.step(f"creating secret {console.value(sid)}")
@@ -1045,10 +1073,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     args = ["run", "jobs", "deploy", job, "--image", pinned, "--region", region,
             "--project", project, "--service-account", sa, "--max-retries", "0",
             "--labels", f"managed-by=pdt,{BUILD_TAG}={fingerprint}"]
-    if values:
+    if values or kept_secret:
         args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"]
     env_vars = []
-    if values:
+    if values or kept_secret:
         env_vars.append(f"PDT_ENV_SECRET_RESOURCE=projects/{project}/secrets/{sid}")
     if store:
         env_vars.append(f"PDT_STORAGE_URL={store.url}")
@@ -1142,8 +1170,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         service_account = service_account_or_none(project, sa)
         bucket = store_bucket(project)
         store = deployer_store(project, name) if app["storage"] else None
-        store_present = store is not None and read_json_or_none(
-            "storage", "buckets", "describe", f"gs://{bucket}") is not None
+        store_present = store is not None and pdt_bucket(project, bucket) is not None
         revoke_folder = store_present and folder_grant_exists(bucket, name, sa)
         revoke_bucket = store_present and bucket_grant_exists(bucket, name, sa)
         revoke_grant = revoke_folder or revoke_bucket
@@ -1152,14 +1179,15 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_repo = (repository_owned and not other_regional_jobs and not other_images
                        and not unmanaged_app_resource)
         delete_image = bool(app_images) and not delete_repo
+        granted = service_account_or_none(project, grant_email(GRANT_NAME, project)) is not None
         delete_sa = (sa == default_sa and service_account_owned(service_account)
-                     and not other_project_jobs and not unmanaged_app_resource)
+                     and not other_project_jobs and not unmanaged_app_resource and not granted)
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
-        builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+        builds_bucket = pdt_bucket(project, builds)
         last_app = not other_project_jobs and not unmanaged_app_resource
-        delete_builder = last_app and builder_owned(builder_account)
+        delete_builder = last_app and builder_owned(builder_account) and not granted
         delete_builds = last_app and managed_by_pdt(builds_bucket)
 
     actions = []
@@ -1282,11 +1310,13 @@ def destroy(app: dict, assume_yes: bool) -> int:
 
 
 def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
-    project, _ = project_region(app)
+    project, region = project_region(app)
     project = preflight(app, project, assume_yes)
+    pdt_bucket(project, store_bucket(project))
     return storage_cli.run(deployer_store(project, app["name"]), app, rest, assume_yes,
                            f"https://console.cloud.google.com/storage/browser/"
-                           f"{store_bucket(project)}/{app['name']}?project={project}")
+                           f"{store_bucket(project)}/{app['name']}?project={project}",
+                           list_runs=lambda: list_runs(project, region, f"pdt-{app['name']}"))
 
 
 def execution_run(execution: dict) -> runs_cli.Run:
@@ -1467,6 +1497,111 @@ def pause(app: dict, paused: bool, assume_yes: bool) -> int:
     return 0
 
 
+MR_ENV_NAMES = ("PDT_RUN_ID", "PDT_APP_ARGS")
+# `gcloud topic escaping`: a value may hold a comma, and PDT_APP_ARGS holds no control character.
+ENV_DELIMITER = "\x1f"
+
+
+def mr_job_args(run_job: dict, iid: str) -> tuple[str, list[str], list[str]]:
+    spec = (run_job.get("spec", {}).get("template", {}).get("spec", {})
+            .get("template", {}).get("spec", {}))
+    container = (spec.get("containers") or [{}])[0]
+    skipped = (lifecycle.TRIGGER_ENV, lifecycle.MR_IID_ENV, *MR_ENV_NAMES)
+    values, secrets = [], []
+    for var in container.get("env") or []:
+        if var.get("name") in skipped:
+            continue
+        reference = (var.get("valueFrom") or {}).get("secretKeyRef")
+        if reference:
+            secrets.append(f"{var['name']}={reference['name']}:{reference.get('key') or 'latest'}")
+        else:
+            values.append(f"{var['name']}={var.get('value', '')}")
+    values += [f"{lifecycle.TRIGGER_ENV}={lifecycle.MR_TRIGGER}", f"{lifecycle.MR_IID_ENV}={iid}"]
+    values += [f"{name}={os.environ[name]}" for name in MR_ENV_NAMES if os.environ.get(name)]
+    return spec.get("serviceAccountName") or "", values, secrets
+
+
+def mr_run(app: dict, assume_yes: bool, iid: str) -> int:
+    stop_on_sigterm()
+    name = app["name"]
+    project, region = project_region(app)
+    project = preflight(app, project, assume_yes)
+    job = f"pdt-{name}"
+    mr_job = f"{job}-mr{iid}"
+    run_job = read_json_or_none("run", "jobs", "describe", job, "--region", region,
+                                "--project", project)
+    if run_job is None:
+        fail(f"{console.value(name)} has no Cloud Run job {console.value(job)}; deploy it first.")
+    account, values, secrets = mr_job_args(run_job, iid)
+    repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
+    image = f"{region}-docker.pkg.dev/{project}/{repo}/{name}-mr{iid}:latest"
+    cloud = build_in_cloud(app, "Cloud Build", "linux/amd64")
+
+    def build(stage: Path) -> None:
+        if cloud:
+            builder, builds = builder_email(project), build_bucket(project)
+            ensure_builder(project, region, repo, builder, builds,
+                           service_account_or_none(project, builder) is not None,
+                           pdt_bucket(project, builds) is not None)
+            cloud_build_image(stage, image, project, region, builder, builds)
+        else:
+            build_image(stage, image, region)
+
+    created = finished = False
+    try:
+        ensure_image(app, image, "linux/amd64", "Cloud Build" if cloud else "", None,
+                     lambda: False, build)
+        args = ["run", "jobs", "create", mr_job, "--image", image, "--region", region,
+                "--project", project, "--max-retries", "0", "--labels", "managed-by=pdt",
+                "--set-env-vars", f"^{ENV_DELIMITER}^" + ENV_DELIMITER.join(values)]
+        if account:
+            args += ["--service-account", account]
+        if secrets:
+            args += ["--set-secrets", ",".join(secrets)]
+        run_quiet(*args, slow=f"creating: Cloud Run job {console.value(mr_job)}")
+        created = True
+        output = run_quiet("run", "jobs", "execute", mr_job, "--region", region, "--project",
+                           project, "--wait", "--format=json",
+                           slow=f"running: Cloud Run job {console.value(mr_job)}")
+        finished = True
+        try:
+            execution = execution_run(json.loads(output or "null") or {})
+        except (ValueError, KeyError):
+            fail(f"Cloud Run gave no execution of {console.value(mr_job)}.")
+        for line in read_lines(project, execution.id):
+            runs_cli.print_line(line)
+        return 0 if execution.status == "succeeded" else 1
+    finally:
+        ignore_sigterm()
+        if created and not finished:
+            for run in list_runs(project, region, mr_job):
+                if run.status == "running":
+                    run_quiet("run", "jobs", "executions", "cancel", run.id, "--region", region,
+                              "--project", project, "--quiet")
+        if created:
+            run_quiet("run", "jobs", "delete", mr_job, "--region", region, "--project", project,
+                      "--quiet")
+        run_quiet("artifacts", "docker", "images", "delete", image, "--project", project,
+                  "--delete-tags", "--quiet")
+        console.done(f"Deleted Cloud Run job {console.value(mr_job)} and image "
+                     f"{console.value(image)}.")
+
+
+def kill(app: dict, assume_yes: bool) -> int:
+    project, region = project_region(app)
+    project = preflight(app, project, assume_yes)
+    job = f"pdt-{app['name']}"
+    running = [run for run in list_runs(project, region, job) if run.status == "running"]
+    for run in running:
+        run_quiet("run", "jobs", "executions", "cancel", run.id, "--region", region,
+                  "--project", project, "--quiet",
+                  slow=f"stopping: Cloud Run execution {console.value(run.id)}")
+        console.done(f"Stopped execution {console.value(run.id)} of {console.value(app['name'])}.")
+    if not running:
+        console.say(f"No execution of {console.value(app['name'])} runs.")
+    return 0
+
+
 def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
     project, region = project_region(app)
     project = preflight(app, project, assume_yes)
@@ -1488,6 +1623,43 @@ def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
     return logs(app, ["--follow"], assume_yes, new=lambda run: run.id == name)
 
 
+GRANT_NAME = "pdt-autoidm"
+# Cloud Run, Artifact Registry, Cloud Build, and Cloud Scheduler do not support resource
+# attributes in IAM conditions (docs.cloud.google.com/iam/docs/conditions-resource-attributes),
+# so these roles hold for the whole project. A build can act only as pdt-builder or pdt-runner,
+# the two accounts the grant gets roles/iam.serviceAccountUser on, except in a project whose
+# first build ran before Cloud Build changed its default account: there a build that names no
+# account runs as the legacy Cloud Build account, and only an organization policy stops that.
+GRANT_ROLES = ("roles/run.admin", "roles/cloudscheduler.admin", "roles/artifactregistry.admin",
+               "roles/secretmanager.viewer", "roles/cloudbuild.builds.editor",
+               "roles/iam.serviceAccountViewer", "roles/serviceusage.serviceUsageConsumer",
+               "roles/logging.viewer", "projects/PROJECT_ID/roles/pdtAutoidmSecretCreate")
+# IAM checks a secret create on the project, so a condition on the secret name cannot limit it.
+# The unconditional role holds only that one permission, and it reads no secret.
+GRANT_CUSTOM_ROLES = {
+    "pdtAutoidmSecretCreate": ("secretmanager.secrets.create",),
+    "pdtAutoidmSecretPolicy": ("secretmanager.secrets.getIamPolicy",
+                               "secretmanager.secrets.setIamPolicy"),
+}
+GRANT_RUNNER = "pdt-runner"
+# Each role with the condition that limits it to pdt's own resources. PROJECT_NUMBER stands for
+# the project number, which a secret's resource name holds, and PROJECT_ID for the project ID.
+GRANT_CONDITIONAL_ROLES = (
+    ("roles/storage.admin", "pdt buckets",
+     'resource.name.startsWith("projects/_/buckets/pdt-")'),
+    ("roles/secretmanager.secretAccessor", "pdt secrets",
+     'resource.name.startsWith("projects/PROJECT_NUMBER/secrets/pdt-")'),
+    ("roles/secretmanager.editor", "pdt secrets",
+     'resource.name.startsWith("projects/PROJECT_NUMBER/secrets/pdt-")'),
+    ("projects/PROJECT_ID/roles/pdtAutoidmSecretPolicy", "pdt secrets",
+     'resource.name.startsWith("projects/PROJECT_NUMBER/secrets/pdt-")'),
+)
+
+
+def grant_email(name: str, project: str) -> str:
+    return f"{name}@{project}.iam.gserviceaccount.com"
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "gcloud":
         try:
@@ -1498,7 +1670,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-                                 "pause", "unpause", "start"))
+                                 "pause", "unpause", "start", "kill", "mr-run"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -1521,6 +1693,10 @@ def main() -> int:
         return pause(app, args.command == "pause", args.yes)
     if args.command == "start":
         return start(app, args.yes, "--follow" in args.rest)
+    if args.command == "kill":
+        return kill(app, args.yes)
+    if args.command == "mr-run":
+        return mr_run(app, args.yes, args.rest[0])
     if args.command == "secrets":
         return secrets(app, args.rest[0], args.yes, *args.rest[1:])
     if args.command == "deploy":

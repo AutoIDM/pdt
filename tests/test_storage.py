@@ -352,3 +352,67 @@ def test_the_cloud_names_the_run(monkeypatch):
     assert storage.cloud_run_id() == "pdt-my-report-abc12"
     monkeypatch.setenv("CLOUD_RUN_EXECUTION", "pdt-my-report-xyz")
     assert storage.cloud_run_id() == "pdt-my-report-xyz"
+
+
+def test_an_mr_run_reads_state_releases_the_lock_at_once_and_never_writes_state(store, tmp_path,
+                                                                               monkeypatch):
+    write(store, "state/count.txt", "1")
+    monkeypatch.setenv("PDT_TRIGGER", "mr")
+    with store.sync(tmp_path / "run") as run:
+        assert (run.state / "count.txt").read_text() == "1"
+        assert LOCK not in store.ls("state")
+        (run.state / "count.txt").write_text("2")
+        (run.output / "report.csv").write_bytes(b"a,b\n")
+    assert store.open("state/count.txt").read() == b"1"
+    assert store.open(run.folder + "report.csv").read() == b"a,b\n"
+
+
+def test_an_mr_run_that_pulls_and_pushes_state_itself_never_writes_state(store, tmp_path,
+                                                                          monkeypatch):
+    write(store, "state/count.txt", "1")
+    monkeypatch.setenv("PDT_TRIGGER", "mr")
+    local = tmp_path / "local"
+    lease = store.pull("state/", local)
+    (local / "count.txt").write_text("2")
+    store.push(local, "state/", lease)
+    store.push(local, "state/")
+    assert store.open("state/count.txt").read() == b"1"
+    assert LOCK not in store.ls("state")
+
+
+@pytest.mark.parametrize("remote", ["./state/", "/state/", "output/../state/", ".\\state\\",
+                                    "State/"])
+def test_an_mr_run_never_writes_state_through_another_spelling(store, tmp_path, monkeypatch,
+                                                               remote):
+    write(store, "state/count.txt", "1")
+    monkeypatch.setenv("PDT_TRIGGER", "mr")
+    (tmp_path / "count.txt").write_text("2")
+    store.push(tmp_path, remote)
+    assert store.open("state/count.txt").read() == b"1"
+
+
+def test_an_mr_run_never_writes_the_done_marker_into_state(store, tmp_path, monkeypatch):
+    write(store, "state/_done", "keep")
+    monkeypatch.setenv("PDT_TRIGGER", "mr")
+    (tmp_path / "empty").mkdir()
+    store.push(tmp_path / "empty", "runs/../state/")
+    assert store.open("state/_done").read() == b"keep"
+
+
+def test_an_mr_run_never_writes_state_from_a_state_folder_under_an_empty_remote(
+        store, tmp_path, monkeypatch):
+    write(store, "state/count.txt", "1")
+    monkeypatch.setenv("PDT_TRIGGER", "mr")
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "count.txt").write_text("2")
+    store.push(tmp_path, "")
+    assert store.open("state/count.txt").read() == b"1"
+
+
+def test_an_mr_run_that_fails_leaves_another_runs_lock(store, tmp_path, monkeypatch):
+    monkeypatch.setenv("PDT_TRIGGER", "mr")
+    with pytest.raises(RuntimeError):
+        with store.sync(tmp_path / "run", push_state_on_error=True):
+            write(store, LOCK, '{"run": "scheduled"}')
+            raise RuntimeError("boom")
+    assert LOCK in store.ls("state")

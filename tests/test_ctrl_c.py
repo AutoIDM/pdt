@@ -172,3 +172,78 @@ def test_a_second_ctrl_c_or_a_flush_error_still_exits_130(flush):
     proc = subprocess.run([sys.executable, "-c", FLUSHED_SCRIPT.format(flush=flush)],
                           capture_output=True, text=True, timeout=15)
     assert (proc.returncode, proc.stderr) == (130, "")
+
+
+FLUSH_SCRIPT = """
+import signal
+import threading
+import time
+from pdt import lifecycle
+
+def waits(seconds):
+    if seconds is None:
+        time.sleep(60)
+
+lifecycle.SINKS = (lifecycle.Sink("slow", lambda event: None, waits),)
+threading.Timer(0.5, signal.raise_signal, (signal.SIGINT,)).start()
+lifecycle.flush()
+"""
+
+
+def test_ctrl_c_ends_the_wait_of_flush_at_once():
+    proc = subprocess.run([sys.executable, "-c", FLUSH_SCRIPT], capture_output=True, text=True,
+                          timeout=15)
+    assert (proc.returncode, proc.stderr) == (0, "")
+
+
+MANAGED_WAIT_SCRIPT = """
+import signal
+import threading
+import time
+from types import SimpleNamespace
+from pdt import managed_services
+
+managed_services.queue_send(SimpleNamespace(refused=False), "the test item",
+                            lambda: time.sleep(60))
+threading.Timer(0.5, signal.raise_signal, (signal.SIGINT,)).start()
+managed_services.wait()
+"""
+
+
+def test_ctrl_c_ends_the_managed_wait_at_once_with_one_warning():
+    proc = subprocess.run([sys.executable, "-c", MANAGED_WAIT_SCRIPT], capture_output=True,
+                          text=True, timeout=10)
+    assert proc.returncode == 0
+    assert proc.stdout.count("AutoIDM did not get the test item: pdt stopped waiting") == 1
+
+
+RUN_SCRIPT = """
+import signal
+import sys
+import threading
+import time
+from pathlib import Path
+from pdt import lifecycle, managed_services
+
+settings = {"send_run_history": True, "send_logs": False, "send_artifacts": False}
+managed_services._senders["report"] = managed_services.Sender("report", settings, None)
+managed_services.Sender.event = lambda *args: time.sleep(60)
+end_run = managed_services.end_run
+
+def ctrl_c_in_the_wait(*args):
+    threading.Timer(0.5, signal.raise_signal, (signal.SIGINT,)).start()
+    return end_run(*args)
+
+managed_services.end_run = ctrl_c_in_the_wait
+sys.exit(lifecycle.run_job("report", "windows", [sys.executable, "-c", "raise SystemExit(3)"],
+                           Path.cwd()))
+"""
+
+
+def test_ctrl_c_after_the_command_exits_ends_the_wait_and_keeps_the_exit_code(project):
+    proc = subprocess.run([sys.executable, "-c", RUN_SCRIPT], capture_output=True, text=True,
+                          timeout=10, cwd=project)
+    assert proc.returncode == 3
+    said = " ".join(proc.stdout.split())
+    assert "AutoIDM did not get the job:run-failed event: pdt stopped waiting" in said
+    assert "Run of report failed (exit code 3)" in said

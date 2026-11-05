@@ -58,7 +58,8 @@ def test_the_schedule_submits_the_job_by_name_to_the_shared_queue():
     target = submit_job_target(NAMES)
     assert target["Arn"] == "arn:aws:scheduler:::aws-sdk:batch:submitJob"
     assert json.loads(target["Input"]) == {
-        "JobName": "pdt-my-app", "JobQueue": "pdt", "JobDefinition": "pdt-my-app"}
+        "JobName": "pdt-my-app", "JobQueue": "pdt", "JobDefinition": "pdt-my-app",
+        "Tags": {"managed-by": "pdt"}}
 
 
 def test_the_scheduler_may_submit_the_job_definition_by_the_name_the_schedule_uses():

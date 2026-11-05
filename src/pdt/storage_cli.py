@@ -8,11 +8,13 @@ from __future__ import annotations
 import json
 import re
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from pdt import console, runs_cli
+from pdt.utils import storage
 
-USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] | get <path> [dest] [--open] "
+USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] "
+         "| get <path> [dest] [--yes] [--open] | get --run <number> [dest] [--yes] [--open] "
          "| query <sql> | unlock [--yes] | destroy [--yes] | --open")
 
 
@@ -53,12 +55,101 @@ def ls(store, path, as_json: bool = False, recursive: bool = False) -> int:
     return 0
 
 
-def get(store, path, dest: Path, show: bool = False) -> int:
+def get(store, path, dest: Path | None, assume_yes: bool = False, show: bool = False) -> int:
+    fs = store.fs()
+    if fs.isdir(path):
+        folder = path.rstrip("/")
+        files = folder_files(fs, folder)
+        if not files:
+            console.say(f"nothing under {console.value(folder)}")
+            return 0
+        target = dest or Path(PurePosixPath(folder).name)
+        if not download(fs, files, target, folder, assume_yes):
+            return 1
+        console.done(f"saved {console.value(len(files))} file(s) of {console.value(folder)} to "
+                     f"{console.value(target)}")
+        return runs_cli.open_place(str(target.resolve())) if show else 0
+    dest = dest or Path(Path(path).name)
     saved = dest / Path(path).name if dest.is_dir() else dest
     with console.waiting(f"downloading: {console.value(path)}"):
-        store.fs().get(path, str(dest))
+        fs.get(path, str(dest))
     console.done(f"saved {console.value(path)} to {console.value(dest)}")
     return runs_cli.open_place(str(saved.resolve())) if show else 0
+
+
+def folder_files(fs, folder: str) -> list[tuple[str, PurePosixPath]]:
+    """Each file under `folder` and its path inside it. The `_done` marker of a run, and a
+    name that leads outside the folder, stay out."""
+    files = []
+    for name in sorted(fs.find(folder)):
+        if not name.startswith(folder + "/"):
+            continue
+        relative = PurePosixPath(name[len(folder) + 1:])
+        if ".." in relative.parts or relative.name == storage.DONE:
+            continue
+        files.append((name, relative))
+    return files
+
+
+def download(fs, files: list[tuple[str, PurePosixPath]], target: Path, what: str,
+             assume_yes: bool) -> bool:
+    from pdt.deploy import proceed
+
+    if target.exists():
+        console.warn(f"{console.value(target)} already exists. pdt replaces each file in it "
+                     "that has the same name.")
+        if not proceed(assume_yes):
+            console.warn("Aborted; nothing was written.")
+            return False
+    with console.waiting(f"downloading: {console.value(len(files))} file(s) of "
+                         f"{console.value(what)}"):
+        for name, relative in files:
+            destination = target.joinpath(*relative.parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            fs.get(name, str(destination))
+    return True
+
+
+def run_folder(fs, run_id: str) -> str | None:
+    try:
+        entries = fs.ls("runs", detail=True)
+    except FileNotFoundError:
+        return None
+    for entry in entries:
+        name = entry["name"].rstrip("/")
+        if entry.get("type") == "directory" and name.endswith(f"-{run_id}"):
+            return name
+    return None
+
+
+def get_run(store, list_runs, app_name: str, number: int, dest: Path | None, assume_yes: bool,
+            show: bool) -> int:
+    with console.waiting(f"reading: the runs of {console.value(app_name)}"):
+        found = runs_cli.numbered(list_runs)
+    if not 1 <= number <= len(found):
+        console.error(f"pdt runs {console.value(app_name)} knows {console.value(len(found))} runs; "
+                      f"pick a number from 1 to {console.value(len(found))}")
+        return 1
+    run = found[number - 1]
+    fs = store.fs()
+    with console.waiting(f"reading: the output of run {console.value(number)}"):
+        folder = run_folder(fs, run.id)
+        files = folder_files(fs, folder) if folder else []
+    console.field("Run", f"{number}, started {runs_cli.started_text(run)}, {run.status}")
+    if not files:
+        console.say(f"run {console.value(number)} of {console.value(app_name)} "
+                    "left no output files")
+        return 0
+    console.field("Stored in", folder)
+    target = dest or Path(PurePosixPath(folder).name)
+    if not download(fs, files, target, folder, assume_yes):
+        return 1
+    console.done(f"saved {console.value(len(files))} file(s) of run {console.value(number)} to "
+                 f"{console.value(target)}")
+    if show:
+        return runs_cli.open_place(str(target.resolve()))
+    console.next_steps([(f"pdt logs {app_name} {number}", "show the log of this run")])
+    return 0
 
 
 def query(store, sql) -> int:
@@ -122,13 +213,23 @@ def destroy(store, app, assume_yes) -> int:
 
 
 def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
-        note: str = "") -> int:
+        note: str = "", list_runs=None) -> int:
     name = app["name"]
     if not app["storage"]:
         console.error(f"storage is turned off for {console.value(name)}; "
                       f"remove {console.value('storage: false')} from "
                       f"{console.value(f'{name}/config.yml')}")
         return 1
+    number = None
+    if "--run" in rest:
+        at = rest.index("--run")
+        given = rest[at + 1] if at + 1 < len(rest) else ""
+        if not given.isdigit():
+            console.error(f"--run takes the number of a run, as {console.value(f'pdt runs {name}')} "
+                          "numbers runs")
+            return 1
+        number = int(given)
+        rest = rest[:at] + rest[at + 2:]
     as_json = "--json" in rest
     recursive = "--recursive" in rest
     assume_yes = assume_yes or "--yes" in rest or "-y" in rest
@@ -141,9 +242,8 @@ def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
         return runs_cli.open_place(page, note)
     handlers = {
         "ls": (0, lambda args: ls(store, args[0] if args else "", as_json, recursive)),
-        "get": (1, lambda args: get(store, args[0],
-                                    Path(args[1] if len(args) > 1 else Path(args[0]).name),
-                                    show)),
+        "get": (1, lambda args: get(store, args[0], Path(args[1]) if len(args) > 1 else None,
+                                    assume_yes, show)),
         "query": (1, lambda args: query(store, args[0])),
         "unlock": (0, lambda args: unlock(store, name, assume_yes)),
         "destroy": (0, lambda args: destroy(store, name, assume_yes)),
@@ -158,6 +258,12 @@ def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
     if show and subcommand != "get":
         console.error("--open works only with get, or with no subcommand")
         return 1
+    if number is not None:
+        if subcommand != "get" or len(args) > 1:
+            console.error(console.escape(USAGE))
+            return 1
+        return get_run(store, list_runs, name, number, Path(args[0]) if args else None,
+                       assume_yes, show)
     needed, handler = handlers[subcommand]
     if len(args) < needed:
         console.error(console.escape(USAGE))

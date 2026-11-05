@@ -12,6 +12,8 @@
 #     "rich",
 #     "python-dotenv",
 #     "backoff",
+#     "cryptography",
+#     "pyjwt",
 # ]
 #
 # [tool.uv]
@@ -74,6 +76,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 import time
 import urllib.parse
 import urllib.request
@@ -84,7 +88,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,
-    run_main, secret_contents, store_plan_lines, store_suffix)
+    keeps_secret, run_main, secret_contents, store_plan_lines, store_suffix)
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.storage import Store
 
@@ -115,6 +119,10 @@ ROLE_IDS = {
     "Key Vault Secrets Officer": "b86a8fe4-44ce-4948-aee5-eccb2c155cd7",
     "Key Vault Secrets User": "4633458b-17de-408a-b874-0445c86b69e6",
     "Storage Blob Data Contributor": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "Contributor": "b24988ac-6180-42a0-ab88-20f7382dd24c",
+    "Key Vault Reader": "21090545-7ca7-4776-b22c-e363652d74d2",
+    "Role Based Access Control Administrator": "f58310d9-a9f6-439a-9e8d-f62e7b41a168",
+    "Reader": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
 }
 STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
 STORE_METADATA_ARGS = tuple(
@@ -179,6 +187,9 @@ def az(*args: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args, code, out.getvalue(), err.getvalue())
 
 
+REFUSED = ("forbidden", "authorizationfailed", "does not have authorization")
+
+
 def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = False,
               hints: dict[str, str] | None = None, slow: str = "") -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
@@ -190,9 +201,7 @@ def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = Fal
                 return proc.stdout
             output = proc.stderr.lower()
             access_error = retry_access and any(text in output for text in (
-                "unable to fetch secret", "forbidden", "authorizationfailed",
-                "does not have authorization",
-            ))
+                "unable to fetch secret", *REFUSED))
             internal_error = retry_internal and "internalservererror" in output
             retried = seconds != 0 and (access_error or internal_error)
             if proc.stderr.strip():
@@ -301,9 +310,15 @@ def az_error_line(response) -> str:
     return f"ERROR: ({error.get('code')}) {error['message']}"
 
 
-def az_json(*args: str):
+def az_json(*args: str, refused_is_missing: bool = False):
+    """None means Azure found nothing. A refused read fails, because None would hide the
+    missing right and the caller would act as if the resource were absent."""
     proc = az(*args, "--output", "json")
     if proc.returncode != 0:
+        if not refused_is_missing and any(text in proc.stderr.lower() for text in REFUSED):
+            console.say(console.escape(proc.stderr.strip()))
+            fail(f"Azure refused {console.value('pdt az ' + ' '.join(args[:4]))}; "
+                 "the Azure sign-in lacks a right that this step needs")
         return None
     return json.loads(proc.stdout or "null")
 
@@ -694,6 +709,10 @@ def managed_by_pdt(resource: dict | None) -> bool:
     return ((resource or {}).get("tags") or {}).get("managed-by") == "pdt"
 
 
+def retained(resource: dict | None) -> bool:
+    return ((resource or {}).get("tags") or {}).get("pdt-lifecycle") == STORE_TAGS["pdt-lifecycle"]
+
+
 def require_managed(resource: dict | None, label: str) -> None:
     if resource is not None and not managed_by_pdt(resource):
         fail(f"{label} exists but is not managed by PDT")
@@ -738,6 +757,8 @@ def secret_reads(settings: dict[str, str], vault_token: str, sid: str,
     if vault is None or not wanted:
         return vault, None, []
     url = f"https://{settings['vault']}.vault.azure.net/secrets/{sid}"
+    if keeps_secret():
+        return vault, None, secret_versions(settings, vault_token, sid)
     current = arm_get(vault_token, f"{url}?api-version={VAULT_API_VERSION}",
                       ("keyvault", "secret", "show", "--vault-name", settings["vault"]),
                       missing=SECRET_MISSING_OR_NOT_GRANTED)
@@ -762,6 +783,23 @@ def secret_state(settings: dict[str, str], sid: str, app_name: str,
         fail(f"Key Vault secret {console.value(sid)} already exists but is not owned "
              f"by PDT app {console.value(app_name)}; choose another Key Vault")
     return vault is not None, current.get("value") if current else None
+
+
+def granted_secret_value(settings: dict[str, str], sid: str) -> str | None:
+    url = (f"https://{settings['vault']}.vault.azure.net/secrets/{sid}"
+           f"?api-version={VAULT_API_VERSION}")
+    command = ("keyvault", "secret", "show", "--vault-name", settings["vault"])
+    for seconds in (10, 20, 40, 0):
+        try:
+            current = arm_get(access_token(VAULT_RESOURCE), url, command)
+            return current.get("value") if current else None
+        except ReadError as exc:
+            if not seconds:
+                console.say(console.escape(str(exc)))
+                fail(f"pdt could not read Key Vault secret {console.value(sid)}. The current "
+                     f"login needs the role {console.value(SECRET_ROLE)} on Key Vault "
+                     f"{console.value(settings['vault'])}.")
+            time.sleep(seconds)
 
 
 def secret_actions(sid: str, values: dict, current: str | None,
@@ -829,25 +867,32 @@ def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
 
 
 def deleted_vault(settings: dict[str, str]) -> dict | None:
-    vaults = arm_list(settings["token"], arm_url(
-        f"/subscriptions/{settings['subscription']}/providers/Microsoft.KeyVault/deletedVaults"),
-        ("keyvault", "show-deleted", "--name", settings["vault"])) or []
-    return next((vault for vault in vaults
-                 if str(vault.get("name")).lower() == settings["vault"].lower()), None)
+    """The read of one region needs only the grant's `locations/deletedVaults/read`; the
+    subscription list would need `deletedVaults/read`, which the grant does not hold."""
+    return arm_get(settings["token"], arm_url(
+        f"/subscriptions/{settings['subscription']}/providers/Microsoft.KeyVault/locations/"
+        f"{settings['region']}/deletedVaults/{settings['vault']}"),
+        ("keyvault", "show-deleted", "--name", settings["vault"],
+         "--location", settings["region"]))
+
+
+def purge_vault(settings: dict[str, str]) -> None:
+    console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
+    run_quiet("keyvault", "purge", "--name", settings["vault"],
+              "--location", settings["region"],
+              slow=f"purging: Key Vault {console.value(settings['vault'])}")
 
 
 def purge_deleted_vault(settings: dict[str, str]) -> None:
     """A soft-deleted vault still owns its name, so create fails until it is purged."""
-    deleted = az_json("keyvault", "show-deleted", "--name", settings["vault"])
+    deleted = deleted_vault(settings)
     if not deleted:
         return
     tags = (deleted.get("properties") or {}).get("tags") or {}
     if tags.get("managed-by") != "pdt":
         fail(f"a soft-deleted Key Vault named {console.value(settings['vault'])} exists but is not "
              "managed by PDT; purge it or deploy to another subscription")
-    console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-    run_quiet("keyvault", "purge", "--name", settings["vault"],
-              slow=f"purging: Key Vault {console.value(settings['vault'])}")
+    purge_vault(settings)
 
 
 def workspace_resource(settings: dict) -> dict | None:
@@ -1008,26 +1053,55 @@ def purge_secret(settings: dict[str, str], sid: str) -> None:
                   settings["vault"], "--name", sid, retry_access=True)
 
 
+def kept_group_deletes(resources: list) -> list[dict]:
+    """What destroy deletes one by one in a group that the grant keeps: each pdt resource but
+    the grant's own identity. The registry goes first, because a deploy that runs at the same
+    time locks it; a refusal then leaves everything for remove_app, as a sibling app would.
+    The jobs go next, because they use the others."""
+    order = {"microsoft.containerregistry/registries": 0, "microsoft.app/jobs": 1}
+    return sorted((resource for resource in resources
+                   if managed_by_pdt(resource) and resource.get("name") != GRANT_NAME),
+                  key=lambda resource: order.get(str(resource.get("type")).lower(), 2))
+
+
 def destroy_group(settings: dict[str, str], app_name: str) -> bool:
-    """Delete the project's group. False means another app holds it, so it stays."""
+    """Delete the project's group, or each pdt resource in it when the grant keeps the group.
+    False means another app holds it, so it stays."""
     rg = settings["resource_group"]
-    others = other_pdt_apps(az_json("resource", "list", "--resource-group", rg) or [], app_name)
+    resources = az_json("resource", "list", "--resource-group", rg) or []
+    others = other_pdt_apps(resources, app_name)
     if others:
         console.note(f"kept: resource group {console.value(rg)} (apps deployed since the plan: "
                      f"{', '.join(console.value(other) for other in others)})")
         return False
-    console.step(f"deleting resource group {console.value(rg)} (takes a few minutes)")
-    locked = delete_unless_locked("group", "delete", "--name", rg, "--yes",
-                                  slow=f"deleting: resource group {console.value(rg)}")
-    if locked:
-        console.note(f"kept: resource group {console.value(rg)} with its ACR and Key Vault "
-                     f"(locked by {console.value(locked)})")
-        return False
-    if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
-        console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-        run_quiet("keyvault", "purge", "--name", settings["vault"],
-                  slow=f"purging: Key Vault {console.value(settings['vault'])}")
-    if az_tsv("group", "exists", "--name", rg) == "false":
+    group = az_json("group", "show", "--name", rg)
+    if group is None:
+        fail(f"pdt could not read resource group {console.value(rg)}, so it deleted nothing "
+             "in it. Run the destroy again.")
+    kept = retained(group)
+    if kept:
+        for resource in kept_group_deletes(resources):
+            name = resource.get("name")
+            console.step(f"deleting {console.value(name)}")
+            locked = delete_unless_locked("resource", "delete", "--ids", resource["id"],
+                                          slow=f"deleting: {console.value(name)}")
+            if locked:
+                console.note(f"kept: {console.value(name)} and the rest of resource group "
+                             f"{console.value(rg)} (locked by {console.value(locked)})")
+                return False
+    else:
+        console.step(f"deleting resource group {console.value(rg)} (takes a few minutes)")
+        locked = delete_unless_locked("group", "delete", "--name", rg, "--yes",
+                                      slow=f"deleting: resource group {console.value(rg)}")
+        if locked:
+            console.note(f"kept: resource group {console.value(rg)} with its ACR and Key Vault "
+                         f"(locked by {console.value(locked)})")
+            return False
+    if deleted_vault(settings):
+        purge_vault(settings)
+    if kept:
+        list_remaining(rg)
+    elif az_tsv("group", "exists", "--name", rg) == "false":
         console.done(f"Nothing remains in resource group {console.value(rg)}.")
     return True
 
@@ -1181,8 +1255,13 @@ def storage(app: dict, settings: dict[str, str], rest: list[str], assume_yes: bo
     page = portal_url(settings, "blade/Microsoft_Azure_Storage/ContainerMenuBlade/overview/"
                       f"storageAccountId/{urllib.parse.quote(store['account_id'], safe='')}/path/"
                       f"{urllib.parse.quote(store['container'] + '/' + app['name'], safe='')}")
+
+    def list_runs() -> list:
+        from pdt import deploy_azure_container_apps as jobs
+        return jobs.list_runs(settings, jobs.find_job(settings, app["name"])[0])
+
     return storage_cli.run(cli_credential_store(settings, app["name"]), app, rest, assume_yes,
-                           page)
+                           page, list_runs=list_runs)
 
 
 def run_basis(seconds: float | None) -> tuple[float, str]:
@@ -1212,7 +1291,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-                                 "pause", "unpause", "start"))
+                                 "pause", "unpause", "start", "kill", "mr-run"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -1225,6 +1304,35 @@ def main() -> int:
         console.say(console.escape(str(exc)))
         command = "pdt az " + " ".join(exc.az_command[:4])
         fail(f"{console.value(command)} failed; fix the problem above and re-run")
+
+
+GRANT_NAME = "pdt-autoidm"
+GRANT_ROLES = ("Contributor", "Key Vault Reader", "Key Vault Secrets Officer")
+GRANT_ASSIGNS = ("AcrPull", "Key Vault Secrets User", "Key Vault Secrets Officer",
+                 "Storage Blob Data Contributor")
+ROLE_WRITE = "Microsoft.Authorization/roleAssignments"
+GRANT_GROUPS = ("pdt", SHARED_GROUP, STORE_GROUP)
+# Contributor cannot write locks. Deploy locks the registry in `pdt` and the shared environment
+# in `pdt-shared` (deploy_azure_container_apps.shared_locks), so only those two groups get them.
+GRANT_LOCK_ACTIONS = ("Microsoft.Authorization/locks/read", "Microsoft.Authorization/locks/write",
+                      "Microsoft.Authorization/locks/delete")
+GRANT_LOCK_GROUPS = ("pdt", SHARED_GROUP)
+# A destroy soft-deletes the vault, and its name stays taken until a purge. Azure checks these
+# two at subscription scope, so the grant holds them there.
+GRANT_VAULT_ACTIONS = ("Microsoft.KeyVault/locations/deletedVaults/read",
+                       "Microsoft.KeyVault/locations/deletedVaults/purge/action")
+
+
+def grant_groups(subscription: str) -> list[str]:
+    return [f"/subscriptions/{subscription}/resourceGroups/{group}" for group in GRANT_GROUPS]
+
+
+def grant_condition() -> str:
+    ids = ", ".join(ROLE_IDS[role] for role in GRANT_ASSIGNS)
+    return (f"((!(ActionMatches{{'{ROLE_WRITE}/write'}})) OR "
+            f"(@Request[{ROLE_WRITE}:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {{{ids}}})) AND "
+            f"((!(ActionMatches{{'{ROLE_WRITE}/delete'}})) OR "
+            f"(@Resource[{ROLE_WRITE}:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {{{ids}}}))")
 
 
 def run_command(app: dict, args: argparse.Namespace) -> int:
@@ -1242,6 +1350,10 @@ def run_command(app: dict, args: argparse.Namespace) -> int:
         return module.pause(app, preflight(app, azure_settings(app)), args.command == "pause")
     if args.command == "start":
         return module.start(app, preflight(app, azure_settings(app)), "--follow" in args.rest)
+    if args.command == "kill":
+        return module.kill(app, preflight(app, azure_settings(app)))
+    if args.command == "mr-run":
+        return module.mr_run(app, preflight(app, azure_settings(app)), args.rest[0])
     if app["timezone"] not in ("Etc/UTC", "UTC"):
         fail("Azure evaluates cron schedules only in UTC; set "
              f"{console.value('timezone: Etc/UTC')}")

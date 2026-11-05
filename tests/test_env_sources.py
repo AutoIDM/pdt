@@ -143,7 +143,7 @@ def test_pdt_run_from_the_project_root_reads_the_app_dot_env(project, monkeypatc
     real_popen = subprocess.Popen
 
     def popen_without_uv(args, **kwargs):
-        assert args == ["uv", "run", "--script", "run.py"]
+        assert args == ["uv", "run", "--isolated", "--script", "run.py"]
         return real_popen([sys.executable, "run.py", str(report)], **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", popen_without_uv)

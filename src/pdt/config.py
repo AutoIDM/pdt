@@ -28,6 +28,7 @@ from pathlib import Path
 
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
+PROJECT_NAME_FILE = ".pdt-project-name"
 
 PROVIDERS = ("google-cloud", "azure", "aws", "windows")
 # The words after `pdt secrets <app>` and `pdt storage <app>`. They live here, so tab
@@ -36,6 +37,7 @@ SECRET_ACTIONS = ("diff", "save", "get", "set")
 STORAGE_COMMANDS = ("ls", "get", "query", "unlock", "destroy")
 # The local port `pdt gui` serves on unless --port names another.
 GUI_PORT = 8765
+AUTOIDM_API_URL = "https://app.autoidm.com"
 # Every cloud provider runs a job as a container image built from the app
 # folder: AWS on Fargate, Azure on Container Apps Jobs, Google Cloud on
 # Cloud Run Jobs. The windows provider runs the app directly.
@@ -47,7 +49,7 @@ SCHEDULE_SHORTHAND = {
     "monthly": "0 0 1 * *",
     "yearly": "0 0 1 1 *",
 }
-ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch"}
+ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch", "managed_services"}
 APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
             "run_scripts", "continue_on_error", "pause", "docker-build", "alerts"}
 # Where a cloud provider builds the image: with Docker on this computer when
@@ -87,6 +89,7 @@ KEY_HOME = {
     "docker-build": f"the top level of {PROJECT_FILE}, or {APP_LEVEL}",
     "alerts": f"the top level of {PROJECT_FILE}, or {APP_LEVEL}",
     "error-watch": f"the top level of {PROJECT_FILE}",
+    "managed_services": f"the top level of {PROJECT_FILE}",
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
@@ -162,6 +165,14 @@ def find_project(start: Path | None = None) -> Path:
                 f"this is not a pdt project: no {PROJECT_FILE} here or in any "
                 "parent folder. Run `pdt init` to set one up.")
         folder = folder.parent
+
+
+def project_name() -> str:
+    project = find_project()
+    saved = project / PROJECT_NAME_FILE
+    if saved.is_file():
+        return saved.read_text(encoding="utf-8").strip() or project.name
+    return project.name
 
 
 def project_line() -> str:
@@ -304,7 +315,8 @@ def merged_app(name: str) -> dict:
         "name": name,
         "dir": app_dir,
         "schedule": plan.get("schedule", own.get("schedule", entry.get("schedule"))),
-        "timezone": timezone,
+        "timezone": plan.get("timezone", timezone),
+        "timezone_set": any("timezone" in section for section in (own, entry, platform, plan)),
         "platform": platform,
         "platform_from": platform_from,
         "config": {
@@ -456,6 +468,37 @@ def save_root_alerts(alerts: list[dict]) -> Path:
     return path
 
 
+def save_managed_services(customer: str, sends: dict[str, bool]) -> Path:
+    """Add a managed_services block with the customer and `sends`, or add `sends` to the block
+    that pdt.yml has. A block on one line (`managed_services: {...}`) stays as it is."""
+    path = find_project() / PROJECT_FILE
+    with locked(path):
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+        start = next((i for i, line in enumerate(lines)
+                      if line.split("#")[0].rstrip() == "managed_services:"), None)
+        if start is None and any(line.startswith("managed_services:") for line in lines):
+            return path
+        if start is None:
+            lines += ([""] if lines and lines[-1].strip() else []) + [
+                "managed_services:", f"  customer: {_yaml_scalar(customer)}",
+                *(f"  {key}: {'true' if value else 'false'}" for key, value in sends.items())]
+        elif sends:
+            end = start + 1
+            while end < len(lines) and (lines[end].startswith((" ", "\t")) or not lines[end].strip()):
+                end += 1
+            while end > start + 1 and not lines[end - 1].strip():
+                end -= 1
+            first = next((i for i in range(start + 1, end)
+                          if lines[i].strip() and not lines[i].strip().startswith("#")), None)
+            indent = _indent(lines[first]) if first is not None else "  "
+            lines[end:end] = [f"{indent}{key}: {'true' if value else 'false'}"
+                              for key, value in sends.items()]
+        else:
+            return path
+        write_text_atomically(path, "\n".join(lines) + "\n")
+    return path
+
+
 def _yaml_scalar(value) -> str:
     import yaml
     if (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][\w:.-]*", value)
@@ -518,6 +561,66 @@ def locked(path: Path):
                 yield
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+LOCKED_EXIT = 75
+SERVICE_CHILD_ENV = "PDT_SERVICE_CHILD"
+LOCK_PROJECT_ENV = "PDT_LOCK_PROJECT"
+
+
+class LockHeld(ConfigError):
+    """Another process holds a lock of this project."""
+
+
+def try_lock(path: Path, project: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "w")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise LockHeld(f"Another process holds the lock {path} of the project {project.name}.") from None
+    return handle
+
+
+def lock_folder() -> tuple[Path, Path]:
+    project = Path(os.environ.get(LOCK_PROJECT_ENV, "").strip() or find_project())
+    state = project / STATE_DIR
+    state.mkdir(exist_ok=True)
+    (state / ".gitignore").write_text("*\n")
+    return state / "locks", project
+
+
+@contextmanager
+def run_lock(app: str):
+    folder, project = lock_folder()
+    whole = try_lock(folder / "project.lock", project)
+    try:
+        own = try_lock(folder / f"app-{app}.lock", project)
+    finally:
+        whole.close()
+    try:
+        yield
+    finally:
+        own.close()
+
+
+@contextmanager
+def project_lock(apps: list[str] | tuple[str, ...] = ()):
+    folder, project = lock_folder()
+    held = [try_lock(folder / "project.lock", project)]
+    try:
+        for app in apps:
+            held.append(try_lock(folder / f"app-{app}.lock", project))
+        yield
+    finally:
+        for handle in held:
+            handle.close()
 
 
 STATE_DIR = ".pdt"
@@ -838,6 +941,9 @@ def runs_per_month(cron: str) -> float:
     return per_day * days / 12
 
 
+SERVICE_ENV_FILES_ENV = "PDT_SERVICE_ENV_FILES"
+
+
 def find_env_files(start: Path) -> list[Path]:
     folder = start.resolve()
     files = []
@@ -875,8 +981,14 @@ def env_file_lines(start: Path) -> list[str]:
     from dotenv import dotenv_values
 
     from pdt import console
-    files = find_env_files(start)
     env = console.value(".env")
+    named = os.environ.get(SERVICE_ENV_FILES_ENV)
+    if named is not None:
+        if not named:
+            return [f"the pdt service started this command, and it read no {env} file"]
+        return [f"the pdt service passed the values of these {env} files: "
+                f"{', '.join(console.value(path) for path in named.split(os.pathsep))}"]
+    files = find_env_files(start)
     if not files:
         return [f"no {env} file in {console.value(start.name)} or a folder above it, "
                 "so pdt reads env vars only from this terminal"]
@@ -1032,7 +1144,11 @@ def missing_env(app: dict) -> str:
         return ""
     secret = os.environ.get("PDT_ENV_SECRET_RESOURCE", "").strip()
     files = find_env_files(app["dir"])
-    if secret != "":
+    if SERVICE_ENV_FILES_ENV in os.environ:
+        looked = "the environment that the pdt service passed"
+        fix = ("add each one as NAME=value to a .env file in the project that the service serves, "
+               "then run the command again")
+    elif secret != "":
         looked = f"the app's cloud secret {secret}"
         fix = (f"add each one as NAME=value to the .env file in your pdt project, "
                f"then run `pdt secrets {app['name']} save`")
@@ -1123,6 +1239,9 @@ def validate_by_app() -> list[tuple[str | None, str]]:
         except ConfigError as e:
             problems.append(str(e))
     apps = find_apps()
+    if "managed_services" in root_cfg:
+        from pdt import managed_services
+        problems.extend(managed_services.problems(root_cfg["managed_services"], apps))
     entries = root_cfg.get("apps")
     if entries is not None and not isinstance(entries, list):
         problems.append(f"{PROJECT_FILE}: apps must be a list, one `- name: <app>` per app")

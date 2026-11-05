@@ -1,7 +1,10 @@
 import base64
+import contextlib
+import io
 from pathlib import Path
 
 import pytest
+from dotenv import dotenv_values
 
 from conftest import add_app, plain
 from pdt import config, deploy_windows
@@ -21,6 +24,7 @@ def test_machine_data_home_falls_back_to_the_system_drive(monkeypatch):
 def project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     (tmp_path / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    (tmp_path / ".pdt-project-name").write_text("example\n")
     monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -55,7 +59,7 @@ def test_local_windows_commands_stop_off_windows(
 
 
 def test_app_folders_live_under_the_machine_data_home(project):
-    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report"
     assert deploy_windows.app_folder("my-report") == folder
     assert deploy_windows.storage_folder("my-report") == folder / "storage"
     assert deploy_windows.logs_folder("my-report") == folder / "logs"
@@ -63,7 +67,7 @@ def test_app_folders_live_under_the_machine_data_home(project):
 
 def test_plan_names_the_data_folder_its_rules_and_both_subfolders(project):
     app = windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report"
     actions = deploy_windows.plan(app, "create", "hourly at minute 00", r"PC\jon",
                                   "uv.exe", False)
     assert plain(actions) == [
@@ -88,13 +92,19 @@ def test_plan_without_storage_has_no_storage_line(project):
 
 def test_folder_script_creates_the_folders_and_grants_the_two_rules(project):
     app = windows_app(project)
-    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report"
     script = deploy_windows._folder_script(app, r"PC\jon")
     assert (f"New-Item -ItemType Directory -Force -Path '{folder}', "
             f"'{folder / 'logs'}', '{folder / 'storage'}'") in script
-    assert "icacls $folder /grant '*S-1-5-18:(OI)(CI)F' 'PC\\jon:(OI)(CI)M'" in script
-    assert script.count("/grant") == 1
-    assert "/inheritance" not in script
+    assert ("icacls $folder /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' "
+            "'*S-1-5-32-544:(OI)(CI)F' 'PC\\jon:(OI)(CI)RX'") in script
+    assert f"icacls '{folder / 'logs'}' /grant 'PC\\jon:(OI)(CI)M'" in script
+    assert f"icacls '{folder / 'storage'}' /grant 'PC\\jon:(OI)(CI)M'" in script
+
+
+def test_an_app_named_for_a_folder_of_pdt_moves_nothing(project):
+    add_app(project, "service", "schedule: hourly\ntimezone: local\n")
+    assert "Move-Item" not in deploy_windows._folder_script(config.merged_app("service"), "PC\\jon")
 
 
 def test_deploy_creates_the_folders_before_registering_the_task(project, monkeypatch):
@@ -269,7 +279,6 @@ def test_validate_reports_what_the_windows_deploy_rejects(project, config_text, 
     assert problems[0] == f"my-report: {problem.split(': ', 1)[0]}: {rejected.value}"
 
 
-
 def test_deploy_registers_the_event_source_before_the_task(project, monkeypatch):
     app = windows_app(project)
     scripts = []
@@ -283,3 +292,58 @@ def test_deploy_registers_the_event_source_before_the_task(project, monkeypatch)
     assert (scripts[0].index("New-EventLog -LogName Application -Source 'pdt'")
             < scripts[0].index("Register-ScheduledTask -TaskName $name -Xml $xml -Force "
                                "-ErrorAction Stop"))
+
+
+def test_a_deploy_moves_the_earlier_folder(project):
+    app = windows_app(project)
+    assert f"Move-Item -Path '{project / 'ProgramData' / 'pdt' / 'my-report'}'" in (
+        deploy_windows._folder_script(app, "PC\\jon"))
+
+
+def test_the_task_has_the_name_of_the_app(project):
+    assert deploy_windows._task_name("my-report") == "pdt-my-report"
+
+
+def test_secrets_set_adds_then_replaces_one_line_of_the_app_env(project, monkeypatch, capsys):
+    app = windows_app(project)
+    env = app["dir"] / ".env"
+    env.write_text("OTHER=keep\nTOKEN=first\nexport TOKEN=again\n")
+    monkeypatch.setattr("sys.stdin", io.StringIO('new "value" \\ here\n'))
+    assert deploy_windows.set_env_line(app, "TOKEN") == 0
+    assert env.read_text() == 'OTHER=keep\nTOKEN="new \\"value\\" \\\\ here"\n'
+    assert dotenv_values(env)["TOKEN"] == 'new "value" \\ here'
+    monkeypatch.setattr("sys.stdin", io.StringIO("third\n"))
+    assert deploy_windows.set_env_line(app, "NEW_NAME") == 0
+    assert env.read_text().splitlines()[-1] == 'NEW_NAME="third"'
+    assert "Added NEW_NAME" in capsys.readouterr().out
+
+
+def test_secrets_set_holds_the_env_lock_while_it_reads_and_writes(project, monkeypatch):
+    app = windows_app(project)
+    env = app["dir"] / ".env"
+    env.write_text("OTHER=keep\n")
+    events = []
+    real_locked, real_read = config.locked, Path.read_text
+
+    @contextlib.contextmanager
+    def locked(path):
+        events.append(("lock", path))
+        with real_locked(path):
+            yield
+        events.append(("unlock", path))
+
+    monkeypatch.setattr(config, "locked", locked)
+    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: events.append(("read", self))
+                        or real_read(self, *a, **k))
+    monkeypatch.setattr(config, "write_text_atomically",
+                        lambda path, text: events.append(("write", path)))
+    monkeypatch.setattr("sys.stdin", io.StringIO("v\n"))
+    assert deploy_windows.set_env_line(app, "TOKEN") == 0
+    assert [kind for kind, path in events if path == env] == ["lock", "read", "write", "unlock"]
+
+
+def test_secrets_set_with_no_value_changes_nothing(project, monkeypatch):
+    app = windows_app(project)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert deploy_windows.set_env_line(app, "TOKEN") == 1
+    assert not (app["dir"] / ".env").exists()

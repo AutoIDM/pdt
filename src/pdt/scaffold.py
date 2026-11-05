@@ -103,9 +103,10 @@ This folder is a pdt project: a set of small scheduled jobs. Every folder holdin
 - List the env vars an app reads under `env:` in its `config.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets. Each `$env:NAME` a PowerShell app's scripts read is required even when `config.yml` does not list it; list it under `env: optional:` when the scripts work without it. The same holds for each `os.environ["NAME"]` a Python app's `.py` files read; `os.environ.get("NAME")` and `os.getenv("NAME")` make it optional. pdt does not find a name that the code builds at run time.
 - Check work with `pdt validate`, try it with `pdt run <name>`, ship it with `pdt deploy <name>`.
 - Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (`--id ID` picks a run by the id `pdt runs` shows; the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all, `--follow` to wait for a running run's lines); add `--json` to any of them for machine-readable output. Stop a deployed app's schedule with `pdt pause <name>` (it writes `pause: true` into the app's `config.yml`), start it again with `pdt unpause <name>`, and start one run now with `pdt run <name> --deployed`. `pdt gui` shows the same in a browser.
-- Read the files an app keeps in its data store with `pdt storage <name> ls [PATH] [--recursive] [--json]`, `pdt storage <name> get PATH`, and `pdt storage <name> query SQL`. When a run stopped but still holds the state lock, `pdt storage <name> unlock` releases it.
+- Read the files an app keeps in its data store with `pdt storage <name> ls [PATH] [--recursive] [--json]`, `pdt storage <name> get PATH [DEST]` (a file or a folder), `pdt storage <name> get --run N [DEST]` (the output folder of run N, as `pdt runs <name>` numbers runs), and `pdt storage <name> query SQL`. When a run stopped but still holds the state lock, `pdt storage <name> unlock` releases it.
 - Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
-- A PowerShell app reads its `config:` section from `$env:PDT_CONFIG_JSON | ConvertFrom-Json`, and pdt keeps each file it writes to `$env:PDT_OUTPUT_DIR` in the app's data store.
+- Every app, Python or PowerShell, writes the files a run should keep (reports, exports) to the folder in `PDT_OUTPUT_DIR`; pdt keeps them in the app's data store under `runs/`.
+- A PowerShell app reads its `config:` section from `$env:PDT_CONFIG_JSON | ConvertFrom-Json`.
 - A `run.ps1` file is the only entry script. Otherwise, `run_scripts` lists the entry scripts in order, or pdt runs each `.ps1` file that no other `.ps1` file loads in name order. Do not use `run.ps1` and `run_scripts` together.
 - `pdt new <name> --from-scripts` writes `requirements.psd1` (the modules to install) and `run.py` (how the scripts run) into a PowerShell app's folder; once there, `requirements.psd1` replaces the modules pdt finds in the scripts, and `run.py` replaces how pdt runs them.
 - An app folder holding a `Dockerfile` is built from that file instead of the generated one when it deploys to a cloud provider. The build context is the app folder under its own name next to `pdt.yml`; a `.dockerignore` in the app folder, with patterns relative to it, keeps files out of the image.
@@ -138,7 +139,7 @@ from pathlib import Path
 
 from pdt import config, powershell
 from pdt.pwsh import ensure_pwsh
-from pdt.run_powershell import pwsh_command, reads_state
+from pdt.run_powershell import output_folder, pwsh_command, reads_state
 from pdt.utils import storage
 from pdt.utils.log import die, log
 
@@ -156,11 +157,13 @@ def main() -> int:
     store = storage.store() if app["storage"] else None
     code = 0
     with tempfile.TemporaryDirectory(prefix="pdt-run-") as local:
-        output, state = Path(local) / "output", Path(local) / "state"
-        output.mkdir()
+        output, state = output_folder(app_dir, Path(local)), Path(local) / "state"
         state.mkdir()
         lease = store.pull("state/", state) if store is not None and reads_state(files) else None
-        env = {**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
+        if lease is not None and storage.is_merge_request_run():
+            store.abort(lease)
+            lease = None
+        env ={**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
                "PDT_CONFIG_JSON": json.dumps(app["config"], default=str)}
         try:
             for script in entries:

@@ -8,14 +8,16 @@
 #     "backoff",
 #     "fsspec",
 #     "duckdb",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Deploy an app locally as a Windows Task Scheduler task.
 
-Per app on this PC there is one folder, `%ProgramData%\\pdt\\<app>\\`, with
+Per app on this PC there is one folder, `%ProgramData%\\pdt\\apps\\<project>\\<app>\\`, with
 `storage\\` (the app's files, kept after destroy) and `logs\\` (one log per
 run, removed on destroy), and one scheduled task `pdt-<app>` whose action
-runs `run_windows_task.py` through uv. The runner sets PDT_STORAGE_URL to the
+runs `run_windows_task.py` through uv. A deploy moves the earlier folder `%ProgramData%\\pdt\\<app>`. The runner sets PDT_STORAGE_URL to the
 storage folder, runs the app in its folder, and writes both output streams
 to `logs\\<UTC start>.log`, each line after its time, ending with
 `pdt: exit N`; `pdt runs` and `pdt logs` read those files. A run is
@@ -30,8 +32,10 @@ that started it in `UV`, so the runner never looks uv up again.
 The task runs as the SYSTEM account, so it does not depend on a user being
 logged on. Registering or removing it needs administrator rights; a
 non-elevated shell gets one UAC prompt. The same elevated script creates the
-app folder and gives SYSTEM full control and the deploying user modify
-rights, so that user can delete what the task wrote. Deploy always registers
+app folder. SYSTEM and Administrators have full control, the deploying user can
+read it, and the deploying user can write only `logs\\`, because `pdt run --deployed`
+leaves a mark there, and `storage\\`, because `pdt storage APP unlock` and `destroy` run
+without elevation. Deploy always registers
 the complete desired task definition with -Force, so rerunning it safely
 reconciles changes to the schedule or repository path.
 
@@ -51,6 +55,7 @@ import base64
 import ctypes
 import html
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -60,12 +65,12 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, regions, runs_cli
+from pdt import config, console, managed_services, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import CostEstimate, run_main, warn_if_locked
 from pdt.pwsh import ensure_pwsh
-from pdt.run_windows_task import EVENT_SOURCE, LINE_TIME, MANUAL_START
+from pdt.run_windows_task import EVENT_SOURCE, LINE_TIME, MANUAL_START, STOP_REQUEST
 
 
 class WindowsDeployError(Exception):
@@ -83,6 +88,9 @@ RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
 # The same limit as --replica-timeout on Azure Container Apps.
 RUN_TIME_LIMIT = "PT30M"
 FOLLOW_POLL_SECONDS = 0.25
+# A stopped run waits for AutoIDM (managed_services.EXIT_WAIT_SECONDS) and the alerts
+# (lifecycle.FLUSH_SECONDS) before it ends.
+STOP_SECONDS = 30
 EXIT_LINE_BYTES = 256
 
 
@@ -158,10 +166,15 @@ def schedule_trigger(cron: str) -> tuple[str, str]:
     )
 
 
+OWN_FOLDERS = {"apps", "cache", "pwsh", "registrations", "service", "ssh", "versions"}
+
+
+def project_folder_name() -> str:
+    return managed_services.backend_name(config.project_name())
+
+
 def app_folder(app_name: str) -> Path:
-    """The app's folder under %ProgramData%\\pdt; the task name is unique per PC, so the
-    app name is too."""
-    return config.machine_data_home() / app_name
+    return config.machine_data_home() / "apps" / project_folder_name() / app_name
 
 
 def storage_folder(app_name: str) -> Path:
@@ -238,7 +251,7 @@ def task_xml(app: dict, uv: str, on_machine_path: bool) -> tuple[str, str]:
     <Enabled>{"false" if app.get("pause") else "true"}</Enabled>
     <Hidden>false</Hidden>
     <ExecutionTimeLimit>{RUN_TIME_LIMIT}</ExecutionTimeLimit>
-    <Priority>7</Priority>
+    <Priority>5</Priority>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -324,18 +337,34 @@ def _deploying_user() -> str:
 
 
 def _folder_script(app: dict, user: str) -> str:
-    """Create the app folder with the two rules its files need: SYSTEM (the task) has full
-    control, and the deploying user can change and delete what SYSTEM writes."""
+    """Create the app folder with its rules: only SYSTEM (the task) and Administrators can write
+    it, the deploying user can read it and can write `logs` and `storage`, and it inherits nothing from
+    %ProgramData%, which lets each user create files."""
     folders = [app_folder(app["name"]), logs_folder(app["name"])]
     if app["storage"]:
         folders.append(storage_folder(app["name"]))
     paths = ", ".join(_ps_string(str(folder)) for folder in folders)
+    earlier = config.machine_data_home() / app["name"]
+    move = ""
+    if app["name"] not in OWN_FOLDERS:
+        move = (f"if ((Test-Path {_ps_string(str(earlier))}) -and -not "
+                f"(Test-Path {_ps_string(str(app_folder(app['name'])))})) {{ "
+                f"New-Item -ItemType Directory -Force -Path "
+                f"{_ps_string(str(app_folder(app['name']).parent))} | Out-Null; "
+                f"Move-Item -Path {_ps_string(str(earlier))} "
+                f"-Destination {_ps_string(str(app_folder(app['name'])))} -ErrorAction Stop }}; ")
     return (
+        f"{move}"
         f"$folder = {_ps_string(str(app_folder(app['name'])))}; "
         f"New-Item -ItemType Directory -Force -Path {paths} | Out-Null; "
-        f"icacls $folder /grant '*S-1-5-18:(OI)(CI)F' {_ps_string(user + ':(OI)(CI)M')} "
-        "| Out-Null; "
+        f"icacls $folder /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "
+        f"{_ps_string(user + ':(OI)(CI)RX')} | Out-Null; "
         "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+        + "".join(
+            f"icacls {_ps_string(str(folder))} /grant {_ps_string(user + ':(OI)(CI)M')} "
+            "| Out-Null; "
+            "if ($LASTEXITCODE -ne 0) { throw \"icacls failed with exit $LASTEXITCODE\" }; "
+            for folder in folders[1:])
     )
 
 
@@ -586,6 +615,40 @@ def pause(app: dict, paused: bool) -> int:
     return 0
 
 
+def stop_task(name: str, logs: Path) -> None:
+    """Stop the run of task `name` the way a Ctrl+C stops `pdt run`: the runner gets a stop
+    request in `logs`, so the run sends its end event. Task Scheduler ends the task when it still
+    runs after STOP_SECONDS."""
+    powershell, _uv = _preflight(require_uv=False)
+    try:
+        (logs / STOP_REQUEST).touch()
+        deadline = time.monotonic() + STOP_SECONDS
+    except OSError:
+        deadline = time.monotonic()
+    while _task_running(powershell, name):
+        if time.monotonic() >= deadline:
+            _run(powershell, f"Stop-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
+                 elevate=True)
+            return
+        time.sleep(1)
+
+
+def kill(app: dict) -> int:
+    try:
+        powershell, name = _managed_task(app)
+        if not _task_running(powershell, name):
+            console.say(f"No run of {console.value(app['name'])} runs: Windows task "
+                        f"{console.value(name)} is not running.")
+            return 0
+        with console.waiting(f"stopping: Windows task {console.value(name)}"):
+            stop_task(name, logs_folder(app["name"]))
+    except WindowsDeployError as exc:
+        console.error(console.escape(str(exc)))
+        return 1
+    console.done(f"Stopped {console.value(app['name'])}: Windows task {console.value(name)}.")
+    return 0
+
+
 def start(app: dict, follow: bool = False) -> int:
     before = {run.id for run in list_runs(app["name"])}
     try:
@@ -635,7 +698,8 @@ def storage(app: dict, rest: list[str], assume_yes: bool) -> int:
     from pdt import storage_cli
 
     return storage_cli.run(_store(app["name"]), app, rest, assume_yes,
-                           str(storage_folder(app["name"])))
+                           str(storage_folder(app["name"])),
+                           list_runs=lambda: list_runs(app["name"]))
 
 
 def parse_line(raw: bytes) -> runs_cli.Line:
@@ -716,11 +780,37 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
     return found
 
 
+def env_line(name: str, value: str) -> str:
+    quoted = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'{name}="{quoted}"'
+
+
+def set_env_line(app: dict, name: str | None) -> int:
+    if not name:
+        console.error(f"{console.value('pdt secrets <app> set')} needs the env var name, "
+                      "with the value on stdin.")
+        return 1
+    value = sys.stdin.read().strip()
+    if value == "":
+        console.error(f"no value for {console.value(name)} on stdin.")
+        return 1
+    path = Path(app["dir"]) / ".env"
+    pattern = re.compile(rf"\s*(export\s+)?{re.escape(name)}\s*=")
+    with config.locked(path):
+        lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
+        kept = [line for line in lines if not pattern.match(line)]
+        replaced = len(kept) != len(lines)
+        config.write_text_atomically(path, "\n".join([*kept, env_line(name, value)]) + "\n")
+    console.done(f"{'Replaced' if replaced else 'Added'} {console.value(name)} in "
+                 f"{console.value(path)}. The next run reads it.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=("deploy", "destroy", "login", "storage", "secrets",
-                                 "runs", "logs", "pause", "unpause", "start"))
+                                 "runs", "logs", "pause", "unpause", "start", "kill"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -740,8 +830,10 @@ def main() -> int:
         console.note("the windows provider deploys to this computer, so it needs no login.")
         return 0
     if args.command == "secrets":
+        if args.rest[:1] == ["set"]:
+            return set_env_line(app, args.rest[1] if len(args.rest) > 1 else None)
         console.note("the windows provider reads your .env file at every run, "
-                     "so there is nothing to compare, save, get, or set.")
+                     "so there is nothing to compare, save, or get.")
         return 0
     config.load_env(app["dir"])
     if args.command == "storage":
@@ -757,6 +849,8 @@ def main() -> int:
         return pause(app, args.command == "pause")
     if args.command == "start":
         return start(app, "--follow" in args.rest)
+    if args.command == "kill":
+        return kill(app)
     if args.command == "deploy":
         return deploy(app, args.yes, args.plan)
     return destroy(app, args.yes)

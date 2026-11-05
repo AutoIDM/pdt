@@ -1,9 +1,10 @@
 import json
 import sys
+from datetime import datetime, timezone
 
 import pytest
 
-from pdt import console, storage_cli
+from pdt import console, runs_cli, storage_cli
 from pdt.utils.storage import Store
 
 
@@ -195,6 +196,85 @@ def test_destroy_reads_inside_a_wait_that_ends_before_the_question(store, app, m
     assert storage_cli.run(store, app, ["destroy"], False) == 1
     assert seen == [("find", ["reading: objects under [bold not dim]my-report/[/]"]),
                     ("confirm", [])]
+
+
+RUN_FOLDER = "runs/20261105T182955Z-run1"
+
+
+@pytest.fixture
+def run_output(tmp_path):
+    folder = tmp_path / "store" / "my-report" / RUN_FOLDER
+    (folder / "output").mkdir(parents=True)
+    (folder / "_done").write_text("")
+    (folder / "accounts.csv").write_text("a")
+    (folder / "output" / "_done").write_text("")
+    (folder / "output" / "summary.txt").write_text("s")
+    return folder
+
+
+def two_runs():
+    started = datetime(2026, 11, 5, 18, 29, 55, tzinfo=timezone.utc)
+    return [runs_cli.Run("run2", started, None, "running"),
+            runs_cli.Run("run1", started, started, "succeeded", 0)]
+
+
+def saved(folder):
+    return sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*")
+                  if path.is_file())
+
+
+def test_get_run_saves_the_run_folder_without_its_done_markers(store, app, run_output, tmp_path,
+                                                                monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert storage_cli.run(store, app, ["get", "--run", "2"], False, list_runs=two_runs) == 0
+    target = tmp_path / "20261105T182955Z-run1"
+    assert saved(target) == ["accounts.csv", "output/summary.txt"]
+    out = capsys.readouterr().out
+    assert f"Stored in: {RUN_FOLDER}" in out
+    assert "saved 2 file(s) of run 2 to 20261105T182955Z-run1" in out
+    assert "pdt logs my-report 2" in out
+
+
+def test_get_run_with_no_output_says_so(store, app, capsys):
+    assert storage_cli.run(store, app, ["get", "--run", "1"], False, list_runs=two_runs) == 0
+    assert "run 1 of my-report left no output files" in capsys.readouterr().out
+
+
+def test_get_run_refuses_a_number_past_the_last_run(store, app, capsys):
+    assert storage_cli.run(store, app, ["get", "--run", "3"], False, list_runs=two_runs) == 1
+    assert "pick a number from 1 to 2" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("rest", [["get", "--run"], ["get", "--run", "x"], ["ls", "--run", "1"],
+                                  ["get", "--run", "1", "a", "b"]])
+def test_get_run_needs_a_number_and_get(store, app, rest):
+    assert storage_cli.run(store, app, rest, False, list_runs=two_runs) == 1
+
+
+def test_get_run_into_an_existing_folder_needs_yes(store, app, run_output, tmp_path, monkeypatch,
+                                                   capsys):
+    target = tmp_path / "out"
+    target.mkdir()
+    monkeypatch.setattr("pdt.deploy.can_prompt", lambda interactive: False)
+    assert storage_cli.run(store, app, ["get", "--run", "2", str(target)], False,
+                           list_runs=two_runs) == 1
+    assert saved(target) == []
+    assert "already exists" in capsys.readouterr().out
+    assert storage_cli.run(store, app, ["get", "--run", "2", str(target), "--yes"], False,
+                           list_runs=two_runs) == 0
+    assert saved(target) == ["accounts.csv", "output/summary.txt"]
+
+
+def test_get_of_a_folder_saves_every_file_under_it(store, app, run_output, tmp_path):
+    target = tmp_path / "out"
+    assert storage_cli.run(store, app, ["get", RUN_FOLDER + "/", str(target)], False) == 0
+    assert saved(target) == ["accounts.csv", "output/summary.txt"]
+
+
+def test_folder_files_leaves_out_names_outside_the_folder():
+    fs = type("Fs", (), {"find": lambda self, path: [
+        "runs/r1/a.csv", "runs/r1/../secret.txt", "runs/r10/b.csv", "elsewhere/c.csv"]})()
+    assert [name for name, _ in storage_cli.folder_files(fs, "runs/r1")] == ["runs/r1/a.csv"]
 
 
 def test_query_reads_the_matching_objects_inside_a_wait(store, app, monkeypatch, waits):

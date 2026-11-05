@@ -161,6 +161,9 @@ def test_path_arguments_still_offer_file_names(project, tmp_path):
 
     assert _complete("pdt storage daily-report ", tmp_path) == ["ls", "get", "query", "unlock", "destroy"]
     assert "notes.txt" in _complete("pdt storage daily-report get report.csv ", tmp_path)
+    assert _complete("pdt storage daily-report get --r", tmp_path) == ["--run "]
+    assert _complete("pdt storage daily-report get --run ", tmp_path) == [""]
+    assert "notes.txt" in _complete("pdt storage daily-report get --run 3 ", tmp_path)
     assert "notes.txt" in _complete("pdt aws s3 cp ", tmp_path)
 
 

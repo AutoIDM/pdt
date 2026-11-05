@@ -50,11 +50,12 @@ def test_the_generated_dockerfile_installs_from_the_script_header_before_the_res
                          'site-packages/pip*\n') < text.index("COPY . /workspace\n"))
 
 
-def test_a_run_py_without_a_script_header_is_staged_whole(tmp_path):
+def test_a_run_py_without_a_script_header_gets_an_empty_header(tmp_path):
     app, stage = staged(tmp_path, "my-report")
     write_dockerfile(stage, app)
     assert sorted(path.name for path in (stage / ".pdt-script").iterdir()) == ["run.py"]
-    assert (stage / ".pdt-script" / "run.py").read_text() == "def main():\n    return 0\n"
+    assert (stage / ".pdt-script" / "run.py").read_text() == (
+        "# /// script\n# dependencies = []\n# ///\n")
 
 
 def test_an_app_dockerfile_is_used_as_is_at_the_context_root(tmp_path):

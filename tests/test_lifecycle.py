@@ -144,6 +144,42 @@ def test_all_and_unhandled_are_not_event_names(project, name):
         lifecycle.emit(name)
 
 
+def test_all_and_unhandled_do_not_receive_a_cli_event_and_its_own_name_does(project, monkeypatch):
+    seen = record(monkeypatch)
+    lifecycle.emit("cli:command-started")
+    (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [all]\n")
+    lifecycle.emit("cli:command-started")
+    assert seen == []
+    (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [cli:*]\n")
+    lifecycle.emit("cli:command-started")
+    assert seen == [("cli:command-started", False)]
+
+
+def test_emit_gives_one_event_to_every_sink(project, monkeypatch):
+    seen = {"one": [], "two": []}
+    monkeypatch.setattr(lifecycle, "SINKS", tuple(
+        lifecycle.Sink(name, got.append, lambda seconds: None) for name, got in seen.items()))
+    event = lifecycle.emit("job:paused", app="report")
+    assert seen == {"one": [event], "two": [event]}
+
+
+def test_flush_waits_for_the_longest_sink_and_not_the_sum(project, monkeypatch):
+    finished = []
+
+    def waits(name):
+        def wait(seconds):
+            time.sleep(0.4)
+            finished.append(name)
+        return wait
+
+    monkeypatch.setattr(lifecycle, "SINKS", tuple(
+        lifecycle.Sink(name, lambda event: None, waits(name)) for name in ("one", "two")))
+    began = time.monotonic()
+    lifecycle.flush()
+    assert time.monotonic() - began < 0.7
+    assert sorted(finished) == ["one", "two"]
+
+
 def test_the_console_prints_an_event_as_one_bold_alert_sentence_handled_or_not(
         project, monkeypatch):
     out = colour_output(monkeypatch)
@@ -199,6 +235,32 @@ def test_a_failing_transport_warns_falls_back_to_the_console_and_the_run_goes_on
     assert seen == [("job:run-started", False), ("job:run-failed", False)]
     out, err = capsys.readouterr()
     assert err.count("The boom alert could not send job:run-failed: no [route]") == 1
+    assert out.count("[alert] not delivered to boom: Run of report failed (exit code 3)\n") == 1
+
+
+def test_a_delivery_thread_pdt_cannot_start_falls_back_to_the_console_and_keeps_the_exit_code(
+        project, monkeypatch, capsys):
+    delivered = []
+    seen = record(monkeypatch, boom=lifecycle.Transport(
+        "boom", frozenset(), lambda event, entry, unhandled: delivered.append(event.name)))
+    two_entries(project, "boom")
+    monkeypatch.setattr(lifecycle, "_queues", {})
+    real_start = threading.Thread.start
+
+    def at_the_limit(self):
+        if self._target is lifecycle._deliver_each:
+            raise RuntimeError("can't start new thread")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", at_the_limit)
+    code = lifecycle.run_job("report", "local", [sys.executable, "-c", "raise SystemExit(3)"],
+                             project)
+    assert code == 3
+    assert delivered == []
+    assert seen == [("job:run-started", False), ("job:run-failed", False)]
+    out, err = capsys.readouterr()
+    assert ("The boom alert could not send job:run-failed: can't start new thread"
+            in " ".join((out + err).split()))
     assert out.count("[alert] not delivered to boom: Run of report failed (exit code 3)\n") == 1
 
 
@@ -357,3 +419,110 @@ def test_pdt_run_names_the_configured_provider(project, monkeypatch):
     assert cli.main() == 0
     assert (seen[0]["provider"], seen[0]["deployed"], seen[0]["trigger"]) == (
         "azure", False, "manual")
+
+
+def test_an_mr_run_sends_the_trigger_mr_and_the_merge_request_number(project, monkeypatch):
+    sent = []
+    monkeypatch.setattr(lifecycle, "emit", lambda name, **params: sent.append((name, params)))
+    monkeypatch.setenv(lifecycle.TRIGGER_ENV, "mr")
+    monkeypatch.setenv(lifecycle.MR_IID_ENV, "12")
+    lifecycle.run_job("report", "windows", [sys.executable, "-c", "raise SystemExit(0)"], project)
+    started = sent[0][1]
+    assert started["trigger"] == "mr" and started["mr_iid"] == "12"
+
+
+def test_a_local_run_has_no_merge_request_number(project, monkeypatch):
+    sent = []
+    monkeypatch.setattr(lifecycle, "emit", lambda name, **params: sent.append((name, params)))
+    monkeypatch.delenv(lifecycle.TRIGGER_ENV, raising=False)
+    lifecycle.run_job("report", "windows", [sys.executable, "-c", "raise SystemExit(0)"], project)
+    assert sent[0][1]["trigger"] == "manual" and "mr_iid" not in sent[0][1]
+
+
+WRITE_OUTPUT = ("import os, pathlib; out = pathlib.Path(os.environ['PDT_OUTPUT_DIR']); "
+                "(out / 'report.csv').write_text('a,b\\n'); (out / 'notes').mkdir(); "
+                "(out / 'notes' / 'summary.txt').write_text('done')")
+
+
+def kept_runs(store_folder):
+    return sorted(path.relative_to(store_folder / "runs").as_posix()
+                  for path in (store_folder / "runs").rglob("*") if path.is_file())
+
+
+@pytest.mark.parametrize(("provider", "code"), [("windows", 0), ("aws", 0), ("local", 4)])
+def test_every_run_keeps_the_files_of_its_output_folder_in_the_store(
+        project, monkeypatch, capsys, provider, code):
+    app = add_app(project, "report")
+    store = project / "store"
+    monkeypatch.setenv("PDT_STORAGE_URL", store.as_uri() + "/")
+    command = [sys.executable, "-c", f"{WRITE_OUTPUT}; raise SystemExit({code})"]
+    assert lifecycle.run_job("report", provider, command, app) == code
+    run = f"{lifecycle.storage.RUN_ID}"
+    kept = kept_runs(store)
+    folder = kept[0].split("/")[0]
+    assert folder.endswith(f"-{run}")
+    assert kept == [f"{folder}/_done", f"{folder}/notes/summary.txt", f"{folder}/report.csv"]
+    assert (app / ".pdt" / "runs" / run / "output" / "report.csv").read_text() == "a,b\n"
+    assert f"kept 2 output file(s) in {store.as_uri()}/runs/{folder}/" in capsys.readouterr().out
+
+
+def test_the_output_folder_that_managed_services_names_exists_before_the_command(
+        project, monkeypatch):
+    app = add_app(project, "report")
+    named = app / ".pdt" / "runs" / lifecycle.storage.RUN_ID / "output"
+    monkeypatch.setattr(lifecycle.managed_services, "start_run",
+                        lambda *args: lifecycle.managed_services.Run(output=named))
+    monkeypatch.setenv("PDT_STORAGE_URL", (project / "store").as_uri() + "/")
+    assert lifecycle.run_job("report", "aws", [sys.executable, "-c", WRITE_OUTPUT], app) == 0
+    assert (named / "report.csv").read_text() == "a,b\n"
+    assert len(kept_runs(project / "store")) == 3
+
+
+def test_a_run_with_no_storage_url_keeps_its_files_in_the_project_store(project):
+    app = add_app(project, "report")
+    assert lifecycle.run_job("report", "local", [sys.executable, "-c", WRITE_OUTPUT], app) == 0
+    assert len(kept_runs(project / ".pdt" / "storage" / "report")) == 3
+
+
+def test_a_run_that_sent_its_own_run_folder_is_not_sent_again(project, monkeypatch):
+    app = add_app(project, "report")
+    store = project / "store"
+    monkeypatch.setenv("PDT_STORAGE_URL", store.as_uri() + "/")
+    sent_by_the_app = (f"{WRITE_OUTPUT}; from pdt.utils import storage; s = storage.store(); "
+                       "s.push(out, s.run_folder() + 'output/')")
+    pushes = []
+    original = lifecycle.storage.Store.push
+    monkeypatch.setattr(lifecycle.storage.Store, "push",
+                        lambda self, *args, **kwargs: pushes.append(args) or original(self, *args, **kwargs))
+    monkeypatch.setenv("PYTHONPATH", str(lifecycle.Path(lifecycle.__file__).resolve().parent.parent))
+    assert lifecycle.run_job("report", "windows", [sys.executable, "-c", sent_by_the_app], app) == 0
+    assert pushes == []
+    assert [path.split("/", 1)[1] for path in kept_runs(store)] == [
+        "output/_done", "output/notes/summary.txt", "output/report.csv"]
+
+
+def test_an_app_with_storage_off_keeps_nothing(project, monkeypatch):
+    app = add_app(project, "report", "storage: false\n")
+    store = project / "store"
+    monkeypatch.setenv("PDT_STORAGE_URL", store.as_uri() + "/")
+    assert lifecycle.run_job("report", "aws", [sys.executable, "-c", WRITE_OUTPUT], app) == 0
+    assert not store.exists()
+
+
+def test_a_store_pdt_cannot_reach_is_a_warning_and_keeps_the_exit_code(project, monkeypatch, capsys):
+    app = add_app(project, "report")
+    monkeypatch.setenv("PDT_STORAGE_URL", "nope://bucket/report/")
+    command = [sys.executable, "-c", f"{WRITE_OUTPUT}; raise SystemExit(5)"]
+    assert lifecycle.run_job("report", "aws", command, app) == 5
+    assert "pdt did not keep the output files of this run: KeyError" in " ".join(
+        capsys.readouterr().out.split())
+
+
+def test_an_empty_output_folder_reaches_no_store(project, monkeypatch):
+    app = add_app(project, "report")
+    monkeypatch.setenv("PDT_STORAGE_URL", "nope://bucket/report/")
+    seen = []
+    monkeypatch.setattr(lifecycle.storage, "Store", lambda *args: seen.append(args))
+    command = [sys.executable, "-c", "import os, sys; sys.exit(0 if os.environ['PDT_OUTPUT_DIR'] else 1)"]
+    assert lifecycle.run_job("report", "windows", command, app) == 0
+    assert seen == []

@@ -12,6 +12,8 @@
 #     "s3fs>=2024",
 #     "duckdb",
 #     "certifi",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Deploy an app to AWS.
@@ -53,10 +55,10 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError, MissingDependencyException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import config, console, storage_cli
+from pdt import config, console, grants, storage_cli
 from pdt.deploy_common import (
     STORE_PREFIX, STORE_TAGS, CostEstimate, cached_price, convert_from_usd, fail, fetch_json,
-    run_main, store_cost_label, store_name)
+    keeps_secret, run_main, store_cost_label, store_name)
 from pdt.utils import email_auth
 from pdt.utils.env_secret import private_file
 from pdt.utils.storage import Store
@@ -64,6 +66,7 @@ from pdt.utils.storage import Store
 AWS_CLI_V2 = "awscli @ https://github.com/aws/aws-cli/archive/refs/tags/2.36.49.tar.gz"
 MANAGED_TAGS = {"managed-by": "pdt"}
 SCHEDULE_GROUP = "pdt"
+BOUNDARY_ENV = grants.BOUNDARY_ENV
 ASSUMED_RUN_MINUTES = 5.0
 RECENT_RUNS = 3
 PRICE_LIST_URL = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/{offer}/current/{region}/index.json"
@@ -138,6 +141,7 @@ BATCH_ARNS = {
     "job_definition": "arn:aws:batch:{region}:{account}:job-definition/pdt-*",
     "job_definition_revision": "arn:aws:batch:{region}:{account}:job-definition/pdt-*:*",
 }
+BATCH_JOB_ARN = "arn:aws:batch:{region}:{account}:job/*"
 SECURITY_GROUP_ARN = "arn:aws:ec2:{region}:{account}:security-group/*"
 BUILD_BUCKET_PREFIX = "pdt-build"
 # Each action pdt calls, grouped with the ARNs of the pdt resources it touches.
@@ -212,6 +216,12 @@ POLICY_SCOPES = [
      "Resource": [BATCH_ARNS["job_definition"], BATCH_ARNS["job_definition_revision"],
                   BATCH_ARNS["job_queue"]]},
     {"Action": ["batch:TagResource"], "Resource": list(BATCH_ARNS.values())},
+    # A Batch job ARN holds the job ID, not its name, so the managed-by tag scopes a job. A job
+    # gets the tag in its SubmitJob, and AWS checks TagResource for the tags of a SubmitJob.
+    {"Action": ["batch:TagResource"], "Resource": [BATCH_JOB_ARN],
+     "Condition": {"StringEquals": {"aws:RequestTag/managed-by": ["pdt"]}}},
+    {"Action": ["batch:TerminateJob"], "Resource": [BATCH_JOB_ARN],
+     "Condition": {"StringEquals": {"aws:ResourceTag/managed-by": ["pdt"]}}},
     # Destroy still clears the cluster a Fargate deployment of the same app left behind.
     {"Action": ["ecs:DeleteCluster", "ecs:DescribeClusters"],
      "Resource": ["arn:aws:ecs:{region}:{account}:cluster/pdt"]},
@@ -782,7 +792,7 @@ def login_error(exc: Exception) -> bool:
 
 def ensure_session(app: dict):
     region = app["platform"].get("region") or os.environ.get("AWS_REGION") or None
-    profile = app["platform"].get("profile") or None
+    profile = None if os.environ.get(BOUNDARY_ENV) else app["platform"].get("profile") or None
     if profile and profile not in boto3.Session().available_profiles:
         console.warn(f"AWS profile {console.value(repr(profile))} from your config is not on "
                      "this computer.")
@@ -846,7 +856,7 @@ def preflight(sts, iam, expected_account: str, region: str,
         fail(f"configured AWS account {console.value(expected_account)} does not match "
              f"credentials ({console.value(account)})")
     source_arn = principal_arn(identity_arn, account)
-    if source_arn.endswith(":root"):
+    if source_arn.endswith(":root") or os.environ.get(BOUNDARY_ENV):
         return account, lambda: None
     policy = deployer_policy(actions, account, region)
     key = hashlib.sha256(json.dumps([source_arn, account, region, policy],
@@ -904,10 +914,13 @@ def trust_policy(service: str) -> str:
 
 def ensure_role(iam, name: str, service: str, policy_name: str,
                 statements: list[dict]) -> str:
+    boundary = os.environ.get(BOUNDARY_ENV)
     try:
         role = iam.get_role(RoleName=name)["Role"]
         if not has_managed_tag(role.get("Tags", []), "Key", "Value"):
             fail(f"IAM role {console.value(name)} exists but is not managed by PDT")
+        if boundary:
+            iam.put_role_permissions_boundary(RoleName=name, PermissionsBoundary=boundary)
         iam.update_assume_role_policy(
             RoleName=name, PolicyDocument=trust_policy(service))
         iam.tag_role(RoleName=name, Tags=iam_tags())
@@ -919,6 +932,7 @@ def ensure_role(iam, name: str, service: str, policy_name: str,
             AssumeRolePolicyDocument=trust_policy(service),
             Description="Managed by PDT",
             Tags=iam_tags(),
+            **({"PermissionsBoundary": boundary} if boundary else {}),
         )["Role"]
     for existing in iam.list_role_policies(RoleName=name).get("PolicyNames", []):
         if existing != policy_name or not statements:
@@ -944,29 +958,36 @@ def secret_statements(secret_arn: str) -> list[dict]:
              "Resource": secret_arn}]
 
 
-def store_statements(bucket: str, app_name: str) -> list[dict]:
+def store_statements(bucket: str, app_name: str, account: str) -> list[dict]:
+    """S3 bucket names are global, so each statement also names the account that must own it."""
+    owner = {"StringEquals": {"s3:ResourceAccount": account}}
     return [
         {"Effect": "Allow",
          "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-         "Resource": f"arn:aws:s3:::{bucket}/{app_name}/*"},
+         "Resource": f"arn:aws:s3:::{bucket}/{app_name}/*", "Condition": owner},
         {"Effect": "Allow", "Action": ["s3:ListBucket"],
          "Resource": f"arn:aws:s3:::{bucket}",
-         "Condition": {"StringLike": {"s3:prefix": [f"{app_name}/*"]}}},
+         "Condition": {**owner, "StringLike": {"s3:prefix": [f"{app_name}/*"]}}},
     ]
 
 
-def store_exists(s3, name: str) -> bool:
+def store_exists(s3, name: str, account: str) -> bool:
+    """Another account can create a bucket of pdt's name and tag, so S3 checks the owner."""
     try:
-        s3.head_bucket(Bucket=name)
+        s3.head_bucket(Bucket=name, ExpectedBucketOwner=account)
         return True
     except ClientError as exc:
         if error_code(exc) == "404":
             return False
+        if error_code(exc) == "403":
+            fail(f"S3 bucket {console.value(name)} exists, but account {console.value(account)} "
+                 "does not own it, so pdt does not use it.")
         raise
 
 
-def ensure_store(s3, name: str, region: str, tags: dict[str, str] = STORE_TAGS) -> None:
-    if store_exists(s3, name):
+def ensure_store(s3, name: str, account: str, region: str,
+                 tags: dict[str, str] = STORE_TAGS) -> None:
+    if store_exists(s3, name, account):
         tags = s3.get_bucket_tagging(Bucket=name).get("TagSet", [])
         if not has_managed_tag(tags, "Key", "Value"):
             fail(f"S3 bucket {console.value(name)} exists but is not managed by PDT")
@@ -993,12 +1014,19 @@ def deployer_store(app: dict, session, account: str) -> Store:
 
 
 def storage(app: dict, session, account: str, rest: list[str], assume_yes: bool) -> int:
+    store_exists(session.client("s3"), store_name(account), account)
+
+    def list_runs() -> list:
+        from pdt import deploy_aws_batch as batch
+        return batch.list_runs(session.client("batch", config=RETRIES),
+                               batch.resource_names(app["name"])["job_definition"])
+
     return storage_cli.run(deployer_store(app, session, account), app, rest, assume_yes,
                            console_url(session,
                                        f"https://s3.console.aws.amazon.com/s3/buckets/"
                                        f"{store_name(account)}?region={session.region_name}"
                                        f"&prefix={app['name']}/"),
-                           console_note(app, session))
+                           console_note(app, session), list_runs=list_runs)
 
 
 def sso_role(profile: str) -> tuple[str, str, str] | None:
@@ -1061,6 +1089,8 @@ def ensure_secret(secrets, name: str, payload: str) -> str:
             fail(f"Secrets Manager secret {console.value(name)} exists but is not managed by PDT")
         if current.get("DeletedDate"):
             secrets.restore_secret(SecretId=name)
+        if keeps_secret():
+            return arn
         try:
             value = secrets.get_secret_value(SecretId=name).get("SecretString", "")
         except Exception:  # noqa: BLE001 - a missing or inaccessible value is replaced
@@ -1267,6 +1297,123 @@ def delete_role(iam, name: str) -> None:
             raise
 
 
+GRANT_ROLE = "pdt-autoidm"
+GRANT_BOUNDARY = "pdt-autoidm-boundary"
+GRANT_SESSION_SECONDS = 3600
+GRANT_LEFT_OUT = {"iam:SimulatePrincipalPolicy"}
+GRANT_BOUNDED = ["iam:DeleteRolePolicy", "iam:PutRolePermissionsBoundary", "iam:PutRolePolicy"]
+GRANT_TAGGED = ["iam:DeleteRole", "iam:PassRole", "iam:UpdateAssumeRolePolicy"]
+GRANT_CREATE = ["iam:CreateRole", "iam:TagRole"]
+# AutoIDM's own roles in an account that also holds a grant.
+BACKEND_ROLES = "pdt-backend-*"
+MANAGED_TAG_CONDITION = {"aws:ResourceTag/managed-by": ["pdt"]}
+# CreateRole with tags also needs TagRole, and AWS sets no resource tag before the role exists,
+# so TagRole can only be held to the managed-by tag and value it writes.
+CREATE_TAG_CONDITION = {"StringEquals": {"aws:RequestTag/managed-by": ["pdt"]},
+                        "ForAllValues:StringEquals": {"aws:TagKeys": list(MANAGED_TAGS)}}
+
+
+def grant_arns(account: str) -> dict[str, str]:
+    return {"role": f"arn:aws:iam::{account}:role/{GRANT_ROLE}",
+            "boundary": f"arn:aws:iam::{account}:policy/{GRANT_BOUNDARY}",
+            "policies": f"arn:aws:iam::{account}:policy/{GRANT_ROLE}*",
+            "backend": f"arn:aws:iam::{account}:role/{BACKEND_ROLES}"}
+
+
+def grant_denies(account: str) -> list[dict]:
+    arns = grant_arns(account)
+    return [{"Effect": "Deny", "Action": ["iam:*"],
+             "Resource": [arns["role"], arns["policies"], arns["backend"]]},
+            {"Effect": "Deny", "Action": ["iam:DeleteRolePermissionsBoundary"], "Resource": ["*"]}]
+
+
+def grant_policy(account: str, region: str) -> dict:
+    from pdt.deploy_aws_batch import DEPLOYER_ACTIONS
+    actions = sorted(set(DEPLOYER_ACTIONS) - GRANT_LEFT_OUT)
+    reshaped = {*GRANT_BOUNDED, *GRANT_TAGGED, *GRANT_CREATE}
+    roles = [ROLE_ARN.format(account=account)]
+    statements = []
+    for statement in deployer_policy(actions, account, region)["Statement"]:
+        rest = [action for action in statement["Action"] if action not in reshaped]
+        if rest:
+            statements.append({**statement, "Action": rest})
+        tagged = [action for action in statement["Action"] if action in GRANT_TAGGED]
+        if tagged:
+            condition = statement.get("Condition", {})
+            statements.append({**statement, "Action": tagged, "Condition": {
+                **condition, "StringEquals": {**condition.get("StringEquals", {}),
+                                              **MANAGED_TAG_CONDITION}}})
+    boundary = {"iam:PermissionsBoundary": grant_arns(account)["boundary"]}
+    statements.append({"Effect": "Allow", "Action": ["iam:CreateRole"], "Resource": roles,
+                       "Condition": {**CREATE_TAG_CONDITION, "StringEquals": {
+                           **CREATE_TAG_CONDITION["StringEquals"], **boundary}}})
+    statements.append({"Effect": "Allow", "Action": ["iam:TagRole"], "Resource": roles,
+                       "Condition": CREATE_TAG_CONDITION})
+    statements.append({"Effect": "Allow", "Action": GRANT_BOUNDED, "Resource": roles,
+                       "Condition": {"StringEquals": boundary}})
+    return {"Version": "2012-10-17", "Statement": [*statements, *grant_denies(account)]}
+
+
+def grant_boundary(account: str) -> dict:
+    region = "*"
+    logs = [arn.format(region=region, account=account) for arn in LOG_GROUP_ARNS]
+    return {"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": ["ecr:GetAuthorizationToken"], "Resource": ["*"]},
+        {"Effect": "Allow",
+         "Action": ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage",
+                    "ecr:CompleteLayerUpload", "ecr:GetDownloadUrlForLayer",
+                    "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart"],
+         "Resource": [f"arn:aws:ecr:*:{account}:repository/pdt"]},
+        {"Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+         "Resource": logs},
+        {"Effect": "Allow",
+         "Action": ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"],
+         "Resource": [f"arn:aws:secretsmanager:*:{account}:secret:pdt-*"]},
+        {"Effect": "Allow",
+         "Action": ["s3:DeleteObject", "s3:GetBucketAcl", "s3:GetBucketLocation", "s3:GetObject",
+                    "s3:GetObjectVersion", "s3:ListBucket", "s3:PutObject"],
+         "Resource": [f"arn:aws:s3:::{STORE_PREFIX}-*", f"arn:aws:s3:::{STORE_PREFIX}-*/*",
+                      f"arn:aws:s3:::{BUILD_BUCKET_PREFIX}-*",
+                      f"arn:aws:s3:::{BUILD_BUCKET_PREFIX}-*/*"]},
+        {"Effect": "Allow", "Action": ["batch:SubmitJob"],
+         "Resource": [f"arn:aws:batch:*:{account}:job-definition/pdt-*",
+                      f"arn:aws:batch:*:{account}:job-queue/pdt"]},
+        {"Effect": "Allow", "Action": ["batch:TagResource"],
+         "Resource": [f"arn:aws:batch:*:{account}:job/*"],
+         "Condition": {"StringEquals": {"aws:RequestTag/managed-by": ["pdt"]}}},
+        {"Effect": "Allow", "Action": ["iam:PassRole"],
+         "Resource": [ROLE_ARN.format(account=account)],
+         "Condition": {"StringEquals": MANAGED_TAG_CONDITION}},
+        *grant_denies(account)]}
+
+
+def grant_policy_name(region: str, part: int = 0) -> str:
+    return f"{GRANT_ROLE}-{region}" + (f"-{part + 1}" if part else "")
+
+
+def grant_policy_parts(account: str, region: str) -> list[dict]:
+    """A managed policy holds at most 6144 characters, so the statements go in as many policies
+    as they need, each with the denies. A place has its own policies, so a second region adds
+    to the role and does not replace the first."""
+    policy = grant_policy(account, region)
+    denies = grant_denies(account)
+    allows = policy["Statement"][:-len(denies)]
+    parts: list[list[dict]] = [[]]
+    for statement in allows:
+        if parts[-1] and policy_size([*parts[-1], statement, *denies]) > GRANT_POLICY_LIMIT:
+            parts.append([])
+        parts[-1].append(statement)
+    return [{"Version": "2012-10-17", "Statement": [*part, *denies]} for part in parts]
+
+
+GRANT_POLICY_LIMIT = 6144
+
+
+def policy_size(statements: list[dict]) -> int:
+    return len(json.dumps({"Version": "2012-10-17", "Statement": statements},
+                          separators=(",", ":")))
+
+
 def load_app(app_name: str) -> dict:
     try:
         app = config.merged_app(app_name)
@@ -1282,7 +1429,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
         "deploy", "destroy", "login", "storage", "secrets", "runs", "logs",
-        "pause", "unpause", "start"))
+        "pause", "unpause", "start", "kill", "mr-run"))
     parser.add_argument("app")
     parser.add_argument("rest", nargs="*")
     parser.add_argument("--yes", action="store_true")
@@ -1309,6 +1456,10 @@ def main() -> int:
             return batch.pause(app, ensure_session(app), args.command == "pause")
         if args.command == "start":
             return batch.start(app, ensure_session(app), "--follow" in args.rest)
+        if args.command == "kill":
+            return batch.kill(app, ensure_session(app))
+        if args.command == "mr-run":
+            return batch.mr_run(app, ensure_session(app), args.rest[0])
         return batch.destroy(app, args.yes)
     except ClientError as exc:
         if error_code(exc) in {"AccessDenied", "AccessDeniedException",

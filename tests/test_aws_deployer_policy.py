@@ -24,6 +24,7 @@ SERVICE_LINKED_ARN = f"arn:aws:iam::{ACCOUNT}:role/aws-service-role/batch.amazon
 # A security group's ARN holds its id, not its name, so a condition scopes it instead.
 GROUP_ARN = SECURITY_GROUP_ARN.format(region=REGION, account=ACCOUNT)
 VPC_ARN = f"arn:aws:ec2:{REGION}:{ACCOUNT}:vpc/*"
+JOB_ARN = f"arn:aws:batch:{REGION}:{ACCOUNT}:job/*"
 BROAD_POLICY = {"Version": "2012-10-17", "Statement": [
     {"Effect": "Allow", "Action": DEPLOYER_ACTIONS, "Resource": "*"}]}
 # The resource types AWS accepts for these actions. SimulatePrincipalPolicy denies any
@@ -66,7 +67,7 @@ def test_only_actions_aws_cannot_scope_use_a_wildcard_resource():
 def test_every_scoped_arn_names_a_pdt_resource():
     for statement in policy()["Statement"]:
         for arn in listed(statement["Resource"]):
-            if arn in ("*", SERVICE_LINKED_ARN, GROUP_ARN, VPC_ARN) or arn in CALLER_ARNS:
+            if arn in ("*", SERVICE_LINKED_ARN, GROUP_ARN, VPC_ARN, JOB_ARN) or arn in CALLER_ARNS:
                 continue
             assert "pdt" in arn, statement
             assert ACCOUNT in arn or arn.startswith("arn:aws:s3:::"), arn

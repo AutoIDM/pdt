@@ -265,6 +265,17 @@ def test_destroy_offers_a_disabled_app_that_is_deployed(project, monkeypatch):
     assert not config.is_deployed(APP)
 
 
+def test_kill_selects_a_disabled_app_that_is_deployed_and_start_does_not(project, monkeypatch):
+    deployed_to(project, AWS)
+    config.set_app_enabled(APP, False)
+    cloud = Cloud(monkeypatch)
+    monkeypatch.setattr("sys.argv", ["pdt", "run", APP, "--kill"])
+    assert cli.main() == 0
+    monkeypatch.setattr("sys.argv", ["pdt", "run", APP, "--deployed"])
+    assert cli.main() == 1
+    assert [command for _, command, _ in cloud.calls] == ["kill"]
+
+
 def test_a_destroy_with_a_record_needs_the_recorded_azure_subscription(project, monkeypatch,
                                                                        capsys):
     monkeypatch.setenv(config.DEPLOYED_PLATFORM_ENV, json.dumps(

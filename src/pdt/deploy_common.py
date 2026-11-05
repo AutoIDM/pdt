@@ -8,9 +8,22 @@ cloud job gets no files, only string secrets. One that names no file is
 a run-time location the app sets itself and goes through as is.
 
 PDT_ENV_SECRET_RESOURCE names that secret. The job's identity may update
-it and no other, through `pdt.utils.env_secret`.
+it and no other, through `pdt.utils.env_secret`. When the project sets
+`managed_services`, the secret also holds the job's AutoIDM cloud
+registration (registration_secrets, make_registration), which every later
+deploy keeps and `pdt secrets` never shows, copies, or replaces.
 
-A build context holds the app directory, pdt.yml, and in .pdt-lifecycle
+The hosted runner (`python -m pdt.hosted_runner`) deploys with KEEP_SECRET_ENV set. Its copy of
+the project holds no .env, so a deploy then reads no secret value and writes none: `gather_secrets` and `registration_secrets` give nothing, the root skips
+`missing_env`, and each provider keeps the secret the app already has and its reference on the
+job. The next `pdt secrets save` from the customer's computer changes it. When that secret holds no
+cloud registration, the deploy then runs the provider's `secrets` with REGISTER_ACTION, which
+makes one with the command's run token (autoidm.RUNNER_ENV) and adds it to the secret, as a deploy
+from a registered computer does.
+
+A build context holds the app directory, pdt.yml, config.PROJECT_NAME_FILE
+(the name of the project folder, since the image's project folder is
+/workspace, so every event names the project as a local run does), and in .pdt-lifecycle
 this pdt's lifecycle.py with the pdt modules it imports (LIFECYCLE_MODULES).
 Every generated image copies that folder to /opt/pdt-lifecycle and starts
 the app through it, so the job prints the lifecycle events of the pdt that
@@ -125,8 +138,13 @@ WORKDIR /workspace/{app}
 """ + ENTRYPOINT
 # The PEP 723 script block, with the reference regex of the PEP.
 SCRIPT_HEADER = re.compile(r"(?m)^# /// script$\s(?:^#(?:| .*)$\s)+^# ///$")
-LIFECYCLE_MODULES = ("__init__.py", "alert_message.py", "config.py", "console.py", "lifecycle.py",
-                     "slack.py", "teams.py", "utils/__init__.py", "utils/storage.py")
+NO_METADATA_HEADER = "# /// script\n# dependencies = []\n# ///\n"
+LIFECYCLE_MODULES = ("__init__.py", "alert_message.py", "config.py", "console.py",
+                     "lifecycle.py", "managed_services.py", "slack.py", "teams.py",
+                     "utils/__init__.py", "utils/autoidm.py", "utils/storage.py")
+# What lifecycle.keep_output needs to reach the store of each cloud provider in its image.
+STORE_PACKAGES = {"aws": ("boto3", "s3fs>=2024"), "google-cloud": ("gcsfs", "google-cloud-storage"),
+                  "azure": ("adlfs", "azure-identity", "azure-storage-blob")}
 # Secret shapes and local state that never belong in an image. The version-control names are
 # the ones `az acr build` always leaves out, so every build place gets the same context.
 BUILD_EXCLUDES = (
@@ -139,6 +157,9 @@ BUILD_EXCLUDES = (
 )
 BUILD_TAG = "pdt-build"
 REBUILD_ENV = "PDT_REBUILD"
+KEEP_SECRET_ENV = "PDT_KEEP_DEPLOYED_SECRET"
+# The provider `secrets` action of a hosted runner deploy that adds the cloud registration.
+REGISTER_ACTION = "register"
 STORE_PREFIX = "pdt-data"
 STORE_TAGS = {"managed-by": "pdt", "pdt-lifecycle": "retain"}
 
@@ -198,12 +219,14 @@ def write_dockerfile(stage: Path, app: dict) -> None:
 def stage_script_header(stage: Path, app_dir: Path) -> None:
     """uv keeps a script's environment per script path, so the Dockerfile copies the
     folder to the app's own path, and `uv run --script run.py` finds that environment.
+    `uv sync --script` refuses a script with no metadata, which the Windows task runs, so such
+    a script gets an empty header here.
     """
     folder = stage / ".pdt-script"
     folder.mkdir()
     text = (app_dir / "run.py").read_text()
     header = SCRIPT_HEADER.search(text)
-    (folder / "run.py").write_text(header.group(0) + "\n" if header else text)
+    (folder / "run.py").write_text(header.group(0) + "\n" if header else NO_METADATA_HEADER)
     lock = app_dir / "run.py.lock"
     if lock.is_file():
         shutil.copy(lock, folder / lock.name)
@@ -300,6 +323,23 @@ def ensure_image(app: dict, image: str, image_platform: str, cloud_builder: str,
 def fail(message: str) -> None:
     console.error(message)
     raise SystemExit(1)
+
+
+def stop_on_sigterm() -> None:
+    """Take the first SIGTERM as a Ctrl+C, so the `finally` clean-up of an `mr-run` runs, and
+    ignore the next ones. A cancel or the run limit of the hosted runner sends SIGTERM to the
+    whole process group, and uv passes one more on to this script."""
+    def stop(_signum, _frame) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    signal.signal(signal.SIGTERM, stop)
+
+
+def ignore_sigterm() -> None:
+    """Called first in the clean-up of an `mr-run`, so a SIGTERM cannot cut it short. The
+    programs that the clean-up starts ignore SIGTERM too."""
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 
 def run_main(main: Callable[[], int]) -> None:
@@ -667,7 +707,18 @@ def secret_contents(values: dict[str, str]) -> str:
     return f"env vars {', '.join(map(console.value, sorted(values)))}" if values else "no env vars"
 
 
+def keeps_secret() -> bool:
+    return os.environ.get(KEEP_SECRET_ENV, "").strip() != ""
+
+
+def keep_paused(app: dict, exists: bool, paused_now: Callable[[], bool]) -> None:
+    if keeps_secret() and exists and not app["pause"]:
+        app["pause"] = paused_now()
+
+
 def gather_secrets(app: dict) -> dict[str, str]:
+    if keeps_secret():
+        return {}
     try:
         spec = config.env_spec(app)
     except config.ConfigError as e:
@@ -700,6 +751,92 @@ def gather_secrets(app: dict) -> dict[str, str]:
             console.error(f"env: {console.escape(problem)}")
         fail("the secret bundle does not satisfy the app's env spec")
     return values
+
+
+def split_registration(current: str | None) -> tuple[dict[str, str], str | None]:
+    from pdt.utils import autoidm
+    try:
+        values = json.loads(current or "")
+    except ValueError:
+        return {}, current
+    if not isinstance(values, dict):
+        return {}, current
+    kept = {name: values.pop(name) for name in autoidm.SECRET_NAMES if name in values}
+    return kept, json.dumps(values, sort_keys=True) if kept else current
+
+
+def reads_registration() -> bool:
+    from pdt import managed_services
+    if keeps_secret():
+        return True
+    try:
+        return managed_services.settings() is not None
+    except config.ConfigError:
+        return False
+
+
+def registration_secrets(current: str | None) -> dict[str, str]:
+    from pdt import managed_services
+    from pdt.utils import autoidm
+    if keeps_secret():
+        return {}
+    kept, _rest = split_registration(current)
+    try:
+        found = managed_services.settings()
+    except config.ConfigError:
+        found = None
+    if found is None:
+        return kept if kept.get(autoidm.ID_ENV) else {}
+    if kept.get(autoidm.ID_ENV):
+        if kept.get(autoidm.CUSTOMER_ENV) == found["customer"]:
+            return kept
+        console.note(f"the app's secret holds the AutoIDM cloud registration "
+                     f"{console.value(kept[autoidm.ID_ENV])} of another customer, so this "
+                     f"deploy replaces it with one for {console.value(found['customer'])}")
+    if managed_services.in_ci():
+        return {}
+    if managed_services.find_registration(found["customer"], machine=True) is None:
+        return {}
+    return dict.fromkeys(autoidm.SECRET_NAMES, "")
+
+
+def make_registration(values: dict[str, str], platform: dict) -> dict[str, str]:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from pdt import managed_services
+    from pdt.utils import autoidm
+    if values.get(autoidm.ID_ENV) != "":
+        return values
+    rest = {name: value for name, value in values.items() if name not in autoidm.SECRET_NAMES}
+    place = managed_services.place(platform)
+    customer = managed_services.settings()["customer"]
+    runner = os.environ.pop(autoidm.RUNNER_ENV, "")
+    machine = None if runner else autoidm.machine_registration(customer)
+    key = Ed25519PrivateKey.generate()
+    try:
+        if runner:
+            answer, api_url = autoidm.runner_installation(json.loads(runner), autoidm.public_key(key))
+            if answer["customer_id"] != customer:
+                raise autoidm.AutoidmError(f"the command is for {answer['customer_id']}, and "
+                                           f"pdt.yml names {customer}")
+        else:
+            answer = autoidm.answered(autoidm.post(machine, "/v1/installations", {
+                "version": 1, "public_key": autoidm.public_key(key), "place": place,
+                "hostname": None}), "/v1/installations", "installation_id")
+            api_url = machine.api_url
+    except autoidm.AutoidmError as e:
+        console.warn(f"AutoIDM did not make a cloud registration for {console.value(place)}: "
+                     f"{console.escape(str(e))}. The job sends nothing to AutoIDM until a "
+                     "deploy makes one.")
+        if e.status == 401 and machine is not None:
+            console.warn(f"AutoIDM refused the registration in {console.value(machine.source)}. "
+                         "Ask AutoIDM whether it was revoked.")
+        return rest
+    console.step(f"made AutoIDM cloud registration {console.value(answer['installation_id'])} "
+                 f"for {console.value(place)}")
+    return {**rest, autoidm.ID_ENV: answer["installation_id"],
+            autoidm.KEY_ENV: autoidm.private_pem(key).decode(), autoidm.URL_ENV: api_url,
+            autoidm.CUSTOMER_ENV: customer}
 
 
 MASK_BOTH_ENDS_FROM = 12
@@ -741,10 +878,22 @@ def run_secrets(action: str, app: dict, current: str | None,
                 name: str | None = None) -> int:
     """`pdt secrets <app> diff|save|get|set`, once the provider has read the deployed secret."""
     from pdt.deploy import proceed
+    from pdt.utils import autoidm
+    kept, current = split_registration(current)
+    if action == REGISTER_ACTION:
+        if kept.get(autoidm.ID_ENV) or not reads_registration():
+            return 0
+        made = make_registration(dict.fromkeys(autoidm.SECRET_NAMES, ""), app["platform"])
+        if made.get(autoidm.ID_ENV):
+            write({**json.loads(current or "{}"), **made})
+        return 0
+    if action == "set" and name in autoidm.SECRET_NAMES:
+        fail(f"pdt keeps {console.value(name)} in the secret itself, so "
+             f"{console.value('pdt secrets ' + app['name'] + ' set')} does not change it.")
 
     def update(values: dict[str, str]) -> None:
         count = sum(kind != "unchanged" for kind, *_rest in secret_changes(current, values))
-        write(values)
+        write({**values, **kept})
         lifecycle.emit(lifecycle.APP_SECRETS_UPDATED,
                        **lifecycle.app_params(app["name"], app["platform"]["provider"]),
                        action=action, count=count)
@@ -858,10 +1007,17 @@ def stage_build_context(app: dict) -> Path:
         project_file = config.find_project() / config.PROJECT_FILE
         if project_file.is_file():
             shutil.copy(project_file, stage / config.PROJECT_FILE)
+        (stage / config.PROJECT_NAME_FILE).write_text(config.project_name() + "\n",
+                                                      encoding="utf-8")
         for module in LIFECYCLE_MODULES:
             target = stage / ".pdt-lifecycle" / "pdt" / module
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(Path(__file__).parent / module, target)
+        lifecycle_copy = stage / ".pdt-lifecycle" / "pdt" / "lifecycle.py"
+        packages = "".join(f'#     "{name}",\n'
+                           for name in STORE_PACKAGES.get(app["platform"].get("provider"), ()))
+        lifecycle_copy.write_text(lifecycle_copy.read_text(encoding="utf-8").replace(
+            '#     "fsspec",\n', '#     "fsspec",\n' + packages, 1), encoding="utf-8")
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise

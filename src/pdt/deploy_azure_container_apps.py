@@ -41,6 +41,7 @@ import gzip
 import hashlib
 import http.client
 import json
+import os
 import re
 import shutil
 import sys
@@ -54,24 +55,26 @@ from typing import Callable, Iterator
 from pdt import config, console, lifecycle, regions, runs_cli
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_azure import (
-    COMMON_PROVIDERS, ENVIRONMENT_TYPE, JOBS_API_VERSION, MANAGEMENT_API, RECENT_RUNS, SECRET_ROLE,
-    STORAGE_RESOURCE, STORE_ROLE, VAULT_RESOURCE, access_token, arm_get, arm_list, arm_url,
-    assign_role, az, az_json, az_tsv,
+    COMMON_PROVIDERS, ENVIRONMENT_TYPE, GRANT_NAME, JOBS_API_VERSION, MANAGEMENT_API, RECENT_RUNS,
+    SECRET_ROLE, STORAGE_RESOURCE, STORE_ROLE, VAULT_RESOURCE, access_token, arm_get, arm_list,
+    arm_url, assign_role, az, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cli_credential_store, cost_estimate,
-    deleted_vault, delete_unless_locked,
+    deleted_vault, delete_unless_locked, purge_vault,
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
-    ensure_secret, ensure_store, ensure_workspace, group_can_be_deleted, held_token_store, list_remaining,
+    ensure_secret, ensure_store, ensure_workspace, granted_secret_value, group_can_be_deleted,
+    held_token_store, kept_group_deletes, list_remaining,
     managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
     portal_url, purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
-    revoke_role, run_basis, run_quiet, secret_actions, secret_name,
+    retained, revoke_role, run_basis, run_quiet, secret_actions, secret_name,
     secret_reads, secret_scope, secret_state, secret_versions, store_condition, store_description,
     store_exists, store_plan, store_reads, store_settings, store_url, store_usage, workspace_keys,
     workspace_resource,
 )
 from pdt.deploy_common import (
     BUILD_TAG, CostEstimate, build_in_cloud, convert_from_usd, ensure_image, fail, gather_secrets,
-    image_action, run_build, run_secrets, ssh_build_args, store_cost_label, store_kept_line,
-    warn_if_locked)
+    image_action, keep_paused, keeps_secret, make_registration, reads_registration, registration_secrets,
+    run_build,
+    ignore_sigterm, run_secrets, ssh_build_args, stop_on_sigterm, store_cost_label, store_kept_line, warn_if_locked)
 
 PROVIDERS = ("Microsoft.App", "Microsoft.ContainerRegistry",
              "Microsoft.OperationalInsights")
@@ -249,7 +252,8 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
             settings["subscription"], "--query",
             "{id:id,name:name,provisioningState:properties.provisioningState,"
             "environmentId:properties.environmentId,identityType:identity.type,"
-            "userAssignedIdentities:identity.userAssignedIdentities,tags:tags}")
+            "userAssignedIdentities:identity.userAssignedIdentities,tags:tags}",
+            refused_is_missing=True)
     except Exception:
         data = None
     if not isinstance(data, dict):
@@ -276,7 +280,8 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
             "--offset", "1h", "--query",
             "[].{eventTimestamp:eventTimestamp,operationName:operationName.value,"
             "status:status.value,subStatus:subStatus.value,correlationId:"
-            "correlationId,resourceId:resourceId,statusMessage:properties.statusMessage}")
+            "correlationId,resourceId:resourceId,statusMessage:properties.statusMessage}",
+            refused_is_missing=True)
     except Exception:
         events = None
     if not isinstance(events, list):
@@ -698,6 +703,78 @@ def pause(app: dict, settings: dict, paused: bool) -> int:
     return 0
 
 
+def kill(app: dict, settings: dict) -> int:
+    job = f"pdt-{app['name']}"
+    running = [run for run in list_runs(settings, job) if run.status == "running"]
+    for run in running:
+        run_quiet("containerapp", "job", "stop", "--name", job,
+                  "--resource-group", settings["resource_group"], "--job-execution-name", run.id,
+                  slow=f"stopping: Container Apps Job execution {console.value(run.id)}")
+        console.done(f"Stopped execution {console.value(run.id)} of {console.value(app['name'])}.")
+    if not running:
+        console.say(f"No execution of {console.value(app['name'])} runs.")
+    return 0
+
+
+MR_ENV_NAMES = ("PDT_RUN_ID", "PDT_APP_ARGS")
+
+
+def mr_run(app: dict, settings: dict, iid: str) -> int:
+    stop_on_sigterm()
+    job, current = find_job(settings, app["name"])
+    if current is None:
+        fail(f"{console.value(app['name'])} has no Container Apps Job yet; run "
+             f"{console.value('pdt deploy ' + app['name'])} first.")
+    cloud = build_in_cloud(app, "ACR Tasks", "linux/amd64")
+    image_name = f"{app['name']}-mr{iid}"
+    image = f"{settings['registry']}.azurecr.io/{image_name}:latest"
+    container = current["properties"]["template"]["containers"][0]
+    skipped = (lifecycle.TRIGGER_ENV, lifecycle.MR_IID_ENV, *MR_ENV_NAMES)
+    env = [f"{var['name']}=secretref:{var['secretRef']}" if "secretRef" in var
+           else f"{var['name']}={var.get('value', '')}"
+           for var in container.get("env") or [] if var["name"] not in skipped]
+    env += [f"{lifecycle.TRIGGER_ENV}={lifecycle.MR_TRIGGER}", f"{lifecycle.MR_IID_ENV}={iid}"]
+    env += [f"{name}={os.environ[name]}" for name in MR_ENV_NAMES if os.environ.get(name)]
+    resources = container.get("resources") or {}
+    name = None
+    try:
+        ensure_image(app, image, "linux/amd64", "ACR Tasks" if cloud else "", None,
+                     lambda: False, lambda stage: build_image(stage, settings, image_name, cloud))
+        output = run_quiet("containerapp", "job", "start", "--name", job,
+                           "--resource-group", settings["resource_group"],
+                           "--container-name", container["name"], "--image", image,
+                           "--cpu", str(resources.get("cpu", CPU)),
+                           "--memory", resources.get("memory", MEMORY),
+                           "--env-vars", *env, "--output", "json",
+                           slow=f"starting: Container Apps Job {console.value(job)}")
+        try:
+            execution = json.loads(output or "null")
+        except ValueError:
+            execution = None
+        name = (execution or {}).get("name")
+        console.done(f"Started execution {console.value(name)} of {console.value(job)} with "
+                     f"image {console.value(image)}.")
+        return logs(app, settings, ["--follow"], new=lambda run: run.id == name)
+    finally:
+        ignore_sigterm()
+        stop = ("containerapp", "job", "stop", "--name", job,
+                "--resource-group", settings["resource_group"], "--job-execution-name", name)
+        shown = name and az_json("containerapp", "job", "execution", "show", "--name", job,
+                                 "--resource-group", settings["resource_group"],
+                                 "--job-execution-name", name,
+                                 refused_is_missing=True)
+        if shown and RUN_STATUS.get((shown.get("properties") or {}).get("status")) == "running":
+            run_quiet(*stop, slow=f"stopping: Container Apps Job execution {console.value(name)}")
+        elif name and shown is None and az(*stop).returncode != 0:
+            # The status is unknown, and a stop of an execution that already ended also fails.
+            console.warn(f"pdt could not read or stop execution {console.value(name)} of "
+                         f"{console.value(job)}; if it still runs, stop it with "
+                         f"{console.value('pdt az containerapp job stop')}.")
+        run_quiet("acr", "repository", "delete", "--name", settings["registry"],
+                  "--repository", image_name, "--yes")
+        console.done(f"Deleted image {console.value(image)}.")
+
+
 def start(app: dict, settings: dict, follow: bool = False) -> int:
     job, current = find_job(settings, app["name"])
     if current is None:
@@ -1074,7 +1151,6 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     job = job_name(settings, name)
     cron = config.cron_expression(app["schedule"])
     values = gather_secrets(app)
-    payload = json.dumps(values, sort_keys=True)
     sid = secret_name(name)
     rg = settings["resource_group"]
 
@@ -1084,7 +1160,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     locks = shared_locks(settings, lock_owner(name))
     legacy = legacy_job_name(name)
     store = store_settings(settings) if app["storage"] else None
-    state = read_state(settings, job, legacy, sid, bool(values), locks, store,
+    wanted_secret = bool(values) or reads_registration()
+    state = read_state(settings, job, legacy, sid, wanted_secret, locks, store,
                        held_token_store(settings, name, access_token(STORAGE_RESOURCE))
                        if store else None, regions.local_currency())
     check_shared_names(settings, state["resources"])
@@ -1119,7 +1196,12 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     missing_locks = state["missing_locks"]
     if not owned_by(legacy_job, name):
         legacy_job = None
+    keep_paused(app, bool(current_job), lambda: (current_job.get("properties") or {}).get(
+        "runningState") == "Suspended")
     vault_exists, current_secret = secret_state(settings, sid, name, state["secret"])
+    kept_secret = keeps_secret() and bool(state["secret"][2])
+    values.update(registration_secrets(current_secret))
+    payload = json.dumps(values, sort_keys=True)
     store_present = False
     usage = None
     if store:
@@ -1159,6 +1241,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         app, console.Markup(f"build and push image {console.value(image)}"),
         "ACR Tasks" if cloud else ""))
     actions += secret_actions(sid, values, current_secret, payload)
+    if kept_secret:
+        actions.append(console.Markup(f"keep Key Vault secret {console.value(sid)} as it is"))
     if legacy_job:
         actions.append(console.Markup(f"delete Container Apps Job {console.value(legacy)} "
                                       f"(its name is now {console.value(job)})"))
@@ -1186,6 +1270,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     vault_id = ensure_group_and_vault(
         settings, tuple(name for name in (*COMMON_PROVIDERS, *PROVIDERS) if not found[name]),
         vault_exists, group)
+    if vault_exists and current_secret is None and wanted_secret and not keeps_secret():
+        current_secret = granted_secret_value(settings, sid)
+        values.update(registration_secrets(current_secret))
     if not registry_exists:
         console.step(f"creating ACR {console.value(settings['registry'])}")
         run_quiet("acr", "create", "--name", settings["registry"],
@@ -1232,7 +1319,13 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
 
     fingerprint = ensure_image(app, image, "linux/amd64", "ACR Tasks" if cloud else "",
                                deployed, current, build)
+    values = make_registration(values, {"provider": "azure",
+                                        "subscription": settings["subscription"],
+                                        "region": settings["region"]})
+    payload = json.dumps(values, sort_keys=True)
     secret_uri = ensure_secret(settings, sid, values, payload, current_secret, name)
+    if kept_secret:
+        secret_uri = f"https://{settings['vault']}.vault.azure.net/secrets/{sid}"
     if legacy_job:
         retire_job(settings, legacy, legacy_job, store, sid)
     console.step(f"reconciling Container Apps Job {console.value(job)}")
@@ -1247,7 +1340,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     principal = ((resource or {}).get("identity") or {}).get("principalId") or job_principal_id(
         job, rg)
     if secret_uri:
-        if current_secret != payload:
+        if current_secret != payload and not kept_secret:
             disable_old_secret_versions(settings, sid)
         assign_role(secret_scope(settings, sid), principal, SECRET_ROLE)
     if store:
@@ -1298,16 +1391,17 @@ def environment_release(settings: dict) -> Release:
         return Release(note=f"Container Apps environment {console.value(environment)} is your "
                             "own; pdt leaves it as it is")
     resource = environment_resource(settings)
+    group = arm_get(settings["token"], arm_url(shared_group_id(settings)),
+                    ("group", "show", "--name", environment.resource_group))
     if resource is None:
-        group = arm_get(settings["token"], arm_url(shared_group_id(settings)),
-                        ("group", "show", "--name", environment.resource_group))
-        return Release(group=managed_by_pdt(group) and not other_environments(settings))
+        return Release(group=managed_by_pdt(group) and not retained(group)
+                       and not other_environments(settings))
     if not managed_by_pdt(resource):
         return Release()
     users = environment_users(settings, settings["token"])
     if users:
         return Release(note=users_note(settings, users))
-    return Release(environment=True, group=not other_environments(settings))
+    return Release(environment=True, group=not retained(group) and not other_environments(settings))
 
 
 def users_note(settings: dict, users: dict[str, int]) -> str:
@@ -1401,7 +1495,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             group_read.result(), resources_read.result(), others)
         if deletable:
             release_read = pool.submit(environment_release, settings)
-            if not group_exists:
+            if not group_exists or retained(group_read.result()):
                 vault_read = pool.submit(deleted_vault, settings)
         else:
             # The Azure CLI runs in this process, so its one read here stays on this thread.
@@ -1423,7 +1517,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     held = held_read.result()
     unlock = [console.Markup(f"remove lock {console.value(lock.name)} from {lock.label}")
               for lock in held]
-    # A run stopped between the group delete and the purge leaves the vault
+    # A run stopped between the vault delete and the purge leaves the vault
     # soft-deleted, still holding its global name.
     orphan_vault = vault_read is not None and managed_by_pdt(
         (vault_read.result() or {}).get("properties"))
@@ -1432,7 +1526,15 @@ def destroy(app: dict, assume_yes: bool) -> int:
         actions = unlock[:]
         if grant:
             actions.append(grant)
-        if group_exists:
+        if group_exists and retained(group_read.result()):
+            actions += [console.Markup(
+                f"delete{' and purge' if resource.get('name') == settings['vault'] else ''} "
+                f"{console.value(resource.get('name'))} "
+                f"({console.escape(str(resource.get('type')))})")
+                for resource in kept_group_deletes(resources_read.result())]
+            console.note(f"resource group {console.value(rg)} and managed identity "
+                         f"{console.value(GRANT_NAME)} stay, because the AutoIDM grant uses them")
+        elif group_exists:
             actions += [
                 console.Markup(f"delete resource group {console.value(rg)} and everything in "
                                "it: the job and the shared ACR (with images), managed identity, "
@@ -1457,9 +1559,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if grant:
             revoke_role(store["container_id"], principal_id, STORE_ROLE)
         if orphan_vault:
-            console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-            run_quiet("keyvault", "purge", "--name", settings["vault"],
-                      slow=f"purging: Key Vault {console.value(settings['vault'])}")
+            purge_vault(settings)
         if group_exists and not destroy_group(settings, name):
             # Another app joined the group meanwhile, so this one leaves the
             # way it would have with a sibling: its own job, image, and secret.

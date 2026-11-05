@@ -12,6 +12,7 @@ from pdt import config, deploy_windows
 def project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     (tmp_path / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    (tmp_path / ".pdt-project-name").write_text("example\n")
     monkeypatch.setenv("ProgramData", str(tmp_path / "ProgramData"))
     monkeypatch.chdir(tmp_path)
     return tmp_path
@@ -29,14 +30,14 @@ def windows_app(project, monkeypatch):
 def test_deploy_plans_the_storage_folder(project, monkeypatch, capsys):
     app = windows_app(project, monkeypatch)
     assert deploy_windows.deploy(app, assume_yes=False) == DECLINED
-    folder = project / "ProgramData" / "pdt" / "my-report" / "storage"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "storage"
     out = capsys.readouterr().out
     assert f"use folder {folder} for the app's files (kept after destroy)" in out
 
 
 def test_destroy_reports_the_kept_folder(project, monkeypatch, capsys):
     app = windows_app(project, monkeypatch)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "storage"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "storage"
     folder.mkdir(parents=True)
     (folder / "a.csv").write_text("a")
     assert deploy_windows.destroy(app, assume_yes=True) == 0
@@ -46,7 +47,7 @@ def test_destroy_reports_the_kept_folder(project, monkeypatch, capsys):
 
 def test_storage_ls_lists_the_folder_contents(project, monkeypatch, capsys):
     app = windows_app(project, monkeypatch)
-    folder = project / "ProgramData" / "pdt" / "my-report" / "storage"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "storage"
     folder.mkdir(parents=True)
     (folder / "a.csv").write_text("a")
     (folder / "b.csv").write_text("b")
@@ -67,7 +68,7 @@ def destroy_with_task(project, monkeypatch, scripts):
 def test_destroy_plans_the_task_the_logs_and_the_kept_storage(project, monkeypatch, capsys):
     scripts = []
     app = destroy_with_task(project, monkeypatch, scripts)
-    folder = project / "ProgramData" / "pdt" / "my-report"
+    folder = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report"
     (folder / "logs").mkdir(parents=True)
     (folder / "logs" / "20260923T100000Z.log").write_text("pdt: exit 0\n")
     (folder / "storage").mkdir()
@@ -105,7 +106,7 @@ def test_destroy_removes_a_leftover_logs_folder_when_the_task_is_gone(
     scripts = []
     app = destroy_with_task(project, monkeypatch, scripts)
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
-    logs = project / "ProgramData" / "pdt" / "my-report" / "logs"
+    logs = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "logs"
     logs.mkdir(parents=True)
 
     assert deploy_windows.destroy(app, assume_yes=True) == 0
@@ -120,7 +121,7 @@ def test_destroy_removes_a_leftover_logs_folder_when_the_task_is_gone(
 def test_destroy_warns_when_a_run_holds_the_state_lock(project, monkeypatch, capsys):
     scripts = []
     app = destroy_with_task(project, monkeypatch, scripts)
-    state = project / "ProgramData" / "pdt" / "my-report" / "storage" / "state"
+    state = project / "ProgramData" / "pdt" / "apps" / "example" / "my-report" / "storage" / "state"
     state.mkdir(parents=True)
     started = datetime.now(timezone.utc).isoformat()
     (state / "lock").write_text(json.dumps({"run": "abcd1234", "started": started}))

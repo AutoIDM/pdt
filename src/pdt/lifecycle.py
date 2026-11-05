@@ -5,19 +5,23 @@
 #     "pyyaml",
 #     "python-dotenv",
 #     "rich",
+#     "cryptography",
+#     "pyjwt",
+#     "fsspec",
 # ]
 # ///
 """Lifecycle events: a name, the UTC time, and a few parameters.
 
 usage: lifecycle.py -- <command...>
 
-`emit` gives each event to every entry of the app's `alerts:` list that
-receives it, once per entry and in config order, through the entry's type
-in TRANSPORTS. An entry receives an event that matches at least one name in
-its `events` and no name in its `exclude-events`; a name may hold a `*`
-glob, and `all` is every event. An event that no entry receives this way is
-unhandled, and goes to each entry with `unhandled` in its `events` (its
-`exclude-events` still apply). When no entry names `unhandled` in `events`
+`emit` gives each event to each row of SINKS. The alerts row gives it to every
+entry of the app's `alerts:` list that receives it, once per entry and in config
+order, through the entry's type in TRANSPORTS. An entry receives an event that
+matches at least one name in its `events` and no name in its `exclude-events`; a name may hold a `*`
+glob, and `all` is every event except a `cli:` event. An event that no entry
+receives this way is unhandled, and goes to each entry with `unhandled` in its
+`events` (its `exclude-events` still apply); a `cli:` event is never unhandled,
+so only a name that matches it receives it. When no entry names `unhandled` in `events`
 or `exclude-events`, the list ends with the implicit entry
 {type: console, events: [unhandled]}, so with no `alerts:` the console
 prints every event. `alerts: false` is an empty list with no
@@ -32,10 +36,11 @@ and the teams type (pdt.teams) posts to a Teams channel.
 `deliver` must not change the event. The console prints at once; every
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the
-end of every pdt command call, waits for every open delivery for at most
-FLUSH_SECONDS in total. An event that a transport did not deliver in that
-time, or whose `deliver` raised (with a warning on stderr that names the
-error), prints on the console marked `not delivered to <type>`. A
+end of every pdt command call, waits for all rows of SINKS at the same time: the
+alerts row waits for every open delivery for at most FLUSH_SECONDS in total, and
+the managed row for at most managed_services.EXIT_WAIT_SECONDS. An event that a
+transport did not deliver in its time, or whose `deliver` raised (with a warning
+on stderr that names the error), prints on the console marked `not delivered to <type>`. A
 transport never changes the exit code of a run, a deploy, or a destroy, and pdt emits
 no event about a failed delivery.
 
@@ -50,20 +55,39 @@ run_id, deployed (false for a local `pdt run`), and trigger (`schedule` or
 `job:run-completed` or `job:run-failed`, and gives the
 command PDT_RUN_ID so the app's `runs/` folder ends with the run_id of the
 events. A SIGINT or SIGTERM to `run_job` goes on to the command, and the
-run ends with `job:run-failed` and reason=interrupted once the command exits. `pdt run` calls
+run ends with `job:run-failed` and reason=interrupted once the command exits; on Windows a
+Ctrl+Break (SIGBREAK) does the same. `pdt run` calls
 it, and the Windows task and every cloud image (a copy at
 /opt/pdt-lifecycle, deploy_common.LIFECYCLE_MODULES) run this file as a
 script around the app's command, from the app folder, so the events land in
-the run's log. A SIGKILL, a Windows task that Task Scheduler ends, or a
-power loss stops pdt at once, so no event fires.
+the run's log. A SIGKILL, a Windows task that Task Scheduler ends (pdt's stop does that only to
+a run that still runs after deploy_windows.STOP_SECONDS), or a power loss stops pdt at once, so
+no event fires.
+
+Every run gets an empty output folder in PDT_OUTPUT_DIR (`output_folder`). When the command
+ends, `keep_output` copies the files it left there to runs/<time>-<run id>/ of the app's store,
+so a Python app keeps its files the same way as a PowerShell app on every provider. The image of
+a cloud provider gets the store packages of that provider in this file's script header
+(deploy_common.STORE_PACKAGES).
+
+When the project sets `managed_services`, `run_job` gives the run to
+pdt.managed_services, the same way on every provider: the end event, the
+command's output (which it then also writes to a file as it prints it), and the
+run's storage output folder, which it names to the command in PDT_OUTPUT_DIR
+(managed_services.output_folder). `run_job` sends these and waits for them
+before it emits the end event, so the alert and the exit code say the same when
+AutoIDM refuses the registration. A log or folder pdt cannot make, or any other
+error in a call to managed_services, costs only what AutoIDM gets, never the run.
 """
 
 from __future__ import annotations
 
 import os
 import queue
+import shutil
 import signal
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -74,7 +98,7 @@ from pathlib import Path
 from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from pdt import alert_message, config, console, slack, teams
+from pdt import alert_message, config, console, managed_services, slack, teams
 from pdt.utils import storage
 
 JOB_RUN_STARTED = "job:run-started"
@@ -94,6 +118,8 @@ EVENTS = (APP_DEPLOY_STARTED, APP_DEPLOY_COMPLETED, APP_DEPLOY_FAILED, JOB_RUN_S
           APP_DESTROY_COMPLETED, APP_DESTROY_FAILED, APP_SECRETS_UPDATED)
 # Set to `manual` for one execution by the pdt command that starts a deployed run.
 TRIGGER_ENV = "PDT_TRIGGER"
+MR_TRIGGER = "mr"
+MR_IID_ENV = "PDT_MR_IID"
 
 
 @dataclass(frozen=True)
@@ -119,6 +145,7 @@ class Transport:
 ENTRY_KEYS = ("type", "events", "exclude-events")
 ALL = "all"
 UNHANDLED = "unhandled"
+CLI_PREFIX = "cli:"
 TRANSPORTS: dict[str, Transport] = {
     "console": Transport("console", frozenset(), print_event),
     "slack": Transport("slack", slack.KEYS, slack.deliver, slack.ONE_OF, slack.secrets),
@@ -178,7 +205,9 @@ def event_patterns(alert: dict, key: str, where: str) -> list[str]:
 
 
 def matches(pattern: str, name: str) -> bool:
-    return pattern == ALL or fnmatchcase(name, pattern)
+    if pattern == ALL:
+        return not name.startswith(CLI_PREFIX)
+    return fnmatchcase(name, pattern)
 
 
 def excludes(alert: dict, name: str) -> bool:
@@ -240,30 +269,21 @@ def _fall_back(item: list) -> None:
     console.event(alert_message.event_sentence(event), f"not delivered to {entry['type']}:")
 
 
-def flush() -> None:
-    """Wait at most FLUSH_SECONDS for every open delivery, then print each one still open
-    on the console, after each line that a delivery thread printed. A Ctrl+C ends the wait
-    early."""
-    deadline = time.monotonic() + FLUSH_SECONDS
+def wait_alerts(seconds: float | None = None) -> None:
+    limit = FLUSH_SECONDS if seconds is None else seconds
     with _lock:
-        try:
-            _lock.wait_for(lambda: all(item[3] != "open" for item in _open),
-                           max(0.0, deadline - time.monotonic()))
-        except KeyboardInterrupt:
-            pass
+        _lock.wait_for(lambda: all(item[3] != "open" for item in _open), limit)
         for item in _open:
             if item[3] == "open":
                 _fall_back(item)
         _open.clear()
-    console.drain()
 
 
-def emit(name: str, **params: object) -> Event:
-    if name in (ALL, UNHANDLED):
-        raise ValueError(f"{name!r} is a reserved word in alerts, not an event name")
-    event = Event(name, datetime.now(timezone.utc), params)
-    alerts = alerts_for(params.get("app"))
-    unhandled = not any(receives(alert, name) for alert in alerts)
+def accept_alerts(event: Event) -> None:
+    name = event.name
+    alerts = alerts_for(event.params.get("app"))
+    unhandled = (not name.startswith(CLI_PREFIX)
+                 and not any(receives(alert, name) for alert in alerts))
     for alert in alerts:
         if receives(alert, name):
             through_unhandled = False
@@ -280,54 +300,229 @@ def emit(name: str, **params: object) -> Event:
             _open.append(item)
             key = repr(sorted(alert.items()))
             if key not in _queues:
-                _queues[key] = queue.Queue()
-                threading.Thread(target=_deliver_each, args=(_queues[key],), daemon=True).start()
+                items: queue.Queue = queue.Queue()
+                if managed_services.started(_deliver_each, items, message=(
+                        f"The {console.value(alert['type'])} alert could not send "
+                        f"{console.value(name)}")) is None:
+                    _fall_back(item)
+                    continue
+                _queues[key] = items
             _queues[key].put(item)
+
+
+@dataclass(frozen=True)
+class Sink:
+    name: str
+    accept: Callable[[Event], None]
+    wait: Callable[[float | None], None]
+
+
+def accept_managed(event: Event) -> None:
+    managed_services.monitored(f"the {console.value(event.name)} event",
+                               lambda: managed_services.accept(event))
+
+
+SINKS = (Sink("alerts", accept_alerts, wait_alerts),
+         Sink("managed", accept_managed, managed_services.wait))
+
+
+def flush() -> None:
+    """On Windows before Python 3.14, a join with no timeout does not see a Ctrl+C, so each
+    join is short."""
+    try:
+        waits = [(sink, managed_services.started(sink.wait, None)) for sink in SINKS]
+        for sink, waiting in waits:
+            if waiting is None:
+                sink.wait(None)
+                continue
+            while waiting.is_alive():
+                waiting.join(managed_services.WAIT_STEP_SECONDS)
+    except KeyboardInterrupt:
+        for sink in SINKS:
+            sink.wait(0)
+    console.drain()
+
+
+def emit(name: str, **params: object) -> Event:
+    if name in (ALL, UNHANDLED):
+        raise ValueError(f"{name!r} is a reserved word in alerts, not an event name")
+    event = Event(name, datetime.now(timezone.utc), params)
+    for sink in SINKS:
+        sink.accept(event)
     return event
 
 
 def app_params(app: str, provider: str) -> dict[str, object]:
-    return {"project": config.find_project().name, "app": app, "provider": provider}
+    return {"project": config.project_name(), "app": app, "provider": provider}
+
+
+def output_folder(app_dir: Path, folder: Path | None) -> Path | None:
+    """The run's PDT_OUTPUT_DIR, made before the command starts: `folder` that managed_services
+    named, else .pdt/runs/<run id>/output in the app folder, or a temporary folder when pdt
+    cannot write there."""
+    fallback = Path(tempfile.gettempdir()) / f"pdt-{storage.RUN_ID}" / "output"
+    try:
+        folder = folder or managed_services.output_folder(app_dir, storage.RUN_ID, fallback)
+        folder.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        console.warn(f"pdt cannot make the output folder of this run: "
+                     f"{console.escape(f'{type(e).__name__}: {e}')}")
+        return None
+    return folder
+
+
+def keep_output(app: str, output: Path) -> None:
+    """Copy the files the command left in `output` to runs/<time>-<run id>/ of the app's store,
+    as run_powershell.py does for a PowerShell app. When this run's folder is in the store
+    already, the command sent it itself (storage.sync, run_powershell.py), and nothing goes up
+    twice. A store pdt cannot reach costs only these files, never the run."""
+    try:
+        files = [path for path in output.rglob("*") if path.is_file()]
+        if not files or not config.merged_app(app)["storage"]:
+            return
+        store = storage.Store(storage.root(app))
+        if store.has_run_folder():
+            return
+        folder = store.run_folder()
+        store.push(output, folder)
+    except Exception as e:
+        console.warn(f"pdt did not keep the output files of this run: "
+                     f"{console.escape(f'{type(e).__name__}: {e}')}")
+        return
+    console.note(f"kept {len(files)} output file(s) in {console.value(f'{store.url}{folder}')}")
 
 
 def run_job(app: str, provider: str, command: list[str], cwd: Path,
             env: dict[str, str] | None = None, deployed: bool = False) -> int:
     """Run `command` as one run of the job. `deployed` is True for the deployed job (a cloud
     image, the Windows task), whose trigger is `manual` when PDT_TRIGGER says so, else
-    `schedule`; a local `pdt run` is always `manual`."""
-    trigger = "manual" if not deployed or os.environ.get(TRIGGER_ENV) == "manual" else "schedule"
+    `schedule`; a local `pdt run` is `manual`."""
+    asked = os.environ.get(TRIGGER_ENV)
+    if asked == MR_TRIGGER:
+        trigger = MR_TRIGGER
+    elif not deployed or asked == "manual":
+        trigger = "manual"
+    else:
+        trigger = "schedule"
     params = {**app_params(app, provider), "run_id": storage.RUN_ID, "deployed": deployed,
               "trigger": trigger}
+    if trigger == MR_TRIGGER:
+        params["mr_iid"] = os.environ.get(MR_IID_ENV, "")
+    run = managed_services.monitored(
+        "this run", lambda: managed_services.start_run(app, storage.RUN_ID, cwd),
+        managed_services.Run())
+    output = output_folder(cwd, run.output)
     emit(JOB_RUN_STARTED, **params)
+    began = time.monotonic()
     stopped: list[int] = []
     child: subprocess.Popen | None = None
 
     def stop(signum: int, _frame: object) -> None:
         stopped.append(signum)
-        # A Ctrl+C in a Windows console reaches the command too, and Windows has no SIGTERM.
+        # A Ctrl+C or Ctrl+Break in a Windows console reaches the command too, and Windows has
+        # no SIGTERM.
         if child is not None and os.name != "nt":
             child.send_signal(signum)
 
+    # SIGBREAK is the stop of a Windows task's run (run_windows_task.STOP_REQUEST).
+    stops = (signal.SIGINT, signal.SIGTERM, *([signal.SIGBREAK] if os.name == "nt" else []))
     # Before Popen, so the command does not inherit a SIGINT that a cloud image's sh ignores.
-    previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
+    previous = {signum: signal.signal(signum, stop) for signum in stops}
     try:
-        child = subprocess.Popen(command, cwd=cwd, env={**(env or os.environ),
-                                                        "PDT_RUN_ID": storage.RUN_ID})
+        child_env = {**(env or os.environ), "PDT_RUN_ID": storage.RUN_ID}
+        if output is not None:
+            child_env["PDT_OUTPUT_DIR"] = str(output)
+        children: queue.Queue[subprocess.Popen] = queue.Queue(1)
+        copier = None if run.log is None else copy_output(children, run.log)
+        if copier is None:
+            child = subprocess.Popen(command, cwd=cwd, env=child_env)
+        else:
+            # Python holds output to a pipe until a buffer fills, so a print() line would
+            # land after a later stderr line.
+            child = subprocess.Popen(command, cwd=cwd, env={"PYTHONUNBUFFERED": "1", **child_env},
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            children.put(child)
         code = child.wait()
+        if copier is not None:
+            copier.join(DRAIN_SECONDS)
         if code < 0:
             code = 128 - code
+        if output is not None:
+            keep_output(app, output)
         state = f"runs/*-{storage.RUN_ID}/"
         if stopped:
-            emit(JOB_RUN_FAILED, **params, exit_code=code, reason="interrupted",
-                 signal=signal.Signals(stopped[0]).name, state=state)
+            name = JOB_RUN_FAILED
+            details = {"exit_code": code, "reason": "interrupted",
+                       "signal": signal.Signals(stopped[0]).name}
         else:
-            emit(JOB_RUN_COMPLETED if code == 0 else JOB_RUN_FAILED, **params, exit_code=code,
-                 state=state)
+            name = JOB_RUN_COMPLETED if code == 0 else JOB_RUN_FAILED
+            details = {"exit_code": code}
+        signal.signal(signal.SIGINT, previous[signal.SIGINT])
+        if managed_services.monitored("the end of this run", lambda: managed_services.end_run(
+                run, name, {**params, **details, "state": state}, time.monotonic() - began),
+                False):
+            console.warn(run.sender.refusal())
+        emit(name, **params, **details, state=state)
         flush()
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+        if run.scratch is not None:
+            shutil.rmtree(run.scratch, ignore_errors=True)
     return code
+
+
+# A process the command started in the background can hold the pipe open.
+DRAIN_SECONDS = 2
+
+
+def copy_output(children: queue.Queue[subprocess.Popen], log: Path) -> threading.Thread | None:
+    def copy() -> None:
+        child = children.get()
+        out = None
+        try:
+            kept = log.open("wb", buffering=0)
+        except OSError as e:
+            console.warn(f"pdt cannot keep the output of this run for AutoIDM: "
+                         f"{console.escape(str(e))}")
+            kept = None
+        printing = True
+        size = 0
+        while True:
+            chunk = child.stdout.read1()
+            if chunk == b"":
+                break
+            if printing:
+                try:
+                    if out is None:
+                        sys.stdout.flush()
+                        out = sys.stdout.buffer
+                    out.write(chunk)
+                    out.flush()
+                except (OSError, ValueError, AttributeError) as e:
+                    console.say(f"pdt stopped printing the output of this run: "
+                                f"{console.escape(str(e))}", stderr=True)
+                    printing = False
+            if kept is None:
+                continue
+            piece = chunk[:managed_services.MAX_UPLOAD_BYTES + 1 - size]
+            try:
+                kept.write(piece)
+            except OSError as e:
+                console.warn(f"pdt stopped keeping the output of this run for AutoIDM: "
+                             f"{console.escape(str(e))}")
+                kept.close()
+                kept = None
+                continue
+            size += len(piece)
+            if size > managed_services.MAX_UPLOAD_BYTES:
+                kept.close()
+                kept = None
+        if kept is not None:
+            kept.close()
+
+    return managed_services.started(
+        copy, message="pdt cannot keep the output of this run for AutoIDM")
 
 
 def main(argv: list[str]) -> int:

@@ -30,10 +30,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
 from pathlib import Path
 
-from pdt import (__version__, alerts_cli, config, console, lifecycle, powershell, pwsh, regions,
-                 runs_cli)
+from pdt import (__version__, alerts_cli, config, console, lifecycle, managed_services, powershell,
+                 pwsh, regions, runs_cli)
 from pdt.config import ConfigError
-from pdt.deploy_common import REBUILD_ENV, CostEstimate
+from pdt.deploy_common import KEEP_SECRET_ENV, REBUILD_ENV, REGISTER_ACTION, CostEstimate, keeps_secret
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -43,6 +43,9 @@ PROVIDERS = {
     "azure": "deploy_azure.py",
     "windows": "deploy_windows.py",
 }
+
+
+MR_PROVIDERS = ("aws", "azure", "google-cloud")
 
 
 def _load(app_name: str):
@@ -173,10 +176,10 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     problems = config.validate_app(app_name)
     sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
-    missing = config.missing_env(app)
+    missing = "" if keeps_secret() else config.missing_env(app)
     if missing != "":
         problems.append(missing)
-    if config.uses_email(app):
+    if config.uses_email(app) and not keeps_secret():
         problems.extend(email_problems(app["config"], check_oauth=False))
     lines = [f"runs {console.value('run.py')}"]
     if config.powershell_scripts(app["dir"]):
@@ -197,6 +200,7 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     if problem != "":
         console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
+    choose_timezone(app, provider)
     code = leave_old_place(app_name, assume_yes)
     if code != 0:
         return code
@@ -207,12 +211,19 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
             console.done("Plan only; nothing was deployed. To deploy this plan, run:")
             console.command(f"pdt deploy {app_name} --yes")
         return code
-    if config.uses_email(app):
+    if config.uses_email(app) and not keeps_secret():
         prepare_email_auth(auth_env_file(app["dir"]))
     alerts_cli.offer(app_name, assume_yes)
-    code = provider_step("deploy", provider, app_name, assume_yes, rebuild)
+    with config.project_lock():
+        code = provider_step("deploy", provider, app_name, assume_yes, rebuild)
     if code != 0:
         return code
+    from pdt.utils import autoidm
+    if os.environ.get(autoidm.RUNNER_ENV):
+        # A deploy from a registered computer writes the cloud registration with the secret;
+        # the hosted runner keeps the secret, so it reads the secret and adds the registration after.
+        os.environ.pop(KEEP_SECRET_ENV, None)
+        dispatch(provider, "secrets", app_name, True, [REGISTER_ACTION])
     run_code = offer_run(app_name, provider, assume_yes, run)
     deployed_next_steps(app_name, started=run_code is not None)
     return run_code or 0
@@ -220,6 +231,8 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
 
 # The schedule a deploy suggests for an app that sets none.
 DEFAULT_SCHEDULE = "daily"
+# The time zone of the person's browser, which the hosted runner gives a portal deploy.
+TIMEZONE_ENV = "PDT_TIMEZONE"
 
 
 def choose_schedule(app: dict, assume_yes: bool) -> str:
@@ -267,6 +280,22 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
         console.note(f"Using schedule {console.value(schedule)}. A deploy saves it to "
                      f"{console.value(saved)}; this plan changes no file.")
     return ""
+
+
+def choose_timezone(app: dict, provider: str) -> None:
+    """When the app has a schedule and no time zone, save one in the app's config.yml, so every
+    later deploy uses the same one: the time zone in TIMEZONE_ENV (the person's browser, for a
+    portal deploy by the hosted runner), else this computer's. A Windows task runs on local time."""
+    if provider == "windows" or app["schedule"] is None or app["timezone_set"]:
+        return
+    zone = os.environ.get(TIMEZONE_ENV, "").strip() or regions.local_timezone()
+    saved = config.save_app_key(app, "timezone", zone).relative_to(config.find_project())
+    app["timezone"] = zone
+    if config.unsaved() is None:
+        console.done(f"Saved time zone {console.value(zone)} to {console.value(saved)}.")
+    else:
+        console.note(f"Using time zone {console.value(zone)}. A deploy saves it to "
+                     f"{console.value(saved)}; this plan changes no file.")
 
 
 def describe_place(place: dict[str, str]) -> str:
@@ -366,7 +395,9 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
     script, deploys to a found key the record keeps, and restores the old record when the
     user declines; a destroy that succeeds forgets the app."""
     started, completed, failed = STEP_EVENTS[command]
+    sender = None
     if command == "deploy":
+        sender = managed_services.sender(app_name)
         was_deployed = config.is_deployed(app_name)
         before = config.deployed_platform(app_name)
         written = record_place(app_name, before)
@@ -396,6 +427,10 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
     if command == "destroy":
         config.mark_deployed(app_name, None)
     lifecycle.emit(completed, **params)
+    if sender is not None:
+        managed_services.wait()
+        if sender.refused:
+            console.warn(sender.refusal())
     return 0
 
 
@@ -539,6 +574,33 @@ def pause(app_name: str, paused: bool) -> int:
     return code
 
 
+def mr_run(app_name: str, iid: str) -> int:
+    try:
+        _app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    if provider not in MR_PROVIDERS:
+        console.error(f"The {console.value(provider)} provider has no merge request run on a "
+                      "hosted runner.")
+        return 1
+    return dispatch(provider, "mr-run", app_name, True, [iid])
+
+
+def kill(app_name: str) -> int:
+    try:
+        app, provider = _load(app_name)
+    except ConfigError as e:
+        console.error(console.escape(str(e)))
+        return 1
+    if not config.is_deployed(app_name):
+        console.error(f"{console.value(app_name)} is not deployed; "
+                      f"run {console.value(f'pdt deploy {app_name}')} first")
+        return 1
+    config.load_env(app["dir"])
+    return dispatch(provider, "kill", app_name, False)
+
+
 def start(app_name: str, follow: bool = False) -> int:
     """Start one run of the deployed job now."""
     try:
@@ -627,13 +689,15 @@ def destroy(app_name: str, assume_yes: bool = False) -> int:
         return 1
     config.load_env(app["dir"])
     recorded = config.deployed_platform(app_name)
-    if recorded is None:
-        return provider_step("destroy", provider, app_name, assume_yes)
-    if moved(recorded, app["platform"]):
-        say_places(app, recorded)
-        console.say(f"pdt destroys it where it is deployed: "
-                    f"{console.value(describe_place(config.place(recorded)))}.")
-    return provider_step("destroy", recorded["provider"], app_name, assume_yes, platform=recorded)
+    with config.project_lock([app_name]):
+        if recorded is None:
+            return provider_step("destroy", provider, app_name, assume_yes)
+        if moved(recorded, app["platform"]):
+            say_places(app, recorded)
+            console.say(f"pdt destroys it where it is deployed: "
+                        f"{console.value(describe_place(config.place(recorded)))}.")
+        return provider_step("destroy", recorded["provider"], app_name, assume_yes,
+                             platform=recorded)
 
 
 # The exit code of a provider script whose plan the user declined, so provider_step can
