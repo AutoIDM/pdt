@@ -514,6 +514,10 @@ class Store:
     def push(self, local: Path, remote: str, lease: Lease | None = None) -> None:
         self._refuse_write()
         backend = self.backend()
+        if remote.startswith("state") and is_merge_request_run():
+            if lease is not None:
+                self._release_lock(backend, lease)
+            return
         files = [(remote + file.relative_to(local).as_posix(), file.read_bytes())
                  for file in sorted(local.rglob("*")) if file.is_file()]
         if remote.startswith("runs/"):
