@@ -247,7 +247,16 @@ def unpack(data: bytes, entry: dict, target: Path) -> None:
             raise CopyError(f"{target / path} exists")
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zipped:
-            infos = zipped.infolist()
+            # `git archive --format=zip` also writes an entry for each folder. A folder entry
+            # writes nothing, so it needs only a path that stays in the folder.
+            infos = []
+            for info in zipped.infolist():
+                if info.is_dir() and info.file_size == 0:
+                    problem = path_problem(info.filename.rstrip("/"))
+                    if problem:
+                        raise CopyError(f"the copy zip folder {info.filename!r} {problem}")
+                    continue
+                infos.append(info)
             names = [info.filename for info in infos]
             if len(names) != len(set(names)) or set(names) != set(wanted):
                 raise CopyError("the copy zip does not hold exactly the files of its copy")
