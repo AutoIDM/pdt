@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from service_fixtures import (
     COMMAND, CUSTOMER, INSTALLATION, KEYS, FakePortal, claims, copy_of, token)
 
-from pdt import config, register_cli, service, service_commands, service_runner
+from pdt import config, deploy_windows, register_cli, service, service_commands, service_runner
 from pdt.service_commands import Clock
 from pdt.service_runner import Job, Pool, execute
 from pdt.utils import autoidm
@@ -1194,11 +1194,11 @@ def test_cancel_of_a_deployed_windows_run_stops_its_task(machine, monkeypatch):
     (machine / ".pdt").mkdir(exist_ok=True)
     (machine / ".pdt" / "state").write_text(json.dumps({"platforms": {"hr": {"provider": "windows"}}}))
     calls = []
-    monkeypatch.setattr(service_runner.subprocess, "run", lambda args, **_kwargs: (
-        calls.append(args) or subprocess.CompletedProcess(args, 0, stdout="", stderr="")))
+    monkeypatch.setattr(deploy_windows, "stop_task", lambda name, logs: calls.append((name, logs)))
     found = job(machine, args={"project": "example", "app": "hr", "deployed": True})
     assert service_runner.stop_deployed(found) == "pdt stopped the Windows task pdt-hr."
-    assert "Stop-ScheduledTask -TaskName 'pdt-hr' -ErrorAction Stop" in calls[0]
+    with service_commands.in_project(machine):
+        assert calls == [("pdt-hr", deploy_windows.logs_folder("hr"))]
 
 
 def test_kill_starts_beside_a_run_of_its_app_and_beside_four_commands(machine, portal,

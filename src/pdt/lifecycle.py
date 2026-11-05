@@ -55,12 +55,14 @@ run_id, deployed (false for a local `pdt run`), and trigger (`schedule` or
 `job:run-completed` or `job:run-failed`, and gives the
 command PDT_RUN_ID so the app's `runs/` folder ends with the run_id of the
 events. A SIGINT or SIGTERM to `run_job` goes on to the command, and the
-run ends with `job:run-failed` and reason=interrupted once the command exits. `pdt run` calls
+run ends with `job:run-failed` and reason=interrupted once the command exits; on Windows a
+Ctrl+Break (SIGBREAK) does the same. `pdt run` calls
 it, and the Windows task and every cloud image (a copy at
 /opt/pdt-lifecycle, deploy_common.LIFECYCLE_MODULES) run this file as a
 script around the app's command, from the app folder, so the events land in
-the run's log. A SIGKILL, a Windows task that Task Scheduler ends, or a
-power loss stops pdt at once, so no event fires.
+the run's log. A SIGKILL, a Windows task that Task Scheduler ends (pdt's stop does that only to
+a run that still runs after deploy_windows.STOP_SECONDS), or a power loss stops pdt at once, so
+no event fires.
 
 Every run gets an empty output folder in PDT_OUTPUT_DIR (`output_folder`). When the command
 ends, `keep_output` copies the files it left there to runs/<time>-<run id>/ of the app's store,
@@ -416,12 +418,15 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
 
     def stop(signum: int, _frame: object) -> None:
         stopped.append(signum)
-        # A Ctrl+C in a Windows console reaches the command too, and Windows has no SIGTERM.
+        # A Ctrl+C or Ctrl+Break in a Windows console reaches the command too, and Windows has
+        # no SIGTERM.
         if child is not None and os.name != "nt":
             child.send_signal(signum)
 
+    # SIGBREAK is the stop of a Windows task's run (run_windows_task.STOP_REQUEST).
+    stops = (signal.SIGINT, signal.SIGTERM, *([signal.SIGBREAK] if os.name == "nt" else []))
     # Before Popen, so the command does not inherit a SIGINT that a cloud image's sh ignores.
-    previous = {signum: signal.signal(signum, stop) for signum in (signal.SIGINT, signal.SIGTERM)}
+    previous = {signum: signal.signal(signum, stop) for signum in stops}
     try:
         child_env = {**(env or os.environ), "PDT_RUN_ID": storage.RUN_ID}
         if output is not None:

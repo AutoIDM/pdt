@@ -70,7 +70,7 @@ from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import CostEstimate, run_main, warn_if_locked
 from pdt.pwsh import ensure_pwsh
-from pdt.run_windows_task import EVENT_SOURCE, LINE_TIME, MANUAL_START
+from pdt.run_windows_task import EVENT_SOURCE, LINE_TIME, MANUAL_START, STOP_REQUEST
 
 
 class WindowsDeployError(Exception):
@@ -88,6 +88,9 @@ RUNNER = Path(__file__).resolve().with_name("run_windows_task.py")
 # The same limit as --replica-timeout on Azure Container Apps.
 RUN_TIME_LIMIT = "PT30M"
 FOLLOW_POLL_SECONDS = 0.25
+# A stopped run waits for AutoIDM (managed_services.EXIT_WAIT_SECONDS) and the alerts
+# (lifecycle.FLUSH_SECONDS) before it ends.
+STOP_SECONDS = 30
 EXIT_LINE_BYTES = 256
 
 
@@ -612,6 +615,24 @@ def pause(app: dict, paused: bool) -> int:
     return 0
 
 
+def stop_task(name: str, logs: Path) -> None:
+    """Stop the run of task `name` the way a Ctrl+C stops `pdt run`: the runner gets a stop
+    request in `logs`, so the run sends its end event. Task Scheduler ends the task when it still
+    runs after STOP_SECONDS."""
+    powershell, _uv = _preflight(require_uv=False)
+    try:
+        (logs / STOP_REQUEST).touch()
+        deadline = time.monotonic() + STOP_SECONDS
+    except OSError:
+        deadline = time.monotonic()
+    while _task_running(powershell, name):
+        if time.monotonic() >= deadline:
+            _run(powershell, f"Stop-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
+                 elevate=True)
+            return
+        time.sleep(1)
+
+
 def kill(app: dict) -> int:
     try:
         powershell, name = _managed_task(app)
@@ -619,8 +640,8 @@ def kill(app: dict) -> int:
             console.say(f"No run of {console.value(app['name'])} runs: Windows task "
                         f"{console.value(name)} is not running.")
             return 0
-        _run(powershell, f"Stop-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
-             elevate=True)
+        with console.waiting(f"stopping: Windows task {console.value(name)}"):
+            stop_task(name, logs_folder(app["name"]))
     except WindowsDeployError as exc:
         console.error(console.escape(str(exc)))
         return 1
