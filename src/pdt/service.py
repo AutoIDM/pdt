@@ -241,6 +241,7 @@ class Served:
     connection: Connection | None = None
     keys_file: Path | None = None
     clock_warned_at: float = 0.0
+    checked_projects: set[Path] = field(default_factory=set)
 
 
 def read_saved(customer: str) -> dict:
@@ -285,20 +286,29 @@ def refuse(served: Served, command_id: str, message: str, keep_journal: bool = F
 def locate(claims: dict, served: Served, settings: dict) -> Path | None:
     project = claims["args"]["project"]
     root = projects_of(settings).get(project)
-    if root is not None:
-        owner = project_customer(root)
-        if owner is None and claims["operation"] == "sync_down":
-            return root
-        if owner is None:
-            raise Refused(f"The project {project} has no {managed_services.KEY} in "
-                          f"{config.PROJECT_FILE}. To add it, run pdt register in {root}.")
-        if owner != served.customer:
-            raise Refused(f"The project {project} names the customer {owner} in "
-                          f"{config.PROJECT_FILE}, not {served.customer}.")
-        return root
-    if claims["operation"] == "sync_down":
-        return None
-    raise Refused(f"This computer does not serve a project named {project}.")
+    if root is None:
+        if claims["operation"] == "sync_down":
+            return None
+        raise Refused(f"This computer does not serve a project named {project}.")
+    owner = project_customer(root)
+    if owner is None and claims["operation"] != "sync_down":
+        raise Refused(f"The project {project} has no {managed_services.KEY} in "
+                      f"{config.PROJECT_FILE}. To add it, run pdt register in {root}.")
+    if owner not in (None, served.customer):
+        raise Refused(f"The project {project} names the customer {owner} in "
+                      f"{config.PROJECT_FILE}, not {served.customer}.")
+    if root not in served.checked_projects and service_access.is_admin():
+        try:
+            found = service_access.writable_by_others(root)
+        except service_access.AccessError as e:
+            raise Refused(str(e)) from None
+        if found:
+            account, path = found
+            raise Refused(f"The account {account} can change {path}, so the pdt service does "
+                          f"not run commands for {root} as {service_account()}. An "
+                          "administrator must remove that right.")
+        served.checked_projects.add(root)
+    return root
 
 
 def accept(item: object, served: Served, settings: dict, pool: Pool) -> bool:
@@ -571,7 +581,9 @@ def access_problem(settings: dict) -> bool:
     python = settings.get("python")
     if python:
         folders.append(service_install.version_folder(settings.get("pdt_version") or __version__))
-    folders.extend(projects_of(settings).values())
+    home = projects_folder(settings)
+    folders.append(home)
+    folders.extend(root for root in projects_of(settings).values() if root.parent != home)
     for folder in folders:
         if not folder.exists():
             continue
