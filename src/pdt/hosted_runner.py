@@ -43,6 +43,9 @@ ENV_KEEP = ("PATH", "PATHEXT", "HOME", "USERPROFILE", "SYSTEMROOT", "COMSPEC", "
             "TMPDIR", "LANG", "LC_ALL", "PROGRAMDATA", "LOCALAPPDATA", "APPDATA", "XDG_DATA_HOME",
             "XDG_CACHE_HOME", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_TOOL_DIR",
             "UV_SYSTEM_CERTS", "SSL_CERT_FILE")
+USER_PATHS = ("HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR",
+              "UV_TOOL_DIR")
+KEEP_SECRET_OPERATIONS = ("deploy", "plan")
 USER = "pdtjob"
 MR_RUN = "mr-run"
 
@@ -115,12 +118,17 @@ def child_env(base: dict[str, str], project: Path, credentials: dict[str, str],
     kept = {name: value for name, value in base.items() if name.upper() in wanted}
     # A copy holds customer files, so a uv.toml in one must not choose a package index.
     return {**kept, **credentials, **extra, "PDT_PROJECT": str(project), "PYTHONUTF8": "1",
-            "UV_NO_CONFIG": "1", "CI": "pdt-hosted-runner", KEEP_SECRET_ENV: "1",
+            "UV_NO_CONFIG": "1", "CI": "pdt-hosted-runner",
             config.SERVICE_CHILD_ENV: "1", config.SERVICE_ENV_FILES_ENV: ""}
 
 
 def run_user() -> str | None:
     return USER if os.name != "nt" and os.geteuid() == 0 else None
+
+
+def user_home(user: str) -> str:
+    import pwd
+    return pwd.getpwnam(user).pw_dir
 
 
 def give_folder(folder: Path, user: str) -> None:
@@ -149,12 +157,14 @@ def send_output(runner: Runner, log: Path, offset: int, secrets: list[bytes],
             handle.seek(offset)
             data = handle.read(service_runner.OUTPUT_LIMIT * 2)
         text, used = service_runner.next_chunk(data, secrets, final)
-        if used == 0:
+        if used == 0 and final:
             return offset, cancel
         answer = runner.report(fact="output", seq=runner.seq, text=text)
         runner.seq += 1
         offset += used
         cancel = cancel or answer.get("cancel") is True
+        if not final:
+            return offset, cancel
 
 
 def run(runner: Runner, answer: dict, work: Path) -> dict:
@@ -181,24 +191,38 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
     output.mkdir()
     if "app_args" in args:
         extra["PDT_APP_ARGS"] = args["app_args"]
+    if operation in KEEP_SECRET_OPERATIONS:
+        extra[KEEP_SECRET_ENV] = "1"
     value = (answer.get("input") or {}).get("value")
+    base = dict(os.environ)
     user = run_user()
     if user:
         give_folder(work, user)
+        if grants.GRANT_FOLDER_ENV in credentials:
+            give_folder(Path(credentials[grants.GRANT_FOLDER_ENV]), user)
+        base = {name: text for name, text in base.items() if name not in USER_PATHS}
+        base["HOME"] = user_home(user)
     log = work / "output.log"
     secrets = service_runner.secret_values([value] if isinstance(value, str) else [])
     try:
         code, outcome, message = run_child(runner, argv, project, child_env(
-            dict(os.environ), project, credentials, extra), log, value, user, limit, secrets)
+            base, project, credentials, extra), log, value, user, limit, secrets)
     finally:
         service_runner.remove_folder(credentials.get(grants.GRANT_FOLDER_ENV))
-    data = service_runner.mask(log.read_bytes(), secrets) if log.is_file() else b""
+    size = log.stat().st_size if log.is_file() else 0
+    upload = size <= managed_services.MAX_UPLOAD_BYTES
+    keep = size if upload else service_runner.MAX_MESSAGE + max(map(len, secrets), default=0)
+    data = b""
+    if size:
+        with log.open("rb") as handle:
+            handle.seek(size - keep)
+            data = service_runner.mask(handle.read(keep), secrets)
     if outcome is None:
         outcome = "done" if code == 0 else "failed"
         if outcome == "failed":
             message = data[-service_runner.MAX_MESSAGE:].decode("utf-8", "replace").strip()
     log_key = artifact_key = None
-    if data and len(data) <= managed_services.MAX_UPLOAD_BYTES:
+    if data and upload:
         log_key = runner.upload("log", f"{runner.command_id}.log", data)
     if (operation, outcome) in (("artifacts", "done"), ("run_mr", "done"), ("run_mr", "failed")):
         zipped = zipped_folder(output)

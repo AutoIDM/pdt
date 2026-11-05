@@ -129,6 +129,87 @@ def test_an_mr_run_runs_the_mr_child_with_the_output_folder(portal, monkeypatch)
     assert found["outcome"] == "done" and found["artifact_key"] == "k/artifact"
 
 
+@pytest.mark.parametrize("operation, args, kept", [
+    ("deploy", {"project": "example", "app": "hr"}, "1"),
+    ("plan", {"project": "example", "app": "hr"}, "1"),
+    ("secrets_set", {"project": "example", "app": "hr", "name": "TOKEN"}, "None"),
+    ("list", {"project": "example"}, "None"),
+])
+def test_only_deploy_and_plan_keep_the_deployed_secret(portal, monkeypatch, operation, args, kept):
+    claim(portal, operation, args, value="hunter2-value" if operation == "secrets_set" else None)
+    child(monkeypatch, "import os\nprint('keep', os.environ.get('PDT_KEEP_DEPLOYED_SECRET'))\n")
+    assert hosted_runner.main([]) == 0
+    output = "".join(body["text"] for body in reports(portal) if body["fact"] == "output")
+    assert f"keep {kept}" in output
+
+
+def test_the_child_user_gets_its_own_home_and_its_credential_folder(portal, monkeypatch, tmp_path):
+    claim(portal)
+    folder = tmp_path / "pdt-gcloud-1"
+    folder.mkdir()
+    monkeypatch.setattr(hosted_runner.grants, "credentials",
+                        lambda place, answer: {hosted_runner.grants.GRANT_FOLDER_ENV: str(folder)})
+    monkeypatch.setattr(hosted_runner, "run_user", lambda: "pdtjob")
+    given = []
+    monkeypatch.setattr(hosted_runner, "give_folder", lambda path, user: given.append((path, user)))
+    monkeypatch.setattr(hosted_runner, "user_home", lambda user: f"/home/{user}")
+    monkeypatch.setenv("HOME", "/root")
+    monkeypatch.setenv("UV_CACHE_DIR", "/root/.cache/uv")
+    seen = {}
+    real = hosted_runner.run_child
+
+    def as_this_user(runner, argv, project, env, log, value, user, *rest):
+        seen["env"] = env
+        return real(runner, argv, project, env, log, value, None, *rest)
+
+    monkeypatch.setattr(hosted_runner, "run_child", as_this_user)
+    child(monkeypatch, "print('ok')")
+    assert hosted_runner.main([]) == 0
+    assert seen["env"]["HOME"] == "/home/pdtjob" and "UV_CACHE_DIR" not in seen["env"]
+    assert (folder, "pdtjob") in given
+
+
+def test_a_silent_child_still_learns_of_a_cancel(portal, monkeypatch):
+    claim(portal, "run", {"project": "example", "app": "hr", "deployed": True})
+    portal.routes["/v1/runner/report"] = lambda body: (200, {"cancel": body["fact"] == "output"})
+    child(monkeypatch, "import time\ntime.sleep(5)\n")
+    assert hosted_runner.main([]) == 0
+    assert result(portal)["outcome"] == "cancelled"
+
+
+def test_output_while_the_child_runs_is_one_report_per_turn(tmp_path, monkeypatch):
+    log = tmp_path / "output.log"
+    log.write_bytes(b"x" * (hosted_runner.service_runner.OUTPUT_LIMIT * 3))
+    sent = []
+
+    class Spy:
+        seq = 0
+
+        def report(self, **facts):
+            sent.append(facts)
+            return {"cancel": False}
+
+    assert hosted_runner.send_output(Spy(), log, 0, [], False)[0] > 0
+    assert len(sent) == 1
+
+
+def test_a_log_over_the_upload_limit_is_not_read_whole(portal, monkeypatch):
+    claim(portal, "secrets_set", {"project": "example", "app": "hr", "name": "TOKEN"},
+          value="hunter2-value")
+    monkeypatch.setattr(hosted_runner.managed_services, "MAX_UPLOAD_BYTES", 20000)
+    child(monkeypatch, "import sys\nsys.stdin.read()\nprint('y' * 30000)\n"
+                       "print('hunter2-value')\nprint('last line')\nraise SystemExit(3)\n")
+    read = []
+    real = hosted_runner.Path.read_bytes
+    monkeypatch.setattr(hosted_runner.Path, "read_bytes",
+                        lambda path: read.append(path.name) or real(path))
+    assert hosted_runner.main([]) == 0
+    found = result(portal)
+    assert found["log_key"] is None and found["outcome"] == "failed"
+    assert "last line" in found["message"] and "hunter2" not in found["message"]
+    assert "output.log" not in read
+
+
 def test_the_mr_child_runs_the_provider_verb_and_copies_its_output(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(hosted_runner.deploy, "mr_run", lambda app, iid: calls.append((app, iid)) or 0)
