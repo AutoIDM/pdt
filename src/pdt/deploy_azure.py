@@ -702,6 +702,10 @@ def managed_by_pdt(resource: dict | None) -> bool:
     return ((resource or {}).get("tags") or {}).get("managed-by") == "pdt"
 
 
+def retained(resource: dict | None) -> bool:
+    return ((resource or {}).get("tags") or {}).get("pdt-lifecycle") == STORE_TAGS["pdt-lifecycle"]
+
+
 def require_managed(resource: dict | None, label: str) -> None:
     if resource is not None and not managed_by_pdt(resource):
         fail(f"{label} exists but is not managed by PDT")
@@ -1014,7 +1018,7 @@ def platform_side_resource(resource: dict) -> bool:
 
 
 def group_can_be_deleted(group: dict | None, resources: list | None, others: list[str]) -> bool:
-    if others or not managed_by_pdt(group) or resources is None:
+    if others or not managed_by_pdt(group) or retained(group) or resources is None:
         return False
     # Older pdt versions left the plans, alert rules, and action group that
     # Azure creates beside a Function App untagged; they go with the group.
@@ -1259,11 +1263,11 @@ GRANT_ROLES = ("Contributor", "Key Vault Reader", "Key Vault Secrets Officer")
 GRANT_ASSIGNS = ("AcrPull", "Key Vault Secrets User", "Key Vault Secrets Officer",
                  "Storage Blob Data Contributor")
 ROLE_WRITE = "Microsoft.Authorization/roleAssignments"
+GRANT_GROUPS = ("pdt", SHARED_GROUP, STORE_GROUP)
 
 
 def grant_groups(subscription: str) -> list[str]:
-    return [f"/subscriptions/{subscription}/resourceGroups/{group}"
-            for group in ("pdt", SHARED_GROUP)]
+    return [f"/subscriptions/{subscription}/resourceGroups/{group}" for group in GRANT_GROUPS]
 
 
 def grant_condition() -> str:

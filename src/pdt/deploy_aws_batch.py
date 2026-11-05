@@ -793,15 +793,15 @@ def secrets(app: dict, action: str, assume_yes: bool, name: str | None = None) -
         clients["sts"], clients["iam"], expected_account, region, DEPLOYER_ACTIONS)
     wait_for_permissions()
     client = clients["secretsmanager"]
-    name = resource_names(app["name"])["secret"]
+    secret = resource_names(app["name"])["secret"]
     current = None
     with console.waiting("reading: resources"):
-        if resource_exists(client, "describe_secret", SecretId=name):
-            current = client.get_secret_value(SecretId=name).get("SecretString", "")
+        if resource_exists(client, "describe_secret", SecretId=secret):
+            current = client.get_secret_value(SecretId=secret).get("SecretString", "")
 
     def write(values: dict[str, str]) -> None:
-        console.step(f"updating secret {console.value(name)}")
-        ensure_secret(client, name, json.dumps(values, sort_keys=True))
+        console.step(f"updating secret {console.value(secret)}")
+        ensure_secret(client, secret, json.dumps(values, sort_keys=True))
 
     return run_secrets(action, app, current, write, assume_yes, name)
 
@@ -1342,7 +1342,7 @@ def mr_run(app: dict, session, iid: str) -> int:
         else:
             docker_build(stage, image, clients["ecr"])
 
-    arn = None
+    arn = job_id = None
     try:
         ensure_image(app, image, DOCKER_PLATFORM, "CodeBuild" if cloud else "", None,
                      lambda: False, build)
@@ -1358,13 +1358,16 @@ def mr_run(app: dict, session, iid: str) -> int:
             jobDefinitionName=name, type="container", platformCapabilities=["FARGATE"],
             containerProperties={**container, "image": image, "environment": environment},
             tags=dict(MANAGED_TAGS))["jobDefinitionArn"]
-        job = clients["batch"].submit_job(jobName=name, jobQueue=JOB_QUEUE.name,
-                                          jobDefinition=arn, tags=dict(MANAGED_TAGS))
-        console.done(f"Started Batch job {console.value(job['jobId'])} of "
-                     f"{console.value(name)}.")
-        return follow_job(clients["batch"], session.client("logs", config=RETRIES),
-                          names["log_group"], job["jobId"])
+        job_id = clients["batch"].submit_job(jobName=name, jobQueue=JOB_QUEUE.name,
+                                             jobDefinition=arn, tags=dict(MANAGED_TAGS))["jobId"]
+        console.done(f"Started Batch job {console.value(job_id)} of {console.value(name)}.")
+        code = follow_job(clients["batch"], session.client("logs", config=RETRIES),
+                          names["log_group"], job_id)
+        job_id = None
+        return code
     finally:
+        if job_id is not None:
+            clients["batch"].terminate_job(jobId=job_id, reason="pdt mr-run stopped")
         if arn is not None:
             clients["batch"].deregister_job_definition(jobDefinition=arn)
         clients["ecr"].batch_delete_image(repositoryName=REPOSITORY,

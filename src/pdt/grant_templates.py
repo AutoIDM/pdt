@@ -4,10 +4,11 @@
   the broker role of AutoIDM may assume with the customer's external ID for at most one hour, the
   policies of `deploy_aws.grant_policy_parts` for every region, and the boundary
   `pdt-autoidm-boundary` that each role it makes must carry.
-- `azure-grant.json`: an ARM template at subscription scope with the resource groups `pdt` and
-  `pdt-shared`, the external ID tag on `pdt`, the managed identity `pdt-autoidm` in `pdt` with a
-  federated credential for AutoIDM's token of this customer only (`pdtIssuer`, `pdtSubject`), and
-  the role assignments of the grant on both groups for that identity. AutoIDM's multi-tenant
+- `azure-grant.json`: an ARM template at subscription scope with the resource groups `pdt`,
+  `pdt-shared`, and `pdt-data`, tagged `pdt-lifecycle=retain` so that no destroy deletes them, the
+  external ID tag on `pdt`, the managed identity `pdt-autoidm` in `pdt` with a federated credential
+  for AutoIDM's token of this customer only (`pdtIssuer`, `pdtSubject`), and the role assignments
+  of the grant on the three groups for that identity. AutoIDM's multi-tenant
   service principal `principalObjectId` gets only Reader on `pdt`, so a token for another
   customer cannot act here. The output `identityClientId` names the identity.
 - `google-cloud-grant.sh`: a Cloud Shell script that makes the service account `pdt-autoidm` with
@@ -145,8 +146,8 @@ def azure_assignments(group: str) -> dict:
 
 def azure_template() -> dict:
     groups = []
-    for group in ("pdt", deploy_azure.SHARED_GROUP):
-        tags = {"managed-by": "pdt"}
+    for group in deploy_azure.GRANT_GROUPS:
+        tags = dict(deploy_azure.STORE_TAGS)
         if group == "pdt":
             tags[grants.EXTERNAL_ID_TAG] = "[parameters('externalId')]"
         groups.append({"type": "Microsoft.Resources/resourceGroups", "apiVersion": "2022-09-01",
@@ -166,7 +167,7 @@ def azure_template() -> dict:
                 "description": "The subject of AutoIDM's identity tokens for your customer"}},
             "location": {"type": "string", "defaultValue": "[deployment().location]"}},
         "resources": [*groups, azure_identity(),
-                      *(azure_assignments(group) for group in ("pdt", deploy_azure.SHARED_GROUP))],
+                      *(azure_assignments(group) for group in deploy_azure.GRANT_GROUPS)],
         "outputs": {"identityClientId": {"type": "string",
                                          "value": IDENTITY_OUTPUT.format("clientId")}}}
 
@@ -186,6 +187,7 @@ def google_script() -> str:
         for role, permissions in deploy_google_cloud.GRANT_CUSTOM_ROLES.items())
     name = deploy_google_cloud.GRANT_NAME
     runner = deploy_google_cloud.GRANT_RUNNER
+    builder = deploy_google_cloud.BUILDER
     return f"""#!/usr/bin/env bash
 # Lets AutoIDM deploy and run the jobs of pdt in one Google Cloud project (managed-by=pdt).
 # Run it in Cloud Shell with the values from the AutoIDM Connect page:
@@ -198,6 +200,7 @@ set -euo pipefail
 NUMBER="$(gcloud projects describe "$PDT_PROJECT" --format='value(projectNumber)')"
 ACCOUNT="{name}@$PDT_PROJECT.iam.gserviceaccount.com"
 RUNNER="{runner}@$PDT_PROJECT.iam.gserviceaccount.com"
+BUILDER="{builder}@$PDT_PROJECT.iam.gserviceaccount.com"
 POOL="{name}"
 DESCRIPTION="managed-by=pdt {grants.EXTERNAL_ID_TAG}=$PDT_EXTERNAL_ID"
 gcloud services enable iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com \\
@@ -246,6 +249,12 @@ if ! gcloud iam service-accounts describe "$RUNNER" --project "$PDT_PROJECT" >/d
     --display-name "pdt job runner" --description "managed-by=pdt"
 fi
 gcloud iam service-accounts add-iam-policy-binding "$RUNNER" --project "$PDT_PROJECT" \\
+  --member "serviceAccount:$ACCOUNT" --role roles/iam.serviceAccountUser --format=none
+if ! gcloud iam service-accounts describe "$BUILDER" --project "$PDT_PROJECT" >/dev/null 2>&1; then
+  gcloud iam service-accounts create {builder} --project "$PDT_PROJECT" \\
+    --display-name "{deploy_google_cloud.BUILDER_DISPLAY_NAME}" --description "managed-by=pdt"
+fi
+gcloud iam service-accounts add-iam-policy-binding "$BUILDER" --project "$PDT_PROJECT" \\
   --member "serviceAccount:$ACCOUNT" --role roles/iam.serviceAccountUser --format=none
 echo "AutoIDM can now act as $ACCOUNT in $PDT_PROJECT."
 echo "Project number: $NUMBER. Enter it on the AutoIDM Connect page."

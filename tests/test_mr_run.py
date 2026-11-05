@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from pdt import (deploy, deploy_aws_batch, deploy_azure_container_apps, deploy_google_cloud,
-                 lifecycle)
+                 lifecycle, runs_cli)
 
 PRODUCTION = {"jobDefinitionArn": "arn:def:1", "revision": 1,
               "tags": {"managed-by": "pdt"},
@@ -33,6 +33,9 @@ class Clients(dict):
 
             def deregister_job_definition(self, jobDefinition):
                 owner.calls.append(("deregister", jobDefinition))
+
+            def terminate_job(self, jobId, reason):
+                owner.calls.append(("terminate", jobId))
 
         class Ecr:
             def batch_delete_image(self, repositoryName, imageIds):
@@ -88,6 +91,20 @@ def test_aws_mr_run_cleans_up_after_a_failure(aws):
     with pytest.raises(RuntimeError):
         deploy_aws_batch.mr_run({"name": "hr"}, Session(), "12")
     assert [call[0] for call in clients.calls][-2:] == ["deregister", "delete image"]
+    assert "terminate" not in [call[0] for call in clients.calls]
+
+
+def test_aws_mr_run_stops_its_job_when_the_follow_fails(aws, monkeypatch):
+    clients = aws()
+
+    def broken(*args):
+        raise RuntimeError("log read failed")
+
+    monkeypatch.setattr(deploy_aws_batch, "follow_job", broken)
+    with pytest.raises(RuntimeError):
+        deploy_aws_batch.mr_run({"name": "hr"}, Session(), "12")
+    assert [call[0] for call in clients.calls][-3:] == ["terminate", "deregister", "delete image"]
+    assert ("terminate", "job-1") in clients.calls
 
 
 def test_an_mr_run_on_the_windows_provider_says_so(monkeypatch, capsys):
@@ -151,6 +168,20 @@ def test_azure_mr_run_deletes_the_image_after_a_failure(monkeypatch):
     assert calls[-1][:3] == ("acr", "repository", "delete")
 
 
+def test_azure_mr_run_stops_its_execution_when_the_follow_fails(monkeypatch):
+    calls = azure(monkeypatch)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("log read failed")
+
+    monkeypatch.setattr(deploy_azure_container_apps, "logs", broken)
+    with pytest.raises(RuntimeError):
+        deploy_azure_container_apps.mr_run({"name": "hr"}, SETTINGS, "12")
+    assert ("containerapp", "job", "stop", "--name", "pdt-hr", "--resource-group", "pdt",
+            "--job-execution-name", "pdt-hr-x1") in calls
+    assert calls[-1][:3] == ("acr", "repository", "delete")
+
+
 GOOGLE_JOB = {"spec": {"template": {"spec": {"template": {"spec": {
     "serviceAccountName": "pdt-hr@p.iam.gserviceaccount.com",
     "containers": [{"image": "img@sha", "env": [
@@ -182,6 +213,7 @@ def google(monkeypatch, fail_execute=False):
                         lambda app, image, *args: calls.append(("build", image)))
     monkeypatch.setattr(deploy_google_cloud, "run_quiet", run_quiet)
     monkeypatch.setattr(deploy_google_cloud, "read_lines", lambda project, execution: [])
+    monkeypatch.setattr(deploy_google_cloud, "list_runs", lambda project, region, job: [])
     monkeypatch.setenv("PDT_RUN_ID", "cmd_1")
     monkeypatch.delenv("PDT_APP_ARGS", raising=False)
     monkeypatch.delenv("PDT_ARTIFACT_REGISTRY_REPO", raising=False)
@@ -197,7 +229,7 @@ def test_google_mr_run_makes_a_job_of_its_own_runs_it_once_and_deletes_it(monkey
     assert create[:4] == ("run", "jobs", "create", "pdt-hr-mr12")
     assert create[create.index("--image") + 1] == image
     assert create[create.index("--set-env-vars") + 1] == (
-        "PDT_STORAGE_URL=gs://b/hr/,PDT_TRIGGER=mr,PDT_MR_IID=12,PDT_RUN_ID=cmd_1")
+        "^\x1f^PDT_STORAGE_URL=gs://b/hr/\x1fPDT_TRIGGER=mr\x1fPDT_MR_IID=12\x1fPDT_RUN_ID=cmd_1")
     assert create[create.index("--set-secrets") + 1] == "PDT_ENV_JSON=pdt-hr-env:latest"
     assert create[create.index("--service-account") + 1] == "pdt-hr@p.iam.gserviceaccount.com"
     assert calls[2][:4] == ("run", "jobs", "execute", "pdt-hr-mr12")
@@ -212,5 +244,26 @@ def test_google_mr_run_deletes_the_job_and_the_image_after_a_failure(monkeypatch
     calls = google(monkeypatch, fail_execute=True)
     with pytest.raises(RuntimeError):
         deploy_google_cloud.mr_run({"name": "hr"}, True, "12")
+    assert [call[:3] for call in calls[-2:]] == [("run", "jobs", "delete"),
+                                                  ("artifacts", "docker", "images")]
+
+
+def test_google_mr_run_keeps_a_comma_inside_one_env_value(monkeypatch):
+    calls = google(monkeypatch)
+    monkeypatch.setenv("PDT_APP_ARGS", "--ids 1,2")
+    deploy_google_cloud.mr_run({"name": "hr"}, True, "12")
+    value = calls[1][calls[1].index("--set-env-vars") + 1]
+    delimiter, _, rest = value[1:].partition("^")
+    assert "PDT_APP_ARGS=--ids 1,2" in rest.split(delimiter)
+
+
+def test_google_mr_run_stops_its_execution_when_the_run_fails(monkeypatch):
+    calls = google(monkeypatch, fail_execute=True)
+    running = runs_cli.Run("pdt-hr-mr12-abc", None, None, "running")
+    monkeypatch.setattr(deploy_google_cloud, "list_runs",
+                        lambda project, region, job: [running] if job == "pdt-hr-mr12" else [])
+    with pytest.raises(RuntimeError):
+        deploy_google_cloud.mr_run({"name": "hr"}, True, "12")
+    assert ("run", "jobs", "executions", "cancel", "pdt-hr-mr12-abc") in [call[:5] for call in calls]
     assert [call[:3] for call in calls[-2:]] == [("run", "jobs", "delete"),
                                                   ("artifacts", "docker", "images")]

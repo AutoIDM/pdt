@@ -1167,14 +1167,15 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_repo = (repository_owned and not other_regional_jobs and not other_images
                        and not unmanaged_app_resource)
         delete_image = bool(app_images) and not delete_repo
+        granted = service_account_or_none(project, grant_email(GRANT_NAME, project)) is not None
         delete_sa = (sa == default_sa and service_account_owned(service_account)
-                     and not other_project_jobs and not unmanaged_app_resource)
+                     and not other_project_jobs and not unmanaged_app_resource and not granted)
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
         builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
         last_app = not other_project_jobs and not unmanaged_app_resource
-        delete_builder = last_app and builder_owned(builder_account)
+        delete_builder = last_app and builder_owned(builder_account) and not granted
         delete_builds = last_app and managed_by_pdt(builds_bucket)
 
     actions = []
@@ -1483,6 +1484,8 @@ def pause(app: dict, paused: bool, assume_yes: bool) -> int:
 
 
 MR_ENV_NAMES = ("PDT_RUN_ID", "PDT_APP_ARGS")
+# `gcloud topic escaping`: a value may hold a comma, and PDT_APP_ARGS holds no control character.
+ENV_DELIMITER = "\x1f"
 
 
 def mr_job_args(run_job: dict, iid: str) -> tuple[str, list[str], list[str]]:
@@ -1530,13 +1533,13 @@ def mr_run(app: dict, assume_yes: bool, iid: str) -> int:
         else:
             build_image(stage, image, region)
 
-    created = False
+    created = finished = False
     try:
         ensure_image(app, image, "linux/amd64", "Cloud Build" if cloud else "", None,
                      lambda: False, build)
         args = ["run", "jobs", "create", mr_job, "--image", image, "--region", region,
                 "--project", project, "--max-retries", "0", "--labels", "managed-by=pdt",
-                "--set-env-vars", ",".join(values)]
+                "--set-env-vars", f"^{ENV_DELIMITER}^" + ENV_DELIMITER.join(values)]
         if account:
             args += ["--service-account", account]
         if secrets:
@@ -1546,6 +1549,7 @@ def mr_run(app: dict, assume_yes: bool, iid: str) -> int:
         output = run_quiet("run", "jobs", "execute", mr_job, "--region", region, "--project",
                            project, "--wait", "--format=json",
                            slow=f"running: Cloud Run job {console.value(mr_job)}")
+        finished = True
         try:
             execution = execution_run(json.loads(output or "null") or {})
         except (ValueError, KeyError):
@@ -1554,6 +1558,11 @@ def mr_run(app: dict, assume_yes: bool, iid: str) -> int:
             runs_cli.print_line(line)
         return 0 if execution.status == "succeeded" else 1
     finally:
+        if created and not finished:
+            for run in list_runs(project, region, mr_job):
+                if run.status == "running":
+                    run_quiet("run", "jobs", "executions", "cancel", run.id, "--region", region,
+                              "--project", project, "--quiet")
         if created:
             run_quiet("run", "jobs", "delete", mr_job, "--region", region, "--project", project,
                       "--quiet")

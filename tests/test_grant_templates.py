@@ -54,16 +54,19 @@ def test_each_account_value_is_a_substitution():
                 assert isinstance(item, dict) or "${" not in item
 
 
-def test_the_azure_template_assigns_the_roles_on_the_two_groups_only():
+def test_the_azure_template_assigns_the_roles_on_the_three_groups_only():
     template = grant_templates.azure_template()
     groups = [item for item in template["resources"]
               if item["type"] == "Microsoft.Resources/resourceGroups"]
-    assert [item["name"] for item in groups] == ["pdt", deploy_azure.SHARED_GROUP]
+    assert [item["name"] for item in groups] == [
+        "pdt", deploy_azure.SHARED_GROUP, deploy_azure.STORE_GROUP]
     assert groups[0]["tags"]["autoidm-external-id"] == "[parameters('externalId')]"
+    for group in groups:
+        assert deploy_azure.retained(group)
     deployments = [item for item in template["resources"]
                    if item["type"] == "Microsoft.Resources/deployments"]
     assert [item["resourceGroup"] for item in deployments] == [
-        "pdt", "pdt", deploy_azure.SHARED_GROUP]
+        "pdt", "pdt", deploy_azure.SHARED_GROUP, deploy_azure.STORE_GROUP]
     for deployment in deployments[1:]:
         assignments = deployment["properties"]["template"]["resources"]
         roles = [assignment["properties"]["roleDefinitionId"] for assignment in assignments]

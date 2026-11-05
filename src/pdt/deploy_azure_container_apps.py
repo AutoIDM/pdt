@@ -65,7 +65,7 @@ from pdt.deploy_azure import (
     held_token_store, list_remaining,
     managed_by_pdt, managed_secret, note_if_unreadable, other_pdt_apps, owned_by, preflight,
     portal_url, purge_secret, report_shared_kept, require_managed, resource_id, retail_price,
-    revoke_role, run_basis, run_quiet, secret_actions, secret_name,
+    retained, revoke_role, run_basis, run_quiet, secret_actions, secret_name,
     secret_reads, secret_scope, secret_state, secret_versions, store_condition, store_description,
     store_exists, store_plan, store_reads, store_settings, store_url, store_usage, workspace_keys,
     workspace_resource,
@@ -750,7 +750,15 @@ def mr_run(app: dict, settings: dict, iid: str) -> int:
         name = (execution or {}).get("name")
         console.done(f"Started execution {console.value(name)} of {console.value(job)} with "
                      f"image {console.value(image)}.")
-        return logs(app, settings, ["--follow"], new=lambda run: run.id == name)
+        try:
+            return logs(app, settings, ["--follow"], new=lambda run: run.id == name)
+        except BaseException:
+            if name:
+                run_quiet("containerapp", "job", "stop", "--name", job,
+                          "--resource-group", settings["resource_group"],
+                          "--job-execution-name", name,
+                          slow=f"stopping: Container Apps Job execution {console.value(name)}")
+            raise
     finally:
         run_quiet("acr", "repository", "delete", "--name", settings["registry"],
                   "--repository", image_name, "--yes")
@@ -1373,16 +1381,17 @@ def environment_release(settings: dict) -> Release:
         return Release(note=f"Container Apps environment {console.value(environment)} is your "
                             "own; pdt leaves it as it is")
     resource = environment_resource(settings)
+    group = arm_get(settings["token"], arm_url(shared_group_id(settings)),
+                    ("group", "show", "--name", environment.resource_group))
     if resource is None:
-        group = arm_get(settings["token"], arm_url(shared_group_id(settings)),
-                        ("group", "show", "--name", environment.resource_group))
-        return Release(group=managed_by_pdt(group) and not other_environments(settings))
+        return Release(group=managed_by_pdt(group) and not retained(group)
+                       and not other_environments(settings))
     if not managed_by_pdt(resource):
         return Release()
     users = environment_users(settings, settings["token"])
     if users:
         return Release(note=users_note(settings, users))
-    return Release(environment=True, group=not other_environments(settings))
+    return Release(environment=True, group=not retained(group) and not other_environments(settings))
 
 
 def users_note(settings: dict, users: dict[str, int]) -> str:

@@ -18,3 +18,8 @@ def test_another_app_or_a_group_pdt_did_not_make_blocks_deletion():
     assert not deploy_azure.group_can_be_deleted(GROUP, [OWNED], ["other-app"])
     assert not deploy_azure.group_can_be_deleted({"name": "pdt", "tags": {}}, [OWNED], [])
     assert not deploy_azure.group_can_be_deleted(GROUP, None, [])
+
+
+def test_a_group_the_grant_made_is_never_deleted():
+    granted = {"name": "pdt", "tags": {"managed-by": "pdt", "pdt-lifecycle": "retain"}}
+    assert not deploy_azure.group_can_be_deleted(granted, [OWNED], [])
