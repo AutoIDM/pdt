@@ -576,6 +576,18 @@ def test_a_checkin_names_the_boot_time_the_service_start_and_the_os(machine, por
     assert body["service_started"].endswith("Z")
     assert body["boot_time"] is None or body["boot_time"] < body["service_started"]
     assert 0 < len(body["os"]) <= 200
+    assert body["machine_id"] == service.machine_id()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="reads /etc/machine-id")
+def test_the_machine_id_is_the_linux_machine_id(monkeypatch):
+    monkeypatch.setattr(service.Path, "read_text", lambda *_args, **_kwargs: "0123abcd\n")
+    assert service.machine_id() == "0123abcd"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="reads IOPlatformUUID")
+def test_the_machine_id_is_the_same_on_each_read():
+    assert service.machine_id() and service.machine_id() == service.machine_id()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="reads /proc/stat")

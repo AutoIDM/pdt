@@ -265,8 +265,29 @@ def os_name() -> str:
     return platform.platform()[:200]
 
 
+def machine_id() -> str | None:
+    """The ID that stays the same for this computer when pdt registers it again."""
+    try:
+        if os.name == "nt":
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography",
+                                0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+                found = str(winreg.QueryValueEx(key, "MachineGuid")[0])
+        elif sys.platform == "darwin":
+            text = subprocess.run(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                                  capture_output=True, text=True, timeout=10).stdout
+            found = next(line.split('"')[-2] for line in text.splitlines()
+                         if '"IOPlatformUUID"' in line)
+        else:
+            found = Path("/etc/machine-id").read_text(encoding="utf-8")
+    except (OSError, StopIteration, IndexError, subprocess.SubprocessError):
+        return None
+    return found.strip()[:200] or None
+
+
 def computer_facts() -> dict[str, str | None]:
-    return {"boot_time": boot_time(), "service_started": when(time.time()), "os": os_name()}
+    return {"boot_time": boot_time(), "service_started": when(time.time()), "os": os_name(),
+            "machine_id": machine_id()}
 
 
 @dataclass
