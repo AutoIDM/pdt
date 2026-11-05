@@ -1060,6 +1060,29 @@ def test_an_mr_run_of_an_app_that_pins_an_older_pdt_is_refused(machine, portal, 
     assert f"pdt-cli {service_runner.MR_STATE_VERSION} or newer" in result["message"]
 
 
+@pytest.mark.parametrize("dependencies, old", [
+    ("dependencies = ['pdt-cli[apps]==0.1.13']", "0.1.13"),
+    ('dependencies = [\n#     "requests",\n#     "pdt_cli <= 0.1.12",\n# ]', "0.1.12"),
+    ('dependencies = ["pdt-cli<0.1.14"]', "0.1.14"),
+    ('dependencies = ["PDT-CLI[apps] === 0.1.9 ; python_version >= \'3.12\'"]', "0.1.9"),
+    ('dependencies = ["pdt-cli>=0.1.10"]', None),
+    ('dependencies = ["pdt-cli~=0.1.13"]', None),
+    ('dependencies = ["pdt-cli-extra==0.1.0"]', None),
+    ('dependencies = ["pdt-cli[apps]==0.1.14"]', None),
+])
+def test_the_mr_pin_check_reads_the_script_metadata(tmp_path, dependencies, old):
+    (tmp_path / "hr").mkdir()
+    (tmp_path / "hr" / "run.py").write_text(
+        f"import os\n# /// script\n# requires-python = \">=3.12\"\n# {dependencies}\n# ///\n",
+        encoding="utf-8")
+    problem = service_runner.mr_copy_problem({"commit": "a" * 40}, tmp_path, "hr", "a" * 40)
+    if old is None:
+        assert problem == ""
+        return
+    line = 6 if "\n" in dependencies else 4
+    assert problem.startswith(f"hr/run.py line {line} pins pdt-cli {old}.")
+
+
 def test_an_mr_with_no_copy_is_refused(machine, portal, monkeypatch):
     portal.serve_copies()
     child(monkeypatch, "raise SystemExit('this must not run')")
