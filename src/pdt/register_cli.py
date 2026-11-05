@@ -68,20 +68,14 @@ PLATFORM_NAMES = {"win32": "windows", "darwin": "macos"}
 
 
 def restrict_folder(folder: Path) -> None:
-    """`service_access.restrict_folder` with FOLDER_SDDL, so from the moment each file made in it
-    exists, SYSTEM and Administrators can open it and the account that runs this can read it."""
     service_access.restrict_folder(folder, FOLDER_SDDL)
 
 
 def write_key(path: Path, key: Ed25519PrivateKey) -> None:
-    """Write the key through a temporary file in the same folder, so `path` holds a whole key
-    or nothing. The temporary file is readable by its owner alone on POSIX, and takes the
-    access list of the folder (`restrict_folder`) on Windows."""
     config.write_text_atomically(path, autoidm.private_pem(key).decode(), newline="\n")
 
 
 def limit_folder(folder: Path, what: str) -> int:
-    """`restrict_folder`, with one error line that says what pdt did not do."""
     try:
         restrict_folder(folder)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as e:
@@ -144,8 +138,6 @@ def register(code: str | None, api_url: str | None, assume_yes: bool = False,
 
 
 def register_with_code(code: str, api_url: str) -> tuple:
-    """The answer of /v1/register, the key, the pending key file, and no user code. None as the
-    answer after one error line."""
     folder = autoidm.folder()
     code = code.strip().upper()
     digest = hashlib.sha256(code.replace("-", "").encode()).hexdigest()
@@ -223,8 +215,6 @@ def device_start_body(key: Ed25519PrivateKey) -> dict:
 
 
 def wait_for_decision(api_url: str, codes: dict) -> dict | None:
-    """The approved answer of /v1/device/poll, or None after one error line. A poll that gets no
-    answer tries again until the code expires."""
     interval = max(1, int(codes.get("interval") or DEFAULT_POLL_SECONDS))
     deadline = time.monotonic() + float(codes.get("expires_in") or 900)
     body = json.dumps({"user_code": codes["user_code"], "device_code": codes["device_code"]}).encode()
@@ -251,8 +241,6 @@ def wait_for_decision(api_url: str, codes: dict) -> dict | None:
 
 
 def approve_in_browser(api_url: str, body: dict) -> tuple[dict | None, str | None]:
-    """The device flow: the codes, the browser, and the wait. Returns the approved answer and the
-    user code, or None after one error line."""
     data = json.dumps(body).encode()
     try:
         codes = autoidm.answered(
@@ -295,8 +283,6 @@ def register_in_browser(api_url: str) -> tuple:
 
 
 def other_customer(customer: str) -> str | None:
-    """The customer that stops a registration of `customer`: the one the service settings name,
-    or, when `pdt register` would install the service, another registration of this computer."""
     from pdt import service, service_install
     try:
         settings = service_install.read_settings()
@@ -313,8 +299,6 @@ def other_customer(customer: str) -> str | None:
 
 def refuse_second_customer(answer: dict, key: Ed25519PrivateKey, api_url: str, pending: Path,
                            other: str) -> int:
-    """One computer with the service serves one customer. AutoIDM revokes the new installation,
-    and pdt deletes the new key."""
     from pdt import service
     new = autoidm.Registration(answer["installation_id"], api_url, key, "new")
     try:
@@ -328,8 +312,6 @@ def refuse_second_customer(answer: dict, key: Ed25519PrivateKey, api_url: str, p
 
 
 def service_wanted() -> bool:
-    """Whether this computer runs the project's jobs: the project has the provider `windows` or no
-    provider, or no project exists. A computer that only deploys to a cloud gets no service."""
     try:
         found = config.load_yaml(config.find_project() / config.PROJECT_FILE).get("platform")
     except config.ConfigError:
@@ -339,7 +321,6 @@ def service_wanted() -> bool:
 
 
 def install_here(customer: str, assume_yes: bool) -> int:
-    """The automatic install of `pdt register`. A person says yes once, and signs in no more."""
     from pdt import service, service_backends
     if not service_wanted():
         return 0
@@ -365,8 +346,6 @@ def grant_status(found: autoidm.Registration, place: str) -> dict:
 
 def connect_places(chosen: list[str], found: autoidm.Registration, assume_yes: bool,
                    pending: bool) -> int:
-    """Open the Connect page of each place that has no active grant, and wait for each. `--yes`,
-    a `pending` installation, and a run with no one to watch print the pages and do not wait."""
     places = sorted({*chosen, *grants.places_of_project()})
     waiting: dict[str, str] = {}
     for place in places:

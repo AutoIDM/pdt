@@ -41,7 +41,6 @@ KEEPALIVE_MESSAGE = '{"action": "keepalive"}'
 
 
 class Connection:
-    """One WebSocket connection, on its own thread."""
 
     def __init__(self, registration: autoidm.Registration, say: Callable[[str], None]) -> None:
         self.registration = registration
@@ -57,7 +56,6 @@ class Connection:
         self.said = ""
 
     def start(self, url: str) -> None:
-        """Set the address. The first call starts the thread."""
         with self.lock:
             self.url = url
         if self.thread is None:
@@ -120,8 +118,6 @@ class Connection:
             self.set_connected(False)
 
     def serve(self, connection) -> None:
-        """Read frames until the connection closes. A replacement opens first, so a command never
-        finds this computer with no connection."""
         from websockets.exceptions import ConnectionClosed
         replace_at = time.monotonic() + random.uniform(REPLACE_FIRST_SECONDS, REPLACE_LAST_SECONDS)
         keepalive_at = time.monotonic() + self.keepalive_seconds
@@ -155,8 +151,6 @@ class Connection:
 
 @dataclass
 class Schedule:
-    """Each timer of one registration, in seconds of `time.time()`. The intervals come from the
-    check-in answer."""
     poll_seconds: int = 30
     checkin_seconds: int = 900
     ws_poll_seconds: int = 300
@@ -221,7 +215,6 @@ class Schedule:
         self.retry_at = 0.0
 
     def checkin_failed(self, now: float) -> None:
-        """A growing random wait, which also covers the answers 429 and 503."""
         self.failures += 1
         most = min(BACKOFF_FIRST_SECONDS * 2 ** self.failures, BACKOFF_MOST_SECONDS)
         self.retry_at = now + random.uniform(most / 2, most)

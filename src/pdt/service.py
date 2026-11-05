@@ -47,7 +47,6 @@ from pdt.utils.email_auth import can_prompt
 LOG_LIMIT_BYTES = 1024 * 1024
 LOOP_SECONDS = 1.0
 RECOVER_SECONDS = 30
-# The most commands /v1/service/checkin answers with: a full answer means there can be more.
 CHECKIN_PAGE = 20
 MAX_LISTED_IDS = 100
 DOORBELL_TIMEOUT_SECONDS = 10
@@ -81,8 +80,6 @@ def service_account() -> str:
 
 
 def running_pid() -> int | None:
-    """The process of the service that runs now, or None. A service that ended with no chance to
-    clean up leaves the file, so the process must also run."""
     try:
         pid = json.loads(pid_path().read_text(encoding="utf-8"))["pid"]
     except (OSError, ValueError, KeyError, TypeError):
@@ -107,7 +104,6 @@ def write_state(state: dict) -> None:
 
 
 def say(message: str) -> None:
-    """A line for a person watching, and for the log file a service with no terminal leaves."""
     console.say(console.escape(message))
     path = log_path()
     try:
@@ -121,7 +117,6 @@ def say(message: str) -> None:
 
 
 def say_once(message: str) -> None:
-    """`say`, one time for each start of the service."""
     if message not in _said_once:
         _said_once.add(message)
         say(message)
@@ -129,7 +124,6 @@ def say_once(message: str) -> None:
 
 @contextmanager
 def one_service():
-    """Yield True while this process holds the lock of the machine's one service, else False."""
     folder = service_runner.service_folder()
     folder.mkdir(parents=True, exist_ok=True)
     with open(folder / "service.lock", "w") as handle:
@@ -169,8 +163,6 @@ def project_folders(settings: dict) -> list[Path]:
 
 
 def projects_of(settings: dict) -> dict[str, Path]:
-    """Each project the settings serve, by the name the portal uses. The first folder keeps a
-    name that two folders hold."""
     found: dict[str, Path] = {}
     for folder in project_folders(settings):
         name = managed_services.backend_name(folder.name)
@@ -187,9 +179,6 @@ def projects_of(settings: dict) -> dict[str, Path]:
 
 
 def choose_projects(wanted: str | None, current: dict) -> tuple[str, list[str]]:
-    """The projects folder and the named projects after an install. A folder that holds pdt.yml
-    is one named project, and any other folder is the projects folder. With no choice, an
-    install in a project names that project."""
     folder = current.get("projects") or str(service_runner.service_folder() / "projects")
     named = list(current.get("named_projects") or [])
     if wanted is None:
@@ -211,8 +200,6 @@ def choose_projects(wanted: str | None, current: dict) -> tuple[str, list[str]]:
 
 
 def project_record(name: str, root: Path) -> dict:
-    """One project of a check-in. AutoIDM refuses a whole check-in that holds one bad value, so
-    a name that fails its rule stays out, and delivery goes on."""
     try:
         folders = sorted(root.iterdir())
     except OSError:
@@ -286,8 +273,6 @@ def machine_served(settings: dict) -> Served | None:
 
 
 def refuse(served: Served, command_id: str, message: str, keep_journal: bool = False) -> None:
-    """Record a refusal, and report it. A refused result needs no earlier claim. A journal file
-    stays when it does not parse, or when it holds an earlier command with this ID."""
     result = service_runner.result_of("refused", message=message)
     if not keep_journal:
         service_runner.journal_write({
@@ -298,8 +283,6 @@ def refuse(served: Served, command_id: str, message: str, keep_journal: bool = F
 
 
 def locate(claims: dict, served: Served, settings: dict) -> Path | None:
-    """The project folder of a command on this computer. sync_down can act on a project that is
-    not here yet. Raises Refused."""
     project = claims["args"]["project"]
     root = projects_of(settings).get(project)
     if root is not None:
@@ -319,8 +302,6 @@ def locate(claims: dict, served: Served, settings: dict) -> Path | None:
 
 
 def accept(item: object, served: Served, settings: dict, pool: Pool) -> bool:
-    """Verify, claim, and queue one command of a check-in. False when the claim got no answer,
-    so the next check-in names this command in `claiming`."""
     command_id = item.get("command_id") if isinstance(item, dict) else None
     token = item.get("token") if isinstance(item, dict) else None
     if not (isinstance(command_id, str) and service_commands.COMMAND_ID.fullmatch(command_id)):
@@ -332,7 +313,6 @@ def accept(item: object, served: Served, settings: dict, pool: Pool) -> bool:
         refuse(served, command_id, f"The journal file of this command does not parse: {e}.", True)
         return True
     if entry is not None and entry.get("state") != "claiming":
-        # A report here would end the command at AutoIDM while it runs, so a repeat gets none.
         say(f"Refused a repeat of {command_id}: this computer already holds that command ID.")
         return True
     try:
@@ -354,7 +334,6 @@ def accept(item: object, served: Served, settings: dict, pool: Pool) -> bool:
 
 
 def claim(job: Job, claim_id: str, pool: Pool) -> bool:
-    """Send the claim, and act on its answer. Only a 2xx answer starts the command."""
     command_id = job.command_id
     try:
         service_runner.report(job.registration, command_id, fact="claimed", claim_id=claim_id)
@@ -380,7 +359,6 @@ def claim(job: Job, claim_id: str, pool: Pool) -> bool:
 
 
 def doorbell(url: str, etag: str | None) -> tuple[int, str | None]:
-    """GET the doorbell. Returns the status, and the new ETag on a 200. Status 0 means no answer."""
     import urllib.error
     import urllib.request
     try:
@@ -398,7 +376,6 @@ def doorbell(url: str, etag: str | None) -> tuple[int, str | None]:
 
 
 def set_clock(served: Served, server_time: object) -> None:
-    """Correct each token by the difference from AutoIDM's time."""
     try:
         moment = datetime.fromisoformat(str(server_time))
     except ValueError:
@@ -415,7 +392,6 @@ def set_clock(served: Served, server_time: object) -> None:
 
 
 def apply_key_sets(served: Served, key_sets: object) -> None:
-    """Each key set in order. A check that fails leaves the file as it is."""
     for token in key_sets if isinstance(key_sets, list) else []:
         try:
             served.keys_version, served.keys = service_commands.next_key_set(
@@ -456,7 +432,6 @@ def checkin_answer(served: Served, settings: dict, running: list[str], claiming:
 
 
 def check_in(served: Served, settings: dict, pool: Pool, state: dict) -> bool:
-    """One check-in. Returns True when a full answer means there can be more commands."""
     answer = checkin_answer(served, settings, pool.ids(), service_runner.claiming_ids(), state)
     state["last_checkin"] = time.time()
     state["status"] = answer.get("status")
@@ -482,7 +457,6 @@ def check_in(served: Served, settings: dict, pool: Pool, state: dict) -> bool:
 
 
 def apply_cancel(item: object, served: Served, pool: Pool) -> None:
-    """Stop a command only for a token that passes its check. A bad token is ignored and logged."""
     command_id = item.get("command_id") if isinstance(item, dict) else None
     token = item.get("token") if isinstance(item, dict) else None
     try:
@@ -496,7 +470,6 @@ def apply_cancel(item: object, served: Served, pool: Pool) -> None:
 
 
 def check(served: Served, settings: dict, pool: Pool, state: dict) -> None:
-    """One pass of delivery: the signals of the connection, the doorbell, and the check-in."""
     schedule = served.schedule
     now = time.time()
     connected, frames, wanted_at = served.connection.read()
@@ -524,14 +497,11 @@ def check(served: Served, settings: dict, pool: Pool, state: dict) -> None:
 
 
 def settings_mark(settings: dict) -> tuple:
-    """What the portal or this loop must act on when it changes."""
     return (settings.get("customer"), settings.get("projects"),
             tuple(settings.get("named_projects") or []))
 
 
 def current_settings(last: dict) -> dict | None:
-    """The settings on disk, or `last` while another process replaces the file, or None when
-    the file is gone."""
     try:
         found = read_settings()
     except InstallError:
@@ -595,9 +565,6 @@ def one_customer_message(customer: str) -> str:
 
 
 def access_problem(settings: dict) -> bool:
-    """Refuse a program folder or a project folder that a non-administrator can change. It prints
-    one error line and the next steps. A person with no administrator rights runs only as that
-    person."""
     if not service_access.is_admin():
         return False
     folders = []
@@ -621,8 +588,6 @@ def access_problem(settings: dict) -> bool:
 
 
 def settings_to_serve() -> dict | None:
-    """The settings on disk. With none on disk, it writes them from the one registration this
-    computer holds. None after one error line."""
     try:
         settings = read_settings()
     except InstallError as e:
@@ -658,7 +623,6 @@ def write_data_folders() -> None:
 
 
 def run(stop: threading.Event) -> int:
-    """The loop of the service, until `stop` is set. It needs only a registration."""
     settings = settings_to_serve()
     if settings is None:
         return 1
@@ -692,7 +656,6 @@ def install_next_step() -> str:
 
 
 def require_admin(action: str) -> bool:
-    """False after one error line and the exact next command."""
     if service_access.is_admin():
         return True
     if os.name == "nt":
@@ -706,7 +669,6 @@ def require_admin(action: str) -> bool:
 
 
 def ask_access(assume_yes: bool) -> bool:
-    """The access statement, and one question. `--yes` accepts it."""
     console.say(console.escape(ACCESS_STATEMENT))
     if assume_yes:
         return True
@@ -739,7 +701,6 @@ def wait_first_checkin(started: float) -> bool:
 
 def install_for(customer: str, projects: str | None, backend: str | None,
                 proxy: str | None) -> int:
-    """Steps 5 to 10 of the contract's `pdt service install`. It runs again without harm."""
     try:
         current = read_settings() or {}
     except InstallError:
@@ -816,7 +777,6 @@ def show_settings(settings: dict) -> None:
 
 
 def start() -> int:
-    """`pdt service start`: start the installed service through its service manager."""
     if not require_admin("start"):
         return 1
     try:
@@ -920,7 +880,6 @@ def remove(assume_yes: bool) -> int:
 
 
 def status_record() -> dict:
-    """What `pdt service status --json` prints."""
     settings = read_settings()
     if settings is None:
         return {"installed": False}

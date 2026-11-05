@@ -52,7 +52,6 @@ MAX_RUNNING = 4
 OUTPUT_SECONDS = 10
 STOP_SECONDS = 10
 MAX_MESSAGE = 4096
-# The contract allows 200 KiB of text, and the body limit counts the JSON form of it.
 OUTPUT_LIMIT = 200 * 1024
 OUTPUT_KEEP_SECONDS = 7 * 24 * 3600
 MIN_SECRET_CHARACTERS = 6
@@ -66,7 +65,6 @@ EVENT_SOURCE = "pdt-service"
 EVENT_IDS = {"claimed": 1000, "started": 1001, "result": 1002}
 EVENTLOG_INFORMATION_TYPE = 4
 NOT_FOR_A_CHILD = set(autoidm.SECRET_NAMES)
-# OS values of the Windows process calls.
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 CREATE_SUSPENDED = 0x4
 STILL_ACTIVE = 259
@@ -89,8 +87,6 @@ def output_path(command_id: str) -> Path:
 
 
 def journal_read(command_id: str) -> dict | None:
-    """The entry of a command, or None when none exists. A file that does not parse raises
-    ValueError, so the caller refuses that command."""
     try:
         text = journal_path(command_id).read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -129,8 +125,6 @@ def claiming_ids() -> list[str]:
 
 def write_event(command_id: str, fact: str, operation: str, requested_by: object,
                 outcome: str | None) -> None:
-    """One line in the Windows Event Log or in syslog, which outlives the journal. A failure here
-    never changes a command."""
     line = (f"command={command_id} fact={fact} operation={operation} "
             f"requested_by={requested_by} outcome={outcome or '-'}")
     write_log_line(line, EVENT_IDS[fact])
@@ -243,7 +237,6 @@ def child_env(base: dict[str, str], project: Path | None,
 
 
 def env_files(project: Path | None, app: str | None) -> list[Path]:
-    """The served project's .env files, nearest first, as `pdt run` reads them."""
     if project is None:
         return []
     folders = [project / app, project] if app else [project]
@@ -251,8 +244,6 @@ def env_files(project: Path | None, app: str | None) -> list[Path]:
 
 
 def env_file_values(project: Path | None, app: str | None) -> dict[str, str]:
-    """The values of `env_files`. A copy holds no .env, so the service passes them to the child
-    of `run_mr` in its environment."""
     values: dict[str, str] = {}
     for path in env_files(project, app):
         for name, value in dotenv_values(path, encoding="utf-8-sig").items():
@@ -261,7 +252,6 @@ def env_file_values(project: Path | None, app: str | None) -> dict[str, str]:
 
 
 def secret_values(texts) -> list[bytes]:
-    """Each value to mask, longest first, so a longer value is not half replaced by a shorter one."""
     found = {text.encode() for text in texts if text and len(text) >= MIN_SECRET_CHARACTERS}
     return sorted(found, key=len, reverse=True)
 
@@ -273,8 +263,6 @@ def mask(data: bytes, secrets: list[bytes]) -> bytes:
 
 
 def safe_cut(data: bytes, cut: int, secrets: list[bytes], final: bool) -> int:
-    """`cut`, or an earlier position, so no secret value crosses it. Unless `final`, the end of
-    `data` can also be the start of a value that the next read finishes."""
     for secret in secrets:
         start = data.find(secret, max(0, cut - len(secret) + 1))
         if start != -1 and start < cut:
@@ -288,9 +276,6 @@ def safe_cut(data: bytes, cut: int, secrets: list[bytes], final: bool) -> int:
 
 
 def next_chunk(data: bytes, secrets: list[bytes] = (), final: bool = True) -> tuple[str, int]:
-    """The longest masked start of `data`, up to halves of OUTPUT_LIMIT, whose JSON form fits the
-    limit, and the bytes it used. It ends at a whole UTF-8 character, unless `data` holds no whole
-    one and `final` is set. It uses no byte when more output can finish a character or a value."""
     size = OUTPUT_LIMIT
     while True:
         cut = safe_cut(data, min(size, len(data)), secrets, final or size < len(data))
@@ -316,14 +301,12 @@ class Job:
     registration: autoidm.Registration
     project: Path | None
     clock: Clock = field(default_factory=Clock)
-    # Values to mask, for what the child prints.
     known_values: list[str] = field(default_factory=list)
     cancel: threading.Event = field(default_factory=threading.Event)
     interrupt: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     offset: int = 0
     seq: int = 0
-    # The process that an earlier service started, when this job follows one.
     adopted_pid: int | None = None
 
     @property
@@ -351,9 +334,6 @@ def report(registration: autoidm.Registration, command_id: str, **facts) -> dict
 
 
 def send_result(registration: autoidm.Registration, command_id: str, result: dict) -> bool:
-    """Send a result the journal holds. False when a later try can help: no answer, a 401 of a
-    registration that can come back, or a 5xx. AutoIDM keeps the first result, so a repeat is a
-    success, and another 4xx will not change."""
     message = result.get("message")
     sent = {**result, "message": message[:MAX_MESSAGE] if message else None}
     try:
@@ -385,8 +365,6 @@ def finish(job: Job, result: dict) -> None:
 
 
 def send_output(job: Job, final: bool = False) -> bool:
-    """Send one chunk of the output file. True when a chunk went up. A failed send changes
-    nothing for the run: the offset stays, and the same chunk goes again."""
     secrets = secret_values(job.known_values)
     longest = max((len(secret) for secret in secrets), default=0)
     wanted = OUTPUT_LIMIT + longest
@@ -422,7 +400,6 @@ def masked_log(job: Job) -> bytes:
 
 
 def log_tail(job: Job) -> str:
-    """The end of the output, for the message of a failed result."""
     try:
         return masked_log(job)[-MAX_MESSAGE:].decode("utf-8", "replace").strip()
     except OSError:
@@ -430,7 +407,6 @@ def log_tail(job: Job) -> str:
 
 
 def upload_log(job: Job) -> tuple[str | None, str | None]:
-    """The key of the full masked output, or a message that says why it did not go up."""
     try:
         data = masked_log(job)
     except OSError as e:
@@ -449,8 +425,6 @@ def upload_log(job: Job) -> tuple[str | None, str | None]:
 
 
 def artifact_key(job: Job, output: Path) -> tuple[str | None, str | None]:
-    """Zip the output folder and upload it. Returns the key, or a message that says why no artifact
-    went up. An empty folder gives no upload and no message."""
     if output.is_symlink() or output.is_junction() or not output.is_dir():
         return None, None
     root = output.resolve()
@@ -482,8 +456,6 @@ def work_root() -> Path:
 
 
 def write_copy_files(job: Job, work: Path) -> Path:
-    """Write the copy of the merge request into `work/project`, and name the project as the
-    portal names it, because the folder's own name is a command ID."""
     target = work / "project"
     unit = f"mr={job.args['mr_iid']}"
     found = copies.get(job.registration, job.args["project"], unit)
@@ -500,7 +472,6 @@ def write_copy_files(job: Job, work: Path) -> Path:
 
 
 def deployed_storage_url(project: Path, app: str) -> dict[str, str]:
-    """PDT_STORAGE_URL of the app deployed on this computer, so an MR run reads its state/."""
     if deployed_platform_of(project, app).get("provider") != "windows":
         return {}
     from pdt import deploy_windows
@@ -509,7 +480,6 @@ def deployed_storage_url(project: Path, app: str) -> dict[str, str]:
 
 
 def command_input(job: Job) -> str:
-    """The value of a `secrets_set`, which AutoIDM gives once to the claim holder."""
     entry = journal_read(job.command_id) or {}
     try:
         answer = autoidm.post(job.registration, "/v1/commands/input", {
@@ -534,7 +504,6 @@ def deployed_platform_of(project: Path | None, app: str) -> dict:
 
 
 def stop_deployed(job: Job) -> str:
-    """What a cancel of a deployed run did to the job. Only the windows provider can stop it."""
     app = job.args["app"]
     platform = deployed_platform_of(job.project, app)
     place = managed_services.place(platform)
@@ -556,10 +525,8 @@ class Prepared:
     cwd: Path
     env: dict[str, str]
     argv: list[str]
-    # PDT_OUTPUT_DIR of the run, when its folder goes up as an artifact.
     output: Path | None = None
     work: Path | None = None
-    # What the child reads on stdin.
     stdin: bytes | None = None
 
 
@@ -568,7 +535,6 @@ def output_folder(app_dir: Path, command_id: str) -> Path:
 
 
 def prepare(job: Job, base: dict[str, str]) -> Prepared:
-    """The folder, the env, and the command line of a job."""
     operation = OPERATIONS[job.operation]
     app = job.args.get("app")
     argv = service_commands.command_line(job.operation, job.args)
@@ -624,7 +590,6 @@ def prepare(job: Job, base: dict[str, str]) -> Prepared:
 
 
 def known_values_of(project: Path | None, app: str | None) -> list[str]:
-    """The values to mask: the .env values of the project, and the proxy password."""
     values = list(env_file_values(project, app).values())
     from pdt import service_install
     password = service_install.proxy_password()
@@ -657,7 +622,6 @@ def execute(job: Job) -> None:
 
 
 def start_child(job: Job, prepared: Prepared) -> tuple[subprocess.Popen, int | None]:
-    """The child, and on Windows the job object that holds it and each process it starts."""
     path = output_path(job.command_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(copies.long_path(path), "ab") as out:
@@ -685,8 +649,6 @@ def start_child(job: Job, prepared: Prepared) -> tuple[subprocess.Popen, int | N
 
 
 def wait_for(job: Job, running, stop) -> tuple[str | None, str | None]:
-    """Send output while `running()`. Returns the outcome and message of what stopped it, or two
-    Nones when the process ended by itself."""
     deadline = time.monotonic() + job.claims["limit_seconds"]
     next_output = time.monotonic() + OUTPUT_SECONDS
     while running():
@@ -745,8 +707,6 @@ def run_child(job: Job, prepared: Prepared) -> None:
 
 def final_result(job: Job, outcome: str, code: int | None, message: str | None,
                  prepared: Prepared) -> dict:
-    """The result, with the keys of the log and the artifact of a `run` or a `run_mr`, and the
-    artifact of `artifacts`."""
     log_key, artifact = None, None
     if job.operation in ("run", "run_mr") and outcome != "refused":
         log_key, problem = upload_log(job)
@@ -762,8 +722,6 @@ def final_result(job: Job, outcome: str, code: int | None, message: str | None,
 
 
 def follow_adopted(job: Job) -> None:
-    """Follow a process an earlier service started. It cannot read that process's exit code, so
-    the result says what it knows."""
     pid, entry = job.adopted_pid, journal_read(job.command_id)
     created = entry.get("process_created")
 
@@ -779,8 +737,6 @@ def follow_adopted(job: Job) -> None:
 
 
 class Pool:
-    """The commands this service holds: the ones that wait for a free slot, and the ones that run,
-    with the ones an earlier service started whose process still runs."""
 
     def __init__(self) -> None:
         self.waiting: list[Job] = []
@@ -818,7 +774,6 @@ class Pool:
                 del self.running[command_id]
 
     def cancel(self, command_id: str) -> bool:
-        """False when this service holds no such command."""
         for job in list(self.waiting):
             if job.command_id == command_id:
                 self.waiting.remove(job)
@@ -844,8 +799,6 @@ class Pool:
 
 def job_of_entry(entry: dict, registration: autoidm.Registration, clock: Clock,
                  project_of) -> Job | None:
-    """A Job for a journal entry that an earlier service left. The journal holds the signed token,
-    and only an administrator can write the journal, so the claims need no new check of the time."""
     try:
         claims = jwt.decode(entry["token"], options={"verify_signature": False})
         operation = OPERATIONS[claims["operation"]]
@@ -862,8 +815,6 @@ def job_of_entry(entry: dict, registration: autoidm.Registration, clock: Clock,
 
 
 def recover(pool: Pool, registration: autoidm.Registration, clock: Clock, project_of) -> None:
-    """Report each journal entry that lost its service, send each result AutoIDM did not get, and
-    remove output past its time. An entry whose process still runs goes on in the pool."""
     held = {*(job.command_id for job in pool.waiting), *pool.running}
     now = time.time()
     for entry in journal_entries():
@@ -894,7 +845,6 @@ def recover(pool: Pool, registration: autoidm.Registration, clock: Clock, projec
 
 def send_late_output(entry: dict, registration: autoidm.Registration, clock: Clock,
                      project_of) -> None:
-    """Send the output that a failed send left behind, before the late result."""
     job = job_of_entry(entry, registration, clock, project_of)
     if job is not None:
         send_all_output(job)

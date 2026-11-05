@@ -33,8 +33,6 @@ if not completion.COMPLETING:
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
-# The same names as service_backends.BACKENDS. Tab completion builds this parser, and it skips
-# the module that holds them.
 BACKENDS = ("windows", "systemd", "launchd", "cron")
 CLOUD_CLIS = {
     "aws": "deploy_aws.py",

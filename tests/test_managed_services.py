@@ -85,7 +85,6 @@ def test_managed_services_belongs_in_pdt_yml(project):
 
 ALL_ON = (f"managed_services:\n  customer: {CUSTOMER}\n  send_logs: true\n"
           "  send_artifacts: true\n")
-# Writes a file in the run's storage output folder, prints a line, and exits with argv[1].
 WORK = ("import os, pathlib, sys\n"
         "out = pathlib.Path('.pdt/runs', os.environ['PDT_RUN_ID'], 'output')\n"
         "out.mkdir(parents=True)\n"
@@ -476,7 +475,6 @@ def test_a_cloud_job_in_workspace_reports_the_name_of_the_deploying_project(
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     stage = deploy_common.stage_build_context(config.merged_app("report"))
     assert (stage / config.PROJECT_NAME_FILE).read_text() == "example\n"
-    # The image copies the staged context to /workspace and sets PDT_PROJECT to it.
     workspace = tmp_path / "workspace"
     shutil.copytree(stage, workspace)
     monkeypatch.setenv("PDT_PROJECT", str(workspace))
@@ -492,7 +490,6 @@ def test_a_cloud_job_in_workspace_reports_the_name_of_the_deploying_project(
 
 
 class Started:
-    """A subprocess.Popen for run_job that records how it started the command."""
 
     calls: list[dict] = []
     stdout = io.BytesIO()
@@ -865,8 +862,6 @@ def test_a_reader_thread_pdt_cannot_start_leaves_the_output_unpiped_and_keeps_th
 
 
 def failing_start(monkeypatch, *names, times=None):
-    """Make Thread.start raise for a thread whose target has one of `names`, at most `times`
-    times."""
     real_start = threading.Thread.start
     failed = []
 

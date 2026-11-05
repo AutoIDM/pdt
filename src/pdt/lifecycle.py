@@ -350,8 +350,7 @@ def run_job(app: str, provider: str, command: list[str], cwd: Path,
             env: dict[str, str] | None = None, deployed: bool = False) -> int:
     """Run `command` as one run of the job. `deployed` is True for the deployed job (a cloud
     image, the Windows task), whose trigger is `manual` when PDT_TRIGGER says so, else
-    `schedule`; a local `pdt run` is `manual`. A run of a merge request (PDT_TRIGGER=mr) is `mr`,
-    with the merge request number from PDT_MR_IID as `mr_iid`."""
+    `schedule`; a local `pdt run` is `manual`."""
     asked = os.environ.get(TRIGGER_ENV)
     if asked == MR_TRIGGER:
         trigger = MR_TRIGGER
@@ -427,9 +426,6 @@ DRAIN_SECONDS = 2
 
 def copy_output(children: queue.Queue[subprocess.Popen], log: Path) -> threading.Thread | None:
     def copy() -> None:
-        """Print the command's output and keep it in `log`, up to one byte over
-        MAX_UPLOAD_BYTES so the upload skips a longer log. A failed write to stdout or to `log`
-        stops only that write, so the command never waits on a pipe that no one reads."""
         child = children.get()
         out = None
         try:

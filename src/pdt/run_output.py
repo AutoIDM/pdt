@@ -33,7 +33,6 @@ def run_id(app: str, number: int) -> str:
 
 
 def run_folder(app: str, identity: str) -> str | None:
-    """The folder `runs/<time>-<run id>/` of the run, or None when it left no output."""
     for entry in pdt_json("storage", app, "ls", "runs", "--json") or []:
         name = str(entry.get("name") or "").rstrip("/")
         if entry.get("type") == "directory" and name.endswith(f"-{identity}"):
@@ -42,12 +41,10 @@ def run_folder(app: str, identity: str) -> str | None:
 
 
 def copy(app: str, number: int, target: Path) -> int:
-    """Copy each file of the output folder of run `number` into `target`. Returns the count."""
     return copy_run(app, run_id(app, number), target)
 
 
 def copy_run(app: str, identity: str, target: Path) -> int:
-    """Copy each file of the output folder of the run `identity` into `target`."""
     folder = run_folder(app, identity)
     if folder is None:
         return 0

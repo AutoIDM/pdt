@@ -552,8 +552,6 @@ def run_job_identity(run_job: dict) -> tuple[str, str]:
 
 
 def secret_value(project: str, sid: str) -> str | None:
-    """The latest value of the secret, or None when it has none. A read that fails for another
-    reason stops the command, so a deploy never replaces a value it could not read."""
     proc = subprocess.run(
         [GCLOUD, "secrets", "versions", "access", "latest",
          "--secret", sid, "--project", project],
@@ -1484,13 +1482,10 @@ def pause(app: dict, paused: bool, assume_yes: bool) -> int:
     return 0
 
 
-# The run values an MR run takes from the hosted runner's child env.
 MR_ENV_NAMES = ("PDT_RUN_ID", "PDT_APP_ARGS")
 
 
 def mr_job_args(run_job: dict, iid: str) -> tuple[str, list[str], list[str]]:
-    """The service account, the env values, and the secrets of the job of a merge request: those
-    of the deployed job, with the trigger `mr` and the run values of this run."""
     spec = (run_job.get("spec", {}).get("template", {}).get("spec", {})
             .get("template", {}).get("spec", {}))
     container = (spec.get("containers") or [{}])[0]
@@ -1510,10 +1505,6 @@ def mr_job_args(run_job: dict, iid: str) -> tuple[str, list[str], list[str]]:
 
 
 def mr_run(app: dict, assume_yes: bool, iid: str) -> int:
-    """Build the app of this folder as image `<app>-mr<iid>`, create the Cloud Run job
-    `pdt-<app>-mr<iid>` with the deployed job's account, env, secret, and storage and no schedule,
-    run it once, print its log, and delete the job and the image, also after a failure. The
-    deployed job stays as it is."""
     name = app["name"]
     project, region = project_region(app)
     project = preflight(app, project, assume_yes)
@@ -1573,7 +1564,6 @@ def mr_run(app: dict, assume_yes: bool, iid: str) -> int:
 
 
 def kill(app: dict, assume_yes: bool) -> int:
-    """Cancel each running execution of the app's Cloud Run job."""
     project, region = project_region(app)
     project = preflight(app, project, assume_yes)
     job = f"pdt-{app['name']}"
@@ -1610,7 +1600,6 @@ def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
 
 
 GRANT_NAME = "pdt-autoidm"
-# Named roles, and no project IAM write: the identity cannot give itself or anyone more.
 GRANT_ROLES = ("roles/run.admin", "roles/cloudscheduler.admin", "roles/artifactregistry.admin",
                "roles/secretmanager.viewer", "roles/cloudbuild.builds.editor",
                "roles/iam.serviceAccountViewer", "roles/serviceusage.serviceUsageConsumer",

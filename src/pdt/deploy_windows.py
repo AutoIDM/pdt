@@ -162,7 +162,6 @@ def schedule_trigger(cron: str) -> tuple[str, str]:
     )
 
 
-# The folders of %ProgramData%\\pdt that pdt itself owns, so an earlier app folder has no such name.
 OWN_FOLDERS = {"apps", "cache", "pwsh", "registrations", "service", "ssh", "versions"}
 
 
@@ -171,8 +170,6 @@ def project_folder_name() -> str:
 
 
 def app_folder(app_name: str) -> Path:
-    """The app's folder under %ProgramData%\\pdt, by project, because two projects can name an
-    app the same."""
     return config.machine_data_home() / "apps" / project_folder_name() / app_name
 
 
@@ -613,8 +610,6 @@ def pause(app: dict, paused: bool) -> int:
 
 
 def kill(app: dict) -> int:
-    """Stop the task. Its wrapper holds the run in a job object that ends the whole process tree
-    when the wrapper ends (run_windows_task.py)."""
     try:
         powershell, name = _managed_task(app)
         _run(powershell, f"Stop-ScheduledTask -TaskName {_ps_string(name)} -ErrorAction Stop",
@@ -757,14 +752,11 @@ def list_runs(app_name: str) -> list[runs_cli.Run]:
 
 
 def env_line(name: str, value: str) -> str:
-    """A .env line that python-dotenv reads back as `value`."""
     quoted = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
     return f'{name}="{quoted}"'
 
 
 def set_env_line(app: dict, name: str | None) -> int:
-    """Write one value, read from stdin, into the `.env` file of the app folder: it replaces the
-    line of that name, or adds one. The task reads the file at each run."""
     if not name:
         console.error(f"{console.value('pdt secrets <app> set')} needs the env var name, "
                       "with the value on stdin.")

@@ -500,8 +500,7 @@ class Store:
 
     def _end(self, run: Run, push_state: bool, released: bool = False) -> None:
         """Upload the run's output, then push state/ or abort. The lock is
-        released on every path, and a failed upload propagates. `released`
-        means the lock went already."""
+        released on every path, and a failed upload propagates."""
         try:
             if any(file.is_file() for file in run.output.rglob("*")):
                 self.push(run.output, run.folder)

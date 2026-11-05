@@ -28,8 +28,6 @@ from pathlib import Path
 
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "config.yml"
-# A cloud image holds the project in /workspace, so a deploy writes the project's name in this
-# file next to the image's pdt.yml (deploy_common.stage_build_context).
 PROJECT_NAME_FILE = ".pdt-project-name"
 
 PROVIDERS = ("google-cloud", "azure", "aws", "windows")
@@ -170,8 +168,6 @@ def find_project(start: Path | None = None) -> Path:
 
 
 def project_name() -> str:
-    """The name the project's events give it: its folder's name, or in a cloud job the name
-    in PROJECT_NAME_FILE, which is the name of the folder the deploy ran in."""
     project = find_project()
     saved = project / PROJECT_NAME_FILE
     if saved.is_file():
@@ -546,10 +542,8 @@ def locked(path: Path):
                 fcntl.flock(fd, fcntl.LOCK_UN)
 
 
-# The exit code of a command that the pdt service started, when another process holds a lock.
 LOCKED_EXIT = 75
 SERVICE_CHILD_ENV = "PDT_SERVICE_CHILD"
-# Names the project folder whose locks a run takes, for a service run from a temporary folder.
 LOCK_PROJECT_ENV = "PDT_LOCK_PROJECT"
 
 
@@ -558,8 +552,6 @@ class LockHeld(ConfigError):
 
 
 def try_lock(path: Path, project: Path):
-    """An open file that holds an exclusive lock on `path`, or LockHeld. Closing it releases
-    the lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "w")
     try:
@@ -576,7 +568,6 @@ def try_lock(path: Path, project: Path):
 
 
 def lock_folder() -> tuple[Path, Path]:
-    """The folder of this project's locks, and the project folder."""
     project = Path(os.environ.get(LOCK_PROJECT_ENV, "").strip() or find_project())
     state = project / STATE_DIR
     state.mkdir(exist_ok=True)
@@ -586,7 +577,6 @@ def lock_folder() -> tuple[Path, Path]:
 
 @contextmanager
 def run_lock(app: str):
-    """A run holds the lock of its app, and the project's lock only while it takes that lock."""
     folder, project = lock_folder()
     whole = try_lock(folder / "project.lock", project)
     try:
@@ -601,8 +591,6 @@ def run_lock(app: str):
 
 @contextmanager
 def project_lock(apps: list[str] | tuple[str, ...] = ()):
-    """`sync_down`, `sync_up`, `deploy`, and `destroy` hold the project's lock for the full
-    command, and the lock of each app in `apps`."""
     folder, project = lock_folder()
     held = [try_lock(folder / "project.lock", project)]
     try:
@@ -932,8 +920,6 @@ def runs_per_month(cron: str) -> float:
     return per_day * days / 12
 
 
-# Set by the pdt service for a child that runs from a copy, which holds no .env file. It
-# names the served project's .env files, whose values the child gets in its environment.
 SERVICE_ENV_FILES_ENV = "PDT_SERVICE_ENV_FILES"
 
 

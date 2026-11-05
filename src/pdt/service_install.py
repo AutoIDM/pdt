@@ -60,8 +60,6 @@ def settings_path() -> Path:
 
 
 def read_settings() -> dict | None:
-    """The settings, or None with no file or while another process replaces it. A version pdt does
-    not know raises InstallError that names the file."""
     try:
         found = json.loads(settings_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -81,7 +79,6 @@ def write_settings(settings: dict) -> None:
 
 
 def split_proxy_password(url: str) -> tuple[str, str | None]:
-    """`url` with no password, and the password."""
     parts = urllib.parse.urlsplit(url)
     if not parts.password:
         return url, None
@@ -115,7 +112,6 @@ def find_proxy(wanted: str | None) -> dict[str, str]:
 
 
 def service_env(settings: dict) -> dict[str, str]:
-    """The env values the service sets for itself and for each child."""
     data = autoidm.data_folder()
     env = {"UV_SYSTEM_CERTS": "1", "UV_NO_CONFIG": "1",
            "UV_CACHE_DIR": str(data / "cache" / "uv"),
@@ -143,7 +139,6 @@ def run_uv(uv: str, *args: str, env: dict[str, str]) -> None:
 
 
 def make_environment(folder: Path, uv: str, python_version: str, settings: dict) -> None:
-    """A copy of uv, Python from uv, and, off Windows, an empty virtual environment."""
     target_uv = uv_of(folder)
     target_uv.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(uv, target_uv)
@@ -183,7 +178,6 @@ def find_uv() -> str:
 
 
 def install_running(settings: dict) -> Path:
-    """The Python of this version in the data folder, installed once."""
     folder = version_folder(__version__)
     python = python_of(folder)
     if (folder / READY_FILE).is_file() and python.is_file():

@@ -77,9 +77,6 @@ def reads_state(files: list[dict]) -> bool:
 
 
 def output_folder(app_dir: Path, local: Path) -> Path:
-    """PDT_OUTPUT_DIR when `lifecycle.run_job` named it for AutoIDM, else the run's output
-    folder that managed_services.output_folder picks, with `local`/output in place of a folder
-    pdt cannot write in."""
     named = os.environ.get("PDT_OUTPUT_DIR", "").strip()
     folder = (Path(named) if named
               else managed_services.output_folder(app_dir, storage.RUN_ID, local / "output"))

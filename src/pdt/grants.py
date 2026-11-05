@@ -16,7 +16,6 @@ from pathlib import Path
 from pdt import config
 
 PLACE_HELP = "<provider>:<account, subscription, or project>:<region>"
-# Only a memory folder keeps a cloud login's own files off the disk.
 MEMORY_FOLDER = Path("/dev/shm")
 EXTERNAL_ID_TAG = "autoidm-external-id"
 BOUNDARY_ENV = "PDT_PERMISSIONS_BOUNDARY"
@@ -31,8 +30,6 @@ def split_place(place: str) -> tuple[str, str, str]:
 
 
 def memory_folder(prefix: str) -> Path:
-    """A new folder in memory for a cloud CLI's own login files. A runner with no such folder
-    stops, because it never writes cloud credentials to disk."""
     import tempfile
     if not MEMORY_FOLDER.is_dir():
         raise RuntimeError(f"{MEMORY_FOLDER} does not exist, so the hosted runner cannot keep this "
@@ -41,8 +38,6 @@ def memory_folder(prefix: str) -> Path:
 
 
 def credentials(place: str, answer: dict) -> dict[str, str]:
-    """The env of a child from the credentials answer of AutoIDM for `place`. Raises
-    RuntimeError when the answer is not for that place's provider, or a login fails."""
     provider, scope, region = split_place(place)
     found = answer.get(provider) if isinstance(answer, dict) else None
     if answer.get("provider") != provider or not isinstance(found, dict):
@@ -75,7 +70,6 @@ def credentials(place: str, answer: dict) -> dict[str, str]:
 
 
 def places_of_project() -> list[str]:
-    """Each place the project's apps deploy to, or deployed to, with no question and no login."""
     from pdt import managed_services
     from pdt.service_commands import PLACE
     found = set()

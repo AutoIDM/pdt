@@ -681,14 +681,10 @@ def secret_contents(values: dict[str, str]) -> str:
 
 
 def keeps_secret() -> bool:
-    """Whether this deploy leaves the app's deployed secret as it is: a cloud worker's."""
     return os.environ.get(KEEP_SECRET_ENV, "").strip() != ""
 
 
 def keep_paused(app: dict, exists: bool, paused_now: Callable[[], bool]) -> None:
-    """A deploy of the hosted runner keeps a paused job paused. The runner deploys AutoIDM's
-    copy, which holds no `pause: true` of an earlier `pdt pause` on another runner. `paused_now`
-    reads the deployed state, and runs only when that matters."""
     if keeps_secret() and exists and not app["pause"]:
         app["pause"] = paused_now()
 
@@ -731,8 +727,6 @@ def gather_secrets(app: dict) -> dict[str, str]:
 
 
 def split_registration(current: str | None) -> tuple[dict[str, str], str | None]:
-    """The AutoIDM cloud registration in a deployed secret, and the secret without it. pdt
-    keeps the registration itself, so `pdt secrets` never shows, copies, or replaces it."""
     from pdt.utils import autoidm
     try:
         values = json.loads(current or "")
@@ -745,9 +739,6 @@ def split_registration(current: str | None) -> tuple[dict[str, str], str | None]
 
 
 def reads_registration() -> bool:
-    """Whether a deploy reads the app's secret for an AutoIDM cloud registration even when
-    the app has no env vars: the project sets `managed_services`. A worker's deploy lists the
-    secret's versions, to keep its reference, and reads no value."""
     from pdt import managed_services
     if keeps_secret():
         return True
@@ -758,12 +749,6 @@ def reads_registration() -> bool:
 
 
 def registration_secrets(current: str | None) -> dict[str, str]:
-    """The AutoIDM cloud registration a deploy puts in the app's secret beside gather_secrets.
-    It is the one the deployed secret (`current`) holds, which pdt leaves as it is while it is
-    for the customer that `managed_services` names. Else, when the project sets
-    `managed_services` and this computer is registered for its customer, it is one empty value
-    per name, which make_registration fills after the plan. Else it is {}: the job sends
-    nothing."""
     from pdt import managed_services
     from pdt.utils import autoidm
     if keeps_secret():
@@ -789,10 +774,6 @@ def registration_secrets(current: str | None) -> dict[str, str]:
 
 
 def make_registration(values: dict[str, str], platform: dict) -> dict[str, str]:
-    """`values` with a new AutoIDM cloud registration in place of the empty values of
-    registration_secrets: a new key pair, and POST /v1/installations signed by this computer's
-    registration. The private key goes only into the secret, never to a file. When AutoIDM
-    makes none, a warning, and `values` without the empty names."""
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     from pdt import managed_services
@@ -860,8 +841,7 @@ def secret_changes(current: str | None, values: dict[str, str]) -> list[tuple[st
 def run_secrets(action: str, app: dict, current: str | None,
                 write: Callable[[dict[str, str]], None], assume_yes: bool,
                 name: str | None = None) -> int:
-    """`pdt secrets <app> diff|save|get|set`, once the provider has read the deployed secret.
-    The AutoIDM cloud registration in it (split_registration) stays as it is."""
+    """`pdt secrets <app> diff|save|get|set`, once the provider has read the deployed secret."""
     from pdt.deploy import proceed
     from pdt.utils import autoidm
     kept, current = split_registration(current)

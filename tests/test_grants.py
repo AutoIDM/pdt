@@ -18,7 +18,6 @@ def not_found(*_args, **_kwargs):
 
 
 class FakeIam:
-    """IAM in memory, enough for a grant: each call appends to `calls`."""
 
     def __init__(self):
         self.calls, self.policies, self.role, self.attached = [], {}, None, []

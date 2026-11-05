@@ -41,8 +41,6 @@ MAX_PATH_CHARACTERS = 1024
 ROOT = "root"
 UNIT = re.compile(r"root|app=(?!\.{1,2}$)(?!-)[A-Za-z0-9._-]{1,128}|mr=[0-9]{1,9}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
-# pdt's own state, the lock files of config.locked, and a run's storage. Git may track none of
-# these and still reach the copy, and no zip may write them on a computer.
 ALWAYS_OUT = (".git", ".pdt", ".env", ".pdt-state", ".pdt-project-name", "*.yml.lock")
 LEFT_OUT = (*BUILD_EXCLUDES, *ALWAYS_OUT, "*.env", "*.csv", "*.tsv", "*.xlsx", "*.ppk",
             "known_hosts", ".secrets*", "artifacts")
@@ -97,7 +95,6 @@ def is_link(path: Path) -> bool:
 
 
 def entry_of(root: Path, relative: str) -> tuple[dict | None, str]:
-    """One entry of a `files` list, or None and why it stays out."""
     path = Path(long_path(root / relative))
     if is_link(path):
         return None, "a link"
@@ -110,8 +107,6 @@ def entry_of(root: Path, relative: str) -> tuple[dict | None, str]:
 
 
 def collect(root: Path) -> tuple[list[dict], dict[str, str]]:
-    """The sorted `files` list of the folder `root`, and each path it left out, with the reason.
-    A folder left out counts as one path."""
     if in_clone(root):
         return collect_tracked(root)
     files, left_out = [], {}
@@ -168,7 +163,6 @@ def app_names(root: Path) -> list[str]:
 
 
 def split_units(files: list[dict], apps: list[str]) -> dict[str, list[dict]]:
-    """The files of each unit: each app folder is `app=<name>`, and the rest is `root`."""
     units: dict[str, list[dict]] = {ROOT: []}
     for app in apps:
         units[f"app={app}"] = []
@@ -179,7 +173,6 @@ def split_units(files: list[dict], apps: list[str]) -> dict[str, list[dict]]:
 
 
 def build_zip(root: Path, files: list[dict]) -> bytes:
-    """The zip of `files` from `root`. It stops when a file changed after `collect` read it."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zipped:
         for entry in files:
@@ -195,7 +188,6 @@ def build_zip(root: Path, files: list[dict]) -> bytes:
 
 
 def path_problem(path: object) -> str:
-    """Why a copy may not hold `path`, or ""."""
     if not (isinstance(path, str) and 0 < len(path) <= MAX_PATH_CHARACTERS):
         return "is not a path of at most 1024 characters"
     if "\\" in path or ":" in path or any(ord(character) < 32 for character in path):
@@ -212,7 +204,6 @@ def path_problem(path: object) -> str:
 
 
 def checked_files(entry: dict) -> list[dict]:
-    """The `files` of a unit from the network, after each path and size passes."""
     files = entry.get("files") if isinstance(entry, dict) else None
     if not isinstance(files, list):
         raise CopyError("the copy has no list of files")
@@ -235,8 +226,6 @@ def checked_files(entry: dict) -> list[dict]:
 
 
 def unpack(data: bytes, entry: dict, target: Path) -> None:
-    """Write the files of the zip `data` of one unit into the folder `target`. It writes nothing
-    unless the zip has the unit's SHA-256, holds exactly its files, and no file exists there."""
     if hashlib.sha256(data).hexdigest() != entry.get("sha256"):
         raise CopyError(f"the zip of {entry.get('unit')} does not have the SHA-256 of its copy")
     files = checked_files(entry)
@@ -280,7 +269,6 @@ def unpack(data: bytes, entry: dict, target: Path) -> None:
 
 
 def inside(root: Path, relative: str) -> Path:
-    """`root / relative`, when no link in an existing folder or file leads out of `root`."""
     path = root / relative
     if not path.resolve().is_relative_to(root.resolve()) or path.is_symlink():
         raise CopyError(f"{relative} leads out of {root}")
@@ -288,7 +276,6 @@ def inside(root: Path, relative: str) -> Path:
 
 
 def download(entry: dict) -> bytes:
-    """The zip of one unit, from the presigned GET of the answer."""
     limit = entry.get("size")
     if not (type(limit) is int and 0 <= limit <= MAX_COPY_BYTES):
         raise CopyError(f"the copy of {entry.get('unit')} has no valid size")
@@ -307,13 +294,11 @@ def download(entry: dict) -> bytes:
 
 
 def fetch(entry: dict, target: Path) -> list[dict]:
-    """Download one unit of an answer and write its files into the new folder `target`."""
     unpack(download(entry), entry, target)
     return entry["files"]
 
 
 def get(found: autoidm.Registration, project: str, unit: str | None = None) -> list[dict]:
-    """The current units of a project at AutoIDM: one unit, or `root` and each app."""
     body = {"version": 1, "project": project, **({"unit": unit} if unit else {})}
     units = autoidm.post(found, "/v1/copies/get", body).get("units")
     return [entry for entry in units or [] if isinstance(entry, dict)
@@ -321,7 +306,6 @@ def get(found: autoidm.Registration, project: str, unit: str | None = None) -> l
 
 
 def put(upload: dict, data: bytes, digest: str) -> None:
-    """Send the zip to the presigned PUT of /v1/copies/start."""
     headers = upload.get("headers") if isinstance(upload.get("headers"), dict) else {}
     request = urllib.request.Request(
         autoidm.check_url(upload.get("url"), "/v1/copies/start"), data=data, method="PUT",
@@ -339,8 +323,6 @@ def put(upload: dict, data: bytes, digest: str) -> None:
 
 def send(found: autoidm.Registration, project: str, unit: str, folder: Path,
          files: list[dict]) -> str:
-    """Send one unit through /v1/copies/start, the presigned PUT, and /v1/copies/finish.
-    Returns the SHA-256 of the zip."""
     data = build_zip(folder, files)
     if len(data) > MAX_COPY_BYTES:
         raise CopyError(f"The zip of {unit} of {project} is {len(data)} bytes, over the limit of "
@@ -357,8 +339,6 @@ def send(found: autoidm.Registration, project: str, unit: str, folder: Path,
 
 
 def customer_problem(pdt_yml: bytes | None, customer: str) -> str:
-    """Why a copy's pdt.yml must not serve `customer`, or "". A pdt.yml that names no customer
-    is fine: pdt adds the customer after it writes the files."""
     if pdt_yml is None:
         return ""
     import yaml

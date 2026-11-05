@@ -171,7 +171,6 @@ def _print(message: str | Text, hang: int | None = None, stderr: bool = False) -
 
 
 def to_file(file: IO[str]) -> None:
-    """Print every line as plain text to `file` from now on, for a service with no terminal."""
     global _console, _errors
     _console = MainThreadConsole(file=file, color_system=None, highlight=False, soft_wrap=True,
                                  emoji=False)

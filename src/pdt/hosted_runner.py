@@ -44,12 +44,10 @@ ENV_KEEP = ("PATH", "PATHEXT", "HOME", "USERPROFILE", "SYSTEMROOT", "COMSPEC", "
             "XDG_CACHE_HOME", "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_TOOL_DIR",
             "UV_SYSTEM_CERTS", "SSL_CERT_FILE")
 USER = "pdtjob"
-# The child of a `run_mr`: `python -m pdt.hosted_runner mr-run APP IID` in the project folder.
 MR_RUN = "mr-run"
 
 
 class Runner:
-    """The API URL, the command, and the run token of the one command of this task."""
 
     def __init__(self, api_url: str, command_id: str) -> None:
         self.api_url = api_url.rstrip("/")
@@ -73,7 +71,6 @@ class Runner:
 
 
 def stop_at(seconds: float) -> None:
-    """End the process when the run limit passes, whatever the child does."""
     def end() -> None:
         console.error(f"The hosted runner passed its time limit of {console.value(round(seconds))} "
                       "seconds.")
@@ -85,7 +82,6 @@ def stop_at(seconds: float) -> None:
 
 
 def checked(answer: dict) -> tuple[str, dict, int]:
-    """The operation, the args, and the run limit of a claim answer. Raises Refused."""
     operation, args = answer.get("operation"), answer.get("args")
     if not isinstance(operation, str) or operation not in OPERATIONS:
         raise Refused(f"pdt does not know the operation {operation!r}.")
@@ -106,7 +102,6 @@ def checked(answer: dict) -> tuple[str, dict, int]:
 
 
 def write_copy(answer: dict, project: Path) -> None:
-    """The units of the copy, in the project folder."""
     for entry in (answer.get("copy") or {}).get("units") or []:
         unit = entry.get("unit") if isinstance(entry, dict) else None
         if not (isinstance(unit, str) and copies.UNIT.fullmatch(unit)):
@@ -116,8 +111,6 @@ def write_copy(answer: dict, project: Path) -> None:
 
 def child_env(base: dict[str, str], project: Path, credentials: dict[str, str],
               extra: dict[str, str]) -> dict[str, str]:
-    """The env of the child: the allow list, the credentials, and pdt's own values. The runner's
-    own environment, the claim, and the run token stay out."""
     wanted = {name.upper() for name in ENV_KEEP}
     kept = {name: value for name, value in base.items() if name.upper() in wanted}
     # A copy holds customer files, so a uv.toml in one must not choose a package index.
@@ -127,8 +120,6 @@ def child_env(base: dict[str, str], project: Path, credentials: dict[str, str],
 
 
 def run_user() -> str | None:
-    """The account of the child: the runner stays root, so the child cannot read the runner's
-    memory or environment."""
     return USER if os.name != "nt" and os.geteuid() == 0 else None
 
 
@@ -152,8 +143,6 @@ def zipped_folder(folder: Path) -> bytes | None:
 
 def send_output(runner: Runner, log: Path, offset: int, secrets: list[bytes],
                 final: bool) -> tuple[int, bool]:
-    """Send the next chunks of the log. Returns the new offset and whether AutoIDM asked for a
-    cancel."""
     cancel = False
     while True:
         with log.open("rb") as handle:
@@ -169,7 +158,6 @@ def send_output(runner: Runner, log: Path, offset: int, secrets: list[bytes],
 
 
 def run(runner: Runner, answer: dict, work: Path) -> dict:
-    """Run the command of a claim answer in `work`, and return its result."""
     operation, args, limit = checked(answer)
     stop_at(limit + GRACE_SECONDS)
     project = work / "project"
@@ -178,7 +166,6 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
     (project / config.PROJECT_NAME_FILE).write_text(args["project"] + "\n", encoding="utf-8")
     app = args.get("app")
     if app:
-        # A record of the deploy lives on the computer that deployed, and the runner has none.
         state = project / config.STATE_DIR / "state"
         state.parent.mkdir(exist_ok=True)
         state.write_text(json.dumps({"deployed": [app]}) + "\n", encoding="utf-8")
@@ -224,7 +211,6 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
 def run_child(runner: Runner, argv: list[str], project: Path, env: dict[str, str], log: Path,
               value: str | None, user: str | None, limit: int,
               secrets: list[bytes]) -> tuple[int | None, str | None, str | None]:
-    """Run the child, send its output, and stop it at a cancel or the run limit."""
     import subprocess
     options = dict(service_runner.tree_options())
     if user:
@@ -259,8 +245,6 @@ def run_child(runner: Runner, argv: list[str], project: Path, env: dict[str, str
 
 
 def mr_run(app: str, iid: str) -> int:
-    """The child of a `run_mr`: run the job of the merge request in its cloud, then copy the
-    output of that run, `runs/<time>-<command ID>/` in the app's store, to PDT_OUTPUT_DIR."""
     code = deploy.mr_run(app, iid)
     try:
         run_output.copy_run(app, os.environ["PDT_RUN_ID"], Path(os.environ["PDT_OUTPUT_DIR"]))

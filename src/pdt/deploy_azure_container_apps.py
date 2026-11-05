@@ -702,7 +702,6 @@ def pause(app: dict, settings: dict, paused: bool) -> int:
 
 
 def kill(app: dict, settings: dict) -> int:
-    """Stop each running execution of the app's job."""
     job = f"pdt-{app['name']}"
     running = [run for run in list_runs(settings, job) if run.status == "running"]
     for run in running:
@@ -715,14 +714,10 @@ def kill(app: dict, settings: dict) -> int:
     return 0
 
 
-# The run values an MR run takes from the hosted runner's child env.
 MR_ENV_NAMES = ("PDT_RUN_ID", "PDT_APP_ARGS")
 
 
 def mr_run(app: dict, settings: dict, iid: str) -> int:
-    """Build the app of this folder as image `<app>-mr<iid>`, start one execution of the deployed
-    job with that image and the job's own env, secret, and storage, follow its log, and delete the
-    image, also after a failure. A start override changes no setting of the job."""
     job, current = find_job(settings, app["name"])
     if current is None:
         fail(f"{console.value(app['name'])} has no Container Apps Job yet; run "

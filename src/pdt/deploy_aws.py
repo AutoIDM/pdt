@@ -787,7 +787,6 @@ def login_error(exc: Exception) -> bool:
 
 def ensure_session(app: dict):
     region = app["platform"].get("region") or os.environ.get("AWS_REGION") or None
-    # A cloud worker's credentials are in its env, and pdt.yml names a profile of the customer's.
     profile = None if os.environ.get(BOUNDARY_ENV) else app["platform"].get("profile") or None
     if profile and profile not in boto3.Session().available_profiles:
         console.warn(f"AWS profile {console.value(repr(profile))} from your config is not on "
@@ -852,7 +851,6 @@ def preflight(sts, iam, expected_account: str, region: str,
         fail(f"configured AWS account {console.value(expected_account)} does not match "
              f"credentials ({console.value(account)})")
     source_arn = principal_arn(identity_arn, account)
-    # A cloud worker's grant fixes its actions, and leaves out iam:SimulatePrincipalPolicy.
     if source_arn.endswith(":root") or os.environ.get(BOUNDARY_ENV):
         return account, lambda: None
     policy = deployer_policy(actions, account, region)
@@ -916,7 +914,6 @@ def ensure_role(iam, name: str, service: str, policy_name: str,
         role = iam.get_role(RoleName=name)["Role"]
         if not has_managed_tag(role.get("Tags", []), "Key", "Value"):
             fail(f"IAM role {console.value(name)} exists but is not managed by PDT")
-        # A cloud worker may change only a role that has the grant's fixed maximum.
         if boundary:
             iam.put_role_permissions_boundary(RoleName=name, PermissionsBoundary=boundary)
         iam.update_assume_role_policy(
@@ -1284,11 +1281,7 @@ def delete_role(iam, name: str) -> None:
 GRANT_ROLE = "pdt-autoidm"
 GRANT_BOUNDARY = "pdt-autoidm-boundary"
 GRANT_SESSION_SECONDS = 3600
-# What the grant takes out of the printed deployer policy: it does not simulate the policy of the
-# login it holds. It reads and writes pdt's own secrets, logs, and data files, which the printed
-# policy scopes to names that start with pdt.
 GRANT_LEFT_OUT = {"iam:SimulatePrincipalPolicy"}
-# Each of these needs the boundary named in the request, so no role exceeds the fixed maximum.
 GRANT_BOUNDED = ["iam:CreateRole", "iam:DeleteRolePolicy", "iam:PutRolePermissionsBoundary",
                  "iam:PutRolePolicy"]
 
@@ -1300,14 +1293,12 @@ def grant_arns(account: str) -> dict[str, str]:
 
 
 def grant_denies(account: str) -> list[dict]:
-    """No action may change the identity itself or remove a boundary."""
     arns = grant_arns(account)
     return [{"Effect": "Deny", "Action": ["iam:*"], "Resource": [arns["role"], arns["policies"]]},
             {"Effect": "Deny", "Action": ["iam:DeleteRolePermissionsBoundary"], "Resource": ["*"]}]
 
 
 def grant_policy(account: str, region: str) -> dict:
-    """The printed deployer policy, less GRANT_LEFT_OUT, with GRANT_BOUNDED under the boundary."""
     from pdt.deploy_aws_batch import DEPLOYER_ACTIONS
     actions = sorted(set(DEPLOYER_ACTIONS) - GRANT_LEFT_OUT)
     statements = []
@@ -1323,7 +1314,6 @@ def grant_policy(account: str, region: str) -> dict:
 
 
 def grant_boundary(account: str) -> dict:
-    """The fixed maximum of each role AutoIDM makes: what the roles of `ensure_role` hold."""
     region = "*"
     logs = [arn.format(region=region, account=account) for arn in LOG_GROUP_ARNS]
     return {"Version": "2012-10-17", "Statement": [

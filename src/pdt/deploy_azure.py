@@ -774,10 +774,6 @@ def secret_state(settings: dict[str, str], sid: str, app_name: str,
 
 
 def granted_secret_value(settings: dict[str, str], sid: str) -> str | None:
-    """The secret's value, read after ensure_group_and_vault gave this login Key Vault Secrets
-    Officer, or None when the vault holds no such secret. A plan reads a secret that refuses
-    this login as none, and only a secret that is not there may lose the AutoIDM cloud
-    registration in it."""
     url = (f"https://{settings['vault']}.vault.azure.net/secrets/{sid}"
            f"?api-version={VAULT_API_VERSION}")
     command = ("keyvault", "secret", "show", "--vault-name", settings["vault"])
@@ -1258,7 +1254,6 @@ def main() -> int:
 
 
 GRANT_NAME = "pdt-autoidm"
-# Key Vault Secrets Officer reads and writes the secrets of pdt's own vaults in the two groups.
 GRANT_ROLES = ("Contributor", "Key Vault Reader", "Key Vault Secrets Officer")
 GRANT_ASSIGNS = ("AcrPull", "Key Vault Secrets User", "Key Vault Secrets Officer",
                  "Storage Blob Data Contributor")
@@ -1271,7 +1266,6 @@ def grant_groups(subscription: str) -> list[str]:
 
 
 def grant_condition() -> str:
-    """Role assignments the identity may add or delete: only the named roles a job needs."""
     ids = ", ".join(ROLE_IDS[role] for role in GRANT_ASSIGNS)
     return (f"((!(ActionMatches{{'{ROLE_WRITE}/write'}})) OR "
             f"(@Request[{ROLE_WRITE}:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {{{ids}}})) AND "
