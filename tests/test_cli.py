@@ -202,6 +202,20 @@ def test_a_run_number_at_the_project_root_is_not_an_app(project, monkeypatch, ca
     assert "no app named '3'" in capsys.readouterr().out
 
 
+def test_the_service_and_sync_commands_are_the_approved_set():
+    parser = cli.build_parser()
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    assert "grant" not in sub.choices and "register" in sub.choices
+
+    def actions(command):
+        return set(next(a for a in sub.choices[command]._actions
+                        if isinstance(a, argparse._SubParsersAction)).choices)
+
+    assert actions("service") == {"install", "start", "status", "remove"}
+    assert actions("sync") == {"up", "down"}
+    assert parser.parse_args(["run", "hello-world", "--kill"]).kill
+
+
 def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     add_app(project, "hello-world", "schedule: daily\n")
     calls = []
