@@ -367,6 +367,19 @@ def test_an_mr_run_reads_state_releases_the_lock_at_once_and_never_writes_state(
     assert store.open(run.folder + "report.csv").read() == b"a,b\n"
 
 
+def test_an_mr_run_that_pulls_and_pushes_state_itself_never_writes_state(store, tmp_path,
+                                                                          monkeypatch):
+    write(store, "state/count.txt", "1")
+    monkeypatch.setenv("PDT_TRIGGER", "mr")
+    local = tmp_path / "local"
+    lease = store.pull("state/", local)
+    (local / "count.txt").write_text("2")
+    store.push(local, "state/", lease)
+    store.push(local, "state/")
+    assert store.open("state/count.txt").read() == b"1"
+    assert LOCK not in store.ls("state")
+
+
 def test_an_mr_run_that_fails_leaves_another_runs_lock(store, tmp_path, monkeypatch):
     monkeypatch.setenv("PDT_TRIGGER", "mr")
     with pytest.raises(RuntimeError):
