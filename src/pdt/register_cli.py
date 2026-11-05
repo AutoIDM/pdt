@@ -340,8 +340,8 @@ def install_here(customer: str, assume_yes: bool) -> int:
     return service.install_for(customer, None, None, None)
 
 
-def grant_status(found: autoidm.Registration, place: str) -> dict:
-    return autoidm.post(found, "/v1/grants/status", {"version": 1, "place": place})
+def grant_status(found: autoidm.Registration, place: str, retry: bool = True) -> dict:
+    return autoidm.post(found, "/v1/grants/status", {"version": 1, "place": place}, retry)
 
 
 def connect_places(chosen: list[str], found: autoidm.Registration, assume_yes: bool,
@@ -374,7 +374,7 @@ def connect_places(chosen: list[str], found: autoidm.Registration, assume_yes: b
             time.sleep(GRANT_POLL_SECONDS)
             for place in list(waiting):
                 try:
-                    status = grant_status(found, place).get("status")
+                    status = grant_status(found, place, False).get("status")
                 except autoidm.AutoidmError:
                     continue
                 if status == "active":

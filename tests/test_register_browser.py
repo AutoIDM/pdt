@@ -179,6 +179,22 @@ def test_a_grant_that_never_becomes_active_says_not_granted(portal, monkeypatch,
     assert "Not granted" in capsys.readouterr().out
 
 
+def test_the_grant_wait_asks_once_each_poll_so_a_busy_answer_does_not_stretch_it(portal, monkeypatch):
+    poll_answers(portal, (200, APPROVED))
+    grant_answers(portal, "pending")
+    monkeypatch.setattr(register_cli, "can_prompt", lambda _interactive: True)
+    monkeypatch.setattr(grants, "places_of_project", lambda: [PLACE])
+    retries = []
+    real = register_cli.autoidm.post
+    monkeypatch.setattr(register_cli.autoidm, "post",
+                        lambda found, path, body, retry=True: retries.append(retry)
+                        or real(found, path, body, retry))
+    clock = iter(range(0, 10 ** 6, 300))
+    monkeypatch.setattr(register_cli.time, "monotonic", lambda: next(clock))
+    assert register_cli.register(None, portal.url) == 1
+    assert retries[-1] is False
+
+
 def test_yes_prints_the_connect_page_and_does_not_wait(portal, monkeypatch, capsys):
     poll_answers(portal, (200, APPROVED))
     grant_answers(portal, "pending")
