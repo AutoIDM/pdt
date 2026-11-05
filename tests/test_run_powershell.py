@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -282,6 +283,37 @@ def test_scripts_that_do_not_read_pdt_state_dir_leave_state_alone(app_dir, wrapp
 
     assert calls == [""]
     assert not stored_state(app_dir).exists()
+
+
+@pytest.mark.parametrize("runner", ["built-in", "from-scripts"])
+def test_a_merge_request_run_reads_state_and_never_writes_it(app_dir, wrapper, monkeypatch, runner):
+    from pdt import scaffold
+
+    (app_dir / "a.ps1").write_text("$env:PDT_STATE_DIR")
+    stored_state(app_dir).mkdir(parents=True)
+    (stored_state(app_dir) / "seen.txt").write_text("before\n")
+    monkeypatch.setenv("PDT_TRIGGER", "mr")
+    calls = []
+    if runner == "built-in":
+        monkeypatch.setattr(wrapper.subprocess, "run", stateful_pwsh(calls, {"a.ps1": 0}))
+        main = partial(wrapper.main, [str(app_dir)])
+    else:
+        run_py = app_dir / "run.py"
+        run_py.write_text(scaffold.RUN_PY_TEXT)
+        namespace = {"__file__": str(run_py), "__name__": "run_py"}
+        exec(compile(scaffold.RUN_PY_TEXT, str(run_py), "exec"), namespace)
+        monkeypatch.setitem(namespace, "ensure_pwsh", lambda: "/fake/pwsh")
+        monkeypatch.setattr(namespace["powershell"], "extract", lambda folder: {"files": [
+            {"file": "a.ps1", "localInvocations": [],
+             "envReads": [{"name": "PDT_STATE_DIR", "line": 1, "set": False}]}]})
+        monkeypatch.setattr(namespace["subprocess"], "run", stateful_pwsh(calls, {"a.ps1": 0}))
+        main = namespace["main"]
+
+    assert main() == 0
+
+    assert calls == ["before\n"]
+    assert sorted(path.name for path in stored_state(app_dir).iterdir()) == ["seen.txt"]
+    assert (stored_state(app_dir) / "seen.txt").read_text() == "before\n"
 
 
 def test_the_from_scripts_run_py_writes_into_the_output_folder_the_lifecycle_names(
