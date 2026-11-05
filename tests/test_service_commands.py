@@ -184,10 +184,12 @@ def test_the_table_is_the_spec_table():
 def test_no_arg_value_reaches_the_command_line_except_the_validated_fields():
     for name, operation in OPERATIONS.items():
         safe = {"project": "projectname", "app": "appname", "run": "12", "deployed": True,
-                "name": "TOKEN", "mr_iid": "12", "sha": "a" * 40, "app_args": "APPARGSVALUE"}
+                "name": "TOKEN", "mr_iid": "12", "sha": "a" * 40, "app_args": "APPARGSVALUE",
+                "timezone": "TIMEZONEVALUE"}
         argv = operation.argv({key: safe[key] for key in (*operation.required, *operation.optional)})
         assert "projectname" not in argv, name
         assert "APPARGSVALUE" not in argv, name
+        assert "TIMEZONEVALUE" not in argv, name
 
 
 def test_no_service_module_starts_a_shell():

@@ -393,7 +393,9 @@ def merged_app(name: str) -> dict:
         "app_profile": own.get("app_profile", entry.get("app_profile", "job")),
         "schedule": plan.get("schedule", job_key("schedule")),
         "job": own_job or entry_job,
-        "timezone": timezone,
+        "timezone": plan.get("timezone", timezone),
+        "timezone_set": any("timezone" in section
+                            for section in (own_job, own, entry_job, entry, platform, plan)),
         "platform": platform,
         "platform_from": platform_from,
         "config": {

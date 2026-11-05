@@ -202,6 +202,8 @@ def run(runner: Runner, answer: dict, work: Path) -> dict:
         extra["PDT_APP_ARGS"] = args["app_args"]
     if operation in KEEP_SECRET_OPERATIONS:
         extra[KEEP_SECRET_ENV] = "1"
+    if "timezone" in args:
+        extra[deploy.TIMEZONE_ENV] = args["timezone"]
     if operation == "deploy":
         extra[autoidm.RUNNER_ENV] = json.dumps({"api_url": runner.api_url, "command_id": runner.command_id,
                                                 "run_token": runner.run_token})
