@@ -77,7 +77,10 @@ STILL_ACTIVE = 259
 MR_STATE_VERSION = "0.1.14"
 # A requirement of the script metadata: its name, its extras, and its specifiers before any marker.
 REQUIREMENT = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*\(?([^;@)]*)\)?")
-SPECIFIER = re.compile(r"(===|==|<=|<)\s*v?([0-9][0-9A-Za-z.*+!-]*)")
+SPECIFIER = re.compile(r"(===|==|<=|<)\s*[vV]?([0-9][0-9A-Za-z.*+!_-]*)")
+# A PEP 440 release with an optional pre-release and post-release, enough to order pins.
+VERSION = re.compile(r"([0-9]+(?:\.[0-9]+)*)(?:[-_.]?(a|alpha|b|beta|c|rc|pre|preview)[-_.]?([0-9]*))?"
+                     r"(?:[-_.]?(post|rev|r)[-_.]?([0-9]*)|-([0-9]+))?", re.I)
 
 
 def now_text() -> str:
@@ -476,8 +479,17 @@ def work_root() -> Path:
     return folder
 
 
-def version_parts(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r"\d+", version)[:3])
+def version_key(version: str) -> tuple:
+    """An order of PEP 440 versions: a pre-release sorts before its release, a post-release
+    after it."""
+    found = VERSION.match(version)
+    if found is None:
+        return ((0,), 0, 0, 0)
+    release, pre, pre_number, post, post_number, implicit_post = found.groups()
+    parts = tuple(int(part) for part in release.split("."))
+    parts = parts + (0,) * (6 - len(parts))
+    post_value = int(post_number or implicit_post or 0) + 1 if post or implicit_post else 0
+    return (parts, 0 if pre else 1, int(pre_number or 0), post_value)
 
 
 def old_pdt_bound(requirement: object) -> tuple[str, str] | None:
@@ -486,15 +498,16 @@ def old_pdt_bound(requirement: object) -> tuple[str, str] | None:
     found = REQUIREMENT.match(requirement) if isinstance(requirement, str) else None
     if found is None or re.sub(r"[-_.]+", "-", found.group(1)).lower() != "pdt-cli":
         return None
-    least = version_parts(MR_STATE_VERSION)
+    least = version_key(MR_STATE_VERSION)
     for operator, version in SPECIFIER.findall(found.group(2)):
-        parts = version_parts(version)
         if version.endswith(".*"):
-            below = parts < least[:len(parts)]
+            prefix = version_key(version[:-2])[0]
+            size = len(version[:-2].split("."))
+            below = prefix[:size] < least[0][:size]
         elif operator == "<":
-            below = parts <= least
+            below = version_key(version) <= least
         else:
-            below = parts < least or (parts == least and not re.fullmatch(r"[0-9.]+", version))
+            below = version_key(version) < least
         if below:
             return requirement, version
     return None
@@ -528,7 +541,8 @@ def mr_copy_problem(entry: dict, project: Path, app: str, sha: str) -> str:
         return ""
     first = text.count("\n", 0, block.start())
     line = first + 1 + next((index for index, row in enumerate(block.group(0).splitlines())
-                             if old[0][0] in row and not row[1:].lstrip().startswith("#")), 0)
+                             if old[0][1] in row and re.search(r"pdt[-_.]+cli", row, re.I)
+                             and not row[1:].lstrip().startswith("#")), 0)
     return (f"{app}/run.py line {line} pins pdt-cli {old[0][1]}. A merge request run needs "
             f"pdt-cli {MR_STATE_VERSION} or newer, which keeps the state of the run apart from "
             "the state of the deployed job.\nNext steps:\n"
