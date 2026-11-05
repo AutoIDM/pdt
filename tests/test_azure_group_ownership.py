@@ -37,8 +37,7 @@ def test_destroy_empties_a_group_the_grant_made_and_keeps_the_group_and_its_iden
         {"id": "job", "name": "pdt-hr", "type": "Microsoft.App/jobs",
          "tags": {**tagged, "pdt-app": "hr"}},
     ]
-    reads = {("resource", "list"): resources, ("group", "show"): granted,
-             ("keyvault", "show-deleted"): {"name": "pdt-x"}}
+    reads = {("resource", "list"): resources, ("group", "show"): granted}
     deleted, purged, listed = [], [], []
     monkeypatch.setattr(deploy_azure, "az_json", lambda *args: reads.get(args[:2]))
     monkeypatch.setattr(deploy_azure, "delete_unless_locked",
@@ -46,7 +45,8 @@ def test_destroy_empties_a_group_the_grant_made_and_keeps_the_group_and_its_iden
     monkeypatch.setattr(deploy_azure, "run_quiet",
                         lambda *args, **kwargs: purged.append(args[:2]) or "")
     monkeypatch.setattr(deploy_azure, "list_remaining", listed.append)
-    settings = {"resource_group": "pdt", "vault": "pdt-x"}
+    monkeypatch.setattr(deploy_azure, "deleted_vault", lambda settings: {"name": "pdt-x"})
+    settings = {"resource_group": "pdt", "vault": "pdt-x", "region": "eastus"}
     assert deploy_azure.destroy_group(settings, "hr") is True
     assert [args[3] for args in deleted] == ["acr", "job", "runner", "vault"]
     assert all(args[:2] == ("resource", "delete") for args in deleted)

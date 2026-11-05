@@ -10,7 +10,9 @@
   for AutoIDM's token of this customer only (`pdtIssuer`, `pdtSubject`), and the role assignments
   of the grant on the three groups for that identity. The custom role
   `pdt-autoidm-locks-<subscription>` (role names are unique in a tenant) adds the management
-  lock rights on `pdt` and `pdt-shared` only, the groups of the locks deploy holds. AutoIDM's multi-tenant
+  lock rights on `pdt` and `pdt-shared` only, the groups of the locks deploy holds. The custom
+  role `pdt-autoidm-vaults-<subscription>` adds the read and the purge of a soft-deleted Key Vault
+  at subscription scope, where Azure checks them, so a destroy can free the vault name. AutoIDM's multi-tenant
   service principal `principalObjectId` gets only Reader on `pdt`, so a token for another
   customer cannot act here. The output `identityClientId` names the identity.
 - `google-cloud-grant.sh`: a Cloud Shell script that makes the service account `pdt-autoidm` with
@@ -37,6 +39,8 @@ IDENTITY = "pdt-autoidm"
 IDENTITY_DEPLOYMENT = "pdt-autoidm-identity"
 LOCK_ROLE = "pdt-autoidm-locks"
 LOCK_ROLE_ID = f"guid(subscription().id, '{LOCK_ROLE}')"
+VAULT_ROLE = "pdt-autoidm-vaults"
+VAULT_ROLE_ID = f"guid(subscription().id, '{VAULT_ROLE}')"
 IDENTITY_OUTPUT = ("[reference(resourceId('pdt', 'Microsoft.Resources/deployments', "
                    f"'{IDENTITY_DEPLOYMENT}'), '2022-09-01').outputs.{{}}.value]")
 NESTED_SCHEMA = "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#"
@@ -100,6 +104,33 @@ def lock_role() -> dict:
             "type": "CustomRole",
             "permissions": [{"actions": list(deploy_azure.GRANT_LOCK_ACTIONS), "notActions": []}],
             "assignableScopes": scopes}}
+
+
+def vault_role() -> dict:
+    return {
+        "type": "Microsoft.Authorization/roleDefinitions", "apiVersion": "2022-04-01",
+        "name": f"[{VAULT_ROLE_ID}]",
+        "properties": {
+            "roleName": f"[format('{VAULT_ROLE}-{{0}}', subscription().subscriptionId)]",
+            "description": "Lets pdt-autoidm purge the soft-deleted Key Vault of a pdt destroy "
+                           "(managed-by=pdt)",
+            "type": "CustomRole",
+            "permissions": [{"actions": list(deploy_azure.GRANT_VAULT_ACTIONS), "notActions": []}],
+            "assignableScopes": ["[subscription().id]"]}}
+
+
+def vault_assignment() -> dict:
+    return {
+        "type": "Microsoft.Authorization/roleAssignments", "apiVersion": "2022-04-01",
+        "name": f"[guid(subscription().id, '{IDENTITY}', {VAULT_ROLE_ID})]",
+        "dependsOn": [
+            f"[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', {VAULT_ROLE_ID})]",
+            f"[resourceId('pdt', 'Microsoft.Resources/deployments', '{IDENTITY_DEPLOYMENT}')]"],
+        "properties": {
+            "roleDefinitionId": f"[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', "
+                                f"{VAULT_ROLE_ID})]",
+            "principalId": IDENTITY_OUTPUT.format("principalId"),
+            "principalType": "ServicePrincipal"}}
 
 
 def role_assignment(role: str, principal: str, name: str, condition: str | None = None) -> dict:
@@ -190,7 +221,7 @@ def azure_template() -> dict:
             "pdtSubject": {"type": "string", "metadata": {
                 "description": "The subject of AutoIDM's identity tokens for your customer"}},
             "location": {"type": "string", "defaultValue": "[deployment().location]"}},
-        "resources": [*groups, lock_role(), azure_identity(),
+        "resources": [*groups, lock_role(), vault_role(), azure_identity(), vault_assignment(),
                       *(azure_assignments(group) for group in deploy_azure.GRANT_GROUPS)],
         "outputs": {"identityClientId": {"type": "string",
                                          "value": IDENTITY_OUTPUT.format("clientId")}}}

@@ -59,7 +59,7 @@ from pdt.deploy_azure import (
     SECRET_ROLE, STORAGE_RESOURCE, STORE_ROLE, VAULT_RESOURCE, access_token, arm_get, arm_list,
     arm_url, assign_role, az, az_json, az_tsv,
     azure_settings, check_shared_names, clean_name, cli_credential_store, cost_estimate,
-    deleted_vault, delete_unless_locked,
+    deleted_vault, delete_unless_locked, purge_vault,
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
     ensure_secret, ensure_store, ensure_workspace, granted_secret_value, group_can_be_deleted,
     held_token_store, kept_group_deletes, list_remaining,
@@ -252,7 +252,8 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
             settings["subscription"], "--query",
             "{id:id,name:name,provisioningState:properties.provisioningState,"
             "environmentId:properties.environmentId,identityType:identity.type,"
-            "userAssignedIdentities:identity.userAssignedIdentities,tags:tags}")
+            "userAssignedIdentities:identity.userAssignedIdentities,tags:tags}",
+            refused_is_missing=True)
     except Exception:
         data = None
     if not isinstance(data, dict):
@@ -279,7 +280,8 @@ def report_job_failure(settings: dict[str, str], job: str) -> None:
             "--offset", "1h", "--query",
             "[].{eventTimestamp:eventTimestamp,operationName:operationName.value,"
             "status:status.value,subStatus:subStatus.value,correlationId:"
-            "correlationId,resourceId:resourceId,statusMessage:properties.statusMessage}")
+            "correlationId,resourceId:resourceId,statusMessage:properties.statusMessage}",
+            refused_is_missing=True)
     except Exception:
         events = None
     if not isinstance(events, list):
@@ -759,7 +761,8 @@ def mr_run(app: dict, settings: dict, iid: str) -> int:
                 "--resource-group", settings["resource_group"], "--job-execution-name", name)
         shown = name and az_json("containerapp", "job", "execution", "show", "--name", job,
                                  "--resource-group", settings["resource_group"],
-                                 "--job-execution-name", name)
+                                 "--job-execution-name", name,
+                                 refused_is_missing=True)
         if shown and RUN_STATUS.get((shown.get("properties") or {}).get("status")) == "running":
             run_quiet(*stop, slow=f"stopping: Container Apps Job execution {console.value(name)}")
         elif name and shown is None and az(*stop).returncode != 0:
@@ -1492,7 +1495,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             group_read.result(), resources_read.result(), others)
         if deletable:
             release_read = pool.submit(environment_release, settings)
-            if not group_exists:
+            if not group_exists or retained(group_read.result()):
                 vault_read = pool.submit(deleted_vault, settings)
         else:
             # The Azure CLI runs in this process, so its one read here stays on this thread.
@@ -1514,7 +1517,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     held = held_read.result()
     unlock = [console.Markup(f"remove lock {console.value(lock.name)} from {lock.label}")
               for lock in held]
-    # A run stopped between the group delete and the purge leaves the vault
+    # A run stopped between the vault delete and the purge leaves the vault
     # soft-deleted, still holding its global name.
     orphan_vault = vault_read is not None and managed_by_pdt(
         (vault_read.result() or {}).get("properties"))
@@ -1556,9 +1559,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if grant:
             revoke_role(store["container_id"], principal_id, STORE_ROLE)
         if orphan_vault:
-            console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-            run_quiet("keyvault", "purge", "--name", settings["vault"],
-                      slow=f"purging: Key Vault {console.value(settings['vault'])}")
+            purge_vault(settings)
         if group_exists and not destroy_group(settings, name):
             # Another app joined the group meanwhile, so this one leaves the
             # way it would have with a sibling: its own job, image, and secret.

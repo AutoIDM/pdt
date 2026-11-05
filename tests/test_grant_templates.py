@@ -97,9 +97,8 @@ def test_the_azure_template_assigns_the_roles_on_the_three_groups_only():
 
 
 def test_the_azure_lock_role_holds_only_lock_rights_on_the_groups_that_deploy_locks():
-    [role] = [item for item in grant_templates.azure_template()["resources"]
-              if item["type"] == "Microsoft.Authorization/roleDefinitions"]
-    assert role["name"] == f"[{grant_templates.LOCK_ROLE_ID}]"
+    role = next(item for item in grant_templates.azure_template()["resources"]
+                if item["name"] == f"[{grant_templates.LOCK_ROLE_ID}]")
     assert "subscriptionId" in role["properties"]["roleName"]
     assert role["properties"]["permissions"] == [{"actions": [
         "Microsoft.Authorization/locks/read", "Microsoft.Authorization/locks/write",
@@ -112,6 +111,21 @@ def test_the_azure_lock_role_holds_only_lock_rights_on_the_groups_that_deploy_lo
     groups = {lock.resource.split("/resourceGroups/")[1].split("/")[0]
               for lock in deploy_azure_container_apps.shared_locks(settings, "pdt-app")}
     assert groups == set(deploy_azure.GRANT_LOCK_GROUPS)
+
+
+def test_the_azure_vault_role_holds_only_the_purge_rights_at_subscription_scope():
+    resources = grant_templates.azure_template()["resources"]
+    role = next(item for item in resources
+                if item["name"] == f"[{grant_templates.VAULT_ROLE_ID}]")
+    assert role["properties"]["permissions"] == [{"actions": [
+        "Microsoft.KeyVault/locations/deletedVaults/read",
+        "Microsoft.KeyVault/locations/deletedVaults/purge/action"], "notActions": []}]
+    assert role["properties"]["assignableScopes"] == ["[subscription().id]"]
+    [assignment] = [item for item in resources
+                    if item["type"] == "Microsoft.Authorization/roleAssignments"]
+    assert grant_templates.VAULT_ROLE_ID in assignment["properties"]["roleDefinitionId"]
+    assert assignment["properties"]["principalId"] == \
+        grant_templates.IDENTITY_OUTPUT.format("principalId")
 
 
 def test_the_azure_identity_trusts_only_this_customers_subject_and_the_app_only_reads():

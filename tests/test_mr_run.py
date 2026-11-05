@@ -142,7 +142,7 @@ def azure(monkeypatch, fail_start=False, status="Succeeded"):
                         lambda app, image, *args: calls.append(("build", image)))
     monkeypatch.setattr(deploy_azure_container_apps, "run_quiet", run_quiet)
     monkeypatch.setattr(deploy_azure_container_apps, "az_json",
-                        lambda *args: {"properties": {"status": status}})
+                        lambda *args, **kwargs: {"properties": {"status": status}})
     monkeypatch.setattr(deploy_azure_container_apps, "logs", lambda *args, **kwargs: 0)
     monkeypatch.setenv("PDT_RUN_ID", "cmd_1")
     monkeypatch.setenv("PDT_APP_ARGS", "--full")
@@ -202,7 +202,7 @@ def test_azure_mr_run_stops_its_execution_when_the_status_read_fails(monkeypatch
                                                                       warned):
     calls = azure(monkeypatch)
     stops = []
-    monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args: None)
+    monkeypatch.setattr(deploy_azure_container_apps, "az_json", lambda *args, **kwargs: None)
     monkeypatch.setattr(deploy_azure_container_apps, "az", lambda *args: (
         stops.append(args) or subprocess.CompletedProcess(args, code, "", "")))
     monkeypatch.setattr(deploy_azure_container_apps, "logs", lambda *args, **kwargs: 130)

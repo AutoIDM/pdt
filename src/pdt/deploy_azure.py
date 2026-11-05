@@ -187,6 +187,9 @@ def az(*args: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args, code, out.getvalue(), err.getvalue())
 
 
+REFUSED = ("forbidden", "authorizationfailed", "does not have authorization")
+
+
 def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = False,
               hints: dict[str, str] | None = None, slow: str = "") -> str:
     waits = (10, 20, 40, 0) if retry_access or retry_internal else (0,)
@@ -198,9 +201,7 @@ def run_quiet(*args: str, retry_access: bool = False, retry_internal: bool = Fal
                 return proc.stdout
             output = proc.stderr.lower()
             access_error = retry_access and any(text in output for text in (
-                "unable to fetch secret", "forbidden", "authorizationfailed",
-                "does not have authorization",
-            ))
+                "unable to fetch secret", *REFUSED))
             internal_error = retry_internal and "internalservererror" in output
             retried = seconds != 0 and (access_error or internal_error)
             if proc.stderr.strip():
@@ -309,9 +310,15 @@ def az_error_line(response) -> str:
     return f"ERROR: ({error.get('code')}) {error['message']}"
 
 
-def az_json(*args: str):
+def az_json(*args: str, refused_is_missing: bool = False):
+    """None means Azure found nothing. A refused read fails, because None would hide the
+    missing right and the caller would act as if the resource were absent."""
     proc = az(*args, "--output", "json")
     if proc.returncode != 0:
+        if not refused_is_missing and any(text in proc.stderr.lower() for text in REFUSED):
+            console.say(console.escape(proc.stderr.strip()))
+            fail(f"Azure refused {console.value('pdt az ' + ' '.join(args[:4]))}; "
+                 "the Azure sign-in lacks a right that this step needs")
         return None
     return json.loads(proc.stdout or "null")
 
@@ -860,25 +867,32 @@ def ensure_group_and_vault(settings: dict[str, str], providers: tuple[str, ...],
 
 
 def deleted_vault(settings: dict[str, str]) -> dict | None:
-    vaults = arm_list(settings["token"], arm_url(
-        f"/subscriptions/{settings['subscription']}/providers/Microsoft.KeyVault/deletedVaults"),
-        ("keyvault", "show-deleted", "--name", settings["vault"])) or []
-    return next((vault for vault in vaults
-                 if str(vault.get("name")).lower() == settings["vault"].lower()), None)
+    """The read of one region needs only the grant's `locations/deletedVaults/read`; the
+    subscription list would need `deletedVaults/read`, which the grant does not hold."""
+    return arm_get(settings["token"], arm_url(
+        f"/subscriptions/{settings['subscription']}/providers/Microsoft.KeyVault/locations/"
+        f"{settings['region']}/deletedVaults/{settings['vault']}"),
+        ("keyvault", "show-deleted", "--name", settings["vault"],
+         "--location", settings["region"]))
+
+
+def purge_vault(settings: dict[str, str]) -> None:
+    console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
+    run_quiet("keyvault", "purge", "--name", settings["vault"],
+              "--location", settings["region"],
+              slow=f"purging: Key Vault {console.value(settings['vault'])}")
 
 
 def purge_deleted_vault(settings: dict[str, str]) -> None:
     """A soft-deleted vault still owns its name, so create fails until it is purged."""
-    deleted = az_json("keyvault", "show-deleted", "--name", settings["vault"])
+    deleted = deleted_vault(settings)
     if not deleted:
         return
     tags = (deleted.get("properties") or {}).get("tags") or {}
     if tags.get("managed-by") != "pdt":
         fail(f"a soft-deleted Key Vault named {console.value(settings['vault'])} exists but is not "
              "managed by PDT; purge it or deploy to another subscription")
-    console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-    run_quiet("keyvault", "purge", "--name", settings["vault"],
-              slow=f"purging: Key Vault {console.value(settings['vault'])}")
+    purge_vault(settings)
 
 
 def workspace_resource(settings: dict) -> dict | None:
@@ -1083,10 +1097,8 @@ def destroy_group(settings: dict[str, str], app_name: str) -> bool:
             console.note(f"kept: resource group {console.value(rg)} with its ACR and Key Vault "
                          f"(locked by {console.value(locked)})")
             return False
-    if az_json("keyvault", "show-deleted", "--name", settings["vault"]):
-        console.step(f"purging soft-deleted Key Vault {console.value(settings['vault'])}")
-        run_quiet("keyvault", "purge", "--name", settings["vault"],
-                  slow=f"purging: Key Vault {console.value(settings['vault'])}")
+    if deleted_vault(settings):
+        purge_vault(settings)
     if kept:
         list_remaining(rg)
     elif az_tsv("group", "exists", "--name", rg) == "false":
@@ -1300,6 +1312,10 @@ GRANT_GROUPS = ("pdt", SHARED_GROUP, STORE_GROUP)
 GRANT_LOCK_ACTIONS = ("Microsoft.Authorization/locks/read", "Microsoft.Authorization/locks/write",
                       "Microsoft.Authorization/locks/delete")
 GRANT_LOCK_GROUPS = ("pdt", SHARED_GROUP)
+# A destroy soft-deletes the vault, and its name stays taken until a purge. Azure checks these
+# two at subscription scope, so the grant holds them there.
+GRANT_VAULT_ACTIONS = ("Microsoft.KeyVault/locations/deletedVaults/read",
+                       "Microsoft.KeyVault/locations/deletedVaults/purge/action")
 
 
 def grant_groups(subscription: str) -> list[str]:
