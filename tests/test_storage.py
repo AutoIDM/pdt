@@ -380,13 +380,24 @@ def test_an_mr_run_that_pulls_and_pushes_state_itself_never_writes_state(store, 
     assert LOCK not in store.ls("state")
 
 
-@pytest.mark.parametrize("remote", ["./state/", "/state/", "output/../state/"])
+@pytest.mark.parametrize("remote", ["./state/", "/state/", "output/../state/", ".\\state\\",
+                                    "State/"])
 def test_an_mr_run_never_writes_state_through_another_spelling(store, tmp_path, monkeypatch,
                                                                remote):
     write(store, "state/count.txt", "1")
     monkeypatch.setenv("PDT_TRIGGER", "mr")
     (tmp_path / "count.txt").write_text("2")
     store.push(tmp_path, remote)
+    assert store.open("state/count.txt").read() == b"1"
+
+
+def test_an_mr_run_never_writes_state_from_a_state_folder_under_an_empty_remote(
+        store, tmp_path, monkeypatch):
+    write(store, "state/count.txt", "1")
+    monkeypatch.setenv("PDT_TRIGGER", "mr")
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "count.txt").write_text("2")
+    store.push(tmp_path, "")
     assert store.open("state/count.txt").read() == b"1"
 
 
