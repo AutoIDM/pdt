@@ -38,6 +38,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -74,7 +75,10 @@ STILL_ACTIVE = 259
 # The first pdt-cli whose storage keeps the state of a merge request run apart from the state of
 # the deployed job. An app runs with the pdt-cli its run.py pins.
 MR_STATE_VERSION = "0.1.14"
-PDT_PIN = re.compile(r'^#[^\n]*"pdt-cli(?:\[[^\]]*\])?==([^"]+)"', re.M)
+SCRIPT_BLOCK = re.compile(r"(?m)^# /// script[ \t]*\n((?:#(?: .*)?\n)+?)# ///[ \t]*$")
+PDT_REQUIREMENT = re.compile(r"\s*pdt[-_.]cli\s*(?:\[[^\]]*\])?\s*([<>=!~;@].*)?", re.I)
+# The bounds that can hold an app below MR_STATE_VERSION.
+UPPER_BOUND = re.compile(r"(===|==|<=|<)\s*([0-9][^\s,;]*)")
 
 
 def now_text() -> str:
@@ -488,11 +492,26 @@ def mr_copy_problem(entry: dict, project: Path, app: str, sha: str) -> str:
         text = run_py.read_text(encoding="utf-8-sig")
     except (FileNotFoundError, UnicodeError):
         return ""
-    pin = PDT_PIN.search(text)
-    if pin is None or version_parts(pin.group(1)) >= version_parts(MR_STATE_VERSION):
+    block = SCRIPT_BLOCK.search(text)
+    if block is None:
         return ""
-    line = text.count("\n", 0, pin.start()) + 1
-    return (f"{app}/run.py line {line} pins pdt-cli {pin.group(1)}. A merge request run needs "
+    try:
+        metadata = tomllib.loads("".join(line[2:] for line in block.group(1).splitlines(True)))
+    except tomllib.TOMLDecodeError:
+        return ""
+    least = version_parts(MR_STATE_VERSION)
+    old = None
+    for dependency in metadata.get("dependencies") or []:
+        found = PDT_REQUIREMENT.fullmatch(dependency) if isinstance(dependency, str) else None
+        for operator, version in UPPER_BOUND.findall(((found and found.group(1)) or "").split(";")[0]):
+            if version_parts(version) < least or (operator == "<" and version_parts(version) == least):
+                old = (dependency, version)
+    if old is None:
+        return ""
+    first = text.count("\n", 0, block.start()) + 1
+    rows = block.group(0).splitlines()
+    line = first + next((index for index, row in enumerate(rows) if old[1] in row and "pdt" in row.lower()), 0)
+    return (f"{app}/run.py line {line} pins pdt-cli {old[1]}. A merge request run needs "
             f"pdt-cli {MR_STATE_VERSION} or newer, which keeps the state of the run apart from "
             f"the state of the deployed job. Raise the pin in that line to {MR_STATE_VERSION} or "
             "newer, and push the change.")
