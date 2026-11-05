@@ -6,7 +6,6 @@ from pdt import deploy_aws, deploy_azure, deploy_google_cloud, grant_templates
 
 
 def actions(template: dict) -> dict[str, list]:
-    """Each allowed action of the template's policies, with the resources it names."""
     found: dict[str, list] = {}
     for resource in template["Resources"].values():
         if resource["Type"] != "AWS::IAM::ManagedPolicy" or resource["Properties"][

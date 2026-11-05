@@ -27,8 +27,6 @@ def folder(tmp_path, monkeypatch):
 
 @pytest.fixture
 def backend(folder):
-    """A local backend that records each request with the key files that existed. It answers
-    from `answers` first; then /v1/uploads gets a place at /bucket, and any other path 202."""
     seen = []
     answers = []
 
@@ -407,7 +405,6 @@ def test_register_names_each_refusal_and_writes_no_registration(backend, capsys,
     assert register_cli.register("KQ7M-2RTX", url) == 1
     assert said in capsys.readouterr().out
     assert not autoidm.files(CUSTOMER)[0].exists()
-    # A code AutoIDM will never take again leaves no pending key; any other refusal keeps it.
     assert bool(list(autoidm.folder().glob("pending-*.key"))) == (code == "bad_request")
 
 

@@ -36,7 +36,6 @@ MERGED_FILES = {copies.ROOT: config.PROJECT_FILE, "app": "config.yml"}
 
 
 def context() -> tuple[Path, str, str, autoidm.Registration]:
-    """This project's folder, its name for AutoIDM, its customer, and that registration."""
     named = os.environ.get(service_runner.SERVICE_PROJECT_ENV, "").strip()
     customer = os.environ.get(service_runner.SERVICE_CUSTOMER_ENV, "").strip()
     if named and customer:
@@ -58,7 +57,6 @@ def context() -> tuple[Path, str, str, autoidm.Registration]:
 
 
 def ask(question: str, assume_yes: bool) -> bool:
-    """One `[y/N]` question at a terminal. `--yes` and a run with no terminal do not ask."""
     if assume_yes or not can_prompt(None):
         return True
     try:
@@ -110,8 +108,6 @@ def send_up(app: str | None, assume_yes: bool) -> int:
 
 
 def merged(local: dict, copy: dict) -> dict:
-    """`local` with each key of `copy`: the copy's value wins, and a key only `local` holds
-    stays. Mappings merge key by key."""
     result = dict(local)
     for key, value in copy.items():
         if isinstance(value, dict) and isinstance(local.get(key), dict):
@@ -122,8 +118,6 @@ def merged(local: dict, copy: dict) -> dict:
 
 
 def merged_text(local: bytes, copy: bytes, path: str) -> bytes:
-    """The merged config file. When the merge changes nothing of the copy, the copy's text stays,
-    with its comments."""
     try:
         mine = yaml.safe_load(local.decode("utf-8-sig")) or {}
         theirs = yaml.safe_load(copy.decode("utf-8-sig")) or {}
@@ -138,8 +132,6 @@ def merged_text(local: bytes, copy: bytes, path: str) -> bytes:
 
 
 def plan_unit(root: Path, unit: str, staged: Path, files: list[dict]) -> dict[str, bytes | None]:
-    """The new bytes of each path of the project that the unit changes, relative to `root`, and
-    None for each path it deletes."""
     app = unit.removeprefix("app=") if unit != copies.ROOT else None
     merged_file = f"{app}/{MERGED_FILES['app']}" if app else MERGED_FILES[copies.ROOT]
     changes: dict[str, bytes | None] = {}
@@ -164,7 +156,6 @@ def plan_unit(root: Path, unit: str, staged: Path, files: list[dict]) -> dict[st
 
 
 def back_up(root: Path, paths: list[str]) -> Path | None:
-    """Copy each existing file of `paths` to `.pdt/backup/<UTC time>/`."""
     existing = [path for path in paths if (root / path).is_file()]
     if not existing:
         return None

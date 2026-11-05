@@ -77,7 +77,6 @@ TICKS: dict = {}
 
 
 def tick() -> int:
-    """One pass of the loop, with the same Served across passes, and wait for each command."""
     if "served" not in TICKS:
         TICKS["served"] = service.machine_served(settings())
         TICKS["served"].connection = NoConnection()
@@ -95,7 +94,6 @@ def tick() -> int:
 
 
 def due() -> None:
-    """The next pass checks in."""
     TICKS["served"].schedule.wanted = True
     TICKS["served"].schedule.last_checkin = 0
 
@@ -654,7 +652,6 @@ def test_a_cancel_in_a_check_in_stops_the_running_command(machine, portal, monke
 
 
 class Steps(threading.Event):
-    """A stop event whose each wait runs one step, and which is set after the last one."""
 
     def __init__(self, steps):
         super().__init__()
@@ -669,8 +666,6 @@ class Steps(threading.Event):
 
 
 def run_loop(steps):
-    """Run the real loop in this thread. Each step runs at one pause of the loop, and the loop
-    stops after the last one."""
     return service.serve(settings(), Steps(steps))
 
 

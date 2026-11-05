@@ -405,7 +405,6 @@ def provider_step(command: str, provider: str, app_name: str, assume_yes: bool,
     started, completed, failed = STEP_EVENTS[command]
     sender = None
     if command == "deploy":
-        # Before the provider script, so a missing registration warns here once, not again in it.
         sender = managed_services.sender(app_name)
         was_deployed = config.is_deployed(app_name)
         before = config.deployed_platform(app_name)
@@ -594,8 +593,6 @@ def pause(app_name: str, paused: bool) -> int:
 
 
 def mr_run(app_name: str, iid: str) -> int:
-    """Run the app of this folder once as the job of merge request `iid` of the deployed app, in
-    the cloud it is deployed to, through the provider verb `mr-run`. The hosted runner calls it."""
     try:
         _app, provider = _load(app_name)
     except ConfigError as e:
@@ -609,7 +606,6 @@ def mr_run(app_name: str, iid: str) -> int:
 
 
 def kill(app_name: str) -> int:
-    """Stop each run of the deployed job that runs now."""
     try:
         app, provider = _load(app_name)
     except ConfigError as e:

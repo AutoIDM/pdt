@@ -1318,9 +1318,6 @@ MR_WAIT_SECONDS = 10
 
 
 def mr_run(app: dict, session, iid: str) -> int:
-    """Build the app of this folder as image `<app>-mr<iid>`, register `pdt-<app>-mr<iid>` from
-    the settings of the deployed job with that image, run it once, print its log, and delete the
-    job definition and the image tag, also after a failure. The deployed job stays as it is."""
     clients = batch_clients(session)
     names = resource_names(app["name"])
     revisions = [item for item in active_job_definitions(clients["batch"], names["job_definition"])
@@ -1377,7 +1374,6 @@ def mr_run(app: dict, session, iid: str) -> int:
 
 
 def follow_job(batch, logs_client, log_group: str, job_id: str) -> int:
-    """Print the log lines of one job as they arrive, and return its exit code."""
     printed = 0
     while True:
         job = batch.describe_jobs(jobs=[job_id])["jobs"][0]
@@ -1393,7 +1389,6 @@ def follow_job(batch, logs_client, log_group: str, job_id: str) -> int:
 
 
 def kill(app: dict, session) -> int:
-    """Terminate each job of the app from SUBMITTED to RUNNING."""
     batch = session.client("batch", config=RETRIES)
     job = resource_names(app["name"])["job_definition"]
     running = [run for run in list_runs(batch, job) if run.status == "running"]

@@ -1,6 +1,3 @@
-"""A deploy keeps the AutoIDM cloud registration in an app's secret unless the provider
-confirms the secret is not there; any other failed read stops the deploy before it writes."""
-
 import io
 import subprocess
 import urllib.error

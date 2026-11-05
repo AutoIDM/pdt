@@ -74,14 +74,10 @@ APP_DEPLOYED = "app:deployed"
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 EXIT_WAIT_SECONDS = 15.0
 WAIT_STEP_SECONDS = 0.1
-# The project, app, run, and file names that AutoIDM takes.
 BACKEND_NAME = re.compile(r"(?!\.{1,2}$)[A-Za-z0-9._-]{1,128}")
 
 
 def backend_name(name: str) -> str:
-    """`name` when BACKEND_NAME takes it. Else each run of other characters becomes `-`, and
-    the first 8 hex digits of the SHA-256 of `name` follow, so `My Jobs` is
-    `My-Jobs-<hash>` in every event and upload, and differs from `My-Jobs`."""
     if BACKEND_NAME.fullmatch(name):
         return name
     readable = re.sub(r"[^A-Za-z0-9._-]+", "-", name)[:119]
@@ -89,9 +85,6 @@ def backend_name(name: str) -> str:
 
 
 def output_folder(app_dir: Path, run_id: str, fallback: Path) -> Path:
-    """The run's output folder: .pdt/runs/<run_id>/output in the app folder, the one
-    storage.sync gives a Python app, or `fallback` when pdt cannot write in the app folder. It
-    makes the folder that holds it."""
     folder = app_dir / ".pdt" / "runs" / run_id / "output"
     try:
         folder.parent.mkdir(parents=True, exist_ok=True)
@@ -127,8 +120,6 @@ def parse(raw: object, where: str) -> dict:
 
 
 def problems(raw: object, apps: list[str]) -> list[str]:
-    """What `pdt validate` says about `managed_services`: its shape, then each app name in a
-    send_* list that is not an app of the project."""
     try:
         parsed = parse(raw, config.PROJECT_FILE)
     except config.ConfigError as e:
@@ -140,7 +131,6 @@ def problems(raw: object, apps: list[str]) -> list[str]:
 
 
 def settings() -> dict | None:
-    """The project's parsed `managed_services`, or None when pdt.yml has none."""
     root = config.load_yaml(config.find_project() / config.PROJECT_FILE)
     if KEY not in root:
         return None
@@ -169,9 +159,6 @@ def monitored(what: str, call: Callable[[], object], default: object = None):
 
 def started(target: Callable[..., object], *args: object,
             message: str = "") -> threading.Thread | None:
-    """A daemon thread that runs `target(*args)`, or None when the OS cannot start one (with
-    `message`, when given), so the caller does the work another way and the run keeps its
-    exit code."""
     thread = threading.Thread(target=target, args=args, daemon=True)
     try:
         thread.start()
@@ -183,8 +170,6 @@ def started(target: Callable[..., object], *args: object,
 
 
 def place(platform: dict) -> str | None:
-    """`<provider>:<account, subscription, or project>:<region>` of a cloud provider, or None
-    for the windows provider."""
     provider = platform.get("provider")
     if provider not in config.CONTAINER_PROVIDERS:
         return None
@@ -245,9 +230,6 @@ class Sender:
             self.upload("log", data, filename, params)
 
     def upload_artifacts(self, output: Path, filename: str, params: dict) -> None:
-        """Zip the files under `output` and upload the zip. A link that leads out of `output`
-        is skipped with a warning, so a run cannot send a file from elsewhere on the computer.
-        When `output` itself is a link or a Windows junction, nothing is sent."""
         if output.is_symlink() or output.is_junction():
             console.warn(f"AutoIDM did not get the artifacts {console.value(filename)}: "
                          f"{console.value(output)} links to another place.")
@@ -297,8 +279,6 @@ class Sender:
 
 
 def find_registration(customer: str, machine: bool = False):
-    """The registration for `customer` (only this computer's when `machine`), or None with
-    one warning."""
     from pdt.utils import autoidm
     try:
         found = (autoidm.machine_registration(customer) if machine
@@ -322,8 +302,6 @@ _senders: dict[str, Sender | None] = {}
 
 
 def sender(app: str) -> Sender | None:
-    """The find_sender result for `app`, kept for the whole process, so a refusal of one send
-    stops every later send of that app."""
     if app not in _senders:
         _senders[app] = monitored("this run", lambda: find_sender(app))
     return _senders[app]

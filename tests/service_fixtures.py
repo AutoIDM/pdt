@@ -1,5 +1,3 @@
-"""What the service tests share: a command key, signed tokens, and a local fake of AutoIDM."""
-
 import hashlib
 import io
 import json
@@ -45,8 +43,6 @@ def token(operation="list", args=None, command_id=COMMAND, **changes) -> str:
 
 
 def copy_of(unit: str, files: dict[str, bytes]) -> tuple[dict, bytes]:
-    """The answer entry of /v1/copies/get, without its URL, and the zip of a unit that holds
-    `files`."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zipped:
         for name, data in files.items():
@@ -60,9 +56,6 @@ def copy_of(unit: str, files: dict[str, bytes]) -> tuple[dict, bytes]:
 
 
 class FakePortal:
-    """Answers each POST from `routes`, by path, and records it. GET /doorbell follows ETags,
-    and GET /zip/<id> serves `zips`. POST /bucket takes a presigned upload, and PUT /bucket a
-    copy."""
 
     def __init__(self):
         self.seen, self.routes, self.zips, self.uploads, self.puts = [], {}, {}, [], []
@@ -148,7 +141,6 @@ class FakePortal:
                        if body["command_id"] == command_id and body["fact"] == "output")
 
     def serve_copies(self, *units: tuple[dict, bytes]) -> None:
-        """Answer /v1/copies/get with `units`: the one the body names, or each unit."""
         entries = []
         for entry, data in units:
             self.zips[entry["sha256"]] = data

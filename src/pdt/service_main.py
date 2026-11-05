@@ -29,7 +29,6 @@ STOP_WAIT_MS = (service_runner.STOP_SECONDS + 10) * 1000
 
 
 def windows_service(run: Callable[[threading.Event], int]) -> int | None:
-    """The exit code of `run` under the SCM, or None when the SCM did not start this process."""
     import ctypes
     from ctypes import wintypes
 

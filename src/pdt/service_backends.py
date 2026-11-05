@@ -30,7 +30,6 @@ CRON_MARK = "# pdt-service"
 # The Service Control Manager takes the last action again for each later failure of the day.
 RECOVERY = "restart/5000/restart/5000/restart/60000"
 RESET_SECONDS = 86400
-# The env var that moves pdt's data folder, so the service finds the same files as the installer.
 KEPT_ENV = ("PDT_INSTALLATION_DIR",)
 
 
@@ -80,7 +79,6 @@ def windows_start(_python: str) -> None:
 
 
 def windows_remove() -> None:
-    """Also deletes the scheduled task `pdt-service` of an earlier pdt."""
     if run("schtasks.exe", "/Query", "/TN", NAME, check=False).returncode == 0:
         run("schtasks.exe", "/End", "/TN", NAME, check=False)
         run("schtasks.exe", "/Delete", "/TN", NAME, "/F")
@@ -164,8 +162,6 @@ def cron_define(python: str, _folder: Path) -> None:
 
 
 def cron_start(python: str) -> None:
-    """The line each 5 minutes starts it too, but a person who installs it waits for the first
-    check-in, so it starts at once, apart from this process."""
     subprocess.Popen(service_command(python), env={**os.environ, **kept_env()},
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
@@ -181,7 +177,6 @@ def cron_running() -> bool:
 
 @dataclass(frozen=True)
 class Backend:
-    # Whether this manager exists on this computer.
     available: Callable[[], bool]
     define: Callable[[str, Path], None]
     start: Callable[[str], None]
@@ -202,7 +197,6 @@ BACKENDS = {
 
 
 def choose(requested: str | None) -> str:
-    """The name of the backend: the one asked for, else the first this computer has."""
     if requested is not None:
         if not BACKENDS[requested].available():
             raise BackendError(f"{requested} does not exist on this computer")

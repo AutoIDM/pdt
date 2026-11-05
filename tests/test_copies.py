@@ -115,7 +115,6 @@ def test_an_app_unit_with_a_path_outside_its_folder_writes_nothing(tmp_path):
 
 
 def git_archive_zip(tmp_path) -> bytes:
-    """The zip of a commit as `git archive --format=zip` writes it, with folder entries."""
     repo = tmp_path / "repo"
     (repo / "hr").mkdir(parents=True)
     (repo / "pdt.yml").write_text("apps: []\n")

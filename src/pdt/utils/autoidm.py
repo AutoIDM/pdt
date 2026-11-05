@@ -62,7 +62,6 @@ RETRY_STATUSES = (429, 503)
 RETRY_FIRST_SECONDS = 1.0
 RETRY_MOST_SECONDS = 300.0
 RETRY_LIMIT_SECONDS = 600.0
-# What the server allows, so a larger difference needs a correction.
 CLOCK_SKEW_SECONDS = 60
 clock_offset = 0.0
 

@@ -11,7 +11,6 @@ PYTHON = "/var/lib/pdt/versions/0.1.14/bin/python"
 
 @pytest.fixture
 def calls(monkeypatch, tmp_path):
-    """Record each program a backend starts, and answer it with `answers` by its first words."""
     found = []
     answers = {}
 

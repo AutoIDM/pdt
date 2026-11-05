@@ -65,7 +65,6 @@ SET_FOLDER_SDDL = ("$ErrorActionPreference = 'Stop'; "
                    "$acl.GetSecurityDescriptorSddlForm('Owner, Access'); "
                    "$folder.SetAccessControl($acl); "
                    "$folder.GetAccessControl().GetSecurityDescriptorSddlForm('Owner, Access')")
-# Each group on macOS whose members are administrators, by group ID.
 MACOS_ADMIN_GROUP = 80
 POSIX_WALK_LIMIT = 50000
 SKIPPED_FOLDERS = {".git", ".venv", "__pycache__", ".pdt"}
@@ -91,9 +90,6 @@ def run_powershell(script: str, env: dict[str, str]) -> str:
 
 
 def restrict_folder(folder: Path, sddl: str) -> None:
-    """On Windows, replace the owner and the whole access list of `folder`. It reads the folder
-    back and raises RuntimeError when it does not match. On another system, only its owner can
-    write it, and that owner is the account that runs pdt."""
     if os.name != "nt":
         return
     shown = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
@@ -110,7 +106,6 @@ def restrict_folder(folder: Path, sddl: str) -> None:
 
 
 def limit(folder: Path, private: bool = True) -> None:
-    """Make `folder` with the rules of the data folder. Raises OSError or RuntimeError."""
     folder.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         try:
@@ -138,7 +133,6 @@ def group_name(gid: int) -> str:
 
 
 def posix_writer(path: Path) -> str | None:
-    """The account other than root that can change `path`, or None."""
     found = path.lstat()
     if found.st_uid != 0:
         return account_name(found.st_uid)
@@ -154,9 +148,6 @@ def posix_writer(path: Path) -> str | None:
 
 
 def posix_writable(folder: Path) -> tuple[str, Path] | None:
-    """The account and the path of the first thing in or above `folder` that an account other than
-    root can change. A file in a folder of root is still that file's owner's to change, so this
-    reads the whole folder."""
     checked = 0
     for parent in (*reversed(folder.parents), folder):
         account = posix_writer(parent)
@@ -193,12 +184,10 @@ def windows_writable(folder: Path) -> tuple[str, Path] | None:
 
 
 def writable_by_others(folder: Path) -> tuple[str, Path] | None:
-    """The account other than an administrator that can change `folder`, and what it can change."""
     return windows_writable(folder) if os.name == "nt" else posix_writable(folder)
 
 
 def repair_commands(folder: Path) -> list[tuple[str, str]]:
-    """The next steps for a folder that a non-administrator can change."""
     if os.name == "nt":
         return [(f'icacls "{folder}" /setowner *S-1-5-32-544 /T',
                  "make Administrators the owner"),

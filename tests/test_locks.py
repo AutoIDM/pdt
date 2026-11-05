@@ -86,7 +86,6 @@ def test_the_locks_of_another_project_folder_can_be_named(project, monkeypatch, 
 
 
 def holder(project, name):
-    """A process that holds the lock `name` until it is stopped."""
     code = ("import fcntl, sys, time; "
             f"handle = open({str(locks(project) / name)!r}, 'w'); "
             "fcntl.flock(handle.fileno(), fcntl.LOCK_EX); print('held', flush=True); time.sleep(60)")

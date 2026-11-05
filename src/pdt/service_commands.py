@@ -28,7 +28,6 @@ KEY_SET_ISSUER = "pdt-signer"
 CANCEL = "cancel"
 RESERVED_PROJECT = "service"
 COMMAND_ID = re.compile(r"cmd_\d{8}T\d{6}Z_[0-9a-f]{8}")
-# The contract's ARG_NAME_RE: `--all` or `--plan` as an app name would reach pdt as a flag.
 NAME = re.compile(r"(?!\.{1,2}$)(?!-)[A-Za-z0-9._-]{1,128}")
 RUN_NUMBER = re.compile(r"[0-9]{1,6}")
 ENV_VAR = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
@@ -39,7 +38,6 @@ MAX_APP_ARGS = 1024
 PLACE = re.compile(r"(aws|azure|google-cloud):[A-Za-z0-9-]{1,64}:[a-z0-9-]{1,32}")
 HOUR = 3600
 MINUTE = 60
-# The longest run limit plus 1 h: a cancel must reach each command that can still run.
 CANCEL_EXPIRES_SECONDS = 25200
 
 
@@ -49,7 +47,6 @@ class Refused(Exception):
 
 @dataclass
 class Clock:
-    """Local time, corrected by the offset of the last check-in."""
     offset: float = 0.0
 
     def now(self) -> float:
@@ -71,13 +68,9 @@ class Operation:
     argv: Callable[[dict], list[str]]
     expires_seconds: int
     limit_seconds: int
-    # None: the hosted runner does not run this operation.
     runner_limit_seconds: int | None
-    # Holds the project's lock for the full command.
     exclusive: bool = False
-    # The copy of a merge request supplies the project: a new work folder with its own locks.
     from_copy: bool = False
-    # The module the child runs, with `argv` as its arguments.
     module: str = "pdt.cli"
 
 
@@ -92,7 +85,6 @@ OPERATIONS = {
                       HOUR, 5 * MINUTE, 5 * MINUTE),
     "health": Operation(("project",), (), lambda a: ["health", "--json"], HOUR, 5 * MINUTE,
                         5 * MINUTE),
-    # The child adds the folder that goes up as the artifact.
     "artifacts": Operation(("project", "app", "run"), (), lambda a: [a["app"], a["run"]], HOUR,
                            15 * MINUTE, 15 * MINUTE, module="pdt.run_output"),
     "plan": Operation(("project", "app"), (), lambda a: ["deploy", a["app"], "--plan"], HOUR,
@@ -108,11 +100,9 @@ OPERATIONS = {
                         HOUR, 55 * MINUTE, exclusive=True),
     "destroy": Operation(("project", "app"), (), lambda a: ["destroy", a["app"], "--yes"],
                          15 * MINUTE, HOUR, 55 * MINUTE, exclusive=True),
-    # The value comes on stdin, from the command input.
     "secrets_set": Operation(("project", "app", "name"), (),
                              lambda a: ["secrets", a["app"], "set", a["name"]], 15 * MINUTE,
                              5 * MINUTE, 5 * MINUTE),
-    # The child has no terminal, so `--yes` stands in for the question `pdt sync` asks.
     "sync_up": Operation(("project",), ("app",), lambda a: ["sync", "up", *app_option(a), "--yes"],
                          24 * HOUR, 15 * MINUTE, None, exclusive=True),
     "sync_down": Operation(("project",), ("app",),
@@ -124,7 +114,6 @@ OPERATIONS = {
 
 
 def args_problem(name: str, args: object) -> str:
-    """Why `args` do not fit the operation `name`, or ""."""
     operation = OPERATIONS[name]
     if not isinstance(args, dict):
         return "the args are not an object"
@@ -152,15 +141,12 @@ def args_problem(name: str, args: object) -> str:
 
 
 def command_line(operation: str, args: dict) -> list[str]:
-    """The program and the arguments of a command, for a list form with no shell."""
     found = OPERATIONS[operation]
     return [sys.executable, "-m", found.module, *found.argv(args)]
 
 
 def decoded(token: object, keys: list[dict], audience: str | None = None,
             issuer: str = ISSUER) -> dict:
-    """The claims of a token signed by one of `keys`. The caller checks each time claim with
-    its corrected clock."""
     try:
         kid = jwt.get_unverified_header(token).get("kid")
     except (jwt.InvalidTokenError, TypeError, ValueError, AttributeError):
@@ -197,7 +183,6 @@ def check_times(claims: dict, now: float, longest: int) -> None:
 
 def verify(token: str, command_id: str, installation_id: str, customer_id: str, keys: list[dict],
            now: float) -> dict:
-    """The claims of a command's token, when every check passes. Raises Refused otherwise."""
     if not COMMAND_ID.fullmatch(str(command_id)):
         raise Refused("The command ID does not have the form pdt expects.")
     claims = decoded(token, keys, installation_id)
@@ -222,7 +207,6 @@ def verify(token: str, command_id: str, installation_id: str, customer_id: str, 
 
 def verify_cancel(token: object, command_id: str, installation_id: str, customer_id: str,
                   keys: list[dict], now: float) -> None:
-    """A cancel token that fails a check raises Refused, and the service stops nothing."""
     claims = decoded(token, keys, installation_id)
     if claims.get("sub") != command_id or claims.get("customer_id") != customer_id:
         raise Refused("The cancel token names another command.")
@@ -233,8 +217,6 @@ def verify_cancel(token: object, command_id: str, installation_id: str, customer
 
 def next_key_set(token: object, version: int, keys: list[dict],
                  customer_id: str) -> tuple[int, list[dict]]:
-    """The version and the keys of a key set, when a key this computer holds signed it, for this
-    customer, with the version one higher. Raises Refused otherwise."""
     claims = decoded(token, keys, customer_id, KEY_SET_ISSUER)
     found = claims.get("command_keys_version")
     if found != version + 1 or type(found) is not int:
@@ -249,7 +231,6 @@ def next_key_set(token: object, version: int, keys: list[dict],
 
 @contextmanager
 def in_project(project: Path):
-    """Read config of `project`, which is not the folder this process runs in."""
     before = os.environ.get("PDT_PROJECT")
     os.environ["PDT_PROJECT"] = str(project)
     try:
@@ -262,7 +243,6 @@ def in_project(project: Path):
 
 
 def env_spec_names(project: Path, app: str) -> set[str]:
-    """Each env var name in the app's env spec."""
     with in_project(project):
         spec = config.env_spec(config.merged_app(app))
     names = {*(spec.get("required") or []), *(spec.get("optional") or [])}

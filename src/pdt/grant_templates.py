@@ -30,7 +30,6 @@ MANAGED_TAG = {"Key": "managed-by", "Value": "pdt"}
 
 
 def substituted(value: object) -> object:
-    """`value` with each text that names the account as a CloudFormation `Fn::Sub`."""
     if isinstance(value, dict):
         return {key: substituted(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -75,7 +74,6 @@ def aws_template() -> dict:
 
 
 def azure_assignments(group: str) -> dict:
-    """A deployment in `group` with each role assignment of the grant."""
     roles = [(role, None) for role in deploy_azure.GRANT_ROLES]
     roles.append(("Role Based Access Control Administrator", deploy_azure.grant_condition()))
     resources = []
@@ -130,14 +128,12 @@ def azure_template() -> dict:
 
 
 def shell_quoted(text: str) -> str:
-    """`text` for the inside of a double-quoted bash word, with PROJECT_NUMBER as $NUMBER."""
     escaped = text.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`")
     return escaped.replace("$", "\\$").replace("PROJECT_NUMBER", "$NUMBER")
 
 
 def google_script() -> str:
     roles = " ".join(deploy_google_cloud.GRANT_ROLES)
-    # Double quotes, so the shell puts the project number in each condition.
     conditional = "\n".join(
         f'grant {role} "{title}" "{shell_quoted(expression)}"'
         for role, title, expression in deploy_google_cloud.GRANT_CONDITIONAL_ROLES)

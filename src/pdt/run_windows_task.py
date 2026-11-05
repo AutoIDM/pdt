@@ -104,8 +104,6 @@ def kernel32():
 
 
 def new_job() -> int:
-    """A new job object that ends each process in it when its last handle closes. No process in
-    it may leave it (no breakaway flag). Raises OSError."""
     import ctypes
 
     class Basic(ctypes.Structure):
@@ -141,20 +139,16 @@ def new_job() -> int:
 
 
 def assign(job: int, process: int) -> None:
-    """Put the process of the handle `process` in `job`. Raises OSError."""
     import ctypes
     if not kernel32().AssignProcessToJobObject(job, process):
         raise ctypes.WinError(ctypes.get_last_error())
 
 
 def end_job(job: int) -> None:
-    """End each process in `job` now."""
     kernel32().TerminateJobObject(job, 1)
 
 
 def hold_in_job() -> int | None:
-    """Put this process in a new job object, so each process it starts is in it too. None off
-    Windows."""
     if os.name != "nt":
         return None
     job = new_job()
@@ -175,7 +169,6 @@ def script_command(uv: str, folder: Path, script: str = "run.py") -> list[str]:
 
 
 def take_lock(path: Path, project: Path):
-    """The same rule as pdt.config.try_lock, because this script imports nothing from pdt."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = open(path, "w")
     try:
@@ -192,8 +185,6 @@ def take_lock(path: Path, project: Path):
 
 
 def app_lock(app_dir: Path):
-    """The lock of the app, as `pdt run` takes it. Raises RuntimeError when another process
-    holds it, or holds the lock of the whole project."""
     project = next((folder for folder in app_dir.parents if (folder / "pdt.yml").is_file()),
                    app_dir.parent)
     locks = project / ".pdt" / "locks"

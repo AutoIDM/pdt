@@ -20,8 +20,6 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" / "pdt"
 DOCS = [ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "verify" / "README.md",
         *sorted((ROOT / "docs").rglob("*.md"))]
-# Text that starts with "pdt " but is not a command: README's mistyped command, the display
-# name of the Google Cloud service account, and the question `pdt register` asks.
 NOT_COMMANDS = {"pdt lgos", "pdt job runner", "pdt jobs in {}?"}
 COMMAND_CALLS = {"command", "field", "next_steps", "deployed_next_steps"}
 SPAN = re.compile(r"`(pdt [^`]+)`")
