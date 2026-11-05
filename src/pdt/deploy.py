@@ -33,7 +33,7 @@ from pathlib import Path
 from pdt import (__version__, alerts_cli, config, console, lifecycle, managed_services, powershell,
                  pwsh, regions, runs_cli)
 from pdt.config import ConfigError
-from pdt.deploy_common import REBUILD_ENV, CostEstimate, keeps_secret
+from pdt.deploy_common import KEEP_SECRET_ENV, REBUILD_ENV, REGISTER_ACTION, CostEstimate, keeps_secret
 from pdt.utils.email_auth import can_prompt
 from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -223,6 +223,12 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
         code = provider_step("deploy", provider, app_name, assume_yes, rebuild)
     if code != 0:
         return code
+    from pdt.utils import autoidm
+    if os.environ.get(autoidm.RUNNER_ENV):
+        # A deploy from a registered computer writes the cloud registration with the secret;
+        # the hosted runner keeps the secret, so it reads the secret and adds the registration after.
+        os.environ.pop(KEEP_SECRET_ENV, None)
+        dispatch(provider, "secrets", app_name, True, [REGISTER_ACTION])
     if app["app_profile"] == "web":
         web_next_steps(app)
         return 0
