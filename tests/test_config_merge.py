@@ -139,6 +139,33 @@ def test_storage_read_works_with_azure_only(project):
         "and this app uses windows; remove the key"]
 
 
+def test_storage_read_needs_the_read_key(project):
+    add_app(project, "report", "storage: {}\n")
+    assert validate_app("report") == [
+        "report/config.yml: storage.read must be a list of app names"]
+    add_app(project, "report", "storage:\n  read: []\n")
+    assert validate_app("report") == []
+    assert storage_read(merged_app("report")) == []
+
+
+def test_storage_read_names_each_app_once(project):
+    add_app(project, "client1")
+    add_app(project, "report", "storage:\n  read: [client1, client1]\n")
+    assert validate_app("report") == [
+        "report/config.yml: storage.read names 'client1' more than once; keep one"]
+
+
+def test_storage_read_names_an_app_with_a_folder_in_the_azure_store(project):
+    add_app(project, "client1", "storage: false\n")
+    add_app(project, "client2", "platform:\n  provider: windows\n")
+    add_app(project, "report", "storage:\n  read: [client1, client2]\n")
+    assert validate_app("report") == [
+        "report/config.yml: storage.read names 'client1', which has storage: false, "
+        "so it has no folder to read",
+        "report/config.yml: storage.read names 'client2', which uses the windows provider, "
+        "so its folder is not in the Azure store"]
+
+
 def test_windows_app_with_no_timezone_runs_on_local_time(project):
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
     add_app(project, "my-report", "schedule: daily\n")

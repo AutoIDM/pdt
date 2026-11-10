@@ -1241,12 +1241,26 @@ def storage_problems(app: dict) -> list[str]:
         problems.append("storage.read works with the azure provider only, "
                         f"and this app uses {provider}; remove the key")
     apps = app_folders()
-    for name in names:
+    for name in dict.fromkeys(names):
+        if names.count(name) > 1:
+            problems.append(f"storage.read names {name!r} more than once; keep one")
         if name == app["name"]:
             problems.append(f"storage.read names {name!r}, which is this app; "
                             "an app already reads its own folder, so remove the name")
         elif name not in apps:
             problems.append(f"storage.read names {name!r}, which is not an app of this project")
+        else:
+            try:
+                other = merged_app(name)
+            except ConfigError:
+                continue
+            if other["storage"] is False:
+                problems.append(f"storage.read names {name!r}, which has storage: false, "
+                                "so it has no folder to read")
+            other_provider = other["platform"].get("provider")
+            if other_provider in PROVIDERS and other_provider != "azure":
+                problems.append(f"storage.read names {name!r}, which uses the {other_provider} "
+                                "provider, so its folder is not in the Azure store")
     return problems
 
 
