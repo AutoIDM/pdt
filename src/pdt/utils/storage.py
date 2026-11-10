@@ -153,12 +153,16 @@ def reclaimable(held: dict) -> bool:
 
 def root(app: str | None = None) -> str:
     """The URL of this app's folder, or of the folder of `app` next to it."""
+    own = config.running_app_dir().name
+    if app is not None and app not in config.storage_read(config.merged_app(own)):
+        raise ValueError(f"{app!r} is not in the storage: read: list of {own}/{config.APP_FILE}; "
+                         "add it there to read its folder")
     url = os.environ.get("PDT_STORAGE_URL", "").strip()
     if url != "":
         if app is None:
             return url
         return url.rstrip("/").rsplit("/", 1)[0] + f"/{app}/"
-    folder = config.find_project() / ".pdt" / "storage" / (app or config.running_app_dir().name)
+    folder = config.find_project() / ".pdt" / "storage" / (app or own)
     return folder.as_uri() + "/"
 
 
@@ -478,6 +482,7 @@ class Store:
     def abort(self, lease: Lease) -> None:
         """Give up a pull without pushing: release the lock and leave the
         remote files as they were."""
+        self._refuse_write()
         self._release_lock(self.backend(), lease)
 
     @contextmanager
