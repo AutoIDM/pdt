@@ -57,7 +57,7 @@ from pdt.deploy_azure import (
     COMMON_PROVIDERS, ENVIRONMENT_TYPE, JOBS_API_VERSION, MANAGEMENT_API, RECENT_RUNS, SECRET_ROLE,
     STORAGE_RESOURCE, STORE_ROLE, VAULT_RESOURCE, access_token, arm_get, arm_list, arm_url,
     assign_role, az, az_json, az_tsv,
-    azure_settings, check_shared_names, clean_name, cli_credential_store, cost_estimate,
+    azure_settings, check_condition_size, check_shared_names, clean_name, cli_credential_store, cost_estimate,
     deleted_vault, delete_unless_locked,
     destroy_group, disable_old_secret_versions, exchange_rate, ensure_group, ensure_group_and_vault,
     ensure_secret, ensure_store, ensure_workspace, group_can_be_deleted, held_token_store, list_remaining,
@@ -1154,7 +1154,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     actions.append("ensure scoped Key Vault secret permissions for the deployer "
                    "and managed identity")
     if store:
-        actions += store_plan(store, store_present, name, job, config.storage_read(app))
+        read_apps = config.storage_read(app)
+        check_condition_size(name, read_apps)
+        actions += store_plan(store, store_present, name, job, read_apps)
     actions.append(image_action(
         app, console.Markup(f"build and push image {console.value(image)}"),
         "ACR Tasks" if cloud else ""))

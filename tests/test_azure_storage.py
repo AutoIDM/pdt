@@ -63,19 +63,43 @@ def test_the_grant_condition_names_one_app_only():
     assert deploy_azure.store_condition("a") != deploy_azure.store_condition("b")
 
 
+def test_the_grant_condition_of_an_app_with_no_read_list_is_the_released_string():
+    # A changed string makes the next deploy of every app replace its role assignment.
+    released = (
+        "((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND NOT SubOperationMatches{'Blob.List'})"
+        " AND !(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write'})"
+        " AND !(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete'}))"
+        " OR (@Resource[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:path] StringStartsWith 'my-report/'))"
+        " AND ((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND SubOperationMatches{'Blob.List'}))"
+        " OR (@Request[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:prefix] StringStartsWith 'my-report/'))")
+    assert deploy_azure.store_condition("my-report") == released
+    assert deploy_azure.store_condition("my-report", []) == released
+
+
 def test_the_grant_condition_adds_read_and_list_of_each_named_folder():
-    paths = " OR ".join(f"@Resource[{BLOBS}:path] StringStartsWith '{folder}'"
-                        for folder in ("report/", "a/", "b/"))
-    prefixes = " OR ".join(f"@Request[{BLOBS}:prefix] StringStartsWith '{folder}'"
-                           for folder in ("report/", "a/", "b/"))
     assert deploy_azure.store_condition("report", ["a", "b"]) == (
-        f"((!(ActionMatches{{'{BLOBS}/write'}}) AND !(ActionMatches{{'{BLOBS}/delete'}}))"
-        f" OR (@Resource[{BLOBS}:path] StringStartsWith 'report/'))"
-        f" AND ((!(ActionMatches{{'{BLOBS}/read'}} AND NOT SubOperationMatches{{'Blob.List'}}))"
-        f" OR ({paths}))"
-        f" AND ((!(ActionMatches{{'{BLOBS}/read'}} AND SubOperationMatches{{'Blob.List'}}))"
-        f" OR ({prefixes}))")
-    assert deploy_azure.store_condition("report", []) == deploy_azure.store_condition("report")
+        "((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write'})"
+        " AND !(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action'})"
+        " AND !(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete'}))"
+        " OR (@Resource[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:path] StringStartsWith 'report/'))"
+        " AND ((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND NOT SubOperationMatches{'Blob.List'}))"
+        " OR (@Resource[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:path] StringStartsWith 'report/'"
+        " OR @Resource[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:path] StringStartsWith 'a/'"
+        " OR @Resource[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:path] StringStartsWith 'b/'))"
+        " AND ((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND SubOperationMatches{'Blob.List'}))"
+        " OR (@Request[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:prefix] StringStartsWith 'report/'"
+        " OR @Request[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:prefix] StringStartsWith 'a/'"
+        " OR @Request[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:prefix] StringStartsWith 'b/'))")
+
+
+def test_a_condition_longer_than_azure_allows_stops_the_deploy(capsys):
+    names = [f"client-{number:02d}" for number in range(40)]
+    deploy_azure.check_condition_size("report", names[:30])
+    with pytest.raises(SystemExit):
+        deploy_azure.check_condition_size("report", names)
+    assert " ".join(capsys.readouterr().out.split()).endswith(
+        "storage.read in report/config.yml names 40 apps. The access rule that names them is "
+        "9976 bytes long, and Azure allows 8192 bytes. Remove names from the list.")
 
 
 def test_plan_lines_show_each_folder_the_job_may_read():
