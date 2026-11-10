@@ -64,7 +64,6 @@ def test_the_grant_condition_names_one_app_only():
 
 
 def test_the_grant_condition_of_an_app_with_no_read_list_is_the_released_string():
-    # A changed string makes the next deploy of every app replace its role assignment.
     released = (
         "((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND NOT SubOperationMatches{'Blob.List'})"
         " AND !(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write'})"

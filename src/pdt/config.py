@@ -1220,7 +1220,6 @@ def validate_app(name: str) -> list[str]:
 
 
 def storage_read(app: dict) -> list[str]:
-    """The apps whose storage folder this app may read (`storage: read:`)."""
     if not isinstance(app["storage"], dict):
         return []
     return app["storage"].get("read") or []

@@ -108,7 +108,6 @@ def test_root_falls_back_to_the_project_storage_folder(project, monkeypatch):
 
 @pytest.fixture
 def report(project, monkeypatch):
-    """An app whose config.yml lets it read the folder of client1."""
     monkeypatch.chdir(add_app(project, "report", "storage:\n  read: [client1]\n"))
     monkeypatch.delenv("PDT_STORAGE_URL", raising=False)
     return project

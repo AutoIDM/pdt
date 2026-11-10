@@ -44,8 +44,7 @@ containers carry no ARM tags, so the container holds STORE_TAGS as
 metadata instead, with underscores in the keys because metadata keys
 must be C# identifiers. RBAC scope stops at the container, so store_condition
 adds an attribute-based access control condition that holds the job
-inside its own <app>/ folder, and lets it read the folder of each app its
-`storage: read:` list names.
+inside its own <app>/ folder.
 
 A shared resource (the project's ACR, and the Container Apps environment in
 deploy_azure_container_apps.py) has a set of users, and destroy may delete
@@ -1109,10 +1108,7 @@ def store_exists(store: dict[str, str],
 
 
 def store_condition(app_name: str, read_apps: list[str] | tuple[str, ...] = ()) -> str:
-    """Limit Storage Blob Data Contributor to the app's own folder, plus
-    reading and listing the folder of each app in read_apps.
-
-    The grammar and the action names come from "Example Azure role assignment
+    """The grammar and the action names come from "Example Azure role assignment
     conditions for Blob Storage":
     https://learn.microsoft.com/en-us/azure/storage/blobs/storage-auth-abac-examples
     """

@@ -152,7 +152,6 @@ def reclaimable(held: dict) -> bool:
 
 
 def root(app: str | None = None) -> str:
-    """The URL of this app's folder, or of the folder of `app` next to it."""
     if app is not None:
         own = config.running_app_dir().name
         if app not in config.storage_read(config.merged_app(own)):
