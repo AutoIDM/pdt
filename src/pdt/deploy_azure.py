@@ -1142,7 +1142,7 @@ def store_condition(app_name: str, read_apps: list[str] | tuple[str, ...] = ()) 
 
 
 def check_condition_size(app_name: str, read_apps: list[str]) -> None:
-    condition = store_condition(app_name, read_apps)
+    condition = store_condition(app_name, read_apps).encode()
     if len(condition) > CONDITION_LIMIT:
         fail(f"storage.read in {console.value(f'{app_name}/{config.APP_FILE}')} names "
              f"{len(read_apps)} apps. The access rule that names them is {len(condition)} "

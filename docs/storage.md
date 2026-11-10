@@ -56,6 +56,6 @@ for path in other.fs().find("runs/"):
         data = f.read()
 ```
 
-The app still has its own folder, from `storage.store()`. It can read and list the folders it names, and it cannot change or delete anything in them. On such a store, a write with `open`, `push`, `pull("state/")`, and `sync` are refused, and so is a name that the list does not hold. On your own computer that rule covers `open`, `push`, and `sync` only; a deployed app is refused every write, because the cloud allows it to read and nothing else. `pdt run APP` on your own computer reads `.pdt/storage/client1/` in your project, so you can try it before you deploy. After you change the list, run `pdt deploy APP` again: the deploy plan shows each folder the app may read, and a name you removed loses its access.
+The app still has its own folder, from `storage.store()`. It can read and list the folders it names, and it cannot change or delete anything in them. On such a store, a write with `open`, `push`, `pull("state/")`, and `sync` are refused, and so is a name that the list does not hold. On your own computer that rule does not cover a write through `other.fs()`; a deployed app is refused every write, because the cloud allows it to read and nothing else. `pdt run APP` on your own computer reads `.pdt/storage/client1/` in your project, so you can try it before you deploy. After you change the list, run `pdt deploy APP` again: the deploy plan shows each folder the app may read, and a name you removed loses its access.
 
 This works with the `azure` provider only for now.
