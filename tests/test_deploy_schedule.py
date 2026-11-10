@@ -60,6 +60,14 @@ def test_no_one_to_ask_and_no_yes_names_the_fix(ps_app, monkeypatch):
     assert not (ps_app / "pdt.yml").exists()
 
 
+def test_the_schedule_goes_into_an_existing_config_yml(ps_app):
+    (ps_app / "config.yml").write_text("storage: false\n")
+    problem = deploy.choose_schedule(merged_app("ps-report"), True)
+    assert problem == ""
+    assert (ps_app / "config.yml").read_text() == 'storage: false\nschedule: "daily"\n'
+    assert not (ps_app / "pdt.yml").exists()
+
+
 def test_a_set_schedule_is_never_asked_again(project, monkeypatch):
     folder = add_app(project, "my-report", "schedule: hourly\n")
     monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: pytest.fail("asked"))

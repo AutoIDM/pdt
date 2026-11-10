@@ -59,8 +59,8 @@ def test_get_without_a_path_prints_the_usage(store, app, capsys):
     assert storage_cli.USAGE in capsys.readouterr().out
 
 
-def test_storage_turned_off_is_refused(store, capsys):
-    app = {"name": "my-report", "storage": False}
+def test_storage_turned_off_is_refused(store, tmp_path, capsys):
+    app = {"name": "my-report", "storage": False, "dir": tmp_path / "my-report"}
     assert storage_cli.run(store, app, ["ls"], False) == 1
     out = capsys.readouterr().out
     assert "storage is turned off for my-report" in out

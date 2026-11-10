@@ -30,12 +30,12 @@ from pathlib import Path
 
 PROJECT_FILE = "pdt.yml"
 APP_FILE = "pdt.yml"
-# The name an app's settings file had before it became pdt.yml. Validation
-# tells a user who still has one to rename it; nothing reads it.
+# The name an app's settings file had before it became pdt.yml. pdt reads it
+# when the app folder has no pdt.yml (see app_file).
 OLD_APP_FILE = "config.yml"
-# The first pdt-cli release that reads the app's pdt.yml. An app whose run.py
-# pins an older release still looks for config.yml.
-APP_FILE_SINCE = "0.2.0"
+# The config.yml files this run already warned about, so a child process such as
+# run_powershell.py does not warn again.
+OLD_APP_FILE_WARNED_ENV = "PDT_CONFIG_YML_WARNED"
 
 PROVIDERS = ("google-cloud", "azure", "aws", "windows")
 # The words after `pdt secrets <app>` and `pdt storage <app>`. They live here, so tab
@@ -208,6 +208,24 @@ def is_app(folder: Path) -> bool:
     return (folder / "run.py").is_file() or powershell_scripts(folder) != []
 
 
+def app_file(app_dir: Path) -> Path:
+    """The app's settings file that pdt reads and writes: its pdt.yml, else its config.yml,
+    else a new pdt.yml."""
+    if (app_dir / APP_FILE).is_file():
+        return app_dir / APP_FILE
+    if (app_dir / OLD_APP_FILE).is_file():
+        old = app_dir / OLD_APP_FILE
+        warned = os.environ.get(OLD_APP_FILE_WARNED_ENV, "").split(os.pathsep)
+        if str(old) not in warned:
+            from pdt import console
+            console.warn(f"{console.value(f'{app_dir.name}/{OLD_APP_FILE}')}: "
+                         f"{console.value(OLD_APP_FILE)} is deprecated. "
+                         f"Rename it to {console.value(APP_FILE)}.")
+            os.environ[OLD_APP_FILE_WARNED_ENV] = os.pathsep.join([*warned, str(old)])
+        return old
+    return app_dir / APP_FILE
+
+
 def app_folders() -> list[str]:
     names = []
     for child in sorted(find_project().iterdir()):
@@ -222,7 +240,7 @@ def is_enabled(name: str) -> bool:
     project = find_project()
     try:
         entry = root_app_entry(load_yaml(project / PROJECT_FILE), name)
-        own = load_yaml(project / name / APP_FILE)
+        own = load_yaml(app_file(project / name))
     except ConfigError:
         return True
     return own.get("enabled", entry.get("enabled", True)) is not False
@@ -291,9 +309,10 @@ def merged_app(name: str) -> dict:
         raise ConfigError(f"no app named {name!r} (no {name}/run.py and no .ps1 file in {name}/)")
     root_cfg = load_yaml(find_project() / PROJECT_FILE)
     entry = root_app_entry(root_cfg, name)
-    own = load_yaml(app_dir / APP_FILE)
+    own_file = app_file(app_dir)
+    own = load_yaml(own_file)
     entry_where = f"{PROJECT_FILE}: apps entry {name!r}"
-    own_where = f"{name}/{APP_FILE}"
+    own_where = f"{name}/{own_file.name}"
     platform = {
         **mapping(root_cfg, "platform", PROJECT_FILE),
         **mapping(entry, "platform", entry_where),
@@ -384,7 +403,7 @@ def save_app_key(app: dict, key: str, value) -> Path:
     Edits the text rather than rewriting the yaml, so the user's comments survive,
     and holds the same lock and atomic replace as `save_platform_key`.
     """
-    path = app["dir"] / APP_FILE
+    path = app_file(app["dir"])
     if keep_unsaved(key, value):
         return path
     text = ("true" if value else "false") if isinstance(value, bool) else yaml_quoted(value)
@@ -412,7 +431,7 @@ def save_platform_key(app: dict, key: str, value: str, path: Path | None = None)
         if (root_cfg.get("platform") or {}).get("provider") == app["platform"].get("provider"):
             path = project_file
         else:
-            path = app["dir"] / APP_FILE
+            path = app_file(app["dir"])
     shown = path.relative_to(find_project())
     if keep_unsaved(key, value, platform=True):
         console.note(f"Using {console.escape(key)} {console.value(value)}. A deploy saves it to "
@@ -636,12 +655,12 @@ def cached_apps() -> list[str]:
         (project / STATE_DIR).mkdir(exist_ok=True)
     except OSError:
         return find_apps()
-    # A new app folder changes the project folder's time; a new run.py, .ps1, or pdt.yml
-    # changes the time of the folder that holds it.
+    # A new app folder changes the project folder's time; a new run.py, .ps1, pdt.yml, or
+    # config.yml changes the time of the folder that holds it.
     folders = [child for child in sorted(project.iterdir())
                if not child.name.startswith(".") and child.is_dir()]
-    stamps = _stamps([Path(__file__), project, project / PROJECT_FILE,
-                      *folders, *(folder / APP_FILE for folder in folders)])
+    stamps = _stamps([Path(__file__), project, project / PROJECT_FILE, *folders,
+                      *(folder / name for folder in folders for name in (APP_FILE, OLD_APP_FILE))])
     apps = find_apps()
     try:
         write_state({"stamps": stamps, "apps": apps}, "apps")
@@ -993,7 +1012,7 @@ def found_env_lines(app: dict) -> list[str]:
         found += [(name, f"optional, {first.get(name, 'the code')}") for name in optional]
     if not found:
         return []
-    own_file = f"{app['name']}/{APP_FILE}"
+    own_file = f"{app['name']}/{app_file(app['dir']).name}"
     return console.rows(f"env vars the code reads that {console.value(own_file)} does not list:",
                         found)
 
@@ -1070,7 +1089,7 @@ def missing_env(app: dict) -> str:
     message = f"{'; '.join(problems)}. pdt looked in {looked}. To fix it, {fix}."
     if any(not is_set(os.environ, name) for name in spec.get("read_by") or {}):
         message += (f" If a script works without one that it reads, list that one under "
-                    f"env: optional: in {app['name']}/{APP_FILE} instead.")
+                    f"env: optional: in {app['name']}/{app_file(app['dir']).name} instead.")
     return message
 
 
@@ -1174,21 +1193,18 @@ def dockerfile_problem(platform: dict) -> str:
 
 
 def validate_app(name: str) -> list[str]:
-    where = f"{name}/{APP_FILE}"
+    own_file = app_file(find_project() / name)
+    where = f"{name}/{own_file.name}"
     try:
         root_cfg = load_yaml(find_project() / PROJECT_FILE)
-        own = load_yaml(find_project() / name / APP_FILE)
+        own = load_yaml(own_file)
     except ConfigError as e:
         return [str(e)]
     problems = []
-    if (find_project() / name / OLD_APP_FILE).is_file():
-        rename = f"{name}/{OLD_APP_FILE}: an app's settings now live in {name}/{APP_FILE}. "
-        if (find_project() / name / "run.py").is_file():
-            rename += (f"Rename the file, and pin pdt-cli {APP_FILE_SINCE} or newer in "
-                       f"{name}/run.py, because older versions read {OLD_APP_FILE}")
-        else:
-            rename += "Rename the file"
-        problems.append(rename)
+    if (find_project() / name / OLD_APP_FILE).is_file() and own_file.name == APP_FILE:
+        problems.append(f"{name} holds both {name}/{APP_FILE} and {name}/{OLD_APP_FILE}. "
+                        f"pdt reads {name}/{APP_FILE} and ignores {name}/{OLD_APP_FILE}; "
+                        f"move what you need into {APP_FILE} and delete {OLD_APP_FILE}")
     try:
         platform = mapping(root_cfg, "platform", PROJECT_FILE)
     except ConfigError as e:
@@ -1211,7 +1227,7 @@ def validate_app(name: str) -> list[str]:
     if provider not in PROVIDERS:
         problems.append(
             f"{name}: platform.provider must be one of: {', '.join(PROVIDERS)}. "
-            f"Set it under platform: in the project's {PROJECT_FILE}, or in {name}/{APP_FILE}.")
+            f"Set it under platform: in the project's {PROJECT_FILE}, or in {where}.")
     if provider == "aws":
         problem = aws_account_problem(str(app["platform"].get("account") or ""))
         if problem != "":

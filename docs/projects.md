@@ -4,6 +4,8 @@
 
 A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, or the `.ps1` scripts of a PowerShell app, and its own `pdt.yml`. Every command except `init` finds the project by looking in the current folder, then each folder above it; a folder that also holds `run.py` or `.ps1` scripts is an app, so the walk goes past it.
 
+`config.yml` is the deprecated name of an app's `pdt.yml`. pdt still reads an app's `config.yml` when its folder has no `pdt.yml`. Rename the file to `pdt.yml`.
+
 ```
 pdt init my-jobs
 ```

@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 import pytest
 
 from conftest import add_app
@@ -79,20 +82,56 @@ def test_a_project_may_keep_its_own_ps1_files(project):
     assert find_project() == project
 
 
-def test_an_old_config_yml_is_reported_and_not_read(project):
+def test_an_app_with_only_a_config_yml_is_read_from_it(project, capsys):
     app = add_app(project, "my-report")
     (app / "config.yml").write_text("schedule: daily\n")
+    assert validate_app("my-report") == []
+    assert merged_app("my-report")["schedule"] == "daily"
+    assert not (app / PROJECT_FILE).exists()
+    out = " ".join(capsys.readouterr().out.split())
+    assert out == "my-report/config.yml: config.yml is deprecated. Rename it to pdt.yml."
+
+
+def test_a_child_process_does_not_warn_again_about_the_same_config_yml(project, capsys):
+    app = add_app(project, "my-report")
+    (app / "config.yml").write_text("schedule: daily\n")
+    merged_app("my-report")
+    capsys.readouterr()
+    result = subprocess.run(
+        [sys.executable, "-c", "from pdt import config; config.merged_app('my-report')"],
+        capture_output=True, text=True, check=True)
+    assert "deprecated" not in result.stdout
+
+
+def test_an_app_with_a_pdt_yml_prints_no_deprecation_warning(project, capsys):
+    add_app(project, "my-report", config_text="schedule: daily\n")
+    merged_app("my-report")
+    assert "deprecated" not in capsys.readouterr().out
+
+
+def test_a_config_yml_problem_names_config_yml(project):
+    app = add_app(project, "my-report")
+    (app / "config.yml").write_text("pause: maybe\n")
+    assert validate_app("my-report") == ["my-report/config.yml: pause must be true or false"]
+
+
+def test_a_powershell_app_with_only_a_config_yml_is_read_from_it(project):
+    app = project / "ad-report"
+    app.mkdir()
+    (app / "report.ps1").write_text("")
+    (app / "config.yml").write_text("schedule: weekly\n")
+    assert find_project() == project
+    assert merged_app("ad-report")["schedule"] == "weekly"
+
+
+def test_an_app_with_both_files_reads_pdt_yml_and_fails_validation(project):
+    app = add_app(project, "my-report", config_text="schedule: daily\n")
+    (app / "config.yml").write_text("schedule: weekly\n")
+    assert merged_app("my-report")["schedule"] == "daily"
     assert validate_app("my-report") == [
-        "my-report/config.yml: an app's settings now live in my-report/pdt.yml. Rename the "
-        "file, and pin pdt-cli 0.2.0 or newer in my-report/run.py, because older versions "
-        "read config.yml"]
-    assert merged_app("my-report")["schedule"] is None
-
-
-def test_an_old_config_yml_in_a_powershell_app_asks_for_no_run_py_pin(project):
-    (powershell_app(project, "ad-report") / "config.yml").write_text("schedule: daily\n")
-    assert validate_app("ad-report")[0] == (
-        "ad-report/config.yml: an app's settings now live in ad-report/pdt.yml. Rename the file")
+        "my-report holds both my-report/pdt.yml and my-report/config.yml. pdt reads "
+        "my-report/pdt.yml and ignores my-report/config.yml; move what you need into pdt.yml "
+        "and delete config.yml"]
 
 
 def test_reports_a_useful_error_outside_any_project(tmp_path, monkeypatch):

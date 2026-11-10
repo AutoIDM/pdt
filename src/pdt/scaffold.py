@@ -365,7 +365,7 @@ def replace_platform(text: str, platform: dict) -> str:
 def merged_platform(root_cfg: dict, root_platform: dict, app_dir: Path) -> dict:
     return {**root_platform,
             **(config.root_app_entry(root_cfg, app_dir.name).get("platform") or {}),
-            **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
+            **(config.load_yaml(config.app_file(app_dir)).get("platform") or {})}
 
 
 def pin_problem(path: Path, shown: str) -> str:
@@ -440,7 +440,8 @@ def change_provider(target: Path) -> int:
                     **{key: str(value) for key, value in extra.items() if value}}
         pins[name] = {key: value for key, value in settings.items()
                       if str(deploy.resolved(after[name]).get(key) or "") != value}
-        problem = pin_problem(target / name / APP_FILE, f"{name}/{APP_FILE}")
+        own_file = config.app_file(target / name)
+        problem = pin_problem(own_file, f"{name}/{own_file.name}")
         if pins[name].keys() - {"timezone"} and problem != "":
             raise ConfigError(problem)
     movable = [name for name in numbered if deploy.moved(recorded[name], after[name])]
@@ -482,13 +483,14 @@ def change_provider(target: Path) -> int:
     for name in deployed:
         if name in removed or not pins[name].keys() - {"timezone"}:
             continue
+        own_file = config.app_file(target / name)
         for key, value in pins[name].items():
-            config.save_platform_key(apps[name], key, value, path=target / name / APP_FILE)
+            config.save_platform_key(apps[name], key, value, path=own_file)
         pinned.append(name)
         console.say(f"{console.value(name)} stays on "
                     f"{console.value(where[name])}. "
                     f"Its {console.value('platform:')} settings are in "
-                    f"{console.value(f'{name}/{APP_FILE}')}.")
+                    f"{console.value(f'{name}/{own_file.name}')}.")
     with config.locked(marker):
         if marker.read_bytes().decode("utf-8") != text:
             raise ConfigError(f"{PROJECT_FILE} changed while pdt init was asking; "
@@ -499,7 +501,8 @@ def change_provider(target: Path) -> int:
     for name in removed:
         if config.place(recorded[name]).get("provider") == provider:
             continue
-        for shown, section in ((f"{name}/{APP_FILE}", config.load_yaml(target / name / APP_FILE)),
+        own_file = config.app_file(target / name)
+        for shown, section in ((f"{name}/{own_file.name}", config.load_yaml(own_file)),
                                (f"{PROJECT_FILE} apps entry {name}",
                                 config.root_app_entry(root_cfg, name))):
             region = (section.get("platform") or {}).get("region")

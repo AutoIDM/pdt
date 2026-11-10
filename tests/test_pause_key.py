@@ -54,6 +54,16 @@ def test_save_app_key_leaves_a_nested_key_with_the_same_name_alone(project):
     assert loaded == {"config": {"pause": 5}, "pause": True}
 
 
+def test_save_app_key_writes_into_an_existing_config_yml(project):
+    folder = add_app(project, "my-report")
+    (folder / "config.yml").write_text("schedule: daily\n")
+    saved = save_app_key(merged_app("my-report"), "pause", True)
+    assert saved == folder / "config.yml"
+    assert saved.read_text() == "schedule: daily\npause: true\n"
+    assert not (folder / "pdt.yml").exists()
+    assert merged_app("my-report")["pause"] is True
+
+
 def test_save_app_key_creates_a_missing_config_file(project):
     add_app(project, "my-report")
     saved = save_app_key(merged_app("my-report"), "pause", True)

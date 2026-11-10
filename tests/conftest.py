@@ -18,6 +18,7 @@ def console_on_stdout(monkeypatch):
     # A --json command moves pdt.console to stderr for the rest of the process.
     monkeypatch.setattr(console._console, "stderr", False)
     monkeypatch.setattr(console, "_warned", set())
+    monkeypatch.setenv("PDT_CONFIG_YML_WARNED", "")
 
 
 @pytest.fixture(autouse=True)

@@ -370,7 +370,7 @@ def own_alerts_apps() -> list[str]:
     root_cfg = config.load_yaml(config.find_project() / config.PROJECT_FILE)
     return [app for app in config.app_folders()
             if "alerts" in config.root_app_entry(root_cfg, app)
-            or "alerts" in config.load_yaml(config.find_project() / app / config.APP_FILE)]
+            or "alerts" in config.load_yaml(config.app_file(config.find_project() / app))]
 
 
 def entries() -> list[dict]:

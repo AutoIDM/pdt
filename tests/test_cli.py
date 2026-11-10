@@ -919,6 +919,24 @@ def test_pause_writes_the_key_and_tells_a_deployed_app(project, monkeypatch, cap
     assert calls == [("azure", "unpause", "hello-world", False)]
 
 
+def test_pause_writes_into_an_existing_config_yml(project, monkeypatch):
+    folder = add_app(project, "hello-world")
+    (folder / "config.yml").write_text("schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: 0)
+    assert run_cli(monkeypatch, "pause", "hello-world") == 0
+    assert (folder / "config.yml").read_text() == "schedule: daily\npause: true\n"
+    assert not (folder / "pdt.yml").exists()
+
+
+def test_list_shows_the_schedule_from_a_config_yml(project, monkeypatch, capsys):
+    folder = add_app(project, "hello-world")
+    (folder / "config.yml").write_text("schedule: weekly\n")
+    assert run_cli(monkeypatch, "list") == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "hello-world/config.yml: config.yml is deprecated. Rename it to pdt.yml."
+    assert "weekly" in next(line for line in lines[1:] if "hello-world" in line)
+
+
 def test_run_deployed_starts_the_deployed_job(project, monkeypatch, capsys):
     add_app(project, "hello-world", "schedule: daily\n")
     calls = []
