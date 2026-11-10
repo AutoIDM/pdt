@@ -63,6 +63,31 @@ def test_the_grant_condition_names_one_app_only():
     assert deploy_azure.store_condition("a") != deploy_azure.store_condition("b")
 
 
+def test_the_grant_condition_adds_read_and_list_of_each_named_folder():
+    paths = " OR ".join(f"@Resource[{BLOBS}:path] StringStartsWith '{folder}'"
+                        for folder in ("report/", "a/", "b/"))
+    prefixes = " OR ".join(f"@Request[{BLOBS}:prefix] StringStartsWith '{folder}'"
+                           for folder in ("report/", "a/", "b/"))
+    assert deploy_azure.store_condition("report", ["a", "b"]) == (
+        f"((!(ActionMatches{{'{BLOBS}/write'}}) AND !(ActionMatches{{'{BLOBS}/delete'}}))"
+        f" OR (@Resource[{BLOBS}:path] StringStartsWith 'report/'))"
+        f" AND ((!(ActionMatches{{'{BLOBS}/read'}} AND NOT SubOperationMatches{{'Blob.List'}}))"
+        f" OR ({paths}))"
+        f" AND ((!(ActionMatches{{'{BLOBS}/read'}} AND SubOperationMatches{{'Blob.List'}}))"
+        f" OR ({prefixes}))")
+    assert deploy_azure.store_condition("report", []) == deploy_azure.store_condition("report")
+
+
+def test_plan_lines_show_each_folder_the_job_may_read():
+    store = deploy_azure.store_settings(SETTINGS)
+    lines = plain(deploy_azure.store_plan(store, True, "report", "pdt-runner", ["a", "b"]))
+    where = f"storage account {store['account']}, container {store['container']}"
+    assert lines[1:4] == [f"grant pdt-runner write access to report/ in {where}",
+                          f"grant pdt-runner read access to a/ in {where}",
+                          f"grant pdt-runner read access to b/ in {where}"]
+    assert len(lines) == 5
+
+
 def test_usage_is_unknown_until_the_data_role_lands(capsys):
     class Deployer:
         def usage(self):

@@ -35,6 +35,10 @@ A run that dies without releasing the lock blocks the next run until the
 lock's TTL passes, unless the next run can tell the holder is gone: it
 carries the same run id, or it started on this same machine and its
 process no longer exists. `pdt storage <app> unlock` releases a lock by hand.
+
+`storage.store(app="other")` opens the folder of another app of the project,
+read-only: the folder next to this app's own. A deployed job can read it when
+this app's config.yml names the other app under `storage: read:`.
 """
 
 from __future__ import annotations
@@ -147,16 +151,21 @@ def reclaimable(held: dict) -> bool:
     return same_machine and isinstance(pid, int) and not _process_alive(pid)
 
 
-def root() -> str:
+def root(app: str | None = None) -> str:
+    """The URL of this app's folder, or of the folder of `app` next to it."""
     url = os.environ.get("PDT_STORAGE_URL", "").strip()
     if url != "":
-        return url
-    folder = config.find_project() / ".pdt" / "storage" / config.running_app_dir().name
+        if app is None:
+            return url
+        return url.rstrip("/").rsplit("/", 1)[0] + f"/{app}/"
+    folder = config.find_project() / ".pdt" / "storage" / (app or config.running_app_dir().name)
     return folder.as_uri() + "/"
 
 
-def store(credentials=None) -> Store:
-    return Store(root(), credentials)
+def store(credentials=None, app: str | None = None) -> Store:
+    """This app's folder. With `app`, the folder of another app of the project,
+    read-only; this app's config.yml names it under `storage: read:`."""
+    return Store(root(app), credentials, read_only=app is not None)
 
 
 def sync(local: Path | None = None, lock_ttl: timedelta = LOCK_TTL,
@@ -376,6 +385,7 @@ BACKENDS: dict[str, type[Backend]] = {
 class Store:
     url: str
     credentials: object | None = None
+    read_only: bool = False
 
     def backend(self) -> Backend:
         scheme = self.url.split("://", 1)[0]
@@ -384,7 +394,14 @@ class Store:
     def fs(self):
         return self.backend().dirfs()
 
+    def _refuse_write(self) -> None:
+        if self.read_only:
+            raise PermissionError(f"{self.url} is the folder of another app, opened read-only; "
+                                  "write to this app's own folder with storage.store()")
+
     def open(self, path: str, mode: str = "rb"):
+        if mode.strip("bt") != "r":
+            self._refuse_write()
         return self.fs().open(path, mode)
 
     def ls(self, path: str = "") -> list[str]:
@@ -421,6 +438,7 @@ class Store:
     def unlock(self) -> None:
         """Release the state lock whoever holds it. For a person who knows the
         run is dead; a run releases its own lock with push or abort."""
+        self._refuse_write()
         if self.read_lock() is not None:
             self.backend().delete(LOCK)
 
@@ -442,6 +460,7 @@ class Store:
         return Lease(versions, lock)
 
     def push(self, local: Path, remote: str, lease: Lease | None = None) -> None:
+        self._refuse_write()
         backend = self.backend()
         fs = backend.dirfs()
         files = [(remote + file.relative_to(local).as_posix(), file.read_bytes())
@@ -503,6 +522,7 @@ class Store:
             self.abort(run.lease)
 
     def _take_lock(self, backend: Backend, ttl: timedelta) -> dict:
+        self._refuse_write()
         lock = {"run": RUN_ID, "host": HOST, "boot": BOOT_ID, "pid": os.getpid(),
                 "started": datetime.now(timezone.utc).isoformat()}
         data = json.dumps(lock).encode()

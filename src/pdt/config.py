@@ -1202,8 +1202,7 @@ def validate_app(name: str) -> list[str]:
             problem = windows_schedule_problem(cron) if provider == "windows" else ""
             if problem != "":
                 problems.append(f"{name}: schedule: {problem}")
-    if not isinstance(app["storage"], bool):
-        problems.append(f"{where}: storage must be true or false")
+    problems.extend(f"{where}: {problem}" for problem in storage_problems(app))
     if not isinstance(app["enabled"], bool):
         problems.append(f"{where}: enabled must be true or false")
     if not isinstance(app["continue_on_error"], bool):
@@ -1217,6 +1216,37 @@ def validate_app(name: str) -> list[str]:
     elif app["docker_build"] not in DOCKER_BUILDS:
         problems.append(f"{app['docker_build_from']}: docker-build must be "
                         f"{', '.join(DOCKER_BUILDS[:-1])}, or {DOCKER_BUILDS[-1]}")
+    return problems
+
+
+def storage_read(app: dict) -> list[str]:
+    """The apps whose storage folder this app may read (`storage: read:`)."""
+    if not isinstance(app["storage"], dict):
+        return []
+    return app["storage"].get("read") or []
+
+
+def storage_problems(app: dict) -> list[str]:
+    storage = app["storage"]
+    if isinstance(storage, bool):
+        return []
+    if not isinstance(storage, dict):
+        return ["storage must be true, false, or a map with a read: list of app names"]
+    problems = key_problems("storage", storage, {"read"})
+    names = storage.get("read")
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        return problems + ["storage.read must be a list of app names"]
+    provider = app["platform"].get("provider")
+    if provider in PROVIDERS and provider != "azure":
+        problems.append("storage.read works with the azure provider only, "
+                        f"and this app uses {provider}; remove the key")
+    apps = app_folders()
+    for name in names:
+        if name == app["name"]:
+            problems.append(f"storage.read names {name!r}, which is this app; "
+                            "an app already reads its own folder, so remove the name")
+        elif name not in apps:
+            problems.append(f"storage.read names {name!r}, which is not an app of this project")
     return problems
 
 

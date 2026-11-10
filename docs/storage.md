@@ -33,3 +33,29 @@ The same steps by hand are `store.pull("state/", folder)`, which returns a lease
 A run that dies without reaching either call leaves the lock behind. The next run takes it over right away when it can tell the holder is gone: the holder ran on the same computer and its process has ended, or it carries the same `PDT_RUN_ID`. Otherwise it waits 30 minutes, or you release the lock yourself with `pdt storage APP unlock`, which asks first.
 
 From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `config.yml`.
+
+## Reading another app's files
+
+An app can write only to its own folder. Sometimes one app needs the files that other apps wrote: a report that puts together what several collector apps saved. List those apps under `storage: read:` in the `config.yml` of the app that reads:
+
+```yml
+storage:
+  read:
+    - client1
+    - client2
+```
+
+Then open the other app's folder by name:
+
+```python
+from pdt.utils import storage
+
+other = storage.store(app="client1")
+for path in other.fs().find("runs/"):
+    with other.open(path, "rb") as f:
+        data = f.read()
+```
+
+The app still has its own folder, from `storage.store()`. It can read and list the folders it names, and it cannot change or delete anything in them. `pdt run APP` on your own computer reads `.pdt/storage/client1/` in your project, so you can try it before you deploy. After you change the list, run `pdt deploy APP` again: the deploy plan shows each folder the app may read, and a name you removed loses its access.
+
+This works with the `azure` provider only for now.

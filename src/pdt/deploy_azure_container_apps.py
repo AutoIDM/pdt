@@ -1154,7 +1154,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     actions.append("ensure scoped Key Vault secret permissions for the deployer "
                    "and managed identity")
     if store:
-        actions += store_plan(store, store_present, name, job)
+        actions += store_plan(store, store_present, name, job, config.storage_read(app))
     actions.append(image_action(
         app, console.Markup(f"build and push image {console.value(image)}"),
         "ACR Tasks" if cloud else ""))
@@ -1252,7 +1252,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         assign_role(secret_scope(settings, sid), principal, SECRET_ROLE)
     if store:
         assign_role(store["container_id"], principal, STORE_ROLE,
-                    condition=store_condition(name))
+                    condition=store_condition(name, config.storage_read(app)))
     console.done(f"Deployed {console.value(name)}.")
     return 0
 

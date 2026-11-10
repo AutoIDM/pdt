@@ -44,7 +44,8 @@ containers carry no ARM tags, so the container holds STORE_TAGS as
 metadata instead, with underscores in the keys because metadata keys
 must be C# identifiers. RBAC scope stops at the container, so store_condition
 adds an attribute-based access control condition that holds the job
-inside its own <app>/ folder.
+inside its own <app>/ folder, and lets it read the folder of each app its
+`storage: read:` list names.
 
 A shared resource (the project's ACR, and the Container Apps environment in
 deploy_azure_container_apps.py) has a set of users, and destroy may delete
@@ -1099,14 +1100,29 @@ def store_exists(store: dict[str, str],
     return bool(metadata)
 
 
-def store_condition(app_name: str) -> str:
-    """Limit Storage Blob Data Contributor to the app's own folder.
+def store_condition(app_name: str, read_apps: list[str] | tuple[str, ...] = ()) -> str:
+    """Limit Storage Blob Data Contributor to the app's own folder, plus
+    reading and listing the folder of each app in read_apps.
 
     The grammar and the action names come from "Example Azure role assignment
     conditions for Blob Storage":
     https://learn.microsoft.com/en-us/azure/storage/blobs/storage-auth-abac-examples
     """
     read = f"ActionMatches{{'{BLOB_ACTION}/read'}}"
+    if read_apps:
+        folders = [f"{name}/" for name in [app_name, *read_apps]]
+        paths = " OR ".join(f"@Resource[{BLOB_ACTION}:path] StringStartsWith '{folder}'"
+                            for folder in folders)
+        prefixes = " OR ".join(f"@Request[{BLOB_ACTION}:prefix] StringStartsWith '{folder}'"
+                               for folder in folders)
+        return (
+            f"((!(ActionMatches{{'{BLOB_ACTION}/write'}})"
+            f" AND !(ActionMatches{{'{BLOB_ACTION}/delete'}}))"
+            f" OR (@Resource[{BLOB_ACTION}:path] StringStartsWith '{app_name}/'))"
+            f" AND ((!({read} AND NOT SubOperationMatches{{'Blob.List'}}))"
+            f" OR ({paths}))"
+            f" AND ((!({read} AND SubOperationMatches{{'Blob.List'}}))"
+            f" OR ({prefixes}))")
     return (
         f"((!({read} AND NOT SubOperationMatches{{'Blob.List'}})"
         f" AND !(ActionMatches{{'{BLOB_ACTION}/write'}})"
@@ -1117,8 +1133,13 @@ def store_condition(app_name: str) -> str:
 
 
 def store_plan(store: dict[str, str], exists: bool, app_name: str,
-               identity: str) -> list[console.Markup]:
+               identity: str,
+               read_apps: list[str] | tuple[str, ...] = ()) -> list[console.Markup]:
     return store_plan_lines(store_description(store), exists, identity, app_name) + [
+        console.Markup(f"grant {console.value(identity)} read access to "
+                       f"{console.value(f'{name}/')} in {store_description(store)}")
+        for name in read_apps
+    ] + [
         console.Markup("grant the signed-in Azure account write access to "
                        f"{console.value(store['container'])} (for pdt storage)"),
     ]
