@@ -36,26 +36,18 @@ From your own computer, `pdt storage APP ls`, `get`, and `query` read the files 
 
 ## Reading another app's files
 
-An app can write only to its own folder. Sometimes one app needs the files that other apps wrote: a report that puts together what several collector apps saved. List those apps under `storage: read:` in the `config.yml` of the app that reads:
+An app can read the folders of the apps listed under `storage: read:` in its `config.yml`. It cannot change them.
 
 ```yml
 storage:
   read:
-    - client1
-    - client2
+    - other-app
 ```
-
-Then open the other app's folder by name:
 
 ```python
 from pdt.utils import storage
 
-other = storage.store(app="client1")
-for path in other.fs().find("runs/"):
-    with other.open(path, "rb") as f:
-        data = f.read()
+other = storage.store(app="other-app")
 ```
 
-The app still has its own folder, from `storage.store()`. It can read and list the folders it names, and it cannot change or delete anything in them. On such a store, a write with `open`, `push`, `pull("state/")`, and `sync` are refused, and so is a name that the list does not hold. On your own computer that rule does not cover a write through `other.fs()`; a deployed app is refused every write, because the cloud allows it to read and nothing else. `pdt run APP` on your own computer reads `.pdt/storage/client1/` in your project, so you can try it before you deploy. After you change the list, run `pdt deploy APP` again: the deploy plan shows each folder the app may read, and a name you removed loses its access.
-
-This works with the `azure` provider only for now.
+Run `pdt deploy APP` after you change the list. This works with the `azure` provider only.
