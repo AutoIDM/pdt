@@ -392,6 +392,13 @@ def test_a_wait_off_a_terminal_prints_one_plain_line_on_stderr_each_time(capsys)
                                    "reading: run list\nreading: run list\n")
 
 
+def test_a_wait_with_json_output_and_no_terminal_prints_nothing(monkeypatch, capsys):
+    monkeypatch.setattr(console, "_data", io.StringIO())
+    with console.waiting("reading: run list"):
+        pass
+    assert capsys.readouterr().err == ""
+
+
 def test_a_wait_with_once_prints_its_plain_line_only_the_first_time(capsys):
     for _ in range(2):
         with console.waiting("reading: prices from the AWS price list", once=True):

@@ -253,8 +253,12 @@ def waiting(message: str, once: bool = False) -> Iterator[Wait]:
     """On a terminal that can animate, a spinner line under the output that names the wait and
     counts its seconds. Otherwise, or with JSON output, one plain line on stderr; with `once`, only the first time a process waits
     for `message`, as for a price read. `message` has the form `<action>: details`. A wait in
-    a worker thread shows no spinner, since the thread that started it may show one."""
+    a worker thread shows no spinner, since the thread that started it may show one. With JSON
+    output and stderr not a terminal, as in a script that `pdt health` starts, nothing prints."""
     wait = Wait(message)
+    if _data is not None and not sys.stderr.isatty():
+        yield wait
+        return
     if not _console.is_interactive or _data is not None:
         if not once or message not in _warned:
             _warned.add(message)
