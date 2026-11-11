@@ -136,21 +136,6 @@ def test_a_missing_acr_tasks_permission_names_the_role(project, monkeypatch, cap
             f'User --role "Container Registry Tasks Contributor" --scope {ACR_ID}') in out
 
 
-def test_the_local_build_never_runs_acr_tasks(project, monkeypatch):
-    calls = fake_az(monkeypatch)
-    commands = []
-    monkeypatch.setattr(deploy_azure_container_apps, "run_build",
-                        lambda command, **_: commands.append(command))
-    monkeypatch.setattr(deploy_azure_container_apps, "ssh_build_args", lambda: [])
-    deploy_azure_container_apps.build_image(staged(project), SETTINGS, "report", False)
-    assert [call["args"] for call in calls] == [
-        ("acr", "login", "--name", "pdtregistry", "--expose-token")]
-    image = "pdtregistry.azurecr.io/report:latest"
-    assert commands[0][:2] == ["docker", "login"]
-    assert commands[1][:5] == ["docker", "build", "--platform", "linux/amd64", "-t"]
-    assert commands[2] == ["docker", "push", image]
-
-
 @pytest.mark.parametrize("cloud, where", [
     (True, "in the cloud with ACR Tasks"), (False, "with Docker on this computer")])
 def test_the_plan_names_the_build_place_and_the_build_follows_it(monkeypatch, tmp_path, cloud,

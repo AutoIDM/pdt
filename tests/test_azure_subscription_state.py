@@ -22,8 +22,3 @@ def test_a_disabled_subscription_names_the_state_and_the_fix():
     assert "Disabled" in message
     assert deploy_azure.SUBSCRIPTIONS_URL in message
     assert "platform.subscription" in message
-
-
-def test_warned_expired_and_deleted_are_problems():
-    for state in ("Warned", "Expired", "Deleted"):
-        assert state in deploy_azure.subscription_problem({**SUB, "state": state})

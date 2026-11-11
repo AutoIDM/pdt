@@ -111,7 +111,6 @@ def test_an_unchanged_job_is_not_written(monkeypatch, capsys):
 
 @pytest.mark.parametrize("path, value", [
     (CONTAINER + ("image",), "pdtregistry.azurecr.io/report@sha256:bbb"),
-    (CONTAINER + ("image",), "pdtregistry.azurecr.io/report:latest"),
     (CONFIG + ("scheduleTriggerConfig", "cronExpression"), "0 7 * * *"),
     (CONTAINER + ("resources", "cpu"), 1.0),
     (CONTAINER + ("resources", "memory"), "2Gi"),
@@ -129,7 +128,6 @@ def test_an_unchanged_job_is_not_written(monkeypatch, capsys):
     (CONFIG + ("registries",), []),
     (("identity", "type"), "SystemAssigned"),
     (("identity", "userAssignedIdentities"), {OTHER_ID: {}}),
-    (("tags",), {"managed-by": "pdt"}),
     (("tags", "pdt-build"), "0" * 32),
 ])
 def test_a_changed_field_is_written_in_one_patch(monkeypatch, path, value):

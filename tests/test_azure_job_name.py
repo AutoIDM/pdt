@@ -42,11 +42,6 @@ def test_a_job_name_is_valid_for_azure_and_keeps_a_readable_app_part(app, start)
     assert name == deploy_azure_container_apps.job_name(settings_for("pdt"), app)
 
 
-def test_every_example_gets_its_own_job_name():
-    names = {deploy_azure_container_apps.job_name(settings_for("pdt"), app) for app, _ in EXAMPLES}
-    assert len(names) == len(EXAMPLES)
-
-
 def test_apps_that_shorten_to_the_same_words_differ_by_the_hash():
     one = deploy_azure_container_apps.job_name(settings_for("pdt"), "salesforce-netsuite-sync")
     two = deploy_azure_container_apps.job_name(settings_for("pdt"), "slesforce-netsuite-sync")

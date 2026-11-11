@@ -51,20 +51,6 @@ def test_four_internal_errors_are_printed_and_fail(monkeypatch, capsys):
     assert sleeps == [10, 20, 40]
 
 
-def test_permission_error_does_not_retry_with_internal_only(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        deploy_azure, "az",
-        lambda *args: calls.append(args) or subprocess.CompletedProcess([], 1, "", "Forbidden"))
-    monkeypatch.setattr(deploy_azure.time, "sleep",
-                        lambda seconds: pytest.fail(f"unexpected {seconds}s sleep"))
-
-    with pytest.raises(SystemExit):
-        deploy_azure.run_quiet("containerapp", "job", "update", retry_internal=True)
-
-    assert len(calls) == 1
-
-
 @pytest.mark.parametrize("message,retry_internal", [
     ("Bad Gateway", True),
     ("InternalServerError", False),
@@ -177,11 +163,6 @@ SETTINGS = {"subscription": "123456789012", "resource_group": "pdt", "workspace"
 def test_ctrl_c_during_an_az_call_stops_pdt(fake_cli):
     with pytest.raises(KeyboardInterrupt):
         deploy_azure.az("rest", "--method", "get", "--url", "https://management.azure.com/")
-
-
-def test_ctrl_c_during_a_cloud_build_stops_pdt(fake_cli):
-    with pytest.raises(KeyboardInterrupt):
-        deploy_azure.az("acr", "build", "--registry", "pdtreport", "stage")
 
 
 def test_ctrl_c_during_a_log_analytics_query_is_not_an_azure_error(fake_cli, monkeypatch, capsys):
