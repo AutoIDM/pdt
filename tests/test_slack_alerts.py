@@ -33,7 +33,7 @@ def webhook():
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Hook)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}/services/T1/B1/x", seen, answer
     server.shutdown()
 
@@ -398,7 +398,7 @@ def test_setup_through_the_slack_app_names_the_entry_by_the_channel_from_connect
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Connect)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
     monkeypatch.setattr(alerts_cli, "CLIENT_ID", "123.456")
     monkeypatch.setattr(alerts_cli, "CONNECT_URL", f"http://127.0.0.1:{server.server_port}/slack")
     answers(monkeypatch, "", "", "y")
