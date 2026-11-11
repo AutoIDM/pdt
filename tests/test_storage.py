@@ -142,7 +142,7 @@ def test_another_apps_folder_can_be_read(report):
     project = report
     folder = project / ".pdt" / "storage" / "client1"
     (folder / "runs").mkdir(parents=True)
-    (folder / "runs" / "data.csv").write_text("a,b\n")
+    (folder / "runs" / "data.csv").write_bytes(b"a,b\n")
     other = storage.store(app="client1")
     assert other.open("runs/data.csv", "rb").read() == b"a,b\n"
     assert other.fs().cat_file("runs/data.csv") == b"a,b\n"
