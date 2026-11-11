@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from conftest import built_image, fake_azure_reads
@@ -168,11 +170,32 @@ def test_role_checks_ask_for_one_assignment_by_object_id_and_role_id(monkeypatch
                       "--fill-role-definition-name", "false", "--fill-principal-name", "false")]
 
 
-def test_an_assignment_with_another_condition_is_replaced_by_its_id(monkeypatch):
+def test_an_assignment_with_another_condition_is_updated_and_never_deleted(monkeypatch):
     calls = []
-    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: calls.append(args) or ASSIGNED)
+    held = [{"id": "/assignment", "name": "guid", "scope": "/scope", "principalId": "principal",
+             "condition": "old", "conditionVersion": "2.0"}]
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: calls.append(args) or held)
     monkeypatch.setattr(deploy_azure, "run_quiet", lambda *args, **kwargs: calls.append(args))
-    deploy_azure.assign_role("/scope", "principal", deploy_azure.STORE_ROLE, condition="c")
+    deploy_azure.assign_role("/scope", "principal", deploy_azure.STORE_ROLE, condition="new")
+    assert len(calls) == 2
+    assert calls[1][:4] == ("role", "assignment", "update", "--role-assignment")
+    assert json.loads(calls[1][4]) == {
+        "id": "/assignment", "name": "guid", "scope": "/scope", "principalId": "principal",
+        "condition": "new", "conditionVersion": "2.0"}
+    calls.clear()
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: calls.append(args) or ASSIGNED)
+    deploy_azure.assign_role("/scope", "principal", deploy_azure.STORE_ROLE, condition="new")
+    assert calls[1][:3] == ("role", "assignment", "update")
+    assert json.loads(calls[1][4]) == {"id": "/assignment", "condition": "new",
+                                       "conditionVersion": "2.0"}
+
+
+def test_an_assignment_that_loses_its_condition_is_replaced_by_its_id(monkeypatch):
+    calls = []
+    held = [{"id": "/assignment", "condition": "old"}]
+    monkeypatch.setattr(deploy_azure, "az_json", lambda *args: calls.append(args) or held)
+    monkeypatch.setattr(deploy_azure, "run_quiet", lambda *args, **kwargs: calls.append(args))
+    deploy_azure.assign_role("/scope", "principal", deploy_azure.STORE_ROLE)
     assert calls[1] == ("role", "assignment", "delete", "--ids", "/assignment")
     assert calls[2][:9] == ("role", "assignment", "create", "--assignee-object-id", "principal",
                             "--assignee-principal-type", "ServicePrincipal", "--role",

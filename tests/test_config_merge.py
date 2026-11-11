@@ -1,7 +1,7 @@
 import pytest
 
 from conftest import add_app
-from pdt.config import ConfigError, merged_app, validate, validate_app
+from pdt.config import ConfigError, merged_app, storage_read, validate, validate_app
 
 ROOT_YAML = """\
 platform:
@@ -99,7 +99,71 @@ def test_storage_can_be_turned_off(project):
 
 def test_storage_must_be_a_bool(project):
     add_app(project, "my-report", "schedule: daily\nstorage: yes-please\n")
-    assert any("storage must be true or false" in p for p in validate_app("my-report"))
+    assert validate_app("my-report") == [
+        "my-report/config.yml: storage must be true, false, or a map with a read: list of app names"]
+
+
+def test_storage_read_names_other_apps(project):
+    add_app(project, "client1")
+    add_app(project, "client2")
+    add_app(project, "report", "storage:\n  read:\n    - client1\n    - client2\n")
+    assert validate_app("report") == []
+    assert storage_read(merged_app("report")) == ["client1", "client2"]
+    assert storage_read(merged_app("client1")) == []
+
+
+def test_storage_read_must_be_a_list_of_app_names(project):
+    add_app(project, "report", "storage:\n  read: client1\n")
+    assert validate_app("report") == [
+        "report/config.yml: storage.read must be a list of app names"]
+    add_app(project, "report", "storage:\n  read: [1]\n")
+    assert validate_app("report") == [
+        "report/config.yml: storage.read must be a list of app names"]
+    add_app(project, "report", "storage:\n  write: [client1]\n  read: []\n")
+    assert validate_app("report") == ["report/config.yml: storage: unknown key 'write'"]
+
+
+def test_storage_read_names_an_app_of_the_project_and_not_itself(project):
+    add_app(project, "report", "storage:\n  read: [report, missing]\n")
+    assert validate_app("report") == [
+        "report/config.yml: storage.read names 'report', which is this app; "
+        "an app already reads its own folder, so remove the name",
+        "report/config.yml: storage.read names 'missing', which is not an app of this project"]
+
+
+def test_storage_read_works_with_azure_only(project):
+    add_app(project, "client1")
+    add_app(project, "report", "platform:\n  provider: windows\nstorage:\n  read: [client1]\n")
+    assert validate_app("report") == [
+        "report/config.yml: storage.read works with the azure provider only, "
+        "and this app uses windows; remove the key"]
+
+
+def test_storage_read_needs_the_read_key(project):
+    add_app(project, "report", "storage: {}\n")
+    assert validate_app("report") == [
+        "report/config.yml: storage.read must be a list of app names"]
+    add_app(project, "report", "storage:\n  read: []\n")
+    assert validate_app("report") == []
+    assert storage_read(merged_app("report")) == []
+
+
+def test_storage_read_names_each_app_once(project):
+    add_app(project, "client1")
+    add_app(project, "report", "storage:\n  read: [client1, client1]\n")
+    assert validate_app("report") == [
+        "report/config.yml: storage.read names 'client1' more than once; keep one"]
+
+
+def test_storage_read_names_an_app_with_a_folder_in_the_azure_store(project):
+    add_app(project, "client1", "storage: false\n")
+    add_app(project, "client2", "platform:\n  provider: windows\n")
+    add_app(project, "report", "storage:\n  read: [client1, client2]\n")
+    assert validate_app("report") == [
+        "report/config.yml: storage.read names 'client1', which has storage: false, "
+        "so it has no folder to read",
+        "report/config.yml: storage.read names 'client2', which uses the windows provider, "
+        "so its folder is not in the Azure store"]
 
 
 def test_windows_app_with_no_timezone_runs_on_local_time(project):

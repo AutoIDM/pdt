@@ -120,6 +120,9 @@ STORE_TAG_ARGS = tuple(f"{key}={value}" for key, value in STORE_TAGS.items())
 STORE_METADATA_ARGS = tuple(
     f"{key.replace('-', '_')}={value}" for key, value in STORE_TAGS.items())
 BLOB_ACTION = "Microsoft.Storage/storageAccounts/blobServices/containers/blobs"
+# "A condition can be up to 8 KB long":
+# https://learn.microsoft.com/en-us/azure/role-based-access-control/conditions-faq
+CONDITION_LIMIT = 8 * 1024
 MANAGEMENT_API = "https://management.azure.com"
 # The CLI has no suspend or resume for a job; the resource manager API does,
 # from this api-version on, and it is what reports properties.runningState.
@@ -625,6 +628,11 @@ def assign_role(scope: str, principal_id: str, role: str,
     existing = role_assignments(scope, principal_id, role)
     if existing and (existing[0].get("condition") or "") == condition:
         return
+    if existing and condition:
+        # An update keeps the assignment, so the principal has access the whole time.
+        run_quiet("role", "assignment", "update", "--role-assignment", json.dumps(
+            {**existing[0], "condition": condition, "conditionVersion": "2.0"}))
+        return
     if existing:
         run_quiet("role", "assignment", "delete", "--ids", existing[0]["id"])
     args = ["role", "assignment", "create", "--assignee-object-id", principal_id,
@@ -1099,14 +1107,27 @@ def store_exists(store: dict[str, str],
     return bool(metadata)
 
 
-def store_condition(app_name: str) -> str:
-    """Limit Storage Blob Data Contributor to the app's own folder.
-
-    The grammar and the action names come from "Example Azure role assignment
+def store_condition(app_name: str, read_apps: list[str] | tuple[str, ...] = ()) -> str:
+    """The grammar and the action names come from "Example Azure role assignment
     conditions for Blob Storage":
     https://learn.microsoft.com/en-us/azure/storage/blobs/storage-auth-abac-examples
     """
     read = f"ActionMatches{{'{BLOB_ACTION}/read'}}"
+    if read_apps:
+        folders = [f"{name}/" for name in [app_name, *read_apps]]
+        paths = " OR ".join(f"@Resource[{BLOB_ACTION}:path] StringStartsWith '{folder}'"
+                            for folder in folders)
+        prefixes = " OR ".join(f"@Request[{BLOB_ACTION}:prefix] StringStartsWith '{folder}'"
+                               for folder in folders)
+        return (
+            f"((!(ActionMatches{{'{BLOB_ACTION}/write'}})"
+            f" AND !(ActionMatches{{'{BLOB_ACTION}/add/action'}})"
+            f" AND !(ActionMatches{{'{BLOB_ACTION}/delete'}}))"
+            f" OR (@Resource[{BLOB_ACTION}:path] StringStartsWith '{app_name}/'))"
+            f" AND ((!({read} AND NOT SubOperationMatches{{'Blob.List'}}))"
+            f" OR ({paths}))"
+            f" AND ((!({read} AND SubOperationMatches{{'Blob.List'}}))"
+            f" OR ({prefixes}))")
     return (
         f"((!({read} AND NOT SubOperationMatches{{'Blob.List'}})"
         f" AND !(ActionMatches{{'{BLOB_ACTION}/write'}})"
@@ -1116,9 +1137,22 @@ def store_condition(app_name: str) -> str:
         f" OR (@Request[{BLOB_ACTION}:prefix] StringStartsWith '{app_name}/'))")
 
 
+def check_condition_size(app_name: str, read_apps: list[str]) -> None:
+    condition = store_condition(app_name, read_apps).encode()
+    if len(condition) > CONDITION_LIMIT:
+        fail(f"storage.read in {console.value(f'{app_name}/{config.APP_FILE}')} names "
+             f"{len(read_apps)} apps. The access rule that names them is {len(condition)} "
+             f"bytes long, and Azure allows {CONDITION_LIMIT} bytes. Remove names from the list.")
+
+
 def store_plan(store: dict[str, str], exists: bool, app_name: str,
-               identity: str) -> list[console.Markup]:
+               identity: str,
+               read_apps: list[str] | tuple[str, ...] = ()) -> list[console.Markup]:
     return store_plan_lines(store_description(store), exists, identity, app_name) + [
+        console.Markup(f"grant {console.value(identity)} read access to "
+                       f"{console.value(f'{name}/')} in {store_description(store)}")
+        for name in read_apps
+    ] + [
         console.Markup("grant the signed-in Azure account write access to "
                        f"{console.value(store['container'])} (for pdt storage)"),
     ]

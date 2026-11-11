@@ -8,7 +8,7 @@ import pytest
 from conftest import add_app
 from pdt.config import merged_app, validate_app
 from pdt.utils import storage
-from pdt.utils.storage import LOCK, Store, StorageConflict, StorageLocked, root
+from pdt.utils.storage import LOCK, Lease, Store, StorageConflict, StorageLocked, root
 
 
 @pytest.fixture
@@ -104,6 +104,73 @@ def test_root_falls_back_to_the_project_storage_folder(project, monkeypatch):
     assert root() == (project / ".pdt" / "storage" / "my-report").as_uri() + "/"
     monkeypatch.setenv("PDT_STORAGE_URL", "s3://pdt-data-abc/my-report/")
     assert root() == "s3://pdt-data-abc/my-report/"
+
+
+@pytest.fixture
+def report(project, monkeypatch):
+    monkeypatch.chdir(add_app(project, "report", "storage:\n  read: [client1]\n"))
+    monkeypatch.delenv("PDT_STORAGE_URL", raising=False)
+    return project
+
+
+def test_another_apps_folder_is_the_one_next_to_this_apps_folder(report, monkeypatch):
+    project = report
+    assert root("client1") == (project / ".pdt" / "storage" / "client1").as_uri() + "/"
+    monkeypatch.setenv("PDT_STORAGE_URL", "abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/report/")
+    assert root("client1") == "abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/client1/"
+
+
+@pytest.mark.parametrize("name", ["client2", "../..", "", "report"])
+def test_a_name_the_read_list_does_not_hold_is_refused(report, monkeypatch, name):
+    with pytest.raises(ValueError) as caught:
+        storage.store(app=name)
+    assert str(caught.value) == (f"{name!r} is not in the storage: read: list of "
+                                 "report/config.yml; add it there to read its folder")
+    monkeypatch.setenv("PDT_STORAGE_URL", "abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/report/")
+    with pytest.raises(ValueError):
+        root(name)
+
+
+@pytest.mark.parametrize("storage_key", ["", "storage:\n  read: []\n", "storage: false\n"])
+def test_an_app_with_no_read_list_opens_no_other_folder(project, monkeypatch, storage_key):
+    monkeypatch.chdir(add_app(project, "report", "schedule: daily\n" + storage_key))
+    with pytest.raises(ValueError):
+        storage.store(app="client1")
+
+
+def test_another_apps_folder_can_be_read(report):
+    project = report
+    folder = project / ".pdt" / "storage" / "client1"
+    (folder / "runs").mkdir(parents=True)
+    (folder / "runs" / "data.csv").write_bytes(b"a,b\n")
+    other = storage.store(app="client1")
+    assert other.open("runs/data.csv", "rb").read() == b"a,b\n"
+    assert other.fs().cat_file("runs/data.csv") == b"a,b\n"
+    assert [Path(path).name for path in other.ls("runs")] == ["data.csv"]
+
+
+def test_another_apps_folder_refuses_a_write(report, tmp_path):
+    project = report
+    other = storage.store(app="client1")
+    with pytest.raises(PermissionError) as caught:
+        other.open("data.csv", "wb")
+    assert "opened read-only" in str(caught.value)
+    for mode in ("w", "r+", "r+b", "a", "ab", "x", "xb"):
+        with pytest.raises(PermissionError):
+            other.open("data.csv", mode)
+    with pytest.raises(PermissionError):
+        other.abort(Lease({}, {}))
+    with pytest.raises(PermissionError):
+        with other.sync(tmp_path / "run"):
+            pass
+    with pytest.raises(PermissionError):
+        other.push(tmp_path, "runs/x/")
+    with pytest.raises(PermissionError):
+        other.pull("state/", tmp_path / "state")
+    with pytest.raises(PermissionError):
+        other.unlock()
+    assert not (project / ".pdt" / "storage" / "client1").exists()
+    assert storage.store().read_only is False
 
 
 def test_storage_false_opts_out(project):

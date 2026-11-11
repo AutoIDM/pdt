@@ -63,6 +63,54 @@ def test_the_grant_condition_names_one_app_only():
     assert deploy_azure.store_condition("a") != deploy_azure.store_condition("b")
 
 
+def test_the_grant_condition_of_an_app_with_no_read_list_is_the_released_string():
+    released = (
+        "((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND NOT SubOperationMatches{'Blob.List'})"
+        " AND !(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write'})"
+        " AND !(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete'}))"
+        " OR (@Resource[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:path] StringStartsWith 'my-report/'))"
+        " AND ((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND SubOperationMatches{'Blob.List'}))"
+        " OR (@Request[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:prefix] StringStartsWith 'my-report/'))")
+    assert deploy_azure.store_condition("my-report") == released
+    assert deploy_azure.store_condition("my-report", []) == released
+
+
+def test_the_grant_condition_adds_read_and_list_of_each_named_folder():
+    assert deploy_azure.store_condition("report", ["a", "b"]) == (
+        "((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write'})"
+        " AND !(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action'})"
+        " AND !(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete'}))"
+        " OR (@Resource[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:path] StringStartsWith 'report/'))"
+        " AND ((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND NOT SubOperationMatches{'Blob.List'}))"
+        " OR (@Resource[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:path] StringStartsWith 'report/'"
+        " OR @Resource[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:path] StringStartsWith 'a/'"
+        " OR @Resource[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:path] StringStartsWith 'b/'))"
+        " AND ((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND SubOperationMatches{'Blob.List'}))"
+        " OR (@Request[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:prefix] StringStartsWith 'report/'"
+        " OR @Request[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:prefix] StringStartsWith 'a/'"
+        " OR @Request[Microsoft.Storage/storageAccounts/blobServices/containers/blobs:prefix] StringStartsWith 'b/'))")
+
+
+def test_a_condition_longer_than_azure_allows_stops_the_deploy(capsys):
+    names = [f"client-{number:02d}" for number in range(40)]
+    deploy_azure.check_condition_size("report", names[:30])
+    with pytest.raises(SystemExit):
+        deploy_azure.check_condition_size("report", names)
+    assert " ".join(capsys.readouterr().out.split()).endswith(
+        "storage.read in report/config.yml names 40 apps. The access rule that names them is "
+        "9976 bytes long, and Azure allows 8192 bytes. Remove names from the list.")
+
+
+def test_plan_lines_show_each_folder_the_job_may_read():
+    store = deploy_azure.store_settings(SETTINGS)
+    lines = plain(deploy_azure.store_plan(store, True, "report", "pdt-runner", ["a", "b"]))
+    where = f"storage account {store['account']}, container {store['container']}"
+    assert lines[1:4] == [f"grant pdt-runner write access to report/ in {where}",
+                          f"grant pdt-runner read access to a/ in {where}",
+                          f"grant pdt-runner read access to b/ in {where}"]
+    assert len(lines) == 5
+
+
 def test_usage_is_unknown_until_the_data_role_lands(capsys):
     class Deployer:
         def usage(self):
