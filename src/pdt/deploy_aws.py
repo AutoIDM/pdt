@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.12,<3.15"
 # dependencies = [
 #     "boto3",
 #     "boto3[crt]; sys_platform != 'win32' or platform_machine != 'ARM64'",
@@ -29,6 +29,7 @@ import argparse
 import configparser
 import functools
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -52,7 +53,12 @@ from botocore import UNSIGNED
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError, MissingDependencyException
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if "pdt" not in sys.modules:
+    _package = Path(__file__).resolve().parent
+    _spec = importlib.util.spec_from_file_location("pdt", _package / "__init__.py",
+                                                   submodule_search_locations=[str(_package)])
+    sys.modules["pdt"] = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(sys.modules["pdt"])
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_PREFIX, STORE_TAGS, CostEstimate, cached_price, convert_from_usd, fail, fetch_json,

@@ -813,9 +813,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def unsupported_python() -> str:
+    """The Pythons pdt supports, such as "3.12 to 3.14", when this Python is above them, else "".
+    uv ignores an upper limit when it installs a package, so pdt checks it itself:
+    https://docs.astral.sh/uv/concepts/resolution/"""
+    import importlib.metadata
+    try:
+        limit = importlib.metadata.metadata("pdt-cli")["Requires-Python"] or ""
+    except importlib.metadata.PackageNotFoundError:
+        return ""
+    lowest = re.search(r">=\s*(\d+\.\d+)", limit)
+    below = re.search(r"<\s*(\d+)\.(\d+)", limit)
+    if lowest is None or below is None or sys.version_info[:2] < (int(below[1]), int(below[2])):
+        return ""
+    return f"{lowest[1]} to {below[1]}.{int(below[2]) - 1}"
+
+
 def run() -> int:
     parser = build_parser()
     completion.configure(parser)
+    supported = unsupported_python()
+    if supported:
+        running = f"{sys.version_info[0]}.{sys.version_info[1]}"
+        console.error(f"pdt runs on Python {console.value(supported)}, but this pdt runs on Python "
+                      f"{console.value(running)}.")
+        console.next_steps([("uv tool install --force --python 3.12 pdt-cli",
+                             "install pdt again on Python 3.12")])
+        return 1
     try:
         if len(sys.argv) > 1 and sys.argv[1] in CLOUD_CLIS:
             # Before argparse, so the cloud CLI parses its own flags. --project keeps
