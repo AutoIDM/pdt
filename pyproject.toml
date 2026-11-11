@@ -3,7 +3,7 @@ name = "pdt-cli"
 version = "0.1.14"
 description = "Easily deploy your process to AWS, Azure, Google Cloud, or Windows."
 readme = "README.md"
-requires-python = ">=3.12,<3.15"
+requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "pyyaml",
