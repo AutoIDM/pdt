@@ -31,7 +31,7 @@ they stream to the terminal. No system install is
 needed. Login state lives in ~/.azure either way. azure-cli pins a few of
 its own dependencies to pre-release versions, so the header allows
 pre-releases; without that, uv before 0.12 refuses to resolve it.
-The header stops below Python 3.15, because azure-cli needs pymsalruntime
+The script headers stop below Python 3.15, because azure-cli needs pymsalruntime
 on macOS and Windows, and pymsalruntime has no Python 3.15 wheels.
 
 Every app owns one tagged Key Vault secret holding its env vars as one
@@ -63,6 +63,7 @@ import argparse
 import base64
 import hashlib
 import http.client
+import importlib.util
 import io
 import json
 import logging
@@ -80,7 +81,12 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if "pdt" not in sys.modules:
+    _package = Path(__file__).resolve().parent
+    _spec = importlib.util.spec_from_file_location("pdt", _package / "__init__.py",
+                                                   submodule_search_locations=[str(_package)])
+    sys.modules["pdt"] = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(sys.modules["pdt"])
 from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,

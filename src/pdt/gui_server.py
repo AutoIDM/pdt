@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.12,<3.15"
 # dependencies = [
 #     "pyyaml",
 #     "rich",
@@ -30,11 +30,17 @@ also fetches the DuckDB-WASM files of the SQL workbench (see
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if "pdt" not in sys.modules:
+    _package = Path(__file__).resolve().parent
+    _spec = importlib.util.spec_from_file_location("pdt", _package / "__init__.py",
+                                                   submodule_search_locations=[str(_package)])
+    sys.modules["pdt"] = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(sys.modules["pdt"])
 from pdt import config, console, duckdb_wasm, gui_cli
 
 

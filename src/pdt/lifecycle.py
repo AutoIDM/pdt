@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.12,<3.15"
 # dependencies = [
 #     "pyyaml",
 #     "python-dotenv",
@@ -60,6 +60,7 @@ power loss stops pdt at once, so no event fires.
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import queue
 import signal
@@ -73,7 +74,12 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Callable
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if "pdt" not in sys.modules:
+    _package = Path(__file__).resolve().parent
+    _spec = importlib.util.spec_from_file_location("pdt", _package / "__init__.py",
+                                                   submodule_search_locations=[str(_package)])
+    sys.modules["pdt"] = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(sys.modules["pdt"])
 from pdt import alert_message, config, console, slack, teams
 from pdt.utils import storage
 

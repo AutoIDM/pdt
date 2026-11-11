@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.12,<3.15"
 # dependencies = [
 #     "pyyaml",
 #     "rich",
@@ -50,6 +50,7 @@ import argparse
 import base64
 import ctypes
 import html
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -59,7 +60,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if "pdt" not in sys.modules:
+    _package = Path(__file__).resolve().parent
+    _spec = importlib.util.spec_from_file_location("pdt", _package / "__init__.py",
+                                                   submodule_search_locations=[str(_package)])
+    sys.modules["pdt"] = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(sys.modules["pdt"])
 from pdt import config, console, regions, runs_cli
 from pdt import powershell as ps
 from pdt.deploy import DECLINED, confirm, show_plan

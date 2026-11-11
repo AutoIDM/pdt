@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.12,<3.15"
 # dependencies = [
 #     "pyyaml",
 #     "rich",
@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import queue
@@ -71,7 +72,12 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable, Iterator
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if "pdt" not in sys.modules:
+    _package = Path(__file__).resolve().parent
+    _spec = importlib.util.spec_from_file_location("pdt", _package / "__init__.py",
+                                                   submodule_search_locations=[str(_package)])
+    sys.modules["pdt"] = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(sys.modules["pdt"])
 # gRPC logs an info line on every gcloud subprocess once the store has been
 # used, and no child of this script uses gRPC.
 os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "0")
