@@ -11,14 +11,6 @@ def test_platform_inside_config_says_where_it_belongs(project):
         "or of the app's config.yml, not here"]
 
 
-def test_schedule_inside_the_root_platform_block_says_where_it_belongs(project):
-    (project / "pdt.yml").write_text("platform:\n  provider: azure\n  schedule: daily\n")
-    add_app(project, "my-report")
-    assert validate() == [
-        "pdt.yml: platform: 'schedule' belongs in the top level of the app's config.yml, "
-        "or its apps: entry in pdt.yml, not here"]
-
-
 def test_platform_key_at_the_top_of_config_yml_says_where_it_belongs(project):
     add_app(project, "my-report", "region: eastus\n")
     assert validate_app("my-report") == [

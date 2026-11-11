@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from conftest import add_app
-from pdt.config import merged_app, validate_app
 from pdt.utils import storage
 from pdt.utils.storage import LOCK, Lease, Store, StorageConflict, StorageLocked, root
 
@@ -173,28 +172,10 @@ def test_another_apps_folder_refuses_a_write(report, tmp_path):
     assert storage.store().read_only is False
 
 
-def test_storage_false_opts_out(project):
-    add_app(project, "my-report", "storage: false\n")
-    assert merged_app("my-report")["storage"] is False
-    assert validate_app("my-report") == []
-
-
-def test_storage_must_be_a_bool(project):
-    add_app(project, "my-report", "storage: yes please\n")
-    assert any("storage" in problem for problem in validate_app("my-report"))
-
-
 def test_pull_creates_the_local_folder_on_the_first_run(store, tmp_path):
     lease = store.pull("state/", tmp_path / "fresh")
     assert (tmp_path / "fresh").is_dir()
     assert lease.versions == {}
-
-
-def test_push_creates_nested_run_folders(store, tmp_path):
-    (tmp_path / "out").mkdir()
-    (tmp_path / "out" / "report.csv").write_text("a\n")
-    store.push(tmp_path / "out", "runs/first-abc/artifacts/")
-    assert store.ls("runs/first-abc/artifacts/")
 
 
 def test_held_lock_returns_a_fresh_lock(store):

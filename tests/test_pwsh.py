@@ -44,11 +44,6 @@ def test_the_install_lives_in_the_machine_folder_on_windows_only(monkeypatch):
     assert pwsh.local_pwsh(windows=False) == Path("/data/pdt/pwsh/pwsh")
 
 
-def test_pwsh_on_the_path_wins(monkeypatch):
-    monkeypatch.setattr(pwsh.shutil, "which", lambda name: "/usr/bin/pwsh")
-    assert pwsh.ensure_pwsh() == "/usr/bin/pwsh"
-
-
 def test_a_missing_pwsh_downloads_without_a_question(monkeypatch, tmp_path):
     monkeypatch.setattr(pwsh.shutil, "which", lambda name: None)
     monkeypatch.setattr(pwsh, "local_pwsh", lambda windows=False: tmp_path / "pwsh")

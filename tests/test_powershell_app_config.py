@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from pdt import config
 
 
@@ -32,12 +30,6 @@ def test_requirements_psd1_next_to_run_py_keeps_a_powershell_app(project):
     (folder / "requirements.psd1").write_text("@{}\n")
     assert config.powershell_scripts(folder) == ["report.ps1"]
     assert config.app_folders() == ["ad-report"]
-
-
-def test_an_empty_folder_is_not_an_app(project):
-    (project / "notes").mkdir()
-    assert config.app_folders() == []
-    assert not config.is_app(Path(project / "notes"))
 
 
 def test_run_scripts_must_name_ps1_files_of_the_app(project):

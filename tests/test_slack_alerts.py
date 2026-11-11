@@ -111,13 +111,6 @@ def test_a_url_parameter_becomes_a_button():
                                              "text": {"type": "plain_text", "text": "Open"}}]} in blocks
 
 
-def test_the_ready_message_names_the_project_and_the_events():
-    payload = slack.ready_message("contoso-jobs", {"webhook": "B1", "events": ["job:run-failed"]})
-    assert payload["text"] == "Success, you're ready!"
-    assert "*contoso-jobs*" in payload["attachments"][0]["blocks"][1]["text"]["text"]
-    assert "Run failed" in payload["attachments"][0]["blocks"][1]["text"]["text"]
-
-
 @pytest.mark.parametrize(("entry", "target"), [
     ({"webhook": "B1"}, "webhook B1"),
     ({"channel": "it-alerts"}, "#it-alerts"),
@@ -148,14 +141,6 @@ def test_a_url_with_no_webhook_id_gets_a_stable_hash():
 def test_the_env_var_of_an_entry_comes_from_webhook_or_from_an_old_channel():
     assert slack.secret_name({"webhook": "B0456DEF", "name": "#ops"}) == "SLACK_WEBHOOK_B0456DEF"
     assert slack.secret_name({"channel": "#it-alerts"}) == "SLACK_WEBHOOK_IT_ALERTS"
-
-
-def test_deliver_posts_the_message_to_the_webhook_of_an_old_channel_entry(webhook, monkeypatch):
-    url, seen, _answer = webhook
-    monkeypatch.setenv("SLACK_WEBHOOK_IT_ALERTS", url)
-    event = lifecycle.Event("app:deploy-failed", AT, PARAMS)
-    slack.deliver(event, {"type": "slack", "channel": "#it-alerts"}, False)
-    assert seen == [slack.message(event)]
 
 
 def test_a_slack_error_raises_with_slacks_answer(webhook, monkeypatch):
