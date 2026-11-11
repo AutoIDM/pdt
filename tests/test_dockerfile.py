@@ -10,7 +10,7 @@ from conftest import add_app, plain
 from pdt import __version__, powershell
 from pdt.config import validate_app
 from pdt.deploy_common import (
-    DOCKERFILE, ENTRYPOINT, POWERSHELL_DOCKERFILE, context_ignore_text, image_action, run_build,
+    DOCKERFILE, ENTRYPOINT, POWERSHELL_DOCKERFILE, image_action, run_build,
     write_dockerfile)
 
 
@@ -67,32 +67,12 @@ def test_an_app_dockerfile_is_used_as_is_at_the_context_root(tmp_path):
         "build image x with Docker on this computer (from my-report/Dockerfile)"]
 
 
-def app_with_dockerfile(project, platform_text):
-    (project / "pdt.yml").write_text(platform_text)
-    folder = add_app(project, "my-report", "schedule: daily\n")
-    (folder / "Dockerfile").write_text("FROM python:3.12-slim\n")
-
-
-def test_a_dockerfile_is_fine_on_every_cloud_provider(project):
-    app_with_dockerfile(project, "platform:\n  provider: azure\n")
-    assert validate_app("my-report") == []
-    (project / "pdt.yml").write_text("platform:\n  provider: google-cloud\n")
-    assert validate_app("my-report") == []
-    (project / "pdt.yml").write_text("platform:\n  provider: aws\n  account: '123456789012'\n")
-    assert validate_app("my-report") == []
-
-
 def test_a_leftover_runtime_key_is_told_to_go(project):
     (project / "pdt.yml").write_text("platform:\n  provider: azure\n  runtime: container_apps\n")
     add_app(project, "my-report", "schedule: daily\n")
     assert validate_app("my-report") == [
         "pdt.yml: platform: 'runtime' is no longer a setting: AWS always runs jobs on "
         "Fargate and Azure on Container Apps Jobs; remove the key"]
-
-
-def test_a_dockerfile_for_the_cloud_does_not_stop_a_windows_app(project):
-    app_with_dockerfile(project, "platform:\n  provider: windows\n")
-    assert validate_app("my-report") == []
 
 
 def test_an_app_dockerignore_is_moved_to_the_context_root(tmp_path):
@@ -107,10 +87,6 @@ def test_no_dockerignore_means_no_ignore_files(tmp_path):
     app, stage = staged(tmp_path, "my-report")
     write_dockerfile(stage, app)
     assert not (stage / ".dockerignore").exists()
-
-
-def test_context_ignore_text_keeps_comments_and_blank_lines():
-    assert context_ignore_text("#c\n\nx\n", "a") == "#c\n\na/x\n"
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")

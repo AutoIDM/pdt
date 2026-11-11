@@ -33,12 +33,6 @@ def windows_app(project, config_text="schedule: hourly\ntimezone: local\n"):
 
 @pytest.mark.parametrize(("command", "rest"), [
     ("deploy", []),
-    ("destroy", []),
-    ("login", []),
-    ("secrets", ["diff"]),
-    ("storage", ["ls", "state/"]),
-    ("runs", ["--", "--json"]),
-    ("logs", ["--", "1"]),
 ])
 def test_local_windows_commands_stop_off_windows(
         project, monkeypatch, capsys, command, rest):

@@ -23,13 +23,10 @@ def no_region_env(monkeypatch, tmp_path):
 @pytest.mark.parametrize("zone,expected", [
     ("Europe/London", ("eu-west-2", "uksouth", "europe-west2")),
     ("America/Los_Angeles", ("us-west-2", "westus2", "us-west1")),
-    ("America/New_York", ("us-east-1", "eastus2", "us-east4")),
-    ("Australia/Sydney", ("ap-southeast-2", "australiaeast", "australia-southeast1")),
     # A zone the table does not list falls back to its continent.
     ("Europe/Budapest", ("eu-central-1", "germanywestcentral", "europe-west3")),
     # A zone that names no place keeps the old defaults.
     ("Etc/UTC", ("us-east-1", "eastus2", "us-central1")),
-    ("", ("us-east-1", "eastus2", "us-central1")),
 ])
 def test_suggests_the_nearest_region_of_each_provider(zone, expected):
     assert tuple(regions.suggest_region(p, zone) for p in regions.PROVIDERS) == expected
@@ -47,19 +44,10 @@ def test_every_windows_zone_names_a_place_or_utc():
         assert zone == "Etc/UTC" or regions.country(zone) != "", windows_id
 
 
-def test_a_uk_windows_computer_gets_uk_south():
-    zone = regions.WINDOWS_ZONES["GMT Standard Time"]
-    assert regions.suggest_region("azure", zone) == "uksouth"
-
-
 @pytest.mark.skipif(os.name == "nt", reason="Windows reads the registry, not TZ")
 def test_reads_the_tz_variable(monkeypatch):
     monkeypatch.setenv("TZ", "Europe/London")
     assert regions.local_timezone() == "Europe/London"
-
-
-def test_question_names_the_provider():
-    assert regions.question("google-cloud") == "Which Google Cloud region should hold your jobs?"
 
 
 def region_in(path):

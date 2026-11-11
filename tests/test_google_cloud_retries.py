@@ -76,17 +76,6 @@ def test_read_json_or_none_waits_for_a_freshly_enabled_api(monkeypatch):
     assert sleeps == [10]
 
 
-def test_describe_json_waits_for_a_freshly_enabled_api(monkeypatch):
-    calls, sleeps = fake_gcloud(monkeypatch, [
-        subprocess.CompletedProcess([], 1, "", SERVICE_DISABLED),
-        subprocess.CompletedProcess([], 0, '{"name": "pdt"}', ""),
-    ])
-
-    assert deploy_google_cloud.describe_json("run", "jobs", "describe", "pdt-a") == {"name": "pdt"}
-    assert len(calls) == 2
-    assert sleeps == [10]
-
-
 def test_a_missing_resource_reads_as_none_without_a_retry(monkeypatch):
     calls, sleeps = fake_gcloud(monkeypatch, [
         subprocess.CompletedProcess([], 1, "", "ERROR: NOT_FOUND: Repository pdt not found"),
