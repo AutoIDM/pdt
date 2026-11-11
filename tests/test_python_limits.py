@@ -19,13 +19,13 @@ DISTRIBUTIONS = {
 
 
 def internal_scripts() -> list[Path]:
-    return [path for path in PACKAGE.glob("*.py") if path.read_text().startswith("#!/usr/bin/env -S uv run --script")]
+    return [path for path in PACKAGE.glob("*.py") if path.read_text(encoding="utf-8").startswith("#!/usr/bin/env -S uv run --script")]
 
 
 def module_level_imports(path: Path) -> set[str]:
     """The dotted names a file imports when it loads. An import inside a function or under
     TYPE_CHECKING does not count."""
-    names, nodes = set(), [ast.parse(path.read_text())]
+    names, nodes = set(), [ast.parse(path.read_text(encoding="utf-8"))]
     while nodes:
         node = nodes.pop()
         if isinstance(node, ast.Import):
@@ -42,7 +42,7 @@ def module_level_imports(path: Path) -> set[str]:
 def packages_missing_from_header(script: Path) -> set[str]:
     """The third-party packages that a script and the pdt modules it loads import, and that the
     script header does not list."""
-    listed = {name.lower() for name in HEADER_PACKAGE.findall(script.read_text().split("# ///")[1])}
+    listed = {name.lower() for name in HEADER_PACKAGE.findall(script.read_text(encoding="utf-8").split("# ///")[1])}
     needed, read, files = set(), set(), [script]
     while files:
         path = files.pop()
@@ -64,7 +64,7 @@ def packages_missing_from_header(script: Path) -> set[str]:
 def test_every_internal_script_has_the_same_python_limit():
     scripts = internal_scripts()
     assert len(scripts) >= 8
-    limits = {script.name: HEADER_LIMIT.findall(script.read_text()) for script in scripts}
+    limits = {script.name: HEADER_LIMIT.findall(script.read_text(encoding="utf-8")) for script in scripts}
     assert set(map(tuple, limits.values())) == {(">=3.12,<3.15",)}, limits
 
 
@@ -75,7 +75,7 @@ def test_every_script_header_lists_the_packages_the_script_loads():
 
 def test_no_internal_script_puts_the_folder_above_it_on_the_import_path():
     for script in internal_scripts():
-        text = script.read_text()
+        text = script.read_text(encoding="utf-8")
         assert "resolve().parent.parent))" not in text, script.name
         if "from pdt import" in text:
             assert PACKAGE_LOAD.search(text), script.name
@@ -88,7 +88,7 @@ def test_a_script_loads_only_pdt_from_the_folder_above_it(tmp_path):
     (site / "pdt" / "probe_module.py").write_text("NAME = 'probe'\n")
     (site / "tool_only_package").mkdir()
     (site / "tool_only_package" / "__init__.py").write_text("")
-    load = PACKAGE_LOAD.search((PACKAGE / "deploy_azure.py").read_text()).group(0)
+    load = PACKAGE_LOAD.search((PACKAGE / "deploy_azure.py").read_text(encoding="utf-8")).group(0)
     (site / "pdt" / "probe.py").write_text(
         "import importlib.util\nimport sys\nfrom pathlib import Path\n\n" + load
         + "from pdt import probe_module\nprint(probe_module.NAME)\n"
