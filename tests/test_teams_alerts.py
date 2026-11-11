@@ -30,7 +30,7 @@ def workflow():
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Hook)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}/workflows/0a1b2c3d4e5f/triggers/manual/paths/invoke", seen, answer
     server.shutdown()
 
