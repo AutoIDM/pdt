@@ -40,6 +40,53 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv run --python ${{ matrix.python }} --group dev pytest -q
 
+  # tests/ needs no network, so this job downloads the IntuneManagement that
+  # tests/test_intune_export.py runs. On a pull request it runs only when the
+  # Intune export changes; the job itself always runs, so it always reports.
+  intune:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+      - id: changes
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ] ||
+             git diff --name-only HEAD^1 HEAD | grep -qE '^(src/pdt/examples/intune-export/|tests/intune_export/|tests/test_intune_export\.py$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - id: module
+        if: steps.changes.outputs.run == 'true'
+        run: |
+          script=src/pdt/examples/intune-export/IntuneExport.ps1
+          echo "commit=$(sed -n "s/^[$]commit = '\(.*\)'$/\1/p" $script)" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sed -n "s/^[$]archiveSha256 = '\(.*\)'$/\1/p" $script)" >> "$GITHUB_OUTPUT"
+      - id: cache
+        if: steps.changes.outputs.run == 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.local/share/pdt/IntuneManagement-${{ steps.module.outputs.commit }}
+          key: intune-management-${{ steps.module.outputs.commit }}
+      - if: steps.changes.outputs.run == 'true' && steps.cache.outputs.cache-hit != 'true'
+        env:
+          COMMIT: ${{ steps.module.outputs.commit }}
+          SHA256: ${{ steps.module.outputs.sha256 }}
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/archive.zip" "https://github.com/Micke-K/IntuneManagement/archive/$COMMIT.zip"
+          echo "${SHA256,,}  $RUNNER_TEMP/archive.zip" | sha256sum -c
+          unzip -q "$RUNNER_TEMP/archive.zip" -d "$RUNNER_TEMP"
+          mkdir -p ~/.local/share/pdt
+          mv "$RUNNER_TEMP/IntuneManagement-$COMMIT" ~/.local/share/pdt/
+      - if: steps.changes.outputs.run == 'true'
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - if: steps.changes.outputs.run == 'true'
+        run: uv run --python 3.13 --group dev pytest -q tests/test_intune_export.py
+        env:
+          PDT_TEST_INTUNE: "1"
+
   smoke:
     runs-on: ${{ matrix.os }}
     strategy:

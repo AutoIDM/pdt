@@ -3,7 +3,8 @@ against IntuneManagement's own offline mock tenant, and tests/intune_export/impo
 the zip it writes with IntuneManagement's own bulk import.
 
 IntuneManagement is the copy the script downloads to pdt's data folder, so these tests need
-no network; they skip until one run of the app (or of the script) has downloaded it."""
+no network. They run only with PDT_TEST_INTUNE=1, which the intune CI job sets after it
+downloads IntuneManagement, and then a missing copy fails them."""
 
 import base64
 import datetime
@@ -31,9 +32,12 @@ MODULE = config.data_home() / "pdt" / f"IntuneManagement-{COMMIT}"
 GROUP = "aaaaaaaa-0000-0000-0000-000000000001"
 ENV = {"PDT_AZURE_TENANT_ID": "tenant-id", "PDT_AZURE_CLIENT_ID": "client-id", "PDT_AZURE_CLIENT_SECRET": "secret"}
 
+REFUSED = ["DeviceConfiguration", "iOSiPadOSUpdatePolicies", "macOSUpdatePolicies", "UpdatePolicies"]
+FORBIDDEN = r"^/?deviceManagement/deviceConfigurations\?"
+
 needs_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason="needs pwsh")
-needs_module = pytest.mark.skipif(not (MODULE / "IntuneManagement.psd1").is_file(),
-                                  reason=f"needs IntuneManagement in {MODULE}")
+needs_module = pytest.mark.skipif(os.environ.get("PDT_TEST_INTUNE") != "1",
+                                  reason="needs PDT_TEST_INTUNE=1 and IntuneManagement in pdt's data folder")
 
 
 def pwsh(args, env, cwd):
@@ -43,6 +47,7 @@ def pwsh(args, env, cwd):
 
 
 def run_export(tmp_path, settings=None, env=None, forbidden=None):
+    assert (MODULE / "IntuneManagement.psd1").is_file(), f"needs IntuneManagement in {MODULE}"
     (tmp_path / "data/pdt").mkdir(parents=True)
     (tmp_path / "data/pdt" / MODULE.name).symlink_to(MODULE)
     (tmp_path / "output").mkdir()
@@ -84,14 +89,43 @@ def import_into_new_tenant(tmp_path, archive):
     return json.loads((tmp_path / "import.json").read_text(encoding="utf-8-sig"))
 
 
+@pytest.fixture(scope="module")
+def first_export(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("first")
+    return folder, *run_export(folder)
+
+
+@pytest.fixture(scope="module")
+def refused_export(tmp_path_factory):
+    return run_export(tmp_path_factory.mktemp("refused"), {"skip_types": REFUSED[1:]}, forbidden=FORBIDDEN)
+
+
+@pytest.fixture(scope="module")
+def certificate_export(tmp_path_factory):
+    folder = tmp_path_factory.mktemp("certificate")
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "pdt test")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(1).not_valid_before(now).not_valid_after(now + datetime.timedelta(days=1))
+            .sign(key, hashes.SHA256()))
+    pfx = pkcs12.serialize_key_and_certificates(b"pdt", key, cert, None, BestAvailableEncryption(b"pw"))
+    result, archive = run_export(folder, {"policy_types": ["SettingsCatalog", "CompliancePolicies"],
+                                          "name_filter": "Edge",
+                                          "settings": {"AddCompanyName": False, "AddIDToExportFile": False}},
+                                 env={"PDT_AZURE_PRIVATE_KEY_B64": base64.b64encode(pfx).decode(),
+                                      "PDT_AZURE_PRIVATE_KEY_PASSWORD": "pw"})
+    return folder, cert, result, archive
+
+
 @needs_pwsh
 @needs_module
-def test_export_imports_into_another_tenant(tmp_path):
-    result, archive = run_export(tmp_path)
+def test_export_imports_into_another_tenant(first_export, tmp_path):
+    folder, result, archive = first_export
     assert result.returncode == 0, result.stdout + result.stderr
-    assert (tmp_path / "output/IntuneManagement.log").is_file()
-    assert not (tmp_path / "IntuneManagement.log").exists()
-    assert json.loads((tmp_path / "log.json").read_text(encoding="utf-8-sig"))["signIns"] == [
+    assert (folder / "output/IntuneManagement.log").is_file()
+    assert not (folder / "IntuneManagement.log").exists()
+    assert json.loads((folder / "log.json").read_text(encoding="utf-8-sig"))["signIns"] == [
         {"tenant": "tenant-id", "app": "client-id", "secret": "secret", "certificate": None}]
     assert files(archive) == [
         "Contoso/AndroidGooglePlay/Managed Google Play.json",
@@ -122,65 +156,50 @@ def test_export_imports_into_another_tenant(tmp_path):
 
 @needs_pwsh
 @needs_module
-def test_config_selects_types_and_sets_intunemanagement_settings(tmp_path):
-    result, archive = run_export(tmp_path, {"policy_types": ["SettingsCatalog", "CompliancePolicies"],
-                                            "name_filter": "Edge",
-                                            "settings": {"AddCompanyName": False, "AddIDToExportFile": False}})
+def test_config_selects_types_and_sets_intunemanagement_settings(certificate_export):
+    _, _, result, archive = certificate_export
     assert result.returncode == 0, result.stdout + result.stderr
     assert files(archive) == ["SettingsCatalog/Edge Settings.json"]
 
 
 @needs_pwsh
 @needs_module
-def test_certificate_wins_over_the_secret(tmp_path):
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "pdt test")])
-    now = datetime.datetime.now(datetime.timezone.utc)
-    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
-            .serial_number(1).not_valid_before(now).not_valid_after(now + datetime.timedelta(days=1))
-            .sign(key, hashes.SHA256()))
-    pfx = pkcs12.serialize_key_and_certificates(b"pdt", key, cert, None, BestAvailableEncryption(b"pw"))
-    result, _ = run_export(tmp_path, env={"PDT_AZURE_PRIVATE_KEY_B64": base64.b64encode(pfx).decode(),
-                                          "PDT_AZURE_PRIVATE_KEY_PASSWORD": "pw"})
+def test_certificate_wins_over_the_secret(certificate_export):
+    folder, cert, result, _ = certificate_export
     assert result.returncode == 0, result.stdout + result.stderr
-    sign_in = json.loads((tmp_path / "log.json").read_text(encoding="utf-8-sig"))["signIns"][0]
+    sign_in = json.loads((folder / "log.json").read_text(encoding="utf-8-sig"))["signIns"][0]
     assert sign_in["secret"] == ""
     assert sign_in["certificate"] == cert.fingerprint(hashes.SHA1()).hex().upper()
 
 
 @needs_pwsh
 @needs_module
-def test_a_type_graph_refuses_fails_the_run_and_keeps_the_zip(tmp_path):
-    result, archive = run_export(tmp_path, forbidden=r"^/?deviceManagement/deviceConfigurations\?")
+def test_a_type_graph_refuses_fails_the_run_and_keeps_the_zip(refused_export):
+    result, archive = refused_export
     assert result.returncode != 0
-    assert "refused to list 4 object types" in output(result)
-    assert "DeviceConfiguration: list request failed (status 403)" in output(result)
+    assert all(f"{name}: list request failed (status 403)" in output(result) for name in REFUSED)
     assert "Contoso/SettingsCatalog/Edge Settings_cp-1.json" in files(archive)
     assert not [name for name in files(archive) if "/DeviceConfiguration/" in name]
 
 
 @needs_pwsh
 @needs_module
-def test_a_refused_type_in_skip_types_does_not_fail_the_run(tmp_path):
-    refused = ["DeviceConfiguration", "iOSiPadOSUpdatePolicies", "macOSUpdatePolicies", "UpdatePolicies"]
-    result, archive = run_export(tmp_path, {"skip_types": refused[1:]},
-                                 forbidden=r"^/?deviceManagement/deviceConfigurations\?")
-    assert result.returncode != 0
+def test_a_refused_type_in_skip_types_does_not_fail_the_run(refused_export, tmp_path):
+    result, _ = refused_export
     assert "refused to list 1 object types" in output(result)
 
-    result, archive = run_export(tmp_path / "all", {"skip_types": refused},
-                                 forbidden=r"^/?deviceManagement/deviceConfigurations\?")
+    result, archive = run_export(tmp_path, {"skip_types": REFUSED}, forbidden=FORBIDDEN)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Contoso/SettingsCatalog/Edge Settings_cp-1.json" in files(archive)
 
 
 @needs_pwsh
 @needs_module
-def test_each_run_lists_what_changed_since_the_last(tmp_path):
-    result, _ = run_export(tmp_path / "first")
+def test_each_run_lists_what_changed_since_the_last(first_export, tmp_path):
+    folder, result, _ = first_export
     assert result.returncode == 0, result.stdout + result.stderr
     assert "This is the first export" in output(result)
-    last = json.loads((tmp_path / "first/state/last-export.json").read_text(encoding="utf-8-sig"))
+    last = json.loads((folder / "state/last-export.json").read_text(encoding="utf-8-sig"))
     assert "Contoso/SettingsCatalog/Edge Settings_cp-1.json" in last["files"]
 
     del last["files"]["Contoso/SettingsCatalog/Edge Settings_cp-1.json"]
