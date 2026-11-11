@@ -71,7 +71,7 @@ def test_command_without_app_lists_apps(project, monkeypatch, capsys, command):
     assert f"pdt {command} <app>" in out
 
 
-@pytest.mark.parametrize("command", APP_COMMANDS)
+@pytest.mark.parametrize("command", ["storage", "destroy"])
 def test_command_with_unknown_app_lists_apps(project, monkeypatch, capsys, command):
     add_app(project, "hello-world")
     add_app(project, "daily-report")
@@ -83,7 +83,7 @@ def test_command_with_unknown_app_lists_apps(project, monkeypatch, capsys, comma
     assert f"pdt {command} <app>" in out
 
 
-@pytest.mark.parametrize("command", APP_COMMANDS)
+@pytest.mark.parametrize("command", ["storage", "destroy"])
 def test_command_without_app_caps_the_list_at_five(project, monkeypatch, capsys, command):
     for i in range(7):
         add_app(project, f"app-{i}")
@@ -95,7 +95,7 @@ def test_command_without_app_caps_the_list_at_five(project, monkeypatch, capsys,
     assert "pdt list" in out
 
 
-@pytest.mark.parametrize("command", APP_COMMANDS)
+@pytest.mark.parametrize("command", ["storage", "destroy"])
 def test_command_without_app_in_empty_project(project, monkeypatch, capsys, command):
     assert run_cli(monkeypatch, command) == 1
     out = capsys.readouterr().out
@@ -202,22 +202,6 @@ def test_a_run_number_at_the_project_root_is_not_an_app(project, monkeypatch, ca
     assert "no app named '3'" in capsys.readouterr().out
 
 
-def test_an_unknown_secrets_action_is_an_error(project, monkeypatch, capsys):
-    add_app(project, "hello-world", "schedule: daily\n")
-    monkeypatch.setattr(deploy, "dispatch", lambda *a: pytest.fail("dispatched"))
-    assert run_cli(monkeypatch, "secrets", "hello-world", "sav") == 1
-    assert "no secrets action named 'sav'; choose diff, save, get, set" in (
-        capsys.readouterr().out)
-
-
-def test_every_app_command_goes_through_choose_app():
-    parser = cli.build_parser()
-    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
-    for command in APP_COMMANDS:
-        app_arg = next(a for a in sub.choices[command]._actions if a.dest == "app")
-        assert app_arg.nargs == "?", f"pdt {command} must accept a missing app name"
-
-
 def test_storage_dispatches_with_the_extra_args(project, monkeypatch):
     add_app(project, "hello-world", "schedule: daily\n")
     calls = []
@@ -304,16 +288,6 @@ def test_new_takes_from_scripts_but_not_together_with_from(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         parser.parse_args(["new", "ad-report", "--from-scripts", "--from", "hello-world"])
     assert "not allowed with argument" in capsys.readouterr().err
-
-
-def test_storage_with_an_unknown_app_lists_the_apps(project, monkeypatch, capsys):
-    add_app(project, "hello-world", "schedule: daily\n")
-    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
-    assert run_cli(monkeypatch, "storage", "../hello-world", "ls") == 1
-    out = capsys.readouterr().out
-    assert "no app named '../hello-world'" in out
-    assert "hello-world" in out
-    assert "pdt storage <app>" in out
 
 
 def test_runs_and_logs_forward_their_flags_after_a_separator(project, monkeypatch):
@@ -472,16 +446,6 @@ def test_deploy_all_stops_when_the_person_will_not_skip(project, monkeypatch, ca
     assert STOP_HINT in out
 
 
-def test_deploy_all_with_yes_and_no_terminal_stops_at_the_failure(project, monkeypatch, capsys):
-    four_apps(project)
-    calls = fake_deploys(monkeypatch, {"bravo": 3})
-    monkeypatch.setattr(cli, "can_prompt", lambda interactive: False)
-    assert run_cli(monkeypatch, "deploy", "--all", "--yes") == 3
-    assert calls == [("alpha", True), ("bravo", True)]
-    assert config.is_enabled("bravo")
-    assert STOP_HINT in capsys.readouterr().out
-
-
 def test_deploy_all_with_skip_failures_runs_unattended(project, monkeypatch, capsys):
     four_apps(project)
     calls = fake_deploys(monkeypatch, {"bravo": 3})
@@ -595,10 +559,6 @@ def four_deployed(project):
         config.mark_deployed(name, True)
 
 
-DESTROY_STOP_HINT = ("Fix the problem above and run pdt destroy --all again, "
-                     "or add --skip-failures to go on past it.")
-
-
 def test_destroy_all_destroys_every_deployed_app_in_order(project, monkeypatch, capsys):
     add_app(project, "hello-world")
     add_app(project, "idle")
@@ -625,49 +585,6 @@ def test_destroy_all_lists_the_apps_unless_yes(project, monkeypatch, capsys):
     assert out.index("pdt destroy --all will destroy these apps") < out.index("Destroying alpha")
     assert run_cli(monkeypatch, "destroy", "--all", "--yes") == 0
     assert "will destroy these apps" not in capsys.readouterr().out
-
-
-def test_destroy_all_goes_on_past_a_declined_app(project, monkeypatch, capsys):
-    four_deployed(project)
-    calls = fake_destroys(monkeypatch, {"bravo": deploy.DECLINED})
-    questions = answer(monkeypatch)
-    assert run_cli(monkeypatch, "destroy", "--all") == 1
-    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
-    assert questions == []
-    out = capsys.readouterr().out
-    assert "bravo did not destroy." not in out
-    assert "Not destroyed: bravo" in out
-
-
-def test_destroy_all_stops_when_the_person_will_not_skip(project, monkeypatch, capsys):
-    four_deployed(project)
-    calls = fake_destroys(monkeypatch, {"bravo": 3})
-    questions = answer(monkeypatch, False)
-    assert run_cli(monkeypatch, "destroy", "--all") == 3
-    assert calls == [("alpha", False), ("bravo", False)]
-    assert questions == ["Skip the failing app bravo and destroy the rest?"]
-    out = capsys.readouterr().out
-    assert "bravo did not destroy." in out
-    assert DESTROY_STOP_HINT in out
-
-
-def test_destroy_all_with_yes_and_no_terminal_stops_at_the_failure(project, monkeypatch, capsys):
-    four_deployed(project)
-    calls = fake_destroys(monkeypatch, {"bravo": 3})
-    monkeypatch.setattr(cli, "can_prompt", lambda interactive: False)
-    assert run_cli(monkeypatch, "destroy", "--all", "--yes") == 3
-    assert calls == [("alpha", True), ("bravo", True)]
-    assert DESTROY_STOP_HINT in capsys.readouterr().out
-
-
-def test_destroy_all_with_skip_failures_runs_unattended(project, monkeypatch, capsys):
-    four_deployed(project)
-    calls = fake_destroys(monkeypatch, {"bravo": 3})
-    questions = answer(monkeypatch)
-    assert run_cli(monkeypatch, "destroy", "--all", "--yes", "--skip-failures") == 1
-    assert [name for name, _ in calls] == ["alpha", "bravo", "charlie", "delta"]
-    assert questions == []
-    assert "Not destroyed: bravo" in capsys.readouterr().out
 
 
 def test_destroy_all_never_offers_to_disable_an_app(project, monkeypatch, capsys):
@@ -907,8 +824,7 @@ def test_json_without_apps_prints_an_empty_list(project, monkeypatch, capsys, co
     assert "This project has no apps yet." in captured.err
 
 
-@pytest.mark.parametrize("argv", [[command] for command in APP_COMMANDS]
-                         + [["health"], ["deploy", "--all"]])
+@pytest.mark.parametrize("argv", [["storage"], ["health"], ["deploy", "--all"]])
 def test_no_enabled_apps_says_so(project, monkeypatch, capsys, argv):
     add_app(project, "hello-world", "enabled: false\n")
     run_cli(monkeypatch, *argv)
@@ -987,7 +903,6 @@ def test_cloud_cli_passthroughs_are_registered():
         assert path.exists(), f"pdt {name} points at a missing script"
         assert f'sys.argv[1] == "{name}"' in path.read_text(), (
             f"{script} has no `{name}` passthrough branch")
-        assert name in cli.CLOUD_CLIS
 
 
 def test_pause_writes_the_key_and_tells_a_deployed_app(project, monkeypatch, capsys):

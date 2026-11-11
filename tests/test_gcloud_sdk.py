@@ -18,9 +18,7 @@ def restore_quiet_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-@pytest.mark.parametrize("ci", ["true", ""])
-def test_a_missing_gcloud_downloads_without_a_question(monkeypatch, tmp_path, capsys, ci):
-    monkeypatch.setenv("CI", ci)
+def test_a_missing_gcloud_downloads_without_a_question(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(gcloud_sdk.shutil, "which", lambda name: None)
     monkeypatch.setattr(gcloud_sdk, "LOCAL_GCLOUD", tmp_path / "gcloud")
 

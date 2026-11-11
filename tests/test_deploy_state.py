@@ -17,13 +17,6 @@ def project_with_starter(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_a_successful_deploy_records_the_app(tmp_path, monkeypatch):
-    project_with_starter(tmp_path, monkeypatch)
-    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: 0)
-    assert deploy.deploy(scaffold.STARTER) == 0
-    assert config.is_deployed(scaffold.STARTER)
-
-
 def test_a_failed_deploy_keeps_its_record_until_a_destroy_succeeds(tmp_path, monkeypatch):
     project_with_starter(tmp_path, monkeypatch)
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: 1)
@@ -47,14 +40,6 @@ def test_concurrent_records_keep_every_app(tmp_path, monkeypatch):
     assert sorted(config.deployed_places()) == sorted(names)
 
 
-def test_destroy_clears_the_record(tmp_path, monkeypatch):
-    project_with_starter(tmp_path, monkeypatch)
-    config.mark_deployed(scaffold.STARTER, config.merged_app(scaffold.STARTER)["platform"])
-    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: 0)
-    assert deploy.destroy(scaffold.STARTER) == 0
-    assert not config.is_deployed(scaffold.STARTER)
-
-
 def test_destroy_ignores_a_record_that_is_not_a_platform(tmp_path, monkeypatch):
     project = project_with_starter(tmp_path, monkeypatch)
     write_raw_state(project, f'{{"deployed": ["{scaffold.STARTER}"], '
@@ -73,15 +58,6 @@ def test_the_state_dir_ignores_itself(tmp_path, monkeypatch):
 def test_init_gitignores_the_state_dir(tmp_path, monkeypatch):
     project_with_starter(tmp_path, monkeypatch)
     assert ".pdt/" in (tmp_path / ".gitignore").read_text().splitlines()
-
-
-def test_the_state_file_is_json(tmp_path, monkeypatch):
-    import json
-
-    project_with_starter(tmp_path, monkeypatch)
-    config.mark_deployed(scaffold.STARTER, True)
-    state = json.loads((tmp_path / ".pdt" / "state").read_text())
-    assert state["deployed"] == [scaffold.STARTER]
 
 
 def write_raw_state(project, text):

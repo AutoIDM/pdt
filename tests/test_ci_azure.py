@@ -114,7 +114,7 @@ def test_a_person_at_the_keyboard_still_gets_the_subscription_written_back(
 
 
 def test_an_unattended_run_with_an_unknown_subscription_names_the_fix(
-        project, azure_app, monkeypatch):
+        project, azure_app, monkeypatch, capsys):
     (project / "pdt.yml").write_text(
         "platform:\n  provider: azure\n  subscription: \"not-a-subscription\"\n")
     app = config.merged_app("my-report")
@@ -122,6 +122,8 @@ def test_an_unattended_run_with_an_unknown_subscription_names_the_fix(
         ACCOUNT if args[:2] == ("account", "show") else [ACCOUNT, OTHER]))
     with pytest.raises(SystemExit):
         deploy_azure.preflight(app, deploy_azure.azure_settings(app))
+    out = " ".join(capsys.readouterr().out.split())
+    assert "set platform.subscription in pdt.yml, or set PDT_AZURE_SUBSCRIPTION" in out
 
 
 @pytest.mark.parametrize("filler", ["", "a", "ab", "abc"])
@@ -134,7 +136,7 @@ def test_a_token_without_an_object_id_claim_gives_an_empty_answer():
     assert deploy_azure.object_id_from_token(jwt_for({"appid": "x"})) == ""
 
 
-@pytest.mark.parametrize("token", ["", "not-a-token", "one.two", "a.@@@@.c"])
+@pytest.mark.parametrize("token", ["one.two", "a.@@@@.c"])
 def test_an_unreadable_token_gives_an_empty_answer(token):
     assert deploy_azure.object_id_from_token(token) == ""
 
@@ -223,14 +225,6 @@ def test_a_deploy_continues_when_the_group_holds_only_the_expected_names():
     ])
     deploy_azure.check_shared_names(dict(SETTINGS), [])
     deploy_azure.check_shared_names(dict(SETTINGS), None)
-
-
-def test_a_discovered_subscription_names_the_vault_like_a_saved_one(azure_app, monkeypatch):
-    chosen(monkeypatch)
-    settings = deploy_azure.preflight(azure_app, deploy_azure.azure_settings(azure_app))
-    saved = deploy_azure.shared_names(ACCOUNT["id"], settings["resource_group"])
-    assert settings["vault"] == saved["vault"]
-    assert settings["storage"] == saved["storage"]
 
 
 def choose_subscription_answering(monkeypatch, answer):

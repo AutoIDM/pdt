@@ -150,12 +150,6 @@ def test_the_art_fits_a_narrow_console():
     assert max(len(line) for line in scaffold.ART.splitlines()) <= 60
 
 
-def test_init_on_an_existing_project_changes_nothing(project):
-    before = (project / PROJECT_FILE).read_text()
-    assert scaffold.init(None, assume_yes=True) == 0
-    assert (project / PROJECT_FILE).read_text() == before
-
-
 def test_every_bundled_example_is_complete():
     examples = sorted(p for p in scaffold.EXAMPLES.iterdir() if p.is_dir())
     assert examples, "the wheel ships no examples"

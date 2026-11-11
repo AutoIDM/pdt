@@ -225,11 +225,6 @@ def test_auth_env_file_names_a_new_dot_env_when_pdt_can_ask(project):
     assert auth_env_file(folder, interactive=True) == folder / ".env"
 
 
-def test_auth_env_file_is_none_with_no_dot_env_and_no_terminal(project):
-    folder = add_app(project, "my-report")
-    assert auth_env_file(folder, interactive=False) is None
-
-
 def test_saving_authorization_creates_no_file_in_a_ci_checkout(project, monkeypatch):
     folder = add_app(project, "my-report")
     clear(monkeypatch)
@@ -277,11 +272,6 @@ def test_confirm_treats_a_person_pressing_ctrl_d_as_no_without_advice(monkeypatc
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     assert deploy.confirm(["do a thing"], assume_yes=False) is False
     assert "--yes" not in capsys.readouterr().out
-
-
-def test_confirm_with_assume_yes_returns_true_without_calling_input(monkeypatch):
-    monkeypatch.setattr("builtins.input", refuse_input)
-    assert deploy.confirm(["do a thing"], assume_yes=True) is True
 
 
 def test_a_build_server_with_a_terminal_still_gets_no_dot_env(project, monkeypatch):

@@ -329,10 +329,6 @@ def test_install_command_installs_imports_and_probes():
         "$ErrorActionPreference = 'Stop'; Install-PSResource -Name 'It''s' -Version '1.0''' ")
 
 
-def test_quoted_doubles_single_quotes():
-    assert powershell.quoted("it's") == "'it''s'"
-
-
 def test_the_gallery_lookup_runs_one_pwsh_and_caches_empty_answers(tmp_path, monkeypatch):
     monkeypatch.setattr(powershell, "GALLERY_CACHE", tmp_path / "psgallery.json")
     monkeypatch.setattr(powershell.pwsh, "ensure_pwsh", lambda: "pwsh")

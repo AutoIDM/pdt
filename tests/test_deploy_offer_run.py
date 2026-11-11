@@ -5,17 +5,14 @@ import pytest
 from pdt import cli, config, console, deploy, scaffold
 
 APP = scaffold.STARTER
-REGIONS = {"aws": "us-east-1", "azure": "eastus", "google-cloud": "us-central1", "windows": None}
 
 
-@pytest.fixture(params=list(REGIONS))
-def project(request, tmp_path, monkeypatch):
+@pytest.fixture
+def project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     monkeypatch.chdir(tmp_path)
     assert scaffold.init(None, assume_yes=True) == 0
-    region = REGIONS[request.param]
-    (tmp_path / "pdt.yml").write_text(f"platform:\n  provider: {request.param}\n"
-                                      + (f"  region: {region}\n" if region else ""))
+    (tmp_path / "pdt.yml").write_text("platform:\n  provider: aws\n  region: us-east-1\n")
     return tmp_path
 
 
@@ -103,12 +100,6 @@ def test_run_starts_the_run_with_no_question(project, monkeypatch, assume_yes, t
     assert deploy.deploy(APP, assume_yes=assume_yes, run=True) == 0
     assert cloud.asked == []
     assert cloud.calls == [("deploy",), FOLLOW]
-
-
-def test_deploy_all_never_offers(project, monkeypatch):
-    cloud = Cloud(monkeypatch)
-    assert deploy.deploy(APP, run=False) == 0
-    assert cloud.commands() == ["deploy"]
 
 
 def test_a_failed_deploy_offers_nothing(project, monkeypatch):

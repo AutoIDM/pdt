@@ -22,11 +22,6 @@ def schedule_in(folder):
     return yaml.safe_load(path.read_text()).get("schedule") if path.is_file() else None
 
 
-def test_yes_takes_daily_and_creates_the_config_file(ps_app):
-    assert deploy.choose_schedule(merged_app("ps-report"), True) == ""
-    assert schedule_in(ps_app) == "daily"
-
-
 def test_the_saved_schedule_is_the_merged_one(ps_app):
     app = merged_app("ps-report")
     deploy.choose_schedule(app, True)

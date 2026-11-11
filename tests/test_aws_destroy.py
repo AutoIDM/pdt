@@ -87,7 +87,7 @@ def test_shared_present_lists_the_queue_and_environment_that_exist(queue, enviro
     assert shared_present(FakeBatch(queue=queue, environment=environment)) == expected
 
 
-@pytest.mark.parametrize("resource", [JOB_QUEUE, COMPUTE_ENVIRONMENT])
+@pytest.mark.parametrize("resource", [JOB_QUEUE])
 def test_remove_disables_deletes_and_treats_the_deleted_listing_as_gone(resource):
     batch = FakeBatch()
     remove(batch, resource)

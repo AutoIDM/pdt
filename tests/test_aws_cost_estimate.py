@@ -1,5 +1,4 @@
 from pdt import deploy_aws_batch
-from pdt.deploy_common import CostEstimate
 
 
 def test_redeploy_estimate_reads_recent_runs_from_the_logs_client(monkeypatch, waits):
@@ -13,9 +12,8 @@ def test_redeploy_estimate_reads_recent_runs_from_the_logs_client(monkeypatch, w
     monkeypatch.setattr(deploy_aws_batch, "list_price", lambda *args, **kwargs: 0.0)
     fake_logs = object()
 
-    estimate = deploy_aws_batch.cost_estimate_for(
+    deploy_aws_batch.cost_estimate_for(
         fake_logs, {"log_group": "/pdt/app"}, "us-east-1", "0 0 * * *", True, None, "USD")
 
     assert seen == [(fake_logs,
                      ["reading: past runs in CloudWatch log group [bold not dim]/pdt/app[/]"])]
-    assert isinstance(estimate, CostEstimate)

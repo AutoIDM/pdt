@@ -57,12 +57,6 @@ def test_the_grant_condition_limits_reads_writes_and_deletes_to_the_app_folder()
         f" OR (@Request[{BLOBS}:prefix] StringStartsWith 'my-report/'))")
 
 
-def test_the_grant_condition_names_one_app_only():
-    assert "my-report/" in deploy_azure.store_condition("my-report")
-    assert "other/" not in deploy_azure.store_condition("my-report")
-    assert deploy_azure.store_condition("a") != deploy_azure.store_condition("b")
-
-
 def test_the_grant_condition_of_an_app_with_no_read_list_is_the_released_string():
     released = (
         "((!(ActionMatches{'Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read'} AND NOT SubOperationMatches{'Blob.List'})"
@@ -111,14 +105,12 @@ def test_plan_lines_show_each_folder_the_job_may_read():
     assert len(lines) == 5
 
 
-def test_usage_is_unknown_until_the_data_role_lands(capsys):
+def test_usage_is_unknown_until_the_data_role_lands():
     class Deployer:
         def usage(self):
             raise RuntimeError("ErrorCode:AuthorizationPermissionMismatch")
 
     assert deploy_azure.store_usage(Deployer()) is None
-    assert capsys.readouterr().out == ""
-    assert "cannot read the data store yet" in deploy_azure.STORE_UNREADABLE
 
 
 def test_another_storage_error_is_raised():

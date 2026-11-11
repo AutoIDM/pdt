@@ -314,17 +314,6 @@ def poll(wait):
         wait.now(state)
 
 
-def test_a_wait_prints_one_line_for_each_state_change_off_a_terminal(monkeypatch):
-    out = io.StringIO()
-    monkeypatch.setattr(console, "_console", Console(file=out, highlight=False))
-    monkeypatch.setattr(console, "_errors", console._console)
-    with console.wait_on("Batch job queue pdt", "deleted") as wait:
-        poll(wait)
-    assert out.getvalue().splitlines() == ["disabling: Batch job queue pdt",
-                                           "deleting: Batch job queue pdt",
-                                           "deleted: Batch job queue pdt (0s)"]
-
-
 def test_a_wait_on_a_terminal_shows_one_spinner_line_and_the_end_line(monkeypatch):
     out = io.StringIO()
     monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True, width=100))

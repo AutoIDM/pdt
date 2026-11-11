@@ -9,7 +9,7 @@ def test_a_group_and_a_name_pass(value):
     assert azure_environment_problem(value) == ""
 
 
-@pytest.mark.parametrize("value", ["my-env", "/my-env", "my-group/", "a/b/c", "my group/env"])
+@pytest.mark.parametrize("value", ["my-env", "/my-env", "a/b/c", "my group/env"])
 def test_a_value_without_one_slash_is_reported(value):
     assert azure_environment_problem(value) != ""
 

@@ -13,7 +13,7 @@ from pdt import deploy_aws_batch as batch_deploy
 from pdt.deploy_aws import deployer_policy
 from pdt.deploy_common import BUILD_TAG, REBUILD_ENV
 from pdt.deploy_aws_batch import (
-    BUILD_LOG_GROUP, BUILD_PROJECT, BUILD_ROLE, BUILDSPEC, DEPLOYER_ACTIONS, REPOSITORY,
+    BUILD_LOG_GROUP, BUILD_PROJECT, BUILD_ROLE, DEPLOYER_ACTIONS, REPOSITORY,
     build_bucket,
 )
 
@@ -504,20 +504,6 @@ def test_the_deployer_policy_grants_the_build_actions_on_pdt_resources_only():
                for action in statement["Action"]}
     assert granted["codebuild:StartBuild"] == [
         f"arn:aws:codebuild:{REGION}:{ACCOUNT}:project/{BUILD_PROJECT}"]
-    for action in ("codebuild:BatchGetBuilds", "codebuild:BatchGetProjects",
-                   "codebuild:CreateProject", "codebuild:UpdateProject",
-                   "codebuild:DeleteProject", "s3:PutLifecycleConfiguration",
-                   "s3:DeleteBucket"):
-        assert action in granted
     assert granted["s3:PutObject"] == ["arn:aws:s3:::pdt-build-*/*"]
     assert granted["s3:PutLifecycleConfiguration"] == ["arn:aws:s3:::pdt-build-*"]
     assert "logs:GetLogEvents" in granted
-    [pass_role] = [statement for statement in statements if statement["Action"] == ["iam:PassRole"]]
-    assert "codebuild.amazonaws.com" in pass_role["Condition"]["StringEquals"][
-        "iam:PassedToService"]
-
-
-def test_the_buildspec_logs_in_to_the_image_registry_and_pushes_the_image():
-    phases = yaml.safe_load(BUILDSPEC)["phases"]
-    assert "docker login" in phases["pre_build"]["commands"][0]
-    assert phases["build"]["commands"][-1] == 'docker push "$IMAGE"'

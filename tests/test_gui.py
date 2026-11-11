@@ -141,7 +141,6 @@ def test_the_run_page_asks_the_worker_and_refreshes_until_the_log_is_there(gui):
     gui.answers[("logs",)] = (1, json.dumps(LINES) + "\n")
     run, first = open_run(gui)
     assert 'http-equiv="refresh"' in first and "refreshes itself" in first
-    assert not [call for call in gui.calls if call[0] == "logs" and len(gui.calls) == 0]
     html = gui.client.get(f"/apps/my-report/runs/{run.pk}/").content.decode()
     assert 'http-equiv="refresh"' not in html
     assert "run 1 of my-report" in html

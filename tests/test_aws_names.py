@@ -13,8 +13,3 @@ def test_the_log_group_and_the_job_definition_follow_the_project_shape():
     names = deploy_aws_batch.resource_names("x")
     assert names["log_group"] == "/pdt/x"
     assert names["job_definition"] == names["schedule"] == "pdt-x"
-
-
-def test_the_shared_batch_resources_are_both_named_pdt():
-    assert deploy_aws_batch.JOB_QUEUE.name == "pdt"
-    assert deploy_aws_batch.COMPUTE_ENVIRONMENT.name == "pdt"

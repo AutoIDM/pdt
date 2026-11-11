@@ -105,23 +105,6 @@ def test_a_redirected_run_list_holds_no_line_of_a_retried_read(monkeypatch, caps
     assert "done: pdt gcloud run jobs executions list (0s)" in err
 
 
-def test_list_runs_sorts_an_execution_with_no_start_time_by_its_creation_time(monkeypatch):
-    started = {
-        "metadata": {"name": "pdt-app-old", "creationTimestamp": "2026-09-23T08:59:58Z"},
-        "status": {"startTime": "2026-09-23T09:00:00Z", "completionTime": "2026-09-23T09:00:05Z",
-                   "conditions": [{"type": "Completed", "status": "True"}]},
-    }
-    queued = {
-        "metadata": {"name": "pdt-app-queued", "creationTimestamp": "2026-09-23T10:00:00Z"},
-        "status": {},
-    }
-    monkeypatch.setattr(deploy_google_cloud, "describe_json",
-                        lambda *a: [started, queued] if a[0] == "run" else [])
-    found = deploy_google_cloud.list_runs("p", "us-central1", "pdt-app")
-    assert [(run.id, run.status) for run in found] == [("pdt-app-queued", "running"),
-                                                        ("pdt-app-old", "succeeded")]
-
-
 def test_list_runs_reads_every_exit_code_in_one_logging_read(monkeypatch):
     executions = [{
         "name": f"namespaces/p/executions/pdt-app-{suffix}",

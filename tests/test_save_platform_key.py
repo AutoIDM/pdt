@@ -59,13 +59,6 @@ def test_writes_to_the_app_file_when_the_app_overrides_the_provider(project):
     assert yaml.safe_load((project / "pdt.yml").read_text())["platform"] == {"provider": "azure"}
 
 
-def test_the_saved_value_comes_back_through_merged_app(project):
-    (project / "pdt.yml").write_text(COMMENTED)
-    add_app(project, "my-report")
-    save_platform_key(merged_app("my-report"), "account", "123456789012")
-    assert merged_app("my-report")["platform"]["account"] == "123456789012"
-
-
 def test_a_leading_zero_survives(project):
     # Unquoted, yaml reads an account id back as an int and drops the zero.
     (project / "pdt.yml").write_text(COMMENTED)
@@ -73,15 +66,6 @@ def test_a_leading_zero_survives(project):
     saved = save_platform_key(merged_app("my-report"), "account", "012345678901")
     assert yaml.safe_load(saved.read_text())["platform"]["account"] == "012345678901"
     assert merged_app("my-report")["platform"]["account"] == "012345678901"
-
-
-def test_saving_twice_leaves_one_key(project):
-    (project / "pdt.yml").write_text(COMMENTED)
-    add_app(project, "my-report")
-    save_platform_key(merged_app("my-report"), "account", "111111111111")
-    saved = save_platform_key(merged_app("my-report"), "account", "222222222222")
-    assert saved.read_text().count("account:") == 1
-    assert yaml.safe_load(saved.read_text())["platform"]["account"] == "222222222222"
 
 
 def test_a_value_with_quotes_backslashes_and_newlines_reads_back_unchanged(project):

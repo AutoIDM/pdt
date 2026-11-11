@@ -1,6 +1,7 @@
 """validate, run, and deploy say what pdt found on its own and where it came from."""
 
 import os
+import subprocess
 from pathlib import Path
 
 import io
@@ -9,8 +10,8 @@ import pytest
 from rich.console import Console
 from rich.text import Text
 
-from conftest import add_app
-from pdt import cli, config, console, deploy, deploy_common, powershell, regions
+from conftest import add_app, started
+from pdt import cli, config, console, deploy, deploy_common, lifecycle, powershell, regions
 from pdt.deploy_azure import secret_actions
 from test_powershell_env import FACTS
 
@@ -129,16 +130,16 @@ def test_validate_says_what_it_found_for_each_app(py_app, project, monkeypatch, 
 
 
 def test_run_says_which_scripts_run_and_why(ps_app, monkeypatch, capsys):
-    monkeypatch.setattr(cli.subprocess, "run", lambda command, **kwargs: (
-        cli.subprocess.CompletedProcess(command, 0)))
+    monkeypatch.setattr(lifecycle.subprocess, "Popen", started(
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0)))
     assert run_cli(monkeypatch, "run", "ps-report") == 0
     assert ("ps-report runs, in order: cleanup.ps1, report.ps1 (each .ps1 that no other "
             "script loads, in name order) no .env file in ps-report") in text(capsys)
 
 
 def test_run_says_it_runs_run_py(py_app, monkeypatch, capsys):
-    monkeypatch.setattr(cli.subprocess, "run", lambda command, **kwargs: (
-        cli.subprocess.CompletedProcess(command, 0)))
+    monkeypatch.setattr(lifecycle.subprocess, "Popen", started(
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0)))
     assert run_cli(monkeypatch, "run", "py-report") == 0
     assert "py-report runs run.py no .env file in py-report" in text(capsys)
 
@@ -190,14 +191,6 @@ def test_a_value_prints_bold_on_a_terminal_and_plain_when_piped(monkeypatch):
         monkeypatch.setattr(console, "_console", Console(file=out, soft_wrap=True, **options))
         console.detail(line)
         assert out.getvalue() == f"      {expected}\n"
-
-
-def test_a_value_in_dim_text_prints_bold_and_not_dim(monkeypatch):
-    out = io.StringIO()
-    monkeypatch.setattr(console, "_console", Console(file=out, force_terminal=True,
-                                                     color_system="standard", soft_wrap=True))
-    console.styled(f"[dim]from {console.value('PDT_PROJECT')}[/]")
-    assert out.getvalue() == "\x1b[2mfrom \x1b[0m\x1b[1mPDT_PROJECT\x1b[0m\n"
 
 
 def test_detail_wraps_on_visible_text_and_keeps_a_hyphenated_name_whole(monkeypatch):

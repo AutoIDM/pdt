@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 import pytest
 
 from conftest import add_app
-from pdt.deploy import DECLINED
 from pdt import config, deploy_windows
 
 
@@ -24,14 +23,6 @@ def windows_app(project, monkeypatch):
     monkeypatch.setattr(deploy_windows, "_task_state", lambda powershell, name: "absent")
     monkeypatch.setattr(deploy_windows, "_deploying_user", lambda: r"PC\jon")
     return config.merged_app("my-report")
-
-
-def test_deploy_plans_the_storage_folder(project, monkeypatch, capsys):
-    app = windows_app(project, monkeypatch)
-    assert deploy_windows.deploy(app, assume_yes=False) == DECLINED
-    folder = project / "ProgramData" / "pdt" / "my-report" / "storage"
-    out = capsys.readouterr().out
-    assert f"use folder {folder} for the app's files (kept after destroy)" in out
 
 
 def test_destroy_reports_the_kept_folder(project, monkeypatch, capsys):

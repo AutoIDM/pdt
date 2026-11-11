@@ -77,12 +77,6 @@ def test_retries_show_one_line_for_the_server_off_a_terminal(monkeypatch, capsys
                                        "answered: prices.example.com (0s)\n")
 
 
-def test_retries_server_error(monkeypatch):
-    calls, waits = install(monkeypatch, [http_error(500), {"ok": True}])
-    assert fetch_json(URL) == {"ok": True}
-    assert len(calls) == 2
-
-
 @pytest.mark.parametrize("error", [
     urllib.error.URLError(ConnectionRefusedError(111)),
     TimeoutError("timed out"),

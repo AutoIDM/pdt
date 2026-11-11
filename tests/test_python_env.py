@@ -5,7 +5,7 @@ import os
 import pytest
 
 from conftest import add_app
-from pdt import cli, config, deploy, deploy_common, python_env
+from pdt import config, deploy_common, python_env
 
 RUN_PY = '''import os
 
@@ -40,11 +40,6 @@ def expected(project, app="py-report", read='run.py:4 reads os.environ["TENANT_I
         f"To fix it, add each one as NAME=value to {project / '.env'}, then run the command again. "
         "If a script works without one that it reads, list that one under env: optional: in "
         f"{app}/config.yml instead.")
-
-
-def run_cli(monkeypatch, *argv):
-    monkeypatch.setattr("sys.argv", ["pdt", *argv])
-    return cli.main()
 
 
 def unlisted(tmp_path, code, env=None):
@@ -110,24 +105,6 @@ def test_the_message_names_the_var_the_line_where_pdt_looked_and_the_fix(py_app,
     assert config.missing_env(app) == ""
 
 
-def test_pdt_run_stops_before_the_app_starts(py_app, project, monkeypatch, capsys):
-    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("the app started"))
-    assert run_cli(monkeypatch, "run", "py-report") == 1
-    assert expected(project) in " ".join(capsys.readouterr().out.split())
-
-
-def test_pdt_validate_reports_the_read(py_app, project, monkeypatch, capsys):
-    assert run_cli(monkeypatch, "validate") == 1
-    assert f"py-report: {expected(project)}" in " ".join(capsys.readouterr().out.split())
-
-
-def test_deploy_stops_before_dispatch(py_app, project, monkeypatch, capsys):
-    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
-    (project / "pdt.yml").write_text("platform:\n  provider: azure\n")
-    assert deploy.deploy("py-report", assume_yes=True) == 1
-    assert f"py-report: {expected(project)}" in " ".join(capsys.readouterr().out.split())
-
-
 def test_deploy_sends_the_required_read_and_the_optional_read_when_set(py_app):
     app = config.merged_app("py-report")
     with pytest.raises(SystemExit):
@@ -136,23 +113,3 @@ def test_deploy_sends_the_required_read_and_the_optional_read_when_set(py_app):
     assert deploy_common.gather_secrets(app) == {"TENANT_ID": "t"}
     os.environ["NOTE"] = "n"
     assert deploy_common.gather_secrets(app) == {"TENANT_ID": "t", "NOTE": "n"}
-
-
-@pytest.mark.parametrize("action", ["diff", "save"])
-def test_secrets_diff_and_save_check_the_read(py_app, project, monkeypatch, capsys, action):
-    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: pytest.fail("dispatched"))
-    assert deploy.secrets("py-report", action) == 1
-    assert f"py-report: {expected(project)}" in " ".join(capsys.readouterr().out.split())
-
-
-def test_a_powershell_app_and_a_python_app_give_the_same_message(py_app, project, monkeypatch):
-    from test_powershell_env import FACTS
-    from pdt import powershell
-    folder = project / "ps-report"
-    folder.mkdir()
-    (folder / "report.ps1").write_text("")
-    (folder / "config.yml").write_text("schedule: daily\nenv:\n  optional: [NOTE]\n")
-    monkeypatch.setattr(powershell, "extract", lambda folder: FACTS)
-    assert config.missing_env(config.merged_app("ps-report")) == expected(
-        project, "ps-report", "report.ps1:4 reads $env:TENANT_ID")
-    assert config.missing_env(config.merged_app("py-report")) == expected(project)

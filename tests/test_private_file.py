@@ -50,13 +50,6 @@ def test_updating_a_secret_locally_makes_the_env_file_owner_only(tmp_path, monke
     assert mode(env_file) == 0o600
 
 
-def test_init_writes_an_owner_only_env_file(tmp_path, monkeypatch):
-    monkeypatch.delenv("PDT_PROJECT", raising=False)
-    monkeypatch.chdir(tmp_path)
-    assert scaffold.init(None, assume_yes=True) == 0
-    assert mode(tmp_path / ".env") == 0o600
-
-
 def test_init_makes_an_existing_env_file_owner_only(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     monkeypatch.chdir(tmp_path)

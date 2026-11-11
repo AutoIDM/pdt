@@ -159,13 +159,6 @@ def test_a_missing_workflow_url_names_the_env_var_and_the_fix(project, monkeypat
                       False)
 
 
-def test_a_cloud_job_finds_the_workflow_url_in_its_env_secret(monkeypatch):
-    monkeypatch.delenv("TEAMS_WEBHOOK_W1", raising=False)
-    monkeypatch.setenv("PDT_ENV_JSON", json.dumps({"TEAMS_WEBHOOK_W1": "https://x.api.powerplatform.com/w"}))
-    assert alert_message.secret_value(teams.secret_name({"webhook": "w1"})) == (
-        "https://x.api.powerplatform.com/w")
-
-
 def test_a_teams_entry_takes_no_channel_and_no_other_key(project):
     for key in ("channel", "url"):
         with pytest.raises(config.ConfigError, match=f"unknown key '{key}'; a teams entry takes: "

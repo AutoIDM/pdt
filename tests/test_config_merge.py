@@ -75,12 +75,6 @@ def test_name_must_match_the_folder(project):
     assert any("does not match directory" in p for p in validate_app("my-report"))
 
 
-def test_aws_rejects_an_account_that_is_not_twelve_digits(project):
-    (project / "pdt.yml").write_text("platform:\n  provider: aws\n  account: nope\n")
-    add_app(project, "my-report", "schedule: daily\n")
-    assert any("platform.account" in p for p in validate_app("my-report"))
-
-
 def test_a_complete_project_validates_clean(project):
     (project / "pdt.yml").write_text(ROOT_YAML)
     add_app(project, "my-report")

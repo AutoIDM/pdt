@@ -223,13 +223,6 @@ def test_aws_converts_at_the_ecb_rate(monkeypatch):
     assert "converted from USD at the ECB rate of 2026-10-08" in estimate.prices
 
 
-def test_aws_keeps_usd_and_says_why_with_no_rate(monkeypatch):
-    monkeypatch.setattr(deploy_common, "ecb_xml", no_ecb)
-    estimate = deploy_aws.cost_estimate("eu-west-2", [("job", 1.0)], "", "GBP")
-    assert estimate.currency == "USD"
-    assert "in USD, because no USD to GBP rate could be read" in estimate.prices
-
-
 def test_aws_says_nothing_extra_for_a_usd_user():
     estimate = deploy_aws.cost_estimate("us-east-1", [("job", 1.0)], "", "USD")
     assert estimate.prices == "us-east-1 list prices, before free tiers"

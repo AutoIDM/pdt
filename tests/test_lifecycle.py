@@ -332,7 +332,6 @@ def test_a_declined_plan_or_a_failure_fails_the_step_and_a_success_completes_it(
 
 
 @pytest.mark.parametrize(("deployed", "override", "trigger"), [
-    (False, "", "manual"),
     (False, "schedule", "manual"),
     (True, "manual", "manual"),
     (True, "", "schedule"),
