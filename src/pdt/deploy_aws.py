@@ -7,6 +7,8 @@
 #     "pyyaml",
 #     "rich",
 #     "python-dotenv",
+#     "cryptography",
+#     "pyjwt",
 #     "backoff",
 #     "fsspec",
 #     "s3fs>=2024",

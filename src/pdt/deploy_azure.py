@@ -11,6 +11,8 @@
 #     "pyyaml",
 #     "rich",
 #     "python-dotenv",
+#     "cryptography",
+#     "pyjwt",
 #     "backoff",
 # ]
 #

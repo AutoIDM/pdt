@@ -349,7 +349,9 @@ def save(project, alerts: list, old: dict | None, new: dict | None,
 
 def setup() -> int:
     """Take each chosen type in turn through events, connect, save, and test. The entries
-    of types the user unchecks go last, so a stop part way keeps them."""
+    of types the user unchecks go last, so a stop part way keeps them. An entry keeps its
+    `exclude-events`, and each name in its `events` that matches none of pdt's own events
+    (an app's own event), because the list of events shows only pdt's own."""
     project = config.find_project()
     if not can_prompt(None):
         console.error("pdt alerts setup asks questions; run it in a terminal")
@@ -378,7 +380,10 @@ def setup() -> int:
                             [(event, f"{alert_message.event_words(event)} ({event})")
                              for event in lifecycle.EVENTS],
                             checked)
-        if not events:
+        custom = [event for event in (old or {}).get("events", [])
+                  if event != lifecycle.ALL
+                  and not any(lifecycle.matches(event, own) for own in lifecycle.EVENTS)]
+        if not events and not custom:
             console.say(f"No events chosen, so {console.escape(title)} gets no alerts.")
             alerts = save(project, alerts, old, None, {})
             continue
@@ -396,7 +401,9 @@ def setup() -> int:
         same = old is not None and events == checked and all(
             old.get(key) == value for key, value in keys.items())
         entry = old if same else {"type": name, **keys, "events": (
-            [lifecycle.ALL] if events == list(lifecycle.EVENTS) else events)}
+            [lifecycle.ALL] if events == list(lifecycle.EVENTS) else events + custom)}
+        if not same and "exclude-events" in (old or {}):
+            entry["exclude-events"] = old["exclude-events"]
         alerts = save(project, alerts, old, entry, values)
         if item.test is None:
             continue

@@ -185,6 +185,40 @@ def test_microsoft_365_posts_to_send_mail_of_the_sender_with_the_html_body(monke
         "toRecipients": [{"emailAddress": {"address": "it-ops@example.com"}}]}}
 
 
+def test_setup_keeps_the_custom_event_names_and_exclude_events_when_the_events_change(
+        project, smtp, monkeypatch):
+    (project / "pdt.yml").write_text(
+        "alerts:\n  - type: email\n    method: smtp\n    from: pdt-alerts@example.com\n"
+        "    to: [it-ops@example.com]\n"
+        "    events: [job:run-failed, report:ready, compliance:*, app:deploy-*]\n"
+        "    exclude-events: [app:deploy-started]\n")
+    queue = ["", "6 4", "", "n", "n"]
+    monkeypatch.setattr(alerts_cli.console, "ask", lambda *_a, **_k: queue.pop(0))
+    monkeypatch.setattr(alerts_cli.console, "confirm", lambda *_a, **_k: queue.pop(0) == "y")
+    monkeypatch.setattr(alerts_cli, "can_prompt", lambda _interactive: True)
+    assert alerts_cli.setup() == 0
+    assert queue == []
+    assert config.load_yaml(project / "pdt.yml")["alerts"] == [{
+        "type": "email", "from": "pdt-alerts@example.com", "method": "smtp",
+        "to": ["it-ops@example.com"],
+        "events": ["app:deploy-completed", "app:deploy-failed", "job:run-started",
+                   "report:ready", "compliance:*"],
+        "exclude-events": ["app:deploy-started"]}]
+
+
+def test_setup_keeps_an_entry_with_only_custom_events_when_no_event_is_checked(
+        project, smtp, monkeypatch):
+    (project / "pdt.yml").write_text(
+        "alerts:\n  - type: email\n    method: smtp\n    from: pdt-alerts@example.com\n"
+        "    to: [it-ops@example.com]\n    events: [job:run-failed, report:ready]\n")
+    queue = ["", "6", "", "n", "n"]
+    monkeypatch.setattr(alerts_cli.console, "ask", lambda *_a, **_k: queue.pop(0))
+    monkeypatch.setattr(alerts_cli.console, "confirm", lambda *_a, **_k: queue.pop(0) == "y")
+    monkeypatch.setattr(alerts_cli, "can_prompt", lambda _interactive: True)
+    assert alerts_cli.setup() == 0
+    assert config.load_yaml(project / "pdt.yml")["alerts"][0]["events"] == ["report:ready"]
+
+
 def test_setup_asks_for_email_writes_pdt_yml_and_env_and_test_sends_to_each_entry(
         project, smtp, monkeypatch):
     for name in SMTP_ENV:
