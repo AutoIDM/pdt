@@ -38,7 +38,7 @@ process no longer exists. `pdt storage <app> unlock` releases a lock by hand.
 
 `storage.store(app="other")` opens the folder of another app of the project,
 read-only: the folder next to this app's own. A deployed job can read it when
-this app's config.yml names the other app under `storage: read:`.
+this app's pdt.yml names the other app under `storage: read:`.
 """
 
 from __future__ import annotations
@@ -168,7 +168,7 @@ def root(app: str | None = None) -> str:
 
 def store(credentials=None, app: str | None = None) -> Store:
     """This app's folder. With `app`, the folder of another app of the project,
-    read-only; this app's config.yml names it under `storage: read:`."""
+    read-only; this app's pdt.yml names it under `storage: read:`."""
     return Store(root(app), credentials, read_only=app is not None)
 
 

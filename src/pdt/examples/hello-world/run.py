@@ -6,7 +6,7 @@
 """Sample hello world app. Use as a template to create your own app.
 
 Edit `main` to do the real work, add what you need to the dependencies
-above, and list any env vars in config.yml so `pdt validate` checks them
+above, and list any env vars in this app's pdt.yml so `pdt validate` checks them
 before a deploy.
 """
 

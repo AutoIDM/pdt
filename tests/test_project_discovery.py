@@ -1,7 +1,11 @@
+import subprocess
+import sys
+
 import pytest
 
 from conftest import add_app
-from pdt.config import PROJECT_FILE, ConfigError, current_app, find_apps, find_project
+from pdt.config import (PROJECT_FILE, ConfigError, current_app, find_apps, find_env_files,
+                        find_project, merged_app, validate_app)
 
 
 def test_finds_the_project_in_the_current_folder(project):
@@ -15,10 +19,119 @@ def test_walks_up_from_a_nested_folder(project, monkeypatch):
     assert find_project() == project
 
 
-def test_an_app_config_does_not_stop_the_walk(project, monkeypatch):
+def test_an_app_pdt_yml_does_not_stop_the_walk(project, monkeypatch):
     app = add_app(project, "my-report", config_text="schedule: daily\n")
     monkeypatch.chdir(app)
     assert find_project() == project
+
+
+def test_a_folder_below_an_app_still_finds_the_project(project, monkeypatch):
+    app = add_app(project, "my-report", config_text="schedule: daily\n")
+    deep = app / "transform" / "models"
+    deep.mkdir(parents=True)
+    monkeypatch.chdir(deep)
+    assert find_project() == project
+
+
+def test_an_app_folder_alone_is_not_a_project(tmp_path, monkeypatch):
+    monkeypatch.delenv("PDT_PROJECT", raising=False)
+    app = add_app(tmp_path, "my-report", config_text="schedule: daily\n")
+    monkeypatch.chdir(app)
+    with pytest.raises(ConfigError):
+        find_project()
+
+
+def test_pdt_project_pointing_at_an_app_folder_is_an_error(project, monkeypatch):
+    app = add_app(project, "my-report", config_text="schedule: daily\n")
+    monkeypatch.setenv("PDT_PROJECT", str(app))
+    with pytest.raises(ConfigError):
+        find_project()
+
+
+def test_env_lookup_climbs_past_the_app_folder(project):
+    app = add_app(project, "my-report", config_text="schedule: daily\n")
+    (project / ".env").write_text("A=1\n")
+    (app / ".env").write_text("B=2\n")
+    assert find_env_files(app) == [app / ".env", project / ".env"]
+
+
+def powershell_app(project, name):
+    app = project / name
+    app.mkdir()
+    (app / "report.ps1").write_text("")
+    (app / PROJECT_FILE).write_text("schedule: daily\n")
+    return app
+
+
+def test_a_powershell_app_pdt_yml_does_not_stop_the_walk(project, monkeypatch):
+    app = powershell_app(project, "ad-report")
+    monkeypatch.chdir(app)
+    assert find_project() == project
+    assert current_app() == "ad-report"
+    assert find_env_files(app) == []
+
+
+def test_pdt_project_pointing_at_a_powershell_app_folder_is_an_error(project, monkeypatch):
+    monkeypatch.setenv("PDT_PROJECT", str(powershell_app(project, "ad-report")))
+    with pytest.raises(ConfigError):
+        find_project()
+
+
+def test_a_project_may_keep_its_own_ps1_files(project):
+    (project / "setup.ps1").write_text("")
+    assert find_project() == project
+
+
+def test_an_app_with_only_a_config_yml_is_read_from_it(project, capsys):
+    app = add_app(project, "my-report")
+    (app / "config.yml").write_text("schedule: daily\n")
+    assert validate_app("my-report") == []
+    assert merged_app("my-report")["schedule"] == "daily"
+    assert not (app / PROJECT_FILE).exists()
+    out = " ".join(capsys.readouterr().out.split())
+    assert out == "my-report/config.yml: config.yml is deprecated. Rename it to pdt.yml."
+
+
+def test_a_child_process_does_not_warn_again_about_the_same_config_yml(project, capsys):
+    app = add_app(project, "my-report")
+    (app / "config.yml").write_text("schedule: daily\n")
+    merged_app("my-report")
+    capsys.readouterr()
+    result = subprocess.run(
+        [sys.executable, "-c", "from pdt import config; config.merged_app('my-report')"],
+        capture_output=True, text=True, check=True)
+    assert "deprecated" not in result.stdout
+
+
+def test_an_app_with_a_pdt_yml_prints_no_deprecation_warning(project, capsys):
+    add_app(project, "my-report", config_text="schedule: daily\n")
+    merged_app("my-report")
+    assert "deprecated" not in capsys.readouterr().out
+
+
+def test_a_config_yml_problem_names_config_yml(project):
+    app = add_app(project, "my-report")
+    (app / "config.yml").write_text("pause: maybe\n")
+    assert validate_app("my-report") == ["my-report/config.yml: pause must be true or false"]
+
+
+def test_a_powershell_app_with_only_a_config_yml_is_read_from_it(project):
+    app = project / "ad-report"
+    app.mkdir()
+    (app / "report.ps1").write_text("")
+    (app / "config.yml").write_text("schedule: weekly\n")
+    assert find_project() == project
+    assert merged_app("ad-report")["schedule"] == "weekly"
+
+
+def test_an_app_with_both_files_reads_pdt_yml_and_fails_validation(project):
+    app = add_app(project, "my-report", config_text="schedule: daily\n")
+    (app / "config.yml").write_text("schedule: weekly\n")
+    assert merged_app("my-report")["schedule"] == "daily"
+    assert validate_app("my-report") == [
+        "my-report holds both my-report/pdt.yml and my-report/config.yml. pdt reads "
+        "my-report/pdt.yml and ignores my-report/config.yml; move what you need into pdt.yml "
+        "and delete config.yml"]
 
 
 def test_reports_a_useful_error_outside_any_project(tmp_path, monkeypatch):
@@ -55,7 +168,7 @@ def test_find_apps_lists_only_folders_holding_run_py(project):
 def test_find_apps_leaves_out_a_disabled_app(project):
     add_app(project, "report-one")
     add_app(project, "report-two")
-    (project / "report-two" / "config.yml").write_text("enabled: false\n")
+    (project / "report-two" / "pdt.yml").write_text("enabled: false\n")
     assert find_apps() == ["report-one"]
 
 

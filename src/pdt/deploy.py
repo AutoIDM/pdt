@@ -51,7 +51,8 @@ def _load(app_name: str):
     if provider not in PROVIDERS:
         raise ConfigError(
             f"platform.provider must be one of: {', '.join(PROVIDERS)}. "
-            f"Set it under platform: in {config.PROJECT_FILE}, or in {app_name}/{config.APP_FILE}.")
+            f"Set it under platform: in {config.PROJECT_FILE}, or in "
+            f"{app_name}/{config.app_file(app['dir']).name}.")
     return app, provider
 
 
@@ -223,9 +224,9 @@ DEFAULT_SCHEDULE = "daily"
 
 
 def choose_schedule(app: dict, assume_yes: bool) -> str:
-    """When the app has no schedule, ask for one and save it in the app's config.yml.
+    """When the app has no schedule, ask for one and save it in the app's pdt.yml.
 
-    Creates config.yml when the app folder has none. Returns a problem for the
+    Creates pdt.yml when the app folder has none. Returns a problem for the
     user, or "". --yes takes DEFAULT_SCHEDULE, the same way it takes every
     other default; a run with no one to ask and no --yes stops with the line
     to add.
@@ -233,7 +234,7 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
     if app["schedule"] is not None:
         return ""
     name = app["name"]
-    where = f"{name}/{config.APP_FILE}"
+    where = f"{name}/{config.app_file(app['dir']).name}"
     words = config.describe_schedule(DEFAULT_SCHEDULE)
     schedule = DEFAULT_SCHEDULE
     if assume_yes:

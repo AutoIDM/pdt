@@ -94,22 +94,22 @@ ENV_TEXT = """\
 AGENTS_TEXT = """\
 # AGENTS.md
 
-This folder is a pdt project: a set of small scheduled jobs. Every folder holding a `config.yml` and a `run.py` is one Python app. Every folder holding a `config.yml` and one or more `.ps1` files but no `run.py` is one PowerShell app. `pdt.yml` holds the settings shared by every app.
+This folder is a pdt project: a set of small scheduled jobs. Every folder holding a `pdt.yml` and a `run.py` is one Python app. Every folder holding a `pdt.yml` and one or more `.ps1` files but no `run.py` is one PowerShell app. The `pdt.yml` at the top of the project holds the settings shared by every app.
 
 ## Working here
 
 - Start a new app with `pdt new <name> --from <example>`; `pdt examples` lists the starting points. Do not copy an app folder by hand.
 - An app declares its dependencies in the script header at the top of its `run.py`. Its `pdt-cli` pin is the pdt version the app runs with. Keep it at the newest pdt release with `pdt upgrade`, which also upgrades pdt itself, and run `pdt deploy <name>` after it raises the pin, so the deployed job uses it too.
-- List the env vars an app reads under `env:` in its `config.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets. Each `$env:NAME` a PowerShell app's scripts read is required even when `config.yml` does not list it; list it under `env: optional:` when the scripts work without it. The same holds for each `os.environ["NAME"]` a Python app's `.py` files read; `os.environ.get("NAME")` and `os.getenv("NAME")` make it optional. pdt does not find a name that the code builds at run time.
+- List the env vars an app reads under `env:` in its own `pdt.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets. Each `$env:NAME` a PowerShell app's scripts read is required even when `pdt.yml` does not list it; list it under `env: optional:` when the scripts work without it. The same holds for each `os.environ["NAME"]` a Python app's `.py` files read; `os.environ.get("NAME")` and `os.getenv("NAME")` make it optional. pdt does not find a name that the code builds at run time.
 - Check work with `pdt validate`, try it with `pdt run <name>`, ship it with `pdt deploy <name>`.
-- Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (`--id ID` picks a run by the id `pdt runs` shows; the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all, `--follow` to wait for a running run's lines); add `--json` to any of them for machine-readable output. Stop a deployed app's schedule with `pdt pause <name>` (it writes `pause: true` into the app's `config.yml`), start it again with `pdt unpause <name>`, and start one run now with `pdt run <name> --deployed`. `pdt gui` shows the same in a browser.
-- Read the files an app keeps in its data store with `pdt storage <name> ls [PATH] [--recursive] [--json]`, `pdt storage <name> get PATH`, and `pdt storage <name> query SQL`. When a run stopped but still holds the state lock, `pdt storage <name> unlock` releases it. An app on the `azure` provider reads the files of another app with `storage.store(app="OTHER")` from `pdt.utils.storage`, once its `config.yml` names that app under `storage: read:`; it cannot change them.
+- Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (`--id ID` picks a run by the id `pdt runs` shows; the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all, `--follow` to wait for a running run's lines); add `--json` to any of them for machine-readable output. Stop a deployed app's schedule with `pdt pause <name>` (it writes `pause: true` into the app's `pdt.yml`), start it again with `pdt unpause <name>`, and start one run now with `pdt run <name> --deployed`. `pdt gui` shows the same in a browser.
+- Read the files an app keeps in its data store with `pdt storage <name> ls [PATH] [--recursive] [--json]`, `pdt storage <name> get PATH`, and `pdt storage <name> query SQL`. When a run stopped but still holds the state lock, `pdt storage <name> unlock` releases it. An app on the `azure` provider reads the files of another app with `storage.store(app="OTHER")` from `pdt.utils.storage`, once its `pdt.yml` names that app under `storage: read:`; it cannot change them.
 - Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
 - A PowerShell app reads its `config:` section from `$env:PDT_CONFIG_JSON | ConvertFrom-Json`, and pdt keeps each file it writes to `$env:PDT_OUTPUT_DIR` in the app's data store.
 - A `run.ps1` file is the only entry script. Otherwise, `run_scripts` lists the entry scripts in order, or pdt runs each `.ps1` file that no other `.ps1` file loads in name order. Do not use `run.ps1` and `run_scripts` together.
 - `pdt new <name> --from-scripts` writes `requirements.psd1` (the modules to install) and `run.py` (how the scripts run) into a PowerShell app's folder; once there, `requirements.psd1` replaces the modules pdt finds in the scripts, and `run.py` replaces how pdt runs them.
 - An app folder holding a `Dockerfile` is built from that file instead of the generated one when it deploys to a cloud provider. The build context is the app folder under its own name next to `pdt.yml`; a `.dockerignore` in the app folder, with patterns relative to it, keeps files out of the image.
-- A deploy to AWS, Azure, or Google Cloud builds the image with Docker on this computer when `docker info` answers, else in the cloud (ACR Tasks, Cloud Build, CodeBuild). `docker-build: local` or `docker-build: cloud` at the top level of `pdt.yml` or of an app's `config.yml` forces one place. A build with Docker forwards this computer's SSH agent, so a `RUN --mount=type=ssh` step in an app's `Dockerfile` can install a private git dependency. A build in the cloud has no agent, so it stops on such a step and names it.
+- A deploy to AWS, Azure, or Google Cloud builds the image with Docker on this computer when `docker info` answers, else in the cloud (ACR Tasks, Cloud Build, CodeBuild). `docker-build: local` or `docker-build: cloud` at the top level of the project's `pdt.yml` or of an app's own `pdt.yml` forces one place. A build with Docker forwards this computer's SSH agent, so a `RUN --mount=type=ssh` step in an app's `Dockerfile` can install a private git dependency. A build in the cloud has no agent, so it stops on such a step and names it.
 """
 
 RUN_PY_TEXT = '''\
@@ -365,7 +365,7 @@ def replace_platform(text: str, platform: dict) -> str:
 def merged_platform(root_cfg: dict, root_platform: dict, app_dir: Path) -> dict:
     return {**root_platform,
             **(config.root_app_entry(root_cfg, app_dir.name).get("platform") or {}),
-            **(config.load_yaml(app_dir / APP_FILE).get("platform") or {})}
+            **(config.load_yaml(config.app_file(app_dir)).get("platform") or {})}
 
 
 def pin_problem(path: Path, shown: str) -> str:
@@ -440,7 +440,8 @@ def change_provider(target: Path) -> int:
                     **{key: str(value) for key, value in extra.items() if value}}
         pins[name] = {key: value for key, value in settings.items()
                       if str(deploy.resolved(after[name]).get(key) or "") != value}
-        problem = pin_problem(target / name / APP_FILE, f"{name}/{APP_FILE}")
+        own_file = config.app_file(target / name)
+        problem = pin_problem(own_file, f"{name}/{own_file.name}")
         if pins[name].keys() - {"timezone"} and problem != "":
             raise ConfigError(problem)
     movable = [name for name in numbered if deploy.moved(recorded[name], after[name])]
@@ -482,13 +483,14 @@ def change_provider(target: Path) -> int:
     for name in deployed:
         if name in removed or not pins[name].keys() - {"timezone"}:
             continue
+        own_file = config.app_file(target / name)
         for key, value in pins[name].items():
-            config.save_platform_key(apps[name], key, value, path=target / name / APP_FILE)
+            config.save_platform_key(apps[name], key, value, path=own_file)
         pinned.append(name)
         console.say(f"{console.value(name)} stays on "
                     f"{console.value(where[name])}. "
                     f"Its {console.value('platform:')} settings are in "
-                    f"{console.value(f'{name}/{APP_FILE}')}.")
+                    f"{console.value(f'{name}/{own_file.name}')}.")
     with config.locked(marker):
         if marker.read_bytes().decode("utf-8") != text:
             raise ConfigError(f"{PROJECT_FILE} changed while pdt init was asking; "
@@ -499,7 +501,8 @@ def change_provider(target: Path) -> int:
     for name in removed:
         if config.place(recorded[name]).get("provider") == provider:
             continue
-        for shown, section in ((f"{name}/{APP_FILE}", config.load_yaml(target / name / APP_FILE)),
+        own_file = config.app_file(target / name)
+        for shown, section in ((f"{name}/{own_file.name}", config.load_yaml(own_file)),
                                (f"{PROJECT_FILE} apps entry {name}",
                                 config.root_app_entry(root_cfg, name))):
             region = (section.get("platform") or {}).get("region")
@@ -524,7 +527,7 @@ def project_yaml(platform: dict) -> str:
     ]
     if platform:
         lines += [
-            "# Defaults for every app. An app's own config.yml can override them.",
+            "# Defaults for every app. An app's own pdt.yml can override them.",
             "platform:",
         ]
         lines += [f"  {key}: {value}" for key, value in platform.items()]
@@ -537,7 +540,7 @@ def project_yaml(platform: dict) -> str:
         ]
     lines += [
         "",
-        "# Settings for one app. The app's own config.yml can hold these instead.",
+        "# Settings for one app. The app's own pdt.yml can hold these instead.",
         "apps: []",
         "",
     ]
@@ -553,11 +556,14 @@ def has_nothing_in_it(folder: Path) -> bool:
 def init(directory: str | None, assume_yes: bool) -> int:
     console.art(ART)
     here = Path.cwd().resolve()
-    if directory is None and (here / PROJECT_FILE).is_file():
+    if directory is None and config.is_project(here):
         target = here
     else:
         target = choose_target(directory, assume_yes)
     marker = target / PROJECT_FILE
+    if marker.is_file() and not config.is_project(target):
+        raise ConfigError(f"{target} is an app folder: its {APP_FILE} holds that app's settings. "
+                          "Run pdt init in the project folder above it.")
     if marker.is_file():
         if assume_yes:
             console.say(f"{console.value(target)} is already a pdt project.")
@@ -674,7 +680,7 @@ def new_app(name: str, source: str | None) -> int:
     console.done(f"Created {console.value(f'{name}/')} from the {console.value(example.name)} "
                  "example.")
     files = [(f"{name}/{job}", "the job itself") for job in powershell_scripts(destination) or ["run.py"]]
-    files.append((f"{name}/config.yml", "how often it runs and what it needs"))
+    files.append((f"{name}/{APP_FILE}", "how often it runs and what it needs"))
     needs_secrets = (destination / "env.template").is_file()
     if needs_secrets:
         files.append((f"{name}/env.template", f"the secrets to copy into {console.value('.env')}"))

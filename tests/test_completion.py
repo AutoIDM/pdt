@@ -43,8 +43,19 @@ def test_app_completer_reads_the_cache_while_nothing_changed(project, monkeypatc
     assert completion.apps("") == ["daily-report"]
 
 
-def test_a_changed_config_yml_rescans_the_apps(project):
+def test_a_changed_pdt_yml_rescans_the_apps(project):
     folder = add_app(project, "daily-report", "enabled: true\n")
+    completion.apps("")
+
+    (folder / "pdt.yml").write_text("enabled: false\n")
+    _later(folder / "pdt.yml")
+
+    assert completion.apps("") == []
+
+
+def test_a_changed_config_yml_rescans_the_apps(project):
+    folder = add_app(project, "daily-report")
+    (folder / "config.yml").write_text("enabled: true\n")
     completion.apps("")
 
     (folder / "config.yml").write_text("enabled: false\n")

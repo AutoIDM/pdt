@@ -112,7 +112,7 @@ def test_deploy_refuses_a_powershell_app_whose_scripts_certainly_fail(tmp_path, 
     project_with_starter(tmp_path, monkeypatch)
     (tmp_path / "report").mkdir()
     (tmp_path / "report" / "report.ps1").write_text("Read-Host 'name'\n")
-    (tmp_path / "report" / "config.yml").write_text("schedule: daily\n")
+    (tmp_path / "report" / "pdt.yml").write_text("schedule: daily\n")
     finding = powershell.Finding("interactive", "report.ps1", 1, "Read-Host waits for a person", True)
     monkeypatch.setattr(powershell, "scan", lambda app, provider: powershell.ScriptScan(
         ["report.ps1"], [], [], [finding]))

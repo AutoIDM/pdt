@@ -18,6 +18,7 @@ def console_on_stdout(monkeypatch):
     # A --json command moves pdt.console to stderr for the rest of the process.
     monkeypatch.setattr(console._console, "stderr", False)
     monkeypatch.setattr(console, "_warned", set())
+    monkeypatch.setenv("PDT_CONFIG_YML_WARNED", "")
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +88,7 @@ def add_app(root, name, config_text="", run_body="def main():\n    return 0\n"):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "run.py").write_text(run_body)
     if config_text:
-        (folder / "config.yml").write_text(config_text)
+        (folder / "pdt.yml").write_text(config_text)
     return folder
 
 

@@ -25,7 +25,7 @@ def wrapper(monkeypatch):
 def app_dir(project, monkeypatch):
     folder = project / "my-report"
     folder.mkdir()
-    (folder / "config.yml").write_text("schedule: daily\n")
+    (folder / "pdt.yml").write_text("schedule: daily\n")
     monkeypatch.chdir(folder)
     monkeypatch.delenv("PDT_STORAGE_URL", raising=False)
     return folder
@@ -101,7 +101,7 @@ def test_scripts_run_in_order_and_the_output_is_stored(app_dir, wrapper, monkeyp
 
 def test_each_script_gets_the_merged_config_section_as_json(app_dir, wrapper, monkeypatch):
     (app_dir / "a.ps1").write_text("")
-    (app_dir / "config.yml").write_text("schedule: daily\nconfig:\n  days: 7\n  types: [A, B]\n")
+    (app_dir / "pdt.yml").write_text("schedule: daily\nconfig:\n  days: 7\n  types: [A, B]\n")
     monkeypatch.setenv("PDT_MY_REPORT_DAYS", "30")
     calls = []
     monkeypatch.setattr(wrapper.subprocess, "run", fake_pwsh(calls, {"a.ps1": 0}))
@@ -114,7 +114,7 @@ def test_each_script_gets_the_merged_config_section_as_json(app_dir, wrapper, mo
 
 def test_a_yaml_date_in_the_config_section_reaches_the_script_as_text(app_dir, wrapper, monkeypatch):
     (app_dir / "a.ps1").write_text("")
-    (app_dir / "config.yml").write_text("schedule: daily\nconfig:\n  since: 2026-01-31\n")
+    (app_dir / "pdt.yml").write_text("schedule: daily\nconfig:\n  since: 2026-01-31\n")
     calls = []
     monkeypatch.setattr(wrapper.subprocess, "run", fake_pwsh(calls, {"a.ps1": 0}))
 
@@ -128,7 +128,7 @@ def test_the_from_scripts_run_py_passes_the_config_section_too(app_dir, monkeypa
     from pdt import scaffold
 
     (app_dir / "a.ps1").write_text("")
-    (app_dir / "config.yml").write_text("schedule: daily\nconfig:\n  since: 2026-01-31\n  days: 7\n")
+    (app_dir / "pdt.yml").write_text("schedule: daily\nconfig:\n  since: 2026-01-31\n  days: 7\n")
     run_py = app_dir / "run.py"
     run_py.write_text(scaffold.RUN_PY_TEXT)
     namespace = {"__file__": str(run_py), "__name__": "run_py"}
@@ -149,7 +149,7 @@ def test_the_first_failure_stops_the_run_and_its_output_is_still_stored(
         app_dir, wrapper, monkeypatch):
     for name in ("first.ps1", "second.ps1", "third.ps1"):
         (app_dir / name).write_text("")
-    (app_dir / "config.yml").write_text(
+    (app_dir / "pdt.yml").write_text(
         "schedule: daily\nrun_scripts: [third.ps1, second.ps1, first.ps1]\n")
     calls = []
     monkeypatch.setattr(wrapper.subprocess, "run",
@@ -166,7 +166,7 @@ def test_continue_on_error_runs_every_script_and_returns_the_first_failure(
         app_dir, wrapper, monkeypatch, capsys):
     for name in ("first.ps1", "second.ps1", "third.ps1"):
         (app_dir / name).write_text("")
-    (app_dir / "config.yml").write_text(
+    (app_dir / "pdt.yml").write_text(
         "schedule: daily\ncontinue_on_error: true\n")
     calls = []
     monkeypatch.setattr(wrapper.subprocess, "run",
@@ -195,7 +195,7 @@ def test_run_ps1_is_the_only_script_that_runs(app_dir, wrapper, monkeypatch):
 
 def test_storage_false_keeps_nothing(app_dir, wrapper, monkeypatch):
     (app_dir / "a.ps1").write_text("")
-    (app_dir / "config.yml").write_text("schedule: daily\nstorage: false\n")
+    (app_dir / "pdt.yml").write_text("schedule: daily\nstorage: false\n")
     monkeypatch.setattr(wrapper.subprocess, "run", fake_pwsh([], {"a.ps1": 0}))
 
     assert wrapper.main([str(app_dir)]) == 0

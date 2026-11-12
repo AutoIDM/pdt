@@ -487,24 +487,24 @@ def test_deploy_all_skips_without_disabling_the_app(project, monkeypatch, capsys
     assert questions == ["Skip the failing app bravo and deploy the rest?",
                          "Disable the failing app bravo?"]
     assert config.is_enabled("bravo")
-    assert not (project / "bravo" / "config.yml").exists()
+    assert not (project / "bravo" / "pdt.yml").exists()
     assert "Not deployed: bravo" in capsys.readouterr().out
 
 
 def test_deploy_all_disables_a_skipped_app(project, monkeypatch, capsys):
     four_apps(project)
-    (project / "bravo" / "config.yml").write_text("# my notes\nschedule: daily\n")
+    (project / "bravo" / "pdt.yml").write_text("# my notes\nschedule: daily\n")
     fake_deploys(monkeypatch, {"bravo": 3})
     questions = answer(monkeypatch, True, True)
     assert run_cli(monkeypatch, "deploy", "--all") == 1
     assert "Skip the failing app bravo" in questions[0]
     assert "Disable the failing app bravo" in questions[1]
     assert not config.is_enabled("bravo")
-    text = (project / "bravo" / "config.yml").read_text()
+    text = (project / "bravo" / "pdt.yml").read_text()
     assert "# my notes" in text
     assert "schedule: daily" in text
     out = capsys.readouterr().out
-    assert f"Disabled bravo in {Path('bravo', 'config.yml')}." in out
+    assert f"Disabled bravo in {Path('bravo', 'pdt.yml')}." in out
     assert "Not deployed: bravo" in out
 
 
@@ -910,13 +910,31 @@ def test_pause_writes_the_key_and_tells_a_deployed_app(project, monkeypatch, cap
     calls = []
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: calls.append(a) or 0)
     assert run_cli(monkeypatch, "pause", "hello-world") == 0
-    assert (project / "hello-world" / "config.yml").read_text() == "schedule: daily\npause: true\n"
+    assert (project / "hello-world" / "pdt.yml").read_text() == "schedule: daily\npause: true\n"
     assert calls == []
     assert "not deployed" in capsys.readouterr().out
     config.mark_deployed("hello-world", True)
     assert run_cli(monkeypatch, "unpause", "hello-world") == 0
-    assert (project / "hello-world" / "config.yml").read_text() == "schedule: daily\npause: false\n"
+    assert (project / "hello-world" / "pdt.yml").read_text() == "schedule: daily\npause: false\n"
     assert calls == [("azure", "unpause", "hello-world", False)]
+
+
+def test_pause_writes_into_an_existing_config_yml(project, monkeypatch):
+    folder = add_app(project, "hello-world")
+    (folder / "config.yml").write_text("schedule: daily\n")
+    monkeypatch.setattr(deploy, "dispatch", lambda *a, **k: 0)
+    assert run_cli(monkeypatch, "pause", "hello-world") == 0
+    assert (folder / "config.yml").read_text() == "schedule: daily\npause: true\n"
+    assert not (folder / "pdt.yml").exists()
+
+
+def test_list_shows_the_schedule_from_a_config_yml(project, monkeypatch, capsys):
+    folder = add_app(project, "hello-world")
+    (folder / "config.yml").write_text("schedule: weekly\n")
+    assert run_cli(monkeypatch, "list") == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "hello-world/config.yml: config.yml is deprecated. Rename it to pdt.yml."
+    assert "weekly" in next(line for line in lines[1:] if "hello-world" in line)
 
 
 def test_run_deployed_starts_the_deployed_job(project, monkeypatch, capsys):
@@ -943,7 +961,7 @@ def test_list_shows_whether_an_app_is_paused(project, monkeypatch, capsys):
 def test_list_shows_a_disabled_app_and_names_leaves_it_out(project, monkeypatch, capsys):
     add_app(project, "hello-world")
     add_app(project, "not-ready")
-    (project / "not-ready" / "config.yml").write_text("enabled: false\n")
+    (project / "not-ready" / "pdt.yml").write_text("enabled: false\n")
     assert run_cli(monkeypatch, "list") == 0
     assert "not-ready" in capsys.readouterr().out
     assert run_cli(monkeypatch, "list", "--names") == 0

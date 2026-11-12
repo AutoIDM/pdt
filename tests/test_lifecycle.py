@@ -57,7 +57,7 @@ def test_an_entry_with_neither_events_nor_exclude_events_is_an_error():
 
 def test_an_unknown_entry_key_names_the_key_and_the_keys_of_its_type(project, monkeypatch):
     add_app(project, "report", "alerts:\n  - type: console\n    event: [all]\n")
-    assert ("report/config.yml: alerts: unknown key 'event'; a console entry takes: "
+    assert ("report/pdt.yml: alerts: unknown key 'event'; a console entry takes: "
             "type, events, exclude-events" in config.validate())
     monkeypatch.setitem(lifecycle.TRANSPORTS, "webhook", lifecycle.Transport(
         "webhook", frozenset({"url"}), lambda event, entry, unhandled: None))
@@ -79,7 +79,7 @@ def test_a_chat_entry_sets_exactly_one_of_its_webhook_keys(entry, error):
 
 def test_validate_names_an_unknown_alerts_type_and_the_known_types(project):
     add_app(project, "report", "alerts:\n  - type: slack-webhook\n    channel: pdt\n")
-    assert ("report/config.yml: alerts type 'slack-webhook' is not known; use one of: console, slack, teams"
+    assert ("report/pdt.yml: alerts type 'slack-webhook' is not known; use one of: console, slack, teams"
             in config.validate())
 
 

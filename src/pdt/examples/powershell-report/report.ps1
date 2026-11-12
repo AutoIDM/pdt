@@ -2,7 +2,7 @@
 #
 # Env vars come from the .env file when you run it on your computer, and
 # from the deployed secrets when it runs in the cloud. List each one under
-# env: in config.yml.
+# env: in pdt.yml.
 #
 # PDT_OUTPUT_DIR is an empty folder pdt makes for each run. After the run,
 # pdt copies every file left in it to the app's data store, under

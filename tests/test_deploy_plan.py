@@ -35,7 +35,7 @@ def test_a_plan_keeps_the_schedule_out_of_the_app_file(aws_project):
     folder = add_app(aws_project, "report")
     with config.plan_only():
         assert deploy.choose_schedule(config.merged_app("report"), True) == ""
-        assert not (folder / "config.yml").exists()
+        assert not (folder / "pdt.yml").exists()
         assert config.merged_app("report")["schedule"] == "daily"
 
 

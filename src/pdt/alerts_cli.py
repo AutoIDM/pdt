@@ -1,7 +1,7 @@
 """`pdt alerts setup` and `pdt alerts test`.
 
 `deploy` calls `offer` before a deploy of an app with no `alerts:` key in
-pdt.yml or its config.yml, when a person can answer. pdt offers it once per
+the project's pdt.yml or the app's own pdt.yml, when a person can answer. pdt offers it once per
 computer: `alerts_offered` in .pdt/state records it, and `setup` sets it too.
 
 A Slack entry connects in one of two ways. With the pdt Slack app (CLIENT_ID and
@@ -365,12 +365,12 @@ def setup() -> int:
 
 
 def own_alerts_apps() -> list[str]:
-    """The apps whose pdt.yml apps: entry or config.yml sets alerts:, so the top-level one
+    """The apps whose apps: entry in the project's pdt.yml or own pdt.yml sets alerts:, so the top-level one
     does not reach them."""
     root_cfg = config.load_yaml(config.find_project() / config.PROJECT_FILE)
     return [app for app in config.app_folders()
             if "alerts" in config.root_app_entry(root_cfg, app)
-            or "alerts" in config.load_yaml(config.find_project() / app / config.APP_FILE)]
+            or "alerts" in config.load_yaml(config.app_file(config.find_project() / app))]
 
 
 def entries() -> list[dict]:
