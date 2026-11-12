@@ -8,7 +8,7 @@ Email is one of the places pdt sends alerts, next to Slack and Microsoft Teams. 
 pdt alerts setup
 ```
 
-Choose Email. pdt asks who gets the email, how to send it (an SMTP server, Amazon SES, or Resend), which address it comes from, and the values of that method. It writes the values to the `.env` file of the project and the entry to `pdt.yml`, then offers a test message.
+Choose Email. pdt asks who gets the email, how to send it (Microsoft 365, an SMTP server, Amazon SES, or Resend), and which address it comes from. For Microsoft 365 you sign in one time as an administrator and pdt does the rest. For the other methods pdt asks for the values of the method. It writes the values to the `.env` file of the project and the entry to `pdt.yml`, then offers a test message.
 
 ```
 pdt alerts test
@@ -38,6 +38,53 @@ The values of the method are env vars. Put them in the `.env` file of the projec
 
 ## The methods
 
+### microsoft-365
+
+pdt sends through Microsoft Graph as an app registration that signs in with a certificate. `from` is the mailbox that sends. It must be a mailbox of your Microsoft 365 organization, for example a shared mailbox; pdt does not create it.
+
+#### The guided setup
+
+In `pdt alerts setup`, choose "Microsoft 365: sign in once, and pdt does the setup" and type the sender address. pdt uses the Azure sign-in of this computer, or opens the Microsoft sign-in in your browser when there is none. Sign in as an administrator. The provider of the project does not matter. pdt then makes sure of three items in your organization, and prints one line for each:
+
+- the app registration `pdt-email`, for this organization only;
+- a certificate on that registration. Its private key is the file `.secrets/pdt-email.pfx` in the project. git ignores that folder, and the file never goes into an image. The certificate is valid for two years;
+- the Microsoft Graph application permission `Mail.Send`, granted for the organization.
+
+pdt writes `PDT_EMAIL_TENANT_ID`, `PDT_EMAIL_CLIENT_ID`, and `PDT_EMAIL_PRIVATE_KEY_PATH` to `.env`. A second run finds each item and changes nothing.
+
+Microsoft can take a short time to accept a new permission. The test message of the setup waits for a maximum of two minutes and tries again during that time.
+
+When your account cannot create the registration or grant the permission, pdt names the role that is missing and prints a link. An administrator opens the link and approves the permission. Then run `pdt alerts setup` again; it continues with what is already there.
+
+#### What the permission allows
+
+The `Mail.Send` application permission lets the registration `pdt-email` send as each mailbox of the organization, not only as the sender address. Keep `.secrets/pdt-email.pfx` and the `.env` file as safe as a password.
+
+To limit the registration to one mailbox, an Exchange administrator runs these commands in Exchange Online PowerShell:
+
+```powershell
+Connect-ExchangeOnline
+# AppId and ObjectId come from Entra > Enterprise applications > pdt-email (not App registrations).
+New-ServicePrincipal -AppId <application-id> -ObjectId <enterprise-app-object-id> -DisplayName "pdt-email"
+New-ManagementScope -Name "pdt-alerts" -RecipientRestrictionFilter "PrimarySmtpAddress -eq 'pdt-alerts@example.com'"
+New-ManagementRoleAssignment -App <enterprise-app-object-id> -Role "Application Mail.Send" -CustomResourceScope "pdt-alerts"
+Test-ServicePrincipalAuthorization -Identity <enterprise-app-object-id> -Resource pdt-alerts@example.com
+```
+
+The test result must show `InScope` = `True`. Then remove the `Mail.Send` permission of `pdt-email` in Entra (App registrations > pdt-email > API permissions), because the Exchange scope does not limit a permission that Entra granted ([Microsoft: role based access control for applications](https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac)). Exchange keeps app permissions in a cache for 30 minutes to 2 hours, so a send can fail during that time. After this change, do not let `pdt alerts setup` replace the email entry: the guided setup grants `Mail.Send` in Entra again.
+
+Not confirmed: that `PrimarySmtpAddress` is a valid filter property for this scope. `Test-ServicePrincipalAuthorization` shows whether the scope works.
+
+#### The values by hand
+
+- `PDT_EMAIL_TENANT_ID`
+- `PDT_EMAIL_CLIENT_ID`
+- `PDT_EMAIL_PRIVATE_KEY_PATH`: the path of a `.pfx` file with no password that holds the certificate and its private key. A relative path starts at the project folder. `pdt deploy` uploads the file's content as `PDT_EMAIL_PRIVATE_KEY_B64`; you can also set that variable yourself, to the base64 of the file.
+
+The app registration needs the Microsoft Graph application permission `Mail.Send` with admin consent, and the certificate under Certificates & secrets. Write the entry with `method: microsoft-365` in `pdt.yml`.
+
+Microsoft Graph takes one body, so an email with an HTML body goes out as HTML only.
+
 ### smtp
 
 - `PDT_SMTP_HOST`
@@ -57,18 +104,6 @@ This method needs the `boto3` package. An app's `run.py` has it through `pdt-cli
 ### resend
 
 - `PDT_RESEND_API_KEY`
-
-### microsoft-365
-
-pdt sends through Microsoft Graph as an app registration that signs in with a certificate.
-
-- `PDT_EMAIL_TENANT_ID`
-- `PDT_EMAIL_CLIENT_ID`
-- `PDT_EMAIL_PRIVATE_KEY_PATH`: the path of a `.pfx` file with no password that holds the certificate and its private key. A relative path starts at the project folder. `pdt deploy` uploads the file's content as `PDT_EMAIL_PRIVATE_KEY_B64`; you can also set that variable yourself, to the base64 of the file.
-
-The app registration needs the Microsoft Graph application permission `Mail.Send` with admin consent, and the certificate under Certificates & secrets. `from` is the mailbox that sends. `pdt alerts setup` does not list this method yet; write the entry and the values by hand.
-
-Microsoft Graph takes one body, so an email with an HTML body goes out as HTML only.
 
 ## Send an alert from an app
 

@@ -14,7 +14,9 @@ it, the user pastes a webhook URL, and pdt can open Slack with a filled-in app
 manifest that makes one.
 
 An Email entry asks for the recipients, the method (EMAIL_METHODS), the sender
-address, and the values of the method, which go to the project's .env.
+address, and the values of the method, which go to the project's .env. The
+Microsoft 365 method asks for no value: pdt.email_setup makes the app
+registration, the certificate, and the permission after one sign-in.
 """
 
 from __future__ import annotations
@@ -33,7 +35,8 @@ from typing import Callable
 
 from dotenv import set_key
 
-from pdt import alert_message, config, console, email_alert, lifecycle, slack, teams
+from pdt import (alert_message, config, console, email_alert, email_setup, lifecycle, slack,
+                 teams)
 from pdt.config import can_prompt
 from pdt.utils.env_secret import private_file
 
@@ -224,6 +227,7 @@ def teams_test(entry: dict, project: str) -> None:
 # method: (the label of the choice, then each env var as (name, question, typed hidden)).
 # The user may leave the answer for a name in email_alert.optional empty.
 EMAIL_METHODS = {
+    "microsoft-365": ("Microsoft 365: sign in once, and pdt does the setup", ()),
     "smtp": ("SMTP server: the mail server of your organization or mail service", (
         ("PDT_SMTP_HOST", "SMTP server name, for example smtp.example.com", False),
         ("PDT_SMTP_PORT", "Port, or press Enter for 587", False),
@@ -260,6 +264,12 @@ def email_configure() -> tuple[dict, dict[str, str]] | None:
     if sender == "":
         return None
     values: dict[str, str] = {}
+    if method == "microsoft-365":
+        found = email_setup.microsoft_365(config.find_project())
+        if found is None:
+            return None
+        values = {name: value for name, value in found.items()
+                  if alert_message.secret_value(name) != value}
     for name, question, hidden in EMAIL_METHODS[method][1]:
         saved = alert_message.secret_value(name)
         if hidden and saved:
@@ -287,7 +297,7 @@ SETUPS = {
     "email": Setup("Email: a message to one or more addresses",
                    (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
                     lifecycle.JOB_RUN_FAILED),
-                   email_configure, email_alert.send_ready,
+                   email_configure, email_setup.send_test,
                    lambda entry: f"email to {email_alert.label(entry)}"),
     "console": Setup("Console: a line in the output of pdt and of each run", lifecycle.EVENTS,
                      lambda: ({}, {}), None, lambda entry: "console"),

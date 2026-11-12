@@ -224,8 +224,8 @@ def test_in_a_menu_setup_takes_the_email_method_the_marker_is_on(project, smtp, 
     for name in SMTP_ENV:
         monkeypatch.delenv(name)
     monkeypatch.delenv("PDT_RESEND_API_KEY", raising=False)
-    # Slack off and Email on, the default events, then the third method.
-    keys = press("space", "down", "down", "space", "enter", "enter", "down", "down", "enter")
+    # Slack off and Email on, the default events, then the fourth method.
+    keys = press("space", "down", "down", "space", "enter", "enter", "down", "down", "down", "enter")
     queue = ["it-ops@example.com", "pdt-alerts@example.com", "key", "n"]
     monkeypatch.setattr(alerts_cli.console, "ask", lambda *_a, **_k: queue.pop(0))
     monkeypatch.setattr(alerts_cli.console, "secret", lambda *_a, **_k: queue.pop(0))
@@ -241,7 +241,7 @@ def test_setup_asks_for_email_writes_pdt_yml_and_env_and_test_sends_to_each_entr
         project, smtp, monkeypatch):
     for name in SMTP_ENV:
         monkeypatch.delenv(name)
-    queue = ["3 1", "", "", "it-ops@example.com, lead@example.com", "1", "pdt-alerts@example.com",
+    queue = ["3 1", "", "", "it-ops@example.com, lead@example.com", "2", "pdt-alerts@example.com",
              "smtp.example.com", "", "pdt", "secret", "n"]
     monkeypatch.setattr(alerts_cli.console, "ask", lambda *_a, **_k: queue.pop(0))
     monkeypatch.setattr(alerts_cli.console, "secret", lambda *_a, **_k: queue.pop(0))
