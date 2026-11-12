@@ -245,13 +245,16 @@ def email_configure() -> tuple[dict, dict[str, str]] | None:
         return None
     methods = list(EMAIL_METHODS)
     console.heading("How should pdt send the email?")
-    for number, method in enumerate(methods, 1):
-        console.choice(number, EMAIL_METHODS[method][0])
-    while True:
-        answer = console.ask("Which one?", "1") or "1"
-        if answer.isdigit() and 1 <= int(answer) <= len(methods):
-            break
-        console.say(f"Please answer a number from 1 to {console.value(len(methods))}.")
+    if console.can_menu():
+        answer = str(console.choose_one([EMAIL_METHODS[method][0] for method in methods]) + 1)
+    else:
+        for number, method in enumerate(methods, 1):
+            console.choice(number, EMAIL_METHODS[method][0])
+        while True:
+            answer = console.ask("Which one?", "1") or "1"
+            if answer.isdigit() and 1 <= int(answer) <= len(methods):
+                break
+            console.say(f"Please answer a number from 1 to {console.value(len(methods))}.")
     method = methods[int(answer) - 1]
     sender = console.ask("Which address should the email come from?")
     if sender == "":

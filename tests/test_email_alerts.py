@@ -219,6 +219,24 @@ def test_setup_keeps_an_entry_with_only_custom_events_when_no_event_is_checked(
     assert config.load_yaml(project / "pdt.yml")["alerts"][0]["events"] == ["report:ready"]
 
 
+def test_in_a_menu_setup_takes_the_email_method_the_marker_is_on(project, smtp, monkeypatch,
+                                                                 press):
+    for name in SMTP_ENV:
+        monkeypatch.delenv(name)
+    monkeypatch.delenv("PDT_RESEND_API_KEY", raising=False)
+    # Slack off and Email on, the default events, then the third method.
+    keys = press("space", "down", "down", "space", "enter", "enter", "down", "down", "enter")
+    queue = ["it-ops@example.com", "pdt-alerts@example.com", "key", "n"]
+    monkeypatch.setattr(alerts_cli.console, "ask", lambda *_a, **_k: queue.pop(0))
+    monkeypatch.setattr(alerts_cli.console, "secret", lambda *_a, **_k: queue.pop(0))
+    monkeypatch.setattr(alerts_cli.console, "confirm", lambda *_a, **_k: queue.pop(0) == "y")
+    monkeypatch.setattr(alerts_cli, "can_prompt", lambda _interactive: True)
+    assert alerts_cli.setup() == 0
+    assert (keys, queue) == ([], [])
+    assert config.load_yaml(project / "pdt.yml")["alerts"][0]["method"] == "resend"
+    assert (project / ".env").read_text() == "PDT_RESEND_API_KEY=key\n"
+
+
 def test_setup_asks_for_email_writes_pdt_yml_and_env_and_test_sends_to_each_entry(
         project, smtp, monkeypatch):
     for name in SMTP_ENV:
