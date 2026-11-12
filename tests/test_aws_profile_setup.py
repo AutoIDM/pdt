@@ -363,3 +363,13 @@ def test_in_a_menu_the_marked_profile_is_saved(aws, project, monkeypatch, press)
     press("down", "enter")
     assert deploy_aws.choose_profile(app(project), boto3.Session()) == "two"
     assert config.load_yaml(project / "pdt.yml")["platform"]["profile"] == "two"
+
+
+def test_the_last_line_of_the_menu_takes_a_typed_profile(aws, project, monkeypatch, press, capsys):
+    config_file = Path(os.environ["AWS_CONFIG_FILE"])
+    config_file.parent.mkdir()
+    config_file.write_text("[profile one]\nregion = eu-west-1\n[profile two]\nregion = eu-west-1\n")
+    answers(monkeypatch, "one")
+    press("down", "down", "enter")
+    assert deploy_aws.choose_profile(app(project), boto3.Session()) == "one"
+    assert "> Another profile\n" in capsys.readouterr().out

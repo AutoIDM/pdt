@@ -265,3 +265,12 @@ def test_in_a_menu_the_marked_subscription_is_saved(azure_app, monkeypatch, pres
     press("down", "enter")
     assert deploy_azure.choose_subscription(azure_app, "", True) == OTHER
     assert calls == [OTHER["id"]]
+
+
+def test_the_last_line_of_the_menu_takes_a_typed_subscription_id(
+        azure_app, monkeypatch, press, capsys):
+    calls = choose_subscription_answering(monkeypatch, OTHER["id"])
+    press("down", "down", "enter")
+    assert deploy_azure.choose_subscription(azure_app, "", True) == OTHER
+    assert calls == [OTHER["id"]]
+    assert "> Another subscription\n" in capsys.readouterr().out

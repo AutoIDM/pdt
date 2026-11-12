@@ -207,6 +207,14 @@ def test_in_a_menu_the_marked_project_is_saved(project, monkeypatch, press):
     assert saved == [("project", "second-project")]
 
 
+def test_the_last_line_of_the_menu_takes_a_typed_project_id(project, monkeypatch, press, capsys):
+    calls, saved = create_answering(project, monkeypatch, ["first-project"], ONE_ACCOUNT)
+    press("down", "down", "enter")
+    assert deploy_google_cloud.choose_project({"name": "my-report"}, "") == "first-project"
+    assert gcloud_calls(calls, "projects", "create") == []
+    assert "> Another project, or a new project\n" in capsys.readouterr().out
+
+
 def test_the_last_line_of_the_menu_creates_a_project_with_the_marked_billing_account(
         project, monkeypatch, press):
     calls, saved = create_answering(project, monkeypatch, ["brand-new-project"], TWO_ACCOUNTS)
