@@ -14,10 +14,13 @@ When none can be read, it is USD.
 The region lists the tables below are drawn from:
 
 - AWS: https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html
-  Only Regions enabled by default appear, because an opt-in Region is a
-  manual step in the AWS console before anything can deploy there.
+  Only Regions enabled by default are suggested, because an opt-in Region is
+  a manual step in the AWS console before anything can deploy there.
 - Azure: https://learn.microsoft.com/en-us/azure/reliability/regions-list
 - Google Cloud: https://docs.cloud.google.com/run/docs/locations
+
+A region that a provider opens after a pdt release fails `region_problem`
+until `REGIONS` lists it.
 
 macOS and Linux name the time zone the IANA way ("Europe/London").
 Windows names it its own way ("GMT Standard Time"); `WINDOWS_ZONES` maps
@@ -28,6 +31,7 @@ https://github.com/unicode-org/cldr/blob/main/common/supplemental/windowsZones.x
 from __future__ import annotations
 
 import configparser
+import difflib
 import os
 import subprocess
 import sys
@@ -48,6 +52,42 @@ REGION_ENV = {
     "aws": ("AWS_REGION", "AWS_DEFAULT_REGION"),
     "azure": ("PDT_AZURE_REGION",),
     "google-cloud": ("PDT_GOOGLE_CLOUD_REGION",),
+}
+
+REGIONS = {
+    "aws": (
+        "af-south-1", "ap-east-1", "ap-east-2", "ap-northeast-1", "ap-northeast-2",
+        "ap-northeast-3", "ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2",
+        "ap-southeast-3", "ap-southeast-4", "ap-southeast-5", "ap-southeast-6", "ap-southeast-7",
+        "ca-central-1", "ca-west-1", "eu-central-1", "eu-central-2", "eu-north-1", "eu-south-1",
+        "eu-south-2", "eu-west-1", "eu-west-2", "eu-west-3", "il-central-1", "me-central-1",
+        "me-south-1", "mx-central-1", "sa-east-1", "us-east-1", "us-east-2", "us-west-1",
+        "us-west-2",
+    ),
+    "azure": (
+        "australiacentral", "australiacentral2", "australiaeast", "australiasoutheast",
+        "austriaeast", "belgiumcentral", "brazilsouth", "brazilsoutheast", "canadacentral",
+        "canadaeast", "centralindia", "centralus", "chilecentral", "denmarkeast", "eastasia",
+        "eastus", "eastus2", "francecentral", "francesouth", "germanynorth", "germanywestcentral",
+        "indiasouthcentral", "indonesiacentral", "israelcentral", "italynorth", "japaneast",
+        "japanwest", "koreacentral", "koreasouth", "malaysiawest", "mexicocentral",
+        "newzealandnorth", "northcentralus", "northeurope", "norwayeast", "norwaywest",
+        "polandcentral", "qatarcentral", "southafricanorth", "southafricawest", "southcentralus",
+        "southeastasia", "southeastasia3", "southindia", "spaincentral", "swedencentral",
+        "switzerlandnorth", "switzerlandwest", "taiwannorth", "uaecentral", "uaenorth", "uksouth", "ukwest",
+        "westcentralus", "westeurope", "westindia", "westus", "westus2", "westus3",
+    ),
+    "google-cloud": (
+        "africa-south1", "asia-east1", "asia-east2", "asia-northeast1", "asia-northeast2",
+        "asia-northeast3", "asia-south1", "asia-south2", "asia-southeast1", "asia-southeast2",
+        "asia-southeast3", "australia-southeast1", "australia-southeast2", "europe-central2",
+        "europe-north1", "europe-north2", "europe-southwest1", "europe-west1", "europe-west10",
+        "europe-west12", "europe-west2", "europe-west3", "europe-west4", "europe-west6",
+        "europe-west8", "europe-west9", "me-central1", "me-central2", "me-west1",
+        "northamerica-northeast1", "northamerica-northeast2", "northamerica-south1",
+        "southamerica-east1", "southamerica-west1", "us-central1", "us-east1", "us-east4",
+        "us-east5", "us-south1", "us-west1", "us-west2", "us-west3", "us-west4",
+    ),
 }
 
 # (aws, azure, google-cloud) when the time zone names no known place.
@@ -315,7 +355,10 @@ def region_suggestion(provider: str, platform: dict | None = None,
 
 
 def suggest_region(provider: str, zone: str | None = None) -> str:
-    return region_suggestion(provider, zone=zone)[0]
+    region = region_suggestion(provider, zone=zone)[0]
+    if region_problem(provider, region) != "":
+        return DEFAULT_REGIONS[PROVIDERS.index(provider)]
+    return region
 
 
 def windows_currency() -> str:
@@ -375,6 +418,25 @@ def local_currency() -> str:
     return code if len(code) == 3 and code.isalpha() else "USD"
 
 
+def region_problem(provider: str, region: str) -> str:
+    if provider not in PROVIDERS or region == "" or region in REGIONS[provider]:
+        return ""
+    close = difflib.get_close_matches(region, REGIONS[provider], n=3)
+    hint = f" Did you mean {' or '.join(close)}?" if close else ""
+    return (f"There is no {PROVIDER_NAMES[provider]} region named {region}.{hint} "
+            f"All {PROVIDER_NAMES[provider]} regions: {REGION_LISTS[provider]}")
+
+
+def env_region_problem(platform: dict) -> str:
+    """The problem with the region an environment variable sets when the config sets none."""
+    provider = str(platform.get("provider"))
+    if provider not in PROVIDERS or platform.get("region"):
+        return ""
+    name = next((name for name in REGION_ENV[provider] if os.environ.get(name)), "")
+    problem = region_problem(provider, os.environ[name]) if name != "" else ""
+    return f"the environment variable {name}: {problem}" if problem != "" else ""
+
+
 def question(provider: str) -> str:
     return f"Which {PROVIDER_NAMES[provider]} region should hold your jobs?"
 
@@ -391,6 +453,10 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
     if any(os.environ.get(name, "").strip() != "" for name in REGION_ENV[provider]):
         return ""
     region, reason = region_suggestion(provider, app["platform"])
+    problem = region_problem(provider, region)
+    if problem != "" and (assume_yes or not can_prompt(None)):
+        return (f"pdt found the region {region}, because {reason}. {problem} Add the region "
+                f"to use as `region: <name>` under platform: in {config.PROJECT_FILE}.")
     if assume_yes:
         if config.unsaved() is None:
             console.say(f"Using {PROVIDER_NAMES[provider]} region {console.value(region)}, "
@@ -400,12 +466,22 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
                 f"platform: in {config.PROJECT_FILE}, or run again with --yes to use {region}.")
     else:
         console.say()
+        if problem != "":
+            console.warn(console.escape(f"pdt found the region {region}, because {reason}. "
+                                        f"{problem}"))
+            region, reason = DEFAULT_REGIONS[PROVIDERS.index(provider)], "it is pdt's default"
         console.say(f"pdt suggests {console.value(region)}, because {console.escape(reason)}.")
         console.field(f"All {PROVIDER_NAMES[provider]} regions", REGION_LISTS[provider])
-        try:
-            region = console.ask(question(provider), region) or region
-        except EOFError:
-            return (f"no {PROVIDER_NAMES[provider]} region is set. Add `region: {region}` under "
-                    f"platform: in {config.PROJECT_FILE}.")
+        suggested = region
+        while True:
+            try:
+                region = console.ask(question(provider), suggested) or suggested
+            except EOFError:
+                return (f"no {PROVIDER_NAMES[provider]} region is set. Add `region: {suggested}` "
+                        f"under platform: in {config.PROJECT_FILE}.")
+            problem = region_problem(provider, region)
+            if problem == "":
+                break
+            console.warn(console.escape(problem))
     config.save_platform_key(app, "region", region)
     return ""

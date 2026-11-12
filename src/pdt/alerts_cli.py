@@ -350,13 +350,15 @@ def setup() -> int:
         console.say()
     for name in gone:
         alerts = save(project, alerts, existing[name], None, {})
-    console.say()
     if not types and not gone:
+        console.say()
         console.say(f"{console.value('alerts:')} stays as it is.")
-    if alerts is not start:
-        for app in own_alerts_apps():
-            console.note(f"{console.value(app)} sets its own {console.value('alerts:')}, so it "
-                         "does not use these entries.")
+    own = own_alerts_apps() if alerts is not start else []
+    if own:
+        console.say()
+    for app in own:
+        console.note(f"{console.value(app)} sets its own {console.value('alerts:')}, so it "
+                     "does not use these entries.")
     console.next_steps([
         ("pdt alerts test", "send a test message"),
         ("pdt deploy <app>", "send the new alerts settings to a deployed app"),

@@ -412,9 +412,9 @@ def test_move_all_destroys_each_app_then_saves_pdt_yml(project, monkeypatch, cap
     assert cloud.destroyed == [(name, "destroy", "azure", True) for name in ("alpha", "beta", "gamma")]
     assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"]["provider"] == "aws"
     assert not (project / "alpha" / APP_FILE).exists()
-    assert "1  alpha  azure, region eastus2, subscription sub-1, resource group pdt" in out
-    assert "What should happen to the apps currently deployed to azure, region eastus2, subscription sub-1, resource group pdt?" in out
-    assert "3) Keep them on azure, region eastus2, subscription sub-1, resource group pdt (only new apps go to aws, region us-east-2)" in out
+    assert "1  alpha  azure (eastus2, subscription sub-1, resource group pdt)" in out
+    assert "What should happen to the apps currently deployed to azure (eastus2, subscription sub-1, resource group pdt)?" in out
+    assert "3) Keep them on azure (eastus2, subscription sub-1, resource group pdt); only new apps go to aws (us-east-2)" in out
     for name in ("alpha", "beta", "gamma"):
         assert f"pdt deploy {name}" in out
 
@@ -444,7 +444,7 @@ def test_keep_pins_every_deployed_app_and_destroys_nothing(project, monkeypatch,
         assert platform_of(project, name) == AZURE_PIN
         assert config.merged_app(name)["platform"]["provider"] == "azure"
     assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"]["provider"] == "aws"
-    assert "alpha stays on azure, region eastus2, subscription sub-1, resource group pdt." in capsys.readouterr().out
+    assert "alpha stays on azure (eastus2, subscription sub-1, resource group pdt)." in capsys.readouterr().out
 
 
 def test_move_all_destroys_a_disabled_app_that_is_deployed(project, monkeypatch):
@@ -464,7 +464,7 @@ def test_keep_pins_the_region_an_environment_variable_selects(project, monkeypat
     answer(monkeypatch, ["2", "us-east-2", "UTC", "3"])
     assert scaffold.init(None, assume_yes=False) == 0
     assert platform_of(project, "alpha") == AZURE_PIN
-    assert "deployed to azure, region eastus2, subscription sub-1, resource group pdt?" in capsys.readouterr().out
+    assert "deployed to azure (eastus2, subscription sub-1, resource group pdt)?" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("replies,confirms", [
@@ -492,7 +492,7 @@ def test_a_failed_destroy_pins_each_app_still_deployed(project, monkeypatch, cap
     assert platform_of(project, "beta") == AZURE_PIN
     assert platform_of(project, "gamma") == AZURE_PIN
     assert yaml.safe_load((project / PROJECT_FILE).read_text())["platform"]["provider"] == "aws"
-    assert "beta was not removed. It is still deployed to azure, region eastus2, subscription sub-1, resource group pdt." in out
+    assert "beta was not removed. It is still deployed to azure (eastus2, subscription sub-1, resource group pdt)." in out
     assert "pdt deploy alpha" in out
     assert "pdt deploy gamma" not in out
 
@@ -522,7 +522,7 @@ def test_a_region_change_asks_too(project, monkeypatch, capsys):
     deployed_app(project, "report")
     answer(monkeypatch, ["1", "westeurope", "4"])
     assert scaffold.init(None, assume_yes=False) == 0
-    assert "apps currently deployed to azure, region eastus2, resource group pdt?" in capsys.readouterr().out
+    assert "apps currently deployed to azure (eastus2, resource group pdt)?" in capsys.readouterr().out
 
 
 def test_an_app_with_its_own_provider_is_listed_without_a_number(project, monkeypatch, capsys):
@@ -530,7 +530,7 @@ def test_an_app_with_its_own_provider_is_listed_without_a_number(project, monkey
     answer(monkeypatch, ["2", "us-east-2", ""])
     assert scaffold.init(None, assume_yes=False) == 0
     out = capsys.readouterr().out
-    assert "\n  own  google-cloud, region us-east4; edit own/config.yml to move it\n" in out
+    assert "\n  own  google-cloud (us-east4); edit own/config.yml to move it\n" in out
     assert "What should happen" not in out
     assert platform_of(project, "own") == {"provider": "google-cloud", "region": "us-east4"}
 
@@ -661,7 +661,7 @@ def test_an_app_that_sets_only_its_region_gets_a_number(project, monkeypatch, ca
     deployed_app(project, "report", "platform:\n  region: westus2\n")
     answer(monkeypatch, ["2", "us-east-2", "UTC", "4"])
     assert scaffold.init(None, assume_yes=False) == 0
-    assert "1  report  azure, region westus2, resource group pdt\n" in capsys.readouterr().out
+    assert "1  report  azure (westus2, resource group pdt)\n" in capsys.readouterr().out
 
 
 def test_a_subscription_change_with_the_same_region_asks_too(project, monkeypatch, capsys):
@@ -680,7 +680,7 @@ def test_keep_pins_the_recorded_place_after_an_edit_to_pdt_yml(project, monkeypa
     answer(monkeypatch, ["2", "us-east-2", "UTC", "3"])
     assert scaffold.init(None, assume_yes=False) == 0
     assert platform_of(project, "alpha") == AZURE_PIN
-    assert "alpha stays on azure, region eastus2, subscription sub-1, resource group pdt." in capsys.readouterr().out
+    assert "alpha stays on azure (eastus2, subscription sub-1, resource group pdt)." in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("own,entry,shown", [
@@ -724,6 +724,46 @@ def test_cancel_at_the_region_question_of_a_new_project_writes_nothing(tmp_path,
     assert not (tmp_path / "jobs").exists()
 
 
+def test_the_region_question_of_a_new_project_offers_the_suggestion_with_no_lines_above(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(scaffold.regions, "region_suggestion",
+                        lambda provider, platform=None, zone=None: ("uksouth", "the time zone is Europe/London"))
+    questions = []
+    replies = iter(["1", "cancel"])
+    monkeypatch.setattr(scaffold.console, "ask",
+                        lambda question, default="": questions.append((question, default))
+                        or next(replies))
+    with pytest.raises(ConfigError, match="cancelled"):
+        scaffold.init(str(tmp_path / "jobs"), assume_yes=False)
+    out = capsys.readouterr().out
+    assert "pdt suggests" not in out
+    assert "All Azure regions" not in out
+    assert questions[-1][1] == "uksouth"
+
+
+def test_a_mistyped_region_in_pdt_init_is_asked_again(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    questions = []
+    replies = iter(["1", "eastu2", "cancel"])
+    monkeypatch.setattr(scaffold.console, "ask",
+                        lambda question, default="": questions.append(question) or next(replies))
+    with pytest.raises(ConfigError, match="cancelled"):
+        scaffold.init(str(tmp_path / "jobs"), assume_yes=False)
+    assert "There is no Azure region named eastu2. Did you mean eastus2" in capsys.readouterr().out
+    assert sum("region" in question for question in questions) == 2
+
+
+@pytest.mark.parametrize("place,text", [
+    ({"provider": "azure", "region": "eastus2"}, "azure (eastus2)"),
+    ({"provider": "aws", "region": "us-east-1", "account": "123"}, "aws (us-east-1, account 123)"),
+    ({"provider": "azure", "resource_group": "pdt"}, "azure (resource group pdt)"),
+    ({"provider": "windows"}, "windows"),
+])
+def test_a_place_shows_the_provider_then_its_region_in_parentheses(place, text):
+    assert scaffold.deploy.describe_place(place) == text
+
+
 @pytest.mark.parametrize("platform,place", [
     ({"provider": "aws", "region": "us-east-1", "subscription": "sub-1"},
      {"provider": "aws", "region": "us-east-1"}),
@@ -740,5 +780,5 @@ def test_an_app_with_its_own_provider_shows_only_its_own_place(project, monkeypa
     answer(monkeypatch, ["3", "us-east4", ""])
     assert scaffold.init(None, assume_yes=False) == 0
     out = capsys.readouterr().out
-    assert "  own  aws, region us-east-1; edit own/config.yml to move it\n" in out
+    assert "  own  aws (us-east-1); edit own/config.yml to move it\n" in out
     assert platform_of(project, "own") == {"provider": "aws", "region": "us-east-1"}

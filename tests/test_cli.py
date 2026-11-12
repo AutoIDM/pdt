@@ -168,6 +168,16 @@ def test_pdt_project_with_the_working_folder_outside_it_lists_apps(project, tmp_
     assert cli.APP_QUESTIONS["deploy"] in capsys.readouterr().out
 
 
+def test_a_blank_line_separates_the_app_list_from_the_commands(project, monkeypatch, capsys):
+    add_app(project, "hello-world")
+    add_app(project, "daily-report")
+    assert run_cli(monkeypatch, "deploy") == 1
+    out = capsys.readouterr().out.splitlines()
+    start = out.index(f"{cli.APP_QUESTIONS['deploy']} This project has:")
+    assert out[start + 1:start + 6] == ["  daily-report", "  hello-world", "",
+                                        "  pdt list  see every app", "  pdt deploy <app>"]
+
+
 @pytest.mark.parametrize("command", ["runs", "logs"])
 def test_json_output_inside_an_app_folder_has_no_extra_line(project, monkeypatch, capsys,
                                                             command):

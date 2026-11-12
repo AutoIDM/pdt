@@ -163,12 +163,22 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
         return _deploy(app_name, True, False, False, True)
 
 
+def say_problems(app_name: str, problems: list[str]) -> None:
+    """Each problem as an error that names the app once."""
+    named = (f"{app_name}: ", f"{app_name}/", f"{config.PROJECT_FILE}: apps entry {app_name!r}")
+    for problem in problems:
+        if problem.startswith(named):
+            console.error(console.escape(problem))
+        else:
+            console.error(f"{console.value(app_name)}: {console.escape(problem)}")
+
+
 def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
             plan_only: bool) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
-        console.error(console.escape(str(e)))
+        say_problems(app_name, [str(e)])
         return 1
     problems = config.validate_app(app_name)
     sources = config.env_file_lines(app["dir"])
@@ -176,6 +186,9 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     missing = config.missing_env(app)
     if missing != "":
         problems.append(missing)
+    region_problem = regions.env_region_problem(app["platform"])
+    if region_problem != "":
+        problems.append(region_problem)
     if config.uses_email(app):
         problems.extend(email_problems(app["config"], check_oauth=False))
     lines = [f"runs {console.value('run.py')}"]
@@ -187,8 +200,7 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
         except (pwsh.PwshError, powershell.PowerShellError) as e:
             problems.append(str(e))
     if problems:
-        for problem in problems:
-            console.error(f"{console.value(app_name)}: {console.escape(problem)}")
+        say_problems(app_name, problems)
         return 1
     console.name(app_name)
     for line in [*lines, *config.found_env_lines(app), *sources]:
@@ -270,8 +282,9 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
 
 
 def describe_place(place: dict[str, str]) -> str:
-    return ", ".join([place["provider"], *(f"{key.replace('_', ' ')} {value}"
-                                           for key, value in place.items() if key != "provider")])
+    details = [value if key == "region" else f"{key.replace('_', ' ')} {value}"
+               for key, value in place.items() if key != "provider"]
+    return f"{place['provider']} ({', '.join(details)})" if details else place["provider"]
 
 
 # The environment variables a provider script reads for a place key the config leaves empty.
@@ -444,7 +457,6 @@ def run_history(provider: str, app_name: str, stderr=None) -> list[runs_cli.Run]
 
 def deployed_next_steps(app_name: str, started: bool = False) -> None:
     """The same commands after every provider's deploy; no `pdt run` when pdt just started one."""
-    console.say()
     console.next_steps([
         *([] if started else [(f"pdt run {app_name} --deployed --follow", "start a run now and follow its log")]),
         (f"pdt logs {app_name}", "read the log of the newest run"),
@@ -555,7 +567,6 @@ def start(app_name: str, follow: bool = False) -> int:
         return dispatch(provider, "start", app_name, False, ["--", "--follow"])
     code = dispatch(provider, "start", app_name, False)
     if code == 0:
-        console.say()
         console.next_steps([
             (f"pdt logs {app_name} --follow", "print the log lines as they arrive"),
             (f"pdt runs {app_name}", "list the recent runs"),

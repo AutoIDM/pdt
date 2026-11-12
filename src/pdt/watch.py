@@ -74,5 +74,6 @@ def offer(code: int, commands: set[str]) -> None:
     from pdt.deploy import DECLINED
     if code in (0, DECLINED, 130) or not can_offer():
         return
+    console.say()
     console.say(f"Get help with {console.escape(command_type(sys.argv, commands))} "
                 f"at {console.value(SUPPORT_URL)}")

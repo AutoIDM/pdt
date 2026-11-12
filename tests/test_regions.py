@@ -4,8 +4,8 @@ import pytest
 import yaml
 
 from conftest import add_app
-from pdt import regions
-from pdt.config import merged_app
+from pdt import cli, regions
+from pdt.config import merged_app, validate_app
 
 
 @pytest.fixture(autouse=True)
@@ -161,3 +161,124 @@ def test_choose_region_names_the_cli_settings(project, monkeypatch, tmp_path, ca
     monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
     assert regions.choose_region(merged_app("my-report"), "azure", True) == ""
     assert "northeurope, because defaults.location" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("provider,typo,meant", [
+    ("azure", "eastu2", "eastus2"),
+    ("aws", "us-est-1", "us-east-1"),
+    ("google-cloud", "us-centrl1", "us-central1"),
+])
+def test_validate_rejects_a_region_the_provider_does_not_have(project, provider, typo, meant):
+    (project / "pdt.yml").write_text(f"platform:\n  provider: {provider}\n  region: {typo}\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    problems = [p for p in validate_app("my-report") if "platform.region" in p]
+    assert len(problems) == 1
+    assert all(text in problems[0] for text in (typo, meant, "pdt.yml"))
+
+
+@pytest.mark.parametrize("provider", regions.PROVIDERS)
+def test_every_region_pdt_suggests_is_a_region_it_accepts(provider):
+    index = regions.PROVIDERS.index(provider)
+    suggested = {names[index] for names in [regions.DEFAULT_REGIONS, *regions.COUNTRY_REGIONS.values(),
+                                             *regions.ZONE_REGIONS.values()]}
+    assert suggested <= set(regions.REGIONS[provider])
+
+
+def test_the_aws_regions_match_the_ones_botocore_knows():
+    botocore = pytest.importorskip("botocore.session")
+    partitions = botocore.get_session().get_data("endpoints")["partitions"]
+    aws = next(p for p in partitions if p["partition"] == "aws")
+    assert set(regions.REGIONS["aws"]) == set(aws["regions"])
+
+
+def test_a_mistyped_answer_is_asked_again(project, monkeypatch):
+    add_app(project, "my-report")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Europe/London")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: True)
+    answers = iter(["uksuoth", "ukwest"])
+    monkeypatch.setattr(regions.console, "ask", lambda _question, _default: next(answers))
+    assert regions.choose_region(merged_app("my-report"), "azure", False) == ""
+    assert region_in(project / "pdt.yml") == "ukwest"
+
+
+@pytest.mark.parametrize("provider,name", [(provider, name) for provider, names
+                                           in regions.REGION_ENV.items() for name in names])
+def test_a_wrong_region_in_the_environment_is_a_problem(monkeypatch, provider, name):
+    monkeypatch.setenv(name, "eastu2")
+    problem = regions.env_region_problem({"provider": provider})
+    assert name in problem and "region named eastu2" in problem
+    assert regions.env_region_problem({"provider": provider, "region": "eastus2"}) == ""
+
+
+def test_validate_checks_the_region_in_the_env_file(project, monkeypatch, capsys):
+    add_app(project, "my-report", "schedule: daily\n")
+    (project / ".env").write_text("PDT_AZURE_REGION=eastu2\n")
+    monkeypatch.setattr("sys.argv", ["pdt", "validate"])
+    assert cli.main() == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert "my-report: the environment variable PDT_AZURE_REGION: There is no Azure region" in out
+
+
+@pytest.mark.parametrize("assume_yes", [True, False])
+@pytest.mark.parametrize("provider,typo", [
+    ("aws", "us-est-1"), ("azure", "eastu2"), ("google-cloud", "us-centrl1")])
+def test_a_wrong_region_in_the_cli_settings_is_not_saved(project, monkeypatch, tmp_path,
+                                                         provider, typo, assume_yes):
+    (tmp_path / "aws-config").write_text(f"[default]\nregion = {typo}\n")
+    (tmp_path / "azure").mkdir()
+    (tmp_path / "azure" / "config").write_text(f"[defaults]\nlocation = {typo}\n")
+    (tmp_path / "gcloud" / "configurations").mkdir(parents=True)
+    (tmp_path / "gcloud" / "active_config").write_text("work\n")
+    (tmp_path / "gcloud" / "configurations" / "config_work").write_text(
+        f"[run]\nregion = {typo}\n")
+    (project / "pdt.yml").write_text(f"platform:\n  provider: {provider}\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: False)
+    problem = regions.choose_region(merged_app("my-report"), provider, assume_yes)
+    assert f"region named {typo}" in problem and "pdt.yml" in problem
+    assert region_in(project / "pdt.yml") is None
+
+
+def test_a_wrong_region_in_the_cli_settings_is_not_offered(project, monkeypatch, tmp_path,
+                                                           capsys):
+    (tmp_path / "azure").mkdir()
+    (tmp_path / "azure" / "config").write_text("[defaults]\nlocation = eastu2\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: True)
+    offered = []
+    monkeypatch.setattr(regions.console, "ask",
+                        lambda _question, default: offered.append(default) or "")
+    assert regions.choose_region(merged_app("my-report"), "azure", False) == ""
+    assert offered == ["eastus2"] and region_in(project / "pdt.yml") == "eastus2"
+    assert "region named eastu2" in " ".join(capsys.readouterr().out.split())
+
+
+def test_no_answer_to_a_wrong_cli_setting_names_a_real_region(project, monkeypatch, tmp_path):
+    (tmp_path / "azure").mkdir()
+    (tmp_path / "azure" / "config").write_text("[defaults]\nlocation = eastu2\n")
+    add_app(project, "my-report", "schedule: daily\n")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: True)
+
+    def no_answer(_question, _default):
+        raise EOFError
+
+    monkeypatch.setattr(regions.console, "ask", no_answer)
+    assert "`region: eastus2`" in regions.choose_region(merged_app("my-report"), "azure", False)
+
+
+@pytest.mark.parametrize("provider,typo,default", [
+    ("aws", "us-est-1", "us-east-1"), ("azure", "eastu2", "eastus2"),
+    ("google-cloud", "us-centrl1", "us-central1")])
+def test_init_never_offers_a_wrong_region_from_the_cli_settings(tmp_path, provider, typo,
+                                                                default):
+    (tmp_path / "aws-config").write_text(f"[default]\nregion = {typo}\n")
+    (tmp_path / "azure").mkdir()
+    (tmp_path / "azure" / "config").write_text(f"[defaults]\nlocation = {typo}\n")
+    (tmp_path / "gcloud" / "configurations").mkdir(parents=True)
+    (tmp_path / "gcloud" / "active_config").write_text("work\n")
+    (tmp_path / "gcloud" / "configurations" / "config_work").write_text(
+        f"[run]\nregion = {typo}\n")
+    assert regions.suggest_region(provider, "Etc/UTC") == default
