@@ -12,6 +12,9 @@ trades the code at CONNECT_URL for the webhook URL and its channel. CONNECT_URL
 holds the app's client secret, so it is a server and not this program. Without
 it, the user pastes a webhook URL, and pdt can open Slack with a filled-in app
 manifest that makes one.
+
+An Email entry asks for the recipients, the method (EMAIL_METHODS), the sender
+address, and the values of the method, which go to the project's .env.
 """
 
 from __future__ import annotations
@@ -30,8 +33,8 @@ from typing import Callable
 
 from dotenv import set_key
 
-from pdt import alert_message, config, console, lifecycle, slack, teams
-from pdt.utils.email_auth import can_prompt
+from pdt import alert_message, config, console, email_alert, lifecycle, slack, teams
+from pdt.config import can_prompt
 from pdt.utils.env_secret import private_file
 
 OFFERED = "alerts_offered"
@@ -218,6 +221,57 @@ def teams_test(entry: dict, project: str) -> None:
     teams.send(entry, teams.ready_message(project, entry))
 
 
+# method: (the label of the choice, then each env var as (name, question, typed hidden)).
+# The user may leave the answer for a name in email_alert.optional empty.
+EMAIL_METHODS = {
+    "smtp": ("SMTP server: the mail server of your organization or mail service", (
+        ("PDT_SMTP_HOST", "SMTP server name, for example smtp.example.com", False),
+        ("PDT_SMTP_PORT", "Port, or press Enter for 587", False),
+        ("PDT_SMTP_USER", "User name", False),
+        ("PDT_SMTP_PASSWORD", "Password", True))),
+    "ses": ("Amazon SES", (
+        ("PDT_SES_REGION", "AWS region of Amazon SES, for example us-east-1", False),
+        ("PDT_SES_ACCESS_KEY_ID", "Access key ID, or press Enter to use the AWS sign-in of "
+                                  "the computer that sends", False),
+        ("PDT_SES_SECRET_ACCESS_KEY", "Secret access key, or press Enter for none", True))),
+    "resend": ("Resend", (("PDT_RESEND_API_KEY", "Resend API key", True),)),
+}
+
+
+def email_configure() -> tuple[dict, dict[str, str]] | None:
+    to = email_alert.addresses(console.ask(
+        "Who gets the alerts? Type one or more email addresses, separated by commas"))
+    if not to:
+        return None
+    methods = list(EMAIL_METHODS)
+    console.heading("How should pdt send the email?")
+    for number, method in enumerate(methods, 1):
+        console.choice(number, EMAIL_METHODS[method][0])
+    while True:
+        answer = console.ask("Which one?", "1") or "1"
+        if answer.isdigit() and 1 <= int(answer) <= len(methods):
+            break
+        console.say(f"Please answer a number from 1 to {console.value(len(methods))}.")
+    method = methods[int(answer) - 1]
+    sender = console.ask("Which address should the email come from?")
+    if sender == "":
+        return None
+    values: dict[str, str] = {}
+    for name, question, hidden in EMAIL_METHODS[method][1]:
+        saved = alert_message.secret_value(name)
+        if hidden and saved:
+            answer = console.secret(f"{question} (press Enter to keep the saved one): ")
+        elif hidden:
+            answer = console.secret(f"{question}: ")
+        else:
+            answer = console.ask(question, saved)
+        if answer != "":
+            values[name] = answer
+        elif not saved and name not in email_alert.METHODS[method][1]:
+            return None
+    return {"method": method, "from": sender, "to": to}, values
+
+
 SETUPS = {
     "slack": Setup("Slack: a message in a Slack channel",
                    (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
@@ -227,6 +281,11 @@ SETUPS = {
                    (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
                     lifecycle.JOB_RUN_FAILED),
                    teams_configure, teams_test, lambda entry: f"Teams {teams.label(entry)}"),
+    "email": Setup("Email: a message to one or more addresses",
+                   (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
+                    lifecycle.JOB_RUN_FAILED),
+                   email_configure, email_alert.send_ready,
+                   lambda entry: f"email to {email_alert.label(entry)}"),
     "console": Setup("Console: a line in the output of pdt and of each run", lifecycle.EVENTS,
                      lambda: ({}, {}), None, lambda entry: "console"),
 }
@@ -419,8 +478,8 @@ def offer(app_name: str, assume_yes: bool) -> None:
     if "alerts" in root_cfg or app_name in own_alerts_apps():
         return
     console.say()
-    console.say(f"pdt can post to Slack or Microsoft Teams when {console.value(app_name)} deploys, "
-                "or when a run fails.")
+    console.say(f"pdt can post to Slack or Microsoft Teams, or send an email, when "
+                f"{console.value(app_name)} deploys, or when a run fails.")
     try:
         answer = console.confirm("Set up alerts now?")
     except EOFError:

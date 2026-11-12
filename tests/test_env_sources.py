@@ -9,8 +9,6 @@ from dotenv import dotenv_values
 
 from conftest import add_app
 from pdt import cli, config, deploy, deploy_common
-from pdt.utils import email_auth
-from pdt.utils.send_email import auth_env_file
 
 APP_YAML = """\
 env:
@@ -214,34 +212,6 @@ def test_gather_secrets_is_the_same_from_a_file_and_from_the_environment(project
     assert from_file == from_environment == VALUES
 
 
-def test_auth_env_file_uses_an_existing_dot_env_even_without_a_terminal(project):
-    folder = add_app(project, "my-report")
-    (folder / ".env").write_text("PDT_TOKEN=t-1\n")
-    assert auth_env_file(folder, interactive=False) == (folder / ".env").resolve()
-
-
-def test_auth_env_file_names_a_new_dot_env_when_pdt_can_ask(project):
-    folder = add_app(project, "my-report")
-    assert auth_env_file(folder, interactive=True) == folder / ".env"
-
-
-def test_saving_authorization_creates_no_file_in_a_ci_checkout(project, monkeypatch):
-    folder = add_app(project, "my-report")
-    clear(monkeypatch)
-    monkeypatch.delenv("PDT_ENV_SECRET_RESOURCE", raising=False)
-    monkeypatch.delenv(email_auth.CACHE_ENV, raising=False)
-    before = sorted(path.name for path in folder.iterdir())
-
-    env_file = auth_env_file(folder, interactive=False)
-    assert env_file is None
-    email_auth._save_cache(env_file, {"client_id": "abc"})
-
-    assert sorted(path.name for path in folder.iterdir()) == before
-    assert not (folder / ".env").exists()
-    cached = json.loads(base64.b64decode(os.environ[email_auth.CACHE_ENV]))
-    assert cached == {"client_id": "abc"}
-
-
 def refuse_input(prompt=""):
     raise AssertionError("confirm asked a question with no one to answer")
 
@@ -274,14 +244,6 @@ def test_confirm_treats_a_person_pressing_ctrl_d_as_no_without_advice(monkeypatc
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     assert deploy.confirm(["do a thing"], assume_yes=False) is False
     assert "--yes" not in capsys.readouterr().out
-
-
-def test_a_build_server_with_a_terminal_still_gets_no_dot_env(project, monkeypatch):
-    folder = add_app(project, "my-report")
-    monkeypatch.setenv("CI", "true")
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
-    assert auth_env_file(folder) is None
 
 
 PATH_YAML = """\

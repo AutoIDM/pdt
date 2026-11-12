@@ -21,10 +21,13 @@ Env (creds only -- put these in .env at this folder or any parent):
     PDT_AZURE_PRIVATE_KEY_B64
     PDT_AZURE_PRIVATE_KEY_PATH (+ optional PDT_AZURE_PRIVATE_KEY_PASSWORD)
   Certificate auth wins over client-secret auth, and B64 wins over PATH.
-  Email: see pdt.utils.send_email. With no email transport, findings go to stdout.
 
-Exit codes: 0 ok, 1 bad config, 2 Entra/Graph failure, 3 email failure,
-4 Monday API failure.
+Findings go out as the alert `orphaned-accounts:found`. Add that name to the
+`events` of an entry under `alerts:` in the project's pdt.yml (`pdt alerts setup`
+makes the entry) to get them by email, in Slack, or in Teams. With no such
+entry, the run's output shows one alert line.
+
+Exit codes: 0 ok, 1 bad config, 2 Entra/Graph failure, 4 Monday API failure.
 """
 
 from __future__ import annotations
@@ -38,9 +41,9 @@ from html import escape
 from pathlib import Path
 
 from pdt.config import ConfigError, load_env, merged_app, missing_env
+from pdt.utils import alert
 from pdt.utils.entra import graph_pages, graph_token
 from pdt.utils.log import die, log
-from pdt.utils.send_email import pick_transport, send_email
 from pdt.utils.web import http_json
 
 EXIT_OK = 0
@@ -278,14 +281,9 @@ def main() -> int:
     cfg = app["config"]
     page_size = cfg_int(cfg, "monday_page_size", 1, 1000)
 
-    transport = pick_transport()
-    email_subject = str(
-        cfg.get("email_subject") or "Monday users missing from Entra ID"
-    ).strip()
-    email_to = cfg.get("email_to") or ""
-    email_from = str(cfg.get("email_from") or "").strip()
+    subject = str(cfg.get("subject") or "Monday users missing from Entra ID").strip()
 
-    log("info", "starting", monday_page_size=page_size, email=transport)
+    log("info", "starting", monday_page_size=page_size)
     token = graph_token(EXIT_ENTRA)
     log("info", "Entra token acquired")
 
@@ -315,17 +313,10 @@ def main() -> int:
             email=user["email"],
             name=user["name"],
         )
-    send_email(email_from, email_to, email_subject,
-               format_body(orphaned, len(monday_active), len(active_upns)),
-               format_html(orphaned, len(monday_active), len(active_upns)))
-    if transport == "stdout":
-        log(
-            "info",
-            "email not configured; findings printed to stdout",
-            count=len(orphaned),
-        )
-    else:
-        log("info", "report sent", transport=transport, to=email_to, count=len(orphaned))
+    alert.emit("orphaned-accounts:found", title=subject,
+               text=format_body(orphaned, len(monday_active), len(active_upns)),
+               html=format_html(orphaned, len(monday_active), len(active_upns)),
+               count=len(orphaned))
     return EXIT_OK
 
 

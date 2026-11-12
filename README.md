@@ -136,7 +136,7 @@ A web app (`app_profile: web`) that greets the person who signed in.
 - [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
 - [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's runs, logs, and files
 - [Writing your own app](docs/writing-apps.md): Python and PowerShell apps, and logging
-- [Sending email](docs/email.md): send mail from an app over SMTP, Microsoft Graph, SES, or Resend
+- [Sending email](docs/email.md): get alerts by email, and send a report from an app with `alert.emit`
 - [More ways to install](docs/install.md): other installs, and how to update or remove pdt
 - [Concepts](docs/concepts.md): projects, apps, and app profiles
 - [Types of apps](docs/types-of-apps.md): scheduled jobs and web apps, and the services pdt picks for each one on each cloud

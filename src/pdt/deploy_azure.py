@@ -91,7 +91,7 @@ from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, cached_price, fail, fetch_json,
     run_main, secret_contents, store_plan_lines, store_suffix)
-from pdt.utils.email_auth import can_prompt
+from pdt.config import can_prompt
 from pdt.utils.storage import Store
 
 AZ = [sys.executable, "-m", "azure.cli"]

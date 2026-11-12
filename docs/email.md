@@ -1,85 +1,99 @@
 # Sending email
 
-`pdt.utils.send_email` sends plain-text mail.
+Email is one of the places pdt sends alerts, next to Slack and Microsoft Teams. An app sends a report by email when it emits an alert of its own.
 
-Supports:
+## Set it up
 
-- SMTP + password
-- SMTP + OAuth for Microsoft or Google
-- Microsoft Graph delegated Mail.Send
-- SES (Amazon Simple Email Service)
-- Resend
+```
+pdt alerts setup
+```
 
-## SMTP
+Choose Email. pdt asks who gets the email, how to send it (an SMTP server, Amazon SES, or Resend), which address it comes from, and the values of that method. It writes the values to the `.env` file of the project and the entry to `pdt.yml`, then offers a test message.
 
-Required environment variables:
+```
+pdt alerts test
+```
 
-- PDT_SMTP_HOST
-- PDT_SMTP_USER
+sends the test message to every Slack, Teams, and email entry again.
 
-When using password auth:
+## The entry in pdt.yml
 
-- PDT_SMTP_PASSWORD
+```yaml
+alerts:
+  - type: email
+    method: smtp
+    from: pdt-alerts@example.com
+    to: [it-ops@example.com]
+    events: [job:run-failed, compliance:changed]
+```
 
-When using OAuth for Google or Microsoft:
+- `method` is how pdt sends the email: `smtp`, `ses`, `resend`, or `microsoft-365`.
+- `from` is the address the email comes from.
+- `to` is the list of addresses that get it.
+- `events` names the events that send an email. `all` is every event, and a name may hold a `*`, such as `job:*`. `exclude-events` takes events out again.
 
-- PDT_SMTP_OAUTH_CLIENT_ID
+The entry sits at the top level of the project's `pdt.yml`, so it works for every app. An app that sets its own `alerts:` uses its own list.
 
-Optional:
+The values of the method are env vars. Put them in the `.env` file of the project. `pdt deploy` uploads them with each app's other secrets, so no app lists them under `env:`.
 
-- PDT_SMTP_AUTH = oauth2
-- PDT_SMTP_PORT: Port 587 is the default and uses STARTTLS; port 465 uses implicit TLS.
+## The methods
 
-Google also requires:
+### smtp
 
-- PDT_SMTP_OAUTH_CLIENT_SECRET
+- `PDT_SMTP_HOST`
+- `PDT_SMTP_USER`
+- `PDT_SMTP_PASSWORD`
+- `PDT_SMTP_PORT` (optional): 587 is the default and uses STARTTLS; 465 uses implicit TLS.
 
-Microsoft optionally accepts:
+pdt signs in with the user name and the password.
 
-- PDT_SMTP_OAUTH_TENANT_ID: Defaults to `common`.
+### ses
 
-PDT infers OAuth when the host is `smtp.gmail.com`, `smtp.office365.com`, or `smtp-mail.outlook.com` and no password is set. If a provider revokes authorization, run or deploy the app from a terminal again.
+- `PDT_SES_REGION`
+- `PDT_SES_ACCESS_KEY_ID` and `PDT_SES_SECRET_ACCESS_KEY` (optional): leave both empty to use the standard AWS credential chain, for example `AWS_PROFILE` or the role of the job.
 
-### Google OAuth
+This method needs the `boto3` package. An app's `run.py` has it through `pdt-cli[apps]`, so an alert that the app emits is sent. The pdt command and the events of a deployed job that pdt emits itself (`job:run-failed` and the others) run without `boto3`, so pdt prints those on the console with a warning.
 
-Create a Desktop app OAuth client in the [Google Auth Platform](https://console.cloud.google.com/auth/clients). Set its client ID and client secret in the variables above. The OAuth consent screen must include `https://mail.google.com/` because Google requires that scope for SMTP OAuth.
+### resend
 
-### Microsoft OAuth
+- `PDT_RESEND_API_KEY`
 
-Create an app registration in the [Microsoft Entra admin center](https://entra.microsoft.com/). Add a Mobile and desktop application platform with `http://localhost` as a redirect URI. Add the delegated Office 365 Exchange Online permission `https://outlook.office.com/SMTP.Send` and allow public client flows.
+### microsoft-365
 
-Microsoft 365 must also have Authenticated SMTP enabled for the sending mailbox. Use `PDT_SMTP_OAUTH_TENANT_ID` for a tenant-specific registration, or leave it empty to use `common`.
+pdt sends through Microsoft Graph as an app registration that signs in with a certificate.
 
-## Microsoft Graph
+- `PDT_EMAIL_TENANT_ID`
+- `PDT_EMAIL_CLIENT_ID`
+- `PDT_EMAIL_PRIVATE_KEY_PATH`: the path of a `.pfx` file with no password that holds the certificate and its private key. A relative path starts at the project folder. `pdt deploy` uploads the file's content as `PDT_EMAIL_PRIVATE_KEY_B64`; you can also set that variable yourself, to the base64 of the file.
 
-Required environment variables:
+The app registration needs the Microsoft Graph application permission `Mail.Send` with admin consent, and the certificate under Certificates & secrets. `from` is the mailbox that sends. `pdt alerts setup` does not list this method yet; write the entry and the values by hand.
 
-- PDT_GRAPH_MAIL_USER
-- PDT_GRAPH_MAIL_CLIENT_ID
+Microsoft Graph takes one body, so an email with an HTML body goes out as HTML only.
 
-Optional:
+## Send an alert from an app
 
-- PDT_GRAPH_MAIL_TENANT_ID: Defaults to `common`.
+```python
+from pdt.utils import alert
 
-PDT sends as `PDT_GRAPH_MAIL_USER`, so `email_from` in the app's pdt.yml must match it. Graph sends the HTML part alone; the other transports send both parts. If a provider revokes authorization, run or deploy the app from a terminal again.
+alert.emit("compliance:changed", title="Compliance changed",
+           text="3 devices changed.", html="<p>3 devices changed.</p>",
+           url="https://example.com/report", devices=3)
+```
 
-Create an app registration in the [Microsoft Entra admin center](https://entra.microsoft.com/). Add a Mobile and desktop application platform with `http://localhost` as a redirect URI. Add the Microsoft Graph delegated permission `Mail.Send` and allow public client flows. Do not add a client secret.
+`alert.emit` sends one event with the name you choose. Every entry under `alerts:` whose `events` match that name gets it. Add the name to the `events` of the email entry to get it by email.
 
-## SES
+- `title` is the subject of the email, and the title of the Slack or Teams message.
+- `text` is the plain body of the email, and the text of the Slack or Teams message.
+- `html` is the HTML body of the email. Slack and Teams do not show it.
+- `url` is the "Open" button in Slack and Teams.
+- Every other keyword, such as `devices=3`, is a labelled field in Slack and Teams.
 
-Required environment variables:
+All four are optional. An event with no `text` and no `html` gets an email body that pdt builds from the title, the fields, and the url.
 
-- PDT_SES_REGION
+The app does not wait for the email. pdt waits for the delivery when the app ends. A delivery that fails prints a warning and the alert line in the run's output, and does not change the result of the run.
 
-Optional:
+When no entry lists the event name, the run's output shows one line, `[alert] Compliance changed`, and nothing is sent.
 
-- PDT_SES_ACCESS_KEY_ID
-- PDT_SES_SECRET_ACCESS_KEY
+## send_email
 
-Leave the two SES key variables empty to use the standard AWS credential chain (for example, `AWS_PROFILE`, environment credentials, or a workload role).
-
-## Resend
-
-Required environment variables:
-
-- PDT_RESEND_API_KEY
+`pdt.utils.send_email.send_email(from_addr, to_addrs, subject, body, html="")` still works, with a `DeprecationWarning`. It emits the event `email:send`. An email entry with `email:send` in its `events` sends it to `to_addrs`, from the `from` of the entry. Use `alert.emit` in new code.

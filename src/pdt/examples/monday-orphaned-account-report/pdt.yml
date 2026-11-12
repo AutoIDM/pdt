@@ -10,11 +10,10 @@ config:
   # users per request.
   monday_page_size: 1000
 
-  # Used only when exactly one email env block is configured.
-  # With no email transport, findings print to stdout.
-  email_to: recipient@example.com
-  email_from: sender@example.com
-  email_subject: Unmatched Accounts Report - Monday users missing from Entra ID
+  # The title of the alert orphaned-accounts:found, which carries the findings.
+  # To get it by email, in Slack, or in Teams, add orphaned-accounts:found to the
+  # events of an entry under alerts: in the project's pdt.yml (pdt alerts setup).
+  subject: Unmatched Accounts Report - Monday users missing from Entra ID
 
 # The Entra app needs User.Read.All (application) plus admin consent.
 env:
@@ -28,20 +27,3 @@ env:
     - [PDT_AZURE_PRIVATE_KEY_PATH]
   optional:
     - PDT_AZURE_PRIVATE_KEY_PASSWORD
-    - PDT_SMTP_HOST
-    - PDT_SMTP_PORT
-    - PDT_SMTP_USER
-    - PDT_SMTP_PASSWORD
-    - PDT_SMTP_AUTH
-    - PDT_SMTP_OAUTH_CLIENT_ID
-    - PDT_SMTP_OAUTH_CLIENT_SECRET
-    - PDT_SMTP_OAUTH_TENANT_ID
-    - PDT_SMTP_OAUTH_CACHE_B64
-    - PDT_GRAPH_MAIL_USER
-    - PDT_GRAPH_MAIL_CLIENT_ID
-    - PDT_GRAPH_MAIL_TENANT_ID
-    - PDT_GRAPH_MAIL_CACHE_B64
-    - PDT_SES_REGION
-    - PDT_SES_ACCESS_KEY_ID
-    - PDT_SES_SECRET_ACCESS_KEY
-    - PDT_RESEND_API_KEY
