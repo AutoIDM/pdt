@@ -217,6 +217,8 @@ def test_destroy_reads_with_a_new_token_when_another_app_takes_the_group_after_t
     monkeypatch.setattr(azure, "destroy_group", lambda settings, name: expired.append(name) and False)
     removed = []
     monkeypatch.setattr(azure, "run_quiet", lambda *args, **kwargs: removed.append(args[:3]))
+    monkeypatch.setattr(azure, "az", lambda *args: subprocess.CompletedProcess(
+        args, 1, "", 'ERROR: Not Found({"error":{"code":"ResourceNotFound"}})'))
     monkeypatch.setattr(azure, "purge_secret", lambda settings, sid: removed.append(sid))
     monkeypatch.setattr(azure, "list_remaining", lambda rg: None)
     destroy(monkeypatch, confirmed=True)

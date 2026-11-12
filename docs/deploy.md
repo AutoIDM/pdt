@@ -33,7 +33,7 @@ pdt login my-report
 
 ### Pausing or turning off a job
 
-An app that should stay deployed but not run for a while sets `pause: true`. The schedule stays in place and does not fire until the key goes back to `false`. `pdt pause APP` and `pdt unpause APP` write the key into the app's `config.yml` and apply it to the deployed schedule in the same step; `pdt deploy` also honors it. A paused app still runs when you ask for it with `pdt run APP --deployed`.
+An app that should stay deployed but not run for a while sets `pause: true`. The schedule stays in place and does not fire until the key goes back to `false`. `pdt pause APP` and `pdt unpause APP` apply the key to the deployed schedule, then write it into the app's `config.yml`, so a failed cloud change leaves the file as it was; `pdt deploy` also honors it. A paused app still runs when you ask for it with `pdt run APP --deployed`.
 
 An app that is not ready sets `enabled: false` in its `config.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it. `enabled: false` does not stop a schedule that is already deployed, so run `pdt pause APP` or `pdt destroy APP` before you set it.
 
