@@ -208,11 +208,17 @@ def test_in_a_menu_the_marked_project_is_saved(project, monkeypatch, press):
 
 
 def test_the_last_line_of_the_menu_takes_a_typed_project_id(project, monkeypatch, press, capsys):
-    calls, saved = create_answering(project, monkeypatch, ["first-project"], ONE_ACCOUNT)
-    press("down", "down", "enter")
+    calls, saved = create_answering(project, monkeypatch, ["first-project", "1"], ONE_ACCOUNT)
+    press("down", "down", "enter", "down", "down", "enter")
     assert deploy_google_cloud.choose_project({"name": "my-report"}, "") == "first-project"
     assert gcloud_calls(calls, "projects", "create") == []
-    assert "> Another project, or a new project\n" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "> Another project, or a new project\n" in out
+    assert "Type the id of the project, or a new project id to create it: " in out
+    assert "[1-2" not in out
+    with pytest.raises(SystemExit):
+        deploy_google_cloud.choose_project({"name": "my-report"}, "")
+    assert "1 is not a valid Google Cloud project id" in capsys.readouterr().out
 
 
 def test_the_last_line_of_the_menu_creates_a_project_with_the_marked_billing_account(

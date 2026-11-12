@@ -319,18 +319,22 @@ def choose_project(app: dict, requested: str) -> str:
     else:
         console.note("Your Google account has no Google Cloud project yet.")
         choices = "type a new project id to create it"
+    numbered = True
     try:
-        answer = str(len(available) + 1)
         if menu:
             answer = str(console.choose_one(
                 [entry[0] for entry in available] + ["Another project, or a new project"],
                 details=[entry[-1] for entry in available] + [""]) + 1)
-        if answer == str(len(available) + 1):
+            if answer == str(len(available) + 1):
+                numbered = False
+                answer = console.read(
+                    "Type the id of the project, or a new project id to create it: ")
+        else:
             answer = console.read(f"Deploy to which one? [{choices}] ")
     except EOFError:
         answer = ""
     ids = [entry[0] for entry in available]
-    if answer.isdigit() and 1 <= int(answer) <= len(ids):
+    if numbered and answer.isdigit() and 1 <= int(answer) <= len(ids):
         project = ids[int(answer) - 1]
     elif answer in ids:
         project = answer

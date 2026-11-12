@@ -369,7 +369,11 @@ def test_the_last_line_of_the_menu_takes_a_typed_profile(aws, project, monkeypat
     config_file = Path(os.environ["AWS_CONFIG_FILE"])
     config_file.parent.mkdir()
     config_file.write_text("[profile one]\nregion = eu-west-1\n[profile two]\nregion = eu-west-1\n")
-    answers(monkeypatch, "one")
-    press("down", "down", "enter")
+    answers(monkeypatch, "one", "1")
+    press("down", "down", "enter", "down", "down", "enter")
     assert deploy_aws.choose_profile(app(project), boto3.Session()) == "one"
-    assert "> Another profile\n" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "> Another profile\n" in out and "Type the name of the profile: " in out
+    assert "[1-2]" not in out
+    with pytest.raises(SystemExit):
+        deploy_aws.choose_profile(app(project), boto3.Session())

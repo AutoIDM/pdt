@@ -270,7 +270,13 @@ def test_in_a_menu_the_marked_subscription_is_saved(azure_app, monkeypatch, pres
 def test_the_last_line_of_the_menu_takes_a_typed_subscription_id(
         azure_app, monkeypatch, press, capsys):
     calls = choose_subscription_answering(monkeypatch, OTHER["id"])
-    press("down", "down", "enter")
+    press("down", "down", "enter", "down", "down", "enter")
     assert deploy_azure.choose_subscription(azure_app, "", True) == OTHER
     assert calls == [OTHER["id"]]
-    assert "> Another subscription\n" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "> Another subscription\n" in out and "Type the id of the subscription: " in out
+    assert "[1-2" not in out
+    monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+    with pytest.raises(SystemExit):
+        deploy_azure.choose_subscription(azure_app, "", True)
+    assert "type one of the subscription ids" in capsys.readouterr().out

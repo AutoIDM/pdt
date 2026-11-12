@@ -444,15 +444,17 @@ def choose_profile(app: dict, session) -> str:
              f"{console.value('AWS_PROFILE=<name>')} "
              f"(profiles: {', '.join(console.value(profile) for profile in profiles)})")
     console.heading("No AWS profile is selected. Profiles on this computer:")
-    answer = str(len(profiles) + 1)
+    numbered = True
     if console.can_menu():
         answer = choose([*profiles, "Another profile"])
+        if answer == str(len(profiles) + 1):
+            numbered = False
+            answer = ask("Type the name of the profile: ")
     else:
         for number, profile in enumerate(profiles, start=1):
             console.choice(number, profile)
-    if answer == str(len(profiles) + 1):
         answer = ask(f"Which profile do you want to use? [1-{len(profiles)}] ")
-    if answer.isdigit() and 1 <= int(answer) <= len(profiles):
+    if numbered and answer.isdigit() and 1 <= int(answer) <= len(profiles):
         profile = profiles[int(answer) - 1]
     elif answer in profiles:
         profile = answer
