@@ -198,3 +198,19 @@ def test_declining_the_create_question_creates_nothing(project, monkeypatch, cap
     assert gcloud_calls(calls, "projects", "create") == []
     assert saved == []
     assert "no Google Cloud project selected" in capsys.readouterr().out
+
+
+def test_in_a_menu_the_marked_project_is_saved(project, monkeypatch, press):
+    calls, saved = create_answering(project, monkeypatch, [], ONE_ACCOUNT)
+    press("down", "enter")
+    assert deploy_google_cloud.choose_project({"name": "my-report"}, "") == "second-project"
+    assert saved == [("project", "second-project")]
+
+
+def test_the_last_line_of_the_menu_creates_a_project_with_the_marked_billing_account(
+        project, monkeypatch, press):
+    calls, saved = create_answering(project, monkeypatch, ["brand-new-project"], TWO_ACCOUNTS)
+    press("down", "down", "enter", "down", "enter")
+    assert deploy_google_cloud.choose_project({"name": "my-report"}, "") == "brand-new-project"
+    assert gcloud_calls(calls, "billing", "projects", "link") == [
+        ["billing", "projects", "link", "brand-new-project", "--billing-account", "BBBB-2222"]]

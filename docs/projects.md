@@ -16,7 +16,7 @@ Region is the only place setting it asks for. Your AWS account, Azure subscripti
 
 To move a project to another provider, run `pdt init` in the project and pick the new provider. If apps are deployed, `pdt init` lists them and asks which to move: all, some, or none. For each app you move, it runs `pdt destroy` where the app is deployed, then updates `pdt.yml` to deploy to the new provider. Stored data will not be deleted. Each app that stays gets its current place written into its own `pdt.yml`. An app whose own `pdt.yml` sets its provider does not move; edit that file to move it. Then run `pdt deploy <app>` for each app you moved.
 
-pdt suggests the region nearest to you from your computer's time zone. If `pdt.yml` has no region when you first deploy, the deploy suggests one the same way, asks you to confirm it or type another, and saves your answer. With `--yes` it takes the suggestion and tells you which region it used.
+pdt suggests the region nearest to you from your computer's time zone. If `pdt.yml` has no region when you first deploy, the deploy suggests one the same way, shows a menu with that region first, and saves the region you choose. Move through a menu with the Up and Down arrow keys and press Enter; the last line of the menu lets you type a region that is not in it. With `--yes` it takes the suggestion and tells you which region it used.
 
 Starting in an empty folder also gives you a working app called `hello-world`. Run it straight away:
 

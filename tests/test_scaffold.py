@@ -745,3 +745,14 @@ def test_an_app_with_its_own_provider_shows_only_its_own_place(project, monkeypa
     out = capsys.readouterr().out
     assert "  own  aws, region us-east-1; edit own/pdt.yml to move it\n" in out
     assert platform_of(project, "own") == {"provider": "aws", "region": "us-east-1"}
+
+
+def test_in_menus_move_some_destroys_the_apps_turned_on(project, monkeypatch, press):
+    moving_project(project)
+    cloud = Cloud(monkeypatch)
+    answer(monkeypatch, ["us-east-2", "UTC"], [True])
+    # The provider (aws), then Move some, then the box of beta.
+    press("down", "enter", "up", "up", "enter", "down", "space", "enter")
+    assert scaffold.init(None, assume_yes=False) == 0
+    assert [name for name, *_ in cloud.destroyed] == ["beta"]
+    assert platform_of(project, "alpha") == AZURE_PIN

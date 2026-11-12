@@ -403,7 +403,19 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
         console.say(f"pdt suggests {console.value(region)}, because {console.escape(reason)}.")
         console.field(f"All {PROVIDER_NAMES[provider]} regions", REGION_LISTS[provider])
         try:
-            region = console.ask(question(provider), region) or region
+            typed = True
+            if console.can_menu():
+                column = PROVIDERS.index(provider)
+                known = [region, *sorted({regions[column] for regions in (
+                    DEFAULT_REGIONS, *COUNTRY_REGIONS.values(), *ZONE_REGIONS.values())}
+                    - {region})]
+                console.heading(console.escape(question(provider)))
+                chosen = console.choose_one([*known, "Another region"])
+                if chosen < len(known):
+                    region = known[chosen]
+                    typed = False
+            if typed:
+                region = console.ask(question(provider), region) or region
         except EOFError:
             return (f"no {PROVIDER_NAMES[provider]} region is set. Add `region: {region}` under "
                     f"platform: in {config.PROJECT_FILE}.")

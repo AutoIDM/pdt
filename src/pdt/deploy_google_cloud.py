@@ -309,16 +309,25 @@ def choose_project(app: dict, requested: str) -> str:
     if requested:
         console.warn(f"platform.project {console.value(repr(requested))} is not a real Google "
                      "Cloud project id.")
+    menu = bool(available) and console.can_menu()
     if available:
         console.heading("Your Google Cloud projects:")
-        for index, entry in enumerate(available, 1):
-            console.choice(index, entry[0], entry[-1])
+        if not menu:
+            for index, entry in enumerate(available, 1):
+                console.choice(index, entry[0], entry[-1])
         choices = f"1-{len(available)}, or type a new project id to create it"
     else:
         console.note("Your Google account has no Google Cloud project yet.")
         choices = "type a new project id to create it"
     try:
-        answer = console.read(f"Deploy to which one? [{choices}] ")
+        if menu:
+            answer = str(console.choose_one(
+                [entry[0] for entry in available] + ["Create a new project"],
+                details=[entry[-1] for entry in available] + [""]) + 1)
+            if answer == str(len(available) + 1):
+                answer = console.read("Type a new project id to create it: ")
+        else:
+            answer = console.read(f"Deploy to which one? [{choices}] ")
     except EOFError:
         answer = ""
     ids = [entry[0] for entry in available]
@@ -353,12 +362,20 @@ def create_project(project: str) -> None:
              "and run the deploy again")
     account = accounts[0]
     if len(accounts) > 1:
-        console.heading("Your open billing accounts:")
-        for index, entry in enumerate(accounts, 1):
-            console.choice(index, entry["displayName"], entry["name"].removeprefix("billingAccounts/"))
         try:
-            answer = console.read(f"Which billing account should pay for this project? "
-                                  f"[1-{len(accounts)}] ")
+            if console.can_menu():
+                console.heading("Which billing account should pay for this project?")
+                answer = str(console.choose_one(
+                    [entry["displayName"] for entry in accounts],
+                    details=[entry["name"].removeprefix("billingAccounts/")
+                             for entry in accounts]) + 1)
+            else:
+                console.heading("Your open billing accounts:")
+                for index, entry in enumerate(accounts, 1):
+                    console.choice(index, entry["displayName"],
+                                   entry["name"].removeprefix("billingAccounts/"))
+                answer = console.read(f"Which billing account should pay for this project? "
+                                      f"[1-{len(accounts)}] ")
         except EOFError:
             answer = ""
         if not (answer.isdigit() and 1 <= int(answer) <= len(accounts)):

@@ -6,7 +6,7 @@ piped run stays plain text and every command stays readable in a log.
 The vocabulary is small on purpose. Bold marks a value the user may
 type back or copy: a name, a command, a path, an id, an env var name, a
 file name, a module name and version. Cyan marks a value
-pdt worked out for the user to weigh: a numbered choice, a money
+pdt worked out for the user to weigh: a numbered choice, the marker of a menu, a money
 amount, the `==>` of a step. Dim marks text the user may skip: a
 progress line, a side note. Colour otherwise marks state and nothing
 else: red for a failure, green for a success, yellow for something the
@@ -31,12 +31,13 @@ import threading
 from contextlib import contextmanager
 from functools import partial
 from time import monotonic
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from rich.cells import cell_len
 from rich.console import Console
 from rich.control import Control
 from rich.markup import escape
+from rich.segment import ControlType
 from rich.text import Text
 
 # Each line that a thread other than the main thread printed, in order, for the main
@@ -67,6 +68,15 @@ class MainThreadConsole(Console):
     def end_line(self) -> None:
         """End the current line, before any queued line prints."""
         super().print()
+
+    def redraw(self, before: int, lines: list[Text]) -> None:
+        """Print `lines` in the place of the `before` lines above the cursor, before any
+        queued line prints. The old Windows console host moves up one line per code."""
+        self.control(*[Control((ControlType.CURSOR_UP, 1))] * before)
+        for line in lines + [Text()] * (before - len(lines)):
+            self.control(Control((ControlType.ERASE_IN_LINE, 2)))
+            super().print(line)
+        self.control(*[Control((ControlType.CURSOR_UP, 1))] * (before - len(lines)))
 
 
 def drain() -> None:
@@ -553,6 +563,137 @@ def confirm(question: str = "Proceed?", default: bool = False, choices: str = ""
         if answer in YES_NO:
             return YES_NO[answer]
         _print("Please answer y or n.")
+
+
+def can_menu() -> bool:
+    """True when a question can show a menu the user moves through with the arrow keys:
+    the input is a terminal, and the output is a terminal that can move its cursor.
+    Otherwise the question prints numbered lines and reads a typed answer."""
+    return (sys.stdin is not None and sys.stdin.isatty() and _console.is_terminal
+            and not _console.is_dumb_terminal)
+
+
+POSIX_KEYS = {b"\r": "enter", b"\n": "enter", b" ": "space", b"\x1b[A": "up", b"\x1bOA": "up",
+              b"\x1b[B": "down", b"\x1bOB": "down"}
+WINDOWS_KEYS = {"\r": "enter", " ": "space", "\x00H": "up", "\xe0H": "up", "\x00P": "down",
+                "\xe0P": "down"}
+
+
+def _posix_key(fd: int) -> str:
+    import select
+    key = os.read(fd, 1)
+    if key in (b"", b"\x04"):
+        raise EOFError
+    # An arrow key sends Esc and two more bytes at once; the Esc key sends Esc alone.
+    while key[:1] == b"\x1b" and len(key) < 3 and select.select([fd], [], [], 0.05)[0]:
+        key += os.read(fd, 1)
+    return POSIX_KEYS.get(key, "")
+
+
+def _windows_key() -> str:
+    import msvcrt
+    key = msvcrt.getwch()
+    if key in ("\x00", "\xe0"):
+        key += msvcrt.getwch()
+    if key == "\x03":
+        raise KeyboardInterrupt
+    if key == "\x1a":
+        raise EOFError
+    return WINDOWS_KEYS.get(key, "")
+
+
+@contextmanager
+def keys() -> Iterator[Callable[[], str]]:
+    """A function that waits for one key and returns `up`, `down`, `space`, `enter`, or ""
+    for any other key. It raises EOFError at the end of input, and Ctrl+C raises
+    KeyboardInterrupt, as in a typed question. A test replaces `keys` to give the keys."""
+    if sys.platform == "win32":
+        yield _windows_key
+        return
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    tty.setcbreak(fd, termios.TCSANOW)
+    try:
+        yield partial(_posix_key, fd)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+def _menu_line(marker: str, label: str, detail: str = "") -> Text:
+    line = Text()
+    line.append(marker, style="bold cyan")
+    line.append(label)
+    if detail != "":
+        line.append(f"  {detail}", style="bold")
+    line.truncate(_console.width - 1, overflow="ellipsis")
+    return line
+
+
+def _menu(labels: list[str], details: list[str], on: set[int] | None, at: int) -> int:
+    """Show one line per label and a marker the Up and Down keys move, until Enter. With
+    `on`, each line has a box and Space turns it on or off. A list longer than the screen
+    shows the part around the marker. Then the lines of the answer take the menu's place."""
+    arrows = "↑ ↓"
+    try:
+        arrows.encode(_console.encoding)
+    except UnicodeEncodeError:
+        arrows = "Up and Down"
+    room = max(3, _console.height - 4)
+    top = drawn = 0
+    _console.show_cursor(False)
+    try:
+        with keys() as key:
+            while True:
+                top = min(max(top, at - room + 1), at)
+                shown = range(top, min(top + room, len(labels)))
+                lines = []
+                if on is not None:
+                    lines.append(Text(f"  {arrows} move, Space turns on or off, Enter goes on",
+                                      style="dim"))
+                if top > 0:
+                    lines.append(Text(f"  {top} more above", style="dim"))
+                for index in shown:
+                    box = "" if on is None else "[x] " if index in on else "[ ] "
+                    lines.append(_menu_line("> " if index == at else "  ", box + labels[index],
+                                            details[index]))
+                if shown.stop < len(labels):
+                    lines.append(Text(f"  {len(labels) - shown.stop} more below", style="dim"))
+                _console.redraw(drawn, lines)
+                drawn = len(lines)
+                pressed = key()
+                if pressed == "up":
+                    at = max(0, at - 1)
+                elif pressed == "down":
+                    at = min(len(labels) - 1, at + 1)
+                elif pressed == "space" and on is not None:
+                    on ^= {at}
+                elif pressed == "enter":
+                    break
+        if on is None:
+            answer = [_menu_line("> ", labels[at], details[at])]
+        else:
+            answer = [_menu_line("  ", f"[x] {labels[index]}") for index in sorted(on)]
+        _console.redraw(drawn, answer or [Text("  none", style="dim")])
+    finally:
+        _console.show_cursor(True)
+        drain()
+    return at
+
+
+def choose_one(labels: list[str], default: int = 0, details: list[str] | None = None) -> int:
+    """The index of the label the user chooses in a menu. The marker starts on `default`.
+    `details` holds each label's id or name, printed bold. Call it only when can_menu()."""
+    return _menu(labels, details or [""] * len(labels), None, default)
+
+
+def choose_many(labels: list[str], on: list[bool]) -> list[bool]:
+    """For each label, whether the user leaves it on in a menu of boxes. `on` holds the
+    state of each box at the start. Call it only when can_menu()."""
+    marked = {index for index, mark in enumerate(on) if mark}
+    _menu(labels, [""] * len(labels), marked, 0)
+    return [index in marked for index in range(len(labels))]
 
 
 def _row(cells: list[str], widths: list[int], styles: list[str]) -> Text:

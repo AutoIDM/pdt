@@ -1,5 +1,6 @@
 import ast
 import io
+import os
 import re
 import subprocess
 import sys
@@ -419,6 +420,58 @@ def test_a_slow_wait_shows_its_line_from_the_start_and_prints_no_end_line(monkey
         wait.now("Azure returned an access error")
     assert out.getvalue().splitlines() == ["deleting: resource group pdt",
                                            "Azure returned an access error: resource group pdt"]
+
+
+def test_a_menu_moves_its_marker_and_leaves_the_answer_on_the_screen(press, capsys):
+    press("up", "down", "down", "down", "down", "x", "up", "enter")
+    assert console.choose_one(["Prod", "Test", "Dev"], details=["sub-1", "sub-2", "sub-3"]) == 1
+    # Off a terminal, each line that the answer erases prints as an empty line.
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert lines[:3] == ["> Prod  sub-1", "  Test  sub-2", "  Dev  sub-3"]
+    assert lines[-1] == "> Test  sub-2"
+
+
+def test_a_menu_of_boxes_returns_each_box_and_says_when_none_is_on(press, capsys):
+    press("space", "down", "space", "enter")
+    assert console.choose_many(["Slack", "Email"], [True, False]) == [False, True]
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert lines[:3] == ["  ↑ ↓ move, Space turns on or off, Enter goes on",
+                         "> [x] Slack", "  [ ] Email"]
+    assert lines[-1] == "  [x] Email"
+    press("enter")
+    assert console.choose_many(["Slack"], [False]) == [False]
+    assert capsys.readouterr().out.split("\n")[-3:] == ["  none", "", ""]
+
+
+def test_a_menu_longer_than_the_screen_shows_the_part_around_the_marker(press, monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", console.MainThreadConsole(
+        file=out, highlight=False, soft_wrap=True, width=20, height=8))
+    press(*["down"] * 6, "enter")
+    labels = [f"region-{number}" for number in range(10)]
+    assert console.choose_one(labels) == 6
+    lines = [line for line in out.getvalue().splitlines() if line]
+    assert lines[:5] == ["> region-0", "  region-1", "  region-2", "  region-3", "  6 more below"]
+    assert lines[-7:-1] == ["  3 more above", "  region-3", "  region-4", "  region-5",
+                            "> region-6", "  3 more below"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with msvcrt")
+@pytest.mark.parametrize("sent,key", [(b"\x1b[A", "up"), (b"\x1bOB", "down"), (b" ", "space"),
+                                      (b"\r", "enter"), (b"q", ""), (b"\x1b", "")])
+def test_the_bytes_of_a_key_give_its_name(sent, key):
+    read, write = os.pipe()
+    os.write(write, sent)
+    assert console._posix_key(read) == key
+    os.close(write)
+    with pytest.raises(EOFError):
+        console._posix_key(read)
+    os.close(read)
+
+
+def test_input_that_is_not_a_terminal_gets_no_menu(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("1\n"))
+    assert not console.can_menu()
 
 
 def test_only_console_reads_an_answer_from_the_user():

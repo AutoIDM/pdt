@@ -531,10 +531,15 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
              f"{console.value('pdt.yml')}, or set {console.value('PDT_AZURE_SUBSCRIPTION')}, "
              "to a subscription id this login can use")
     console.heading("Your Azure subscriptions:")
-    for index, sub in enumerate(available, 1):
-        console.choice(index, str(sub.get("name")), str(sub.get("id")))
     try:
-        answer = console.read(f"Deploy to which one? [1-{len(available)}, or a subscription id] ")
+        if console.can_menu():
+            answer = str(console.choose_one([str(sub.get("name")) for sub in available],
+                                            details=[str(sub.get("id")) for sub in available]) + 1)
+        else:
+            for index, sub in enumerate(available, 1):
+                console.choice(index, str(sub.get("name")), str(sub.get("id")))
+            answer = console.read(
+                f"Deploy to which one? [1-{len(available)}, or a subscription id] ")
     except EOFError:
         answer = ""
     typed = [sub for sub in available if answer in (sub.get("id"), sub.get("name"))]

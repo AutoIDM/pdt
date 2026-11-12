@@ -161,3 +161,19 @@ def test_choose_region_names_the_cli_settings(project, monkeypatch, tmp_path, ca
     monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
     assert regions.choose_region(merged_app("my-report"), "azure", True) == ""
     assert "northeurope, because defaults.location" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("pressed,typed,region", [
+    (["enter"], None, "uksouth"),
+    (["down", "enter"], None, "australiaeast"),
+    (["down"] * 99 + ["enter"], "ukwest", "ukwest"),
+])
+def test_a_menu_lists_the_suggestion_first_and_another_region_last(
+        project, monkeypatch, press, pressed, typed, region):
+    add_app(project, "my-report")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Europe/London")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: True)
+    monkeypatch.setattr(regions.console, "ask", lambda _question, _default: typed)
+    press(*pressed)
+    assert regions.choose_region(merged_app("my-report"), "azure", False) == ""
+    assert region_in(project / "pdt.yml") == region

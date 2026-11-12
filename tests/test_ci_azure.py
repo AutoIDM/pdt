@@ -258,3 +258,10 @@ def test_a_typed_subscription_id_not_in_the_list_says_what_to_type(azure_app, mo
     assert calls == []
     message = capsys.readouterr().out
     assert "type a number from the list or one of the subscription ids" in message
+
+
+def test_in_a_menu_the_marked_subscription_is_saved(azure_app, monkeypatch, press):
+    calls = choose_subscription_answering(monkeypatch, "")
+    press("down", "enter")
+    assert deploy_azure.choose_subscription(azure_app, "", True) == OTHER
+    assert calls == [OTHER["id"]]
