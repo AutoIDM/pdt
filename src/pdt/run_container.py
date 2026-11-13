@@ -47,7 +47,9 @@ def run(app: dict, local_url: str, started: Callable[[], object] = lambda: None)
     if built.returncode != 0:
         return built.returncode
     port = web.port(app)
-    command = ["docker", "run", "--rm", "--init", "-p", f"127.0.0.1:{port}:{port}",
+    container = f"pdt-{app['name']}-local"
+    command = ["docker", "run", "--rm", "--init", "--name", container,
+               "-p", f"127.0.0.1:{port}:{port}",
                "-e", f"{web.ENV_PORT}={port}", "-e", f"{web.ENV_URL}={local_url}",
                "-e", f"{web.ENV_STORAGE_READ_DIR}={web.STORAGE_READ_DIR}"]
     for other in app["storage_read"]:
@@ -60,22 +62,50 @@ def run(app: dict, local_url: str, started: Callable[[], object] = lambda: None)
             command += ["-e", name]
     command.append(image)
     console.step(f"running {console.value(image)}")
-    process = subprocess.Popen(command)
+    process = start(command)
     started()
-    return serve(app["name"], process)
+    return serve(app["name"], process, container)
 
 
-def serve(name: str, process: subprocess.Popen) -> int:
-    """Wait for a web app's server; Ctrl+C reaches it too, and stops it."""
+def start(command: list[str], **options) -> subprocess.Popen:
+    """Start a server in its own process group, so that pdt stops the whole group: the server
+    and every process it starts."""
+    if os.name == "nt":
+        return subprocess.Popen(command, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                                **options)
+    return subprocess.Popen(command, start_new_session=True, **options)
+
+
+def interrupt(process: subprocess.Popen) -> None:
+    if os.name == "nt":
+        process.send_signal(signal.CTRL_BREAK_EVENT)
+    else:
+        os.killpg(process.pid, signal.SIGINT)
+
+
+def kill(process: subprocess.Popen) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+    else:
+        os.killpg(process.pid, signal.SIGKILL)
+
+
+def serve(name: str, process: subprocess.Popen, container: str = "") -> int:
+    """Wait for a web app's server. Ctrl+C reaches only pdt, because the server has its own
+    process group; pdt stops the group, kills it after STOP_WAIT, and stops the container."""
     try:
         return process.wait()
     except KeyboardInterrupt:
-        # A Ctrl+C at a terminal reaches the server too; a SIGINT sent to pdt alone does not.
-        process.send_signal(signal.SIGINT)
         try:
+            interrupt(process)
             process.wait(STOP_WAIT)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                kill(process)
+            except OSError:
+                pass
             process.wait()
+        if container:
+            subprocess.run(["docker", "rm", "--force", container], capture_output=True)
         console.done(f"Stopped {console.value(name)}.")
         return 0
