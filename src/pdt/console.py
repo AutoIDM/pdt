@@ -560,6 +560,7 @@ def _answer(prompt: Text, password: bool = False) -> str:
         prompt = Text("\n").join(_wrap(prompt, 0, _console.width - 1))
         prompt.append(" ")
     try:
+        _discard_input()
         if sys.platform != "win32" and _at_terminal():
             _console.print(prompt, end="")
             return _typed(password)
@@ -571,6 +572,7 @@ def _answer(prompt: Text, password: bool = False) -> str:
         _console.end_line()
         raise
     finally:
+        _discard_input()
         drain()
 
 
@@ -740,6 +742,29 @@ def _windows_keys(kernel32, handle, record) -> Iterator[str]:
             yield key
 
 
+def _discard_input() -> None:
+    """Discard the keys that wait in the input of a terminal, such as the lines of a paste
+    after the first, so that a paste answers one question only. Input that is not a
+    terminal, such as a pipe, keeps each line for the next question."""
+    global _unread
+    if sys.stdin is None or not sys.stdin.isatty():
+        return
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetStdHandle.argtypes = (wintypes.DWORD,)
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.FlushConsoleInputBuffer.argtypes = (wintypes.HANDLE,)
+        kernel32.FlushConsoleInputBuffer.restype = wintypes.BOOL
+        # STD_INPUT_HANDLE is -10.
+        kernel32.FlushConsoleInputBuffer(kernel32.GetStdHandle(-10))
+        return
+    import termios
+    _unread = b""
+    termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+
+
 @contextmanager
 def keys() -> Iterator[Callable[[], str]]:
     """A function that waits for one key and returns its name: `up`, `down`, `space`,
@@ -897,6 +922,7 @@ def _menu(labels: list[str], details: list[str], on: set[int] | None, at: int) -
 
     _console.show_cursor(False)
     try:
+        _discard_input()
         with keys() as key:
             while True:
                 draw()
@@ -926,6 +952,7 @@ def _menu(labels: list[str], details: list[str], on: set[int] | None, at: int) -
             answer = [_menu_line("  ", f"[x] {labels[index]}") for index in sorted(on)]
         _console.redraw(drawn, answer or [Text("  none", style="dim")])
     finally:
+        _discard_input()
         _console.show_cursor(True)
         drain()
     return at

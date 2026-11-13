@@ -272,6 +272,8 @@ def test_confirm_treats_a_person_pressing_ctrl_d_as_no_without_advice(monkeypatc
     press("eof")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    # The stdin of pytest has no terminal input to discard.
+    monkeypatch.setattr("pdt.console._discard_input", lambda: None)
     assert deploy.confirm(["do a thing"], assume_yes=False) is False
     assert "--yes" not in capsys.readouterr().out
 
