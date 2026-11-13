@@ -7,22 +7,11 @@ keys the app may set and what each provider creates for it.
 
 from __future__ import annotations
 
-import importlib
-from types import ModuleType
+from pdt.profiles import job, web
 
-NAMES = ("job", "web")
+PROFILES = {"job": job, "web": web}
+NAMES = tuple(PROFILES)
 DEFAULT = "job"
-
-
-
-def module(name: str) -> ModuleType:
-    if name not in NAMES:
-        raise ValueError(f"no app profile named {name!r}")
-    return importlib.import_module(f"pdt.profiles.{name}")
-
-
-def for_app(app: dict) -> ModuleType:
-    return module(app.get("app_profile") or DEFAULT)
 
 
 def problems(app: dict, provider: str) -> list[str]:
@@ -30,4 +19,4 @@ def problems(app: dict, provider: str) -> list[str]:
     name = app.get("app_profile") or DEFAULT
     if name not in NAMES:
         return [f"{app['name']}: app_profile must be one of: {', '.join(NAMES)}"]
-    return module(name).problems(app, provider)
+    return PROFILES[name].problems(app, provider)

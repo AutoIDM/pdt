@@ -23,9 +23,6 @@ in PDT_STORAGE_READ_URLS.
 
 from __future__ import annotations
 
-NAME = "web"
-
-KEYS = {"web"}
 WEB_KEYS = {"port", "health_path", "auth", "resources"}
 AUTH_KEYS = {"provider", "allowed_domains", "allowed_groups"}
 # What a deployed web app gets when web.resources does not say.

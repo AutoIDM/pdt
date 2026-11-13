@@ -154,14 +154,6 @@ def test_storage_mapping_shape_is_checked(project):
     assert any("unknown key 'size'" in p for p in problems)
 
 
-
-
-def test_the_job_profile_is_the_default_and_owns_the_schedule():
-    assert profiles.DEFAULT == job.NAME
-    assert "schedule" in job.KEYS
-    assert job.KEYS.isdisjoint(web.KEYS)
-
-
 def test_a_top_level_auth_section_points_at_web(project):
     (project / "pdt.yml").write_text(GOOGLE_CLOUD)
     add_app(project, "dashboard", "app_profile: web\nauth: public\n")

@@ -6,11 +6,6 @@ key is a job.
 
 from __future__ import annotations
 
-NAME = "job"
-
-# The app keys only this profile uses.
-KEYS = {"schedule", "job"}
-
 
 def problems(app: dict, provider: str) -> list[str]:
     from pdt import config
