@@ -758,7 +758,10 @@ def follow_store(list_runs: Callable[[], list[Run]],
         run = latest(list_runs, resolve, run)
 
 
-def health_row(app_name: str, found: list[Run] | None) -> dict:
+def health_row(app_name: str, found: list[Run] | None, service: bool = False) -> dict:
+    """A web app's one row is its deployed service: `ok` while it serves, `stopped` while it is
+    paused, `failed` when it cannot serve; Recent says the same in place of a count of
+    finished runs, since a service never finishes."""
     if found is None:
         return {"app": app_name, "status": "unknown", "last_run": None,
                 "succeeded": 0, "runs": 0}
@@ -766,13 +769,22 @@ def health_row(app_name: str, found: list[Run] | None) -> dict:
         return {"app": app_name, "status": "not yet run", "last_run": None,
                 "succeeded": 0, "runs": 0}
     found = found[:DEFAULT_RUNS]
+    if service:
+        status = {"running": "ok"}.get(found[0].status, found[0].status)
+        return {"app": app_name, "status": status, "last_run": found[0].started.isoformat(),
+                "succeeded": 0, "runs": 0, "recent": found[0].status}
     status = {"succeeded": "ok"}.get(found[0].status, found[0].status)
+    # A run that is still going has no result yet, so "Recent" counts finished runs only.
+    finished = [run for run in found if run.status != "running"]
     return {"app": app_name, "status": status, "last_run": found[0].started.isoformat(),
-            "succeeded": sum(run.status == "succeeded" for run in found), "runs": len(found)}
+            "succeeded": sum(run.status == "succeeded" for run in finished),
+            "runs": len(finished)}
 
 
-def health(app_runs: dict[str, list[Run] | None], as_json: bool) -> int:
-    rows = [health_row(app_name, found) for app_name, found in app_runs.items()]
+def health(app_runs: dict[str, list[Run] | None], as_json: bool,
+           services: set[str] = frozenset()) -> int:
+    rows = [health_row(app_name, found, app_name in services)
+            for app_name, found in app_runs.items()]
     if as_json:
         console.data(json.dumps(rows))
     else:
@@ -781,7 +793,8 @@ def health(app_runs: dict[str, list[Run] | None], as_json: bool) -> int:
             [[row["app"], row["status"],
               local_text(datetime.fromisoformat(row["last_run"]))
               if row["last_run"] else "",
-              f"{row['succeeded']} of {row['runs']} succeeded" if row["runs"] else ""]
+              row.get("recent")
+              or (f"{row['succeeded']} of {row['runs']} succeeded" if row["runs"] else "")]
              for row in rows],
             row_styles=[["bold", console.RUN_STATUS_COLOURS[row["status"]]] for row in rows])
     return 1 if any(row["status"] in ("failed", "unknown") for row in rows) else 0

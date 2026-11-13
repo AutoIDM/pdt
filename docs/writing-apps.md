@@ -35,6 +35,29 @@ To change either step, run `pdt new <app> --from-scripts`. It writes `requiremen
 pdt new my-report --from-scripts
 ```
 
+## Web apps
+
+A web app is an HTTP server that pdt deploys behind a Google sign-in. Set `app_profile: web` in the app's `pdt.yml`. Web apps deploy to Google Cloud.
+
+```yaml
+app_profile: web
+web:
+  port: 8050          # default 8080
+  health_path: /      # default /
+  auth:
+    provider: google
+    allowed_domains: [example.com]
+    allowed_groups: [sales@example.com]
+storage:
+  read: [warehouse]
+```
+
+The app is a `run.py`, or a folder with a `Dockerfile` and a `pdt.yml`. It listens on `0.0.0.0` at the port in `PDT_PORT`.
+
+Visitors sign in before a request reaches the app, so the app needs no sign-in code. `allowed_domains` and `allowed_groups` list who may enter. The visitor's email is in the `X-Goog-Authenticated-User-Email` header, as `accounts.google.com:<email>`. A Python app reads it with `pdt.utils.auth.current_user(self.headers)`, which returns the email, or `""` in a local `pdt run`.
+
+`pdt run APP` serves the app on `http://127.0.0.1:PORT/` and opens it in the browser. Ctrl+C stops it. `pdt run APP --deployed` opens the deployed app.
+
 ## Logging
 
 `pdt.utils.log` writes one log line per event:

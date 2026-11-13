@@ -131,6 +131,15 @@ BUILD_PUSH_ROLE = "roles/artifactregistry.writer"
 # https://docs.cloud.google.com/build/docs/securing-builds/store-manage-build-logs
 BUILD_BUCKET_ROLE = "roles/storage.admin"
 BUILD_LIFECYCLE = {"rule": [{"action": {"type": "Delete"}, "condition": {"age": 1}}]}
+# The image repository deletes an image that has no tag once it is 30 days old, and keeps the
+# 2 newest of each image whatever their age. Each deploy tags the image it deploys `latest`.
+CLEANUP_POLICIES = [
+    {"name": "pdt-delete-untagged", "action": {"type": "Delete"},
+     "condition": {"tagState": "untagged", "olderThan": "30d"}},
+    {"name": "pdt-keep-newest", "action": {"type": "Keep"},
+     "mostRecentVersions": {"keepCount": 2}},
+]
+CLEANUP_LINE = "delete untagged images after 30 days, keep the 2 newest of each image"
 # What the deployer needs to submit a build as the builder, keyed by what the
 # refusal names: (marker in the error, role, what to grant it on).
 BUILD_SUBMIT_ROLES = (
@@ -642,6 +651,61 @@ def cloud_build_image(stage: Path, image: str, project: str, region: str,
          "and run the deploy again")
 
 
+def other_profile(app: dict, project: str, region: str) -> str:
+    """The other profile's resource that pdt deployed for this app, or "": a job's Cloud Run job
+    when the app is now a web app, or a web app's Cloud Run service when it is now a job."""
+    kind = "jobs" if app.get("app_profile", "job") == "web" else "services"
+    found = read_json_or_none("run", kind, "describe", f"pdt-{app['name']}", "--region", region,
+                              "--project", project)
+    return kind[:-1] if managed_by_pdt(found) else ""
+
+
+def refuse_profile_change(app: dict, project: str, region: str, command: str) -> None:
+    """Stop when the app is deployed under its other profile: neither profile's deploy or
+    destroy removes the other's resources."""
+    found = other_profile(app, project, region)
+    if found:
+        profile = app.get("app_profile", "job")
+        other = "job" if profile == "web" else "web"
+        fail(f"Cloud Run {console.escape(found)} {console.value(f'pdt-{app['name']}')} is still deployed from "
+             f"when {console.value(app['name'])} was a {console.value(other)} "
+             f"app; set app_profile: {console.value(other)} and run {console.value(f'pdt destroy {app['name']}')}"
+             f", then set app_profile: {console.value(profile)} and run "
+             f"{console.value(f'pdt {command} {app['name']}')} again")
+
+
+def pdt_services(project: str) -> list[str]:
+    """The Cloud Run services pdt made in the project, in every region: the web apps."""
+    return [((item.get("metadata") or {}).get("name") or "")
+            for item in list_json("run", "services", "list", "--project", project)
+            if managed_by_pdt(item)]
+
+
+# CLEANUP_POLICIES as `gcloud artifacts repositories describe` shows them.
+CLEANUP_POLICIES_SET = {
+    "pdt-delete-untagged": {"action": "DELETE",
+                            "condition": {"olderThan": "2592000s", "tagState": "UNTAGGED"}},
+    "pdt-keep-newest": {"action": "KEEP", "mostRecentVersions": {"keepCount": 2}},
+}
+
+
+def cleanup_policies_set(repository: dict | None) -> bool:
+    """Whether the repository has exactly CLEANUP_POLICIES, in force and not a dry run."""
+    current = {name: {key: value for key, value in policy.items() if key != "id"}
+               for name, policy in ((repository or {}).get("cleanupPolicies") or {}).items()}
+    return current == CLEANUP_POLICIES_SET and not (repository or {}).get("cleanupPolicyDryRun")
+
+
+def set_cleanup_policies(project: str, region: str, repo: str) -> None:
+    console.step(f"setting the clean-up policy of Artifact Registry repo {console.value(repo)}")
+    with tempfile.TemporaryDirectory(prefix="pdt-") as folder:
+        policy = Path(folder, "cleanup.json")
+        policy.write_text(json.dumps(CLEANUP_POLICIES))
+        run_quiet("artifacts", "repositories", "set-cleanup-policies", repo,
+                  "--location", region, "--project", project, "--policy", str(policy),
+                  "--no-dry-run")
+
+
 def ensure_builder(project: str, region: str, repo: str, builder: str, bucket: str,
                    builder_exists: bool, bucket_exists: bool) -> None:
     if not builder_exists:
@@ -925,6 +989,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             require_managed(described, f"bucket {console.value(bucket)}")
             bucket_exists = described is not None
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
+        refuse_profile_change(app, project, region, "deploy")
         run_job = read_json_or_none(
             "run", "jobs", "describe", job, "--region", region, "--project", project)
         require_managed(run_job, f"Cloud Run job {console.value(job)}")
@@ -950,6 +1015,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
 
     actions = [console.Markup(("use existing" if repo_exists else "create")
                               + f" Artifact Registry repo {console.value(repo)}")]
+    set_cleanup = not cleanup_policies_set(repository)
+    if set_cleanup:
+        actions.append(console.Markup(f"set the clean-up policy of {console.value(repo)}: "
+                                      f"{console.escape(CLEANUP_LINE)}"))
     if cloud:
         actions.append(console.Markup(("use existing" if builder_exists else "create")
                                       + f" service account {console.value(builder)} for "
@@ -994,6 +1063,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                   "--repository-format", "docker", "--location", region,
                   "--project", project, "--labels", "managed-by=pdt",
                   slow=f"creating: Artifact Registry repository {console.value(repo)}")
+    if set_cleanup:
+        set_cleanup_policies(project, region, repo)
     template = ((run_job or {}).get("spec", {}).get("template", {}).get("spec", {})
                 .get("template", {}).get("spec", {}))
     pinned = (template.get("containers") or [{}])[0].get("image")
@@ -1102,6 +1173,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_scheduler = scheduler_owned(scheduler, name, project, region, sa)
         if scheduler is not None and not delete_scheduler:
             console.note(f"Cloud Scheduler job {console.value(job)} is not managed by PDT; keeping it")
+        refuse_profile_change(app, project, region, "destroy")
         run_job = read_json_or_none(
             "run", "jobs", "describe", job,
             "--region", region, "--project", project)
@@ -1164,7 +1236,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
         builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
-        last_app = not other_project_jobs and not unmanaged_app_resource
+        # A web app is a Cloud Run service; it shares the builder and the build bucket.
+        last_app = (not other_project_jobs and not pdt_services(project)
+                    and not unmanaged_app_resource)
         delete_builder = last_app and builder_owned(builder_account)
         delete_builds = last_app and managed_by_pdt(builds_bucket)
 
@@ -1519,6 +1593,9 @@ def main() -> int:
         return relogin(args.yes)
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
+    if app["app_profile"] == "web":
+        from pdt import deploy_google_cloud_web as web_module
+        return web_module.command(app, args.command, args.rest, args.yes, args.plan)
     if args.command == "runs":
         return runs(app, args.rest, args.yes)
     if args.command == "logs":

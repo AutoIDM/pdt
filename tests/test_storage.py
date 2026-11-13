@@ -83,8 +83,7 @@ def test_done_is_written_last(store, tmp_path, monkeypatch):
     (local / "b.csv").write_text("b")
     (local / "a.csv").write_text("a")
     order = []
-    monkeypatch.setattr("fsspec.implementations.dirfs.DirFileSystem.pipe_file",
-                        lambda self, path, data, **kw: order.append(path))
+    monkeypatch.setattr(storage.Local, "put", lambda self, path, data: order.append(path))
     store.push(local, "runs/20260101T000000Z-abc/")
     assert order[-1] == "runs/20260101T000000Z-abc/_done"
     assert len(order) == 3

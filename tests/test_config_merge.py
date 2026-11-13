@@ -228,3 +228,11 @@ def test_validate_accepts_timezone_under_platform_and_rejects_schedule(project):
     assert validate() == [
         "pdt.yml: platform: 'schedule' belongs in the top level of the app's pdt.yml, "
         "or its apps: entry in the project's pdt.yml, not here"]
+
+
+def test_a_job_that_reads_other_folders_keeps_its_own_store(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: azure\n")
+    add_app(project, "client1", "schedule: daily\n")
+    add_app(project, "report", "schedule: daily\nstorage:\n  enabled: false\n  read: [client1]\n")
+    assert any("storage.read needs storage.enabled: true for a job" in p
+               for p in validate_app("report"))

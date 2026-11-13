@@ -1,0 +1,25 @@
+# Sample web app: a small HTTP server that greets the person who signed in.
+# Use it as a template for a dashboard or an internal tool. A web app runs all
+# the time behind the platform's sign-in, so it has no schedule.
+
+# The shape of what pdt deploys. Leave it off for a job that runs on a schedule.
+app_profile: web
+
+web:
+  # The app listens at this port; run.py reads it from PDT_PORT.
+  port: 8080
+  # `pdt run` and the platform's startup probe ask this path.
+  health_path: /healthz
+  # Who may use the app. A web app always has a sign-in.
+  auth:
+    # Where visitors sign in: google.
+    provider: google
+    # Only people from these domains may enter.
+    allowed_domains: [example.com]
+    # Or only members of these groups.
+    # allowed_groups: [sales@example.com]
+
+# Env vars this app needs. `pdt validate` checks them against your .env.
+env:
+  required: []
+  optional: []

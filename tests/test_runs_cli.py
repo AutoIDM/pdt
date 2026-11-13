@@ -408,9 +408,22 @@ def test_health_rows_and_exit_code(capsys):
     assert lines[1].split() == ["a", "ok", "2026-09-23", "10:00:12", "1", "of", "2", "succeeded"]
     assert lines[2].split() == ["b", "failed", "2026-09-22", "10:00:00", "0", "of", "1",
                                 "succeeded"]
-    assert lines[3].split() == ["c", "running", "2026-09-23", "10:00:24", "0", "of", "1",
-                                "succeeded"]
+    # A run still going has no result, so it counts in no "of N succeeded".
+    assert lines[3].split() == ["c", "running", "2026-09-23", "10:00:24"]
     assert lines[4].split() == ["d", "not", "yet", "run"]
+
+
+def test_health_shows_a_serving_web_app_as_ok_and_running(capsys):
+    service = Run("pdt-dashboard", T1, None, "running")
+    assert runs_cli.health({"dashboard": [service]}, False, {"dashboard"}) == 0
+    assert capsys.readouterr().out.splitlines()[1].split() == [
+        "dashboard", "ok", "2026-09-23", "10:00:24", "running"]
+    failed = Run("pdt-dashboard", T1, None, "failed")
+    assert runs_cli.health({"dashboard": [failed]}, False, {"dashboard"}) == 1
+    assert capsys.readouterr().out.splitlines()[1].split()[1::3] == ["failed", "failed"]
+    stopped = Run("pdt-dashboard", T1, None, "stopped")
+    assert runs_cli.health({"dashboard": [stopped]}, False, {"dashboard"}) == 0
+    assert capsys.readouterr().out.splitlines()[1].split()[1::3] == ["stopped", "stopped"]
 
 
 def test_health_json_and_a_clean_exit(capsys):

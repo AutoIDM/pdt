@@ -156,7 +156,10 @@ def test_every_bundled_example_is_complete():
     for example in examples:
         assert (example / "run.py").is_file() or any(example.glob("*.ps1")), example.name
         config = yaml.safe_load((example / "pdt.yml").read_text())
-        assert config["schedule"], f"{example.name} has no schedule"
+        if config.get("app_profile") == "web":
+            assert "schedule" not in config, f"{example.name} is a web app with a schedule"
+        else:
+            assert config["schedule"], f"{example.name} has no schedule"
         assert "name" not in config, f"{example.name} pins a name, so it cannot be renamed"
 
 
