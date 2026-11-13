@@ -36,7 +36,7 @@ From your own computer, `pdt storage APP ls`, `get`, and `query` read the files 
 
 ## Reading another app's files
 
-A web app often shows what a job produced, for example a dashboard over a database that a job rebuilds every hour. `storage:` also takes a mapping: `enabled` (default `true`, the same as `storage: true`) and `read`, the list of other apps in the project whose storage this app may read. `pdt deploy` grants the read rights, and the app reads with a read-only view of the other app's folder:
+An app can read the folders of the apps listed under `storage: read:` in its `pdt.yml`. It cannot change them. `storage:` then takes a mapping: `enabled` (default `true`, the same as `storage: true`) and `read`.
 
 ```yaml
 storage:
@@ -44,12 +44,17 @@ storage:
   read: [warehouse]
 ```
 
+A web app finds each folder as read-only files at `/pdt/storage/<app>/` (the folder in `PDT_STORAGE_READ_DIR`), so any container reads it with no pdt code. A file the job writes shows up within about a minute.
+
+A Python app can also open the folder with `pdt.utils.storage`:
+
 ```python
 from pathlib import Path
 
 from pdt.utils import storage
 
+other = storage.store(app="warehouse")
 path = storage.read_only("warehouse").fetch("state/warehouse.duckdb", Path("warehouse.duckdb"))
 ```
 
-`fetch` copies the file to the local path when the stored copy changed since the last fetch and returns the path, or `None` when the file is not there. A reader takes no lock, so it never blocks the job that writes the files, and it never sees a half-written file: the Local backend (Windows and `pdt run`) now writes each file to a temporary name and replaces the old file in one step, and every cloud store writes an object in one step. `PDT_STORAGE_READ_URLS` carries the folder of each app in `read` to the deployed app; `pdt run APP` points it at `.pdt/storage/<other-app>/` in your project.
+`fetch` copies the file to the local path when the stored copy changed since the last fetch and returns the path, or `None` when the file is not there. A reader takes no lock, so it never blocks the job that writes the files, and it never sees a half-written file. For a job, `storage: read:` works with the `azure` provider only. Run `pdt deploy APP` after you change the list.

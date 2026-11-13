@@ -45,7 +45,7 @@ web:
   port: 8050                    # the app listens here (default 8080)
   health_path: /                # must answer 200 (default /)
   auth:
-    provider: google            # or `web.auth: public` for no sign-in
+    provider: google
     allowed_domains: [example.com]
     allowed_groups: [sales@example.com]
 storage:
@@ -53,7 +53,7 @@ storage:
   read: [warehouse]             # other apps whose storage this app may read
 ```
 
-A web app has no `schedule`; `pdt validate` rejects one. A web app is either a `run.py` that serves HTTP on the port in `PDT_PORT`, or any container: a folder with a `Dockerfile` and a `pdt.yml` and no `run.py`, such as nginx serving static files. It needs no sign-in code. The platform puts its own gate in front of it, and no request reaches the app before the visitor signed in: Identity-Aware Proxy on Cloud Run, oauth2-proxy on a Windows PC. `web.auth: public` serves everyone instead; `pdt validate` insists on one or the other, so a web app never goes out with an unanswered question.
+A web app has no `schedule`; `pdt validate` rejects one. A web app is either a `run.py` that serves HTTP on the port in `PDT_PORT`, or any container: a folder with a `Dockerfile` and a `pdt.yml` and no `run.py`, such as nginx serving static files. It needs no sign-in code. The platform puts its own gate in front of it, and no request reaches the app before the visitor signed in: Identity-Aware Proxy on Cloud Run, oauth2-proxy on a Windows PC. A web app is never open to everyone: `pdt validate` requires `web.auth.provider` and at least one of `web.auth.allowed_domains` and `web.auth.allowed_groups`.
 
 `web.auth.provider` names where visitors sign in. `google` works on Google Cloud and Windows; `microsoft` is accepted but has no gate yet. On Google Cloud nothing more is needed: Identity-Aware Proxy uses a Google-managed OAuth client. On Windows, create an OAuth client in the Google Cloud console with the redirect URI `pdt deploy` names, and put its id and secret in `.env` as `PDT_AUTH_CLIENT_ID` and `PDT_AUTH_CLIENT_SECRET`; `pdt validate` and `pdt deploy` require them like any other env var. Windows also needs `PDT_AUTH_COOKIE_SECRET` (any random text), and with `web.auth.allowed_groups` a service account with domain-wide delegation; see [Web apps on Windows](platforms.md#web-apps-on-windows).
 

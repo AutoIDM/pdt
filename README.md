@@ -132,7 +132,7 @@ A web app (`app_profile: web`): a small HTTP server that greets the person who s
 - [Deploying](docs/deploy.md): deploy, run, pause, and destroy a job, and run pdt from CI
 - [Commands](docs/commands.md): every `pdt` command and its options
 - [Settings](docs/settings.md): every setting in the project's and the apps' `pdt.yml` files, and every env var, with its allowed values and its default
-- [How pdt works](docs/primitives.md): the practices, the definitions, and the building blocks of jobs and web apps, with the web app pieces that are missing
+- [How pdt works](docs/primitives.md): the practices, the definitions, and the building blocks of jobs and web apps
 - [Choosing where jobs run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
 - [App profiles](docs/profiles.md): the `job` and `web` profiles, what each command means for each, and which resources each provider creates
 - [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
