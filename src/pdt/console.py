@@ -849,16 +849,23 @@ def _menu_line(marker: str, label: str, detail: str = "") -> Text:
     return line
 
 
+MENU_LINES = 10
+MENU_WRAP = 4
+
+
 def _menu(labels: list[str], details: list[str], on: set[int] | None, at: int) -> int:
     """Show one line per label and a marker the Up and Down keys move, until Enter. With
-    `on`, each line has a box and Space turns it on or off. A list longer than the screen
-    shows the part around the marker. Then the lines of the answer take the menu's place."""
+    `on`, each line has a box and Space turns it on or off. A list longer than MENU_LINES
+    or the screen shows the part around the marker. In a list longer than MENU_WRAP lines,
+    the marker goes from one end to the other. Then the lines of the answer take the menu's
+    place."""
     arrows = "↑ ↓"
     try:
         arrows.encode(_console.encoding)
     except UnicodeEncodeError:
         arrows = "Up and Down"
-    room = max(3, _console.height - 4)
+    room = min(MENU_LINES, max(3, _console.height - 4))
+    wrap = len(labels) > MENU_WRAP
     top = drawn = 0
 
     def draw() -> None:
@@ -894,8 +901,12 @@ def _menu(labels: list[str], details: list[str], on: set[int] | None, at: int) -
                     # under them.
                     drawn = 0
                     _console.show_cursor(False)
+                elif pressed == "up" and wrap and at == 0:
+                    at = len(labels) - 1
                 elif pressed == "up":
                     at = max(0, at - 1)
+                elif pressed == "down" and wrap and at == len(labels) - 1:
+                    at = 0
                 elif pressed == "down":
                     at = min(len(labels) - 1, at + 1)
                 elif pressed == "space" and on is not None:

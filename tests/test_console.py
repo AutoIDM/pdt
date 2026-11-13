@@ -458,6 +458,32 @@ def test_a_menu_longer_than_the_screen_shows_the_part_around_the_marker(press, m
                             "> region-6", "  3 more below"]
 
 
+@pytest.mark.parametrize("count,pressed,chosen", [
+    (4, ["up", "enter"], 0), (4, ["down"] * 4 + ["enter"], 3),
+    (5, ["up", "enter"], 4), (5, ["down"] * 5 + ["enter"], 0),
+])
+def test_a_menu_of_more_than_4_lines_goes_from_one_end_to_the_other(press, count, pressed, chosen):
+    press(*pressed)
+    assert console.choose_one([f"line-{number}" for number in range(count)]) == chosen
+    press(*pressed[:-1], "space", "enter")
+    on = console.choose_many([f"line-{number}" for number in range(count)], [False] * count)
+    assert on == [number == chosen for number in range(count)]
+
+
+def test_a_menu_shows_at_most_10_lines_and_follows_the_marker_to_the_end(press, monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(console, "_console", console.MainThreadConsole(
+        file=out, highlight=False, soft_wrap=True, width=20, height=40))
+    press("up", "enter")
+    labels = [f"region-{number}" for number in range(30)]
+    assert console.choose_one(labels) == 29
+    lines = [line for line in out.getvalue().splitlines() if line]
+    assert lines[:11] == ["> region-0", *(f"  region-{number}" for number in range(1, 10)),
+                          "  20 more below"]
+    assert lines[11:-1] == ["  20 more above", *(f"  region-{number}" for number in range(20, 29)),
+                            "> region-29"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with ReadConsoleInputW")
 @pytest.mark.parametrize("sent,key", [
     (b"\x1b[A", "up"), (b"\x1bOB", "down"), (b" ", "space"), (b"\r", "enter"), (b"\x7f", "backspace"),
