@@ -127,7 +127,7 @@ RUN pip uninstall -y --root-user-action=ignore pip
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libicu76 libssl3t64 libgssapi-krb5-2 && rm -rf /var/lib/apt/lists/*
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFFERED=1
 RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
-RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh && echo '{{"LogLevel":"Critical"}}' > "$(dirname "$pwsh")/powershell.config.json"
+RUN pwsh="$(XDG_DATA_HOME=/opt/pwsh-data /opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh && echo '{{"LogLevel":"Critical"}}' > "$(dirname "$pwsh")/powershell.config.json"
 {modules}""" + AS_APP_USER + f"""\
 COPY --chown={APP_USER}:{APP_USER} .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py

@@ -197,8 +197,7 @@ def read_only(app_name: str, credentials=None) -> Store:
                        f"storage: read: in the app's {config.APP_FILE} and deploy again")
     if app_name in urls:
         return Store(urls[app_name], credentials, read_only=True)
-    folder = config.find_project() / ".pdt" / "storage" / app_name
-    return Store(folder.as_uri() + "/", credentials, read_only=True)
+    return store(credentials, app=app_name)
 
 
 def sync(local: Path | None = None, lock_ttl: timedelta = LOCK_TTL,

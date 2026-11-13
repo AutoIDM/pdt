@@ -651,6 +651,29 @@ def cloud_build_image(stage: Path, image: str, project: str, region: str,
          "and run the deploy again")
 
 
+def other_profile(app: dict, project: str, region: str) -> str:
+    """The other profile's resource that pdt deployed for this app, or "": a job's Cloud Run job
+    when the app is now a web app, or a web app's Cloud Run service when it is now a job."""
+    kind = "jobs" if app.get("app_profile", "job") == "web" else "services"
+    found = read_json_or_none("run", kind, "describe", f"pdt-{app['name']}", "--region", region,
+                              "--project", project)
+    return kind[:-1] if managed_by_pdt(found) else ""
+
+
+def refuse_profile_change(app: dict, project: str, region: str, command: str) -> None:
+    """Stop when the app is deployed under its other profile: neither profile's deploy or
+    destroy removes the other's resources."""
+    found = other_profile(app, project, region)
+    if found:
+        profile = app.get("app_profile", "job")
+        other = "job" if profile == "web" else "web"
+        fail(f"Cloud Run {console.escape(found)} {console.value(f'pdt-{app['name']}')} is still deployed from "
+             f"when {console.value(app['name'])} was a {console.value(other)} "
+             f"app; set app_profile: {console.value(other)} and run {console.value(f'pdt destroy {app['name']}')}"
+             f", then set app_profile: {console.value(profile)} and run "
+             f"{console.value(f'pdt {command} {app['name']}')} again")
+
+
 def pdt_services(project: str) -> list[str]:
     """The Cloud Run services pdt made in the project, in every region: the web apps."""
     return [((item.get("metadata") or {}).get("name") or "")
@@ -658,11 +681,19 @@ def pdt_services(project: str) -> list[str]:
             if managed_by_pdt(item)]
 
 
+# CLEANUP_POLICIES as `gcloud artifacts repositories describe` shows them.
+CLEANUP_POLICIES_SET = {
+    "pdt-delete-untagged": {"action": "DELETE",
+                            "condition": {"olderThan": "2592000s", "tagState": "UNTAGGED"}},
+    "pdt-keep-newest": {"action": "KEEP", "mostRecentVersions": {"keepCount": 2}},
+}
+
+
 def cleanup_policies_set(repository: dict | None) -> bool:
-    """Whether the repository already has CLEANUP_POLICIES, in force and not a dry run."""
-    names = sorted((repository or {}).get("cleanupPolicies") or {})
-    return (names == sorted(policy["name"] for policy in CLEANUP_POLICIES)
-            and not (repository or {}).get("cleanupPolicyDryRun"))
+    """Whether the repository has exactly CLEANUP_POLICIES, in force and not a dry run."""
+    current = {name: {key: value for key, value in policy.items() if key != "id"}
+               for name, policy in ((repository or {}).get("cleanupPolicies") or {}).items()}
+    return current == CLEANUP_POLICIES_SET and not (repository or {}).get("cleanupPolicyDryRun")
 
 
 def set_cleanup_policies(project: str, region: str, repo: str) -> None:
@@ -958,6 +989,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             require_managed(described, f"bucket {console.value(bucket)}")
             bucket_exists = described is not None
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
+        refuse_profile_change(app, project, region, "deploy")
         run_job = read_json_or_none(
             "run", "jobs", "describe", job, "--region", region, "--project", project)
         require_managed(run_job, f"Cloud Run job {console.value(job)}")
@@ -1141,6 +1173,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_scheduler = scheduler_owned(scheduler, name, project, region, sa)
         if scheduler is not None and not delete_scheduler:
             console.note(f"Cloud Scheduler job {console.value(job)} is not managed by PDT; keeping it")
+        refuse_profile_change(app, project, region, "destroy")
         run_job = read_json_or_none(
             "run", "jobs", "describe", job,
             "--region", region, "--project", project)

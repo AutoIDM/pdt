@@ -63,11 +63,18 @@ def test_put_if_version_replaces_through_a_rename(store, tmp_path, monkeypatch):
     assert store.open("state/a.txt").read() == b"v2"
 
 
-def test_read_only_falls_back_to_the_project_folder(project, monkeypatch):
+def test_read_only_without_a_url_map_finds_the_folder_next_to_its_own(project, monkeypatch):
     monkeypatch.delenv(storage.READ_URLS_ENV, raising=False)
+    monkeypatch.delenv("PDT_STORAGE_URL", raising=False)
     add_app(project, "warehouse", "schedule: hourly\n")
+    add_app(project, "report", "schedule: daily\nstorage:\n  read: [warehouse]\n")
+    monkeypatch.chdir(project / "report")
     found = storage.read_only("warehouse")
     assert found.url == (project / ".pdt" / "storage" / "warehouse").as_uri() + "/"
+    assert found.read_only
+    # A deployed job has its own folder's URL, and the other app's folder is next to it.
+    monkeypatch.setenv("PDT_STORAGE_URL", "az://pdt-data/report/")
+    assert storage.read_only("warehouse").url == "az://pdt-data/warehouse/"
 
 
 def test_read_only_uses_the_deployed_urls(project, monkeypatch, tmp_path):

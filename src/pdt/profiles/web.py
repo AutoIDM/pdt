@@ -60,13 +60,14 @@ COMMANDS = {
     "run": "start the app on this computer with no sign-in, from run.py or its Dockerfile; "
            "Ctrl+C stops",
     "run --deployed": "open the deployed app in the browser",
-    "runs": "one row per start of the server, with its exit code when it stopped",
-    "logs": "the server's log; the running server by default",
-    "health": "whether the deployed server answers web.health_path",
+    "runs": "one row: the deployed service, since its last deploy",
+    "logs": "what the deployed service wrote since its last deploy",
+    "health": "whether the deployed service serves, is stopped, or failed",
     "pause": "stop the server; `unpause` starts it again",
     "deploy": "build the app, create or update the server and its sign-in, wait until "
               "health_path answers, print the URL",
-    "destroy": "remove the server, its sign-in, and the logs; keep the storage",
+    "destroy": "remove the server, its sign-in, its image, and its service account; keep the "
+               "storage and the logs",
 }
 
 ANSWERS = {

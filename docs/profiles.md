@@ -55,12 +55,12 @@ Config keys only this profile uses: `web`.
 | --- | --- |
 | `pdt run` | start the app on this computer with no sign-in, from run.py or its Dockerfile; Ctrl+C stops |
 | `pdt run --deployed` | open the deployed app in the browser |
-| `pdt runs` | one row per start of the server, with its exit code when it stopped |
-| `pdt logs` | the server's log; the running server by default |
-| `pdt health` | whether the deployed server answers web.health_path |
+| `pdt runs` | one row: the deployed service, since its last deploy |
+| `pdt logs` | what the deployed service wrote since its last deploy |
+| `pdt health` | whether the deployed service serves, is stopped, or failed |
 | `pdt pause` | stop the server; `unpause` starts it again |
 | `pdt deploy` | build the app, create or update the server and its sign-in, wait until health_path answers, print the URL |
-| `pdt destroy` | remove the server, its sign-in, and the logs; keep the storage |
+| `pdt destroy` | remove the server, its sign-in, its image, and its service account; keep the storage and the logs |
 
 | Concern | AWS | Azure | Google Cloud | Windows |
 | --- | --- | --- | --- | --- |

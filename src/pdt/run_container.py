@@ -57,7 +57,8 @@ def run(app: dict, local_url: str, started: Callable[[], object] = lambda: None)
         folder.mkdir(parents=True, exist_ok=True)
         command += ["-v", f"{folder}:{web.STORAGE_READ_DIR}/{other}:ro"]
     spec = config.env_spec(app)
-    for name in [*(spec.get("required") or []), *(spec.get("optional") or [])]:
+    for name in [*(spec.get("required") or []), *(spec.get("optional") or []),
+                 *(name for group in spec.get("one_of") or [] for name in group)]:
         if os.environ.get(name, "") != "":
             command += ["-e", name]
     command.append(image)
@@ -100,12 +101,15 @@ def serve(name: str, process: subprocess.Popen, container: str = "") -> int:
             interrupt(process)
             process.wait(STOP_WAIT)
         except (OSError, subprocess.TimeoutExpired):
-            try:
-                kill(process)
-            except OSError:
-                pass
-            process.wait()
-        if container:
-            subprocess.run(["docker", "rm", "--force", container], capture_output=True)
+            pass
+        # The first process can exit while another process of the group still runs.
+        try:
+            kill(process)
+        except OSError:
+            pass
+        process.wait()
         console.done(f"Stopped {console.value(name)}.")
         return 0
+    finally:
+        if container:
+            subprocess.run(["docker", "rm", "--force", container], capture_output=True)

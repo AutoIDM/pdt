@@ -323,7 +323,10 @@ def test_the_deployed_service_is_one_run(monkeypatch):
     service = {"metadata": {"creationTimestamp": "2026-11-01T10:00:00Z"},
                "status": {"conditions": [{"type": "Ready", "status": "True",
                                           "lastTransitionTime": "2026-11-12T10:00:00Z"}]}}
-    monkeypatch.setattr(gc, "read_json_or_none", lambda *args: service)
+    revision = {"metadata": {"creationTimestamp": "2026-11-12T10:00:00Z"}}
+    service["status"]["latestCreatedRevisionName"] = "pdt-dashboard-00002-abc"
+    monkeypatch.setattr(gc, "read_json_or_none", lambda *args:
+                        revision if args[:2] == ("run", "revisions") else service)
     [run] = gweb.deployed_runs(PROJECT, REGION, "pdt-dashboard")
     assert run.id == "pdt-dashboard" and run.status == "running" and run.ended is None
     assert run.started == datetime(2026, 11, 12, 10, tzinfo=timezone.utc)
@@ -477,8 +480,8 @@ def test_a_deploy_sets_the_clean_up_policy_once(google, monkeypatch):
     assert gweb.deploy(web_app(google), True) == 0
     [policy] = fake.ran("artifacts", "repositories", "set-cleanup-policies")
     assert "--no-dry-run" in policy
-    names = {name["name"]: None for name in gc.CLEANUP_POLICIES}
-    repository = {"labels": {"managed-by": "pdt"}, "cleanupPolicies": names}
+    policies = {name: {**policy, "id": name} for name, policy in gc.CLEANUP_POLICIES_SET.items()}
+    repository = {"labels": {"managed-by": "pdt"}, "cleanupPolicies": policies}
     fake = fake_cloud(monkeypatch, FakeCloud(found={("artifacts", "repositories", "describe"):
                                                     repository}))
     assert gweb.deploy(web_app(google), True) == 0
@@ -509,3 +512,25 @@ def test_the_plan_warns_about_accounts_the_managed_sign_in_cannot_serve():
         "cannot sign in"]
     assert "no organization" in gweb.audience_problems(app, "")[0]
     assert gweb.audience_problems(app, None) == []
+
+
+def test_a_clean_up_policy_with_the_right_names_but_other_rules_is_set_again():
+    policies = {name: {**policy, "id": name} for name, policy in gc.CLEANUP_POLICIES_SET.items()}
+    assert gc.cleanup_policies_set({"cleanupPolicies": policies})
+    policies["pdt-keep-newest"]["mostRecentVersions"] = {"keepCount": 1}
+    assert not gc.cleanup_policies_set({"cleanupPolicies": policies})
+
+
+def test_a_web_app_deployed_earlier_as_a_job_must_be_destroyed_as_a_job_first(google, monkeypatch,
+                                                                              capsys):
+    found = {("run", "jobs", "describe"): {"metadata": {"labels": {"managed-by": "pdt"}}}}
+    fake = fake_cloud(monkeypatch, FakeCloud(found=found))
+    with pytest.raises(SystemExit):
+        gweb.deploy(web_app(google), True)
+    assert fake.ran("run", "deploy") == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Cloud Run job pdt-dashboard is still deployed" in out
+    assert "set app_profile: job and run pdt destroy dashboard" in out
+    with pytest.raises(SystemExit):
+        gweb.destroy(web_app(google), True)
+    assert fake.ran("run", "services", "delete") == []

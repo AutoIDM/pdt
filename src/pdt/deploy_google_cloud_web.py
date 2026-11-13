@@ -513,6 +513,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         stale_folder = (bucket_exists and not app["storage"]
                         and gc.folder_grant_exists(bucket, name, sa))
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
+        gc.refuse_profile_change(app, project, region, "deploy")
         current = gc.read_json_or_none("run", "services", "describe", service,
                                        "--region", region, "--project", project)
         gc.require_managed(current, f"Cloud Run service {console.value(service)}")
@@ -725,6 +726,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     console.status(f"Checking current state in project {console.value(project)} "
                    f"({console.value(region)})...")
     with console.waiting("reading: resources"):
+        gc.refuse_profile_change(app, project, region, "destroy")
         current = gc.read_json_or_none("run", "services", "describe", service,
                                        "--region", region, "--project", project)
         delete_service = gc.managed_by_pdt(current)
@@ -859,7 +861,13 @@ def deployed_runs(project: str, region: str, service: str) -> list[runs_cli.Run]
         return []
     conditions = {c.get("type"): c for c in (current.get("status") or {}).get("conditions") or []}
     ready = conditions.get("Ready") or {}
-    when = ready.get("lastTransitionTime") or (current.get("metadata") or {}).get("creationTimestamp")
+    revision = gc.read_json_or_none(
+        "run", "revisions", "describe",
+        (current.get("status") or {}).get("latestCreatedRevisionName") or "",
+        "--region", region, "--project", project) \
+        if (current.get("status") or {}).get("latestCreatedRevisionName") else None
+    when = (((revision or {}).get("metadata") or {}).get("creationTimestamp")
+            or (current.get("metadata") or {}).get("creationTimestamp"))
     status = {"True": "running", "False": "failed"}.get(ready.get("status"), "running")
     annotations = (current.get("metadata") or {}).get("annotations") or {}
     if annotations.get(SCALING_MODE) == "manual" and str(annotations.get(MANUAL_COUNT)) == "0":
