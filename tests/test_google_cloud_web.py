@@ -438,7 +438,7 @@ def test_a_new_app_is_priced_from_the_default_visits(monkeypatch):
     cost = gweb.cost_estimate(app, "p", "us-central1", None, int(0.8 * 1024 ** 3))
     labels = dict(cost.items)
     [(label, amount)] = [item for item in cost.items if item[0].startswith("Cloud Run:")]
-    assert "20 visits a weekday, 2 a weekend day, 7 s each" in label
+    assert label == "Cloud Run: 53 min a month (new app)"
     assert round(amount, 4) == round(7 * (20 * 21.7 + 2 * 8.7) * SECOND, 4)
     assert round(labels["Artifact Registry: 0.80 GiB of images, shared (0.5 GiB free)"], 2) == 0.03
     assert labels["Identity-Aware Proxy"] == 0.0
@@ -447,12 +447,11 @@ def test_a_new_app_is_priced_from_the_default_visits(monkeypatch):
 
 def test_a_deployed_app_is_priced_from_its_measured_use(monkeypatch):
     priced(monkeypatch)
-    use = gweb.Use(weekday_seconds=83.5, weekday_requests=30, weekdays=1.0, first="Nov 12",
-                   last="Nov 13")
+    use = gweb.Use(weekday_seconds=83.5, weekday_requests=30, weekdays=1.0)
     app = {"auth": {"provider": "google"}, "web": {"resources": {"min_instances": 1}}}
     cost = gweb.cost_estimate(app, "p", "us-central1", use)
     [(label, amount)] = [item for item in cost.items if item[0].startswith("Cloud Run:")]
-    assert label == "Cloud Run: 84 s a weekday, 8 s a weekend day, measured Nov 12 to Nov 13"
+    assert label == "Cloud Run: 31 min a month (measured)"
     assert round(amount, 4) == round((83.5 * 21.7 + 8.35 * 8.7) * SECOND, 4)
     idle = dict(cost.items)["1 idle instance(s) kept running"]
     assert round(idle, 2) == round(730 * 3600 * (0.0000025 + 0.5 * 0.0000025), 2)

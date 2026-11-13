@@ -323,8 +323,6 @@ class Use:
     weekend_seconds: float = 0.0
     weekend_requests: float = 0.0
     weekend_days: float = 0.0
-    first: str = ""
-    last: str = ""
 
 
 def hourly(project: str, service: str, metric: str, start: datetime.datetime,
@@ -375,7 +373,6 @@ def measured_use(project: str, service: str, deployed: datetime.datetime,
             use.weekend_seconds += seconds.get(stamp, 0.0)
             use.weekend_requests += requests.get(stamp, 0.0)
         hour += datetime.timedelta(hours=1)
-    use.first, use.last = start.strftime("%b %-d"), end.strftime("%b %-d")
     return use
 
 
@@ -393,9 +390,7 @@ def monthly_use(use: Use | None) -> tuple[float, float, str]:
     if use is None or use.weekdays + use.weekend_days < MIN_COVERED_DAYS:
         seconds = SECONDS_A_VISIT * (VISITS_A_WEEKDAY * WEEKDAYS_A_MONTH
                                      + VISITS_A_WEEKEND_DAY * WEEKEND_DAYS_A_MONTH)
-        return (seconds, seconds / SECONDS_A_VISIT * REQUESTS_A_VISIT,
-                f"{VISITS_A_WEEKDAY} visits a weekday, {VISITS_A_WEEKEND_DAY} a weekend day, "
-                f"{SECONDS_A_VISIT} s each (an estimate for a new app)")
+        return seconds, seconds / SECONDS_A_VISIT * REQUESTS_A_VISIT, "new app"
     # With only weekdays measured, a weekend day is the share of a weekday that a new app gets.
     share = VISITS_A_WEEKEND_DAY / VISITS_A_WEEKDAY
     if use.weekdays >= MIN_COVERED_DAYS:
@@ -408,9 +403,7 @@ def monthly_use(use: Use | None) -> tuple[float, float, str]:
     else:
         end_seconds, end_requests = day_seconds * share, day_requests * share
     return (day_seconds * WEEKDAYS_A_MONTH + end_seconds * WEEKEND_DAYS_A_MONTH,
-            day_requests * WEEKDAYS_A_MONTH + end_requests * WEEKEND_DAYS_A_MONTH,
-            f"{day_seconds:.0f} s a weekday, {end_seconds:.0f} s a weekend day, "
-            f"measured {use.first} to {use.last}")
+            day_requests * WEEKDAYS_A_MONTH + end_requests * WEEKEND_DAYS_A_MONTH, "measured")
 
 
 def cost_estimate(app: dict, project: str, region: str, use: Use | None = None,
@@ -449,7 +442,8 @@ def cost_estimate(app: dict, project: str, region: str, use: Use | None = None,
         except Exception as exc:  # the billing catalog is a nicety; the deploy goes on
             detail = gc.billing_detail(exc)
             continue
-        items = [(f"Cloud Run: {source}", seconds * (vcpu * cpu + gib * memory))]
+        items = [(f"Cloud Run: {seconds / 60:,.0f} min a month ({source})",
+                  seconds * (vcpu * cpu + gib * memory))]
         if size["min_instances"]:
             items.append((f"{size['min_instances']} idle instance(s) kept running", idle))
         items.append((f"Requests: {requests:,.0f} a month (2 million free)",
