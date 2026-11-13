@@ -53,6 +53,7 @@ import threading
 import urllib.parse
 import urllib.request
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -68,8 +69,8 @@ IAP_API = "iap.googleapis.com"
 # `gcloud run deploy --iap` reads the project through Resource Manager, and asks to turn the API
 # on when it is off; a deploy turns it on first so gcloud asks nothing.
 RESOURCE_MANAGER_API = "cloudresourcemanager.googleapis.com"
-APIS = tuple(api for api in gc.APIS if api not in ("cloudbilling.googleapis.com",
-                                                   "cloudscheduler.googleapis.com"))
+APIS = (*(api for api in gc.APIS if api != "cloudscheduler.googleapis.com"),
+        "monitoring.googleapis.com")
 DESTROY_APIS = tuple(api for api in gc.DESTROY_APIS if api != "cloudscheduler.googleapis.com")
 IAP_ROLE = "roles/iap.httpsResourceAccessor"
 READ_ROLE = "roles/storage.objectViewer"
@@ -286,49 +287,181 @@ def deploy_args(app: dict, project: str, region: str, sa: str, image: str, url: 
     return args
 
 
-# The estimate assumes an instance runs this share of the month. Request-based billing charges
-# only while a request runs, so a dashboard that is idle most of the day costs far less.
-UPTIME = 0.80
 MONTH_SECONDS = 730 * 3600
-# Cloud Billing catalog descriptions of the request-based Cloud Run service prices.
+WEEKDAYS_A_MONTH = 21.7
+WEEKEND_DAYS_A_MONTH = 8.7
+# A new app has no use to measure yet. These defaults come from the first web app pdt ran:
+# each visit starts an instance (a cold start), serves about 3 requests, and bills about 7 s.
+VISITS_A_WEEKDAY = 20
+VISITS_A_WEEKEND_DAY = 2
+SECONDS_A_VISIT = 7
+REQUESTS_A_VISIT = 3
+# How far back the estimate reads the deployed service's use, and the least of a weekday (or of
+# a weekend) it needs before it trusts the measured numbers.
+HISTORY_DAYS = 14
+MIN_COVERED_DAYS = 0.25
+FREE_REQUESTS = 2_000_000
+FREE_REGISTRY_GIB = 0.5
+MONITORING = "https://monitoring.googleapis.com/v3"
+REGISTRY = "https://artifactregistry.googleapis.com/v1"
+# Cloud Billing catalog descriptions.
 CPU_SKU = "Services CPU (Request-based billing)"
 MEMORY_SKU = "Services Memory (Request-based billing)"
+MIN_CPU_SKU = "Services Min Instance CPU (Request-based billing)"
+MIN_MEMORY_SKU = "Services Min Instance Memory (Request-based billing)"
+REQUESTS_SKU = "Requests"
+REGISTRY_SKU = "Artifact Registry Storage"
 
 
-def cost_estimate(app: dict, project: str, region: str) -> CostEstimate:
-    """Monthly cost at UPTIME, from the Cloud Billing catalog's list prices for the region."""
+@dataclass
+class Use:
+    """A deployed service's use: billed seconds and requests on weekdays and on weekend days,
+    and how many of each it covers (a part day counts as its share of 24 hours)."""
+    weekday_seconds: float = 0.0
+    weekday_requests: float = 0.0
+    weekdays: float = 0.0
+    weekend_seconds: float = 0.0
+    weekend_requests: float = 0.0
+    weekend_days: float = 0.0
+    first: str = ""
+    last: str = ""
+
+
+def hourly(project: str, service: str, metric: str, start: datetime.datetime,
+           end: datetime.datetime, token: str) -> dict[datetime.datetime, float]:
+    """The sum of a Cloud Monitoring metric of the service in each hour from start to end."""
+    params = urllib.parse.urlencode({
+        "filter": f'metric.type="run.googleapis.com/{metric}" '
+                  f'AND resource.labels.service_name="{service}"',
+        "interval.startTime": start.isoformat(), "interval.endTime": end.isoformat(),
+        "aggregation.alignmentPeriod": "3600s", "aggregation.perSeriesAligner": "ALIGN_SUM",
+        "aggregation.crossSeriesReducer": "REDUCE_SUM"})
+    answer = fetch_json(urllib.request.Request(
+        f"{MONITORING}/projects/{project}/timeSeries?{params}",
+        headers={"Authorization": f"Bearer {token}"})) or {}
+    sums: dict[datetime.datetime, float] = {}
+    for series in answer.get("timeSeries") or []:
+        for point in series.get("points") or []:
+            hour = datetime.datetime.fromisoformat(point["interval"]["endTime"].replace("Z", "+00:00"))
+            value = point.get("value") or {}
+            sums[hour] = sums.get(hour, 0.0) + float(value.get("doubleValue")
+                                                     or value.get("int64Value") or 0)
+    return sums
+
+
+def measured_use(project: str, service: str, deployed: datetime.datetime,
+                 now: datetime.datetime | None = None) -> Use:
+    """The service's use from Cloud Monitoring, from its first deploy or HISTORY_DAYS ago."""
+    end = (now or datetime.datetime.now(datetime.timezone.utc)).replace(
+        minute=0, second=0, microsecond=0)
+    start = max(deployed, end - datetime.timedelta(days=HISTORY_DAYS))
+    use = Use()
+    if end - start < datetime.timedelta(hours=1):
+        return use
+    token = gc.run_quiet("auth", "print-access-token").strip()
+    seconds = hourly(project, service, "container/billable_instance_time", start, end, token)
+    requests = hourly(project, service, "request_count", start, end, token)
+    hour = start.replace(minute=0, second=0, microsecond=0)
+    while hour < end:
+        share = (min(hour + datetime.timedelta(hours=1), end) - max(hour, start)) / \
+            datetime.timedelta(hours=1) / 24
+        stamp = hour + datetime.timedelta(hours=1)
+        if hour.weekday() < 5:
+            use.weekdays += share
+            use.weekday_seconds += seconds.get(stamp, 0.0)
+            use.weekday_requests += requests.get(stamp, 0.0)
+        else:
+            use.weekend_days += share
+            use.weekend_seconds += seconds.get(stamp, 0.0)
+            use.weekend_requests += requests.get(stamp, 0.0)
+        hour += datetime.timedelta(hours=1)
+    use.first, use.last = start.strftime("%b %-d"), end.strftime("%b %-d")
+    return use
+
+
+def registry_bytes(project: str, region: str, repo: str) -> int:
+    """The size of the image repository; gcloud's JSON leaves it out, the REST answer has it."""
+    token = gc.run_quiet("auth", "print-access-token").strip()
+    answer = fetch_json(urllib.request.Request(
+        f"{REGISTRY}/projects/{project}/locations/{region}/repositories/{repo}",
+        headers={"Authorization": f"Bearer {token}"})) or {}
+    return int(answer.get("sizeBytes") or 0)
+
+
+def monthly_use(use: Use | None) -> tuple[float, float, str]:
+    """(billed seconds, requests, how pdt got them) for a month."""
+    if use is None or use.weekdays + use.weekend_days < MIN_COVERED_DAYS:
+        seconds = SECONDS_A_VISIT * (VISITS_A_WEEKDAY * WEEKDAYS_A_MONTH
+                                     + VISITS_A_WEEKEND_DAY * WEEKEND_DAYS_A_MONTH)
+        return (seconds, seconds / SECONDS_A_VISIT * REQUESTS_A_VISIT,
+                f"{VISITS_A_WEEKDAY} visits a weekday, {VISITS_A_WEEKEND_DAY} a weekend day, "
+                f"{SECONDS_A_VISIT} s each (an estimate for a new app)")
+    # With only weekdays measured, a weekend day is the share of a weekday that a new app gets.
+    share = VISITS_A_WEEKEND_DAY / VISITS_A_WEEKDAY
+    if use.weekdays >= MIN_COVERED_DAYS:
+        day_seconds, day_requests = use.weekday_seconds / use.weekdays, use.weekday_requests / use.weekdays
+    else:
+        day_seconds = use.weekend_seconds / use.weekend_days / share
+        day_requests = use.weekend_requests / use.weekend_days / share
+    if use.weekend_days >= MIN_COVERED_DAYS:
+        end_seconds, end_requests = use.weekend_seconds / use.weekend_days, use.weekend_requests / use.weekend_days
+    else:
+        end_seconds, end_requests = day_seconds * share, day_requests * share
+    return (day_seconds * WEEKDAYS_A_MONTH + end_seconds * WEEKEND_DAYS_A_MONTH,
+            day_requests * WEEKDAYS_A_MONTH + end_requests * WEEKEND_DAYS_A_MONTH,
+            f"{day_seconds:.0f} s a weekday, {end_seconds:.0f} s a weekend day, "
+            f"measured {use.first} to {use.last}")
+
+
+def cost_estimate(app: dict, project: str, region: str, use: Use | None = None,
+                  registry_bytes: int = 0) -> CostEstimate:
+    """Monthly cost from the service's measured use, or from the defaults for a new app, at the
+    Cloud Billing catalog's list prices for the region."""
     currency = regions.local_currency()
 
-    def price(description: str, in_currency: str) -> float:
+    def price(service: str, description: str, in_currency: str) -> float:
         def read() -> list:
             ids = {s.get("displayName"): s.get("serviceId")
                    for s in gc.billing_list("services", "services", project)}
-            skus = gc.billing_list(f"services/{ids['Cloud Run']}/skus", "skus", project,
+            skus = gc.billing_list(f"services/{ids[service]}/skus", "skus", project,
                                    in_currency)
             return list(gc.sku_price(skus, region, description))
 
         amount, _unit = cached_price("google-cloud", region, in_currency,
-                                     f"Cloud Run: {description}", read,
+                                     f"{service}: {description}", read,
                                      "reading: prices from the Cloud Billing catalog")
         return amount
 
-    seconds = MONTH_SECONDS * UPTIME
     size = web.resources(app)
-    shares = [("Cloud Run service", float(size["cpu"]), web.memory_mib(size["memory"]) / 1024)]
+    vcpu, gib = float(size["cpu"]), web.memory_mib(size["memory"]) / 1024
+    seconds, requests, source = monthly_use(use)
     for in_currency in dict.fromkeys((currency, "USD")):
         try:
-            cpu, memory = price(CPU_SKU, in_currency), price(MEMORY_SKU, in_currency)
+            cpu, memory = price("Cloud Run", CPU_SKU, in_currency), price("Cloud Run", MEMORY_SKU,
+                                                                          in_currency)
+            request = price("Cloud Run", REQUESTS_SKU, in_currency)
+            stored = price("Artifact Registry", REGISTRY_SKU, in_currency)
+            idle = 0.0
+            if size["min_instances"]:
+                idle = size["min_instances"] * MONTH_SECONDS * (
+                    vcpu * price("Cloud Run", MIN_CPU_SKU, in_currency)
+                    + gib * price("Cloud Run", MIN_MEMORY_SKU, in_currency))
         except Exception as exc:  # the billing catalog is a nicety; the deploy goes on
             detail = gc.billing_detail(exc)
             continue
-        items = [(f"{label}: {vcpu:g} vCPU / {mem:g} GiB x {UPTIME:.0%} of the month",
-                  seconds * (vcpu * cpu + mem * memory)) for label, vcpu, mem in shares]
+        items = [(f"Cloud Run: {source}", seconds * (vcpu * cpu + gib * memory))]
+        if size["min_instances"]:
+            items.append((f"{size['min_instances']} idle instance(s) kept running", idle))
+        items.append((f"Requests: {requests:,.0f} a month (2 million free)",
+                      max(0.0, requests - FREE_REQUESTS) * request))
         items.append(("Identity-Aware Proxy", 0.0))
+        registry_gib = registry_bytes / 1024 ** 3
+        items.append((f"Artifact Registry: {registry_gib:.2f} GiB of images, shared "
+                      "(0.5 GiB free)", max(0.0, registry_gib - FREE_REGISTRY_GIB) * stored))
         converted = "" if in_currency == "USD" else ", converted from USD by Google Cloud"
-        return CostEstimate(items, f"{region} request-based list prices{converted}, "
-                            f"an instance up {UPTIME:.0%} of the month, before free tiers",
-                            "excludes requests, Artifact Registry storage, and network egress",
-                            currency=in_currency)
+        return CostEstimate(items, f"{region} list prices{converted}, {vcpu:g} vCPU / {gib:g} GiB "
+                            "billed per second while a request runs, before the Cloud Run "
+                            "free tier", "excludes network egress", currency=in_currency)
     return CostEstimate([("Cloud Run service: no price read", 0.0)],
                         f"the Cloud Billing catalog did not answer: {console.escape(detail)}",
                         currency="USD")
@@ -455,7 +588,23 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             actions.append(console.Markup(f"allow {console.value(member)} to enter"))
         for member in remove_members:
             actions.append(console.Markup(f"no longer allow {console.value(member)} to enter"))
-    cost = cost_estimate(app, project, region)
+    use = None
+    if service_exists:
+        try:
+            use = measured_use(project, service, datetime.datetime.fromisoformat(
+                ((current.get("metadata") or {}).get("creationTimestamp") or "")
+                .replace("Z", "+00:00")))
+        except Exception as exc:  # Cloud Monitoring is a nicety; the estimate uses the defaults
+            console.note(f"could not read the use of {console.value(service)} from Cloud "
+                         f"Monitoring ({console.escape(str(exc))}); the estimate uses the "
+                         "defaults for a new app")
+    stored = 0
+    if repo_exists:
+        try:
+            stored = registry_bytes(project, region, repo)
+        except Exception:  # the repository's size is a nicety; the estimate shows 0
+            pass
+    cost = cost_estimate(app, project, region, use, stored)
     for problem in audience:
         console.warn(f"web.auth: {console.escape(problem)}")
 

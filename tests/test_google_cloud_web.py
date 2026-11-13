@@ -421,17 +421,56 @@ def test_destroy_with_nothing_deployed_removes_nothing(google, monkeypatch, caps
     assert "Nothing to remove for dashboard" in " ".join(capsys.readouterr().out.split())
 
 
-def test_the_cost_estimate_prices_80_percent_uptime(monkeypatch):
-    app = {"storage_read": ["warehouse"], "auth": {"provider": "google"}, "web": {}}
-    prices = {gweb.CPU_SKU: 0.000024, gweb.MEMORY_SKU: 0.0000025}
+PRICES = {gweb.CPU_SKU: 0.000024, gweb.MEMORY_SKU: 0.0000025, gweb.MIN_CPU_SKU: 0.0000025,
+          gweb.MIN_MEMORY_SKU: 0.0000025, gweb.REQUESTS_SKU: 0.0000004, gweb.REGISTRY_SKU: 0.10}
+SECOND = 1 * 0.000024 + 0.5 * 0.0000025
+
+
+def priced(monkeypatch):
     monkeypatch.setattr(gweb, "cached_price", lambda provider, region, currency, query, read, *a:
-                        (prices[query.split(": ", 1)[1]], "s"))
+                        (PRICES[query.split(": ", 1)[1]], "s"))
     monkeypatch.setattr(gweb.regions, "local_currency", lambda: "USD")
-    cost = gweb.cost_estimate(app, "p", "us-central1")
-    seconds = 730 * 3600 * 0.8
-    assert round(cost.items[0][1], 2) == round(seconds * (1 * 0.000024 + 0.5 * 0.0000025), 2)
-    assert cost.items[1] == ("Identity-Aware Proxy", 0.0) and len(cost.items) == 2
-    assert "80% of the month" in cost.prices
+
+
+def test_a_new_app_is_priced_from_the_default_visits(monkeypatch):
+    priced(monkeypatch)
+    app = {"auth": {"provider": "google"}, "web": {}}
+    cost = gweb.cost_estimate(app, "p", "us-central1", None, int(0.8 * 1024 ** 3))
+    labels = dict(cost.items)
+    [(label, amount)] = [item for item in cost.items if item[0].startswith("Cloud Run:")]
+    assert "20 visits a weekday, 2 a weekend day, 7 s each" in label
+    assert round(amount, 4) == round(7 * (20 * 21.7 + 2 * 8.7) * SECOND, 4)
+    assert round(labels["Artifact Registry: 0.80 GiB of images, shared (0.5 GiB free)"], 2) == 0.03
+    assert labels["Identity-Aware Proxy"] == 0.0
+    assert not any("idle" in label for label in labels)
+
+
+def test_a_deployed_app_is_priced_from_its_measured_use(monkeypatch):
+    priced(monkeypatch)
+    use = gweb.Use(weekday_seconds=83.5, weekday_requests=30, weekdays=1.0, first="Nov 12",
+                   last="Nov 13")
+    app = {"auth": {"provider": "google"}, "web": {"resources": {"min_instances": 1}}}
+    cost = gweb.cost_estimate(app, "p", "us-central1", use)
+    [(label, amount)] = [item for item in cost.items if item[0].startswith("Cloud Run:")]
+    assert label == "Cloud Run: 84 s a weekday, 8 s a weekend day, measured Nov 12 to Nov 13"
+    assert round(amount, 4) == round((83.5 * 21.7 + 8.35 * 8.7) * SECOND, 4)
+    idle = dict(cost.items)["1 idle instance(s) kept running"]
+    assert round(idle, 2) == round(730 * 3600 * (0.0000025 + 0.5 * 0.0000025), 2)
+
+
+def test_measured_use_splits_weekdays_from_weekend_days(monkeypatch):
+    from datetime import datetime, timezone
+    monkeypatch.setattr(gc, "run_quiet", lambda *a, **k: "token")
+    friday = datetime(2026, 11, 13, 12, tzinfo=timezone.utc)
+    sums = {"container/billable_instance_time": {datetime(2026, 11, 13, 13, tzinfo=timezone.utc): 10.0,
+                                                  datetime(2026, 11, 14, 10, tzinfo=timezone.utc): 4.0},
+            "request_count": {datetime(2026, 11, 13, 13, tzinfo=timezone.utc): 3.0}}
+    monkeypatch.setattr(gweb, "hourly", lambda project, service, metric, start, end, token:
+                        sums[metric])
+    use = gweb.measured_use("p", "pdt-dashboard", friday,
+                            now=datetime(2026, 11, 15, 0, tzinfo=timezone.utc))
+    assert (use.weekday_seconds, use.weekday_requests, use.weekend_seconds) == (10.0, 3.0, 4.0)
+    assert round(use.weekdays, 3) == 0.5 and round(use.weekend_days, 3) == 1.0
 
 
 def test_a_deploy_sets_the_clean_up_policy_once(google, monkeypatch):
