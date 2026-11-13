@@ -6,8 +6,8 @@
 """Sample web app. Use as a template to create your own.
 
 It serves at the port in PDT_PORT. Identity-Aware Proxy signs each visitor in
-and sends their email in the X-Goog-Authenticated-User-Email header. A local
-`pdt run` has no sign-in, so the greeting says "visitor".
+and sends their email in a header; `pdt.utils.auth.current_user` reads it. A
+local `pdt run` has no sign-in, so the greeting says "visitor".
 """
 
 from __future__ import annotations
@@ -18,10 +18,8 @@ import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from pdt.utils.auth import current_user
 from pdt.utils.log import log
-
-# Identity-Aware Proxy sets it to "accounts.google.com:<email>".
-EMAIL_HEADER = "X-Goog-Authenticated-User-Email"
 
 
 def stop(_signum, _frame) -> None:
@@ -32,7 +30,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/healthz":
             return self.reply("ok")
-        who = (self.headers.get(EMAIL_HEADER) or "").removeprefix("accounts.google.com:") or "visitor"
+        who = current_user(self.headers) or "visitor"
         log("info", "page served", path=self.path, user=who)
         self.reply(f"Hello, {who}!")
 
