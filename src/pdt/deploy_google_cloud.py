@@ -1519,6 +1519,9 @@ def main() -> int:
         return relogin(args.yes)
     if args.command == "storage":
         return storage(app, args.rest, args.yes)
+    if app["app_profile"] == "web":
+        from pdt import deploy_google_cloud_web as web_module
+        return web_module.command(app, args.command, args.rest, args.yes, args.plan)
     if args.command == "runs":
         return runs(app, args.rest, args.yes)
     if args.command == "logs":

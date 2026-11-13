@@ -107,13 +107,21 @@ def main(argv: list[str]) -> int:
     else:
         command = [uv, "run", "--script", str(Path(__file__).with_name("run_powershell.py")), app_dir]
     command = [uv, "run", "--script", str(Path(__file__).with_name("lifecycle.py")), "--", *command]
+    code = run_logged(command, app_dir, env, log)
+    report(Path(app_dir).name, log, code)
+    return code
+
+
+def run_logged(command: list[str], cwd: str, env: dict[str, str], log: Path) -> int:
+    """Run `command`, write both of its streams to `log` with a time before each line and the
+    exit marker last, and return its exit code. `run_windows_service.py` shares it."""
     with log.open("wb") as out:
         try:
             child = subprocess.Popen(
-                command, cwd=app_dir, env=env,
+                command, cwd=cwd, env=env,
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         except OSError as exc:
-            out.write(timed(f"{uv} could not be started: {exc}".encode()))
+            out.write(timed(f"{command[0]} could not be started: {exc}".encode()))
             code = MISSING_UV
         else:
             lock = threading.Lock()
@@ -149,7 +157,6 @@ def main(argv: list[str]) -> int:
                 if rest[0]:
                     out.write(timed(rest[0]))
         out.write(timed(f"{EXIT_MARKER}{code}".encode()))
-    report(Path(app_dir).name, log, code)
     return code
 
 

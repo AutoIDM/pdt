@@ -32,22 +32,24 @@ The same steps by hand are `store.pull("state/", folder)`, which returns a lease
 
 A run that dies without reaching either call leaves the lock behind. The next run takes it over right away when it can tell the holder is gone: the holder ran on the same computer and its process has ended, or it carries the same `PDT_RUN_ID`. Otherwise it waits 30 minutes, or you release the lock yourself with `pdt storage APP unlock`, which asks first.
 
-From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its own `pdt.yml`.
+From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `pdt.yml`.
 
 ## Reading another app's files
 
-An app can read the folders of the apps listed under `storage: read:` in its `pdt.yml`. It cannot change them.
+A web app often shows what a job produced, for example a dashboard over a database that a job rebuilds every hour. `storage:` also takes a mapping: `enabled` (default `true`, the same as `storage: true`) and `read`, the list of other apps in the project whose storage this app may read. `pdt deploy` grants the read rights, and the app reads with a read-only view of the other app's folder:
 
-```yml
+```yaml
 storage:
-  read:
-    - other-app
+  enabled: true
+  read: [warehouse]
 ```
 
 ```python
+from pathlib import Path
+
 from pdt.utils import storage
 
-other = storage.store(app="other-app")
+path = storage.read_only("warehouse").fetch("state/warehouse.duckdb", Path("warehouse.duckdb"))
 ```
 
-Run `pdt deploy APP` after you change the list. This works with the `azure` provider only.
+`fetch` copies the file to the local path when the stored copy changed since the last fetch and returns the path, or `None` when the file is not there. A reader takes no lock, so it never blocks the job that writes the files, and it never sees a half-written file: the Local backend (Windows and `pdt run`) now writes each file to a temporary name and replaces the old file in one step, and every cloud store writes an object in one step. `PDT_STORAGE_READ_URLS` carries the folder of each app in `read` to the deployed app; `pdt run APP` points it at `.pdt/storage/<other-app>/` in your project.

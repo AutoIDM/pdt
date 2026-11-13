@@ -841,7 +841,7 @@ def test_list_json_has_the_fields_the_table_shows(project, monkeypatch, capsys):
     add_app(project, "broken", "platform: [1]\n")
     assert run_cli(monkeypatch, "list", "--json") == 0
     records = {record["name"]: record for record in json.loads(capsys.readouterr().out)}
-    assert records["hello-world"] == {"name": "hello-world", "schedule": "daily",
+    assert records["hello-world"] == {"name": "hello-world", "profile": "job", "schedule": "daily",
                                       "platform": "azure", "enabled": True, "paused": False,
                                       "error": None}
     assert records["not-ready"]["enabled"] is False

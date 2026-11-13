@@ -16,7 +16,7 @@ pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Win
 
 ## Primitives
 
-Every job gets the same building blocks. pdt picks the service on each cloud for you.
+Every job gets the same building blocks. pdt picks the service on each cloud for you. The table shows the `job` profile, a process that runs on a schedule and exits; the `web` profile, an HTTP server that runs all the time behind the platform's sign-in (Google Cloud and Windows for now), is in [App profiles](docs/profiles.md).
 
 | | AWS | Azure | Google Cloud | Windows |
 | --- | --- | --- | --- | --- |
@@ -116,6 +116,9 @@ A PowerShell job whose one script, `hello.ps1`, writes "Hello, world!". It is th
 ### powershell-report
 PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in the app's data store.
 
+### web-hello
+A web app (`app_profile: web`): a small HTTP server that greets the person who signed in, listening on the port in `PDT_PORT` and answering `/healthz` for the health check. Start from it to put a dashboard or an internal tool behind a Google sign-in; see [App profiles](docs/profiles.md). A web app can also be any container: a folder with a `Dockerfile` and a `pdt.yml`.
+
 ## Support
 
 [AutoIDM](https://autoidm.com/service) makes pdt. Any issues, questions, ideas, or concerns? Use any of these methods to get a hold of us:
@@ -128,7 +131,10 @@ PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in th
 - [Projects and apps](docs/projects.md): set up a project, add an app, and where pdt keeps its files
 - [Deploying](docs/deploy.md): deploy, run, pause, and destroy a job, and run pdt from CI
 - [Commands](docs/commands.md): every `pdt` command and its options
+- [Settings](docs/settings.md): every setting in the project's and the apps' `pdt.yml` files, and every env var, with its allowed values and its default
+- [How pdt works](docs/primitives.md): the practices, the definitions, and the building blocks of jobs and web apps, with the web app pieces that are missing
 - [Choosing where jobs run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
+- [App profiles](docs/profiles.md): the `job` and `web` profiles, what each command means for each, and which resources each provider creates
 - [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
 - [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's runs, logs, and files
 - [Writing your own app](docs/writing-apps.md): Python and PowerShell apps, and logging
