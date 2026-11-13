@@ -1,13 +1,17 @@
-"""What every chat alerts type says: the content of a lifecycle event, before a transport lays it out.
+"""What every alerts type says: the content of a lifecycle event, before a transport lays it out.
 
-`event_message` and `ready_message` build a Message: a title, a tone, an optional
-note, body text, labelled fields, an "Open" link, and a footer. pdt.slack turns a
-Message into Block Kit and pdt.teams turns it into an Adaptive Card. The note,
-text, footer, and field values use one markup, `*bold*` and `code`, which Slack
-shows as written and Teams converts. `event_sentence` is the one line the
-console type prints for an event. A Tone (`OUTCOMES`, `OTHER`, `UNHANDLED`,
-`READY`) holds the colour and icon of an outcome for both types. The title also
-says the outcome in words, so the tone is never the only sign of it.
+`event_message` and `ready_message` build a Message: a title, a tone, an optional note,
+body text, labelled fields, an "Open" link, and a footer. pdt.slack turns a Message into
+Block Kit, pdt.teams turns it into an Adaptive Card, and pdt.email_alert turns it into an
+email. The note, text, footer, and field values use one markup, `*bold*` and `code`, which
+Slack shows as written and Teams converts. An event can carry four content parameters
+(`CONTENT`): `title` replaces the words of the event in the title, after the app name
+(`<app>: <title>`), `text` is the body text, `url` is the "Open" link, and `html` is a
+body that only the email type sends. None of them, and not the `to` of pdt.email_alert,
+becomes a field. `event_sentence` is the one line the console type prints for an event. A
+Tone (`OUTCOMES`, `OTHER`, `UNHANDLED`, `READY`) holds the colour and icon of an outcome
+for both types. The title also says the outcome in words, so the tone is never the only
+sign of it.
 """
 
 from __future__ import annotations
@@ -58,7 +62,10 @@ UNHANDLED = Tone("#868686", ":white_circle:", "⚪", "emphasis")
 READY = Tone("#2EB67D", ":white_check_mark:", "✅", "good")
 FIELDS = {"project": "Project", "app": "App", "provider": "Provider", "deployed": "Where",
           "trigger": "Trigger", "exit_code": "Exit code", "run_id": "Run id", "state": "Logs"}
-HIDDEN = {"url"}
+CONTENT = ("title", "text", "html", "url")
+HIDDEN = {*CONTENT, "to"}
+# Slack refuses a section text above 3000 characters.
+MAX_TEXT = 2900
 CLOUDS = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}
 MAX_FIELDS = 10
 SENTENCES = {
@@ -101,6 +108,11 @@ def event_message(event, unhandled: bool = False) -> Message:
     tone = UNHANDLED if unhandled else OUTCOMES.get(event.name.rsplit("-", 1)[-1], OTHER)
     words = event_words(event.name)
     title = f"{words}: {params['app']}" if "app" in params else words
+    if params.get("title"):
+        title = f"{params['app']}: {params['title']}" if "app" in params else str(params["title"])
+    text = str(params.get("text") or "")
+    if len(text) > MAX_TEXT:
+        text = text[:MAX_TEXT] + "..."
     keys = [key for key in FIELDS if key in params and (key != "state" or params.get("deployed"))]
     keys += [key for key in params if key not in FIELDS and key not in HIDDEN]
     fields = []
@@ -121,6 +133,7 @@ def event_message(event, unhandled: bool = False) -> Message:
         tone=tone,
         note=(f"*Unhandled event.* No alerts entry lists `{event.name}`, so it came here "
               "through `unhandled`." if unhandled else ""),
+        text=text,
         fields=tuple(fields),
         url=str(params["url"]) if "url" in params else "",
         footer=f"`{event.name}` at {event.at:%Y-%m-%d %H:%M} UTC, sent by pdt")
@@ -128,10 +141,11 @@ def event_message(event, unhandled: bool = False) -> Message:
 
 def event_sentence(event) -> str:
     """One event as the console says it, such as `Run of hello-world failed (interrupted, exit code 130)`.
-    An event that SENTENCES does not name, or one without an `app`, says the title of event_message."""
+    An event that SENTENCES does not name, or one without an `app`, says the title of
+    event_message on one line."""
     params = event.params
     if event.name not in SENTENCES or "app" not in params:
-        return event_message(event).title
+        return " ".join(event_message(event).title.split())
     provider = str(params.get("provider"))
     place = CLOUDS.get(provider) or ("this computer" if provider == "windows" else "")
     sentence = SENTENCES[event.name].format(
@@ -174,9 +188,10 @@ def secret_value(name: str) -> str:
     return ""
 
 
-def post(url: str, payload: dict, service: str) -> str:
-    request = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
-                                     headers={"Content-Type": "application/json"})
+def post(url: str, payload: dict, service: str, headers: dict | None = None) -> str:
+    request = urllib.request.Request(
+        url, data=json.dumps(payload).encode(), method="POST",
+        headers={"Content-Type": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             return response.read().decode(errors="replace").strip()

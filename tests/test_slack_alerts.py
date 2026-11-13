@@ -332,7 +332,7 @@ def test_an_unchecked_type_loses_its_entry_and_every_other_entry_stays(project, 
 
 def test_unchecking_the_only_entry_leaves_an_empty_list(project, monkeypatch):
     (project / "pdt.yml").write_text("alerts:\n  - type: console\n    events: [all]\n")
-    answers(monkeypatch, "3", "")
+    answers(monkeypatch, "4", "")
     alerts_cli.setup()
     assert config.load_yaml(project / "pdt.yml")["alerts"] == []
 
@@ -340,7 +340,7 @@ def test_unchecking_the_only_entry_leaves_an_empty_list(project, monkeypatch):
 def test_console_starts_unchecked_and_adds_an_entry_with_no_secret_and_no_test(
         project, monkeypatch):
     shown = first_checked(monkeypatch)
-    answers(monkeypatch, "1 3", "", "3 5", "")
+    answers(monkeypatch, "1 4", "", "3 5", "")
     assert alerts_cli.setup() == 0
     assert shown["Where should pdt send alerts?"] == ["[x] Slack: a message in a Slack channel"]
     assert config.load_yaml(project / "pdt.yml")["alerts"] == [{"type": "console", "events": [
@@ -350,7 +350,7 @@ def test_console_starts_unchecked_and_adds_an_entry_with_no_secret_and_no_test(
 
 
 def test_every_event_checked_is_written_as_all(project, monkeypatch):
-    answers(monkeypatch, "1 3", "", "")
+    answers(monkeypatch, "1 4", "", "")
     alerts_cli.setup()
     assert (project / "pdt.yml").read_text().endswith(
         "alerts:\n  - type: console\n    events: [all]\n")

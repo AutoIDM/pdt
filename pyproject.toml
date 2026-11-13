@@ -9,9 +9,9 @@ dependencies = [
     "pyyaml",
     "rich",
     "python-dotenv",
-    "msal",
-    "google-auth",
-    "google-auth-oauthlib",
+    "cryptography",
+    "pyjwt",
+    "certifi",
     "backoff",
     "rich-argparse>=1.8.0",
     "argcomplete",
@@ -68,4 +68,3 @@ select = ["T20", "F821"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/pdt/utils/log.py" = ["T20"]
-"src/pdt/utils/send_email.py" = ["T20"]

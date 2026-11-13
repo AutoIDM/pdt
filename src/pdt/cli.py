@@ -28,8 +28,7 @@ from pdt.config import ConfigError
 if not completion.COMPLETING:
     from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh,
                      scaffold, upgrade)
-    from pdt.utils.email_auth import can_prompt
-    from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
+    from pdt.config import can_prompt
 
 CLOUD_CLIS = {
     "aws": "deploy_aws.py",
@@ -190,9 +189,6 @@ def cmd_validate(args) -> int:
             missing = config.missing_env(app)
             if missing != "":
                 problems.append((name, f"{name}: {missing}"))
-            if config.uses_email(app):
-                for problem in email_problems(app["config"]):
-                    problems.append((name, f"{name}: {problem}"))
     finally:
         os.environ.clear()
         os.environ.update(original_env)
@@ -241,13 +237,6 @@ def cmd_run(args) -> int:
     if missing != "":
         console.error(f"{console.value(name)}: {console.escape(missing)}")
         return 1
-    if config.uses_email(app):
-        problems = email_problems(app["config"], check_oauth=False)
-        if problems:
-            for problem in problems:
-                console.error(f"{console.value(name)}: {console.escape(problem)}")
-            return 1
-        prepare_email_auth(auth_env_file(app["dir"]))
     console.name(name)
     for line in [*run_lines(app), *sources]:
         console.detail(line)

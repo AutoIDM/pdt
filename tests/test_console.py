@@ -13,7 +13,6 @@ import pytest
 from rich.console import Console
 
 from pdt import console, deploy, lifecycle
-from pdt.utils import email_auth
 
 
 def test_labelled_lines_keep_escaped_brackets_literal(capsys):
@@ -298,18 +297,6 @@ def test_a_piped_answer_ends_the_question_line():
     result = subprocess.run([sys.executable, "-c", script], input="y\n", capture_output=True,
                             text=True)
     assert result.stdout == "Proceed? [y/N] \nbackground warning\n"
-
-
-def test_a_sign_in_prompt_asks_again_then_takes_its_yes_default(monkeypatch, capsys):
-    answering(monkeypatch, "ok", "")
-    email_auth._confirm("google", "a@example.com")
-    assert capsys.readouterr().out.count("Open Google Gmail sign-in now? [Y/n]") == 2
-
-
-def test_a_sign_in_prompt_treats_end_of_input_as_no(monkeypatch):
-    answering(monkeypatch)
-    with pytest.raises(email_auth.OAuthError):
-        email_auth._confirm("google", "a@example.com")
 
 
 def poll(wait):

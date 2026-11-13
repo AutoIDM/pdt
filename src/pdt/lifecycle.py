@@ -5,6 +5,8 @@
 #     "pyyaml",
 #     "python-dotenv",
 #     "rich",
+#     "cryptography",
+#     "pyjwt",
 # ]
 # ///
 """Lifecycle events: a name, the UTC time, and a few parameters.
@@ -25,10 +27,13 @@ implicit entry, so no entry receives any event.
 
 A Transport is a name, the extra entry keys it allows, and
 `deliver(event, entry, unhandled)`, where `unhandled` says the entry got the
-event through `unhandled`. The console type prints one `[alert]` line with
+event through `unhandled`. `secrets(entry)` and `optional(entry)` name the env
+vars the entry reads, and `problem(entry)` is what is wrong with its own keys,
+or "". The console type prints one `[alert]` line with
 the sentence of pdt.alert_message.event_sentence, the same line for a handled
 and an unhandled event. The slack type (pdt.slack) posts to a Slack channel,
-and the teams type (pdt.teams) posts to a Teams channel.
+the teams type (pdt.teams) posts to a Teams channel, and the email type
+(pdt.email_alert) sends an email.
 `deliver` must not change the event. The console prints at once; every
 other transport delivers on a thread of its own entry, one event at a time
 in emit order, so `emit` returns at once. `flush`, which `run_job` and the
@@ -41,7 +46,9 @@ no event about a failed delivery.
 
 `job:` names are events of a scheduled job's run, `app:` names are events
 of the app itself. The names pdt emits are the constants below; `emit`
-takes any name, so an app can emit its own. The standard parameters are
+takes any name, so an app can emit its own (pdt.utils.alert.emit). Any event
+can carry the content parameters `title`, `text`, `html`, and `url`
+(pdt.alert_message). The standard parameters are
 project, app, and provider (the configured one), and for a `job:run-*` event
 run_id, deployed (false for a local `pdt run`), and trigger (`schedule` or
 `manual`). `app:secrets-updated` adds action and count, and no env var name or value.
@@ -80,7 +87,7 @@ if "pdt" not in sys.modules:
                                                    submodule_search_locations=[str(_package)])
     sys.modules["pdt"] = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(sys.modules["pdt"])
-from pdt import alert_message, config, console, slack, teams
+from pdt import alert_message, config, console, email_alert, slack, teams
 from pdt.utils import storage
 
 JOB_RUN_STARTED = "job:run-started"
@@ -120,6 +127,8 @@ class Transport:
     deliver: Callable[[Event, dict, bool], None]
     one_of: tuple[str, ...] = ()
     secrets: Callable[[dict], list[str]] = lambda entry: []
+    optional: Callable[[dict], list[str]] = lambda entry: []
+    problem: Callable[[dict], str] = lambda entry: ""
 
 
 ENTRY_KEYS = ("type", "events", "exclude-events")
@@ -129,6 +138,8 @@ TRANSPORTS: dict[str, Transport] = {
     "console": Transport("console", frozenset(), print_event),
     "slack": Transport("slack", slack.KEYS, slack.deliver, slack.ONE_OF, slack.secrets),
     "teams": Transport("teams", teams.KEYS, teams.deliver, teams.ONE_OF, teams.secrets),
+    "email": Transport("email", email_alert.KEYS, email_alert.deliver, (), email_alert.secrets,
+                       email_alert.optional, email_alert.problem),
 }
 
 
@@ -167,6 +178,9 @@ def parse_entry(alert: object, where: str) -> dict:
         raise config.ConfigError(
             f"{where}: the {alert['type']} alerts entry sets both {' and '.join(present)}; "
             "keep only one")
+    problem = TRANSPORTS[alert["type"]].problem(alert)
+    if problem != "":
+        raise config.ConfigError(f"{where}: the {alert['type']} alerts entry {problem}")
     if "events" not in alert and "exclude-events" not in alert:
         raise config.ConfigError(
             f"{where}: the {alert['type']} alerts entry needs events, for example "
@@ -264,20 +278,25 @@ def flush() -> None:
     console.drain()
 
 
+def receivers(alerts: list[dict], name: str) -> list[tuple[dict, bool]]:
+    """Each entry of `alerts` that gets the event `name`, in order, with True when it gets
+    it through `unhandled`."""
+    unhandled = not any(receives(alert, name) for alert in alerts)
+    found = []
+    for alert in alerts:
+        if receives(alert, name):
+            found.append((alert, False))
+        elif (unhandled and UNHANDLED in alert["events"]
+              and UNHANDLED not in alert["exclude-events"] and not excludes(alert, name)):
+            found.append((alert, True))
+    return found
+
+
 def emit(name: str, **params: object) -> Event:
     if name in (ALL, UNHANDLED):
         raise ValueError(f"{name!r} is a reserved word in alerts, not an event name")
     event = Event(name, datetime.now(timezone.utc), params)
-    alerts = alerts_for(params.get("app"))
-    unhandled = not any(receives(alert, name) for alert in alerts)
-    for alert in alerts:
-        if receives(alert, name):
-            through_unhandled = False
-        elif (unhandled and UNHANDLED in alert["events"]
-              and UNHANDLED not in alert["exclude-events"] and not excludes(alert, name)):
-            through_unhandled = True
-        else:
-            continue
+    for alert, through_unhandled in receivers(alerts_for(params.get("app")), name):
         if alert["type"] == "console":
             TRANSPORTS["console"].deliver(event, alert, through_unhandled)
             continue

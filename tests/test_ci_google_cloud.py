@@ -4,7 +4,6 @@ import pytest
 
 from conftest import add_app
 from pdt import config, deploy_google_cloud
-from pdt.utils import email_auth
 
 
 class Result:
@@ -70,7 +69,7 @@ def test_no_credential_and_no_key_file_names_both_ways_to_fix_it(monkeypatch, ca
 
 def test_a_person_at_a_terminal_is_still_offered_the_browser_login(monkeypatch):
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
-    monkeypatch.setattr(email_auth, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(config, "can_prompt", lambda interactive: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")
     calls = record_gcloud(monkeypatch, [(["auth", "login"], Result(0))])
     deploy_google_cloud.ensure_credentials()
@@ -95,7 +94,7 @@ def test_an_unattended_run_with_no_project_names_the_key_to_set(project, monkeyp
 
 def choose_project_answering(project, monkeypatch, answer):
     add_app(project, "my-report", "schedule: daily\n")
-    monkeypatch.setattr(email_auth, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(config, "can_prompt", lambda interactive: True)
     monkeypatch.setattr("builtins.input", lambda prompt="": answer)
     saved = []
 
@@ -129,7 +128,7 @@ TWO_ACCOUNTS = ('[{"name": "billingAccounts/AAAA-1111", "displayName": "Main"},'
 
 def create_answering(project, monkeypatch, answers, accounts, create=True):
     add_app(project, "my-report", "schedule: daily\n")
-    monkeypatch.setattr(email_auth, "can_prompt", lambda interactive: True)
+    monkeypatch.setattr(config, "can_prompt", lambda interactive: True)
     replies = iter(answers)
     monkeypatch.setattr("builtins.input", lambda prompt="": next(replies))
     monkeypatch.setattr(deploy_google_cloud.console, "confirm", lambda question="": create)

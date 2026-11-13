@@ -5,6 +5,8 @@
 #     "pyyaml",
 #     "rich",
 #     "python-dotenv",
+#     "cryptography",
+#     "pyjwt",
 #     "backoff",
 #     "gcsfs",
 #     "fsspec",
@@ -94,7 +96,6 @@ from pdt.deploy_common import (
     store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
 from pdt import storage_cli
-from pdt.utils import email_auth
 from pdt.utils.storage import Store
 
 GCLOUD = "gcloud"
@@ -244,7 +245,7 @@ def require_managed(resource: dict | None, label: str) -> None:
 
 
 def can_ask() -> bool:
-    return email_auth.can_prompt(None)
+    return config.can_prompt(None)
 
 
 def have_credentials() -> bool:

@@ -21,7 +21,6 @@ def test_a_folder_with_run_py_is_a_python_app_even_with_ps1_files(project):
     folder = ps_app(project)
     (folder / "run.py").write_text("")
     assert config.powershell_scripts(folder) == []
-    assert not config.uses_email(config.merged_app("ad-report"))
 
 
 def test_requirements_psd1_next_to_run_py_keeps_a_powershell_app(project):

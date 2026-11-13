@@ -189,14 +189,13 @@ enabled: true
 pause: false
 
 config:
-  email_from: reports@example.com
   lookback_hours: 72
 
 env:
-  required: [PDT_SMTP_HOST, PDT_SMTP_USER]
+  required: [REPORT_API_URL]
   one_of:
-    - [PDT_SMTP_PASSWORD]
-    - [PDT_SMTP_OAUTH_CLIENT_ID]
+    - [REPORT_API_KEY]
+    - [REPORT_CLIENT_ID, REPORT_CLIENT_SECRET]
   optional: [REPORT_GREETING]
 ```
 
@@ -293,10 +292,9 @@ storage:
 
 The `config:` block is free-form. You choose the keys and the values. A Python app reads the block as `app["config"]`. A PowerShell app reads it from `$env:PDT_CONFIG_JSON`. See [Writing your own app](writing-apps.md).
 
-pdt checks only two things in this block:
+pdt checks only one thing in this block:
 
 - The block cannot hold a name of an app key, such as `schedule`, except `name`.
-- An app that sends email with `pdt.utils.send_email` needs `email_from` here when an email env var is set. See [Sending email](email.md).
 
 ### `env:` keys
 
@@ -498,29 +496,7 @@ Set the last five of these only to use a resource with another name. Each defaul
 
 ### Email env vars
 
-Your app reads these through `pdt.utils.send_email`. Set one group only. With no group set, pdt prints the message instead of sending it. List each name that your app uses under [`env:`](#env-keys). For the setup steps, see [Sending email](email.md).
-
-| Env var | Allowed values | Default | What it does |
-| --- | --- | --- | --- |
-| `PDT_SMTP_HOST` | A mail server name. | Not set. | Names the SMTP server. SMTP needs it. |
-| `PDT_SMTP_USER` | A mailbox address. | Not set. | Names the SMTP user. SMTP needs it. |
-| `PDT_SMTP_PORT` | A port number. | `587` | Sets the SMTP port. Port 587 uses STARTTLS. Port 465 uses implicit TLS. |
-| `PDT_SMTP_PASSWORD` | A password. | Not set. | Holds the SMTP password. |
-| `PDT_SMTP_AUTH` | `password` or `oauth2`. | pdt selects `oauth2` for `smtp.gmail.com`, `smtp.office365.com`, and `smtp-mail.outlook.com` when no password is set. | Selects the SMTP sign-in method. |
-| `PDT_SMTP_OAUTH_CLIENT_ID` | An OAuth client ID. | Not set. | Selects the OAuth client. OAuth needs it. |
-| `PDT_SMTP_OAUTH_CLIENT_SECRET` | An OAuth client secret. | Not set. | Holds the OAuth client secret. Google needs it. |
-| `PDT_SMTP_OAUTH_TENANT_ID` | A Microsoft tenant ID. | `common` | Selects the Microsoft tenant. |
-| `PDT_SMTP_OAUTH_CACHE_B64` | The value that pdt writes. | pdt writes it to `.env` after you sign in. | Holds the saved authorization. Copy it to your CI variables for a build server. |
-| `PDT_GRAPH_MAIL_USER` | A mailbox address. | Not set. | Names the mailbox that sends the mail. Microsoft Graph needs it. It must match `email_from`. |
-| `PDT_GRAPH_MAIL_CLIENT_ID` | An app registration client ID. | Not set. | Selects the app registration. Microsoft Graph needs it. |
-| `PDT_GRAPH_MAIL_TENANT_ID` | A Microsoft tenant ID. | `common` | Selects the Microsoft tenant. |
-| `PDT_GRAPH_MAIL_CACHE_B64` | The value that pdt writes. | pdt writes it to `.env` after you sign in. | Holds the saved authorization. Copy it to your CI variables for a build server. |
-| `PDT_SES_REGION` | An AWS region name. | Not set. | Selects the SES region. SES needs it. |
-| `PDT_SES_ACCESS_KEY_ID` | An AWS access key. | The standard AWS credentials. | Holds the SES access key. |
-| `PDT_SES_SECRET_ACCESS_KEY` | An AWS secret key. | The standard AWS credentials. | Holds the SES secret key. |
-| `PDT_RESEND_API_KEY` | A Resend API key. | Not set. | Holds the Resend API key. Resend needs it. |
-| `PDT_EMAIL_FROM` | An email address. | Not set. | Sets the sender for `python -m pdt.utils.send_email` when `--from` is missing. |
-| `PDT_EMAIL_TO` | An email address. | Not set. | Sets the recipient for `python -m pdt.utils.send_email` when `--to` is missing. |
+The email alert type reads the values of the `method` of its entry in `pdt.yml`. `pdt alerts setup` writes them to `.env`, and `pdt deploy` sends them with each app's other secrets, so no app lists them under [`env:`](#env-keys). For the entry, see [The entry in pdt.yml](email.md#the-entry-in-pdtyml). For the env vars of each method (`azure-communication-services`, `microsoft-365`, and `smtp`), see [The methods](email.md#the-methods).
 
 ### Microsoft Graph sign-in env vars
 
