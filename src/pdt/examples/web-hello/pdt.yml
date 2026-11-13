@@ -15,7 +15,7 @@ web:
   # hostname: hello.example.com
   # tls_cert: certs/hello.pem
   # tls_key: certs/hello.key
-  # Who may use the app. Write `auth: public` to serve everyone.
+  # Who may use the app. A web app always has a sign-in.
   auth:
     # Where visitors sign in: google (Google Cloud and Windows).
     provider: google

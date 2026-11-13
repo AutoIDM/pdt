@@ -4,14 +4,17 @@ The app is any container that listens on the port in `web.port` (PDT_PORT), or a
 `run.py` that does. It needs no sign-in code. The platform's own gate stands in
 front of it and lets no request through until the visitor signed in:
 Identity-Aware Proxy on Cloud Run, oauth2-proxy on a Windows PC. `web.auth.provider`
-names where visitors sign in (`google`; `microsoft` has no gate yet);
-`web.auth: public` serves everyone. Each gate sets a
+names where visitors sign in (`google`; `microsoft` has no gate yet). A web app is
+never open to everyone: `pdt validate` requires a provider and at least one of
+`web.auth.allowed_domains` and `web.auth.allowed_groups`. Each gate sets a
 header with the visitor's email (`pdt.utils.auth.current_user` reads all of them),
 and the app may ignore it.
 
-`web.auth.allowed_domains` and `web.auth.allowed_groups` narrow who may enter. Each
-platform enforces what it can (see ANSWERS); where it cannot, deploy says so,
-and the app checks the header itself.
+`web.auth.allowed_domains` and `web.auth.allowed_groups` say who may enter.
+
+`web.resources` sizes the deployed app: cpu, memory, timeout (seconds a request
+may take), min_instances, max_instances, and concurrency (requests one instance
+serves at once). Each key that is not set takes RESOURCE_DEFAULTS.
 
 `storage.read` names the apps whose files this app may read. The deployed app
 finds each one's folder read-only under STORAGE_READ_DIR/<app>/, the way the
@@ -25,9 +28,19 @@ NAME = "web"
 DESCRIPTION = "an HTTP server that runs all the time behind the platform's sign-in"
 
 KEYS = {"web"}
-WEB_KEYS = {"port", "health_path", "hostname", "tls_cert", "tls_key", "auth"}
+WEB_KEYS = {"port", "health_path", "hostname", "tls_cert", "tls_key", "auth", "resources"}
 AUTH_KEYS = {"provider", "allowed_domains", "allowed_groups"}
-PUBLIC = "public"
+# What a deployed web app gets when web.resources does not say.
+RESOURCE_DEFAULTS = {"cpu": 1, "memory": "512MiB", "timeout": 300, "min_instances": 0,
+                     "max_instances": 3, "concurrency": 80}
+# The vCPU counts a Cloud Run instance can have, and the most memory, in MiB, each allows.
+CPU_MEMORY_MAX = {1: 4096, 2: 8192, 4: 16384, 6: 24576, 8: 32768}
+# Cloud Run gen2 needs at least 512 MiB.
+MEMORY_MIN = 512
+TIMEOUT_MAX = 3600
+CONCURRENCY_MAX = 1000
+# The providers that read web.resources.
+RESOURCE_PROVIDERS = ("google-cloud",)
 AUTH_PROVIDERS = ("google", "microsoft")
 DEFAULT_PORT = 8080
 DEFAULT_HEALTH_PATH = "/"
@@ -74,11 +87,11 @@ COMMANDS = {
 
 ANSWERS = {
     "google-cloud": {
-        "compute": "a Cloud Run service pdt-<app>, 0 to 3 instances of 1 vCPU and 512 MiB, one "
-                   "container from the app's image",
+        "compute": "a Cloud Run service pdt-<app>, by default 0 to 3 instances of 1 vCPU and "
+                   "512 MiB, one container from the app's image",
         "lifecycle": "scales to zero after 15 minutes with no request, starts on the next one; "
-                     "`pdt deploy` sends a new revision; `pdt pause` sets the ingress to internal "
-                     "so no visitor reaches it",
+                     "`pdt deploy` sends a new revision; `pdt pause` stops the service, so it runs "
+                     "no instance and answers no request, and `pdt unpause` starts it again",
         "ingress": "HTTPS at https://pdt-<app>-<project number>.<region>.run.app; Identity-Aware "
                    "Proxy in front; no request reaches the app before the sign-in",
         "identity": "the service runs as its own service account pdt-web-<app>, which may read "
@@ -127,26 +140,71 @@ ANSWERS = {
 
 
 def auth_provider(app: dict) -> str:
-    """`google`, `microsoft`, or PUBLIC."""
+    """`google` or `microsoft`."""
     return str(app["auth"].get("provider") or "")
 
 
-def is_public(app: dict) -> bool:
-    return auth_provider(app) == PUBLIC
-
-
 def gate(app: dict, provider: str) -> str:
-    """The sign-in gate this platform puts in front of the app, or "" for a public app."""
-    if is_public(app):
-        return ""
+    """The sign-in gate this platform puts in front of the app."""
     return GATES.get((provider, auth_provider(app)), "")
+
+
+def memory_mib(text: str) -> int | None:
+    """512 for "512MiB", 2048 for "2GiB"; None for any other text."""
+    for unit, size in (("MiB", 1), ("GiB", 1024)):
+        number = text[:-len(unit)] if isinstance(text, str) and text.endswith(unit) else ""
+        if number.isdigit():
+            return int(number) * size
+    return None
+
+
+def resources(app: dict) -> dict:
+    """web.resources with RESOURCE_DEFAULTS filled in."""
+    return {**RESOURCE_DEFAULTS, **(app["web"].get("resources") or {})}
+
+
+def resource_problems(value, where: str) -> list[str]:
+    from pdt import config
+
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return [f"{where}: web.resources must be a mapping"]
+    problems = config.key_problems(f"{where}: web.resources", value, set(RESOURCE_DEFAULTS))
+    merged = {**RESOURCE_DEFAULTS, **value}
+
+    def whole(key: str, low: int, high: int) -> bool:
+        number = merged[key]
+        if isinstance(number, bool) or not isinstance(number, int) or not low <= number <= high:
+            problems.append(f"{where}: web.resources.{key} must be a whole number from {low} "
+                            f"to {high}")
+            return False
+        return True
+
+    cpu_ok = merged["cpu"] in CPU_MEMORY_MAX and not isinstance(merged["cpu"], bool)
+    if not cpu_ok:
+        problems.append(f"{where}: web.resources.cpu must be one of "
+                        + ", ".join(str(cpu) for cpu in CPU_MEMORY_MAX))
+    memory = memory_mib(merged["memory"])
+    if memory is None:
+        problems.append(f"{where}: web.resources.memory must be a size such as 512MiB or 2GiB")
+    elif memory < MEMORY_MIN:
+        problems.append(f"{where}: web.resources.memory must be at least {MEMORY_MIN}MiB")
+    elif cpu_ok and memory > CPU_MEMORY_MAX[merged["cpu"]]:
+        problems.append(f"{where}: web.resources.memory: {merged['cpu']} vCPU allows at most "
+                        f"{CPU_MEMORY_MAX[merged['cpu']] // 1024}GiB; raise cpu or lower memory")
+    whole("timeout", 1, TIMEOUT_MAX)
+    whole("concurrency", 1, CONCURRENCY_MAX)
+    if whole("max_instances", 1, 1000) & whole("min_instances", 0, 1000):
+        if merged["min_instances"] > merged["max_instances"]:
+            problems.append(f"{where}: web.resources.min_instances must not be more than "
+                            "max_instances")
+    return problems
 
 
 def required_env(app: dict) -> list[str]:
     """The env vars the sign-in gate needs on this app's provider."""
     provider = app["platform"].get("provider", "")
-    if is_public(app):
-        return []
     if provider == "windows":
         names = [ENV_CLIENT_ID, ENV_CLIENT_SECRET, ENV_COOKIE_SECRET]
         if app["auth"].get("allowed_groups"):
@@ -211,22 +269,21 @@ def problems(app: dict, provider: str) -> list[str]:
                 "visitors use and the PEM certificate and key files for it, because the PC has "
                 "no platform certificate")
     chosen = auth.get("provider")
-    if not auth:
-        problems.append(f"{where}: web.auth: say who may use the app: web.auth: public serves "
-                        f"everyone, and web.auth.provider: {' or '.join(AUTH_PROVIDERS)} puts a "
-                        "sign-in in front of it")
-    elif chosen not in (PUBLIC, *AUTH_PROVIDERS):
-        problems.append(f"{where}: web.auth.provider must be {PUBLIC}, "
-                        f"{', or '.join(AUTH_PROVIDERS)}")
-    elif chosen == PUBLIC:
-        for key in ("allowed_domains", "allowed_groups"):
-            if auth.get(key):
-                problems.append(f"{where}: web.auth.{key}: a public app has no sign-in, so it cannot "
-                                "limit who enters; set web.auth.provider instead")
+    if chosen not in AUTH_PROVIDERS:
+        problems.append(f"{where}: web.auth.provider must be {' or '.join(AUTH_PROVIDERS)}: a web "
+                        "app is never open to everyone, so visitors always sign in")
     elif provider in PROVIDERS and (provider, chosen) not in GATES:
         problems.append(f"{where}: web.auth.provider: {chosen} sign-in is not yet available on the "
                         f"{provider} provider; it works with "
                         + ", ".join(sorted(p for (prov, p) in GATES if prov == provider)))
     problems.extend(_names(auth.get("allowed_domains"), "allowed_domains", f"{where}: web.auth"))
     problems.extend(_names(auth.get("allowed_groups"), "allowed_groups", f"{where}: web.auth"))
+    if not auth.get("allowed_domains") and not auth.get("allowed_groups"):
+        problems.append(f"{where}: web.auth: list who may enter in allowed_domains, "
+                        "allowed_groups, or both")
+    problems.extend(resource_problems(web.get("resources"), where))
+    if web.get("resources") is not None and provider in PROVIDERS \
+            and provider not in RESOURCE_PROVIDERS:
+        problems.append(f"{where}: web.resources: the {provider} provider does not read it; "
+                        "remove the key")
     return problems

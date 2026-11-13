@@ -483,7 +483,7 @@ def columns(rows: list[tuple[str, str]]) -> None:
 
 SECRET_CHANGE_COLOURS = {"deleted": "red", "new": "green", "updated": "yellow", "unchanged": "dim"}
 RUN_STATUS_COLOURS = {"succeeded": "green", "ok": "green", "failed": "red", "unknown": "red",
-                      "running": "cyan", "not yet run": "dim"}
+                      "running": "cyan", "stopped": "yellow", "not yet run": "dim"}
 LOG_LEVEL_COLOURS = {"DEBUG": "dim", "INFO": "green", "WARNING": "yellow", "ERROR": "bold red"}
 
 

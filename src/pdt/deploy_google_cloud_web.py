@@ -7,7 +7,7 @@ app needs.
 
 Resources per app, in the configured project and region:
   Cloud Run service      pdt-<app>      (labels managed-by=pdt, pdt-build=<fingerprint>);
-                         IAP on, no unauthenticated caller, unless `web.auth: public`
+                         IAP on, no unauthenticated caller
   Secret Manager secret  pdt-<app>-env  (as for a job, when the app has env values)
   service account        pdt-web-<app>  the service's identity, for this app only: it may
                          read its own secret, write its own storage folder, and read
@@ -15,6 +15,8 @@ Resources per app, in the configured project and region:
   IAP IAM bindings       roles/iap.httpsResourceAccessor on the service for each
                          web.auth.allowed_domains entry (domain:) and allowed_groups
                          entry (group:); they go with the service
+web.resources sets the instance size and scale; RESOURCE_DEFAULTS in profiles/web.py
+fills in each key it does not set.
 Shared with the project's jobs: the Artifact Registry repo and the bucket
 pdt-data-<suffix>. A web app never runs as the jobs' pdt-runner, so a flaw in it
 cannot reach a job's secret or write a job's files.
@@ -30,8 +32,9 @@ https://pdt-<app>-<project number>.<region>.run.app. IAP signs each visitor in
 with Google through the Google-managed OAuth client, so nothing is made in the
 Cloud console by hand, and forwards the email in X-Goog-Authenticated-User-Email.
 
-`pause` sets the service's ingress to internal, so no visitor reaches it, and
-`unpause` sets it back to all. A deploy restarts the app with the deployed code.
+`pause` stops the service (manual scaling to 0 instances: it runs nothing and
+answers no request), and `unpause` sets automatic scaling again. A deploy
+restarts the app with the deployed code and keeps a paused app stopped.
 `runs` shows the deployed service as one row, so `pdt health` reads it; `logs`
 reads what the deployed service wrote since its last deploy: both output streams
 and Cloud Run's system log (startup probes, instance starts and stops). IAP on
@@ -70,9 +73,9 @@ APIS = tuple(api for api in gc.APIS if api not in ("cloudbilling.googleapis.com"
 DESTROY_APIS = tuple(api for api in gc.DESTROY_APIS if api != "cloudscheduler.googleapis.com")
 IAP_ROLE = "roles/iap.httpsResourceAccessor"
 READ_ROLE = "roles/storage.objectViewer"
-CPU = "1"
-MEMORY = "512Mi"
-MAX_INSTANCES = "3"
+# Service annotations that mark a stopped service: manual scaling with 0 instances.
+SCALING_MODE = "run.googleapis.com/scalingMode"
+MANUAL_COUNT = "run.googleapis.com/manualInstanceCount"
 APP_CONTAINER = "app"
 # The startup probe asks web.health_path every 5 s for up to 90 s.
 PROBE = "periodSeconds=5,timeoutSeconds=5,failureThreshold=18"
@@ -215,15 +218,17 @@ def deploy_args(app: dict, project: str, region: str, sa: str, image: str, url: 
     """The `gcloud run deploy` arguments for the service and its one container."""
     service = service_name(app["name"])
     port = str(web.port(app))
-    public = web.is_public(app)
+    size = web.resources(app)
     args = ["run", "deploy", service, "--region", region, "--project", project,
             "--service-account", sa, "--platform", "managed", "--execution-environment", "gen2",
-            "--ingress", "internal" if app["pause"] else "all",
-            "--min-instances", "0", "--max-instances", MAX_INSTANCES,
+            "--ingress", "all", "--scaling", "0" if app["pause"] else "auto",
+            "--min-instances", str(size["min_instances"]),
+            "--max-instances", str(size["max_instances"]),
+            "--concurrency", str(size["concurrency"]), "--timeout", str(size["timeout"]),
             "--labels", f"managed-by=pdt,{BUILD_TAG}={fingerprint}",
-            "--allow-unauthenticated" if public else "--no-allow-unauthenticated",
-            "--no-iap" if public else "--iap",
-            "--image", image, "--port", port, "--cpu", CPU, "--memory", MEMORY,
+            "--no-allow-unauthenticated", "--iap",
+            "--image", image, "--port", port, "--cpu", str(size["cpu"]),
+            "--memory", f"{web.memory_mib(size['memory'])}Mi",
             "--startup-probe", f"httpGet.path={web.health_path(app)},httpGet.port={port},{PROBE}",
             # Volumes are set whole on every deploy, so a removed storage.read entry goes too.
             "--clear-volumes", "--clear-volume-mounts"]
@@ -255,11 +260,6 @@ CPU_SKU = "Services CPU (Request-based billing)"
 MEMORY_SKU = "Services Memory (Request-based billing)"
 
 
-def gib(memory: str) -> float:
-    """0.5 for "512Mi", 1.0 for "1Gi"."""
-    return float(memory[:-2]) / 1024 if memory.endswith("Mi") else float(memory[:-2])
-
-
 def cost_estimate(app: dict, project: str, region: str) -> CostEstimate:
     """Monthly cost at UPTIME, from the Cloud Billing catalog's list prices for the region."""
     currency = regions.local_currency()
@@ -278,7 +278,8 @@ def cost_estimate(app: dict, project: str, region: str) -> CostEstimate:
         return amount
 
     seconds = MONTH_SECONDS * UPTIME
-    shares = [("Cloud Run service", float(CPU), gib(MEMORY))]
+    size = web.resources(app)
+    shares = [("Cloud Run service", float(size["cpu"]), web.memory_mib(size["memory"]) / 1024)]
     for in_currency in dict.fromkeys((currency, "USD")):
         try:
             cpu, memory = price(CPU_SKU, in_currency), price(MEMORY_SKU, in_currency)
@@ -287,8 +288,7 @@ def cost_estimate(app: dict, project: str, region: str) -> CostEstimate:
             continue
         items = [(f"{label}: {vcpu:g} vCPU / {mem:g} GiB x {UPTIME:.0%} of the month",
                   seconds * (vcpu * cpu + mem * memory)) for label, vcpu, mem in shares]
-        if not web.is_public(app):
-            items.append(("Identity-Aware Proxy", 0.0))
+        items.append(("Identity-Aware Proxy", 0.0))
         converted = "" if in_currency == "USD" else ", converted from USD by Google Cloud"
         return CostEstimate(items, f"{region} request-based list prices{converted}, "
                             f"an instance up {UPTIME:.0%} of the month, before free tiers",
@@ -389,13 +389,16 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         actions.append(console.Markup(f"allow {console.value(sa)} to read "
                                       f"{console.value(f'{bucket}/{other}/')}, mounted read-only at "
                                       f"{console.value(f'{web.STORAGE_READ_DIR}/{other}/')}"))
+    size = web.resources(app)
     actions.append(console.Markup(
         ("update" if service_exists else "create")
-        + f" Cloud Run service {console.value(service)}: {console.value(CPU)} vCPU, "
-        f"{console.value(MEMORY)}, 0 to {console.value(MAX_INSTANCES)} instances, port "
-        f"{console.value(str(web.port(app)))}, startup probe on "
-        f"{console.value(web.health_path(app))}"
-        + (" (paused: ingress internal)" if app["pause"] else "")))
+        + f" Cloud Run service {console.value(service)}: {console.value(str(size['cpu']))} vCPU, "
+        f"{console.value(size['memory'])}, {console.value(str(size['min_instances']))} to "
+        f"{console.value(str(size['max_instances']))} instances of "
+        f"{console.value(str(size['concurrency']))} requests each, requests up to "
+        f"{console.value(str(size['timeout']))} s, port {console.value(str(web.port(app)))}, "
+        f"startup probe on {console.value(web.health_path(app))}"
+        + (" (paused: stopped, 0 instances)" if app["pause"] else "")))
     if gate:
         actions.append(console.Markup(
             f"put {console.value(gate)} in front of {console.value(url)}: visitors sign in with "
@@ -404,14 +407,6 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             actions.append(console.Markup(f"allow {console.value(member)} to enter"))
         for member in remove_members:
             actions.append(console.Markup(f"no longer allow {console.value(member)} to enter"))
-        if not iap_members(app):
-            actions.append(console.Markup(
-                "allow no one yet: set web.auth.allowed_domains or web.auth.allowed_groups, or run "
-                + console.value(f"pdt gcloud iap web add-iam-policy-binding --resource-type=cloud-run "
-                                f"--service {service} --region {region} --member user:EMAIL "
-                                f"--role {IAP_ROLE}")))
-    else:
-        actions.append(console.Markup(f"serve {console.value(url)} to everyone (web.auth: public)"))
     cost = cost_estimate(app, project, region)
 
     if plan_only:
@@ -510,8 +505,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                          "--member", member, "--role", IAP_ROLE)
     console.done(f"Deployed {console.value(name)}: {console.value(url)}")
     if app["pause"]:
-        console.note(f"{console.value(name)} is paused: its ingress is internal, so no visitor "
-                     f"reaches it; {console.value(f'pdt unpause {name}')} opens it")
+        console.note(f"{console.value(name)} is paused: the service is stopped and answers no "
+                     f"request; {console.value(f'pdt unpause {name}')} starts it")
     elif gate:
         console.note("the first visit asks the visitor to sign in with Google and to allow the "
                      "app to see their email")
@@ -642,6 +637,9 @@ def deployed_runs(project: str, region: str, service: str) -> list[runs_cli.Run]
     ready = conditions.get("Ready") or {}
     when = ready.get("lastTransitionTime") or (current.get("metadata") or {}).get("creationTimestamp")
     status = {"True": "running", "False": "failed"}.get(ready.get("status"), "running")
+    annotations = (current.get("metadata") or {}).get("annotations") or {}
+    if annotations.get(SCALING_MODE) == "manual" and str(annotations.get(MANUAL_COUNT)) == "0":
+        status = "stopped"
     return [runs_cli.Run(service, datetime.datetime.fromisoformat(when), None, status)]
 
 
@@ -726,13 +724,16 @@ def pause(app: dict, paused: bool, assume_yes: bool) -> int:
     if current is None:
         fail(f"Cloud Run service {console.value(service)} does not exist; run "
              f"{console.value(f'pdt deploy {app['name']}')} first")
-    ingress = "internal" if paused else "all"
     gc.run_quiet("run", "services", "update", service, "--region", region, "--project", project,
-                 "--ingress", ingress,
-                 slow=f"updating: Cloud Run service {console.value(service)}")
-    console.done(f"{'Paused' if paused else 'Unpaused'} {console.value(app['name'])}: the "
-                 f"ingress of Cloud Run service {console.value(service)} is "
-                 f"{console.value(ingress)}.")
+                 "--scaling", "0" if paused else "auto",
+                 slow=f"{'stopping' if paused else 'starting'}: Cloud Run service "
+                      f"{console.value(service)}")
+    if paused:
+        console.done(f"Paused {console.value(app['name'])}: Cloud Run service "
+                     f"{console.value(service)} is stopped and answers no request.")
+    else:
+        console.done(f"Unpaused {console.value(app['name'])}: Cloud Run service "
+                     f"{console.value(service)} starts an instance at the next request.")
     return 0
 
 

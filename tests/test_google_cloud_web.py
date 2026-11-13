@@ -199,21 +199,30 @@ def test_a_service_with_the_old_sidecar_must_be_destroyed_first(google, monkeypa
     assert "pdt destroy dashboard" in capsys.readouterr().out
 
 
-def test_a_public_app_has_no_iap_and_one_container(google, monkeypatch, capsys):
-    fake = fake_cloud(monkeypatch, FakeCloud(), secrets={})
-    app = web_app(google, "app_profile: web\nweb:\n  port: 80\n  auth: public\nstorage: false\n")
-    assert gweb.deploy(app, True, plan_only=True) == 0
-    assert gweb.deploy(app, True) == 0
-    assert gweb.IAP_API not in fake.apis
+def test_web_resources_size_the_service(google, monkeypatch, capsys):
+    fake = fake_cloud(monkeypatch, FakeCloud())
+    text = WEB_APP.replace("web:\n", "web:\n  resources:\n    cpu: 2\n    memory: 2GiB\n"
+                                     "    timeout: 900\n    min_instances: 1\n"
+                                     "    max_instances: 5\n    concurrency: 20\n", 1)
+    assert gweb.deploy(web_app(google, text), True, plan_only=True) == 0
+    assert gweb.deploy(web_app(google, text), True) == 0
     [deploy] = fake.ran("run", "deploy")
-    assert "--no-iap" in deploy and "--allow-unauthenticated" in deploy
-    assert "--container" not in deploy and "--add-volume" not in deploy
-    assert "--set-secrets" not in deploy
-    assert flag(deploy, "--startup-probe").startswith("httpGet.path=/,httpGet.port=80,")
-    assert fake.ran("iap") == [] and fake.ran("run", "services", "add-iam-policy-binding") == []
-    assert fake.ran("storage", "buckets", "create") == []
+    assert (flag(deploy, "--cpu"), flag(deploy, "--memory"), flag(deploy, "--timeout")) == \
+        ("2", "2048Mi", "900")
+    assert (flag(deploy, "--min-instances"), flag(deploy, "--max-instances"),
+            flag(deploy, "--concurrency")) == ("1", "5", "20")
     out = " ".join(capsys.readouterr().out.split())
-    assert "to everyone (web.auth: public)" in out
+    assert "2 vCPU, 2GiB, 1 to 5 instances of 20 requests each, requests up to 900 s" in out
+
+
+def test_without_web_resources_the_defaults_apply(google, monkeypatch):
+    fake = fake_cloud(monkeypatch, FakeCloud())
+    assert gweb.deploy(web_app(google), True) == 0
+    [deploy] = fake.ran("run", "deploy")
+    assert (flag(deploy, "--cpu"), flag(deploy, "--memory"), flag(deploy, "--max-instances"),
+            flag(deploy, "--concurrency"), flag(deploy, "--timeout")) == \
+        ("1", "512Mi", "3", "80", "300")
+    assert "--iap" in deploy and "--no-allow-unauthenticated" in deploy
 
 
 def test_a_second_deploy_fixes_the_members(google, monkeypatch, capsys):
@@ -232,11 +241,11 @@ def test_a_second_deploy_fixes_the_members(google, monkeypatch, capsys):
     assert "update Cloud Run service pdt-dashboard" in out
 
 
-def test_a_paused_app_deploys_with_internal_ingress(google, monkeypatch, capsys):
+def test_a_paused_app_deploys_stopped(google, monkeypatch, capsys):
     fake = fake_cloud(monkeypatch, FakeCloud())
     assert gweb.deploy(web_app(google, WEB_APP + "pause: true\n"), True) == 0
     [deploy] = fake.ran("run", "deploy")
-    assert flag(deploy, "--ingress") == "internal"
+    assert flag(deploy, "--scaling") == "0" and flag(deploy, "--ingress") == "all"
     assert "pdt unpause dashboard" in " ".join(capsys.readouterr().out.split())
 
 
@@ -249,13 +258,6 @@ def test_the_plan_only_reads(google, monkeypatch, capsys):
     assert "Identity-Aware Proxy in front of" in out
     assert "allow domain:example.com to enter" in out
     assert "mounted read-only at /pdt/storage/warehouse/" in out
-
-
-def test_with_no_allow_list_the_plan_says_no_one_can_enter(google, monkeypatch, capsys):
-    fake_cloud(monkeypatch, FakeCloud())
-    app = web_app(google, "app_profile: web\nweb:\n  auth:\n    provider: google\n")
-    assert gweb.deploy(app, True, plan_only=True) == 0
-    assert "allow no one yet" in " ".join(capsys.readouterr().out.split())
 
 
 def test_iap_changes_keep_members_added_by_hand():
@@ -273,14 +275,14 @@ def test_the_url_and_the_env_flag():
     assert env_of(value) == {"A": "x,y", "B": '{"k": "v=1"}'}
 
 
-def test_pause_and_unpause_switch_the_ingress(google, monkeypatch, capsys):
+def test_pause_stops_the_service_and_unpause_starts_it(google, monkeypatch, capsys):
     found = {("run", "services", "describe"): {"metadata": {"labels": {"managed-by": "pdt"}}}}
     fake = fake_cloud(monkeypatch, FakeCloud(found=found))
     app = web_app(google)
     assert gweb.pause(app, True, True) == 0
     assert gweb.pause(app, False, True) == 0
     updates = fake.ran("run", "services", "update")
-    assert [flag(c, "--ingress") for c in updates] == ["internal", "all"]
+    assert [flag(c, "--scaling") for c in updates] == ["0", "auto"]
     out = " ".join(capsys.readouterr().out.split())
     assert "Paused dashboard" in out and "Unpaused dashboard" in out
 
@@ -322,6 +324,9 @@ def test_the_deployed_service_is_one_run(monkeypatch):
     [run] = gweb.deployed_runs(PROJECT, REGION, "pdt-dashboard")
     assert run.id == "pdt-dashboard" and run.status == "running" and run.ended is None
     assert run.started == datetime(2026, 11, 12, 10, tzinfo=timezone.utc)
+    service["metadata"]["annotations"] = {gweb.SCALING_MODE: "manual", gweb.MANUAL_COUNT: "0"}
+    [run] = gweb.deployed_runs(PROJECT, REGION, "pdt-dashboard")
+    assert run.status == "stopped"
     monkeypatch.setattr(gc, "read_json_or_none", lambda *args: None)
     assert gweb.deployed_runs(PROJECT, REGION, "pdt-dashboard") == []
 
@@ -408,7 +413,7 @@ def test_destroy_with_nothing_deployed_removes_nothing(google, monkeypatch, caps
 
 
 def test_the_cost_estimate_prices_80_percent_uptime(monkeypatch):
-    app = {"storage_read": ["warehouse"], "auth": {"provider": "google"}}
+    app = {"storage_read": ["warehouse"], "auth": {"provider": "google"}, "web": {}}
     prices = {gweb.CPU_SKU: 0.000024, gweb.MEMORY_SKU: 0.0000025}
     monkeypatch.setattr(gweb, "cached_price", lambda provider, region, currency, query, read, *a:
                         (prices[query.split(": ", 1)[1]], "s"))

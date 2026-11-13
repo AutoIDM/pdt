@@ -420,6 +420,10 @@ def test_health_shows_a_serving_web_app_as_ok_and_running(capsys):
         "dashboard", "ok", "2026-09-23", "10:00:24", "running"]
     failed = Run("pdt-dashboard", T1, None, "failed")
     assert runs_cli.health({"dashboard": [failed]}, False, {"dashboard"}) == 1
+    assert capsys.readouterr().out.splitlines()[1].split()[1::3] == ["failed", "failed"]
+    stopped = Run("pdt-dashboard", T1, None, "stopped")
+    assert runs_cli.health({"dashboard": [stopped]}, False, {"dashboard"}) == 0
+    assert capsys.readouterr().out.splitlines()[1].split()[1::3] == ["stopped", "stopped"]
 
 
 def test_health_json_and_a_clean_exit(capsys):

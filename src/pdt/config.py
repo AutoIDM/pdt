@@ -306,9 +306,9 @@ def mapping(cfg: dict, key: str, where: str) -> dict:
 
 
 def auth_section(web: dict, where: str) -> dict:
-    """`web.auth: public` is the mapping {provider: public}; anything else is a mapping."""
-    if web.get("auth") == "public":
-        return {"provider": "public"}
+    if web.get("auth") is not None and not isinstance(web.get("auth"), dict):
+        raise ConfigError(f"{where}: web.auth: must be a mapping with provider: and "
+                          "allowed_domains: or allowed_groups:; a web app is never open to everyone")
     return mapping(web, "auth", f"{where}: web")
 
 

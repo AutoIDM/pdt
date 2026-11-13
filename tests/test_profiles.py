@@ -74,22 +74,42 @@ def test_a_web_app_says_who_may_use_it(project):
     add_app(project, "warehouse", "schedule: hourly\n")
     add_app(project, "dashboard", WEB_APP.replace("  auth:\n    provider: google\n"
                                                   "    allowed_domains: [example.com]\n", ""))
-    assert any("web.auth: public serves everyone" in p for p in validate_app("dashboard"))
+    assert any("web.auth.provider must be google or microsoft" in p
+               for p in validate_app("dashboard"))
     add_app(project, "dashboard", WEB_APP.replace("provider: google", "provider: github"))
-    assert any("web.auth.provider must be public, google, or microsoft" in p
+    assert any("web.auth.provider must be google or microsoft" in p
                for p in validate_app("dashboard"))
 
 
-def test_a_public_web_app_has_no_allow_lists(project):
+def test_a_web_app_is_never_open_to_everyone(project):
     (project / "pdt.yml").write_text(GOOGLE_CLOUD)
     add_app(project, "warehouse", "schedule: hourly\n")
     add_app(project, "dashboard", CLOUD_WEB_APP.replace("provider: google", "provider: public"))
-    assert any("a public app has no sign-in" in p for p in validate_app("dashboard"))
+    assert any("never open to everyone" in p for p in validate_app("dashboard"))
     add_app(project, "dashboard", "app_profile: web\nweb:\n  auth: public\n")
+    assert any("never open to everyone" in p for p in validate_app("dashboard"))
+    add_app(project, "dashboard", "app_profile: web\nweb:\n  auth:\n    provider: google\n")
+    assert any("list who may enter in allowed_domains, allowed_groups, or both" in p
+               for p in validate_app("dashboard"))
+
+
+def test_web_resources_are_checked(project):
+    (project / "pdt.yml").write_text(GOOGLE_CLOUD)
+    add_app(project, "warehouse", "schedule: hourly\n")
+    base = CLOUD_WEB_APP.replace("web:\n", "web:\n  resources:\n    RES\n", 1)
+    add_app(project, "dashboard", base.replace("RES", "cpu: 2\n    memory: 4GiB\n    timeout: 900"))
     assert validate_app("dashboard") == []
-    app = merged_app("dashboard")
-    assert app["auth"] == {"provider": "public"} and web.is_public(app)
-    assert web.required_env(app) == []
+    assert web.resources(merged_app("dashboard"))["max_instances"] == 3
+    add_app(project, "dashboard", base.replace("RES", "cpu: 1\n    memory: 8GiB"))
+    assert any("1 vCPU allows at most 4GiB" in p for p in validate_app("dashboard"))
+    add_app(project, "dashboard", base.replace("RES", "cpu: 3\n    memory: 1TB\n    disk: 9"))
+    problems = validate_app("dashboard")
+    assert any("web.resources.cpu must be one of 1, 2, 4, 6, 8" in p for p in problems)
+    assert any("web.resources.memory must be a size" in p for p in problems)
+    assert any("disk" in p for p in problems)
+    add_app(project, "dashboard", base.replace("RES", "min_instances: 4\n    max_instances: 2"))
+    assert any("min_instances must not be more than max_instances" in p
+               for p in validate_app("dashboard"))
 
 
 def test_each_cloud_gate_is_a_known_pair(project):
@@ -127,7 +147,8 @@ def test_a_container_with_a_config_file_is_a_web_app(project):
     folder = project / "site"
     folder.mkdir()
     (folder / "Dockerfile").write_text("FROM nginx:alpine\n")
-    (folder / "pdt.yml").write_text("app_profile: web\nweb:\n  port: 80\n  auth: public\n")
+    (folder / "pdt.yml").write_text("app_profile: web\nweb:\n  port: 80\n  auth:\n"
+                                    "    provider: google\n    allowed_domains: [example.com]\n")
     assert "site" in config.app_folders()
     assert validate_app("site") == []
     assert web.port(merged_app("site")) == 80

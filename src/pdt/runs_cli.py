@@ -759,8 +759,9 @@ def follow_store(list_runs: Callable[[], list[Run]],
 
 
 def health_row(app_name: str, found: list[Run] | None, service: bool = False) -> dict:
-    """A web app's one row is its deployed service: `ok` while it serves, and `running` under
-    Recent in place of a count of finished runs, since a service never finishes."""
+    """A web app's one row is its deployed service: `ok` while it serves, `stopped` while it is
+    paused, `failed` when it cannot serve; Recent says the same in place of a count of
+    finished runs, since a service never finishes."""
     if found is None:
         return {"app": app_name, "status": "unknown", "last_run": None,
                 "succeeded": 0, "runs": 0}
