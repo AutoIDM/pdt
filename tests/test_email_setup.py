@@ -105,6 +105,13 @@ def test_a_first_run_makes_the_registration_the_certificate_and_the_permission(
     assert email_setup.granted_now
 
 
+def test_a_new_certificate_is_valid_for_ten_years():
+    from cryptography import x509
+    _pfx, der = email_setup.new_certificate()
+    certificate = x509.load_der_x509_certificate(der)
+    assert (certificate.not_valid_after_utc - certificate.not_valid_before_utc).days == 3650
+
+
 def test_a_second_run_changes_nothing_in_microsoft_365_or_in_the_project(
         project, organization, monkeypatch, capsys):
     values = email_setup.ensure(project, TENANT, "admin@example.com", organization.call)

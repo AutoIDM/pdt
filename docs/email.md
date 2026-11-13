@@ -47,7 +47,7 @@ pdt sends through Microsoft Graph as an app registration that signs in with a ce
 In `pdt alerts setup`, choose "Microsoft 365: sign in once, and pdt does the setup" and type the sender address. pdt uses the Azure sign-in of this computer, or opens the Microsoft sign-in in your browser when there is none. Sign in as an administrator. The provider of the project does not matter. pdt then makes sure of three items in your organization, and prints one line for each:
 
 - the app registration `pdt-email`, for this organization only;
-- a certificate on that registration. Its private key is the file `.secrets/pdt-email.pfx` in the project. git ignores that folder, and the file never goes into an image. The certificate is valid for two years;
+- a certificate on that registration. Its private key is the file `.secrets/pdt-email.pfx` in the project. git ignores that folder, and the file never goes into an image. The certificate is valid for 10 years;
 - the Microsoft Graph application permission `Mail.Send`, granted for the organization.
 
 pdt writes `PDT_EMAIL_TENANT_ID`, `PDT_EMAIL_CLIENT_ID`, and `PDT_EMAIL_PRIVATE_KEY_PATH` to `.env`. A second run finds each item and changes nothing.

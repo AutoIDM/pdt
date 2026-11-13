@@ -42,7 +42,7 @@ GRAPH = "https://graph.microsoft.com/v1.0"
 GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
 REGISTRATION = "pdt-email"
 CERTIFICATE = ".secrets/pdt-email.pfx"
-CERTIFICATE_DAYS = 730
+CERTIFICATE_DAYS = 3650
 PERMISSION = "Mail.Send"
 # The admin consent page sends the browser to an address that the registration lists.
 REDIRECT_URI = "http://localhost"
