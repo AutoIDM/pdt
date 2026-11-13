@@ -74,8 +74,7 @@ STORAGE_READ_DIR = "/pdt/storage"
 COMMANDS = {
     "run": "start the app on this computer with no sign-in, from run.py or its Dockerfile; "
            "Ctrl+C stops",
-    "run --deployed": "not for a web app; it runs all the time, and `pdt deploy` restarts it "
-                      "with the deployed code",
+    "run --deployed": "open the deployed app in the browser",
     "runs": "one row per start of the server, with its exit code when it stopped",
     "logs": "the server's log; the running server by default",
     "health": "whether the deployed server answers web.health_path",
@@ -90,8 +89,8 @@ ANSWERS = {
         "compute": "a Cloud Run service pdt-<app>, by default 0 to 3 instances of 1 vCPU and "
                    "512 MiB, one container from the app's image",
         "lifecycle": "scales to zero after 15 minutes with no request, starts on the next one; "
-                     "`pdt deploy` sends a new revision; `pdt pause` stops the service, so it runs "
-                     "no instance and answers no request, and `pdt unpause` starts it again",
+                     "`pdt deploy` sends a new revision; `pdt pause` stops the service and "
+                     "`pdt unpause` starts it",
         "ingress": "HTTPS at https://pdt-<app>-<project number>.<region>.run.app; Identity-Aware "
                    "Proxy in front; no request reaches the app before the sign-in",
         "identity": "the service runs as its own service account pdt-web-<app>, which may read "
@@ -270,8 +269,7 @@ def problems(app: dict, provider: str) -> list[str]:
                 "no platform certificate")
     chosen = auth.get("provider")
     if chosen not in AUTH_PROVIDERS:
-        problems.append(f"{where}: web.auth.provider must be {' or '.join(AUTH_PROVIDERS)}: a web "
-                        "app is never open to everyone, so visitors always sign in")
+        problems.append(f"{where}: web.auth.provider must be {' or '.join(AUTH_PROVIDERS)}")
     elif provider in PROVIDERS and (provider, chosen) not in GATES:
         problems.append(f"{where}: web.auth.provider: {chosen} sign-in is not yet available on the "
                         f"{provider} provider; it works with "

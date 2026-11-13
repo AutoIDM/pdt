@@ -174,7 +174,7 @@ Put these keys at the top level of the app's `pdt.yml`, or in its entry in the `
 | `storage` | `true`, `false`, or a block of [`storage:` keys](#storage-keys). | `true` | Gives the app a storage folder. See [Keeping files between runs](storage.md). |
 | `web` | A block of [`web:` keys](#web-keys). | Empty. | Sets the port, the health check, the sign-in, and the size of a web app. Only a web app takes it. |
 | `enabled` | `true` or `false`. | `true` | With `false`, every command except `pdt list` acts as if the app is not there. `pdt destroy` still accepts the app while it is deployed. A deployed schedule keeps running. Run `pdt pause` or `pdt destroy` first. |
-| `pause` | `true` or `false`. | `false` | With `true`, the deployed schedule starts no runs. You can still start a run with `pdt run APP --deployed`. A paused web app is stopped: it runs no instance and answers no request. `pdt pause` and `pdt unpause` write this key. |
+| `pause` | `true` or `false`. | `false` | With `true`, the deployed schedule starts no runs. You can still start a run with `pdt run APP --deployed`. A paused web app is stopped. `pdt pause` and `pdt unpause` write this key. |
 | `docker-build` | `auto`, `local`, or `cloud`. | The top-level `pdt.yml` value, then `auto`. | Sets where a deploy builds the image. `auto` uses Docker on this computer when Docker answers, else the cloud. `local` uses only Docker. `cloud` uses only the cloud. `pdt validate` reports this key for the `windows` provider. |
 | `alerts` | A list of [alert entries](#alerts-entries), or `false`. | The top-level `pdt.yml` list. | Replaces the whole project list for this app. |
 | `run_scripts` | See [PowerShell keys](#powershell-keys). | Not set. | Selects the scripts of a PowerShell app. |

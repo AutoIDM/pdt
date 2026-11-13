@@ -56,9 +56,16 @@ def run(app: dict, local_url: str, started: Callable[[], object] = lambda: None)
             command += ["-e", name]
     command.append(image)
     console.step(f"running {console.value(image)}")
+    process = subprocess.Popen(command)
+    started()
+    return serve(app["name"], process)
+
+
+def serve(name: str, process: subprocess.Popen) -> int:
+    """Wait for a web app's server; Ctrl+C reaches it too, and stops it."""
     try:
-        process = subprocess.Popen(command)
-        started()
         return process.wait()
     except KeyboardInterrupt:
+        process.wait()
+        console.done(f"Stopped {console.value(name)}.")
         return 0

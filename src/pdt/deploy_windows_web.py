@@ -44,6 +44,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 from pathlib import Path
 
 from pdt import config, console, deploy_windows as win, deploy_windows_job as job, regions, runs_cli
@@ -569,10 +570,11 @@ def pause(app: dict, paused: bool) -> int:
 
 
 def start(app: dict, follow: bool = False) -> int:
-    console.error(f"{console.value(app['name'])} is a web app; it runs all the time, so it has no "
-                  f"run to start. {console.value(f'pdt deploy {app['name']}')} restarts it with "
-                  "the deployed code.")
-    return 1
+    """`pdt run APP --deployed` opens the deployed app in the browser."""
+    url = web.url(app)
+    console.done(f"Opening {console.value(url)}")
+    webbrowser.open(url)
+    return 0
 
 
 def list_runs(app_name: str) -> list[runs_cli.Run]:

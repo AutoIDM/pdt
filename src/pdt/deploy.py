@@ -565,15 +565,13 @@ def start(app_name: str, follow: bool = False) -> int:
     except ConfigError as e:
         console.error(console.escape(str(e)))
         return 1
-    if app["app_profile"] == "web":
-        console.error(f"{console.value(app_name)} is a web app; it runs all the time, so it has "
-                      f"no run to start. {console.value(f'pdt deploy {app_name}')} restarts it "
-                      "with the deployed code.")
-        return 1
     if not config.is_deployed(app_name):
         console.error(f"{console.value(app_name)} is not deployed; "
                       f"run {console.value(f'pdt deploy {app_name}')} first")
         return 1
+    if app["app_profile"] == "web":
+        # A web app has no run to start: the provider opens its deployed URL.
+        return dispatch(provider, "start", app_name, False)
     config.load_env(app["dir"])
     if follow:
         return dispatch(provider, "start", app_name, False, ["--", "--follow"])

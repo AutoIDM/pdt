@@ -291,10 +291,12 @@ def test_main_hands_a_web_app_to_the_web_module(windows, monkeypatch):
     assert calls == [("dashboard", "pause")]
 
 
-def test_start_refuses_a_web_app(windows, capsys):
+def test_run_deployed_opens_the_deployed_url(windows, monkeypatch):
+    opened = []
+    monkeypatch.setattr(web_win.webbrowser, "open", opened.append)
     app = web_app(windows)
-    assert web_win.start(app) == 1
-    assert "pdt deploy dashboard" in capsys.readouterr().out
+    assert web_win.start(app) == 0
+    assert opened == [web.url(app)]
 
 
 def test_run_deployed_refuses_a_web_app(windows, monkeypatch, capsys):

@@ -80,14 +80,12 @@ def watch(app: dict, local_url: str, container: bool) -> threading.Thread:
             time.sleep(POLL)
         else:
             console.warn(f"nothing answered {console.value(health)} within "
-                         f"{console.value(f'{START_WAIT:.0f}')} s. "
-                         f"The app must serve HTTP on port {console.value(str(port))} (the "
-                         f"value of {console.value(web.ENV_PORT)}) on all interfaces, "
-                         f"{console.value('0.0.0.0')}; a deploy fails the same way")
+                         f"{console.value(f'{START_WAIT:.0f}')} s; the app must listen on "
+                         f"{console.value(f'0.0.0.0:{port}')} ({console.value(web.ENV_PORT)})")
             return
         if not container and listens_on_all_interfaces(port) is False:
-            console.warn(f"the app answers on {console.value('127.0.0.1')} only. A deployed app "
-                         f"must listen on {console.value('0.0.0.0')}, or its deploy fails")
+            console.warn(f"the app listens on {console.value('127.0.0.1')} only; it must "
+                         f"listen on {console.value('0.0.0.0')} to deploy")
         console.done(f"{console.value(app['name'])} answers at {console.value(local_url)}")
         if can_open_browser():
             webbrowser.open(local_url)

@@ -195,8 +195,7 @@ def project_line() -> str:
     project = console.value(str(find_project()))
     if os.environ.get("PDT_PROJECT", "").strip() != "":
         return f"Project folder: {project}  [dim](from {console.value('PDT_PROJECT')})[/]"
-    return (f"Project folder: {project}  "
-            f"[dim](the first folder with {console.value(PROJECT_FILE)}, from here up)[/]")
+    return f"Project folder: {project}"
 
 
 def powershell_scripts(app_dir: Path) -> list[str]:
@@ -308,7 +307,7 @@ def mapping(cfg: dict, key: str, where: str) -> dict:
 def auth_section(web: dict, where: str) -> dict:
     if web.get("auth") is not None and not isinstance(web.get("auth"), dict):
         raise ConfigError(f"{where}: web.auth: must be a mapping with provider: and "
-                          "allowed_domains: or allowed_groups:; a web app is never open to everyone")
+                          "allowed_domains: or allowed_groups:")
     return mapping(web, "auth", f"{where}: web")
 
 

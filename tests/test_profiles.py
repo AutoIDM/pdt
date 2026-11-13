@@ -85,9 +85,10 @@ def test_a_web_app_is_never_open_to_everyone(project):
     (project / "pdt.yml").write_text(GOOGLE_CLOUD)
     add_app(project, "warehouse", "schedule: hourly\n")
     add_app(project, "dashboard", CLOUD_WEB_APP.replace("provider: google", "provider: public"))
-    assert any("never open to everyone" in p for p in validate_app("dashboard"))
+    assert any("web.auth.provider must be google or microsoft" in p
+               for p in validate_app("dashboard"))
     add_app(project, "dashboard", "app_profile: web\nweb:\n  auth: public\n")
-    assert any("never open to everyone" in p for p in validate_app("dashboard"))
+    assert any("web.auth: must be a mapping" in p for p in validate_app("dashboard"))
     add_app(project, "dashboard", "app_profile: web\nweb:\n  auth:\n    provider: google\n")
     assert any("list who may enter in allowed_domains, allowed_groups, or both" in p
                for p in validate_app("dashboard"))

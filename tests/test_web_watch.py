@@ -46,7 +46,7 @@ def test_a_loopback_server_is_reported_and_the_browser_opens(monkeypatch):
     web_watch.watch(app(port), url, container=False).join(10)
     server.shutdown()
     out = " ".join(" ".join(lines).replace("[bold not dim]", "").replace("[/]", "").split())
-    assert "answers on 127.0.0.1 only" in out and f"dashboard answers at {url}" in out
+    assert "listens on 127.0.0.1 only" in out and f"dashboard answers at {url}" in out
     assert opened == [url]
 
 

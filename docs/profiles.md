@@ -54,7 +54,7 @@ Config keys only this profile uses: `web`.
 | Command | What it means |
 | --- | --- |
 | `pdt run` | start the app on this computer with no sign-in, from run.py or its Dockerfile; Ctrl+C stops |
-| `pdt run --deployed` | not for a web app; it runs all the time, and `pdt deploy` restarts it with the deployed code |
+| `pdt run --deployed` | open the deployed app in the browser |
 | `pdt runs` | one row per start of the server, with its exit code when it stopped |
 | `pdt logs` | the server's log; the running server by default |
 | `pdt health` | whether the deployed server answers web.health_path |
@@ -65,7 +65,7 @@ Config keys only this profile uses: `web`.
 | Concern | AWS | Azure | Google Cloud | Windows |
 | --- | --- | --- | --- | --- |
 | compute | not yet available; the web profile runs on Google Cloud and Windows | not yet available; the web profile runs on Google Cloud and Windows | a Cloud Run service pdt-<app>, by default 0 to 3 instances of 1 vCPU and 512 MiB, one container from the app's image | two Windows services on this PC, pdt-<app> (the app, through WinSW) and pdt-<app>-proxy (oauth2-proxy, through WinSW) |
-| lifecycle | not yet available; the web profile runs on Google Cloud and Windows | not yet available; the web profile runs on Google Cloud and Windows | scales to zero after 15 minutes with no request, starts on the next one; `pdt deploy` sends a new revision; `pdt pause` stops the service, so it runs no instance and answers no request, and `pdt unpause` starts it again | both services start at boot and restart after a failure; no time limit; `pdt deploy` restarts them so they run the deployed code |
+| lifecycle | not yet available; the web profile runs on Google Cloud and Windows | not yet available; the web profile runs on Google Cloud and Windows | scales to zero after 15 minutes with no request, starts on the next one; `pdt deploy` sends a new revision; `pdt pause` stops the service and `pdt unpause` starts it | both services start at boot and restart after a failure; no time limit; `pdt deploy` restarts them so they run the deployed code |
 | ingress | not yet available; the web profile runs on Google Cloud and Windows | not yet available; the web profile runs on Google Cloud and Windows | HTTPS at https://pdt-<app>-<project number>.<region>.run.app; Identity-Aware Proxy in front; no request reaches the app before the sign-in | the proxy listens on TCP 443 with the certificate in web.tls_cert; a firewall rule pdt-<app> opens the port; the app listens on 127.0.0.1 only |
 | identity | not yet available; the web profile runs on Google Cloud and Windows | not yet available; the web profile runs on Google Cloud and Windows | the service runs as its own service account pdt-web-<app>, which may read only its secret and its storage.read folders and write only its own storage folder; a visitor signs in with Google, allowed_domains and allowed_groups are IAM bindings on the service, and the app sees X-Goog-Authenticated-User-Email; a user: or serviceAccount: binding added by hand stays | each service runs as its virtual account NT SERVICE\pdt-<app>; a visitor signs in with Google, the proxy enforces allowed_domains and allowed_groups, and the app sees X-Forwarded-Email |
 | secrets | not yet available; the web profile runs on Google Cloud and Windows | not yet available; the web profile runs on Google Cloud and Windows | Secret Manager secret pdt-<app>-env, mounted as PDT_ENV_JSON | the project's .env file, read when each service starts |

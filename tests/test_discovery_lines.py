@@ -97,7 +97,7 @@ def test_a_terminal_value_that_wins_over_dot_env_is_named_but_not_shown(project,
 
 def test_the_project_line_says_how_pdt_found_the_project(project, monkeypatch):
     assert plain([config.project_line()]) == [
-        f"Project folder: {project}  (the first folder with pdt.yml, from here up)"]
+        f"Project folder: {project}"]
     monkeypatch.setenv("PDT_PROJECT", str(project))
     assert plain([config.project_line()]) == [f"Project folder: {project}  (from PDT_PROJECT)"]
 
@@ -123,7 +123,7 @@ def test_a_listed_env_var_is_not_named(project, monkeypatch):
 def test_validate_says_what_it_found_for_each_app(py_app, project, monkeypatch, capsys):
     assert run_cli(monkeypatch, "validate") == 0
     out = text(capsys)
-    assert f"Project folder: {project} (the first folder with pdt.yml, from here up)" in out
+    assert f"Project folder: {project}" in out
     assert ("py-report runs run.py env vars the code reads that py-report/pdt.yml does not list: "
             "TENANT_ID required, run.py line 4 NOTE optional, run.py line 5 "
             "no .env file in py-report or a folder above it") in out

@@ -271,8 +271,8 @@ def cmd_run(args) -> int:
         web_watch.watch(app, local_url, False)
         env = dict(os.environ, **{web.ENV_PORT: str(web.port(app)), web.ENV_URL: local_url,
                                   web.ENV_STORAGE_READ_DIR: str(run_container.read_root())})
-        return lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"],
-                                 env)
+        return run_container.serve(name, subprocess.Popen(["uv", "run", "--script", "run.py"],
+                                                          cwd=app["dir"], env=env))
     if (app["dir"] / "run.py").is_file():
         code = lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"])
     else:

@@ -32,9 +32,8 @@ https://pdt-<app>-<project number>.<region>.run.app. IAP signs each visitor in
 with Google through the Google-managed OAuth client, so nothing is made in the
 Cloud console by hand, and forwards the email in X-Goog-Authenticated-User-Email.
 
-`pause` stops the service (manual scaling to 0 instances: it runs nothing and
-answers no request), and `unpause` sets automatic scaling again. A deploy
-restarts the app with the deployed code and keeps a paused app stopped.
+`pause` stops the service (manual scaling to 0 instances), and `unpause` sets
+automatic scaling again. A deploy keeps a paused app stopped.
 `runs` shows the deployed service as one row, so `pdt health` reads it; `logs`
 reads what the deployed service wrote since its last deploy: both output streams
 and Cloud Run's system log (startup probes, instance starts and stops). IAP on
@@ -53,6 +52,7 @@ import os
 import threading
 import urllib.parse
 import urllib.request
+import webbrowser
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -369,6 +369,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
 
     actions = [console.Markup(("use existing" if repo_exists else "create")
                               + f" Artifact Registry repo {console.value(repo)}")]
+    set_cleanup = not gc.cleanup_policies_set(repository)
+    if set_cleanup:
+        actions.append(console.Markup(f"set the clean-up policy of {console.value(repo)}: "
+                                      f"{console.escape(gc.CLEANUP_LINE)}"))
     if cloud:
         actions.append(console.Markup(("use existing" if builder_exists else "create")
                                       + f" service account {console.value(builder)} for "
@@ -382,7 +386,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         actions.append(console.Markup(f"{secret_state} secret {console.value(sid)} "
                                       f"({secret_contents(values)}, as one json blob)"))
     actions.append(console.Markup(("use existing" if sa_exists else "create")
-                                  + f" service account {console.value(sa)}, for this app only"))
+                                  + f" service account {console.value(sa)}"))
     if store:
         actions += store_plan_lines(f"bucket {console.value(bucket)}", bucket_exists, sa, name)
     for other in app["storage_read"]:
@@ -394,15 +398,14 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         ("update" if service_exists else "create")
         + f" Cloud Run service {console.value(service)}: {console.value(str(size['cpu']))} vCPU, "
         f"{console.value(size['memory'])}, {console.value(str(size['min_instances']))} to "
-        f"{console.value(str(size['max_instances']))} instances of "
-        f"{console.value(str(size['concurrency']))} requests each, requests up to "
-        f"{console.value(str(size['timeout']))} s, port {console.value(str(web.port(app)))}, "
-        f"startup probe on {console.value(web.health_path(app))}"
-        + (" (paused: stopped, 0 instances)" if app["pause"] else "")))
+        f"{console.value(str(size['max_instances']))} instances, "
+        f"{console.value(str(size['concurrency']))} requests each, "
+        f"{console.value(str(size['timeout']))} s timeout, port "
+        f"{console.value(str(web.port(app)))}, health check on "
+        f"{console.value(web.health_path(app))}"
+        + (" (paused)" if app["pause"] else "")))
     if gate:
-        actions.append(console.Markup(
-            f"put {console.value(gate)} in front of {console.value(url)}: visitors sign in with "
-            f"Google; the app sees {console.value('X-Goog-Authenticated-User-Email')}"))
+        actions.append(console.Markup(f"put {console.value(gate)} in front of {console.value(url)}"))
         for member in add_members:
             actions.append(console.Markup(f"allow {console.value(member)} to enter"))
         for member in remove_members:
@@ -421,6 +424,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                      "--repository-format", "docker", "--location", region,
                      "--project", project, "--labels", "managed-by=pdt",
                      slow=f"creating: Artifact Registry repository {console.value(repo)}")
+    if set_cleanup:
+        gc.set_cleanup_policies(project, region, repo)
     containers = ((((current or {}).get("spec") or {}).get("template") or {}).get("spec") or {}
                   ).get("containers") or []
     pinned = next((c.get("image") for c in containers
@@ -505,11 +510,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                          "--member", member, "--role", IAP_ROLE)
     console.done(f"Deployed {console.value(name)}: {console.value(url)}")
     if app["pause"]:
-        console.note(f"{console.value(name)} is paused: the service is stopped and answers no "
-                     f"request; {console.value(f'pdt unpause {name}')} starts it")
-    elif gate:
-        console.note("the first visit asks the visitor to sign in with Google and to allow the "
-                     "app to see their email")
+        console.note(f"{console.value(name)} is paused; {console.value(f'pdt unpause {name}')} "
+                     "starts it")
     return 0
 
 
@@ -728,20 +730,19 @@ def pause(app: dict, paused: bool, assume_yes: bool) -> int:
                  "--scaling", "0" if paused else "auto",
                  slow=f"{'stopping' if paused else 'starting'}: Cloud Run service "
                       f"{console.value(service)}")
-    if paused:
-        console.done(f"Paused {console.value(app['name'])}: Cloud Run service "
-                     f"{console.value(service)} is stopped and answers no request.")
-    else:
-        console.done(f"Unpaused {console.value(app['name'])}: Cloud Run service "
-                     f"{console.value(service)} starts an instance at the next request.")
+    console.done(f"{'Paused' if paused else 'Unpaused'} {console.value(app['name'])}: Cloud Run "
+                 f"service {console.value(service)} is {'stopped' if paused else 'started'}.")
     return 0
 
 
 def start(app: dict, assume_yes: bool, follow: bool = False) -> int:
-    console.error(f"{console.value(app['name'])} is a web app; it runs all the time, so it has no "
-                  f"run to start. {console.value(f'pdt deploy {app['name']}')} restarts it with "
-                  "the deployed code.")
-    return 1
+    """`pdt run APP --deployed` opens the deployed app in the browser."""
+    project, region = gc.project_region(app)
+    project = gc.preflight(app, project, assume_yes)
+    url = service_url(app["name"], project_number(project), region)
+    console.done(f"Opening {console.value(url)}")
+    webbrowser.open(url)
+    return 0
 
 
 def command(app: dict, name: str, rest: list[str], assume_yes: bool, plan_only: bool) -> int:

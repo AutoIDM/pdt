@@ -186,7 +186,6 @@ def test_deploy_builds_the_service_behind_iap_with_a_mounted_read_folder(google,
     assert fake.ran("iap", "web", "remove-iam-policy-binding") == []
     out = " ".join(capsys.readouterr().out.split())
     assert f"Deployed dashboard: https://pdt-dashboard-{NUMBER}.{REGION}.run.app/" in out
-    assert "sign in with Google" in out
 
 
 def test_a_service_with_the_old_sidecar_must_be_destroyed_first(google, monkeypatch, capsys):
@@ -212,7 +211,7 @@ def test_web_resources_size_the_service(google, monkeypatch, capsys):
     assert (flag(deploy, "--min-instances"), flag(deploy, "--max-instances"),
             flag(deploy, "--concurrency")) == ("1", "5", "20")
     out = " ".join(capsys.readouterr().out.split())
-    assert "2 vCPU, 2GiB, 1 to 5 instances of 20 requests each, requests up to 900 s" in out
+    assert "2 vCPU, 2GiB, 1 to 5 instances, 20 requests each, 900 s timeout" in out
 
 
 def test_without_web_resources_the_defaults_apply(google, monkeypatch):
@@ -294,9 +293,12 @@ def test_pause_of_a_missing_service_says_deploy_first(google, monkeypatch, capsy
     assert "pdt deploy dashboard" in capsys.readouterr().out
 
 
-def test_start_refuses_a_web_app(google, capsys):
-    assert gweb.start(web_app(google), True) == 1
-    assert "pdt deploy dashboard" in capsys.readouterr().out
+def test_run_deployed_opens_the_deployed_url(google, monkeypatch, capsys):
+    fake_cloud(monkeypatch, FakeCloud())
+    opened = []
+    monkeypatch.setattr(gweb.webbrowser, "open", opened.append)
+    assert gweb.start(web_app(google), True) == 0
+    assert opened == [f"https://pdt-dashboard-{NUMBER}.{REGION}.run.app/"]
 
 
 def test_main_hands_a_web_app_to_the_web_module(google, monkeypatch):
@@ -423,3 +425,16 @@ def test_the_cost_estimate_prices_80_percent_uptime(monkeypatch):
     assert round(cost.items[0][1], 2) == round(seconds * (1 * 0.000024 + 0.5 * 0.0000025), 2)
     assert cost.items[1] == ("Identity-Aware Proxy", 0.0) and len(cost.items) == 2
     assert "80% of the month" in cost.prices
+
+
+def test_a_deploy_sets_the_clean_up_policy_once(google, monkeypatch):
+    fake = fake_cloud(monkeypatch, FakeCloud())
+    assert gweb.deploy(web_app(google), True) == 0
+    [policy] = fake.ran("artifacts", "repositories", "set-cleanup-policies")
+    assert "--no-dry-run" in policy
+    names = {name["name"]: None for name in gc.CLEANUP_POLICIES}
+    repository = {"labels": {"managed-by": "pdt"}, "cleanupPolicies": names}
+    fake = fake_cloud(monkeypatch, FakeCloud(found={("artifacts", "repositories", "describe"):
+                                                    repository}))
+    assert gweb.deploy(web_app(google), True) == 0
+    assert fake.ran("artifacts", "repositories", "set-cleanup-policies") == []
