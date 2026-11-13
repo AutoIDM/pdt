@@ -50,7 +50,7 @@ In `pdt alerts setup`, choose "Microsoft 365: sign in once, and pdt does the set
 - a certificate on that registration. Its private key is the file `.secrets/pdt-email.pfx` in the project. git ignores that folder, and the file never goes into an image. The certificate is valid for 10 years;
 - the Microsoft Graph application permission `Mail.Send`, granted for the organization.
 
-pdt writes `PDT_EMAIL_TENANT_ID`, `PDT_EMAIL_CLIENT_ID`, and `PDT_EMAIL_PRIVATE_KEY_PATH` to `.env`. A second run finds each item and changes nothing.
+pdt writes `PDT_EMAIL_TENANT_ID`, `PDT_EMAIL_CLIENT_ID`, and `PDT_EMAIL_PRIVATE_KEY_PATH` to `.env`. A second run finds each item and changes nothing. pdt uses only a registration that it created, or the one that `PDT_EMAIL_CLIENT_ID` in `.env` names. When another registration named `pdt-email` exists, the setup stops, changes nothing, and says what you can do. The setup also stops when the sign-in is for another organization than the `PDT_EMAIL_TENANT_ID` in `.env`.
 
 Microsoft can take a short time to accept a new permission. The test message of the setup waits for a maximum of two minutes and tries again during that time.
 
@@ -60,20 +60,21 @@ When your account cannot create the registration or grant the permission, pdt na
 
 The `Mail.Send` application permission lets the registration `pdt-email` send as each mailbox of the organization, not only as the sender address. Keep `.secrets/pdt-email.pfx` and the `.env` file as safe as a password.
 
-To limit the registration to one mailbox, an Exchange administrator runs these commands in Exchange Online PowerShell:
+To limit the registration to one mailbox, Microsoft documents [role based access control for applications in Exchange Online](https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac). An administrator with the Exchange Administrator role runs these commands in Exchange Online PowerShell, after `Connect-ExchangeOnline`:
 
 ```powershell
-Connect-ExchangeOnline
-# AppId and ObjectId come from Entra > Enterprise applications > pdt-email (not App registrations).
-New-ServicePrincipal -AppId <application-id> -ObjectId <enterprise-app-object-id> -DisplayName "pdt-email"
-New-ManagementScope -Name "pdt-alerts" -RecipientRestrictionFilter "PrimarySmtpAddress -eq 'pdt-alerts@example.com'"
-New-ManagementRoleAssignment -App <enterprise-app-object-id> -Role "Application Mail.Send" -CustomResourceScope "pdt-alerts"
-Test-ServicePrincipalAuthorization -Identity <enterprise-app-object-id> -Resource pdt-alerts@example.com
+# The AppId and the ObjectId come from Enterprise applications > pdt-email in the Microsoft Entra admin center, not from App registrations.
+New-ServicePrincipal -AppId <application-id> -ObjectId <object-id> -DisplayName "pdt-email"
+New-ManagementScope -Name "pdt-alerts" -RecipientRestrictionFilter "<filter>"
+New-ManagementRoleAssignment -App <object-id> -Role "Application Mail.Send" -CustomResourceScope "pdt-alerts"
+Test-ServicePrincipalAuthorization -Identity <object-id> -Resource pdt-alerts@example.com
 ```
 
-The test result must show `InScope` = `True`. Then remove the `Mail.Send` permission of `pdt-email` in Entra (App registrations > pdt-email > API permissions), because the Exchange scope does not limit a permission that Entra granted ([Microsoft: role based access control for applications](https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac)). Exchange keeps app permissions in a cache for 30 minutes to 2 hours, so a send can fail during that time. After this change, do not let `pdt alerts setup` replace the email entry: the guided setup grants `Mail.Send` in Entra again.
+`<filter>` is a filter expression that matches only the sender mailbox. The Microsoft page links the list of [filterable properties](https://learn.microsoft.com/en-us/powershell/exchange/recipientfilter-properties); its own example is `"CustomAttribute1 -eq '012332'"`. In the result of the last command, `InScope` is `True` when the permission applies to that mailbox.
 
-Not confirmed: that `PrimarySmtpAddress` is a valid filter property for this scope. `Test-ServicePrincipalAuthorization` shows whether the scope works.
+The Exchange assignment acts in addition to the permission that Microsoft Entra ID granted. The registration can send as each mailbox until that grant is gone, so revoke it: in the Microsoft Entra admin center, go to Entra ID > Enterprise apps > All applications > pdt-email > Permissions, open the Admin consent tab, select `...` next to `Mail.Send`, and select Revoke permission ([Microsoft: review permissions granted to enterprise applications](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/manage-application-permissions)). Exchange keeps app permissions in a cache for 30 minutes to 2 hours, so a change can take that long.
+
+After this change, do not let `pdt alerts setup` replace the email entry: the guided setup grants `Mail.Send` in Microsoft Entra ID again.
 
 #### The values by hand
 
@@ -128,7 +129,7 @@ When no entry lists the event name, the run's output shows one line, `[alert] my
 
 `pdt.utils.send_email.send_email(from_addr, to_addrs, subject, body, html="")` still works, with a `DeprecationWarning`. It emits the event `email:send`, and it sends nothing by itself.
 
-An email entry sends a `send_email` call only when its `events` list holds `email:send`. `pdt alerts setup` does not add that name. Add it to the entry in `pdt.yml` by hand:
+An email entry sends a `send_email` call only when its `events` list holds `email:send`. An entry with `events: [all]` also receives it. `pdt alerts setup` does not add that name. Add it to the entry in `pdt.yml` by hand:
 
 ```yaml
     events: [app:deploy-completed, app:deploy-failed, job:run-failed, email:send]
