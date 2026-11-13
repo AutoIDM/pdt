@@ -41,7 +41,6 @@ from pdt import alert_message, config
 from pdt.alert_message import Message
 
 KEYS = frozenset({"method", "from", "to"})
-# method: (the env vars it needs, the env vars it reads when they are set)
 METHODS = {
     "microsoft-365": (("PDT_EMAIL_TENANT_ID", "PDT_EMAIL_CLIENT_ID",
                        "PDT_EMAIL_PRIVATE_KEY_PATH"), ("PDT_EMAIL_PRIVATE_KEY_B64",)),
@@ -181,7 +180,7 @@ def graph_token(values: dict) -> str:
     """An app-only Microsoft Graph token, signed in with the certificate of the .pfx file."""
     try:
         import jwt
-        from cryptography.hazmat.primitives.hashes import SHA1
+        from cryptography.hazmat.primitives.hashes import SHA256
         from cryptography.hazmat.primitives.serialization.pkcs12 import (
             load_key_and_certificates)
     except ImportError:
@@ -199,8 +198,9 @@ def graph_token(values: dict) -> str:
     now = int(time.time())
     assertion = jwt.encode(
         {"aud": url, "exp": now + CERT_JWT_SECONDS, "iss": client_id, "jti": str(uuid.uuid4()),
-         "nbf": now, "sub": client_id}, key, algorithm="RS256",
-        headers={"x5t": base64.b64encode(cert.fingerprint(SHA1())).decode("ascii")})
+         "nbf": now, "sub": client_id}, key, algorithm="PS256",
+        headers={"x5t#S256": base64.urlsafe_b64encode(
+            cert.fingerprint(SHA256())).rstrip(b"=").decode("ascii")})
     form = {"scope": GRAPH_SCOPE, "client_id": client_id, "grant_type": "client_credentials",
             "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
             "client_assertion": assertion}

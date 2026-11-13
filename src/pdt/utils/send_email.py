@@ -5,10 +5,10 @@ as `text`, and `html`. Each email entry of the app's `alerts:` list that
 receives `email:send` sends it to `to_addrs`, from the entry's own `from`, so
 `from_addr` is not used. An email entry receives `email:send` only when its
 `events` list holds that name (or `all`); `pdt alerts setup` does not add it.
-With no such entry, the console prints the alert line
-and no email goes out. Both functions return the method of the first email
-entry that receives the event, or "stdout" when none does. A failure is a
-warning in the log and never ends the app.
+With no such entry, the console prints the alert line and no email goes out.
+Both functions return the method of the first email entry that receives the
+event, or "stdout" when none does. A failure is a warning in the log and never
+ends the app.
 """
 
 from __future__ import annotations
@@ -46,6 +46,6 @@ def send_email(from_addr: str, to_addrs, subject: str, body: str, html: str = ""
         alert.emit(EVENT, title=subject, text=body, html=html,
                    to=email_alert.addresses(to_addrs))
         return _method()
-    except Exception as e:  # noqa: BLE001 - an alert never ends the app
+    except Exception as e:
         log("warning", "email not sent", error=str(e))
         return "stdout"

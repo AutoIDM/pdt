@@ -192,6 +192,39 @@ def test_microsoft_365_posts_to_send_mail_of_the_sender_with_the_html_body(monke
         "toRecipients": [{"emailAddress": {"address": "it-ops@example.com"}}]}}
 
 
+def test_the_sign_in_assertion_names_the_certificate_as_microsoft_specifies(monkeypatch):
+    import base64
+    import io
+    import json
+    import urllib.parse
+
+    import jwt
+    from cryptography import x509
+    from cryptography.hazmat.primitives.hashes import SHA256
+
+    from pdt import email_setup
+    pfx, der = email_setup.new_certificate()
+    posted = []
+
+    def urlopen(request, timeout=None):
+        posted.append(urllib.parse.parse_qs(request.data.decode()))
+        return io.BytesIO(json.dumps({"access_token": "token"}).encode())
+
+    monkeypatch.setattr(email_alert.urllib.request, "urlopen", urlopen)
+    values = {"PDT_EMAIL_TENANT_ID": "tenant", "PDT_EMAIL_CLIENT_ID": "client",
+              "PDT_EMAIL_PRIVATE_KEY_B64": base64.b64encode(pfx).decode(),
+              "PDT_EMAIL_PRIVATE_KEY_PATH": ""}
+    assert email_alert.graph_token(values) == "token"
+    assertion = posted[0]["client_assertion"][0]
+    certificate = x509.load_der_x509_certificate(der)
+    thumbprint = base64.urlsafe_b64encode(certificate.fingerprint(SHA256())).rstrip(b"=").decode()
+    assert jwt.get_unverified_header(assertion) == {
+        "alg": "PS256", "typ": "JWT", "x5t#S256": thumbprint}
+    claims = jwt.decode(assertion, certificate.public_key(), algorithms=["PS256"],
+                        audience="https://login.microsoftonline.com/tenant/oauth2/v2.0/token")
+    assert (claims["iss"], claims["sub"]) == ("client", "client")
+
+
 def test_setup_keeps_the_custom_event_names_and_exclude_events_when_the_events_change(
         project, smtp, monkeypatch):
     (project / "pdt.yml").write_text(
