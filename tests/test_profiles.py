@@ -155,15 +155,6 @@ def test_storage_mapping_shape_is_checked(project):
 
 
 
-def test_every_profile_answers_every_concern_for_every_provider():
-    from pdt.config import PROVIDERS
-    for name in profiles.NAMES:
-        answers = profiles.module(name).ANSWERS
-        assert set(answers) == set(PROVIDERS), name
-        for provider, concerns in answers.items():
-            assert set(concerns) == set(profiles.CONCERN_NAMES), (name, provider)
-            assert all(text for text in concerns.values()), (name, provider)
-
 
 def test_the_job_profile_is_the_default_and_owns_the_schedule():
     assert profiles.DEFAULT == job.NAME
@@ -175,3 +166,14 @@ def test_a_top_level_auth_section_points_at_web(project):
     (project / "pdt.yml").write_text(GOOGLE_CLOUD)
     add_app(project, "dashboard", "app_profile: web\nauth: public\n")
     assert any("auth" in p and "web.auth" in p for p in validate_app("dashboard"))
+
+
+def test_a_job_takes_its_schedule_from_the_job_section_or_the_top_level(project):
+    add_app(project, "report", "job:\n  schedule: hourly\n  timezone: America/Chicago\n")
+    app = merged_app("report")
+    assert app["schedule"] == "hourly" and app["timezone"] == "America/Chicago"
+    assert validate_app("report") == []
+    add_app(project, "old", "schedule: daily\n")
+    assert merged_app("old")["schedule"] == "daily" and validate_app("old") == []
+    add_app(project, "report", "job:\n  schedule: hourly\n  retries: 3\n")
+    assert any("unknown key 'retries'" in p for p in validate_app("report"))

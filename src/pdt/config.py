@@ -58,7 +58,9 @@ SCHEDULE_SHORTHAND = {
 ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch"}
 APP_KEYS = {"name", "app_profile", "schedule", "timezone", "platform", "config", "env", "storage",
             "enabled", "run_scripts", "continue_on_error", "pause", "docker-build", "alerts",
-            "web"}
+            "web", "job"}
+# The keys of a job's `job:` section. Each one also works at the top level of the app.
+JOB_KEYS = {"schedule", "timezone"}
 # `storage:` is `true`, `false`, or a mapping with these keys.
 STORAGE_KEYS = {"enabled", "read"}
 # Where a cloud provider builds the image: with Docker on this computer when
@@ -91,6 +93,7 @@ KEY_HOME = {
     "app_profile": APP_LEVEL,
     "schedule": APP_LEVEL,
     "web": APP_LEVEL,
+    "job": APP_LEVEL,
     "auth": "the web: section, as web.auth",
     "config": APP_LEVEL,
     "env": APP_LEVEL,
@@ -351,8 +354,17 @@ def merged_app(name: str) -> dict:
             alerts, alerts_from = section["alerts"], where
     # Task Scheduler runs a task on the PC's own clock, so a Windows app always
     # runs on local time and any timezone it sets does not apply.
+    own_job, entry_job = mapping(own, "job", own_where), mapping(entry, "job", entry_where)
+
+    def job_key(key: str, default=None):
+        """A `job:` key, else the same key at the top level, the app's file before the entry."""
+        for section in (own_job, own, entry_job, entry):
+            if key in section:
+                return section[key]
+        return default
+
     timezone = ("local" if platform.get("provider") == "windows" else
-                own.get("timezone", entry.get("timezone", platform.get("timezone", "Etc/UTC"))))
+                job_key("timezone", platform.get("timezone", "Etc/UTC")))
     plan = unsaved() or {}
     platform.update(plan.get("platform", {}))
     storage = own.get("storage", entry.get("storage", True))
@@ -364,7 +376,8 @@ def merged_app(name: str) -> dict:
         "name": name,
         "dir": app_dir,
         "app_profile": own.get("app_profile", entry.get("app_profile", "job")),
-        "schedule": plan.get("schedule", own.get("schedule", entry.get("schedule"))),
+        "schedule": plan.get("schedule", job_key("schedule")),
+        "job": own_job or entry_job,
         "timezone": timezone,
         "platform": platform,
         "platform_from": platform_from,

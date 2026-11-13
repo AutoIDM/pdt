@@ -58,10 +58,6 @@ platform:
 
 `project` is optional. When it is missing or wrong, the deploy lists your projects and asks you to choose one, then writes your answer here.
 
-### Web apps on Google Cloud
-
-A web app (`app_profile: web`) is a Cloud Run service `pdt-<app>` with Identity-Aware Proxy (IAP) in front of it. The service allows no unauthenticated caller; IAP signs each visitor in with Google through a Google-managed OAuth client, so nothing is created in the Cloud console by hand, and lets in the principals `pdt deploy` binds to the role IAP-secured Web App User on the service: each `web.auth.allowed_domains` entry as a Google Workspace domain, each `web.auth.allowed_groups` entry as a Google group. IAP forwards the visitor's email in `X-Goog-Authenticated-User-Email`. The URL is `https://pdt-<app>-<project number>.<region>.run.app/`, known before the first deploy. The service scales to zero after 15 minutes without a request and starts on the next one; with request-based billing the app has CPU only while a request runs. With `storage.read`, each named app's folder of the bucket is mounted read-only at `/pdt/storage/<app>/` as a Cloud Storage volume (Cloud Storage FUSE, limited to the folder), and the service's own service account `pdt-web-<app>` gets Storage Object Viewer on those folders; a new file shows up within about a minute. A web app always has this sign-in; pdt never makes it callable by everyone. `microsoft` sign-in is not available on Google Cloud yet (IAP needs Identity Platform for identities outside Google).
-
 ## Bringing your own Dockerfile
 
 Every cloud provider runs a job as a container (see [Primitives](../README.md#primitives)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the entrypoint. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
@@ -114,4 +110,3 @@ Windows accepts these schedules:
 Other cron forms are rejected, because they do not translate to Windows Task Scheduler.
 
 Each app keeps its run data in `%ProgramData%\pdt\<app>\`. The task writes one log file per run to the `logs\` folder in it, named by the run's UTC start time, and `pdt runs <app>` and `pdt logs <app>` read those files. The app's own files (see [Keeping files between runs](storage.md)) live in the `storage\` folder next to it. Deploy creates the folder and gives the SYSTEM account full control and you modify rights, so `pdt storage <app> destroy` works without an administrator. `pdt destroy <app>` removes the task and the `logs\` folder and keeps `storage\`. A run is stopped after 30 minutes, the same limit as the cloud providers, and a run that is still going when the next one is due is left alone; the new start is skipped.
-
