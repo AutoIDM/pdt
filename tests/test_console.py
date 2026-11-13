@@ -460,7 +460,9 @@ def test_a_menu_longer_than_the_screen_shows_the_part_around_the_marker(press, m
 @pytest.mark.parametrize("sent,key", [
     (b"\x1b[A", "up"), (b"\x1bOB", "down"), (b" ", "space"), (b"\r", "enter"), (b"\x7f", "backspace"),
     (b"\x15", "clear"), (b"\x04", "eof"), (b"q", "q"), ("é".encode(), "é"), ("€".encode(), "€"),
-    (b"\x1b", ""), (b"\x1b[D", ""), (b"\x1b[1;5C", ""), (b"\x1b[3~", ""), (b"\x1bq", ""), (b"\t", "")])
+    (b"\x1b", ""), (b"\x1b[D", ""), (b"\x1b[1;5C", ""), (b"\x1b[3~", ""), (b"\x1bq", ""), (b"\t", ""),
+    # The marks a terminal puts around pasted text.
+    (b"\x1b[200~", ""), (b"\x1b[201~", "")])
 def test_the_bytes_of_a_key_give_its_name_or_its_character(sent, key):
     read, write = os.pipe()
     os.write(write, sent)
