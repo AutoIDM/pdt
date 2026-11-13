@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Callable
 
 from pdt import config, console
 from pdt.deploy_common import docker_problem, stage_build_context, write_dockerfile
@@ -24,7 +25,8 @@ def read_root() -> Path:
     return config.find_project() / ".pdt" / "storage"
 
 
-def run(app: dict, local_url: str) -> int:
+def run(app: dict, local_url: str, started: Callable[[], object] = lambda: None) -> int:
+    """Build and run the container; `started` runs once the container starts."""
     problem = docker_problem()
     if problem:
         console.error(f"{console.value(app['name'])} is a container, so {console.value('pdt run')} "
@@ -55,6 +57,8 @@ def run(app: dict, local_url: str) -> int:
     command.append(image)
     console.step(f"running {console.value(image)}")
     try:
-        return subprocess.run(command).returncode
+        process = subprocess.Popen(command)
+        started()
+        return process.wait()
     except KeyboardInterrupt:
         return 0

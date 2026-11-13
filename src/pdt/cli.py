@@ -264,8 +264,11 @@ def cmd_run(args) -> int:
         # On this computer the app runs with no sign-in: the browser talks to it directly.
         local_url = f"http://127.0.0.1:{web.port(app)}/"
         console.detail(f"serves {console.value(local_url)} with no sign-in; Ctrl+C stops it")
-        if not (app["dir"] / "run.py").is_file():
-            return run_container.run(app, local_url)
+        from pdt import web_watch
+        container = not (app["dir"] / "run.py").is_file()
+        if container:
+            return run_container.run(app, local_url, lambda: web_watch.watch(app, local_url, True))
+        web_watch.watch(app, local_url, False)
         env = dict(os.environ, **{web.ENV_PORT: str(web.port(app)), web.ENV_URL: local_url,
                                   web.ENV_STORAGE_READ_DIR: str(run_container.read_root())})
         return lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"],
