@@ -102,15 +102,22 @@ ENTRYPOINT = ('ENTRYPOINT ["sh", "-c", "stop() {{ kill -s $1 $pid; wait $pid; fi
               'trap \\"stop TERM\\" TERM; trap \\"stop INT\\" INT; '
               'uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- {start} & pid=$!; '
               'wait $pid; finish $?"]\n')
-DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
+# The app runs as this user, not root. It owns /workspace, so the app can write files next to
+# its run.py, and its own uv cache, where `uv sync` puts the script's packages.
+APP_USER = "pdt"
+APP_UID = 10001
+DOCKERFILE = f"FROM {BASE_IMAGE}\n" + f"""\
 RUN pip uninstall -y --root-user-action=ignore pip
-COPY .pdt-lifecycle /opt/pdt-lifecycle
+RUN useradd --uid {APP_UID} --user-group --create-home {APP_USER} \\
+    && mkdir -p /workspace/{{app}} && chown -R {APP_USER}:{APP_USER} /workspace
+USER {APP_USER}
+COPY --chown={APP_USER}:{APP_USER} .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
-WORKDIR /workspace/{app}
+WORKDIR /workspace/{{app}}
 ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false PYTHONUNBUFFERED=1
-COPY .pdt-script .
+COPY --chown={APP_USER}:{APP_USER} .pdt-script .
 RUN uv sync --script run.py && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*
-COPY . /workspace
+COPY --chown={APP_USER}:{APP_USER} . /workspace
 """ + ENTRYPOINT.replace("{start}", "uv run --script run.py")
 POWERSHELL_DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
 RUN pip uninstall -y --root-user-action=ignore pip

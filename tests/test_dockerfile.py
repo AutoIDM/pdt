@@ -45,9 +45,10 @@ def test_the_generated_dockerfile_installs_from_the_script_header_before_the_res
     assert (stage / ".pdt-script" / "run.py.lock").read_text() == "lock\n"
     assert (stage / ".pdt-script" / "pdt_cli-0.1.11-py3-none-any.whl").read_text() == "wheel\n"
     text = (stage / "Dockerfile").read_text()
-    assert (text.index("WORKDIR /workspace/my-report\n") < text.index("COPY .pdt-script .\n")
+    assert (text.index("USER pdt\n") < text.index("WORKDIR /workspace/my-report\n")
+            < text.index("COPY --chown=pdt:pdt .pdt-script .\n")
             < text.index('RUN uv sync --script run.py && rm -rf "$(uv python dir)"/*/lib/python*/'
-                         'site-packages/pip*\n') < text.index("COPY . /workspace\n"))
+                         'site-packages/pip*\n') < text.index("COPY --chown=pdt:pdt . /workspace\n"))
 
 
 def test_a_run_py_without_a_script_header_is_staged_whole(tmp_path):
