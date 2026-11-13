@@ -114,6 +114,7 @@ def fake_cloud(monkeypatch, fake: FakeCloud, secrets=None):
     monkeypatch.setattr(gweb, "confirm", lambda actions, assume_yes, cost=None: True)
     monkeypatch.setattr(gweb, "fetch_json", lambda request: {"email": AGENT})
     monkeypatch.setattr(gweb.regions, "local_currency", lambda: "USD")
+    monkeypatch.setattr(gweb, "CATALOG_WAITS", ())
     monkeypatch.setattr(gweb, "organization",
                         lambda project: gweb.Organization("example.com", {"example.com"}, True))
     return fake
@@ -461,6 +462,36 @@ def test_a_deployed_app_is_priced_from_its_measured_use(monkeypatch):
     idle = dict(cost.items)["1 idle instance(s) kept running"]
     assert round(idle, 2) == round(730 * 3600 * (0.0000025 + 0.5 * 0.0000025), 2)
 
+
+
+def test_a_catalog_that_fails_once_is_read_again(monkeypatch):
+    priced(monkeypatch)
+    real, waits = gweb.cached_price, []
+    calls = iter([LookupError("busy")])
+
+    def flaky(*args):
+        for error in calls:
+            raise error
+        return real(*args)
+    monkeypatch.setattr(gweb, "cached_price", flaky)
+    monkeypatch.setattr(gweb.time, "sleep", waits.append)
+    app = {"auth": {"provider": "google"}, "web": {}}
+    assert gweb.cost_estimate(app, "p", "us-central1") is not None
+    assert waits == [0, gweb.CATALOG_WAITS[0]]
+
+
+def test_a_catalog_that_never_answers_gives_no_estimate(monkeypatch, capsys):
+    priced(monkeypatch)
+    waits = []
+
+    def refused(*args):
+        raise LookupError("no answer")
+    monkeypatch.setattr(gweb, "cached_price", refused)
+    monkeypatch.setattr(gweb.time, "sleep", waits.append)
+    app = {"auth": {"provider": "google"}, "web": {}}
+    assert gweb.cost_estimate(app, "p", "us-central1") is None
+    assert waits == [0, *gweb.CATALOG_WAITS]
+    assert "No cost estimate" in capsys.readouterr().out
 
 def test_measured_use_splits_weekdays_from_weekend_days(monkeypatch):
     from datetime import datetime, timezone

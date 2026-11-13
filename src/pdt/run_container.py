@@ -101,7 +101,7 @@ def serve(name: str, process: subprocess.Popen, container: str = "") -> int:
         try:
             interrupt(process)
             process.wait(STOP_WAIT)
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired, KeyboardInterrupt):  # a second Ctrl+C kills
             pass
         # The first process can exit while another process of the group still runs.
         try:

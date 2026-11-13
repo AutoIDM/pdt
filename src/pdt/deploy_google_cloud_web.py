@@ -50,6 +50,7 @@ import json
 import re
 import os
 import threading
+import time
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -448,10 +449,15 @@ def monthly_use(use: Use | None) -> tuple[float, float, str]:
             day_requests * WEEKDAYS_A_MONTH + end_requests * WEEKEND_DAYS_A_MONTH, "measured")
 
 
+# Seconds between reads of the Cloud Billing catalog after a failed read.
+CATALOG_WAITS = (10, 20, 40)
+
+
 def cost_estimate(app: dict, project: str, region: str, use: Use | None = None,
-                  registry_bytes: int = 0) -> CostEstimate:
+                  registry_bytes: int = 0) -> CostEstimate | None:
     """Monthly cost from the service's measured use, or from the defaults for a new app, at the
-    Cloud Billing catalog's list prices for the region."""
+    Cloud Billing catalog's list prices for the region; None when the catalog does not answer
+    after CATALOG_WAITS."""
     currency = regions.local_currency()
 
     def price(service: str, description: str, in_currency: str) -> float:
@@ -470,37 +476,39 @@ def cost_estimate(app: dict, project: str, region: str, use: Use | None = None,
     size = web_app.resources(app)
     vcpu, gib = float(size["cpu"]), web_app.memory_mib(size["memory"]) / 1024
     seconds, requests, source = monthly_use(use)
-    for in_currency in dict.fromkeys((currency, "USD")):
-        try:
-            cpu, memory = price("Cloud Run", CPU_SKU, in_currency), price("Cloud Run", MEMORY_SKU,
-                                                                          in_currency)
-            request = price("Cloud Run", REQUESTS_SKU, in_currency)
-            stored = price("Artifact Registry", REGISTRY_SKU, in_currency)
-            idle = 0.0
+    for wait in (0, *CATALOG_WAITS):
+        time.sleep(wait)
+        for in_currency in dict.fromkeys((currency, "USD")):
+            try:
+                cpu, memory = price("Cloud Run", CPU_SKU, in_currency), price("Cloud Run", MEMORY_SKU,
+                                                                              in_currency)
+                request = price("Cloud Run", REQUESTS_SKU, in_currency)
+                stored = price("Artifact Registry", REGISTRY_SKU, in_currency)
+                idle = 0.0
+                if size["min_instances"]:
+                    idle = size["min_instances"] * MONTH_SECONDS * (
+                        vcpu * price("Cloud Run", MIN_CPU_SKU, in_currency)
+                        + gib * price("Cloud Run", MIN_MEMORY_SKU, in_currency))
+            except Exception as exc:  # the billing catalog is a nicety; the deploy goes on
+                detail = gc.billing_detail(exc)
+                continue
+            items = [(f"Cloud Run: {seconds / 60:,.0f} min a month ({source})",
+                      seconds * (vcpu * cpu + gib * memory))]
             if size["min_instances"]:
-                idle = size["min_instances"] * MONTH_SECONDS * (
-                    vcpu * price("Cloud Run", MIN_CPU_SKU, in_currency)
-                    + gib * price("Cloud Run", MIN_MEMORY_SKU, in_currency))
-        except Exception as exc:  # the billing catalog is a nicety; the deploy goes on
-            detail = gc.billing_detail(exc)
-            continue
-        items = [(f"Cloud Run: {seconds / 60:,.0f} min a month ({source})",
-                  seconds * (vcpu * cpu + gib * memory))]
-        if size["min_instances"]:
-            items.append((f"{size['min_instances']} idle instance(s) kept running", idle))
-        items.append((f"Requests: {requests:,.0f} a month (2 million free)",
-                      max(0.0, requests - FREE_REQUESTS) * request))
-        items.append(("Identity-Aware Proxy", 0.0))
-        registry_gib = registry_bytes / 1024 ** 3
-        items.append((f"Artifact Registry: {registry_gib:.2f} GiB of images, shared "
-                      "(0.5 GiB free)", max(0.0, registry_gib - FREE_REGISTRY_GIB) * stored))
-        converted = "" if in_currency == "USD" else ", converted from USD by Google Cloud"
-        return CostEstimate(items, f"{region} list prices{converted}, {vcpu:g} vCPU / {gib:g} GiB "
-                            "billed per second while a request runs, before the Cloud Run "
-                            "free tier", "excludes network egress", currency=in_currency)
-    return CostEstimate([("Cloud Run service: no price read", 0.0)],
-                        f"the Cloud Billing catalog did not answer: {console.escape(detail)}",
-                        currency="USD")
+                items.append((f"{size['min_instances']} idle instance(s) kept running", idle))
+            items.append((f"Requests: {requests:,.0f} a month (2 million free)",
+                          max(0.0, requests - FREE_REQUESTS) * request))
+            items.append(("Identity-Aware Proxy", 0.0))
+            registry_gib = registry_bytes / 1024 ** 3
+            items.append((f"Artifact Registry: {registry_gib:.2f} GiB of images, shared "
+                          "(0.5 GiB free)", max(0.0, registry_gib - FREE_REGISTRY_GIB) * stored))
+            converted = "" if in_currency == "USD" else ", converted from USD by Google Cloud"
+            return CostEstimate(items, f"{region} list prices{converted}, {vcpu:g} vCPU / {gib:g} GiB "
+                                "billed per second while a request runs, before the Cloud Run "
+                                "free tier", "excludes network egress", currency=in_currency)
+    console.warn(f"No cost estimate: the Cloud Billing catalog did not answer"
+                 f"{': ' + console.escape(detail) if detail else ''}")
+    return None
 
 
 def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
