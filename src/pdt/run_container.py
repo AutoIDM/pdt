@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable
 
 from pdt import config, console
-from pdt.deploy_common import docker_problem, stage_build_context, write_dockerfile
+from pdt.deploy_common import docker_problem, ssh_build_args, stage_build_context, write_dockerfile
 from pdt import web_app
 
 # How long a stopped server may take to exit before pdt kills it.
@@ -41,7 +41,7 @@ def run(app: dict, local_url: str, started: Callable[[], object] = lambda: None)
     try:
         write_dockerfile(stage, app)
         console.step(f"building {console.value(image)}")
-        built = subprocess.run(["docker", "build", "-t", image, str(stage)])
+        built = subprocess.run(["docker", "build", *ssh_build_args(), "-t", image, str(stage)])
     finally:
         shutil.rmtree(stage, ignore_errors=True)
     if built.returncode != 0:

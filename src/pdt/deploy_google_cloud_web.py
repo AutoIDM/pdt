@@ -255,7 +255,8 @@ def audience_problems(app: dict, org: Organization | None) -> tuple[list[str], l
     cautions): it serves only accounts of the project's organization
     (https://docs.cloud.google.com/run/docs/securing/identity-aware-proxy-cloud-run)."""
     if org is None:
-        return [], []
+        return [], ["pdt may not read the project's organization, so it cannot check that the "
+                    "accounts in allowed_domains can sign in"]
     if not org.primary:
         return ["the project has no organization, so Identity-Aware Proxy's Google-managed sign-in "
                 "lets no one in; move the project into an organization"], []

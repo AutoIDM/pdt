@@ -549,7 +549,8 @@ def test_the_accounts_the_managed_sign_in_cannot_serve():
     assert stops == [] and len(cautions) == 1 and cautions[0].startswith("partner.example ")
     stops, cautions = gweb.audience_problems(app, gweb.Organization("", set(), True))
     assert "no organization" in stops[0] and cautions == []
-    assert gweb.audience_problems(app, None) == ([], [])
+    stops, cautions = gweb.audience_problems(app, None)
+    assert stops == [] and "may not read" in cautions[0]
 
 
 def test_the_organization_holds_every_domain_the_directory_lists(monkeypatch):

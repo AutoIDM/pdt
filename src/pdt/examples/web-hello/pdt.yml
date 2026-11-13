@@ -8,7 +8,7 @@ app_profile: web
 web:
   # The app listens at this port; run.py reads it from PDT_PORT.
   port: 8080
-  # `pdt health` and the platform's startup probe ask this path.
+  # `pdt run` and the platform's startup probe ask this path.
   health_path: /healthz
   # Who may use the app. A web app always has a sign-in.
   auth:
