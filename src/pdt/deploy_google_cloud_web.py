@@ -15,7 +15,7 @@ Resources per app, in the configured project and region:
   IAP IAM bindings       roles/iap.httpsResourceAccessor on the service for each
                          web.auth.allowed_domains entry (domain:) and allowed_groups
                          entry (group:); they go with the service
-web.resources sets the instance size and scale; RESOURCE_DEFAULTS in profiles/web.py
+web.resources sets the instance size and scale; RESOURCE_DEFAULTS in web_app.py
 fills in each key it does not set.
 Shared with the project's jobs: the Artifact Registry repo and the bucket
 pdt-data-<suffix>. A web app never runs as the jobs' pdt-runner, so a flaw in it
@@ -63,7 +63,7 @@ from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, ensure_image, fail,
     fetch_json, gather_secrets, image_action, secret_contents, store_kept_line,
     store_plan_lines, warn_if_locked)
-from pdt.profiles import web
+from pdt import web_app
 
 IAP_API = "iap.googleapis.com"
 # `gcloud run deploy --iap` reads the project through Resource Manager, and asks to turn the API
@@ -295,8 +295,8 @@ def deploy_args(app: dict, project: str, region: str, sa: str, image: str, url: 
                 fingerprint: str, sid: str | None, store_url: str | None, bucket: str) -> list[str]:
     """The `gcloud run deploy` arguments for the service and its one container."""
     service = service_name(app["name"])
-    port = str(web.port(app))
-    size = web.resources(app)
+    port = str(web_app.port(app))
+    size = web_app.resources(app)
     args = ["run", "deploy", service, "--region", region, "--project", project,
             "--service-account", sa, "--platform", "managed", "--execution-environment", "gen2",
             "--ingress", "all", "--scaling", "0" if app["pause"] else "auto",
@@ -306,17 +306,17 @@ def deploy_args(app: dict, project: str, region: str, sa: str, image: str, url: 
             "--labels", f"managed-by=pdt,{BUILD_TAG}={fingerprint}",
             "--no-allow-unauthenticated", "--iap",
             "--image", image, "--port", port, "--cpu", str(size["cpu"]),
-            "--memory", f"{web.memory_mib(size['memory'])}Mi",
-            "--startup-probe", f"httpGet.path={web.health_path(app)},httpGet.port={port},{PROBE}",
+            "--memory", f"{web_app.memory_mib(size['memory'])}Mi",
+            "--startup-probe", f"httpGet.path={web_app.health_path(app)},httpGet.port={port},{PROBE}",
             # Volumes are set whole on every deploy, so a removed storage.read entry goes too.
             "--clear-volumes", "--clear-volume-mounts"]
     for other in app["storage_read"]:
         volume = volume_name(other)
         args += ["--add-volume", f"name={volume},type=cloud-storage,bucket={bucket},readonly=true,"
                                  f"mount-options=only-dir={other}",
-                 "--add-volume-mount", f"volume={volume},mount-path={web.STORAGE_READ_DIR}/{other}"]
-    env = [(web.ENV_PORT, port), (web.ENV_URL, url),
-           (web.ENV_STORAGE_READ_DIR, web.STORAGE_READ_DIR)]
+                 "--add-volume-mount", f"volume={volume},mount-path={web_app.STORAGE_READ_DIR}/{other}"]
+    env = [(web_app.ENV_PORT, port), (web_app.ENV_URL, url),
+           (web_app.ENV_STORAGE_READ_DIR, web_app.STORAGE_READ_DIR)]
     if app["storage_read"]:
         env.append(("PDT_STORAGE_READ_URLS", json.dumps(read_urls(app, bucket), sort_keys=True)))
     if sid:
@@ -467,8 +467,8 @@ def cost_estimate(app: dict, project: str, region: str, use: Use | None = None,
                                      "reading: prices from the Cloud Billing catalog")
         return amount
 
-    size = web.resources(app)
-    vcpu, gib = float(size["cpu"]), web.memory_mib(size["memory"]) / 1024
+    size = web_app.resources(app)
+    vcpu, gib = float(size["cpu"]), web_app.memory_mib(size["memory"]) / 1024
     seconds, requests, source = monthly_use(use)
     for in_currency in dict.fromkeys((currency, "USD")):
         try:
@@ -509,7 +509,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     project, region = gc.project_region(app)
     console.status("Checking your Google Cloud sign-in...")
     project = gc.preflight(app, project, assume_yes)
-    gate = web.gate(app, "google-cloud")
+    gate = web_app.gate(app, "google-cloud")
     apis = (*APIS, *((IAP_API, RESOURCE_MANAGER_API) if gate else ()), *((gc.CLOUD_BUILD_API,) if cloud else ()))
     gc.ensure_apis(project, assume_yes, apis)
     if gate:
@@ -606,14 +606,14 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     for other in app["storage_read"]:
         actions.append(console.Markup(f"allow {console.value(sa)} to read "
                                       f"{console.value(f'{bucket}/{other}/')}, mounted read-only at "
-                                      f"{console.value(f'{web.STORAGE_READ_DIR}/{other}/')}"))
+                                      f"{console.value(f'{web_app.STORAGE_READ_DIR}/{other}/')}"))
     for other in stale_reads:
         actions.append(console.Markup(f"remove {console.value(sa)} read access to "
                                       f"{console.value(f'{bucket}/{other}/')}"))
     if stale_folder:
         actions.append(console.Markup(f"remove {console.value(sa)} write access to "
                                       f"{console.value(f'{bucket}/{name}/')}"))
-    size = web.resources(app)
+    size = web_app.resources(app)
     actions.append(console.Markup(
         ("update" if service_exists else "create")
         + f" Cloud Run service {console.value(service)}: {console.value(str(size['cpu']))} vCPU, "
@@ -621,8 +621,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         f"{console.value(str(size['max_instances']))} instances, "
         f"{console.value(str(size['concurrency']))} requests each, "
         f"{console.value(str(size['timeout']))} s timeout, port "
-        f"{console.value(str(web.port(app)))}, health check on "
-        f"{console.value(web.health_path(app))}"
+        f"{console.value(str(web_app.port(app)))}, health check on "
+        f"{console.value(web_app.health_path(app))}"
         + (" (paused)" if app["pause"] else "")))
     if gate:
         actions.append(console.Markup(f"put {console.value(gate)} in front of {console.value(url)}"))

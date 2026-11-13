@@ -1,7 +1,6 @@
 from conftest import add_app
-from pdt import config, profiles
+from pdt import config, web_app
 from pdt.config import merged_app, validate_app
-from pdt.profiles import job, web
 
 GOOGLE_CLOUD = "platform:\n  provider: google-cloud\n"
 CLOUD_WEB_APP = """\
@@ -34,7 +33,7 @@ def test_a_web_app_validates(project):
     assert app["app_profile"] == "web"
     assert app["storage"] is True
     assert app["storage_read"] == ["warehouse"]
-    assert web.port(app) == 8050
+    assert web_app.port(app) == 8050
 
 
 def test_an_unknown_profile_is_refused(project):
@@ -86,7 +85,7 @@ def test_web_resources_are_checked(project):
     base = CLOUD_WEB_APP.replace("web:\n", "web:\n  resources:\n    RES\n", 1)
     add_app(project, "dashboard", base.replace("RES", "cpu: 2\n    memory: 4GiB\n    timeout: 900"))
     assert validate_app("dashboard") == []
-    assert web.resources(merged_app("dashboard"))["max_instances"] == 3
+    assert web_app.resources(merged_app("dashboard"))["max_instances"] == 3
     add_app(project, "dashboard", base.replace("RES", "cpu: 1\n    memory: 8GiB"))
     assert any("1 vCPU needs from 512MiB to 4GiB" in p for p in validate_app("dashboard"))
     add_app(project, "dashboard", base.replace("RES", "cpu: 4"))
@@ -107,8 +106,8 @@ def test_each_cloud_gate_is_a_known_pair(project):
     add_app(project, "dashboard", CLOUD_WEB_APP)
     assert validate_app("dashboard") == []
     app = merged_app("dashboard")
-    assert web.gate(app, "google-cloud") == "Identity-Aware Proxy"
-    assert web.health_path(app) == "/"
+    assert web_app.gate(app, "google-cloud") == "Identity-Aware Proxy"
+    assert web_app.health_path(app) == "/"
     (project / "pdt.yml").write_text("platform:\n  provider: azure\n")
     assert any("not yet available on the azure provider" in p for p in validate_app("dashboard"))
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
@@ -132,7 +131,7 @@ def test_a_container_with_a_config_file_is_a_web_app(project):
                                     "    provider: google\n    allowed_domains: [example.com]\n")
     assert "site" in config.app_folders()
     assert validate_app("site") == []
-    assert web.port(merged_app("site")) == 80
+    assert web_app.port(merged_app("site")) == 80
     (folder / "pdt.yml").unlink()
     assert "site" not in config.app_folders()
 

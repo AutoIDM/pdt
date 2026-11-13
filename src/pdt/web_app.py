@@ -1,4 +1,4 @@
-"""The `web` profile: an HTTP server that runs all the time behind the platform's sign-in.
+"""A web app: an HTTP server behind the platform's sign-in.
 
 The app is any container that listens on the port in `web.port` (PDT_PORT), or a
 `run.py` that does. It needs no sign-in code. The platform's own gate stands in

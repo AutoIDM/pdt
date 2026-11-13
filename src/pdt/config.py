@@ -1277,8 +1277,13 @@ def validate_app(name: str) -> list[str]:
         problem = azure_environment_problem(str(app["platform"].get("environment") or ""))
         if problem != "":
             problems.append(f"{name}: platform.environment: {problem}")
-    from pdt import profiles
-    problems.extend(profiles.problems(app, provider))
+    if app["app_profile"] == "web":
+        from pdt import web_app
+        problems.extend(web_app.problems(app, provider))
+    elif app["app_profile"] == "job":
+        problems.extend(job_problems(app, provider))
+    else:
+        problems.append(f"{name}: app_profile must be one of: job, web")
     problems.extend(f"{where}: {problem}" for problem in
                     storage_problems(app, own.get("storage", entry.get("storage", True))))
     if not isinstance(app["enabled"], bool):
@@ -1347,6 +1352,25 @@ def storage_problems(app: dict, storage) -> list[str]:
             if provider in PROVIDERS and other_provider in PROVIDERS and other_provider != provider:
                 problems.append(f"storage.read names {name!r}, which uses the {other_provider} "
                                 f"provider, so its folder is not in the {STORE_NAMES[provider]} store")
+    return problems
+
+
+def job_problems(app: dict, provider: str) -> list[str]:
+    """The checks of a job's `job:` section and schedule."""
+    name = app["name"]
+    problems = key_problems(f"{name}/{APP_FILE}: job", app["job"], JOB_KEYS)
+    if app["schedule"] is not None:
+        try:
+            cron = cron_expression(app["schedule"])
+        except ConfigError as e:
+            problems.append(f"{name}: {e}")
+        else:
+            problem = windows_schedule_problem(cron) if provider == "windows" else ""
+            if problem != "":
+                problems.append(f"{name}: schedule: {problem}")
+    if app["web"]:
+        problems.append(f"{name}: web: only an app with app_profile: web uses this "
+                        "section; remove it, or set app_profile: web")
     return problems
 
 

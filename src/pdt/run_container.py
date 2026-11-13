@@ -18,7 +18,7 @@ from typing import Callable
 
 from pdt import config, console
 from pdt.deploy_common import docker_problem, stage_build_context, write_dockerfile
-from pdt.profiles import web
+from pdt import web_app
 
 # How long a stopped server may take to exit before pdt kills it.
 STOP_WAIT = 10
@@ -46,17 +46,17 @@ def run(app: dict, local_url: str, started: Callable[[], object] = lambda: None)
         shutil.rmtree(stage, ignore_errors=True)
     if built.returncode != 0:
         return built.returncode
-    port = web.port(app)
+    port = web_app.port(app)
     # A name of its own, so a second `pdt run` never removes the first one's container.
     container = f"pdt-{app['name']}-local-{os.getpid()}"
     command = ["docker", "run", "--rm", "--init", "--name", container,
                "-p", f"127.0.0.1:{port}:{port}",
-               "-e", f"{web.ENV_PORT}={port}", "-e", f"{web.ENV_URL}={local_url}",
-               "-e", f"{web.ENV_STORAGE_READ_DIR}={web.STORAGE_READ_DIR}"]
+               "-e", f"{web_app.ENV_PORT}={port}", "-e", f"{web_app.ENV_URL}={local_url}",
+               "-e", f"{web_app.ENV_STORAGE_READ_DIR}={web_app.STORAGE_READ_DIR}"]
     for other in app["storage_read"]:
         folder = read_root() / other
         folder.mkdir(parents=True, exist_ok=True)
-        command += ["-v", f"{folder}:{web.STORAGE_READ_DIR}/{other}:ro"]
+        command += ["-v", f"{folder}:{web_app.STORAGE_READ_DIR}/{other}:ro"]
     spec = config.env_spec(app)
     for name in [*(spec.get("required") or []), *(spec.get("optional") or []),
                  *(name for group in spec.get("one_of") or [] for name in group)]:

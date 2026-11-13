@@ -21,7 +21,7 @@ import urllib.request
 import webbrowser
 
 from pdt import console
-from pdt.profiles import web
+from pdt import web_app
 
 # How long `pdt run` waits for the first answer: the same limit as a deployed app's startup check.
 START_WAIT = 90.0
@@ -69,8 +69,8 @@ def can_open_browser() -> bool:
 
 def watch(app: dict, local_url: str, container: bool) -> threading.Thread:
     """Start a thread that reports when the app answers, and opens local_url once it does."""
-    port = web.port(app)
-    health = local_url.rstrip("/") + web.health_path(app)
+    port = web_app.port(app)
+    health = local_url.rstrip("/") + web_app.health_path(app)
 
     def run() -> None:
         deadline = time.monotonic() + START_WAIT
@@ -81,7 +81,7 @@ def watch(app: dict, local_url: str, container: bool) -> threading.Thread:
         else:
             console.warn(f"nothing answered {console.value(health)} within "
                          f"{console.value(f'{START_WAIT:.0f}')} s; the app must listen on "
-                         f"{console.value(f'0.0.0.0:{port}')} ({console.value(web.ENV_PORT)})")
+                         f"{console.value(f'0.0.0.0:{port}')} ({console.value(web_app.ENV_PORT)})")
             return
         if not container and listens_on_all_interfaces(port) is False:
             console.warn(f"the app listens on {console.value('127.0.0.1')} only; it must "
