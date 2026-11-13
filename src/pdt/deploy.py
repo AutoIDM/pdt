@@ -254,9 +254,26 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
                 f"again with --yes to run it {DEFAULT_SCHEDULE} ({words}).")
     else:
         console.say()
-        console.say(f"{console.value(name)} has no schedule yet. Answer hourly, daily, weekly, "
-                    f"monthly, or a cron expression such as {console.value('30 6 * * 1-5')}.")
-        while True:
+        shorthand = ["hourly", "daily", "weekly", "monthly"]
+        chosen = len(shorthand)
+        if console.can_menu():
+            console.say(f"{console.value(name)} has no schedule yet.")
+            console.heading(f"How often should {console.escape(name)} run?")
+            try:
+                chosen = console.choose_one(
+                    [f"{word}: {config.describe_schedule(word)}" for word in shorthand]
+                    + ["A cron expression, such as 30 6 * * 1-5"],
+                    shorthand.index(DEFAULT_SCHEDULE))
+            except EOFError:
+                return f"no schedule is set. Add `schedule: {DEFAULT_SCHEDULE}` to {where}."
+        else:
+            console.say(f"{console.value(name)} has no schedule yet. Answer hourly, daily, "
+                        f"weekly, monthly, or a cron expression such as "
+                        f"{console.value('30 6 * * 1-5')}.")
+        if chosen < len(shorthand):
+            schedule = shorthand[chosen]
+            words = config.describe_schedule(schedule)
+        while chosen == len(shorthand):
             try:
                 schedule = console.ask(f"How often should {name} run?",
                                        DEFAULT_SCHEDULE) or DEFAULT_SCHEDULE
@@ -343,16 +360,23 @@ def leave_old_place(app_name: str, assume_yes: bool) -> int:
         return 1
     console.say(f"What do you want to do with the app currently deployed to "
                 f"{console.value(current)}?")
-    console.choice(1, f"Remove it from {current}, then deploy it to {target}")
-    console.choice(2, "Cancel")
-    while True:
+    labels = [f"Remove it from {current}, then deploy it to {target}", "Cancel"]
+    if console.can_menu():
         try:
-            answer = console.ask("Which one?", "2") or "2"
+            answer = str(console.choose_one(labels, 1) + 1)
         except EOFError:
             answer = "2"
-        if answer in ("1", "2"):
-            break
-        console.say("Please answer 1 or 2.")
+    else:
+        console.choice(1, labels[0])
+        console.choice(2, labels[1])
+        while True:
+            try:
+                answer = console.ask("Which one?", "2") or "2"
+            except EOFError:
+                answer = "2"
+            if answer in ("1", "2"):
+                break
+            console.say("Please answer 1 or 2.")
     if answer == "2":
         console.say("Cancelled.")
         return DECLINED

@@ -161,3 +161,46 @@ def test_choose_region_names_the_cli_settings(project, monkeypatch, tmp_path, ca
     monkeypatch.setattr(regions, "local_timezone", lambda: "Etc/UTC")
     assert regions.choose_region(merged_app("my-report"), "azure", True) == ""
     assert "northeurope, because defaults.location" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("pressed,typed,region", [
+    (["enter"], None, "uksouth"),
+    (["up", "enter"], None, "uaenorth"),
+    (["down", "enter"], None, "centralus"),
+    (["down"] * 5 + ["enter"], "ukwest", "ukwest"),
+    (["down"] * 6 + ["enter"], None, "australiaeast"),
+])
+def test_a_menu_starts_on_the_suggestion_and_lists_another_region_last(
+        project, monkeypatch, press, pressed, typed, region):
+    add_app(project, "my-report")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Europe/London")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: True)
+    monkeypatch.setattr(regions.console, "ask", lambda _question, _default: typed)
+    press(*pressed)
+    assert regions.choose_region(merged_app("my-report"), "azure", False) == ""
+    assert region_in(project / "pdt.yml") == region
+
+
+def test_a_menu_sorts_the_regions_by_country_then_by_name(project, monkeypatch):
+    add_app(project, "my-report")
+    monkeypatch.setattr(regions, "local_timezone", lambda: "Europe/London")
+    monkeypatch.setattr(regions, "can_prompt", lambda _interactive: True)
+    shown = []
+    monkeypatch.setattr(regions.console, "can_menu", lambda: True)
+    monkeypatch.setattr(regions.console, "choose_one", lambda labels, default, details: (
+        shown.extend(zip(labels, details)), default)[1])
+    assert regions.choose_region(merged_app("my-report"), "azure", False) == ""
+    assert [(label.strip(), name) for label, name in shown[:3]] == [
+        ("Australia", "australiaeast"), ("Austria", "austriaeast"), ("Belgium", "belgiumcentral")]
+    assert [(label.strip(), name) for label, name in shown[-6:]] == [
+        ("United Kingdom", "uksouth"), ("United States", "centralus"),
+        ("United States", "eastus2"), ("United States", "westus2"),
+        ("United States", "westus3"), ("Another region", "")]
+    assert len({len(label) for label, _name in shown[:-1]}) == 1
+    assert region_in(project / "pdt.yml") == "uksouth"
+
+
+@pytest.mark.parametrize("provider", regions.PROVIDERS)
+def test_every_region_of_the_menu_has_a_country(provider):
+    for name in regions.menu_regions(provider):
+        assert regions.REGION_COUNTRY.get(name, "") != "", name

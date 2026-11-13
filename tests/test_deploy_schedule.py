@@ -73,3 +73,18 @@ def test_a_set_schedule_is_never_asked_again(project, monkeypatch):
     monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: pytest.fail("asked"))
     assert deploy.choose_schedule(merged_app("my-report"), False) == ""
     assert schedule_in(folder) == "hourly"
+
+
+def test_in_a_menu_the_marker_starts_on_daily(ps_app, monkeypatch, press):
+    monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: True)
+    press("down", "enter")
+    assert deploy.choose_schedule(merged_app("ps-report"), False) == ""
+    assert schedule_in(ps_app) == "weekly"
+
+
+def test_the_last_line_of_the_menu_asks_for_a_cron_expression(ps_app, monkeypatch, press):
+    monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: True)
+    monkeypatch.setattr(deploy.console, "ask", lambda _question, _default: "30 6 * * 1-5")
+    press("down", "down", "down", "enter")
+    assert deploy.choose_schedule(merged_app("ps-report"), False) == ""
+    assert schedule_in(ps_app) == "30 6 * * 1-5"

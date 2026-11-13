@@ -418,6 +418,15 @@ def ask(prompt: str) -> str:
         return ""
 
 
+def choose(labels: list[str], default: int = 0, details: list[str] | None = None) -> str:
+    """The number of the label the user chooses in a menu, as the text a typed answer has,
+    or "" at the end of input."""
+    try:
+        return str(console.choose_one(labels, default, details) + 1)
+    except EOFError:
+        return ""
+
+
 def choose_profile(app: dict, session) -> str:
     profiles = session.available_profiles
     if not profiles:
@@ -436,10 +445,17 @@ def choose_profile(app: dict, session) -> str:
              f"{console.value('AWS_PROFILE=<name>')} "
              f"(profiles: {', '.join(console.value(profile) for profile in profiles)})")
     console.heading("No AWS profile is selected. Profiles on this computer:")
-    for number, profile in enumerate(profiles, start=1):
-        console.choice(number, profile)
-    answer = ask(f"Which profile do you want to use? [1-{len(profiles)}] ")
-    if answer.isdigit() and 1 <= int(answer) <= len(profiles):
+    numbered = True
+    if console.can_menu():
+        answer = choose([*profiles, "Another profile"])
+        if answer == str(len(profiles) + 1):
+            numbered = False
+            answer = ask("Type the name of the profile: ")
+    else:
+        for number, profile in enumerate(profiles, start=1):
+            console.choice(number, profile)
+        answer = ask(f"Which profile do you want to use? [1-{len(profiles)}] ")
+    if numbered and answer.isdigit() and 1 <= int(answer) <= len(profiles):
         profile = profiles[int(answer) - 1]
     elif answer in profiles:
         profile = answer
@@ -478,9 +494,14 @@ def append_section(path: Path, header: str, values: dict[str, str]) -> None:
 def create_profile(app: dict) -> str:
     console.warn("No AWS profile is on this computer yet.")
     console.heading("How do you sign in to AWS?")
-    console.choice(1, "AWS IAM Identity Center (single sign-on)", "recommended")
-    console.choice(2, "An access key", "an access key ID and secret access key")
-    answer = ask("Which one? [1-2] ") or "1"
+    labels = ["AWS IAM Identity Center (single sign-on)", "An access key"]
+    details = ["recommended", "an access key ID and secret access key"]
+    if console.can_menu():
+        answer = choose(labels, details=details)
+    else:
+        console.choice(1, labels[0], details[0])
+        console.choice(2, labels[1], details[1])
+        answer = ask("Which one? [1-2] ") or "1"
     if answer == "1":
         return create_sso_profile(app)
     if answer == "2":
@@ -494,9 +515,14 @@ def pick(options: list[tuple[str, str]], only: str, question: str) -> str:
         key, label = options[0]
         console.field(only, key if key == label else f"{label} ({key})")
         return key
-    for number, (key, label) in enumerate(options, start=1):
-        console.choice(number, label, "" if key == label else key)
-    answer = ask(f"{question} [1-{len(options)}] ")
+    details = ["" if key == label else key for key, label in options]
+    if console.can_menu():
+        console.heading(console.escape(question))
+        answer = choose([label for _, label in options], details=details)
+    else:
+        for number, (_, label) in enumerate(options, start=1):
+            console.choice(number, label, details[number - 1])
+        answer = ask(f"{question} [1-{len(options)}] ")
     if answer.isdigit() and 1 <= int(answer) <= len(options):
         return options[int(answer) - 1][0]
     if answer in {key for key, _ in options}:
