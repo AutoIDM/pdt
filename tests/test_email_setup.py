@@ -1,3 +1,5 @@
+import base64
+import json
 import os
 import re
 import shutil
@@ -5,7 +7,7 @@ import subprocess
 
 import pytest
 
-from pdt import alerts_cli, config, email_alert, email_setup
+from pdt import alerts_cli, config, console, deploy, email_alert, email_setup
 
 TENANT = "11111111-1111-1111-1111-111111111111"
 MAIL_SEND = "b633e1c5-f582-4048-a93e-9f11b44c7e96"
@@ -25,6 +27,7 @@ class Organization:
         self.grants = []
         self.refuse = []
         self.writes = []
+        self.users = [{"userPrincipalName": "pdt-alerts@example.com"}]
 
     def call(self, method, path, body=None):
         if any(f"{method} {path}".startswith(start) for start in self.refuse):
@@ -32,6 +35,8 @@ class Organization:
                                               "Authorization_RequestDenied")
         if method != "GET":
             self.writes.append(f"{method} {path.split('/')[1]}")
+        if method == "GET" and path.startswith("/users?$filter="):
+            return {"value": self.users}
         if method == "GET" and path.startswith("/applications?$filter="):
             key, value = re.search(r"filter=(\w+) eq '([^']*)'", path).groups()
             return {"value": [{"id": app["id"], "appId": app["appId"], "tags": app.get("tags", [])}
@@ -76,7 +81,7 @@ def organization(project, monkeypatch):
     monkeypatch.setattr(email_setup.time, "sleep", lambda _seconds: None)
     found = Organization()
     monkeypatch.setattr(email_setup, "sign_in",
-                        lambda: (TENANT, "admin@example.com", found.call))
+                        lambda _sender: (TENANT, "admin@example.com", "example.com", found.call))
     return found
 
 
@@ -199,7 +204,7 @@ def test_a_sign_in_to_another_tenant_than_the_saved_one_stops_the_setup(
     assert email_setup.ensure(project, TENANT, "admin@example.com", organization.call) is None
     out = capsys.readouterr().out
     assert saved in out and TENANT in out and "pdt changed nothing." in out
-    assert f"  pdt az login --tenant {saved} --allow-no-subscriptions\n" in out
+    assert "  pdt alerts setup\n" in out
     assert organization.writes == [] and not (project / ".secrets").exists()
 
 
@@ -320,3 +325,125 @@ def test_the_test_message_reports_the_real_error_when_the_wait_ends(monkeypatch)
     monkeypatch.setattr(email_setup, "granted_now", True)
     with pytest.raises(RuntimeError, match="ErrorAccessDenied"):
         email_setup.send_test(entry, "contoso-jobs")
+
+
+def fake_token(user, tenant):
+    payload = base64.urlsafe_b64encode(json.dumps({"upn": user, "tid": tenant}).encode())
+    return "header." + payload.decode().rstrip("=") + ".signature"
+
+
+class AzureCli:
+    """A stand-in for the Azure CLI that `email_setup.az` runs. It records each command with
+    the AZURE_CONFIG_DIR it ran with, and holds the account that this folder signed in."""
+
+    def __init__(self, account=None):
+        self.account = account
+        self.calls = []
+
+    def run(self, command, **kwargs):
+        args = command[command.index("az") + 1:]
+        self.calls.append((args, kwargs["env"].get("AZURE_CONFIG_DIR")))
+        if args[0] == "login":
+            domain = args[args.index("--tenant") + 1]
+            self.account = {"user": {"name": f"admin@{domain}"}, "tenantId": TENANT,
+                            "tenantDefaultDomain": domain}
+            return subprocess.CompletedProcess(command, 0, "[]", "")
+        if self.account is None:
+            return subprocess.CompletedProcess(command, 1, "", "Please run 'az login'.")
+        if args[:2] == ["account", "show"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps(self.account), "")
+        return subprocess.CompletedProcess(
+            command, 0, fake_token(self.account["user"]["name"], TENANT) + "\n", "")
+
+
+@pytest.fixture
+def azure_cli(project, monkeypatch):
+    monkeypatch.delenv("AZURE_CONFIG_DIR", raising=False)
+    found = AzureCli()
+    monkeypatch.setattr(email_setup.subprocess, "run", found.run)
+    monkeypatch.setattr(deploy, "announce_install", lambda _script: None)
+    monkeypatch.setattr(email_setup.console, "can_menu", lambda: False)
+    return found
+
+
+def test_the_email_sign_in_uses_its_own_folder_and_the_organization_of_the_sender(
+        azure_cli, capsys):
+    tenant_id, user, organization, _call = email_setup.sign_in("pdt-alerts@contoso.example.com")
+    assert (tenant_id, user, organization) == (TENANT, "admin@contoso.example.com",
+                                               "contoso.example.com")
+    assert [args[0] for args, _folder in azure_cli.calls] == ["account", "login", "account"]
+    assert {folder for _args, folder in azure_cli.calls} == {str(email_setup.AZURE_DIR)}
+    assert ["login", "--tenant", "contoso.example.com", "--allow-no-subscriptions"] in [
+        args for args, _folder in azure_cli.calls]
+    out = capsys.readouterr().out
+    assert "Which Microsoft account" not in out
+    assert ("pdt opens the Microsoft sign-in of contoso.example.com in your browser. Sign in as "
+            "an administrator.") in " ".join(out.split())
+    assert "AZURE_CONFIG_DIR" not in os.environ
+    assert "AZURE_CONFIG_DIR" not in deploy.provider_env()
+
+
+@pytest.mark.parametrize("answer, login", [("1", False), ("2", True)])
+def test_a_saved_email_sign_in_gets_a_menu_to_use_it_or_to_sign_in_again(
+        azure_cli, monkeypatch, capsys, answer, login):
+    azure_cli.account = {"user": {"name": "old@example.com"}, "tenantId": TENANT,
+                         "tenantDefaultDomain": "example.com"}
+    monkeypatch.setattr(email_setup.console, "ask", lambda *_a, **_k: answer)
+    _tenant, user, organization, _call = email_setup.sign_in("pdt-alerts@contoso.example.com")
+    out = capsys.readouterr().out
+    assert "  1) Use old@example.com (organization example.com)\n" in out
+    assert "  2) Sign in with another account\n" in out
+    logins = [args for args, _folder in azure_cli.calls if args[0] == "login"]
+    if login:
+        assert logins == [["login", "--tenant", "contoso.example.com", "--allow-no-subscriptions"]]
+        assert (user, organization) == ("admin@contoso.example.com", "contoso.example.com")
+    else:
+        assert logins == []
+        assert (user, organization) == ("old@example.com", "example.com")
+    assert {folder for _args, folder in azure_cli.calls} == {str(email_setup.AZURE_DIR)}
+
+
+@pytest.mark.parametrize("user", [
+    {"userPrincipalName": "PDT-Alerts@example.com"},
+    {"userPrincipalName": "shared-1@example.com", "mail": "pdt-alerts@EXAMPLE.com"},
+    {"userPrincipalName": "shared-1@example.com", "mail": "shared@example.com",
+     "proxyAddresses": ["SMTP:shared@example.com", "smtp:Pdt-Alerts@example.com"]}])
+def test_the_sender_is_a_mailbox_by_its_upn_its_mail_or_a_proxy_address(organization, user):
+    organization.users = [user]
+    assert email_setup.mailbox(organization.call, "pdt-alerts@example.com")
+
+
+def test_a_user_with_only_an_x500_or_another_address_is_not_the_mailbox(organization):
+    organization.users = [{"userPrincipalName": "other@example.com", "mail": "other@example.com",
+                           "proxyAddresses": ["X500:pdt-alerts@example.com"]}]
+    assert not email_setup.mailbox(organization.call, "pdt-alerts@example.com")
+
+
+def test_a_sender_that_is_no_mailbox_saves_nothing_and_is_asked_again(
+        project, organization, monkeypatch, capsys):
+    warned = []
+    monkeypatch.setattr(email_setup.console, "warn", warned.append)
+    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1",
+                    "nobody@example.com", "")
+    assert alerts_cli.setup() == 1
+    assert queue == []
+    assert warned == [f"{console.value('nobody@example.com')} is not a mailbox in the Microsoft "
+                      f"365 organization {console.value('example.com')}."]
+    assert organization.writes == [] and not (project / ".secrets").exists()
+    assert not (project / ".env").exists()
+    assert "alerts" not in config.load_yaml(project / "pdt.yml")
+
+
+def test_a_sender_typed_again_that_is_a_mailbox_is_the_one_saved(
+        project, organization, monkeypatch, capsys):
+    asked = []
+    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1",
+                    "nobody@example.com", "pdt-alerts@example.com", "n")
+    monkeypatch.setattr(alerts_cli.console, "confirm",
+                        lambda question, *_a, **_k: asked.append(question) or queue.pop(0) == "y")
+    assert alerts_cli.setup() == 0
+    assert queue == []
+    assert config.load_yaml(project / "pdt.yml")["alerts"][0]["from"] == "pdt-alerts@example.com"
+    assert asked == ["Send a test message to email address it-ops@example.com now?"]
+    assert ("saved  the email address it-ops@example.com entry under alerts: in pdt.yml"
+            in capsys.readouterr().out.splitlines())

@@ -222,11 +222,17 @@ def send_microsoft_365(values: dict, sender: str, to: list[str], subject: str, t
                        html: str) -> None:
     body = {"contentType": "HTML", "content": html} if html != "" else {
         "contentType": "Text", "content": text}
-    alert_message.post(
-        f"https://graph.microsoft.com/v1.0/users/{urllib.parse.quote(sender)}/sendMail",
-        {"message": {"subject": subject, "body": body, "toRecipients": [
-            {"emailAddress": {"address": address}} for address in to]}},
-        "Microsoft Graph", {"Authorization": f"Bearer {graph_token(values)}"})
+    try:
+        alert_message.post(
+            f"https://graph.microsoft.com/v1.0/users/{urllib.parse.quote(sender)}/sendMail",
+            {"message": {"subject": subject, "body": body, "toRecipients": [
+                {"emailAddress": {"address": address}} for address in to]}},
+            "Microsoft Graph", {"Authorization": f"Bearer {graph_token(values)}"})
+    except RuntimeError as e:
+        if '"ErrorInvalidUser"' not in str(e):
+            raise
+        raise RuntimeError(f"{sender} is not a mailbox in the Microsoft 365 organization of the "
+                           f"app registration. {e}") from None
 
 
 SENDERS = {"microsoft-365": send_microsoft_365, "smtp": send_smtp, "resend": send_resend}

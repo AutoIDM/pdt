@@ -192,6 +192,32 @@ def test_microsoft_365_posts_to_send_mail_of_the_sender_with_the_html_body(monke
         "toRecipients": [{"emailAddress": {"address": "it-ops@example.com"}}]}}
 
 
+def test_a_send_from_an_address_that_is_no_mailbox_says_so_before_the_answer(monkeypatch):
+    answer = ('Microsoft Graph answered HTTP 404: {"error":{"code":"ErrorInvalidUser",'
+              '"message":"The requested user \'pdt-alerts@example.com\' is invalid."}}')
+
+    def post(*_args):
+        raise RuntimeError(answer)
+
+    monkeypatch.setattr(email_alert, "graph_token", lambda values: "token")
+    monkeypatch.setattr(alert_message, "post", post)
+    for name in ("PDT_EMAIL_TENANT_ID", "PDT_EMAIL_CLIENT_ID", "PDT_EMAIL_PRIVATE_KEY_B64"):
+        monkeypatch.setenv(name, "x")
+    entry = {"type": "email", "method": "microsoft-365", "from": "pdt-alerts@example.com",
+             "to": ["it-ops@example.com"]}
+    with pytest.raises(RuntimeError) as raised:
+        email_alert.send(entry, entry["to"], "Subject", "text")
+    assert str(raised.value) == ("pdt-alerts@example.com is not a mailbox in the Microsoft 365 "
+                                 f"organization of the app registration. {answer}")
+
+
+def test_an_email_entry_is_described_by_its_email_addresses():
+    entry = {"type": "email", "method": "smtp", "from": "pdt-alerts@example.com",
+             "to": ["it-ops@example.com", "lead@example.com"]}
+    assert (alerts_cli.SETUPS["email"].describe(entry)
+            == "email address it-ops@example.com, lead@example.com")
+
+
 def test_the_sign_in_assertion_names_the_certificate_as_microsoft_specifies(monkeypatch):
     import base64
     import io

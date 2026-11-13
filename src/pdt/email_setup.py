@@ -1,7 +1,12 @@
 """The guided Microsoft 365 setup of `pdt alerts setup`.
 
-`microsoft_365` gets a Microsoft Graph token from the Azure CLI sign-in on this
-computer (`pdt az`), and starts that sign-in when there is none. `ensure` then
+`microsoft_365` gets a Microsoft Graph token from an Azure CLI sign-in (`pdt az`)
+that it keeps in AZURE_DIR, apart from the sign-in in ~/.azure that a deploy uses,
+because the organization of the email can be another one than the deploy account.
+When AZURE_DIR holds a sign-in, the user chooses to use it or to sign in with
+another account; with none, the sign-in starts at once, in the organization of the
+domain of the sender address. `mailbox` then makes sure that the sender address is
+a mailbox of that organization before anything changes there. `ensure` then
 makes sure of three items in the signed-in organization, and prints one line for
 each: the single-tenant app registration REGISTRATION with its service
 principal, a certificate on it whose private key is the file CERTIFICATE in the
@@ -41,8 +46,10 @@ from pathlib import Path
 from typing import Callable
 
 from pdt import alert_message, console, email_alert
+from pdt.config import data_home
 
-GRAPH = "https://graph.microsoft.com/v1.0"
+AZURE_DIR = data_home() / "pdt" / "email-azure"
+GRAPH ="https://graph.microsoft.com/v1.0"
 GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
 REGISTRATION = "pdt-email"
 # The mark on each registration that pdt creates, in the `tags` of the application.
@@ -73,12 +80,26 @@ class SetupError(Exception):
 
 
 def az(*args: str) -> subprocess.CompletedProcess:
-    """Run one Azure CLI command the way `pdt az` does, and return what it printed."""
+    """Run one Azure CLI command the way `pdt az` does, with the sign-in in AZURE_DIR, and
+    return what it printed."""
     from pdt import deploy
     script = Path(__file__).with_name("deploy_azure.py")
     deploy.announce_install(script)
     return subprocess.run(["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
-                           "az", *args], capture_output=True, text=True)
+                           "az", *args], capture_output=True, text=True,
+                          env={**os.environ, "AZURE_CONFIG_DIR": str(AZURE_DIR)})
+
+
+def account() -> dict:
+    """What `az account show` says of the sign-in in AZURE_DIR, or {} with none."""
+    done = az("account", "show", "--output", "json")
+    if done.returncode != 0:
+        return {}
+    try:
+        found = json.loads(done.stdout)
+    except ValueError:
+        return {}
+    return found if isinstance(found, dict) else {}
 
 
 def az_token() -> str:
@@ -118,25 +139,63 @@ def graph_call(token: str, method: str, path: str, body: dict | None = None) -> 
     return json.loads(text) if text else {}
 
 
-def sign_in() -> tuple[str, str, Callable]:
-    """The tenant id and the user of the Azure CLI sign-in, and `call` for Microsoft Graph."""
+def sign_in(sender: str) -> tuple[str, str, str, Callable]:
+    """The tenant id, the user, and the organization of the Azure CLI sign-in in AZURE_DIR,
+    and `call` for Microsoft Graph. A new sign-in goes to the organization of the domain of
+    `sender`."""
+    domain = sender.rpartition("@")[2]
     with console.waiting("checking: Microsoft sign-in", once=True):
-        token = az_token()
+        found = account()
+    signed_in = str((found.get("user") or {}).get("name") or "")
+    organization = str(found.get("tenantDefaultDomain") or found.get("tenantDisplayName")
+                       or found.get("tenantId") or "")
+    token = ""
+    if signed_in:
+        labels = [f"Use {signed_in} (organization {organization})",
+                  "Sign in with another account"]
+        console.heading("Which Microsoft account should pdt use?")
+        if console.can_menu():
+            answer = str(console.choose_one(labels) + 1)
+        else:
+            for number, label in enumerate(labels, 1):
+                console.choice(number, label)
+            while True:
+                answer = console.ask("Which one?", "1") or "1"
+                if answer.isdigit() and 1 <= int(answer) <= len(labels):
+                    break
+                console.say(f"Please answer a number from 1 to {console.value(len(labels))}.")
+        if answer == "1":
+            token = az_token()
     if token == "":
-        console.say("pdt opens the Microsoft sign-in in your browser. Sign in as an "
-                    "administrator.")
+        console.say(f"pdt opens the Microsoft sign-in of {console.value(domain)} in your "
+                    "browser. Sign in as an administrator.")
         with console.waiting("waiting: Microsoft sign-in in the browser"):
-            done = az("login", "--allow-no-subscriptions")
+            done = az("login", "--tenant", domain, "--allow-no-subscriptions")
         if done.returncode != 0:
             raise SetupError((done.stdout + done.stderr).strip() or "the sign-in did not finish")
         token = az_token()
         if token == "":
             raise SetupError("the Microsoft sign-in gave no access to Microsoft Graph")
+        organization = domain
     found = claims(token)
     user = str(found.get("upn") or found.get("unique_name") or "your account")
     console.say(f"Signed in to Microsoft as {console.value(user)}.")
-    return (str(found.get("tid") or ""), user,
+    return (str(found.get("tid") or ""), user, organization,
             lambda method, path, body=None: graph_call(token, method, path, body))
+
+
+def mailbox(call: Callable, address: str) -> bool:
+    """True when `address` is the user principal name, the mail, or an smtp: proxy address of
+    a user of the organization. A shared mailbox is a user too."""
+    quoted = address.replace("'", "''")
+    found = call("GET", f"/users?$filter=userPrincipalName eq '{quoted}' or mail eq '{quoted}' "
+                        f"or proxyAddresses/any(a:a eq 'smtp:{quoted}')"
+                        "&$select=userPrincipalName,mail,proxyAddresses")["value"]
+    wanted = address.lower()
+    return any(str(user.get("userPrincipalName") or "").lower() == wanted
+               or str(user.get("mail") or "").lower() == wanted
+               or f"smtp:{wanted}" in [str(item).lower() for item in user.get("proxyAddresses") or []]
+               for user in found)
 
 
 def thumbprints(key_credentials: list[dict]) -> set[str]:
@@ -225,8 +284,9 @@ def ensure(project: Path, tenant_id: str, user: str, call: Callable) -> dict[str
         console.failed(f"The {console.value('.env')} file holds PDT_EMAIL_TENANT_ID "
                        f"{console.value(saved_tenant)}, and the Microsoft sign-in is for the "
                        f"organization {console.value(tenant_id)}. pdt changed nothing.")
-        console.say("Sign in to the organization of the saved value, then run the setup again:")
-        console.command(f"pdt az login --tenant {saved_tenant} --allow-no-subscriptions")
+        console.say("Run the setup again with a sender address of the organization of the "
+                    "saved value:")
+        console.command("pdt alerts setup")
         return None
     needs = ("create an app registration", "Application Developer or Global Administrator")
     registration = None
@@ -334,8 +394,8 @@ def ensure(project: Path, tenant_id: str, user: str, call: Callable) -> dict[str
         console.failed(f"{console.value(user)} cannot {console.escape(needs[0])} in this "
                        "Microsoft 365 organization.")
         console.say(f"That needs one of these roles: {console.escape(needs[1])}.")
-        steps = [("pdt az login --allow-no-subscriptions",
-                  "sign in with an account that has the role")]
+        steps = [("pdt alerts setup", "run the setup again, choose Sign in with another "
+                                      "account, and sign in with an account that has the role")]
         if registration is not None and needs[0].startswith("give"):
             link = (f"https://login.microsoftonline.com/{tenant_id}/adminconsent"
                     f"?client_id={registration['appId']}"
@@ -343,21 +403,28 @@ def ensure(project: Path, tenant_id: str, user: str, call: Callable) -> dict[str
             console.say("Or an administrator opens this link and approves the permission. The "
                         "browser then shows a page that does not load, which is correct:")
             console.command(link)
-            steps = []
-        console.next_steps([*steps, ("pdt alerts setup", "run the setup again after that")],
-                           "Then:")
+            steps = [("pdt alerts setup", "run the setup again after that")]
+        console.next_steps(steps, "Then:")
         return None
     return {"PDT_EMAIL_TENANT_ID": tenant_id, "PDT_EMAIL_CLIENT_ID": app_id,
             "PDT_EMAIL_PRIVATE_KEY_PATH": CERTIFICATE}
 
 
-def microsoft_365(project: Path) -> dict[str, str] | None:
-    """The env vars of the microsoft-365 method after the guided setup, or None when the
-    setup did not finish."""
+def microsoft_365(project: Path, sender: str) -> tuple[str, dict[str, str]] | None:
+    """The sender address and the env vars of the microsoft-365 method after the guided
+    setup, or None when the setup did not finish. While the sender address is not a mailbox
+    of the organization, it asks for another one, and an empty answer stops the setup."""
     try:
-        tenant_id, user, call = sign_in()
-        return ensure(project, tenant_id, user, call)
-    except SetupError as e:
+        tenant_id, user, organization, call = sign_in(sender)
+        while not mailbox(call, sender):
+            console.warn(f"{console.value(sender)} is not a mailbox in the Microsoft 365 "
+                         f"organization {console.value(organization)}.")
+            sender = console.ask("Which address should the email come from?")
+            if sender == "":
+                return None
+        values = ensure(project, tenant_id, user, call)
+        return None if values is None else (sender, values)
+    except (SetupError, GraphError) as e:
         console.failed(f"Microsoft 365 is not set up: {console.escape(str(e))}")
         return None
 

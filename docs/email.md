@@ -44,7 +44,7 @@ pdt sends through Microsoft Graph as an app registration that signs in with a ce
 
 #### The guided setup
 
-In `pdt alerts setup`, choose "Microsoft 365: sign in once, and pdt does the setup" and type the sender address. pdt uses the Azure sign-in of this computer, or opens the Microsoft sign-in in your browser when there is none. Sign in as an administrator. The provider of the project does not matter. pdt then makes sure of three items in your organization, and prints one line for each:
+In `pdt alerts setup`, choose "Microsoft 365: sign in once, and pdt does the setup" and type the sender address. pdt keeps a Microsoft sign-in for email apart from the Azure sign-in that `pdt deploy` uses (`pdt az account show` does not change), so the email organization can be another one than the deploy account. The first time, pdt opens the Microsoft sign-in of the organization of the sender address in your browser. Sign in as an administrator. A later setup asks whether to use that account again or to sign in with another account. The provider of the project does not matter. pdt then checks that the sender address is a mailbox of the organization (a user or a shared mailbox, by its user name, mail, or an alias); when it is not, pdt changes nothing and asks for the sender address again. pdt then makes sure of three items in your organization, and prints one line for each:
 
 - the app registration `pdt-email`, for this organization only;
 - a certificate on that registration. Its private key is the file `.secrets/pdt-email.pfx` in the project. git ignores that folder, and the file never goes into an image. The certificate is valid for 10 years;

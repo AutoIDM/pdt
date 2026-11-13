@@ -261,10 +261,11 @@ def email_configure() -> tuple[dict, dict[str, str]] | None:
         return None
     values: dict[str, str] = {}
     if method == "microsoft-365":
-        found = email_setup.microsoft_365(config.find_project())
+        found = email_setup.microsoft_365(config.find_project(), sender)
         if found is None:
             return None
-        values = {name: value for name, value in found.items()
+        sender, env = found
+        values = {name: value for name, value in env.items()
                   if alert_message.secret_value(name) != value}
     for name, question, hidden in EMAIL_METHODS[method][1]:
         saved = alert_message.secret_value(name)
@@ -294,7 +295,7 @@ SETUPS = {
                    (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
                     lifecycle.JOB_RUN_FAILED),
                    email_configure, email_setup.send_test,
-                   lambda entry: f"email to {email_alert.label(entry)}"),
+                   lambda entry: f"email address {email_alert.label(entry)}"),
     "console": Setup("Console: a line in the output of pdt and of each run", lifecycle.EVENTS,
                      lambda: ({}, {}), None, lambda entry: "console"),
 }
