@@ -842,6 +842,11 @@ def keys() -> Iterator[Callable[[], str]]:
 def _menu_line(marker: str, label: str, detail: str = "") -> Text:
     line = Text()
     line.append(marker, style="bold cyan")
+    if detail != "":
+        # The detail tells two lines apart, so the label gives up its room first.
+        room = _console.width - 1 - len(marker) - len(detail) - 2
+        if len(label) > room:
+            label = label[:max(room - 1, 0)] + "…" if room > 0 else ""
     line.append(label)
     if detail != "":
         line.append(f"  {detail}", style="bold")

@@ -657,6 +657,14 @@ def test_each_line_of_a_menu_fits_a_narrow_terminal(press, monkeypatch):
     assert "  ↑ ↓ move, Space turns on o…" in lines and "  1 more above" in lines
 
 
+def test_a_narrow_menu_shortens_the_label_and_keeps_the_detail(press, monkeypatch):
+    out = terminal_console(monkeypatch, width=24, height=10)
+    press("enter")
+    console.choose_one(["United States".ljust(20)] * 2, details=["westus2", "westus3"])
+    lines = re.sub(r"\x1b\[[0-9?]*[A-Za-z]", "", out.getvalue()).splitlines()
+    assert "> United Stat…  westus2" in lines and "  United Stat…  westus3" in lines
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Windows has no terminal mode to restore")
 def test_keys_gives_the_terminal_back_in_the_mode_it_had(monkeypatch):
     import pty
