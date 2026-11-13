@@ -560,8 +560,7 @@ def _answer(prompt: Text, password: bool = False) -> str:
         prompt = Text("\n").join(_wrap(prompt, 0, _console.width - 1))
         prompt.append(" ")
     try:
-        if (sys.platform != "win32" and _console.is_terminal and sys.stdin is not None
-                and sys.stdin.isatty()):
+        if sys.platform != "win32" and _at_terminal():
             _console.print(prompt, end="")
             return _typed(password)
         answer = _console.input(prompt, password=password)
@@ -609,12 +608,18 @@ def confirm(question: str = "Proceed?", default: bool = False, choices: str = ""
         _print("Please answer y or n.")
 
 
+def _at_terminal() -> bool:
+    """True when the input and the output are a terminal. rich also reports a terminal for
+    output in a pipe when FORCE_COLOR or TTY_COMPATIBLE is set, so ask the file too."""
+    return (sys.stdin is not None and sys.stdin.isatty() and _console.is_terminal
+            and _console.file.isatty())
+
+
 def can_menu() -> bool:
     """True when a question can show a menu the user moves through with the arrow keys:
     the input is a terminal, and the output is a terminal that can move its cursor.
     Otherwise the question prints numbered lines and reads a typed answer."""
-    return (sys.stdin is not None and sys.stdin.isatty() and _console.is_terminal
-            and not _console.is_dumb_terminal)
+    return _at_terminal() and not _console.is_dumb_terminal
 
 
 POSIX_KEYS = {b"\r": "enter", b"\n": "enter", b" ": "space", b"\x1b[A": "up", b"\x1bOA": "up",
@@ -624,21 +629,67 @@ WINDOWS_KEYS = {"\r": "enter", " ": "space", "\x00H": "up", "\xe0H": "up", "\x00
                 "\xe0P": "down", "\x08": "backspace", "\x1a": "eof"}
 
 
+# The bytes that _posix_key read after the end of one key. They start the next key.
+_unread = b""
+
+
+def _next_byte(fd: int, wait: bool) -> bytes:
+    """The next byte of the input, or b"" at its end. With `wait` false it is also b""
+    when no byte comes at once, as after the Esc key, which sends Esc alone."""
+    global _unread
+    if _unread:
+        byte, _unread = _unread[:1], _unread[1:]
+        return byte
+    if not wait:
+        import select
+        if not select.select([fd], [], [], 0.05)[0]:
+            return b""
+    return os.read(fd, 1)
+
+
+def _escape_sequence(fd: int) -> bytes:
+    """The bytes of one key that starts with Esc. Esc and `[` start a sequence of bytes
+    0x30-0x3f, then bytes 0x20-0x2f, then one last byte 0x40-0x7e. Esc and `O` have one more
+    byte. Esc and another byte is that key with Alt. A byte that cannot go on a sequence
+    ends it and starts the next key."""
+    global _unread
+    key = b"\x1b" + _next_byte(fd, False)
+    if key == b"\x1bO":
+        return key + _next_byte(fd, False)
+    if key != b"\x1b[":
+        return key
+    byte = _next_byte(fd, False)
+    for low, high in ((0x30, 0x3f), (0x20, 0x2f)):
+        while byte and low <= byte[0] <= high:
+            key += byte
+            byte = _next_byte(fd, False)
+    if key == b"\x1b[" and byte == b"[":
+        # A function key of the Linux console: Esc, `[`, `[`, and one letter.
+        return key + byte + _next_byte(fd, False)
+    if byte and 0x40 <= byte[0] <= 0x7e:
+        return key + byte
+    _unread = byte + _unread
+    return key
+
+
 def _posix_key(fd: int) -> str:
-    import select
-    key = os.read(fd, 1)
+    global _unread
+    key = _next_byte(fd, True)
     if key == b"":
         raise EOFError
     if key == b"\x1b":
-        # A key such as an arrow sends Esc and more bytes at once, and a letter or `~` ends
-        # them; the Esc key sends Esc alone.
-        while select.select([fd], [], [], 0.05)[0]:
-            key += os.read(fd, 1)
-            if key[-1] >= 0x40 and (len(key) > 2 or key[1:] not in (b"[", b"O")):
-                break
+        key = _escape_sequence(fd)
+        if key == b"\x1b\x1b":
+            # Alt with a key that sends its own sequence, such as Alt+Up in iTerm2.
+            _escape_sequence(fd)
     elif key[0] >= 0xc0:
         # The first byte of a UTF-8 character tells how many bytes follow it.
-        key += os.read(fd, 1 if key[0] < 0xe0 else 2 if key[0] < 0xf0 else 3)
+        for _ in range(1 if key[0] < 0xe0 else 2 if key[0] < 0xf0 else 3):
+            byte = _next_byte(fd, True)
+            if not (byte and 0x80 <= byte[0] <= 0xbf):
+                _unread = byte + _unread
+                return ""
+            key += byte
     if key in POSIX_KEYS:
         return POSIX_KEYS[key]
     if key[0] < 0x20:
@@ -650,9 +701,13 @@ def _windows_key() -> str:
     import msvcrt
     key = msvcrt.getwch()
     # An arrow key gives a prefix and a code at once. The letter `à` is the same as one
-    # prefix, with no code after it.
+    # prefix, and the character after it is then the next key.
     if key in ("\x00", "\xe0") and msvcrt.kbhit():
-        key += msvcrt.getwch()
+        code = msvcrt.getwch()
+        if key + code in WINDOWS_KEYS:
+            key += code
+        else:
+            msvcrt.ungetwch(code)
     if key == "\x03":
         raise KeyboardInterrupt
     if key in WINDOWS_KEYS:
@@ -661,25 +716,43 @@ def _windows_key() -> str:
 
 
 @contextmanager
-def keys() -> Iterator[Callable[[], str]]:
+def keys(resumed: Callable[[], None] | None = None) -> Iterator[Callable[[], str]]:
     """A function that waits for one key and returns its name: `up`, `down`, `space`,
     `enter`, `backspace`, `clear` (Ctrl+U), `word` (Ctrl+W), or `eof` (Ctrl+D, or Ctrl+Z on
-    Windows). Another
-    key gives its one character, or "" when it has none. The function raises EOFError when
-    the input ends, and Ctrl+C raises KeyboardInterrupt. A test replaces `keys` to give the
-    keys."""
+    Windows). Another key gives its one character, or "" when it has none. The function
+    raises EOFError when the input ends, and Ctrl+C raises KeyboardInterrupt.
+
+    On macOS and Linux, Ctrl+Z gives the shell the terminal as pdt found it, with the cursor
+    shown, and `fg` calls `resumed`."""
     if sys.platform == "win32":
         yield _windows_key
         return
+    import signal
     import termios
     import tty
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
+
+    def stop(signum, frame):
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        _console.show_cursor(True)
+        signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGTSTP)
+        # The process stops at the line above, and goes on from here after `fg`.
+        signal.signal(signal.SIGTSTP, stop)
+        tty.setcbreak(fd, termios.TCSANOW)
+        if resumed is not None:
+            resumed()
+
+    main = threading.current_thread() is threading.main_thread()
+    before = signal.signal(signal.SIGTSTP, stop) if main else None
     tty.setcbreak(fd, termios.TCSANOW)
     try:
         yield partial(_posix_key, fd)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        if main:
+            signal.signal(signal.SIGTSTP, before)
 
 
 def _menu_line(marker: str, label: str, detail: str = "") -> Text:
@@ -703,26 +776,41 @@ def _menu(labels: list[str], details: list[str], on: set[int] | None, at: int) -
         arrows = "Up and Down"
     room = max(3, _console.height - 4)
     top = drawn = 0
+
+    def draw() -> None:
+        nonlocal top, drawn
+        top = min(max(top, at - room + 1), at)
+        shown = range(top, min(top + room, len(labels)))
+        lines = []
+        if on is not None:
+            lines.append(Text(f"  {arrows} move, Space turns on or off, Enter goes on",
+                              style="dim"))
+        if top > 0:
+            lines.append(Text(f"  {top} more above", style="dim"))
+        for index in shown:
+            box = "" if on is None else "[x] " if index in on else "[ ] "
+            lines.append(_menu_line("> " if index == at else "  ", box + labels[index],
+                                    details[index]))
+        if shown.stop < len(labels):
+            lines.append(Text(f"  {len(labels) - shown.stop} more below", style="dim"))
+        for line in lines:
+            # A line that wraps takes two rows, and redraw counts one row for each line.
+            line.truncate(_console.width - 1, overflow="ellipsis")
+        _console.redraw(drawn, lines)
+        drawn = len(lines)
+
+    def draw_below() -> None:
+        """After `fg`, the shell's lines are under the menu, so draw a new menu under them."""
+        nonlocal drawn
+        drawn = 0
+        _console.show_cursor(False)
+        draw()
+
     _console.show_cursor(False)
     try:
-        with keys() as key:
+        with keys(draw_below) as key:
             while True:
-                top = min(max(top, at - room + 1), at)
-                shown = range(top, min(top + room, len(labels)))
-                lines = []
-                if on is not None:
-                    lines.append(Text(f"  {arrows} move, Space turns on or off, Enter goes on",
-                                      style="dim"))
-                if top > 0:
-                    lines.append(Text(f"  {top} more above", style="dim"))
-                for index in shown:
-                    box = "" if on is None else "[x] " if index in on else "[ ] "
-                    lines.append(_menu_line("> " if index == at else "  ", box + labels[index],
-                                            details[index]))
-                if shown.stop < len(labels):
-                    lines.append(Text(f"  {len(labels) - shown.stop} more below", style="dim"))
-                _console.redraw(drawn, lines)
-                drawn = len(lines)
+                draw()
                 pressed = key()
                 if pressed == "up":
                     at = max(0, at - 1)

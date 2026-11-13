@@ -5,6 +5,8 @@ import re
 import subprocess
 import sys
 import threading
+import time
+import types
 from pathlib import Path
 
 import pytest
@@ -471,6 +473,127 @@ def test_the_bytes_of_a_key_give_its_name_or_its_character(sent, key):
     with pytest.raises(EOFError):
         console._posix_key(read)
     os.close(read)
+
+
+def keys_of(sent, chunks=None):
+    """The keys that `_posix_key` reads from a pipe that holds `sent` and then ends. With
+    `chunks`, each of them arrives in its own read."""
+    read, write = os.pipe()
+    found = []
+
+    def arrive():
+        for chunk in chunks or [sent]:
+            os.write(write, chunk)
+            time.sleep(0.01)
+        os.close(write)
+
+    thread = threading.Thread(target=arrive)
+    thread.start()
+    try:
+        while True:
+            found.append(console._posix_key(read))
+    except EOFError:
+        thread.join()
+        os.close(read)
+        return found
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with msvcrt")
+@pytest.mark.parametrize("sent,found", [
+    # The input ends inside a sequence.
+    (b"\x1b", [""]), (b"\x1b[", [""]), (b"\x1b[1;", [""]), (b"\x1bO", [""]), (b"\xe2\x82", [""]),
+    # Esc, `[`, parameter bytes, intermediate bytes, one last byte.
+    (b"\x1b[1;5Cx", ["", "x"]), (b"\x1b[0 qx", ["", "x"]), (b"\x1b[Zx", ["", "x"]),
+    # A byte that cannot go on the sequence is the next key.
+    (b"\x1b[1\r", ["", "enter"]), (b"\x1b[1\x1b[A", ["", "up"]),
+    # Esc, `O`, and one byte.
+    (b"\x1bOPx", ["", "x"]),
+    # Alt with a character, and Alt with an arrow key in iTerm2.
+    (b"\x1b1\r", ["", "enter"]), (b"\x1b\x1b[Ax", ["", "x"]), (b"\x1b\x1bOAx", ["", "x"]),
+    # F1 of the Linux console.
+    (b"\x1b[[Ax", ["", "x"]),
+    # A first byte with no character does not take the bytes after it.
+    (b"\xe2x", ["", "x"]), (b"\xe2\x82x", ["", "x"]), (b"\x80x", ["", "x"]),(b"\xffab", ["", "a", "b"]),
+])
+def test_a_key_ends_where_its_form_ends(sent, found):
+    assert keys_of(sent) == found
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with msvcrt")
+def test_a_character_whose_bytes_arrive_in_separate_reads_is_one_key():
+    euro = "€".encode()
+    assert keys_of(b"", [euro[:1], euro[1:2], euro[2:], b"x"]) == ["€", "x"]
+
+
+def test_a_windows_arrow_key_is_one_key_and_a_letter_keeps_the_key_after_it(monkeypatch):
+    waiting = list("\xe0H" "\xe0x" "\x00P" "\x00K" "a\r")
+    fake = types.SimpleNamespace(getwch=lambda: waiting.pop(0), kbhit=lambda: bool(waiting),
+                                 ungetwch=lambda char: waiting.insert(0, char))
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    found = []
+    while waiting:
+        found.append(console._windows_key())
+    assert found == ["up", "à", "x", "down", "", "K", "a", "enter"]
+
+
+def terminal_console(monkeypatch, **options):
+    out = io.StringIO()
+    out.isatty = lambda: True
+    monkeypatch.setattr(console, "_console", console.MainThreadConsole(
+        file=out, highlight=False, soft_wrap=True, force_terminal=True, color_system=None,
+        **options))
+    return out
+
+
+def test_a_menu_moves_up_over_its_lines_and_erases_each_one(press, monkeypatch):
+    out = terminal_console(monkeypatch, width=40, height=20)
+    press("down", "enter")
+    assert console.choose_one(["a", "b"]) == 1
+    up, erase = "\x1b[1A", "\x1b[2K"
+    assert out.getvalue() == (
+        "\x1b[?25l" + f"{erase}> a\n{erase}  b\n"
+        + up * 2 + f"{erase}  a\n{erase}> b\n"
+        + up * 2 + f"{erase}> b\n{erase}\n" + up
+        + "\x1b[?25h")
+
+
+def test_each_line_of_a_menu_fits_a_narrow_terminal(press, monkeypatch):
+    out = terminal_console(monkeypatch, width=30, height=6)
+    press("down", "down", "down", "enter")
+    console.choose_many([f"A long label of box {number}" for number in range(9)], [False] * 9)
+    lines = re.sub(r"\x1b\[[0-9?]*[A-Za-z]", "", out.getvalue()).splitlines()
+    assert max(len(line) for line in lines) <= 29
+    assert "  ↑ ↓ move, Space turns on o…" in lines and "  1 more above" in lines
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no terminal mode to restore")
+def test_keys_gives_the_terminal_back_in_the_mode_it_had(monkeypatch):
+    import pty
+    import termios
+    master, slave = pty.openpty()
+    monkeypatch.setattr(sys, "stdin", open(slave, closefd=False))
+    before = termios.tcgetattr(slave)
+    with pytest.raises(RuntimeError):
+        with console.keys():
+            assert not termios.tcgetattr(slave)[3] & termios.ICANON
+            raise RuntimeError
+    after = termios.tcgetattr(slave)
+    # The kernel sets PENDIN by itself when a terminal goes back to line mode.
+    after[3] &= ~termios.PENDIN
+    assert after == before
+    os.close(master)
+    os.close(slave)
+
+
+@pytest.mark.parametrize("stdin,stdout,menu", [(True, True, True), (True, False, False),
+                                               (False, True, False)])
+def test_a_menu_needs_a_real_terminal_for_the_input_and_the_output(monkeypatch, stdin, stdout, menu):
+    # rich reports a terminal for output in a pipe when FORCE_COLOR is set.
+    out = terminal_console(monkeypatch)
+    out.isatty = lambda: stdout
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: stdin))
+    assert console.can_menu() is menu
+    assert console._at_terminal() is menu
 
 
 @pytest.mark.parametrize("password,shown", [(False, "us-a\b \bwest 1\b \b\b \b1\n"), (True, "\n")])

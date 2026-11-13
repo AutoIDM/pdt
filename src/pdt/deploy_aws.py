@@ -419,7 +419,8 @@ def ask(prompt: str) -> str:
 
 
 def choose(labels: list[str], default: int = 0, details: list[str] | None = None) -> str:
-    """The number of the label the user chooses in a menu, as the text a typed answer has."""
+    """The number of the label the user chooses in a menu, as the text a typed answer has,
+    or "" at the end of input."""
     try:
         return str(console.choose_one(labels, default, details) + 1)
     except EOFError:
