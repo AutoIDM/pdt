@@ -117,7 +117,7 @@ alert.emit("compliance:changed", title="Compliance changed",
 
 `alert.emit` sends one event with the name you choose. Every entry under `alerts:` whose `events` match that name gets it. Add the name to the `events` of the email entry to get it by email.
 
-- `title` is the subject of the email, and the title of the Slack or Teams message.
+- `title` is the subject of the email. Slack, Teams, and the console show it after the name of the app, as `<app>: <title>`.
 - `text` is the plain body of the email, and the text of the Slack or Teams message.
 - `html` is the HTML body of the email. Slack and Teams do not show it.
 - `url` is the "Open" button in Slack and Teams.
@@ -127,7 +127,7 @@ All four are optional. An event with no `text` and no `html` gets an email body 
 
 The app does not wait for the email. pdt waits for the delivery when the app ends. A delivery that fails prints a warning and the alert line in the run's output, and does not change the result of the run.
 
-When no entry lists the event name, the run's output shows one line, `[alert] Compliance changed`, and nothing is sent.
+When no entry lists the event name, the run's output shows one line, `[alert] my-app: Compliance changed` for the app `my-app`, and nothing is sent.
 
 ## send_email
 

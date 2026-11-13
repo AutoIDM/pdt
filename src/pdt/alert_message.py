@@ -6,7 +6,8 @@ Message into Block Kit, pdt.teams turns it into an Adaptive Card, and
 pdt.email_alert turns it into an email. The note,
 text, footer, and field values use one markup, `*bold*` and `code`, which Slack
 shows as written and Teams converts. An event can carry four content parameters
-(`CONTENT`): `title` replaces the title, `text` is the body text, `url` is the
+(`CONTENT`): `title` replaces the words of the event in the title, after the app
+name (`<app>: <title>`), `text` is the body text, `url` is the
 "Open" link, and `html` is a body that only the email type sends. None of them,
 and not the `to` of pdt.email_alert, becomes a field. `event_sentence` is the one line the
 console type prints for an event. A Tone (`OUTCOMES`, `OTHER`, `UNHANDLED`,
@@ -109,7 +110,7 @@ def event_message(event, unhandled: bool = False) -> Message:
     words = event_words(event.name)
     title = f"{words}: {params['app']}" if "app" in params else words
     if params.get("title"):
-        title = str(params["title"])
+        title = f"{params['app']}: {params['title']}" if "app" in params else str(params["title"])
     text = str(params.get("text") or "")
     if len(text) > MAX_TEXT:
         text = text[:MAX_TEXT] + "..."

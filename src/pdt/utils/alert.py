@@ -5,8 +5,9 @@
 
 `emit` gives one event to every entry of the app's `alerts:` list that receives
 its name (see pdt.lifecycle). `title`, `text`, `html`, and `url` are the content
-of the alert: Slack and Teams show the title, the text, and an "Open" button for
-the url; the email type sends the title as the subject, the text as the plain
+of the alert: Slack, Teams, and the console show the title after the app name
+(`<app>: <title>`), and Slack and Teams also show the text and an "Open" button for
+the url; the email type sends the title alone as the subject, the text as the plain
 body, and the html as the HTML body. Every other keyword is a labelled field.
 The event also carries the project, app, provider, and run_id of this run.
 

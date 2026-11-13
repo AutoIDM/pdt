@@ -84,10 +84,16 @@ def test_slack_and_teams_show_title_text_and_url_and_never_html_or_a_content_fie
         "html": "<p>secret page</p>", "url": "https://example.com/report", "devices": 3})
     message = alert_message.event_message(event)
     assert (message.title, message.text, message.url) == (
-        "Compliance changed", "3 devices changed.", "https://example.com/report")
+        "compliance: Compliance changed", "3 devices changed.", "https://example.com/report")
     assert message.fields == (("App", "compliance"), ("Devices", "3"))
     assert "secret page" not in str(slack.message(event)) + str(teams.message(event))
-    assert alert_message.event_sentence(event) == "Compliance changed"
+    assert alert_message.event_sentence(event) == "compliance: Compliance changed"
+    assert slack.message(event)["attachments"][0]["blocks"][0]["text"]["text"] == (
+        ":large_blue_circle: compliance: Compliance changed")
+    assert teams.message(event)["attachments"][0]["content"]["body"][0]["items"][0]["text"] == (
+        "\U0001F535 compliance: Compliance changed")
+    no_app = lifecycle.Event("compliance:changed", AT, {"title": "Compliance changed"})
+    assert alert_message.event_sentence(no_app) == "Compliance changed"
 
 
 def test_send_email_is_deprecated_and_sends_the_event_to_its_own_recipients(project, smtp,
@@ -115,7 +121,7 @@ def test_send_email_with_no_email_entry_prints_the_alert_line_and_sends_nothing(
         assert send_email.send_email("a@example.com", ["b@example.com"], "Report", "body") == "stdout"
     lifecycle.flush()
     assert smtp == []
-    assert capsys.readouterr().out == "[alert] Report\n"
+    assert capsys.readouterr().out == "[alert] report: Report\n"
 
 
 def test_a_send_failure_is_a_warning_and_the_console_line_and_not_an_exit(project, smtp,
