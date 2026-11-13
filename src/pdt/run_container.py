@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -18,6 +19,9 @@ from typing import Callable
 from pdt import config, console
 from pdt.deploy_common import docker_problem, stage_build_context, write_dockerfile
 from pdt.profiles import web
+
+# How long a stopped server may take to exit before pdt kills it.
+STOP_WAIT = 10
 
 
 def read_root() -> Path:
@@ -66,6 +70,12 @@ def serve(name: str, process: subprocess.Popen) -> int:
     try:
         return process.wait()
     except KeyboardInterrupt:
-        process.wait()
+        # A Ctrl+C at a terminal reaches the server too; a SIGINT sent to pdt alone does not.
+        process.send_signal(signal.SIGINT)
+        try:
+            process.wait(STOP_WAIT)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
         console.done(f"Stopped {console.value(name)}.")
         return 0
