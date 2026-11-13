@@ -16,8 +16,7 @@ the entry's `to` for that event. Microsoft Graph takes one body, so
 `microsoft-365` sends the HTML body when the event has one.
 
 This module is in deploy_common.LIFECYCLE_MODULES, so it imports only what
-lifecycle.py's script header installs. boto3 is not in that header, so the
-`ses` method sends only where boto3 is installed, such as an app's own run.
+lifecycle.py's script header installs.
 The file is not named email.py, because lifecycle.py runs as a script from this
 folder, where that name would hide the standard library's `email` package.
 """
@@ -47,7 +46,6 @@ METHODS = {
     "microsoft-365": (("PDT_EMAIL_TENANT_ID", "PDT_EMAIL_CLIENT_ID",
                        "PDT_EMAIL_PRIVATE_KEY_PATH"), ("PDT_EMAIL_PRIVATE_KEY_B64",)),
     "smtp": (("PDT_SMTP_HOST", "PDT_SMTP_USER", "PDT_SMTP_PASSWORD"), ("PDT_SMTP_PORT",)),
-    "ses": (("PDT_SES_REGION",), ("PDT_SES_ACCESS_KEY_ID", "PDT_SES_SECRET_ACCESS_KEY")),
     "resend": (("PDT_RESEND_API_KEY",), ()),
 }
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
@@ -153,29 +151,6 @@ def send_smtp(values: dict, sender: str, to: list[str], subject: str, text: str,
         raise RuntimeError(f"the SMTP server {host} did not take the email: {e}") from None
 
 
-def send_ses(values: dict, sender: str, to: list[str], subject: str, text: str,
-             html: str) -> None:
-    try:
-        import boto3
-        from botocore.exceptions import BotoCoreError, ClientError
-    except ImportError:
-        raise RuntimeError("the ses method needs the boto3 package, and it is not installed "
-                           "where this event was sent from") from None
-    client_args = {"region_name": values["PDT_SES_REGION"]}
-    if values["PDT_SES_ACCESS_KEY_ID"] != "":
-        client_args.update(aws_access_key_id=values["PDT_SES_ACCESS_KEY_ID"],
-                           aws_secret_access_key=values["PDT_SES_SECRET_ACCESS_KEY"])
-    body = {"Text": {"Data": text}}
-    if html != "":
-        body["Html"] = {"Data": html}
-    try:
-        boto3.client("ses", **client_args).send_email(
-            Source=sender, Destination={"ToAddresses": to},
-            Message={"Subject": {"Data": subject}, "Body": body})
-    except (BotoCoreError, ClientError) as e:
-        raise RuntimeError(f"Amazon SES did not take the email: {e}") from None
-
-
 def send_resend(values: dict, sender: str, to: list[str], subject: str, text: str,
                 html: str) -> None:
     fields = {"from": sender, "to": to, "subject": subject, "text": text}
@@ -254,8 +229,7 @@ def send_microsoft_365(values: dict, sender: str, to: list[str], subject: str, t
         "Microsoft Graph", {"Authorization": f"Bearer {graph_token(values)}"})
 
 
-SENDERS = {"microsoft-365": send_microsoft_365, "smtp": send_smtp, "ses": send_ses,
-           "resend": send_resend}
+SENDERS = {"microsoft-365": send_microsoft_365, "smtp": send_smtp, "resend": send_resend}
 
 
 def send(entry: dict, to: list[str], subject: str, text: str, html: str = "") -> None:

@@ -137,6 +137,8 @@ def test_a_send_failure_is_a_warning_and_the_console_line_and_not_an_exit(projec
 
 @pytest.mark.parametrize(("keys", "error"), [
     ("from: a@example.com\n    to: [b@example.com]", "needs method, one of: microsoft-365, smtp"),
+    ("method: ses\n    from: a@example.com\n    to: [b@example.com]",
+     "needs method, one of: microsoft-365, smtp, resend"),
     ("method: smtp\n    to: [b@example.com]", "needs from"),
     ("method: smtp\n    from: a@example.com\n    to: b@example.com", "needs to, a list"),
 ])
@@ -151,7 +153,6 @@ def test_an_email_entry_needs_a_known_method_a_from_and_a_to_list(keys, error):
 
 @pytest.mark.parametrize(("method", "required", "optional"), [
     ("smtp", ["PDT_SMTP_HOST", "PDT_SMTP_USER", "PDT_SMTP_PASSWORD"], ["PDT_SMTP_PORT"]),
-    ("ses", ["PDT_SES_REGION"], ["PDT_SES_ACCESS_KEY_ID", "PDT_SES_SECRET_ACCESS_KEY"]),
     ("resend", ["PDT_RESEND_API_KEY"], []),
     ("microsoft-365", ["PDT_EMAIL_TENANT_ID", "PDT_EMAIL_CLIENT_ID", "PDT_EMAIL_PRIVATE_KEY_PATH"],
      ["PDT_EMAIL_PRIVATE_KEY_B64"]),
@@ -230,8 +231,8 @@ def test_in_a_menu_setup_takes_the_email_method_the_marker_is_on(project, smtp, 
     for name in SMTP_ENV:
         monkeypatch.delenv(name)
     monkeypatch.delenv("PDT_RESEND_API_KEY", raising=False)
-    # Slack off and Email on, the default events, then the fourth method.
-    keys = press("space", "down", "down", "space", "enter", "enter", "down", "down", "down", "enter")
+    # Slack off and Email on, the default events, then the third method.
+    keys = press("space", "down", "down", "space", "enter", "enter", "down", "down", "enter")
     queue = ["it-ops@example.com", "pdt-alerts@example.com", "key", "n"]
     monkeypatch.setattr(alerts_cli.console, "ask", lambda *_a, **_k: queue.pop(0))
     monkeypatch.setattr(alerts_cli.console, "secret", lambda *_a, **_k: queue.pop(0))

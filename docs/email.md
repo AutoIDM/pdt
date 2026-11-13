@@ -8,7 +8,7 @@ Email is one of the places pdt sends alerts, next to Slack and Microsoft Teams. 
 pdt alerts setup
 ```
 
-Choose Email. pdt asks who gets the email, how to send it (Microsoft 365, an SMTP server, Amazon SES, or Resend), and which address it comes from. For Microsoft 365 you sign in one time as an administrator and pdt does the rest. For the other methods pdt asks for the values of the method. It writes the values to the `.env` file of the project and the entry to `pdt.yml`, then offers a test message.
+Choose Email. pdt asks who gets the email, how to send it (Microsoft 365, an SMTP server, or Resend), and which address it comes from. For Microsoft 365 you sign in one time as an administrator and pdt does the rest. For the other methods pdt asks for the values of the method. It writes the values to the `.env` file of the project and the entry to `pdt.yml`, then offers a test message.
 
 ```
 pdt alerts test
@@ -27,7 +27,7 @@ alerts:
     events: [job:run-failed, compliance:changed]
 ```
 
-- `method` is how pdt sends the email: `smtp`, `ses`, `resend`, or `microsoft-365`.
+- `method` is how pdt sends the email: `microsoft-365`, `smtp`, or `resend`.
 - `from` is the address the email comes from.
 - `to` is the list of addresses that get it.
 - `events` names the events that send an email. `all` is every event, and a name may hold a `*`, such as `job:*`. `exclude-events` takes events out again.
@@ -94,12 +94,7 @@ Microsoft Graph takes one body, so an email with an HTML body goes out as HTML o
 
 pdt signs in with the user name and the password.
 
-### ses
-
-- `PDT_SES_REGION`
-- `PDT_SES_ACCESS_KEY_ID` and `PDT_SES_SECRET_ACCESS_KEY` (optional): leave both empty to use the standard AWS credential chain, for example `AWS_PROFILE` or the role of the job.
-
-This method needs the `boto3` package. An app's `run.py` has it through `pdt-cli[apps]`, so an alert that the app emits is sent. The pdt command and the events of a deployed job that pdt emits itself (`job:run-failed` and the others) run without `boto3`, so pdt prints those on the console with a warning.
+For Amazon SES, use this method. In the Amazon SES console, choose SMTP settings, then Create SMTP Credentials. AWS shows an SMTP user name and an SMTP password one time; they are `PDT_SMTP_USER` and `PDT_SMTP_PASSWORD`. The SMTP password is different from an AWS secret access key, and the credentials work in one AWS Region only. `PDT_SMTP_HOST` is the SMTP endpoint of that Region; the [list of SES endpoints](https://docs.aws.amazon.com/general/latest/gr/ses.html) has each one. The endpoint takes port 587 with STARTTLS and port 465 with implicit TLS. See [AWS: obtaining Amazon SES SMTP credentials](https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html) and [AWS: connecting to an Amazon SES SMTP endpoint](https://docs.aws.amazon.com/ses/latest/dg/smtp-connect.html).
 
 ### resend
 

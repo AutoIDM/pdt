@@ -233,11 +233,6 @@ EMAIL_METHODS = {
         ("PDT_SMTP_PORT", "Port, or press Enter for 587", False),
         ("PDT_SMTP_USER", "User name", False),
         ("PDT_SMTP_PASSWORD", "Password", True))),
-    "ses": ("Amazon SES", (
-        ("PDT_SES_REGION", "AWS region of Amazon SES, for example us-east-1", False),
-        ("PDT_SES_ACCESS_KEY_ID", "Access key ID, or press Enter to use the AWS sign-in of "
-                                  "the computer that sends", False),
-        ("PDT_SES_SECRET_ACCESS_KEY", "Secret access key, or press Enter for none", True))),
     "resend": ("Resend", (("PDT_RESEND_API_KEY", "Resend API key", True),)),
 }
 
