@@ -1344,6 +1344,7 @@ source = { editable = "." }
 dependencies = [
     { name = "argcomplete" },
     { name = "backoff" },
+    { name = "certifi" },
     { name = "cryptography" },
     { name = "pyjwt" },
     { name = "python-dotenv" },
@@ -1391,6 +1392,7 @@ requires-dist = [
     { name = "backoff" },
     { name = "boto3", marker = "extra == 'apps'" },
     { name = "boto3", extras = ["crt"], marker = "(platform_machine != 'ARM64' and extra == 'apps') or (sys_platform != 'win32' and extra == 'apps')" },
+    { name = "certifi" },
     { name = "cryptography" },
     { name = "cryptography", marker = "extra == 'apps'" },
     { name = "fsspec", marker = "extra == 'apps'" },

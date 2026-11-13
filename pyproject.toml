@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv",
     "cryptography",
     "pyjwt",
+    "certifi",
     "backoff",
     "rich-argparse>=1.8.0",
     "argcomplete",
