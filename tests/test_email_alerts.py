@@ -136,9 +136,10 @@ def test_a_send_failure_is_a_warning_and_the_console_line_and_not_an_exit(projec
 
 
 @pytest.mark.parametrize(("keys", "error"), [
-    ("from: a@example.com\n    to: [b@example.com]", "needs method, one of: microsoft-365, smtp"),
+    ("from: a@example.com\n    to: [b@example.com]",
+     "needs method, one of: azure-communication-services, microsoft-365"),
     ("method: ses\n    from: a@example.com\n    to: [b@example.com]",
-     "needs method, one of: microsoft-365, smtp, resend"),
+     "needs method, one of: azure-communication-services, microsoft-365, smtp, resend"),
     ("method: smtp\n    to: [b@example.com]", "needs from"),
     ("method: smtp\n    from: a@example.com\n    to: b@example.com", "needs to, a list"),
 ])
@@ -152,6 +153,7 @@ def test_an_email_entry_needs_a_known_method_a_from_and_a_to_list(keys, error):
 
 
 @pytest.mark.parametrize(("method", "required", "optional"), [
+    ("azure-communication-services", ["PDT_ACS_CONNECTION_STRING"], []),
     ("smtp", ["PDT_SMTP_HOST", "PDT_SMTP_USER", "PDT_SMTP_PASSWORD"], ["PDT_SMTP_PORT"]),
     ("resend", ["PDT_RESEND_API_KEY"], []),
     ("microsoft-365", ["PDT_EMAIL_TENANT_ID", "PDT_EMAIL_CLIENT_ID", "PDT_EMAIL_PRIVATE_KEY_PATH"],
@@ -209,6 +211,61 @@ def test_a_send_from_an_address_that_is_no_mailbox_says_so_before_the_answer(mon
         email_alert.send(entry, entry["to"], "Subject", "text")
     assert str(raised.value) == ("pdt-alerts@example.com is not a mailbox in the Microsoft 365 "
                                  f"organization of the app registration. {answer}")
+
+
+ACS_CONNECTION = ("endpoint=https://contoso.communication.azure.com/;"
+                  "accesskey=cGR0LXRlc3Qta2V5LTAxMjM0NTY3ODk=")
+
+
+def test_the_acs_signature_matches_a_vector_computed_with_openssl():
+    # Computed apart from pdt with openssl, by the steps of
+    # https://learn.microsoft.com/en-us/azure/communication-services/tutorials/hmac-header-tutorial
+    headers = email_alert.acs_headers(
+        "https://contoso.communication.azure.com/emails:send?api-version=2023-03-31",
+        b'{"senderAddress": "DoNotReply@example.com"}', "cGR0LXRlc3Qta2V5LTAxMjM0NTY3ODk=",
+        "Fri, 13 Nov 2026 10:00:00 GMT")
+    assert headers == {
+        "x-ms-date": "Fri, 13 Nov 2026 10:00:00 GMT",
+        "x-ms-content-sha256": "btDrQ0Njn+p5KMGlrCZ5kKISL1/qeT+qatzY5ambmbM=",
+        "Authorization": "HMAC-SHA256 SignedHeaders=x-ms-date;host;x-ms-content-sha256"
+                         "&Signature=R2wR6DwDWrel3HfqlwXmGPCSQbBKJ2Afh6a6PoTSBCc="}
+
+
+def test_acs_posts_the_signed_email_to_the_endpoint_of_the_connection_string(monkeypatch):
+    posted = []
+    monkeypatch.setattr(alert_message, "post", lambda *args: posted.append(args))
+    monkeypatch.setenv("PDT_ACS_CONNECTION_STRING", ACS_CONNECTION)
+    entry = {"type": "email", "method": "azure-communication-services",
+             "from": "DoNotReply@example.com", "to": ["it-ops@example.com"]}
+    email_alert.send(entry, entry["to"], "Subject", "text", "<p>html</p>")
+    (url, payload, service, headers), = posted
+    assert (url, service) == ("https://contoso.communication.azure.com/emails:send"
+                              "?api-version=2023-03-31", "Azure Communication Services")
+    assert payload == {"senderAddress": "DoNotReply@example.com",
+                       "content": {"subject": "Subject", "plainText": "text",
+                                   "html": "<p>html</p>"},
+                       "recipients": {"to": [{"address": "it-ops@example.com"}]}}
+    assert headers == email_alert.acs_headers(url, email_alert.json.dumps(payload).encode(),
+                                              "cGR0LXRlc3Qta2V5LTAxMjM0NTY3ODk=",
+                                              headers["x-ms-date"])
+
+
+@pytest.mark.parametrize("sender, limit", [
+    ("DoNotReply@0f1e2d3c.azurecomm.net", "5 email messages each minute and 10 each hour for "
+                                          "0f1e2d3c.azurecomm.net"),
+    ("alerts@example.com", "30 email messages each minute and 100 each hour for example.com")])
+def test_an_acs_answer_429_names_the_limit(monkeypatch, sender, limit):
+    def post(*_args):
+        raise RuntimeError("Azure Communication Services answered HTTP 429: Too Many Requests")
+
+    monkeypatch.setattr(alert_message, "post", post)
+    monkeypatch.setenv("PDT_ACS_CONNECTION_STRING", ACS_CONNECTION)
+    entry = {"type": "email", "method": "azure-communication-services", "from": sender,
+             "to": ["it-ops@example.com"]}
+    with pytest.raises(RuntimeError) as raised:
+        email_alert.send(entry, entry["to"], "Subject", "text")
+    assert str(raised.value) == ("Azure Communication Services refused the email: the "
+                                 f"subscription reached its limit of {limit}")
 
 
 def test_an_email_entry_is_described_by_its_email_addresses():
@@ -318,8 +375,9 @@ def test_in_a_menu_setup_takes_the_email_method_the_marker_is_on(project, smtp, 
     for name in SMTP_ENV:
         monkeypatch.delenv(name)
     monkeypatch.delenv("PDT_RESEND_API_KEY", raising=False)
-    # Slack off and Email on, the default events, then the third method.
-    keys = press("space", "down", "down", "space", "enter", "enter", "down", "down", "enter")
+    # Slack off and Email on, the default events, then the fourth method.
+    keys = press("space", "down", "down", "space", "enter", "enter", "down", "down", "down",
+                 "enter")
     queue = ["it-ops@example.com", "pdt-alerts@example.com", "key", "n"]
     monkeypatch.setattr(alerts_cli.console, "ask", lambda *_a, **_k: queue.pop(0))
     monkeypatch.setattr(alerts_cli.console, "secret", lambda *_a, **_k: queue.pop(0))
@@ -335,7 +393,7 @@ def test_setup_asks_for_email_writes_pdt_yml_and_env_and_test_sends_to_each_entr
         project, smtp, monkeypatch):
     for name in SMTP_ENV:
         monkeypatch.delenv(name)
-    queue = ["3 1", "", "", "it-ops@example.com, lead@example.com", "2", "pdt-alerts@example.com",
+    queue = ["3 1", "", "", "it-ops@example.com, lead@example.com", "3", "pdt-alerts@example.com",
              "smtp.example.com", "", "pdt", "secret", "n"]
     monkeypatch.setattr(alerts_cli.console, "ask", lambda *_a, **_k: queue.pop(0))
     monkeypatch.setattr(alerts_cli.console, "secret", lambda *_a, **_k: queue.pop(0))

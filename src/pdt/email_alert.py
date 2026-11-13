@@ -14,6 +14,9 @@ and `page`), and one with only `html` gets its plain body from `plain`. A `to`
 parameter of the event (a list of addresses, or one string with commas) replaces
 the entry's `to` for that event. Microsoft Graph takes one body, so
 `microsoft-365` sends the HTML body when the event has one.
+`azure-communication-services` signs its request with the access key of
+PDT_ACS_CONNECTION_STRING (`endpoint=...;accesskey=...`) with the standard
+library alone.
 
 This module is in deploy_common.LIFECYCLE_MODULES, so it imports only what
 lifecycle.py's script header installs.
@@ -24,6 +27,8 @@ folder, where that name would hide the standard library's `email` package.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import re
 import smtplib
@@ -34,6 +39,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from email.message import EmailMessage
+from email.utils import formatdate
 from html import escape
 from pathlib import Path
 
@@ -42,6 +48,7 @@ from pdt.alert_message import Message
 
 KEYS = frozenset({"method", "from", "to"})
 METHODS = {
+    "azure-communication-services": (("PDT_ACS_CONNECTION_STRING",), ()),
     "microsoft-365": (("PDT_EMAIL_TENANT_ID", "PDT_EMAIL_CLIENT_ID",
                        "PDT_EMAIL_PRIVATE_KEY_PATH"), ("PDT_EMAIL_PRIVATE_KEY_B64",)),
     "smtp": (("PDT_SMTP_HOST", "PDT_SMTP_USER", "PDT_SMTP_PASSWORD"), ("PDT_SMTP_PORT",)),
@@ -49,6 +56,10 @@ METHODS = {
 }
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 CERT_JWT_SECONDS = 60 * 10
+ACS_API_VERSION = "2023-03-31"
+# The sending limits of a subscription, per minute and per hour: an Azure managed domain
+# (azurecomm.net), and a custom domain.
+ACS_LIMITS = {"azure": (5, 10), "custom": (30, 100)}
 
 
 def problem(entry: dict) -> str:
@@ -235,7 +246,54 @@ def send_microsoft_365(values: dict, sender: str, to: list[str], subject: str, t
                            f"app registration. {e}") from None
 
 
-SENDERS = {"microsoft-365": send_microsoft_365, "smtp": send_smtp, "resend": send_resend}
+def acs_headers(url: str, body: bytes, access_key: str, date: str) -> dict:
+    """The headers that sign a POST of `body` to `url` with the access key of a Communication
+    Service (HMAC-SHA256 of the verb, path and query, date, host, and body hash)."""
+    parts = urllib.parse.urlsplit(url)
+    content_hash = base64.b64encode(hashlib.sha256(body).digest()).decode()
+    signed = f"POST\n{parts.path}?{parts.query}\n{date};{parts.netloc};{content_hash}"
+    try:
+        key = base64.b64decode(access_key, validate=True)
+    except ValueError:
+        raise RuntimeError("the accesskey of PDT_ACS_CONNECTION_STRING is not valid base64") from None
+    signature = base64.b64encode(hmac.digest(key, signed.encode(), hashlib.sha256)).decode()
+    return {"x-ms-date": date, "x-ms-content-sha256": content_hash,
+            "Authorization": "HMAC-SHA256 SignedHeaders=x-ms-date;host;x-ms-content-sha256"
+                             f"&Signature={signature}"}
+
+
+def send_azure_communication_services(values: dict, sender: str, to: list[str], subject: str,
+                                      text: str, html: str) -> None:
+    """Hand the email to Azure Communication Services. The service answers when it accepted
+    the email, and sends it after that."""
+    parts = {}
+    for part in values["PDT_ACS_CONNECTION_STRING"].split(";"):
+        name, _, value = part.partition("=")
+        parts[name.strip().lower()] = value.strip()
+    if not parts.get("endpoint") or not parts.get("accesskey"):
+        raise RuntimeError("PDT_ACS_CONNECTION_STRING needs endpoint=...;accesskey=...")
+    url = f"{parts['endpoint'].rstrip('/')}/emails:send?api-version={ACS_API_VERSION}"
+    content = {"subject": subject, "plainText": text}
+    if html != "":
+        content["html"] = html
+    payload = {"senderAddress": sender, "content": content,
+               "recipients": {"to": [{"address": address} for address in to]}}
+    headers = acs_headers(url, json.dumps(payload).encode(), parts["accesskey"],
+                          formatdate(usegmt=True))
+    try:
+        alert_message.post(url, payload, "Azure Communication Services", headers)
+    except RuntimeError as e:
+        if "answered HTTP 429" not in str(e):
+            raise
+        domain = "azure" if sender.lower().endswith(".azurecomm.net") else "custom"
+        minute, hour = ACS_LIMITS[domain]
+        raise RuntimeError(f"Azure Communication Services refused the email: the subscription "
+                           f"reached its limit of {minute} email messages each minute and "
+                           f"{hour} each hour for {sender.rpartition('@')[2]}") from None
+
+
+SENDERS = {"azure-communication-services": send_azure_communication_services,
+           "microsoft-365": send_microsoft_365, "smtp": send_smtp, "resend": send_resend}
 
 
 def send(entry: dict, to: list[str], subject: str, text: str, html: str = "") -> None:

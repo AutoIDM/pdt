@@ -214,7 +214,7 @@ def test_a_sign_in_to_another_organization_replaces_the_saved_one_after_yes(
         project, organization, monkeypatch, capsys):
     key = other_organization_saved(project)
     asked = []
-    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1",
+    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "2",
                     "pdt-alerts@example.com", "y", "n")
     monkeypatch.setattr(alerts_cli.console, "confirm",
                         lambda question, *_a, **_k: asked.append(question) or queue.pop(0) == "y")
@@ -234,7 +234,7 @@ def test_a_sign_in_to_another_organization_changes_nothing_after_no(
         project, organization, monkeypatch, capsys):
     key = other_organization_saved(project)
     env = (project / ".env").read_text()
-    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1",
+    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "2",
                     "pdt-alerts@example.com", "")
     assert alerts_cli.setup() == 1
     assert queue == []
@@ -306,7 +306,7 @@ def answers(monkeypatch, *replies):
 
 def test_setup_with_microsoft_365_asks_for_no_value_and_a_second_setup_writes_nothing(
         project, organization, monkeypatch):
-    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1",
+    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "2",
                     "pdt-alerts@example.com", "n")
     assert alerts_cli.setup() == 0
     assert queue == []
@@ -320,7 +320,7 @@ def test_setup_with_microsoft_365_asks_for_no_value_and_a_second_setup_writes_no
     files = {path: path.stat().st_mtime_ns for path in (
         project / "pdt.yml", project / ".env", project / ".secrets" / "pdt-email.pfx")}
     organization.writes.clear()
-    queue = answers(monkeypatch, "", "", "y", "it-ops@example.com", "1",
+    queue = answers(monkeypatch, "", "", "y", "it-ops@example.com", "2",
                     "pdt-alerts@example.com", "n")
     assert alerts_cli.setup() == 0
     assert queue == [] and organization.writes == []
@@ -377,12 +377,13 @@ class AzureCli:
     def __init__(self, account=None):
         self.account = account
         self.calls = []
+        self.subscriptions = []
 
     def run(self, command, **kwargs):
         args = command[command.index("az") + 1:]
         self.calls.append((args, kwargs["env"].get("AZURE_CONFIG_DIR")))
         if args[0] == "login":
-            domain = args[args.index("--tenant") + 1]
+            domain = args[args.index("--tenant") + 1] if "--tenant" in args else "example.com"
             self.account = {"user": {"name": f"admin@{domain}"}, "tenantId": TENANT,
                             "tenantDefaultDomain": domain}
             return subprocess.CompletedProcess(command, 0, "[]", "")
@@ -390,6 +391,8 @@ class AzureCli:
             return subprocess.CompletedProcess(command, 1, "", "Please run 'az login'.")
         if args[:2] == ["account", "show"]:
             return subprocess.CompletedProcess(command, 0, json.dumps(self.account), "")
+        if args[:2] == ["account", "list"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps(self.subscriptions), "")
         return subprocess.CompletedProcess(
             command, 0, fake_token(self.account["user"]["name"], TENANT) + "\n", "")
 
@@ -451,6 +454,25 @@ def test_an_organization_with_no_domain_and_no_name_is_named_by_the_account_doma
             in capsys.readouterr().out)
 
 
+def test_the_azure_sign_in_has_no_tenant_and_a_menu_of_the_enabled_subscriptions(
+        azure_cli, monkeypatch, capsys):
+    azure_cli.subscriptions = [
+        {"id": "sub-1", "name": "Production", "tenantId": TENANT,
+         "user": {"name": "admin@example.com"}},
+        {"id": "sub-2", "name": "Sandbox", "tenantId": TENANT,
+         "user": {"name": "admin@example.com"}},
+        {"id": TENANT, "name": "N/A(tenant level account)", "tenantId": TENANT}]
+    monkeypatch.setattr(email_setup.console, "ask", lambda *_a, **_k: "2")
+    subscription, _call = email_setup.azure_sign_in()
+    assert subscription == "sub-2"
+    assert [args for args, _folder in azure_cli.calls if args[0] == "login"] == [["login"]]
+    assert {folder for _args, folder in azure_cli.calls} == {str(email_setup.AZURE_DIR)}
+    out = capsys.readouterr().out
+    assert "  1) Production (sub-1)\n  2) Sandbox (sub-2)\n" in out
+    assert "tenant level" not in out
+    assert "Signed in to Azure as admin@example.com, subscription Sandbox." in out
+
+
 @pytest.mark.parametrize("user", [
     {"userPrincipalName": "PDT-Alerts@example.com"},
     {"userPrincipalName": "shared-1@example.com", "mail": "pdt-alerts@EXAMPLE.com"},
@@ -471,7 +493,7 @@ def test_a_sender_that_is_no_mailbox_saves_nothing_and_is_asked_again(
         project, organization, monkeypatch, capsys):
     warned = []
     monkeypatch.setattr(email_setup.console, "warn", warned.append)
-    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1",
+    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "2",
                     "nobody@example.com", "")
     assert alerts_cli.setup() == 1
     assert queue == []
@@ -485,7 +507,7 @@ def test_a_sender_that_is_no_mailbox_saves_nothing_and_is_asked_again(
 def test_a_sender_typed_again_that_is_a_mailbox_is_the_one_saved(
         project, organization, monkeypatch, capsys):
     asked = []
-    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1",
+    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "2",
                     "nobody@example.com", "pdt-alerts@example.com", "n")
     monkeypatch.setattr(alerts_cli.console, "confirm",
                         lambda question, *_a, **_k: asked.append(question) or queue.pop(0) == "y")
@@ -495,3 +517,208 @@ def test_a_sender_typed_again_that_is_a_mailbox_is_the_one_saved(
     assert asked == ["Send a test message to email address it-ops@example.com now?"]
     assert ("saved  the email address it-ops@example.com entry under alerts: in pdt.yml"
             in capsys.readouterr().out.splitlines())
+
+
+SUBSCRIPTION = "22222222-2222-2222-2222-222222222222"
+NAME = "pdt-email-" + email_setup.hashlib.sha256(SUBSCRIPTION.encode()).hexdigest()[:8]
+GROUP = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/pdt-email"
+PROVIDER = f"{GROUP}/providers/Microsoft.Communication"
+OTHER = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/mail/providers/Microsoft.Communication"
+CONNECTION = "endpoint=https://acs.example.com/;accesskey=a2V5"
+RECORDS = {
+    "Domain": {"type": "TXT", "name": "example.com", "value": "ms-domain-verification=1",
+               "ttl": 3600},
+    "SPF": {"type": "TXT", "name": "example.com",
+            "value": "v=spf1 include:spf.protection.outlook.com -all", "ttl": 3600},
+    "DKIM": {"type": "CNAME", "name": "selector1-azurecomm-prod-net._domainkey",
+             "value": "selector1-azurecomm-prod-net._domainkey.azurecomm.net", "ttl": 3600},
+    "DKIM2": {"type": "CNAME", "name": "selector2-azurecomm-prod-net._domainkey",
+              "value": "selector2-azurecomm-prod-net._domainkey.azurecomm.net", "ttl": 3600}}
+VERIFIED = {kind: {"status": "Verified"} for kind in email_setup.VERIFY}
+
+
+class Arm:
+    """A stand-in for Azure Resource Manager: each resource by its id. `writes` holds each
+    change as `METHOD <the last type in the path, or the action of a POST>`."""
+
+    def __init__(self):
+        self.resources = {}
+        self.writes = []
+
+    def add(self, path, body):
+        name = path.rstrip("/").rpartition("/")[2]
+        self.resources[path.lower()] = {"id": path, "name": name, **body}
+
+    def call(self, method, path, body=None):
+        path = path.partition("?")[0]
+        key = path.lower()
+        if method != "GET":
+            parts = [part for part in path.split("/") if part]
+            self.writes.append(f"{method} {parts[-1] if method == 'POST' else parts[-2]}")
+        if method == "POST" and key.endswith("/listkeys"):
+            return {"primaryConnectionString": CONNECTION}
+        if method == "POST" and key.endswith("/initiateverification"):
+            return {}
+        if method == "PUT":
+            properties = dict(body.get("properties") or {})
+            if properties.get("domainManagement") == "AzureManaged":
+                properties.update(fromSenderDomain="0f1e2d3c.azurecomm.net",
+                                  dataLocation="Europe", verificationStates=VERIFIED)
+            elif properties.get("domainManagement") == "CustomerManaged":
+                properties.update(fromSenderDomain=path.rpartition("/")[2], dataLocation="Europe",
+                                  verificationRecords=RECORDS, verificationStates={})
+            self.add(path, {**body, "properties": properties})
+            return self.resources[key]
+        if method == "PATCH":
+            self.resources[key]["properties"].update(body["properties"])
+            return self.resources[key]
+        if key in self.resources:
+            return self.resources[key]
+        for kind in ("emailservices", "communicationservices", "dnszones"):
+            if key.endswith(f"/providers/microsoft.communication/{kind}") or key.endswith(
+                    f"/providers/microsoft.network/{kind}"):
+                return {"value": [item for found, item in self.resources.items()
+                                  if re.search(f"/{kind}/[^/]+$", found)]}
+        if key.endswith("/domains"):
+            return {"value": [item for found, item in self.resources.items()
+                              if re.fullmatch(re.escape(key) + "/[^/]+", found)]}
+        raise email_setup.ArmError(404, "Azure answered HTTP 404: ResourceNotFound")
+
+
+@pytest.fixture
+def arm(project, monkeypatch):
+    monkeypatch.delenv("PDT_ACS_CONNECTION_STRING", raising=False)
+    monkeypatch.setattr(email_setup.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(email_setup.regions, "suggest_region", lambda _provider: "westeurope")
+    found = Arm()
+    monkeypatch.setattr(email_setup, "azure_sign_in", lambda: (SUBSCRIPTION, found.call))
+    return found
+
+
+def acs_setup(monkeypatch, sender):
+    return answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1", sender, "n")
+
+
+def test_azure_communication_services_is_the_first_email_method():
+    method = next(iter(alerts_cli.EMAIL_METHODS))
+    assert (method, alerts_cli.EMAIL_METHODS[method][0]) == (
+        "azure-communication-services",
+        "Azure Communication Services: no mailbox needed; pdt creates the Azure email service")
+
+
+def test_an_empty_sender_creates_the_azure_address_once_and_a_second_setup_changes_nothing(
+        project, arm, monkeypatch, capsys):
+    queue = acs_setup(monkeypatch, "")
+    assert alerts_cli.setup() == 0
+    assert queue == []
+    assert arm.writes == ["PUT resourceGroups", "PUT emailServices", "PUT domains",
+                          "PUT communicationServices", "POST listKeys"]
+    assert arm.resources[f"{GROUP}".lower()]["location"] == "westeurope"
+    assert arm.resources[f"{PROVIDER}/emailServices/{NAME}".lower()]["properties"] == {
+        "dataLocation": "Europe"}
+    service = arm.resources[f"{PROVIDER}/communicationServices/{NAME}".lower()]
+    assert service["properties"]["linkedDomains"] == [
+        f"{PROVIDER}/emailServices/{NAME}/domains/AzureManagedDomain"]
+    assert all(item["tags"] == {"managed-by": "pdt"} for item in arm.resources.values())
+    assert config.load_yaml(project / "pdt.yml")["alerts"] == [{
+        "type": "email", "method": "azure-communication-services",
+        "from": "DoNotReply@0f1e2d3c.azurecomm.net", "to": ["it-ops@example.com"],
+        "events": ["app:deploy-completed", "app:deploy-failed", "job:run-failed"]}]
+    assert (project / ".env").read_text() == f"PDT_ACS_CONNECTION_STRING={CONNECTION}\n"
+    out = [" ".join(line.split()) for line in capsys.readouterr().out.splitlines()]
+    start = out.index("created the resource group pdt-email")
+    assert out[start:start + 5] == [
+        "created the resource group pdt-email", f"created the email service {NAME}",
+        "created the Azure email domain AzureManagedDomain",
+        f"created the communication service {NAME}",
+        "The Azure address DoNotReply@0f1e2d3c.azurecomm.net sends at most 10 messages each "
+        "hour for the whole subscription."]
+    arm.writes.clear()
+    monkeypatch.setenv("PDT_ACS_CONNECTION_STRING", CONNECTION)
+    queue = answers(monkeypatch, "", "", "y", "it-ops@example.com", "1", "", "n")
+    assert alerts_cli.setup() == 0
+    assert queue == [] and arm.writes == ["POST listKeys"]
+    assert ("the resource group pdt-email is already there the email service "
+            f"{NAME} is already there the Azure email domain AzureManagedDomain is already "
+            f"there the communication service {NAME} already sends from AzureManagedDomain"
+            ) in " ".join(capsys.readouterr().out.split())
+
+
+def verified_domain(arm, path):
+    arm.add(path, {"properties": {"dataLocation": "Europe", "verificationStates": VERIFIED,
+                                  "verificationRecords": RECORDS}})
+
+
+def test_a_service_that_links_the_verified_domain_of_the_sender_is_used_and_nothing_is_made(
+        project, arm, monkeypatch, capsys):
+    arm.add(f"{OTHER}/emailServices/mail", {"properties": {}})
+    verified_domain(arm, f"{OTHER}/emailServices/mail/domains/example.com")
+    arm.add(f"{OTHER}/communicationServices/mail", {"properties": {
+        "linkedDomains": [f"{OTHER}/emailServices/mail/domains/example.com"]}})
+    acs_setup(monkeypatch, "DoNotReply@example.com")
+    assert alerts_cli.setup() == 0
+    assert arm.writes == ["POST listKeys"]
+    assert config.load_yaml(project / "pdt.yml")["alerts"][0]["from"] == "DoNotReply@example.com"
+    assert "the communication service mail already sends from example.com" in capsys.readouterr().out
+
+
+def test_a_verified_domain_with_no_service_is_linked_to_a_new_service_of_pdt(
+        project, arm, monkeypatch, capsys):
+    arm.add(f"{OTHER}/emailServices/mail", {"properties": {}})
+    verified_domain(arm, f"{OTHER}/emailServices/mail/domains/example.com")
+    acs_setup(monkeypatch, "DoNotReply@example.com")
+    assert alerts_cli.setup() == 0
+    assert arm.writes == ["PUT resourceGroups", "PUT communicationServices",
+                          "POST listKeys"]
+    service = arm.resources[f"{PROVIDER}/communicationServices/{NAME}".lower()]
+    assert service["properties"] == {"dataLocation": "Europe", "linkedDomains": [
+        f"{OTHER}/emailServices/mail/domains/example.com"]}
+    assert (project / ".env").read_text() == f"PDT_ACS_CONNECTION_STRING={CONNECTION}\n"
+
+
+def test_a_new_custom_domain_with_no_dns_zone_prints_the_records_and_stops(
+        project, arm, monkeypatch, capsys):
+    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1",
+                    "DoNotReply@example.com")
+    assert alerts_cli.setup() == 1
+    assert queue == []
+    assert arm.writes == ["PUT resourceGroups", "PUT emailServices", "PUT domains"]
+    out = [" ".join(line.split()) for line in capsys.readouterr().out.splitlines()]
+    assert "created the email domain example.com" in out
+    assert out[out.index("Add these records to the DNS of example.com:") + 1:][:4] == [
+        "example.com TXT ms-domain-verification=1",
+        "example.com TXT v=spf1 include:spf.protection.outlook.com -all",
+        "selector1-azurecomm-prod-net._domainkey.example.com CNAME "
+        "selector1-azurecomm-prod-net._domainkey.azurecomm.net",
+        "selector2-azurecomm-prod-net._domainkey.example.com CNAME "
+        "selector2-azurecomm-prod-net._domainkey.azurecomm.net"]
+    assert "pdt alerts setup" in " ".join(out)
+    assert not (project / ".env").exists()
+    assert "alerts" not in config.load_yaml(project / "pdt.yml")
+    arm.writes.clear()
+    answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1", "DoNotReply@example.com")
+    assert alerts_cli.setup() == 1
+    assert arm.writes == ["POST initiateVerification"] * 4
+    assert "started the verification of example.com" in capsys.readouterr().out
+
+
+def test_a_new_custom_domain_in_an_azure_dns_zone_gets_the_records_and_the_verification(
+        project, arm, monkeypatch, capsys):
+    zone = (f"/subscriptions/{SUBSCRIPTION}/resourceGroups/dns/providers/Microsoft.Network/"
+            "dnszones/example.com")
+    arm.add(zone, {"properties": {}})
+    arm.add(f"{zone}/TXT/@", {"properties": {"TXTRecords": [{"value": ["google-site=1"]}]}})
+    answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1", "DoNotReply@example.com")
+    assert alerts_cli.setup() == 1
+    assert arm.writes == ["PUT resourceGroups", "PUT emailServices", "PUT domains",
+                          "PATCH TXT", "PATCH TXT", "PUT CNAME", "PUT CNAME"] + ["POST initiateVerification"] * 4
+    assert arm.resources[f"{zone}/TXT/@".lower()]["properties"]["TXTRecords"] == [
+        {"value": ["google-site=1"]}, {"value": ["ms-domain-verification=1"]},
+        {"value": ["v=spf1 include:spf.protection.outlook.com -all"]}]
+    assert arm.resources[f"{zone}/CNAME/selector1-azurecomm-prod-net._domainkey".lower()][
+        "properties"]["CNAMERecord"] == {
+            "cname": "selector1-azurecomm-prod-net._domainkey.azurecomm.net"}
+    out = " ".join(capsys.readouterr().out.split())
+    assert "started the verification of example.com" in out
+    assert "Add these records" not in out
+    assert not (project / ".env").exists()

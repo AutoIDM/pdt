@@ -8,7 +8,7 @@ Email is one of the places pdt sends alerts, next to Slack and Microsoft Teams. 
 pdt alerts setup
 ```
 
-Choose Email. pdt asks who gets the email, how to send it (Microsoft 365, an SMTP server, or Resend), and which address it comes from. For Microsoft 365 you sign in one time as an administrator and pdt does the rest. For the other methods pdt asks for the values of the method. It writes the values to the `.env` file of the project and the entry to `pdt.yml`, then offers a test message.
+Choose Email. pdt asks who gets the email, how to send it (Azure Communication Services, Microsoft 365, an SMTP server, or Resend), and which address it comes from. For Azure Communication Services and Microsoft 365 you sign in one time and pdt does the rest. For the other methods pdt asks for the values of the method. It writes the values to the `.env` file of the project and the entry to `pdt.yml`, then offers a test message.
 
 ```
 pdt alerts test
@@ -27,7 +27,7 @@ alerts:
     events: [job:run-failed, compliance:changed]
 ```
 
-- `method` is how pdt sends the email: `microsoft-365`, `smtp`, or `resend`.
+- `method` is how pdt sends the email: `azure-communication-services`, `microsoft-365`, `smtp`, or `resend`.
 - `from` is the address the email comes from.
 - `to` is the list of addresses that get it.
 - `events` names the events that send an email. `all` is every event, and a name may hold a `*`, such as `job:*`. `exclude-events` takes events out again.
@@ -37,6 +37,17 @@ The entry sits at the top level of the project's `pdt.yml`, so it works for ever
 The values of the method are env vars. Put them in the `.env` file of the project. `pdt deploy` uploads them with each app's other secrets, so no app lists them under `env:`.
 
 ## The methods
+
+### azure-communication-services
+
+pdt sends through Azure Communication Services Email. It needs no mailbox and no administrator consent.
+
+In `pdt alerts setup`, choose "Azure Communication Services: no mailbox needed; pdt creates the Azure email service". pdt signs in to Azure with the same email sign-in as Microsoft 365, apart from the sign-in that `pdt deploy` uses. When the account has more than one subscription, pdt asks which one holds the email service. The provider of the project does not matter.
+
+- **The Azure address.** Press Enter at the sender question. pdt creates, in the resource group `pdt-email`, an Email Communication Service, its Azure managed domain, and a Communication Service, each with the tag `managed-by=pdt`. The email comes from `DoNotReply@<id>.azurecomm.net`. Azure sends at most 5 messages each minute and 10 each hour from an Azure address, for the whole subscription, and does not raise that limit ([Microsoft: service limits](https://learn.microsoft.com/en-us/azure/communication-services/concepts/service-limits#email)).
+- **Your own domain.** Type an address of your domain. When the subscription holds a verified email domain with that name, pdt uses the Communication Service that sends from it, or links the domain to its own Communication Service. Otherwise pdt creates the domain. Azure then needs four DNS records: a TXT record that proves you own the domain, an SPF TXT record, and two DKIM CNAME records. When the domain has an Azure DNS zone in the same subscription, pdt adds the records and starts the verification. Otherwise pdt prints the records; add them at your DNS provider. Azure verifies a domain in 15 to 30 minutes. Run `pdt alerts setup` again: it starts or checks the verification, and finishes the setup when the domain is verified. When the user name of the address is not `DoNotReply`, pdt adds it to the domain. A custom domain sends at most 30 messages each minute and 100 each hour, and Microsoft can raise that limit.
+
+pdt writes `PDT_ACS_CONNECTION_STRING` to `.env`. A second run finds each resource and changes nothing. pdt never changes a resource without the tag `managed-by=pdt`.
 
 ### microsoft-365
 

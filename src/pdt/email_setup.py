@@ -1,4 +1,4 @@
-"""The guided Microsoft 365 setup of `pdt alerts setup`.
+"""The guided Microsoft 365 and Azure Communication Services setups of `pdt alerts setup`.
 
 `microsoft_365` gets a Microsoft Graph token from an Azure CLI sign-in (`pdt az`)
 that it keeps in AZURE_DIR, apart from the sign-in in ~/.azure that a deploy uses,
@@ -31,6 +31,19 @@ it made, and returns None. The next run continues from there.
 a test gives the answers. `send_test` sends the test message; right after this
 process gave the permission, Microsoft can refuse the registration for a short
 time, so it waits and tries again for at most GRANT_WAIT_SECONDS.
+
+`azure_communication_services` signs in with the same AZURE_DIR, takes one enabled
+subscription (a menu when there are more), and talks to Azure Resource Manager with a
+token of that sign-in, so no Azure CLI extension is needed. `acs_ensure` finds or creates,
+in the resource group RESOURCE_GROUP, an Email Communication Service and a Communication
+Service named `pdt-email-<the first 8 hex digits of the SHA-256 of the subscription id>`,
+because a Communication Service name is a host name that must be unique in Azure. An empty
+sender gets the Azure managed domain (sender DoNotReply@...azurecomm.net). An address gets
+the verified domain of that name in the subscription and a Communication Service that
+links it; pdt links it to its own Communication Service when none does, and creates the
+domain, with its DNS records in an Azure DNS zone of the subscription, when there is none.
+pdt changes only a resource with the tag `managed-by=pdt`, except that it links a verified
+domain to its own Communication Service. The setup returns the connection string.
 """
 
 from __future__ import annotations
@@ -48,7 +61,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from pdt import alert_message, console, email_alert
+from pdt import alert_message, console, email_alert, regions
 from pdt.config import data_home
 
 AZURE_DIR = data_home() / "pdt" / "email-azure"
@@ -70,6 +83,28 @@ NEW_REGISTRATION_TRIES = 6
 TOO_NEW = ("HTTP 401", "HTTP 403", "AADSTS")
 # True once this process gave the permission.
 granted_now = False
+ARM = "https://management.azure.com"
+ACS_API = "2023-04-01"
+DNS_API = "2018-05-01"
+GROUP_API = "2021-04-01"
+RESOURCE_GROUP = "pdt-email"
+TAGS = {"managed-by": "pdt"}
+AZURE_DOMAIN = "AzureManagedDomain"
+SENDER_USERNAME = "DoNotReply"
+# The records that verify a custom domain: ownership, SPF, and the two DKIM keys.
+VERIFY = ("Domain", "SPF", "DKIM", "DKIM2")
+PROVISION_WAIT_SECONDS = 600
+# The Azure Communication Services data location of each Azure region whose name holds the
+# text; any other region (the United States, Mexico) is "United States".
+DATA_LOCATIONS = (
+    ("canada", "Canada"), ("brazil", "Brazil"), ("chile", "Brazil"), ("uk", "United Kingdom"),
+    ("france", "France"), ("germany", "Germany"), ("norway", "Norway"),
+    ("switzerland", "Switzerland"), ("uae", "United Arab Emirates"),
+    ("qatar", "United Arab Emirates"), ("southafrica", "Africa"), ("australia", "Australia"),
+    ("japan", "Japan"), ("korea", "Korea"), ("india", "India"), ("asia", "Asia Pacific"),
+    ("newzealand", "Asia Pacific"), ("europe", "Europe"), ("sweden", "Europe"),
+    ("italy", "Europe"), ("spain", "Europe"), ("poland", "Europe"), ("austria", "Europe"),
+    ("belgium", "Europe"), ("denmark", "Europe"), ("israel", "Europe"))
 
 
 class GraphError(Exception):
@@ -90,7 +125,10 @@ def az(*args: str) -> subprocess.CompletedProcess:
     deploy.announce_install(script)
     return subprocess.run(["uv", "run", "--project", str(Path.cwd()), "--script", str(script),
                            "az", *args], capture_output=True, text=True,
-                          env={**os.environ, "AZURE_CONFIG_DIR": str(AZURE_DIR)})
+                          env={**os.environ, "AZURE_CONFIG_DIR": str(AZURE_DIR),
+                               # The output is captured, so `az login` must not ask for a
+                               # subscription.
+                               "AZURE_CORE_LOGIN_EXPERIENCE_V2": "off"})
 
 
 def account() -> dict:
@@ -142,6 +180,19 @@ def graph_call(token: str, method: str, path: str, body: dict | None = None) -> 
     return json.loads(text) if text else {}
 
 
+def choose(labels: list[str]) -> int:
+    """The index of the label the user picks, from a menu or from numbered lines."""
+    if console.can_menu():
+        return console.choose_one(labels)
+    for number, label in enumerate(labels, 1):
+        console.choice(number, label)
+    while True:
+        answer = console.ask("Which one?", "1") or "1"
+        if answer.isdigit() and 1 <= int(answer) <= len(labels):
+            return int(answer) - 1
+        console.say(f"Please answer a number from 1 to {console.value(len(labels))}.")
+
+
 def sign_in(sender: str) -> tuple[str, str, str, Callable]:
     """The tenant id, the user, and the organization of the Azure CLI sign-in in AZURE_DIR,
     and `call` for Microsoft Graph. A new sign-in goes to the organization of the domain of
@@ -154,20 +205,9 @@ def sign_in(sender: str) -> tuple[str, str, str, Callable]:
                        or signed_in.rpartition("@")[2])
     token = ""
     if signed_in:
-        labels = [f"Use {signed_in} (organization {organization})",
-                  "Sign in with another account"]
         console.heading("Which Microsoft account should pdt use?")
-        if console.can_menu():
-            answer = str(console.choose_one(labels) + 1)
-        else:
-            for number, label in enumerate(labels, 1):
-                console.choice(number, label)
-            while True:
-                answer = console.ask("Which one?", "1") or "1"
-                if answer.isdigit() and 1 <= int(answer) <= len(labels):
-                    break
-                console.say(f"Please answer a number from 1 to {console.value(len(labels))}.")
-        if answer == "1":
+        if choose([f"Use {signed_in} (organization {organization})",
+                   "Sign in with another account"]) == 0:
             token = az_token()
     if token == "":
         console.say(f"pdt opens the Microsoft sign-in of {console.value(domain)} in your "
@@ -431,6 +471,330 @@ def microsoft_365(project: Path, sender: str) -> tuple[str, dict[str, str]] | No
     except (SetupError, GraphError) as e:
         console.failed(f"Microsoft 365 is not set up: {console.escape(str(e))}")
         return None
+
+
+class ArmError(Exception):
+    def __init__(self, status: int, text: str):
+        super().__init__(text)
+        self.status = status
+
+
+def arm_call(token: str, method: str, path: str, body: dict | None = None) -> dict:
+    request = urllib.request.Request(
+        ARM + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=alert_message.TIMEOUT_SECONDS) as response:
+            text = response.read().decode()
+    except urllib.error.HTTPError as e:
+        text = e.read().decode(errors="replace")
+        try:
+            detail = json.loads(text)["error"]
+            text = f"{detail['code']}: {detail['message']}"
+        except (ValueError, KeyError, TypeError):
+            pass
+        raise ArmError(e.code, f"Azure answered HTTP {e.code}: {text[:300]}") from None
+    except urllib.error.URLError as e:
+        raise SetupError(f"Azure could not be reached: {e.reason}") from None
+    return json.loads(text) if text else {}
+
+
+def azure_sign_in() -> tuple[str, Callable]:
+    """The subscription id that the user chooses from the Azure CLI sign-in in AZURE_DIR, and
+    `call` for Azure Resource Manager."""
+    with console.waiting("checking: Azure sign-in", once=True):
+        found = account()
+    signed_in = str((found.get("user") or {}).get("name") or "")
+    use = False
+    if signed_in:
+        console.heading("Which Azure account should pdt use?")
+        use = choose([f"Use {signed_in}", "Sign in with another account"]) == 0
+    if not use:
+        console.say("pdt opens the Azure sign-in in your browser.")
+        with console.waiting("waiting: Azure sign-in in the browser"):
+            done = az("login")
+        if done.returncode != 0:
+            raise SetupError((done.stdout + done.stderr).strip() or "the sign-in did not finish")
+    done = az("account", "list", "--query", "[?state=='Enabled']", "--output", "json")
+    try:
+        subscriptions = json.loads(done.stdout) if done.returncode == 0 else []
+    except ValueError:
+        subscriptions = []
+    # A sign-in with no subscription lists its tenant as an entry with the tenant's id.
+    subscriptions = [item for item in subscriptions if item.get("id") != item.get("tenantId")]
+    if not subscriptions:
+        raise SetupError("the Azure account has no enabled subscription. Run pdt alerts setup "
+                         "again and choose Sign in with another account")
+    subscription = subscriptions[0]
+    if len(subscriptions) > 1:
+        console.heading("Which Azure subscription should hold the email service?")
+        subscription = subscriptions[choose([f"{item['name']} ({item['id']})"
+                                             for item in subscriptions])]
+    done = az("account", "get-access-token", "--subscription", subscription["id"], "--query",
+              "accessToken", "--output", "tsv")
+    if done.returncode != 0 or done.stdout.strip() == "":
+        raise SetupError("the Azure sign-in gave no access to Azure Resource Manager")
+    token = done.stdout.strip().splitlines()[-1]
+    user = str((subscription.get("user") or {}).get("name") or signed_in or "your account")
+    console.say(f"Signed in to Azure as {console.value(user)}, subscription "
+                f"{console.value(subscription['name'])}.")
+    return subscription["id"], lambda method, path, body=None: arm_call(token, method, path, body)
+
+
+def data_location(region: str) -> str:
+    """The data location of Azure Communication Services nearest to an Azure region."""
+    return next((place for part, place in DATA_LOCATIONS if part in region), "United States")
+
+
+def tagged(resource: dict) -> bool:
+    return (resource.get("tags") or {}).get("managed-by") == "pdt"
+
+
+def provisioned(call: Callable, path: str, label: str) -> dict:
+    """The resource at `path` once Azure finished creating or changing it."""
+    deadline = time.monotonic() + PROVISION_WAIT_SECONDS
+    with console.waiting(f"waiting: Azure to finish {label}"):
+        while True:
+            found = call("GET", path)
+            state = (found.get("properties") or {}).get("provisioningState", "Succeeded")
+            if state == "Succeeded":
+                return found
+            if state in ("Failed", "Canceled"):
+                raise SetupError(f"Azure could not finish {label}: {state}")
+            if time.monotonic() >= deadline:
+                raise SetupError(f"Azure did not finish {label} in {PROVISION_WAIT_SECONDS} "
+                                 "seconds. Run pdt alerts setup again")
+            time.sleep(RETRY_SECONDS)
+
+
+def ensure_resource(call: Callable, path: str, label: str, body: dict) -> dict:
+    """The resource at `path`, created with `body` when it is missing."""
+    try:
+        found = call("GET", path)
+        console.done(f"{label} is already there")
+        return found
+    except ArmError as e:
+        if e.status != 404:
+            raise
+    call("PUT", path, body)
+    found = provisioned(call, path, label)
+    console.done(f"created {label}")
+    return found
+
+
+def full_name(name: str, domain: str) -> str:
+    """The DNS name of a verification record, which Azure gives relative to the domain."""
+    if name in ("", "@"):
+        return domain
+    if name == domain or name.endswith("." + domain):
+        return name
+    return f"{name}.{domain}"
+
+
+def add_records(call: Callable, zone: dict, domain: str, records: dict) -> None:
+    """Add each verification record to the Azure DNS zone, next to the records it holds."""
+    for kind in VERIFY:
+        record = records.get(kind)
+        if not record:
+            continue
+        name = full_name(record["name"], domain)
+        relative = "@" if name == zone["name"] else name[:-len(zone["name"]) - 1]
+        path = f"{zone['id']}/{record['type']}/{relative}?api-version={DNS_API}"
+        shown = f"the {record['type']} record {console.value(name)}"
+        try:
+            found = call("GET", path)["properties"]
+        except ArmError as e:
+            if e.status != 404:
+                raise
+            found = None
+        if record["type"] == "CNAME":
+            if found is None:
+                call("PUT", path, {"properties": {"TTL": record.get("ttl") or 3600,
+                                                  "CNAMERecord": {"cname": record["value"]}}})
+                console.done(f"added {shown}")
+            elif (found.get("CNAMERecord") or {}).get("cname", "").rstrip(".") == record["value"]:
+                console.done(f"{shown} is already there")
+            else:
+                console.warn(f"{shown} points to another name. Change it to "
+                             f"{console.value(record['value'])}.")
+            continue
+        values = ["".join(item.get("value") or []) for item in (found or {}).get("TXTRecords") or []]
+        spf = [value for value in values if value.startswith("v=spf1")]
+        if record["value"] in values:
+            console.done(f"{shown} with {console.value(record['value'])} is already there")
+        elif kind == "SPF" and spf:
+            console.warn(f"{shown} holds the SPF record {console.value(spf[0])}. Add "
+                         f"{console.value('include:spf.protection.outlook.com')} to it.")
+        elif found is None:
+            call("PUT", path, {"properties": {"TTL": record.get("ttl") or 3600,
+                                              "TXTRecords": [{"value": [record["value"]]}]}})
+            console.done(f"added {shown} with {console.value(record['value'])}")
+        else:
+            call("PATCH", path, {"properties": {"TXTRecords": [
+                *found["TXTRecords"], {"value": [record["value"]]}]}})
+            console.done(f"added {shown} with {console.value(record['value'])}")
+
+
+def verify(call: Callable, subscription: str, domain: dict, created: bool) -> None:
+    """Add the records of a domain that is not verified to its Azure DNS zone, or print them,
+    and start the verification of each record that is not verified or in progress."""
+    name = domain["name"]
+    records = domain["properties"].get("verificationRecords") or {}
+    states = domain["properties"].get("verificationStates") or {}
+    zones = call("GET", f"/subscriptions/{subscription}/providers/Microsoft.Network/dnszones"
+                        f"?api-version={DNS_API}")["value"]
+    zones = [zone for zone in zones if name == zone["name"] or name.endswith("." + zone["name"])]
+    zone = max(zones, key=lambda item: len(item["name"])) if zones else None
+    if not created and not tagged(domain):
+        console.failed(f"The email domain {console.value(name)} is not verified, and pdt did "
+                       "not create it, so pdt changed nothing.")
+        zone = None
+    elif zone is not None:
+        add_records(call, zone, name, records)
+    if tagged(domain) and (zone is not None or not created):
+        started = [kind for kind in VERIFY if kind in records and (states.get(kind) or {})
+                   .get("status", "NotStarted") in ("NotStarted", "VerificationFailed")]
+        for kind in started:
+            call("POST", f"{domain['id']}/initiateVerification?api-version={ACS_API}",
+                 {"verificationType": kind})
+        if started:
+            console.done(f"started the verification of {console.value(name)}")
+        else:
+            console.done(f"the verification of {console.value(name)} is in progress")
+    if zone is None:
+        console.say(f"Add these records to the DNS of {console.value(name)}:")
+        for kind in VERIFY:
+            if kind in records:
+                console.say(f"  {console.value(full_name(records[kind]['name'], name))}  "
+                            f"{console.value(records[kind]['type'])}  "
+                            f"{console.value(records[kind]['value'])}")
+    console.next_steps([("pdt alerts setup", "run the setup again after Azure verified the "
+                                             "domain, which takes 15 to 30 minutes")])
+
+
+def link(call: Callable, subscription: str, domain: dict, group: str, service_path: str,
+         make_group: bool) -> str:
+    """The id of a Communication Service that links `domain`. pdt uses one that links it
+    already; else it links the domain to its own Communication Service, in `group`, which it
+    creates first when `make_group` is true."""
+    services = call("GET", f"/subscriptions/{subscription}/providers/Microsoft.Communication/"
+                           f"communicationServices?api-version={ACS_API}")["value"]
+    for service in services:
+        linked = [item.lower() for item in service["properties"].get("linkedDomains") or []]
+        if domain["id"].lower() in linked:
+            console.done(f"the communication service {console.value(service['name'])} already "
+                         f"sends from {console.value(domain['name'])}")
+            return service["id"]
+    if make_group:
+        ensure_group(call, group)
+    label = f"the communication service {console.value(service_path.rpartition('/')[2])}"
+    path = f"{service_path}?api-version={ACS_API}"
+    try:
+        service = call("GET", path)
+    except ArmError as e:
+        if e.status != 404:
+            raise
+        call("PUT", path, {"location": "global", "tags": TAGS, "properties": {
+            "dataLocation": domain["properties"]["dataLocation"], "linkedDomains": [domain["id"]]}})
+        provisioned(call, path, label)
+        console.done(f"created {label}")
+        return service_path
+    if not tagged(service):
+        raise SetupError(f"{service['name']} in the resource group {RESOURCE_GROUP} has no "
+                         f"tag {TAG}, so pdt does not change it")
+    call("PATCH", path, {"properties": {"linkedDomains": [
+        *(service["properties"].get("linkedDomains") or []), domain["id"]]}})
+    provisioned(call, path, label)
+    console.done(f"linked {console.value(domain['name'])} to {label}")
+    return service_path
+
+
+def ensure_group(call: Callable, group: str) -> None:
+    ensure_resource(call, f"{group}?api-version={GROUP_API}",
+                    f"the resource group {console.value(RESOURCE_GROUP)}",
+                    {"location": regions.suggest_region("azure"), "tags": TAGS})
+
+
+def ensure_email_service(call: Callable, group: str, email_path: str) -> None:
+    ensure_group(call, group)
+    ensure_resource(call, f"{email_path}?api-version={ACS_API}",
+                    f"the email service {console.value(email_path.rpartition('/')[2])}",
+                    {"location": "global", "tags": TAGS, "properties": {
+                        "dataLocation": data_location(regions.suggest_region("azure"))}})
+
+
+def acs_ensure(subscription: str, sender: str, call: Callable) -> tuple[str, str] | None:
+    """The sender address and the connection string of a Communication Service that sends
+    from the domain of `sender`, or from an Azure managed domain when `sender` is empty. It
+    returns None when the domain is not verified yet."""
+    group = f"/subscriptions/{subscription}/resourceGroups/{RESOURCE_GROUP}"
+    name = f"pdt-email-{hashlib.sha256(subscription.encode()).hexdigest()[:8]}"
+    email_path = f"{group}/providers/Microsoft.Communication/emailServices/{name}"
+    service_path = f"{group}/providers/Microsoft.Communication/communicationServices/{name}"
+    if sender == "":
+        ensure_email_service(call, group, email_path)
+        domain = ensure_resource(
+            call, f"{email_path}/domains/{AZURE_DOMAIN}?api-version={ACS_API}",
+            f"the Azure email domain {console.value(AZURE_DOMAIN)}",
+            {"location": "global", "tags": TAGS, "properties": {"domainManagement": "AzureManaged"}})
+        service_id = link(call, subscription, domain, group, service_path, False)
+        sender = f"{SENDER_USERNAME}@{domain['properties']['fromSenderDomain']}"
+        console.say(f"The Azure address {console.value(sender)} sends at most "
+                    f"{email_alert.ACS_LIMITS['azure'][1]} messages each hour for the whole "
+                    "subscription.")
+    else:
+        username, _, domain_name = sender.rpartition("@")
+        domain = None
+        for service in call("GET", f"/subscriptions/{subscription}/providers/"
+                                   f"Microsoft.Communication/emailServices?api-version={ACS_API}"
+                            )["value"]:
+            for found in call("GET", f"{service['id']}/domains?api-version={ACS_API}")["value"]:
+                if found["name"].lower() == domain_name.lower():
+                    domain = found
+        created = domain is None
+        if created:
+            ensure_email_service(call, group, email_path)
+            domain = ensure_resource(
+                call, f"{email_path}/domains/{domain_name}?api-version={ACS_API}",
+                f"the email domain {console.value(domain_name)}",
+                {"location": "global", "tags": TAGS,
+                 "properties": {"domainManagement": "CustomerManaged"}})
+        if not all((domain["properties"].get("verificationStates") or {}).get(kind, {})
+                   .get("status") == "Verified" for kind in VERIFY):
+            verify(call, subscription, domain, created)
+            return None
+        if username.lower() != SENDER_USERNAME.lower():
+            path = f"{domain['id']}/senderUsernames/{username}?api-version={ACS_API}"
+            shown = f"the sender user name {console.value(username)}"
+            try:
+                call("GET", path)
+                console.done(f"{shown} is already there")
+            except ArmError as e:
+                if e.status != 404:
+                    raise
+                if not tagged(domain):
+                    raise SetupError(f"{username} is not a sender user name of {domain_name}, "
+                                     "and pdt did not create that domain, so pdt does not "
+                                     "change it") from None
+                call("PUT", path, {"properties": {"username": username}})
+                console.done(f"added {shown} to {console.value(domain_name)}")
+        service_id = link(call, subscription, domain, group, service_path, not created)
+    keys = call("POST", f"{service_id}/listKeys?api-version={ACS_API}")
+    return sender, keys["primaryConnectionString"]
+
+
+def azure_communication_services(sender: str) -> tuple[str, dict[str, str]] | None:
+    """The sender address and the env var of the azure-communication-services method after
+    the guided setup, or None when the setup did not finish."""
+    try:
+        subscription, call = azure_sign_in()
+        found = acs_ensure(subscription, sender, call)
+    except (SetupError, ArmError) as e:
+        console.failed(f"Azure Communication Services is not set up: {console.escape(str(e))}")
+        return None
+    if found is None:
+        return None
+    return found[0], {"PDT_ACS_CONNECTION_STRING": found[1]}
 
 
 def send_test(entry: dict, project: str) -> None:

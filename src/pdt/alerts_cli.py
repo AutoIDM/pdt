@@ -16,7 +16,10 @@ manifest that makes one.
 An Email entry asks for the recipients, the method (EMAIL_METHODS), the sender
 address, and the values of the method, which go to the project's .env. The
 Microsoft 365 method asks for no value: pdt.email_setup makes the app
-registration, the certificate, and the permission after one sign-in.
+registration, the certificate, and the permission after one sign-in. The Azure
+Communication Services method asks for no value either: pdt.email_setup makes the
+Azure email resources after one sign-in, and an empty sender address means an
+Azure address.
 """
 
 from __future__ import annotations
@@ -228,6 +231,9 @@ def teams_test(entry: dict, project: str) -> None:
 # method: (the label of the choice, then each env var as (name, question, typed hidden)).
 # The user may leave the answer for a name in email_alert.optional empty.
 EMAIL_METHODS = {
+    "azure-communication-services": (
+        "Azure Communication Services: no mailbox needed; pdt creates the Azure email service",
+        ()),
     "microsoft-365": ("Microsoft 365: sign in once, and pdt does the setup", ()),
     "smtp": ("SMTP server: the mail server of your organization or mail service", (
         ("PDT_SMTP_HOST", "SMTP server name, for example smtp.example.com", False),
@@ -256,12 +262,20 @@ def email_configure() -> tuple[dict, dict[str, str]] | None:
                 break
             console.say(f"Please answer a number from 1 to {console.value(len(methods))}.")
     method = methods[int(answer) - 1]
-    sender = console.ask("Which address should the email come from?")
-    if sender == "":
-        return None
+    if method == "azure-communication-services":
+        sender = console.ask("Which address should the email come from? Press Enter to use an "
+                             "Azure address with no setup, or type an address of your own "
+                             "domain")
+    else:
+        sender = console.ask("Which address should the email come from?")
+        if sender == "":
+            return None
     values: dict[str, str] = {}
-    if method == "microsoft-365":
-        found = email_setup.microsoft_365(config.find_project(), sender)
+    if method in ("azure-communication-services", "microsoft-365"):
+        if method == "azure-communication-services":
+            found = email_setup.azure_communication_services(sender)
+        else:
+            found = email_setup.microsoft_365(config.find_project(), sender)
         if found is None:
             return None
         sender, env = found
