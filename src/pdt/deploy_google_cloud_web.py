@@ -171,6 +171,15 @@ def read_grant_exists(bucket: str, other: str, sa: str) -> bool:
                for binding in policy.get("bindings") or [])
 
 
+def held_reads(bucket: str, sa: str, own: str) -> list[str]:
+    """The app folders of the bucket, other than the app's own, on which `sa` holds the read
+    role: what a deploy or a destroy must check, whatever the config says now."""
+    folders = gc.list_json("storage", "managed-folders", "list", f"gs://{bucket}/")
+    names = [str(folder.get("name") or "").rstrip("/") for folder in folders]
+    return [other for other in names if other and other != own
+            and read_grant_exists(bucket, other, sa)]
+
+
 def grant_store_read(bucket: str, other: str, sa: str) -> None:
     console.step(f"granting {console.value(sa)} read access to "
                  f"{console.value(f'{bucket}/{other}/')}")
@@ -188,6 +197,32 @@ def revoke_store_read(bucket: str, other: str, sa: str) -> None:
     gc.run_quiet("storage", "managed-folders", "remove-iam-policy-binding",
                  gc.store_url(bucket, other), "--member", f"serviceAccount:{sa}",
                  "--role", READ_ROLE)
+
+
+def organization_domain(project: str) -> str | None:
+    """The domain of the project's organization, "" for a project with no organization, or None
+    when the deployer may not read it."""
+    proc = gc.gcloud("projects", "get-ancestors", project, "--format=json")
+    if proc.returncode != 0:
+        return None
+    org = next((item.get("id") for item in json.loads(proc.stdout or "[]")
+                if item.get("type") == "organization"), None)
+    if org is None:
+        return ""
+    proc = gc.gcloud("organizations", "describe", str(org), "--format=value(displayName)")
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def audience_problems(app: dict, domain: str | None) -> list[str]:
+    """Who the Google-managed OAuth client cannot sign in: it serves only accounts of the
+    project's organization (https://docs.cloud.google.com/run/docs/securing/identity-aware-proxy-cloud-run)."""
+    if domain is None:
+        return []
+    if domain == "":
+        return ["the project has no organization, so Identity-Aware Proxy's Google-managed sign-in "
+                "lets no one in; move the project into an organization"]
+    return [f"{other} is not the project's organization ({domain}), so its accounts cannot sign in"
+            for other in app["auth"].get("allowed_domains") or [] if other.lower() != domain.lower()]
 
 
 def ensure_iap_agent(project: str, number: str) -> str:
@@ -342,11 +377,14 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             described = gc.read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
             gc.require_managed(described, f"bucket {console.value(builds)}")
             builds_exists = described is not None
-        bucket_exists = False
-        if needs_bucket:
-            described = gc.read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
-            gc.require_managed(described, f"bucket {console.value(bucket)}")
-            bucket_exists = described is not None
+        described = gc.read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
+        gc.require_managed(described, f"bucket {console.value(bucket)}")
+        bucket_exists = described is not None
+        # Grants an earlier deploy made that the config no longer names.
+        stale_reads = [other for other in (held_reads(bucket, sa, name) if bucket_exists else [])
+                       if other not in app["storage_read"]]
+        stale_folder = (bucket_exists and not app["storage"]
+                        and gc.folder_grant_exists(bucket, name, sa))
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
         current = gc.read_json_or_none("run", "services", "describe", service,
                                        "--region", region, "--project", project)
@@ -364,6 +402,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             else:
                 secret_state = "unchanged" if gc.secret_value(project, sid) == payload else "update"
         members = iap_policy_members(project, region, service) if service_exists and gate else []
+        audience = audience_problems(app, organization_domain(project)) if gate else []
 
         add_members, remove_members = iap_changes(members, iap_members(app) if gate else [])
 
@@ -393,6 +432,12 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         actions.append(console.Markup(f"allow {console.value(sa)} to read "
                                       f"{console.value(f'{bucket}/{other}/')}, mounted read-only at "
                                       f"{console.value(f'{web.STORAGE_READ_DIR}/{other}/')}"))
+    for other in stale_reads:
+        actions.append(console.Markup(f"remove {console.value(sa)} read access to "
+                                      f"{console.value(f'{bucket}/{other}/')}"))
+    if stale_folder:
+        actions.append(console.Markup(f"remove {console.value(sa)} write access to "
+                                      f"{console.value(f'{bucket}/{name}/')}"))
     size = web.resources(app)
     actions.append(console.Markup(
         ("update" if service_exists else "create")
@@ -411,6 +456,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         for member in remove_members:
             actions.append(console.Markup(f"no longer allow {console.value(member)} to enter"))
     cost = cost_estimate(app, project, region)
+    for problem in audience:
+        console.warn(f"web.auth: {console.escape(problem)}")
 
     if plan_only:
         return show_plan(actions, cost)
@@ -461,6 +508,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         gc.grant_store_access(bucket, name, sa)
     for other in app["storage_read"]:
         grant_store_read(bucket, other, sa)
+    for other in stale_reads:
+        revoke_store_read(bucket, other, sa)
+    if stale_folder:
+        gc.revoke_store_access(bucket, name, sa, True, False)
     if secret_state == "create":
         console.step(f"creating secret {console.value(sid)}")
         gc.run_quiet("secrets", "create", sid, "--project", project,
@@ -551,14 +602,25 @@ def destroy(app: dict, assume_yes: bool) -> int:
             images = gc.list_json("artifacts", "docker", "images", "list",
                                   f"{region}-docker.pkg.dev/{project}/{repo}",
                                   "--include-tags", "--project", project)
-        delete_image = any(gc.image_name(item) == name for item in images)
+        other_images = [item for item in images if gc.image_name(item) != name]
+        delete_repo = gc.managed_by_pdt(repository) and not other_images
+        delete_image = any(gc.image_name(item) == name for item in images) and not delete_repo
+        # The builder and the build bucket go with the last of the project's jobs and web apps.
+        last_app = (not [item for item in gc.list_json("run", "jobs", "list", "--project", project)
+                         if gc.managed_by_pdt(item)]
+                    and not [other for other in gc.pdt_services(project) if other != service])
+        builder = gc.builder_email(project)
+        builder_account = gc.service_account_or_none(project, builder)
+        builds = gc.build_bucket(project)
+        builds_bucket = gc.read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+        delete_builder = last_app and gc.builder_owned(builder_account)
+        delete_builds = last_app and gc.managed_by_pdt(builds_bucket)
         store = gc.deployer_store(project, name) if app["storage"] else None
         bucket_present = gc.read_json_or_none("storage", "buckets", "describe",
                                               f"gs://{bucket}") is not None
-        revoke_folder = app["storage"] and bucket_present and gc.folder_grant_exists(bucket, name, sa)
-        revoke_bucket = app["storage"] and bucket_present and gc.bucket_grant_exists(bucket, name, sa)
-        revoke_reads = [other for other in app["storage_read"]
-                        if bucket_present and read_grant_exists(bucket, other, sa)]
+        revoke_folder = bucket_present and gc.folder_grant_exists(bucket, name, sa)
+        revoke_bucket = bucket_present and gc.bucket_grant_exists(bucket, name, sa)
+        revoke_reads = held_reads(bucket, sa, name) if bucket_present else []
 
     actions = []
     if revoke_folder or revoke_bucket:
@@ -576,14 +638,19 @@ def destroy(app: dict, assume_yes: bool) -> int:
         actions.append(console.Markup(f"delete Artifact Registry image {console.value(image)}"))
     if delete_account:
         actions.append(console.Markup(f"delete service account {console.value(sa)}"))
+    if delete_repo:
+        actions.append(console.Markup(f"delete Artifact Registry repository {console.value(repo)}"))
+    if delete_builder:
+        actions.append(console.Markup(f"delete service account {console.value(builder)}"))
+    if delete_builds:
+        actions.append(console.Markup(f"delete bucket {console.value(builds)}"))
     kept = []
     if current is not None and not delete_service:
         kept.append(f"Cloud Run service {console.value(service)}")
     if account is not None and not delete_account:
         kept.append(f"service account {console.value(sa)} (not managed by PDT)")
-    if repository is not None:
-        kept.append(f"Artifact Registry repository {console.value(repo)} (shared; a job's "
-                    "destroy removes it with the last app)")
+    if repository is not None and not delete_repo:
+        kept.append(f"Artifact Registry repository {console.value(repo)} (shared)")
     if bucket_present and store is not None:
         kept.append(store_kept_line(f"bucket {console.value(bucket)}", store.usage()[0], name))
     if not actions:
@@ -620,6 +687,18 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if delete_account:
         console.step(f"deleting service account {console.value(sa)}")
         gc.run_quiet("iam", "service-accounts", "delete", sa, "--project", project, "--quiet")
+    if delete_repo:
+        console.step(f"deleting Artifact Registry repository {console.value(repo)}")
+        gc.run_quiet("artifacts", "repositories", "delete", repo, "--location", region,
+                     "--project", project, "--quiet",
+                     slow=f"deleting: Artifact Registry repository {console.value(repo)}")
+    if delete_builder:
+        console.step(f"deleting service account {console.value(builder)}")
+        gc.run_quiet("iam", "service-accounts", "delete", builder, "--project", project, "--quiet")
+    if delete_builds:
+        console.step(f"deleting bucket {console.value(builds)}")
+        gc.run_quiet("storage", "rm", "--recursive", f"gs://{builds}/", "--project", project,
+                     slow=f"deleting: bucket {console.value(builds)}")
     console.done(f"Removed {console.value(name)} from project {console.value(project)}.")
     if kept:
         console.heading("Still present:")

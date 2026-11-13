@@ -651,6 +651,13 @@ def cloud_build_image(stage: Path, image: str, project: str, region: str,
          "and run the deploy again")
 
 
+def pdt_services(project: str) -> list[str]:
+    """The Cloud Run services pdt made in the project, in every region: the web apps."""
+    return [((item.get("metadata") or {}).get("name") or "")
+            for item in list_json("run", "services", "list", "--project", project)
+            if managed_by_pdt(item)]
+
+
 def cleanup_policies_set(repository: dict | None) -> bool:
     """Whether the repository already has CLEANUP_POLICIES, in force and not a dry run."""
     names = sorted((repository or {}).get("cleanupPolicies") or {})
@@ -1196,7 +1203,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
         builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
-        last_app = not other_project_jobs and not unmanaged_app_resource
+        # A web app is a Cloud Run service; it shares the builder and the build bucket.
+        last_app = (not other_project_jobs and not pdt_services(project)
+                    and not unmanaged_app_resource)
         delete_builder = last_app and builder_owned(builder_account)
         delete_builds = last_app and managed_by_pdt(builds_bucket)
 

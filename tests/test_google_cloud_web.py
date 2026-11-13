@@ -113,6 +113,7 @@ def fake_cloud(monkeypatch, fake: FakeCloud, secrets=None):
     monkeypatch.setattr(gweb, "confirm", lambda actions, assume_yes, cost=None: True)
     monkeypatch.setattr(gweb, "fetch_json", lambda request: {"email": AGENT})
     monkeypatch.setattr(gweb.regions, "local_currency", lambda: "USD")
+    monkeypatch.setattr(gweb, "organization_domain", lambda project: "example.com")
     return fake
 
 
@@ -368,18 +369,24 @@ def test_destroy_removes_the_service_the_secret_the_image_and_the_read_grant(goo
                  {"role": gweb.READ_ROLE, "members": [f"serviceAccount:{SA}"]},
                  {"role": gc.STORE_ROLE, "members": [f"serviceAccount:{SA}"]}]}}
     fake = fake_cloud(monkeypatch, FakeCloud(found=found))
-    monkeypatch.setattr(gc, "list_json", lambda *args: [{"package": f"x/{PROJECT}/pdt/dashboard"}])
+    monkeypatch.setattr(gc, "list_json", lambda *args: (
+        [{"name": "warehouse/"}, {"name": "dashboard/"}] if args[1] == "managed-folders"
+        else [{"package": f"x/{PROJECT}/pdt/dashboard"}]))
     monkeypatch.setattr(gweb, "warn_if_locked", lambda store, name: None)
     monkeypatch.setattr(gc, "service_account_or_none", lambda project, email:
                         {"email": email, "displayName": "pdt web app dashboard"})
     assert gweb.destroy(web_app(google), True) == 0
     [delete] = fake.ran("iam", "service-accounts", "delete")
     assert delete[3] == SA
-    # The account goes last, after every grant it held is removed.
-    assert fake.calls.index(delete) == len(fake.calls) - 1
+    # The account goes after every grant it held is removed.
+    revokes = [fake.calls.index(c) for c in fake.ran("storage", "managed-folders",
+                                                      "remove-iam-policy-binding")]
+    assert revokes and fake.calls.index(delete) > max(revokes)
     assert [c[:3] for c in fake.ran("run", "services", "delete")] == [("run", "services", "delete")]
     assert fake.ran("secrets", "delete") != []
-    assert fake.ran("artifacts", "docker", "images", "delete") != []
+    # The app's image was the last in the repository, so the repository goes with it.
+    assert fake.ran("artifacts", "docker", "images", "delete") == []
+    assert fake.ran("artifacts", "repositories", "delete") != []
     removes = fake.ran("storage", "managed-folders", "remove-iam-policy-binding")
     assert any("/warehouse/" in c[3] and flag(c, "--role") == gweb.READ_ROLE for c in removes)
     assert any("/dashboard/" in c[3] and flag(c, "--role") == gc.STORE_ROLE for c in removes)
@@ -438,3 +445,29 @@ def test_a_deploy_sets_the_clean_up_policy_once(google, monkeypatch):
                                                     repository}))
     assert gweb.deploy(web_app(google), True) == 0
     assert fake.ran("artifacts", "repositories", "set-cleanup-policies") == []
+
+
+def test_a_redeploy_removes_grants_the_config_no_longer_names(google, monkeypatch, capsys):
+    found = {("storage", "buckets", "describe"): {"labels": {"managed-by": "pdt"}},
+             ("storage", "managed-folders", "get-iam-policy"): {"bindings": [
+                 {"role": gweb.READ_ROLE, "members": [f"serviceAccount:{SA}"]},
+                 {"role": gc.STORE_ROLE, "members": [f"serviceAccount:{SA}"]}]}}
+    fake = fake_cloud(monkeypatch, FakeCloud(found=found))
+    monkeypatch.setattr(gc, "list_json", lambda *args: (
+        [{"name": "warehouse/"}, {"name": "old-source/"}, {"name": "dashboard/"}]
+        if args[1] == "managed-folders" else []))
+    text = WEB_APP.replace("storage:\n  read: [warehouse]\n",
+                           "storage:\n  enabled: false\n  read: [warehouse]\n")
+    assert gweb.deploy(web_app(google, text), True) == 0
+    removes = fake.ran("storage", "managed-folders", "remove-iam-policy-binding")
+    assert [(c[3].rsplit("/", 2)[-2], flag(c, "--role")) for c in removes] == [
+        ("old-source", gweb.READ_ROLE), ("dashboard", gc.STORE_ROLE)]
+
+
+def test_the_plan_warns_about_accounts_the_managed_sign_in_cannot_serve():
+    app = {"auth": {"allowed_domains": ["example.com", "partner.example"]}}
+    assert gweb.audience_problems(app, "example.com") == [
+        "partner.example is not the project's organization (example.com), so its accounts "
+        "cannot sign in"]
+    assert "no organization" in gweb.audience_problems(app, "")[0]
+    assert gweb.audience_problems(app, None) == []
