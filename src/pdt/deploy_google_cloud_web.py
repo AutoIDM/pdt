@@ -86,6 +86,7 @@ SA_DISPLAY_NAME = "pdt web app"
 # `gcloud ... --set-env-vars` splits on commas unless the value starts with ^<delimiter>^.
 ENV_DELIMITER = "|"
 SERVICE_USAGE = "https://serviceusage.googleapis.com/v1beta1"
+DIRECTORY = "https://admin.googleapis.com/admin/directory/v1"
 REVISION_FILTER = 'resource.type="cloud_run_revision"'
 # The service's own output and Cloud Run's system log about it.
 # Cloud Run writes its system log under two names: varlog/system and //var/log/system.
@@ -200,30 +201,71 @@ def revoke_store_read(bucket: str, other: str, sa: str) -> None:
                  "--role", READ_ROLE)
 
 
-def organization_domain(project: str) -> str | None:
-    """The domain of the project's organization, "" for a project with no organization, or None
-    when the deployer may not read it."""
+@dataclass
+class Organization:
+    """The project's organization, as far as the deployer may read it."""
+    primary: str  # "" for a project with no organization
+    domains: set[str]  # lower case: the primary domain and every other domain pdt found
+    complete: bool  # the Directory API listed every domain of the Workspace account
+
+
+def organization(project: str) -> Organization | None:
+    """The project's organization, or None when the deployer may not read it."""
     proc = gc.gcloud("projects", "get-ancestors", project, "--format=json")
     if proc.returncode != 0:
         return None
     org = next((item.get("id") for item in json.loads(proc.stdout or "[]")
                 if item.get("type") == "organization"), None)
     if org is None:
-        return ""
-    proc = gc.gcloud("organizations", "describe", str(org), "--format=value(displayName)")
-    return proc.stdout.strip() if proc.returncode == 0 else None
+        return Organization("", set(), True)
+    proc = gc.gcloud("organizations", "describe", str(org), "--format=json")
+    if proc.returncode != 0:
+        return None
+    described = json.loads(proc.stdout or "{}")
+    primary = described.get("displayName", "")
+    customer = (described.get("owner") or {}).get("directoryCustomerId")
+    listed = directory_domains(customer) if customer else None
+    if listed is not None:
+        return Organization(primary, {primary.lower(), *listed}, True)
+    # A deployer of an organization's project most often has an account of that organization.
+    account = gc.gcloud("auth", "list", "--filter=status:ACTIVE", "--format=value(account)")
+    own = account.stdout.strip().rpartition("@")[2].lower()
+    return Organization(primary, {primary.lower()} | ({own} if own and not
+                                                     own.endswith("gserviceaccount.com") else set()),
+                        False)
 
 
-def audience_problems(app: dict, domain: str | None) -> list[str]:
-    """Who the Google-managed OAuth client cannot sign in: it serves only accounts of the
-    project's organization (https://docs.cloud.google.com/run/docs/securing/identity-aware-proxy-cloud-run)."""
-    if domain is None:
-        return []
-    if domain == "":
+def directory_domains(customer: str) -> set[str] | None:
+    """Every domain of the Workspace account, or None when the deployer may not list them: the
+    Directory API needs a Workspace admin and the admin.directory.domain.readonly scope."""
+    token = gc.run_quiet("auth", "print-access-token").strip()
+    request = urllib.request.Request(f"{DIRECTORY}/customer/{customer}/domains",
+                                     headers={"Authorization": f"Bearer {token}"})
+    try:
+        answer = fetch_json(request) or {}
+    except Exception:  # most deployers' tokens lack the scope
+        return None
+    return {domain["domainName"].lower() for domain in answer.get("domains") or []
+            if domain.get("domainName")}
+
+
+def audience_problems(app: dict, org: Organization | None) -> tuple[list[str], list[str]]:
+    """Who the Google-managed OAuth client cannot sign in, as (problems that stop the deploy,
+    cautions): it serves only accounts of the project's organization
+    (https://docs.cloud.google.com/run/docs/securing/identity-aware-proxy-cloud-run)."""
+    if org is None:
+        return [], []
+    if not org.primary:
         return ["the project has no organization, so Identity-Aware Proxy's Google-managed sign-in "
-                "lets no one in; move the project into an organization"]
-    return [f"{other} is not the project's organization ({domain}), so its accounts cannot sign in"
-            for other in app["auth"].get("allowed_domains") or [] if other.lower() != domain.lower()]
+                "lets no one in; move the project into an organization"], []
+    others = [other for other in app["auth"].get("allowed_domains") or []
+              if other.lower() not in org.domains]
+    if org.complete:
+        return [f"{other} is not a domain of the project's organization ({org.primary}), so its "
+                f"accounts cannot sign in" for other in others], []
+    return [], [f"{other} is not the organization's primary domain ({org.primary}), and pdt may not "
+                f"list its other domains; if {other} is not one of them, its accounts cannot sign in"
+                for other in others]
 
 
 def ensure_iap_agent(project: str, number: str) -> str:
@@ -470,6 +512,12 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     gate = web.gate(app, "google-cloud")
     apis = (*APIS, *((IAP_API, RESOURCE_MANAGER_API) if gate else ()), *((gc.CLOUD_BUILD_API,) if cloud else ()))
     gc.ensure_apis(project, assume_yes, apis)
+    if gate:
+        stops, cautions = audience_problems(app, organization(project))
+        if stops:
+            fail("web.auth: " + "; ".join(console.escape(problem) for problem in stops))
+        for caution in cautions:
+            console.warn(f"web.auth: {console.escape(caution)}")
 
     service = service_name(name)
     values = gather_secrets(app)
@@ -530,7 +578,6 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             else:
                 secret_state = "unchanged" if gc.secret_value(project, sid) == payload else "update"
         members = iap_policy_members(project, region, service) if service_exists and gate else []
-        audience = audience_problems(app, organization_domain(project)) if gate else []
 
         add_members, remove_members = iap_changes(members, iap_members(app) if gate else [])
 
@@ -600,8 +647,6 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         except Exception:  # the repository's size is a nicety; the estimate shows 0
             pass
     cost = cost_estimate(app, project, region, use, stored)
-    for problem in audience:
-        console.warn(f"web.auth: {console.escape(problem)}")
 
     if plan_only:
         return show_plan(actions, cost)

@@ -5,6 +5,7 @@ No test here needs the network or gcloud: every gcloud call is patched and recor
 
 import json
 import subprocess
+import urllib.error
 from datetime import datetime, timezone
 
 import pytest
@@ -113,7 +114,8 @@ def fake_cloud(monkeypatch, fake: FakeCloud, secrets=None):
     monkeypatch.setattr(gweb, "confirm", lambda actions, assume_yes, cost=None: True)
     monkeypatch.setattr(gweb, "fetch_json", lambda request: {"email": AGENT})
     monkeypatch.setattr(gweb.regions, "local_currency", lambda: "USD")
-    monkeypatch.setattr(gweb, "organization_domain", lambda project: "example.com")
+    monkeypatch.setattr(gweb, "organization",
+                        lambda project: gweb.Organization("example.com", {"example.com"}, True))
     return fake
 
 
@@ -505,14 +507,51 @@ def test_a_redeploy_removes_grants_the_config_no_longer_names(google, monkeypatc
         ("old-source", gweb.READ_ROLE), ("dashboard", gc.STORE_ROLE)]
 
 
-def test_the_plan_warns_about_accounts_the_managed_sign_in_cannot_serve():
-    app = {"auth": {"allowed_domains": ["example.com", "partner.example"]}}
-    assert gweb.audience_problems(app, "example.com") == [
-        "partner.example is not the project's organization (example.com), so its accounts "
-        "cannot sign in"]
-    assert "no organization" in gweb.audience_problems(app, "")[0]
-    assert gweb.audience_problems(app, None) == []
+def test_the_accounts_the_managed_sign_in_cannot_serve():
+    app = {"auth": {"allowed_domains": ["example.com", "Second.example", "partner.example"]}}
+    listed = gweb.Organization("example.com", {"example.com", "second.example"}, True)
+    assert gweb.audience_problems(app, listed) == ([
+        "partner.example is not a domain of the project's organization (example.com), so its "
+        "accounts cannot sign in"], [])
+    unlisted = gweb.Organization("example.com", {"example.com", "second.example"}, False)
+    stops, cautions = gweb.audience_problems(app, unlisted)
+    assert stops == [] and len(cautions) == 1 and cautions[0].startswith("partner.example ")
+    stops, cautions = gweb.audience_problems(app, gweb.Organization("", set(), True))
+    assert "no organization" in stops[0] and cautions == []
+    assert gweb.audience_problems(app, None) == ([], [])
 
+
+def test_the_organization_holds_every_domain_the_directory_lists(monkeypatch):
+    answers = {("projects", "get-ancestors"): '[{"id": "p", "type": "project"}, '
+                                              '{"id": "1", "type": "organization"}]',
+               ("organizations", "describe"): '{"displayName": "example.com", '
+                                              '"owner": {"directoryCustomerId": "C1"}}',
+               ("auth", "list"): "deployer@second.example\n"}
+    monkeypatch.setattr(gc, "gcloud", lambda *args, **kw: subprocess.CompletedProcess(
+        args, 0, answers[args[:2]], ""))
+    monkeypatch.setattr(gc, "run_quiet", lambda *args: "token")
+    monkeypatch.setattr(gweb, "fetch_json", lambda request: {"domains": [
+        {"domainName": "example.com"}, {"domainName": "Third.example"}]})
+    assert gweb.organization("p") == gweb.Organization(
+        "example.com", {"example.com", "third.example"}, True)
+
+    def refused(request):
+        raise urllib.error.HTTPError(request.full_url, 403, "scope", {}, None)
+    monkeypatch.setattr(gweb, "fetch_json", refused)
+    assert gweb.organization("p") == gweb.Organization(
+        "example.com", {"example.com", "second.example"}, False)
+
+
+def test_a_domain_outside_the_organization_stops_the_deploy_before_any_change(google, monkeypatch,
+                                                                            capsys):
+    fake = fake_cloud(monkeypatch, FakeCloud())
+    monkeypatch.setattr(gweb, "organization",
+                        lambda project: gweb.Organization("other.example", {"other.example"}, True))
+    with pytest.raises(SystemExit):
+        gweb.deploy(web_app(google), True)
+    assert fake.ran("iam", "service-accounts", "create") == []
+    assert fake.ran("run", "deploy") == []
+    assert "example.com is not a domain of the project's organization" in capsys.readouterr().out
 
 def test_a_clean_up_policy_with_the_right_names_but_other_rules_is_set_again():
     policies = {name: {**policy, "id": name} for name, policy in gc.CLEANUP_POLICIES_SET.items()}

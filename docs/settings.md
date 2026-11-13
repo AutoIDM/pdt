@@ -255,7 +255,7 @@ Every web app has a sign-in. `web.auth` needs `provider`, and `allowed_domains`,
 | `allowed_domains` | A list of Google Workspace domains, for example `[example.com]`. | Empty. | Lets every account of each domain enter. |
 | `allowed_groups` | A list of Google group addresses, for example `[sales@example.com]`. | Empty. | Lets every member of each group enter. |
 
-IAP signs visitors in with a Google-managed OAuth client, which serves only accounts of the Google Cloud project's own organization. A domain in `allowed_domains` that is not the organization's domain, a group member from outside the organization, or a project with no organization cannot sign in; the deploy plan warns about the first and the last. These need an OAuth client that you create in the Cloud console.
+IAP signs visitors in with a Google-managed OAuth client, which serves only accounts of the Google Cloud project's own organization. A group member from outside the organization cannot sign in. A deploy stops before it changes anything when the project has no organization. It also stops when a domain in `allowed_domains` is not a domain of the organization. pdt can list the organization's domains only when the deployer is a Google Workspace admin and the token has the `admin.directory.domain.readonly` scope. Otherwise, pdt accepts the organization's primary domain and the deployer's own domain, and warns about each other domain.
 
 IAP sends the email of the visitor to the app in the header `X-Goog-Authenticated-User-Email`, as `accounts.google.com:<email>`.
 
