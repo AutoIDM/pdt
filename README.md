@@ -16,7 +16,7 @@ pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Win
 
 ## Primitives
 
-Every job gets the same building blocks. pdt picks the service on each cloud for you. The table shows the `job` profile, a process that runs on a schedule and exits; the `web` profile, an HTTP server that runs all the time behind the platform's sign-in (Google Cloud and Windows for now), is in [App profiles](docs/profiles.md).
+Every job gets the same building blocks. pdt picks the service on each cloud for you. The table shows the `job` profile, a process that runs on a schedule and exits; the `web` profile, an HTTP server that runs all the time behind the platform's sign-in (Google Cloud for now), is in [App profiles](docs/profiles.md).
 
 | | AWS | Azure | Google Cloud | Windows |
 | --- | --- | --- | --- | --- |

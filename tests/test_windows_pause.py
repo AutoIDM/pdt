@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from conftest import add_app
-from pdt import config, deploy_windows, deploy_windows_job, runs_cli
+from pdt import config, deploy_windows, runs_cli
 
 
 @pytest.fixture
@@ -80,7 +80,7 @@ def test_start_with_follow_waits_for_the_new_log_before_it_reads_the_run_list(
             (folder / "20260923T100000Z.log").write_text("")
     monkeypatch.setattr(deploy_windows.time, "sleep", runner_starts)
     followed = []
-    monkeypatch.setattr(deploy_windows_job, "logs", lambda app, rest, new: followed.append(
+    monkeypatch.setattr(deploy_windows, "logs", lambda app, rest, new: followed.append(
         [path.stem for path in folder.glob("*.log") if new(runs_cli.Run(path.stem, datetime.now(timezone.utc), None, "running"))])
         or 0)
 

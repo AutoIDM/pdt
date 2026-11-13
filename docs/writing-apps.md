@@ -37,7 +37,7 @@ pdt new my-report --from-scripts
 
 ## Web apps
 
-A job runs and exits. A web app runs all the time and answers HTTP requests: a dashboard, a lookup form, an internal tool. Set `app_profile: web` in the app's own `pdt.yml` to make one. [App profiles](profiles.md) lists what every command means for a web app and which resources each provider creates for it. The web profile deploys on Google Cloud (a Cloud Run service) and Windows (two services); `pdt validate` says so for AWS and Azure.
+A job runs and exits. A web app runs all the time and answers HTTP requests: a dashboard, a lookup form, an internal tool. Set `app_profile: web` in the app's own `pdt.yml` to make one. [App profiles](profiles.md) lists what every command means for a web app and which resources each provider creates for it. The web profile deploys on Google Cloud, as a Cloud Run service; `pdt validate` says so for the other providers.
 
 ```yaml
 app_profile: web
@@ -53,13 +53,13 @@ storage:
   read: [warehouse]             # other apps whose storage this app may read
 ```
 
-A web app has no `schedule`; `pdt validate` rejects one. A web app is either a `run.py` that serves HTTP on the port in `PDT_PORT`, or any container: a folder with a `Dockerfile` and a `pdt.yml` and no `run.py`, such as nginx serving static files. It needs no sign-in code. The platform puts its own gate in front of it, and no request reaches the app before the visitor signed in: Identity-Aware Proxy on Cloud Run, oauth2-proxy on a Windows PC. A web app is never open to everyone: `pdt validate` requires `web.auth.provider` and at least one of `web.auth.allowed_domains` and `web.auth.allowed_groups`.
+A web app has no `schedule`; `pdt validate` rejects one. A web app is either a `run.py` that serves HTTP on the port in `PDT_PORT`, or any container: a folder with a `Dockerfile` and a `pdt.yml` and no `run.py`, such as nginx serving static files. It needs no sign-in code. The platform puts its own gate in front of it, and no request reaches the app before the visitor signed in: Identity-Aware Proxy. A web app is never open to everyone: `pdt validate` requires `web.auth.provider` and at least one of `web.auth.allowed_domains` and `web.auth.allowed_groups`.
 
-`web.auth.provider` names where visitors sign in. `google` works on Google Cloud and Windows; `microsoft` is accepted but has no gate yet. On Google Cloud nothing more is needed: Identity-Aware Proxy uses a Google-managed OAuth client. On Windows, create an OAuth client in the Google Cloud console with the redirect URI `pdt deploy` names, and put its id and secret in `.env` as `PDT_AUTH_CLIENT_ID` and `PDT_AUTH_CLIENT_SECRET`; `pdt validate` and `pdt deploy` require them like any other env var. Windows also needs `PDT_AUTH_COOKIE_SECRET` (any random text), and with `web.auth.allowed_groups` a service account with domain-wide delegation; see [Web apps on Windows](platforms.md#web-apps-on-windows).
+`web.auth.provider` names where visitors sign in: `google`. Nothing more is needed: Identity-Aware Proxy uses a Google-managed OAuth client.
 
-`web.auth.allowed_domains` lists the domains whose accounts may enter, and `web.auth.allowed_groups` the groups whose members may. On Google Cloud both are IAM bindings on the service (a Google Workspace domain, a Google group); on Windows the proxy checks both.
+`web.auth.allowed_domains` lists the domains whose accounts may enter, and `web.auth.allowed_groups` the groups whose members may. Both are IAM bindings on the service (a Google Workspace domain, a Google group).
 
-Each gate forwards the visitor's email in a header: `X-Goog-Authenticated-User-Email` (IAP, as `accounts.google.com:<email>`), `X-Forwarded-Email` (Windows). An app may ignore it. A Python app that wants it calls `pdt.utils.auth.current_user(headers)`, which reads every gate's header and returns the email, or `""` with no gate.
+IAP forwards the visitor's email in `X-Goog-Authenticated-User-Email`, as `accounts.google.com:<email>`. An app may ignore it. A Python app that wants it calls `pdt.utils.auth.current_user(headers)`, which returns the email, or `""` with no gate. Trust no other header for the visitor's identity: a visitor can send any header that IAP does not set.
 
 ```python
 import os
@@ -77,7 +77,7 @@ class Handler(BaseHTTPRequestHandler):
 ThreadingHTTPServer(("0.0.0.0", int(os.environ["PDT_PORT"])), Handler).serve_forever()
 ```
 
-`pdt run APP` serves the app on `http://127.0.0.1:PORT/` on your own computer with no gate, so `current_user` returns `""` there; Ctrl+C stops it. A container app runs through Docker on your computer, with each `storage.read` app's local storage folder mounted read-only under `/pdt/storage/<app>/`. A deployed web app has no runs to start, so `pdt run APP --deployed` refuses it; `pdt deploy APP` restarts it with the deployed code.
+`pdt run APP` serves the app on `http://127.0.0.1:PORT/` on your own computer with no gate, so `current_user` returns `""` there; Ctrl+C stops it. A container app runs through Docker on your computer, with each `storage.read` app's local storage folder mounted read-only under `/pdt/storage/<app>/`. `pdt run APP --deployed` opens the deployed app in the browser.
 
 A web app often shows what a job produced. `storage.read` names the apps whose storage it may read, and `pdt deploy` grants the read rights. On Google Cloud, each named app's folder of the bucket is mounted read-only at `/pdt/storage/<app>/` (the folder in `PDT_STORAGE_READ_DIR`), so any container reads it as plain files; a file the job writes shows up within about a minute, and the reader takes no lock, so it never blocks the job. A Python app can also read the store itself: `pdt.utils.storage.read_only("warehouse")` is a read-only view of that app's folder, and its `fetch("state/warehouse.duckdb", Path("warehouse.duckdb"))` copies the file to that path when the stored copy changed since the last fetch.
 

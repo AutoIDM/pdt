@@ -3,7 +3,6 @@ from pdt import config, profiles
 from pdt.config import merged_app, validate_app
 from pdt.profiles import job, web
 
-WINDOWS = "platform:\n  provider: windows\n"
 GOOGLE_CLOUD = "platform:\n  provider: google-cloud\n"
 CLOUD_WEB_APP = """\
 app_profile: web
@@ -15,19 +14,7 @@ web:
 storage:
   read: [warehouse]
 """
-WEB_APP = """\
-app_profile: web
-web:
-  port: 8050
-  hostname: sales.example.com
-  tls_cert: certs/sales.pem
-  tls_key: certs/sales.key
-  auth:
-    provider: google
-    allowed_domains: [example.com]
-storage:
-  read: [warehouse]
-"""
+WEB_APP = CLOUD_WEB_APP
 
 
 def test_an_app_with_no_profile_is_a_job(project):
@@ -38,8 +25,8 @@ def test_an_app_with_no_profile_is_a_job(project):
     assert validate_app("my-report") == []
 
 
-def test_a_web_app_on_windows_validates(project):
-    (project / "pdt.yml").write_text(WINDOWS)
+def test_a_web_app_validates(project):
+    (project / "pdt.yml").write_text(GOOGLE_CLOUD)
     add_app(project, "warehouse", "schedule: hourly\n")
     add_app(project, "dashboard", WEB_APP)
     assert validate_app("dashboard") == []
@@ -48,7 +35,6 @@ def test_a_web_app_on_windows_validates(project):
     assert app["storage"] is True
     assert app["storage_read"] == ["warehouse"]
     assert web.port(app) == 8050
-    assert web.url(app) == "https://sales.example.com/"
 
 
 def test_an_unknown_profile_is_refused(project):
@@ -57,7 +43,7 @@ def test_an_unknown_profile_is_refused(project):
 
 
 def test_a_web_app_rejects_a_schedule(project):
-    (project / "pdt.yml").write_text(WINDOWS)
+    (project / "pdt.yml").write_text(GOOGLE_CLOUD)
     add_app(project, "dashboard", WEB_APP + "schedule: hourly\n")
     assert any("a web app runs all the time; remove the key" in p
                for p in validate_app("dashboard"))
@@ -70,14 +56,14 @@ def test_a_job_rejects_the_web_and_auth_sections(project):
 
 
 def test_a_web_app_says_who_may_use_it(project):
-    (project / "pdt.yml").write_text(WINDOWS)
+    (project / "pdt.yml").write_text(GOOGLE_CLOUD)
     add_app(project, "warehouse", "schedule: hourly\n")
     add_app(project, "dashboard", WEB_APP.replace("  auth:\n    provider: google\n"
                                                   "    allowed_domains: [example.com]\n", ""))
-    assert any("web.auth.provider must be google or microsoft" in p
+    assert any("web.auth.provider must be google" in p
                for p in validate_app("dashboard"))
     add_app(project, "dashboard", WEB_APP.replace("provider: google", "provider: github"))
-    assert any("web.auth.provider must be google or microsoft" in p
+    assert any("web.auth.provider must be google" in p
                for p in validate_app("dashboard"))
 
 
@@ -85,7 +71,7 @@ def test_a_web_app_is_never_open_to_everyone(project):
     (project / "pdt.yml").write_text(GOOGLE_CLOUD)
     add_app(project, "warehouse", "schedule: hourly\n")
     add_app(project, "dashboard", CLOUD_WEB_APP.replace("provider: google", "provider: public"))
-    assert any("web.auth.provider must be google or microsoft" in p
+    assert any("web.auth.provider must be google" in p
                for p in validate_app("dashboard"))
     add_app(project, "dashboard", "app_profile: web\nweb:\n  auth: public\n")
     assert any("web.auth: must be a mapping" in p for p in validate_app("dashboard"))
@@ -102,7 +88,9 @@ def test_web_resources_are_checked(project):
     assert validate_app("dashboard") == []
     assert web.resources(merged_app("dashboard"))["max_instances"] == 3
     add_app(project, "dashboard", base.replace("RES", "cpu: 1\n    memory: 8GiB"))
-    assert any("1 vCPU allows at most 4GiB" in p for p in validate_app("dashboard"))
+    assert any("1 vCPU needs from 512MiB to 4GiB" in p for p in validate_app("dashboard"))
+    add_app(project, "dashboard", base.replace("RES", "cpu: 4"))
+    assert any("4 vCPU needs from 2GiB to 16GiB" in p for p in validate_app("dashboard"))
     add_app(project, "dashboard", base.replace("RES", "cpu: 3\n    memory: 1TB\n    disk: 9"))
     problems = validate_app("dashboard")
     assert any("web.resources.cpu must be one of 1, 2, 4, 6, 8" in p for p in problems)
@@ -120,20 +108,12 @@ def test_each_cloud_gate_is_a_known_pair(project):
     assert validate_app("dashboard") == []
     app = merged_app("dashboard")
     assert web.gate(app, "google-cloud") == "Identity-Aware Proxy"
-    assert web.required_env(app) == []
-    assert web.health_path(app) == "/" and web.url(app) == ""
-    add_app(project, "dashboard", CLOUD_WEB_APP.replace("provider: google", "provider: microsoft"))
-    assert any("microsoft sign-in is not yet available on the google-cloud provider" in p
-               for p in validate_app("dashboard"))
+    assert web.health_path(app) == "/"
     (project / "pdt.yml").write_text("platform:\n  provider: azure\n")
     assert any("not yet available on the azure provider" in p for p in validate_app("dashboard"))
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    assert any("not yet available on the windows provider" in p for p in validate_app("dashboard"))
 
-
-def test_a_web_app_on_windows_needs_a_hostname_and_a_certificate(project):
-    (project / "pdt.yml").write_text(WINDOWS)
-    add_app(project, "dashboard", "app_profile: web\nweb:\n  auth:\n    provider: google\n"
-                                  "    allowed_domains: [example.com]\n")
-    assert any("needs hostname, tls_cert, tls_key" in p for p in validate_app("dashboard"))
 
 
 def test_a_web_app_is_refused_on_aws_for_now(project):
@@ -158,7 +138,7 @@ def test_a_container_with_a_config_file_is_a_web_app(project):
 
 
 def test_storage_read_must_name_another_app_in_the_project(project):
-    (project / "pdt.yml").write_text(WINDOWS)
+    (project / "pdt.yml").write_text(GOOGLE_CLOUD)
     add_app(project, "dashboard", WEB_APP.replace("[warehouse]", "[dashboard, nowhere]"))
     problems = validate_app("dashboard")
     assert any("storage.read names 'dashboard', which is this app" in p for p in problems)
@@ -173,18 +153,6 @@ def test_storage_mapping_shape_is_checked(project):
     assert any("storage.read must be a list of app names" in p for p in problems)
     assert any("unknown key 'size'" in p for p in problems)
 
-
-def test_the_web_profile_adds_the_gate_env_vars_on_windows(project):
-    from pdt.config import env_spec
-    (project / "pdt.yml").write_text(WINDOWS)
-    add_app(project, "warehouse", "schedule: hourly\n")
-    add_app(project, "dashboard", WEB_APP)
-    required = env_spec(merged_app("dashboard"))["required"]
-    assert web.ENV_CLIENT_ID in required and web.ENV_COOKIE_SECRET in required
-    assert web.ENV_SERVICE_ACCOUNT_PATH not in required
-    add_app(project, "grouped", WEB_APP.replace("allowed_domains: [example.com]", "allowed_groups: [sales]"))
-    required = env_spec(merged_app("grouped"))["required"]
-    assert web.ENV_SERVICE_ACCOUNT_PATH in required and web.ENV_ADMIN_EMAIL in required
 
 
 def test_every_profile_answers_every_concern_for_every_provider():

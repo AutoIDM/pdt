@@ -5,7 +5,7 @@ import pytest
 
 from conftest import add_app, plain
 from pdt.deploy import DECLINED
-from pdt import config, deploy_windows, deploy_windows_job, runs_cli
+from pdt import config, deploy_windows, runs_cli
 
 
 @pytest.fixture
@@ -248,8 +248,8 @@ def test_list_runs_reads_only_the_end_of_each_log_and_asks_only_about_the_newest
     monkeypatch.setattr(deploy_windows, "_task_running",
                         lambda powershell, name: asked.append(name) or True)
     reads = []
-    real_read = deploy_windows_job.parse_line
-    monkeypatch.setattr(deploy_windows_job, "parse_line",
+    real_read = deploy_windows.parse_line
+    monkeypatch.setattr(deploy_windows, "parse_line",
                         lambda raw: reads.append(len(raw)) or real_read(raw))
 
     found = deploy_windows.list_runs("my-report")

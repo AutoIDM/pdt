@@ -1006,11 +1006,6 @@ def env_spec(app: dict) -> dict:
         for name in lifecycle.TRANSPORTS[entry["type"]].secrets(entry):
             if name not in required:
                 required.append(name)
-    if app.get("app_profile") == "web":
-        from pdt.profiles import web
-        for name in web.required_env(app):
-            if name not in required:
-                required.append(name)
     if required != list(spec.get("required") or []):
         spec = {**spec, "required": required}
     if not powershell_scripts(app["dir"]):

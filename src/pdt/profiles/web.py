@@ -2,13 +2,12 @@
 
 The app is any container that listens on the port in `web.port` (PDT_PORT), or a
 `run.py` that does. It needs no sign-in code. The platform's own gate stands in
-front of it and lets no request through until the visitor signed in:
-Identity-Aware Proxy on Cloud Run, oauth2-proxy on a Windows PC. `web.auth.provider`
-names where visitors sign in (`google`; `microsoft` has no gate yet). A web app is
-never open to everyone: `pdt validate` requires a provider and at least one of
-`web.auth.allowed_domains` and `web.auth.allowed_groups`. Each gate sets a
-header with the visitor's email (`pdt.utils.auth.current_user` reads all of them),
-and the app may ignore it.
+front of it and lets no request through until the visitor signed in: Identity-Aware
+Proxy on Cloud Run. `web.auth.provider` names where visitors sign in (`google`). A
+web app is never open to everyone: `pdt validate` requires a provider and at least
+one of `web.auth.allowed_domains` and `web.auth.allowed_groups`. The gate sets a
+header with the visitor's email (`pdt.utils.auth.current_user` reads it), and the
+app may ignore it.
 
 `web.auth.allowed_domains` and `web.auth.allowed_groups` say who may enter.
 
@@ -28,42 +27,28 @@ NAME = "web"
 DESCRIPTION = "an HTTP server that runs all the time behind the platform's sign-in"
 
 KEYS = {"web"}
-WEB_KEYS = {"port", "health_path", "hostname", "tls_cert", "tls_key", "auth", "resources"}
+WEB_KEYS = {"port", "health_path", "auth", "resources"}
 AUTH_KEYS = {"provider", "allowed_domains", "allowed_groups"}
 # What a deployed web app gets when web.resources does not say.
 RESOURCE_DEFAULTS = {"cpu": 1, "memory": "512MiB", "timeout": 300, "min_instances": 0,
                      "max_instances": 3, "concurrency": 80}
-# The vCPU counts a Cloud Run instance can have, and the most memory, in MiB, each allows.
-CPU_MEMORY_MAX = {1: 4096, 2: 8192, 4: 16384, 6: 24576, 8: 32768}
-# Cloud Run gen2 needs at least 512 MiB.
-MEMORY_MIN = 512
+# The vCPU counts a Cloud Run instance can have, and the least and the most memory, in MiB,
+# each allows (https://docs.cloud.google.com/run/docs/configuring/services/memory-limits).
+CPU_MEMORY = {1: (512, 4096), 2: (512, 8192), 4: (2048, 16384), 6: (4096, 24576),
+              8: (4096, 32768)}
 TIMEOUT_MAX = 3600
 CONCURRENCY_MAX = 1000
-# The providers that read web.resources.
-RESOURCE_PROVIDERS = ("google-cloud",)
-AUTH_PROVIDERS = ("google", "microsoft")
+AUTH_PROVIDERS = ("google",)
 DEFAULT_PORT = 8080
 DEFAULT_HEALTH_PATH = "/"
-# The port the Windows proxy listens on. There the app's own port is reachable from 127.0.0.1 only.
-PROXY_PORT = 443
 # The providers that can run this profile today. The others are refused at validation
 # time, so a deploy never gets as far as the cloud.
-PROVIDERS = ("google-cloud", "windows")
-# Which sign-in gate each (provider, web.auth.provider) pair gets. A pair that is not here is
-# refused at validation time.
+PROVIDERS = ("google-cloud",)
+# Which sign-in gate each (provider, web.auth.provider) pair gets.
 GATES = {
     ("google-cloud", "google"): "Identity-Aware Proxy",
-    ("windows", "google"): "oauth2-proxy",
 }
 
-# The env vars oauth2-proxy needs on Windows, where no platform makes the OAuth client.
-ENV_CLIENT_ID = "PDT_AUTH_CLIENT_ID"
-ENV_CLIENT_SECRET = "PDT_AUTH_CLIENT_SECRET"
-# Windows only: oauth2-proxy's cookie secret, and, with allowed_groups, the service account
-# with domain-wide delegation that reads Google group membership.
-ENV_COOKIE_SECRET = "PDT_AUTH_COOKIE_SECRET"
-ENV_SERVICE_ACCOUNT_PATH = "PDT_AUTH_GOOGLE_SERVICE_ACCOUNT_PATH"
-ENV_ADMIN_EMAIL = "PDT_AUTH_GOOGLE_ADMIN_EMAIL"
 # What the app reads.
 ENV_PORT = "PDT_PORT"
 ENV_URL = "PDT_URL"
@@ -112,29 +97,10 @@ ANSWERS = {
         "cost": "request-based billing: CPU and memory while a request runs, no charge at zero "
                 "instances; IAP is free",
     },
-    "windows": {
-        "compute": "two Windows services on this PC, pdt-<app> (the app, through WinSW) and "
-                   "pdt-<app>-proxy (oauth2-proxy, through WinSW)",
-        "lifecycle": "both services start at boot and restart after a failure; no time limit; "
-                     "`pdt deploy` restarts them so they run the deployed code",
-        "ingress": f"the proxy listens on TCP {PROXY_PORT} with the certificate in web.tls_cert; "
-                   "a firewall rule pdt-<app> opens the port; the app listens on 127.0.0.1 only",
-        "identity": "each service runs as its virtual account NT SERVICE\\pdt-<app>; a visitor "
-                    "signs in with Google, the proxy enforces allowed_domains and "
-                    "allowed_groups, and the app sees X-Forwarded-Email",
-        "secrets": "the project's .env file, read when each service starts",
-        "storage": "%ProgramData%\\pdt\\<app>\\storage; storage.read grants the service read "
-                   "rights on each named app's storage folder",
-        "logs": "%ProgramData%\\pdt\\<app>\\logs, one file per start of the server; the proxy "
-                "logs each request with the visitor's email",
-        "health": "an HTTP request to web.health_path; the service state from Get-Service",
-        "build": "none; uv runs run.py from the project folder",
-        "cost": "none",
-    },
-    **{provider: {concern: "not yet available; the web profile runs on Google Cloud and Windows"
+    **{provider: {concern: "not yet available; the web profile runs on Google Cloud"
                   for concern in ("compute", "lifecycle", "ingress", "identity", "secrets",
                                   "storage", "logs", "health", "build", "cost")}
-       for provider in ("aws", "azure")},
+       for provider in ("aws", "azure", "windows")},
 }
 
 
@@ -180,18 +146,19 @@ def resource_problems(value, where: str) -> list[str]:
             return False
         return True
 
-    cpu_ok = merged["cpu"] in CPU_MEMORY_MAX and not isinstance(merged["cpu"], bool)
+    cpu = merged["cpu"]
+    cpu_ok = cpu in CPU_MEMORY and not isinstance(cpu, bool)
     if not cpu_ok:
         problems.append(f"{where}: web.resources.cpu must be one of "
-                        + ", ".join(str(cpu) for cpu in CPU_MEMORY_MAX))
+                        + ", ".join(str(count) for count in CPU_MEMORY))
     memory = memory_mib(merged["memory"])
     if memory is None:
         problems.append(f"{where}: web.resources.memory must be a size such as 512MiB or 2GiB")
-    elif memory < MEMORY_MIN:
-        problems.append(f"{where}: web.resources.memory must be at least {MEMORY_MIN}MiB")
-    elif cpu_ok and memory > CPU_MEMORY_MAX[merged["cpu"]]:
-        problems.append(f"{where}: web.resources.memory: {merged['cpu']} vCPU allows at most "
-                        f"{CPU_MEMORY_MAX[merged['cpu']] // 1024}GiB; raise cpu or lower memory")
+    elif cpu_ok and not CPU_MEMORY[cpu][0] <= memory <= CPU_MEMORY[cpu][1]:
+        low, high = CPU_MEMORY[cpu]
+        problems.append(f"{where}: web.resources.memory: {cpu} vCPU needs from "
+                        f"{low if low < 1024 else low // 1024}{'MiB' if low < 1024 else 'GiB'} "
+                        f"to {high // 1024}GiB")
     whole("timeout", 1, TIMEOUT_MAX)
     whole("concurrency", 1, CONCURRENCY_MAX)
     if whole("max_instances", 1, 1000) & whole("min_instances", 0, 1000):
@@ -201,32 +168,12 @@ def resource_problems(value, where: str) -> list[str]:
     return problems
 
 
-def required_env(app: dict) -> list[str]:
-    """The env vars the sign-in gate needs on this app's provider."""
-    provider = app["platform"].get("provider", "")
-    if provider == "windows":
-        names = [ENV_CLIENT_ID, ENV_CLIENT_SECRET, ENV_COOKIE_SECRET]
-        if app["auth"].get("allowed_groups"):
-            names += [ENV_SERVICE_ACCOUNT_PATH, ENV_ADMIN_EMAIL]
-        return names
-    return []
-
-
 def port(app: dict) -> int:
     return int(app["web"].get("port", DEFAULT_PORT))
 
 
 def health_path(app: dict) -> str:
     return str(app["web"].get("health_path", DEFAULT_HEALTH_PATH))
-
-
-def url(app: dict) -> str:
-    """The URL visitors use when `web.hostname` is set (Windows), else "": a cloud
-    provider prints the URL its platform gave the app when it deploys."""
-    hostname = app["web"].get("hostname")
-    if not hostname:
-        return ""
-    return f"https://{hostname}/"
 
 
 def _names(value, what: str, where: str) -> list[str]:
@@ -257,16 +204,6 @@ def problems(app: dict, provider: str) -> list[str]:
     path = web.get("health_path", DEFAULT_HEALTH_PATH)
     if not isinstance(path, str) or not path.startswith("/"):
         problems.append(f"{where}: web.health_path must be a path that starts with /")
-    for key in ("hostname", "tls_cert", "tls_key"):
-        if key in web and (not isinstance(web[key], str) or web[key] == ""):
-            problems.append(f"{where}: web.{key} must be text")
-    if provider == "windows":
-        missing = [key for key in ("hostname", "tls_cert", "tls_key") if not web.get(key)]
-        if missing:
-            problems.append(
-                f"{where}: web: on Windows a web app needs {', '.join(missing)}: the DNS name "
-                "visitors use and the PEM certificate and key files for it, because the PC has "
-                "no platform certificate")
     chosen = auth.get("provider")
     if chosen not in AUTH_PROVIDERS:
         problems.append(f"{where}: web.auth.provider must be {' or '.join(AUTH_PROVIDERS)}")
@@ -280,8 +217,4 @@ def problems(app: dict, provider: str) -> list[str]:
         problems.append(f"{where}: web.auth: list who may enter in allowed_domains, "
                         "allowed_groups, or both")
     problems.extend(resource_problems(web.get("resources"), where))
-    if web.get("resources") is not None and provider in PROVIDERS \
-            and provider not in RESOURCE_PROVIDERS:
-        problems.append(f"{where}: web.resources: the {provider} provider does not read it; "
-                        "remove the key")
     return problems

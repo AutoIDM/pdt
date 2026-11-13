@@ -10,23 +10,16 @@ web:
   port: 8080
   # `pdt health` and the platform's startup probe ask this path.
   health_path: /healthz
-  # On Windows, add the DNS name visitors use and the PEM certificate and
-  # key files for it, because the PC has no platform certificate:
-  # hostname: hello.example.com
-  # tls_cert: certs/hello.pem
-  # tls_key: certs/hello.key
   # Who may use the app. A web app always has a sign-in.
   auth:
-    # Where visitors sign in: google (Google Cloud and Windows).
+    # Where visitors sign in: google.
     provider: google
     # Only people from these domains may enter.
     allowed_domains: [example.com]
     # Or only members of these groups.
     # allowed_groups: [sales@example.com]
 
-# Env vars this app needs. `pdt validate` checks them against your .env, and
-# adds the sign-in's own where the platform needs them (PDT_AUTH_CLIENT_ID
-# and PDT_AUTH_CLIENT_SECRET for Google sign-in on Azure or Windows).
+# Env vars this app needs. `pdt validate` checks them against your .env.
 env:
   required: []
   optional: []

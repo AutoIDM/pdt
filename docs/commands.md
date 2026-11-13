@@ -8,7 +8,7 @@
 | `pdt list` | show every app with its profile (`job` or `web`), schedule, and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `profile`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
 | `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
 | `pdt run APP` | run an app on this machine; a web app serves `http://127.0.0.1:PORT/` with no sign-in until Ctrl+C, from its `run.py`, or from its `Dockerfile` with Docker |
-| `pdt run APP --deployed` | start one run of the deployed job now, on its platform; a web app runs all the time, so this refuses it; `pdt deploy APP` restarts it with the deployed code |
+| `pdt run APP --deployed` | start one run of the deployed job now, on its platform; for a web app, open its deployed URL in the browser |
 | `pdt run APP --deployed --follow` | start one run of the deployed job, follow its log, and exit 0 when it succeeds or 1 when it fails |
 | `pdt deploy APP` | deploy an app to its configured platform, then ask whether to start a run and follow its log |
 | `pdt deploy APP --run` | deploy, then start a run and follow its log with no question |
