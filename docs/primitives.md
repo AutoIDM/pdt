@@ -20,6 +20,16 @@ An **app** is a **scheduled job** (**job** for short) or a **web app**. A **job*
 pdt chooses how to deploy your app based on what kind of app it is, its settings, and where you're deploying it. The kind of app is its **profile**. pdt reads `app_profile` from pdt.yml to see what kind it is. It could be `job` or `web`. `job` is the default.
 
 
+## Profiles
+
+An app's profile sets which services pdt picks for it on each cloud.
+
+| Profile | What it is | Where it runs |
+| --- | --- | --- |
+| `job` | A script that runs on a schedule and exits. The default. | AWS, Azure, Google Cloud, Windows |
+| `web` | An HTTP server behind a Google sign-in. | Google Cloud |
+
+
 ## Primitives
 
 Every app gets the same building blocks. pdt picks the service on each cloud for you.

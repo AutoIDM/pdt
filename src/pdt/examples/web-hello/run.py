@@ -5,12 +5,9 @@
 # ///
 """Sample web app. Use as a template to create your own.
 
-It serves at the port in PDT_PORT. The platform's sign-in in front of it
-forwards each request with the visitor's email in a header;
-`pdt.utils.auth.current_user` reads it. A local `pdt run` has no sign-in, so
-the greeting says "visitor".
-
-Exit codes: 0 ok, 1 bad config.
+It serves at the port in PDT_PORT. Identity-Aware Proxy signs each visitor in
+and sends their email in the X-Goog-Authenticated-User-Email header. A local
+`pdt run` has no sign-in, so the greeting says "visitor".
 """
 
 from __future__ import annotations
@@ -20,21 +17,22 @@ import signal
 import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
-from pdt.config import ConfigError, load_env, merged_app, missing_env
-from pdt.utils.auth import current_user
-from pdt.utils.log import die, log
+from pdt.utils.log import log
 
-EXIT_OK = 0
-EXIT_CONFIG = 1
+# Identity-Aware Proxy sets it to "accounts.google.com:<email>".
+EMAIL_HEADER = "X-Goog-Authenticated-User-Email"
+
+
+def stop(_signum, _frame) -> None:
+    raise KeyboardInterrupt
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/healthz":
             return self.reply("ok")
-        who = current_user(self.headers) or "visitor"
+        who = (self.headers.get(EMAIL_HEADER) or "").removeprefix("accounts.google.com:") or "visitor"
         log("info", "page served", path=self.path, user=who)
         self.reply(f"Hello, {who}!")
 
@@ -51,26 +49,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    app_dir = Path(__file__).resolve().parent
-    try:
-        app = merged_app(app_dir.name)
-    except ConfigError as exc:
-        die(EXIT_CONFIG, "config is not valid", problem=str(exc))
-    load_env(app_dir)
-    missing = missing_env(app)
-    if missing != "":
-        die(EXIT_CONFIG, f"env vars missing: {missing}")
-
     port = int(os.environ["PDT_PORT"])
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    signal.signal(signal.SIGTERM, lambda *_: server.shutdown())
-    log("info", "serving", app=app["name"], port=port)
+    signal.signal(signal.SIGTERM, stop)
+    log("info", "serving", port=port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
-    log("info", "stopped", app=app["name"])
-    return EXIT_OK
+    log("info", "stopped")
+    return 0
 
 
 if __name__ == "__main__":

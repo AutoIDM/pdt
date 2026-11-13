@@ -16,7 +16,7 @@ pdt builds, runs, and deploys scheduled jobs to AWS, Azure, Google Cloud, or Win
 
 ## Primitives
 
-Every job gets the same building blocks. pdt picks the service on each cloud for you. The table shows the `job` profile, a process that runs on a schedule and exits; the `web` profile, an HTTP server that runs all the time behind the platform's sign-in (Google Cloud for now), is in [App profiles](docs/profiles.md).
+Every job gets the same building blocks. pdt picks the service on each cloud for you.
 
 | | AWS | Azure | Google Cloud | Windows |
 | --- | --- | --- | --- | --- |
@@ -117,7 +117,7 @@ A PowerShell job whose one script, `hello.ps1`, writes "Hello, world!". It is th
 PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in the app's data store.
 
 ### web-hello
-A web app (`app_profile: web`): a small HTTP server that greets the person who signed in, listening on the port in `PDT_PORT` and answering `/healthz` for the health check. Start from it to put a dashboard or an internal tool behind a Google sign-in; see [App profiles](docs/profiles.md). A web app can also be any container: a folder with a `Dockerfile` and a `pdt.yml`.
+A web app (`app_profile: web`) that greets the person who signed in.
 
 ## Support
 
@@ -134,7 +134,6 @@ A web app (`app_profile: web`): a small HTTP server that greets the person who s
 - [Settings](docs/settings.md): every setting in the project's and the apps' `pdt.yml` files, and every env var, with its allowed values and its default
 - [How pdt works](docs/primitives.md): the practices, the definitions, and the building blocks of jobs and web apps
 - [Choosing where jobs run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
-- [App profiles](docs/profiles.md): the `job` and `web` profiles, what each command means for each, and which resources each provider creates
 - [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
 - [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's runs, logs, and files
 - [Writing your own app](docs/writing-apps.md): Python and PowerShell apps, and logging

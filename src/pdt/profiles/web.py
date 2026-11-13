@@ -6,7 +6,7 @@ front of it and lets no request through until the visitor signed in: Identity-Aw
 Proxy on Cloud Run. `web.auth.provider` names where visitors sign in (`google`). A
 web app is never open to everyone: `pdt validate` requires a provider and at least
 one of `web.auth.allowed_domains` and `web.auth.allowed_groups`. The gate sets a
-header with the visitor's email (`pdt.utils.auth.current_user` reads it), and the
+header with the visitor's email, and the
 app may ignore it.
 
 `web.auth.allowed_domains` and `web.auth.allowed_groups` say who may enter.
@@ -24,7 +24,6 @@ in PDT_STORAGE_READ_URLS.
 from __future__ import annotations
 
 NAME = "web"
-DESCRIPTION = "an HTTP server that runs all the time behind the platform's sign-in"
 
 KEYS = {"web"}
 WEB_KEYS = {"port", "health_path", "auth", "resources"}
@@ -55,54 +54,6 @@ ENV_URL = "PDT_URL"
 ENV_STORAGE_READ_DIR = "PDT_STORAGE_READ_DIR"
 # Where the deployed app finds a read-only copy of each `storage.read` app's files.
 STORAGE_READ_DIR = "/pdt/storage"
-
-COMMANDS = {
-    "run": "start the app on this computer with no sign-in, from run.py or its Dockerfile; "
-           "Ctrl+C stops",
-    "run --deployed": "open the deployed app in the browser",
-    "runs": "one row: the deployed service, since its last deploy",
-    "logs": "what the deployed service wrote since its last deploy",
-    "health": "whether the deployed service serves, is stopped, or failed",
-    "pause": "stop the server; `unpause` starts it again",
-    "deploy": "build the app, create or update the server and its sign-in, wait until "
-              "health_path answers, print the URL",
-    "destroy": "remove the server, its sign-in, its image, and its service account; keep the "
-               "storage and the logs",
-}
-
-ANSWERS = {
-    "google-cloud": {
-        "compute": "a Cloud Run service pdt-<app>, by default 0 to 3 instances of 1 vCPU and "
-                   "512 MiB, one container from the app's image",
-        "lifecycle": "scales to zero after 15 minutes with no request, starts on the next one; "
-                     "`pdt deploy` sends a new revision; `pdt pause` stops the service and "
-                     "`pdt unpause` starts it",
-        "ingress": "HTTPS at https://pdt-<app>-<project number>.<region>.run.app; Identity-Aware "
-                   "Proxy in front; no request reaches the app before the sign-in",
-        "identity": "the service runs as its own service account pdt-web-<app>, which may read "
-                    "only its secret and its storage.read folders and write only its own "
-                    "storage folder; a visitor signs in with Google, "
-                    "allowed_domains and allowed_groups are IAM bindings on the service, and "
-                    "the app sees X-Goog-Authenticated-User-Email; a user: or serviceAccount: "
-                    "binding added by hand stays",
-        "secrets": "Secret Manager secret pdt-<app>-env, mounted as PDT_ENV_JSON",
-        "storage": f"gs://pdt-data-<suffix>/<app>/; each storage.read app's folder is a "
-                   f"read-only Cloud Storage volume at {STORAGE_READ_DIR}/<app>/, new files "
-                   "visible within about a minute",
-        "logs": "Cloud Logging; `pdt logs` reads what the deployed service wrote since its "
-                "last deploy: its output and Cloud Run's system log; --follow tails them; IAP "
-                "writes no per-sign-in entry on Cloud Run",
-        "health": "a startup probe on web.health_path every 5 s for up to 90 s; `pdt health` "
-                  "shows ok while the service serves, and `pdt runs` shows it as one row",
-        "build": "the app's Dockerfile, or the generated one, pushed to Artifact Registry",
-        "cost": "request-based billing: CPU and memory while a request runs, no charge at zero "
-                "instances; IAP is free",
-    },
-    **{provider: {concern: "not yet available; the web profile runs on Google Cloud"
-                  for concern in ("compute", "lifecycle", "ingress", "identity", "secrets",
-                                  "storage", "logs", "health", "build", "cost")}
-       for provider in ("aws", "azure", "windows")},
-}
 
 
 def auth_provider(app: dict) -> str:
@@ -196,6 +147,9 @@ def problems(app: dict, provider: str) -> list[str]:
                         f"provider; it runs on {', '.join(PROVIDERS)}")
     if app["schedule"] is not None:
         problems.append(f"{name}: schedule: a web app runs all the time; remove the key")
+    if app.get("job"):
+        problems.append(f"{name}: job: only an app with app_profile: job uses this section; "
+                        "remove it")
     web, auth = app["web"], app["auth"]
     problems.extend(config.key_problems(f"{where}: web", web, WEB_KEYS))
     problems.extend(config.key_problems(f"{where}: web.auth", auth, AUTH_KEYS))

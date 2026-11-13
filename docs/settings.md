@@ -43,7 +43,7 @@ Each kind of setting merges in its own way:
 | Each `config:` key | Key by key: the `apps:` entry, then the app's `pdt.yml`, then `PDT_<APP>_<KEY>`. |
 | `env:` | The whole `env:` block of the app's `pdt.yml`. When that block is empty, the whole `env:` block of the `apps:` entry. The two blocks do not merge. |
 | `alerts`, `docker-build` | The top level of the project's `pdt.yml`, then the `apps:` entry, then the app's `pdt.yml`. The highest one replaces the others. |
-| `timezone` | The first value in this list: top level of the app's `pdt.yml`, the `apps:` entry, merged `platform.timezone`, `Etc/UTC`. |
+| `schedule`, `timezone` | The first value in this list: `job:` in the app's `pdt.yml`, the top level of the app's `pdt.yml`, `job:` in the `apps:` entry, the top level of the `apps:` entry. For `timezone`, then the merged `platform.timezone`, then `Etc/UTC`. |
 | Every other app key | The first value in this list: the app's `pdt.yml`, the `apps:` entry, the default. |
 
 `pdt destroy` does not use this order for the place. It uses the place that `.pdt/state` records. See [The `.pdt` folder](#the-pdt-folder).
@@ -94,7 +94,8 @@ Put these keys under `platform:` in the project's `pdt.yml`, in an `apps:` entry
 | --- | --- | --- | --- |
 | `provider` | `aws`, `azure`, `google-cloud`, or `windows`. | No default. `pdt init` writes it. `pdt validate` reports an app with no provider. | Selects where the app runs. |
 | `region` | A region name of the cloud provider, for example `us-east-1`. | No default. The first deploy suggests a region, asks you to confirm it, and saves the answer. With `--yes`, the deploy takes the suggestion. | Selects where the job and its data live. The `windows` provider does not use it. |
-| `timezone` | A time zone name, for example `America/Chicago`. | `Etc/UTC` | Sets the time zone of the schedule for every app that does not set its own. The `windows` provider ignores it and uses the local time of the PC. |
+| `timezone` | See [`job:` keys](#job-keys). | | The time zone of a job's schedule. The same as `job.timezone`. |
+| `job` | A block of [`job:` keys](#job-keys). | Empty. | Sets when a job runs. Only a job takes it. |
 
 ### AWS keys
 
@@ -154,10 +155,6 @@ platform:
   provider: windows
 ```
 
-### The retired `runtime` key
-
-The `runtime` key is no longer a setting. `pdt validate` reports it and tells you to remove it.
-
 ## App keys
 
 Put these keys at the top level of the app's `pdt.yml`, or in its entry in the `apps:` list of the project's `pdt.yml`.
@@ -165,8 +162,8 @@ Put these keys at the top level of the app's `pdt.yml`, or in its entry in the `
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `name` | The name of the app folder. | In the app's `pdt.yml`, the folder name. An `apps:` entry must have it. | Connects an `apps:` entry to an app folder. In the app's `pdt.yml` it must match the folder name. |
-| `app_profile` | `job` or `web`. | `job` | Selects the kind of app. A `job` runs on a schedule and exits. A `web` app is an HTTP server behind a sign-in. See [App profiles](profiles.md). |
-| `schedule` | `hourly`, `daily`, `weekly`, `monthly`, `yearly`, or a 5-field cron expression in quotes. | No schedule. The first deploy asks for one and saves it. With `--yes`, the deploy uses `daily`. | Sets when the job runs. The `windows` provider accepts fewer forms. See [Windows Task Scheduler](platforms.md#windows-task-scheduler). A web app has no schedule, and `pdt validate` reports one. |
+| `app_profile` | `job` or `web`. | `job` | Selects the kind of app. A `job` runs on a schedule and exits. A `web` app is an HTTP server behind a sign-in. |
+| `schedule` | See [`job:` keys](#job-keys). | | A job's schedule. The same as `job.schedule`. |
 | `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of this app's schedule. The `windows` provider ignores it. |
 | `platform` | A block of [`platform:` keys](#platform-keys). | The `platform:` block of `pdt.yml`. | Replaces each named key for this app. |
 | `config` | A block of your own keys. See [`config:` keys](#config-keys). | Empty. | Holds the settings that your app reads. |
@@ -184,8 +181,9 @@ This app `pdt.yml` shows the common keys:
 
 ```yaml
 # my-report/pdt.yml
-schedule: "0 6 * * 1-5"
-timezone: America/Chicago
+job:
+  schedule: "0 6 * * 1-5"
+  timezone: America/Chicago
 storage: true
 enabled: true
 pause: false
@@ -203,6 +201,22 @@ env:
 ```
 
 A cron value that starts with `*` must be in quotes, for example `"*/15 * * * *"`. pdt also accepts `@daily` and the other shorthand names with `@`.
+
+### `job:` keys
+
+These keys apply only to a job. Each one also works at the top level of the app's `pdt.yml`, where older apps have it. New apps put them in `job:`. When both places set a key, `job:` wins.
+
+| Key | Allowed values | Default | What it does |
+| --- | --- | --- | --- |
+| `schedule` | `hourly`, `daily`, `weekly`, `monthly`, `yearly`, or a 5-field cron expression in quotes. | No schedule. The first deploy asks for one and saves it. With `--yes`, the deploy uses `daily`. | Sets when the job runs. The `windows` provider accepts fewer forms. See [Windows Task Scheduler](platforms.md#windows-task-scheduler). |
+| `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of the schedule. The `windows` provider ignores it. |
+
+```yaml
+# my-report/pdt.yml
+job:
+  schedule: "0 6 * * 1-5"
+  timezone: America/Chicago
+```
 
 ### `storage:` keys
 
@@ -243,7 +257,7 @@ Every web app has a sign-in. `web.auth` needs `provider`, and `allowed_domains`,
 
 IAP signs visitors in with a Google-managed OAuth client, which serves only accounts of the Google Cloud project's own organization. A domain in `allowed_domains` that is not the organization's domain, a group member from outside the organization, or a project with no organization cannot sign in; the deploy plan warns about the first and the last. These need an OAuth client that you create in the Cloud console.
 
-IAP sends the email of the visitor to the app in the header `X-Goog-Authenticated-User-Email`, as `accounts.google.com:<email>`. The app does not need to read it. A Python app can call `pdt.utils.auth.current_user(headers)`, which returns the email, or `""` when no one signed in, as in `pdt run`.
+IAP sends the email of the visitor to the app in the header `X-Goog-Authenticated-User-Email`, as `accounts.google.com:<email>`.
 
 ### `web.resources:` keys
 
@@ -521,11 +535,10 @@ Your app reads these through `pdt.utils.entra`, to read Microsoft Graph data as 
 | `PDT_AZURE_PRIVATE_KEY_PATH` | The path of a PFX file. A relative path starts at the project folder. | Not set. | Signs in with the certificate in this file. |
 | `PDT_AZURE_PRIVATE_KEY_PASSWORD` | A password. | Not set. | Opens a PFX certificate that has a password. |
 
-## Env vars that pdt or another program sets
+## Env vars that pdt sets for your app
 
-Do not set the env vars in this section.
+Do not set these env vars yourself.
 
-### Values for your app to read
 
 | Env var | What it holds |
 | --- | --- |
@@ -538,32 +551,6 @@ Do not set the env vars in this section.
 | `PDT_CONFIG_JSON` | The app's merged `config:` block as JSON, for a PowerShell script. |
 | `PDT_OUTPUT_DIR` | The folder for a PowerShell script's files. pdt keeps each file in the storage folder. |
 | `PDT_STATE_DIR` | The folder for a PowerShell script's state. See [Writing your own app](writing-apps.md). |
-
-### Values between pdt processes
-
-| Env var | What it does |
-| --- | --- |
-| `PDT_CLI_VERSION` | Gives a provider script and a deployed job the pdt version. |
-| `PDT_DEPLOYED_PLATFORM` | Gives a provider script the place that `.pdt/state` records for an app. |
-| `PDT_ENV_SECRET_RESOURCE` | Names the cloud secret of a deployed app. |
-| `PDT_JSON_OUTPUT` | Tells a provider script to print only JSON on stdout. `--json` sets it. |
-| `PDT_PLAN_VALUES` | Holds the values that `pdt deploy --plan` does not save. |
-| `PDT_REBUILD` | Tells a provider script to build the image. `pdt deploy --rebuild` sets it. |
-| `PDT_SCAN_DIR` | Names the temporary folder of PowerShell scans. |
-| `PDT_TRIGGER` | Marks a run as `manual`. |
-
-### Values that other programs set
-
-| Env var | Set by | What pdt does with it |
-| --- | --- | --- |
-| `CLOUD_RUN_JOB`, `CLOUD_RUN_EXECUTION` | Google Cloud | Finds the job and the ID of the run. |
-| `CONTAINER_APP_JOB_EXECUTION_NAME` | Azure | Finds the ID of the run. |
-| `AWS_BATCH_JOB_ID` | AWS | Finds the ID of the run. |
-| `UV` | uv | Finds the uv program for a Windows scheduled task. |
-| `LOCALAPPDATA` | Windows | Finds the data folder on Windows. |
-| `ProgramData` | Windows | Finds the folder for Windows scheduled tasks. |
-| `APPDATA` | Windows | Finds the gcloud settings folder. |
-| `CLAUDECODE`, `CURSOR_AGENT`, `CODEX_SANDBOX`, `GEMINI_CLI` | An AI agent program | Prints no `error-watch` line. |
 
 ## `.env` files
 
@@ -590,12 +577,8 @@ pdt creates this folder in the project and keeps it out of git. Do not edit the 
 
 | File | What it holds |
 | --- | --- |
-| `.pdt/state` | JSON with `deployed`, the list of deployed apps, and `platforms`, the place of each app. It also holds `alerts_offered` and `aws_preflight_passes`. |
-| `.pdt/apps` | The list of app names for tab completion. |
-| `.pdt/gui.sqlite3` | What `pdt gui` fetched. |
+| `.pdt/state` | The deployed apps, and where each one is deployed. |
 | `.pdt/storage/<app>/` | The storage folder of `pdt run` on your computer. |
-
-A deploy writes the place of the app in `.pdt/state` before the provider script starts. A failed deploy keeps that record. Only a destroy that succeeds clears it.
 
 `.pdt/state` changes what pdt does in these ways:
 

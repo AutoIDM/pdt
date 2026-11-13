@@ -36,25 +36,22 @@ From your own computer, `pdt storage APP ls`, `get`, and `query` read the files 
 
 ## Reading another app's files
 
-An app can read the folders of the apps listed under `storage: read:` in its `pdt.yml`. It cannot change them. `storage:` then takes a mapping: `enabled` (default `true`, the same as `storage: true`) and `read`.
+An app can read the folders of the apps listed under `storage: read:` in its `pdt.yml`. It cannot change them.
 
-```yaml
+```yml
 storage:
-  enabled: true
-  read: [warehouse]
+  read:
+    - other-app
 ```
 
-A web app finds each folder as read-only files at `/pdt/storage/<app>/` (the folder in `PDT_STORAGE_READ_DIR`), so any container reads it with no pdt code. A file the job writes shows up within about a minute.
-
-A Python app can also open the folder with `pdt.utils.storage`:
+A job reads a folder with `pdt.utils.storage`. This works with the `azure` provider only.
 
 ```python
-from pathlib import Path
-
 from pdt.utils import storage
 
-other = storage.store(app="warehouse")
-path = storage.read_only("warehouse").fetch("state/warehouse.duckdb", Path("warehouse.duckdb"))
+other = storage.store(app="other-app")
 ```
 
-`fetch` copies the file to the local path when the stored copy changed since the last fetch and returns the path, or `None` when the file is not there. A reader takes no lock, so it never blocks the job that writes the files, and it never sees a half-written file. For a job, `storage: read:` works with the `azure` provider only. Run `pdt deploy APP` after you change the list.
+A web app finds each folder as read-only files in `/pdt/storage/<app>/`. A new file shows up there within about a minute.
+
+Run `pdt deploy APP` after you change the list.
