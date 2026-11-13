@@ -47,7 +47,8 @@ def run(app: dict, local_url: str, started: Callable[[], object] = lambda: None)
     if built.returncode != 0:
         return built.returncode
     port = web.port(app)
-    container = f"pdt-{app['name']}-local"
+    # A name of its own, so a second `pdt run` never removes the first one's container.
+    container = f"pdt-{app['name']}-local-{os.getpid()}"
     command = ["docker", "run", "--rm", "--init", "--name", container,
                "-p", f"127.0.0.1:{port}:{port}",
                "-e", f"{web.ENV_PORT}={port}", "-e", f"{web.ENV_URL}={local_url}",

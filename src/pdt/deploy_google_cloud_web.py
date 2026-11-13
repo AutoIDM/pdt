@@ -282,8 +282,8 @@ def deploy_args(app: dict, project: str, region: str, sa: str, image: str, url: 
     if store_url:
         env.append(("PDT_STORAGE_URL", store_url))
     args += ["--set-env-vars", env_flag(env)]
-    if sid:
-        args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"]
+    # With no secret, a binding from an earlier deploy must go, or the app keeps old values.
+    args += ["--set-secrets", f"PDT_ENV_JSON={sid}:latest"] if sid else ["--clear-secrets"]
     return args
 
 
