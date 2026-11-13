@@ -531,17 +531,29 @@ def choose_subscription(app: dict, requested: str, can_ask: bool) -> dict:
              f"{console.value('pdt.yml')}, or set {console.value('PDT_AZURE_SUBSCRIPTION')}, "
              "to a subscription id this login can use")
     console.heading("Your Azure subscriptions:")
-    for index, sub in enumerate(available, 1):
-        console.choice(index, str(sub.get("name")), str(sub.get("id")))
+    numbered = True
     try:
-        answer = console.read(f"Deploy to which one? [1-{len(available)}, or a subscription id] ")
+        if console.can_menu():
+            answer = str(console.choose_one(
+                [str(sub.get("name")) for sub in available] + ["Another subscription"],
+                details=[str(sub.get("id")) for sub in available] + [""]) + 1)
+            if answer == str(len(available) + 1):
+                numbered = False
+                answer = console.read("Type the id of the subscription: ")
+        else:
+            for index, sub in enumerate(available, 1):
+                console.choice(index, str(sub.get("name")), str(sub.get("id")))
+            answer = console.read(
+                f"Deploy to which one? [1-{len(available)}, or a subscription id] ")
     except EOFError:
         answer = ""
     typed = [sub for sub in available if answer in (sub.get("id"), sub.get("name"))]
-    if answer.isdigit() and 1 <= int(answer) <= len(available):
+    if numbered and answer.isdigit() and 1 <= int(answer) <= len(available):
         sub = available[int(answer) - 1]
     elif typed:
         sub = typed[0]
+    elif not numbered:
+        fail("no Azure subscription selected; type one of the subscription ids")
     else:
         fail("no Azure subscription selected; type a number from the list or one of the subscription ids")
     save_subscription(app, sub)

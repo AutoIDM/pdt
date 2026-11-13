@@ -61,9 +61,15 @@ class Setup:
 
 
 def checkboxes(question: str, options: list[tuple[str, str]], chosen) -> list[str]:
-    """The values of `options` the user leaves on. Each number typed turns one on or off,
-    and an empty answer accepts the list as shown."""
+    """The values of `options` the user leaves on. In a menu, Space turns one on or off and
+    Enter accepts. Without a menu, each number typed turns one on or off, and an empty
+    answer accepts the list as shown."""
     on = set(chosen)
+    if console.can_menu():
+        console.heading(question)
+        marks = console.choose_many([label for _, label in options],
+                                    [value in on for value, _ in options])
+        return [value for (value, _), mark in zip(options, marks) if mark]
     while True:
         console.heading(question)
         for number, (value, label) in enumerate(options, 1):

@@ -475,3 +475,13 @@ def test_deploy_offers_alerts_before_it_dispatches(project, monkeypatch):
     monkeypatch.setattr(deploy, "dispatch", lambda *a, **_k: order.append(("dispatch", a[1])) or 1)
     deploy.deploy("report", assume_yes=False, run=False)
     assert order == [("offer", "report"), ("dispatch", "deploy")]
+
+
+def test_in_a_menu_space_turns_the_marked_box_on_or_off(press, capsys):
+    press("space", "down", "down", "space", "enter")
+    assert alerts_cli.checkboxes("Where should pdt send alerts?",
+                                 [("slack", "Slack"), ("teams", "Teams"), ("console", "Console")],
+                                 ["slack", "teams"]) == ["teams", "console"]
+    out = capsys.readouterr().out
+    assert "Type numbers" not in out
+    assert [line for line in out.splitlines() if line][-2:] == ["  [x] Teams", "  [x] Console"]

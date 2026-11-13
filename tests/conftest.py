@@ -55,6 +55,23 @@ def waits(monkeypatch):
 
 
 @pytest.fixture
+def press(monkeypatch):
+    """`press("down", "space", "enter")` gives those keys, in order, to the menus of a test."""
+    def give(*pressed):
+        queue = list(pressed)
+
+        @contextmanager
+        def keys():
+            yield lambda: queue.pop(0)
+
+        monkeypatch.setattr(console, "can_menu", lambda: True)
+        monkeypatch.setattr(console, "keys", keys)
+        return queue
+
+    return give
+
+
+@pytest.fixture
 def project(tmp_path, monkeypatch):
     monkeypatch.delenv("PDT_PROJECT", raising=False)
     (tmp_path / "pdt.yml").write_text("platform:\n  provider: azure\n")

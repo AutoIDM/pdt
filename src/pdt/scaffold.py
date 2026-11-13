@@ -211,6 +211,13 @@ def _ask(question: str, default: str = "") -> str:
 def _ask_choice(question: str, labels: list[str], default: int = 1) -> int:
     console.say()
     console.heading(question)
+    if console.can_menu():
+        try:
+            return console.choose_one(labels, default - 1) + 1
+        except EOFError:
+            raise ConfigError(
+                "there is no one to answer the questions. "
+                "Run `pdt init` in a terminal, or add --yes to take the defaults.")
     console.say()
     for number, label in enumerate(labels, start=1):
         console.choice(number, label)
@@ -385,6 +392,13 @@ def pin_problem(path: Path, shown: str) -> str:
 
 
 def ask_apps(numbered: list[str]) -> list[str]:
+    if console.can_menu():
+        console.heading("Which apps should move?")
+        try:
+            marks = console.choose_many(numbered, [False] * len(numbered))
+        except EOFError:
+            return []
+        return [name for name, mark in zip(numbered, marks) if mark]
     while True:
         answer = _ask("Type the numbers of the apps to move, separated by spaces "
                       "(Enter cancels)")

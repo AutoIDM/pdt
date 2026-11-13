@@ -381,3 +381,15 @@ def test_a_deploy_goes_to_the_found_key_the_record_keeps(project, monkeypatch):
     assert cloud.calls[0][2] is None
     assert cloud.calls[1][2]["project"] == "project-a"
     assert config.deployed_places()[APP]["project"] == "project-a"
+
+
+@pytest.mark.parametrize("pressed,commands", [(["enter"], []), (["up", "enter"], ["destroy", "deploy"])])
+def test_in_a_menu_the_marker_starts_on_cancel(project, monkeypatch, press, pressed, commands):
+    old, new = MOVES["region"]
+    deployed_to(project, old)
+    (project / "pdt.yml").write_text(new)
+    cloud = Cloud(monkeypatch)
+    press(*pressed)
+    deploy.deploy(APP, run=False)
+    assert [command for _provider, command, _platform in cloud.calls] == commands
+    assert cloud.asked == []
