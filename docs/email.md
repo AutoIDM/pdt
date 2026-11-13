@@ -126,4 +126,12 @@ When no entry lists the event name, the run's output shows one line, `[alert] my
 
 ## send_email
 
-`pdt.utils.send_email.send_email(from_addr, to_addrs, subject, body, html="")` still works, with a `DeprecationWarning`. It emits the event `email:send`. An email entry with `email:send` in its `events` sends it to `to_addrs`, from the `from` of the entry. Use `alert.emit` in new code.
+`pdt.utils.send_email.send_email(from_addr, to_addrs, subject, body, html="")` still works, with a `DeprecationWarning`. It emits the event `email:send`, and it sends nothing by itself.
+
+An email entry sends a `send_email` call only when its `events` list holds `email:send`. `pdt alerts setup` does not add that name. Add it to the entry in `pdt.yml` by hand:
+
+```yaml
+    events: [app:deploy-completed, app:deploy-failed, job:run-failed, email:send]
+```
+
+The entry then sends the email to `to_addrs`, from the `from` of the entry; `from_addr` is not used. Without `email:send` in an entry, the run's output shows the warning and one `[alert]` line with the subject, and no email goes out. Use `alert.emit` in new code.
