@@ -8,7 +8,11 @@ principal, a certificate on it whose private key is the file CERTIFICATE in the
 project (a .pfx with no password, in a folder that git ignores), and the
 Microsoft Graph application permission PERMISSION, granted in the organization.
 It reads the state first and changes only what is not yet true, so a second run
-changes nothing. It returns the three env vars that the `microsoft-365` method
+changes nothing. pdt uses a registration only when the saved PDT_EMAIL_CLIENT_ID
+names it or when it carries TAG, which pdt puts on each registration it creates;
+another registration with the same name stops the setup. A sign-in to another
+tenant than the saved PDT_EMAIL_TENANT_ID stops it too. `keep_out_of_git` makes
+sure that git ignores the certificate file. It returns the three env vars that the `microsoft-365` method
 of pdt.email_alert reads.
 
 When the account cannot make a change (HTTP 403), `ensure` says which role is
@@ -41,6 +45,8 @@ from pdt import alert_message, console, email_alert
 GRAPH = "https://graph.microsoft.com/v1.0"
 GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
 REGISTRATION = "pdt-email"
+# The mark on each registration that pdt creates, in the `tags` of the application.
+TAG = "managed-by=pdt"
 CERTIFICATE = ".secrets/pdt-email.pfx"
 CERTIFICATE_DAYS = 3650
 PERMISSION = "Mail.Send"
@@ -177,17 +183,50 @@ def saved_certificate(path: Path) -> bytes:
 
 
 def write_private(path: Path, data: bytes) -> None:
-    """Write the key file readable by its owner alone, in a folder that git ignores."""
+    """Write the key file readable by its owner alone."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    ignore = path.parent / ".gitignore"
-    if not ignore.exists():
-        ignore.write_text("*\n")
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
         f.write(data)
 
 
+def git(project: Path, *args: str) -> int | None:
+    """The exit code of one git command in the project folder, or None with no git."""
+    try:
+        return subprocess.run(["git", *args], cwd=project, capture_output=True).returncode
+    except OSError:
+        return None
+
+
+def keep_out_of_git(project: Path, path: Path) -> None:
+    """Make sure git ignores the key file at `path`, and warn when git already tracks it.
+    The folder of the file gets a .gitignore for everything in it when it has none. When
+    the ignore rules of the repository still do not cover the file, its name goes into
+    that .gitignore."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ignore = path.parent / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("*\n")
+    shown = path.relative_to(project).as_posix()
+    if git(project, "check-ignore", "-q", "--no-index", shown) == 1:
+        text = ignore.read_text()
+        ignore.write_text(text + ("" if text.endswith("\n") or text == "" else "\n")
+                          + f"/{path.name}\n")
+    if git(project, "ls-files", "--error-unmatch", shown) == 0:
+        command = f"git rm --cached {shown}"
+        console.warn(f"git tracks {console.value(shown)}, which holds a private key. Take it "
+                     f"out of the repository with {console.value(command)}.")
+
+
 def ensure(project: Path, tenant_id: str, user: str, call: Callable) -> dict[str, str] | None:
     global granted_now
+    saved_tenant = alert_message.secret_value("PDT_EMAIL_TENANT_ID")
+    if saved_tenant and tenant_id and saved_tenant.lower() != tenant_id.lower():
+        console.failed(f"The {console.value('.env')} file holds PDT_EMAIL_TENANT_ID "
+                       f"{console.value(saved_tenant)}, and the Microsoft sign-in is for the "
+                       f"organization {console.value(tenant_id)}. pdt changed nothing.")
+        console.say("Sign in to the organization of the saved value, then run the setup again:")
+        console.command(f"pdt az login --tenant {saved_tenant} --allow-no-subscriptions")
+        return None
     needs = ("create an app registration", "Application Developer or Global Administrator")
     registration = None
     try:
@@ -196,15 +235,27 @@ def ensure(project: Path, tenant_id: str, user: str, call: Callable) -> dict[str
         if client_id:
             found = call("GET", f"/applications?$filter=appId eq '{client_id}'&$select=id")["value"]
         if not found:
-            found = call("GET", f"/applications?$filter=displayName eq '{REGISTRATION}'"
-                                "&$select=id")["value"]
+            named = call("GET", f"/applications?$filter=displayName eq '{REGISTRATION}'"
+                                "&$select=id,appId,tags")["value"]
+            found = [app for app in named if TAG in (app.get("tags") or [])]
+            if named and not found:
+                console.failed(f"This Microsoft 365 organization already has an app registration "
+                               f"named {console.value(REGISTRATION)} that pdt did not create "
+                               f"(application ID {console.value(named[0]['appId'])}). pdt "
+                               "changed nothing.")
+                console.say("Rename or delete that registration in the Microsoft Entra admin "
+                            "center, then run the setup again. Or, to let pdt use it, add this "
+                            f"line to the {console.value('.env')} file of the project, then run "
+                            "the setup again:")
+                console.command(f"PDT_EMAIL_CLIENT_ID={named[0]['appId']}")
+                return None
         if found:
             registration = call("GET", f"/applications/{found[0]['id']}?$select=id,appId,"
                                        "keyCredentials,requiredResourceAccess,web")
         else:
             registration = call("POST", "/applications", {
                 "displayName": REGISTRATION, "signInAudience": "AzureADMyOrg",
-                "web": {"redirectUris": [REDIRECT_URI]}})
+                "tags": [TAG], "web": {"redirectUris": [REDIRECT_URI]}})
         app_id = registration["appId"]
         principal = None
         for attempt in range(NEW_REGISTRATION_TRIES):
@@ -231,6 +282,7 @@ def ensure(project: Path, tenant_id: str, user: str, call: Callable) -> dict[str
                  "registration")
         path = project / CERTIFICATE
         created = not path.is_file()
+        keep_out_of_git(project, path)
         if created:
             pfx, certificate = new_certificate()
             write_private(path, pfx)

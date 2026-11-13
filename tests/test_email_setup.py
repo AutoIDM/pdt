@@ -1,5 +1,7 @@
 import os
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -32,7 +34,8 @@ class Organization:
             self.writes.append(f"{method} {path.split('/')[1]}")
         if method == "GET" and path.startswith("/applications?$filter="):
             key, value = re.search(r"filter=(\w+) eq '([^']*)'", path).groups()
-            return {"value": [{"id": app["id"]} for app in self.applications.values()
+            return {"value": [{"id": app["id"], "appId": app["appId"], "tags": app.get("tags", [])}
+                              for app in self.applications.values()
                               if app[key] == value]}
         if method == "GET" and path.startswith("/applications/"):
             return self.applications[path.split("/")[2].split("?")[0]]
@@ -145,6 +148,89 @@ def test_an_account_that_cannot_grant_gets_the_role_and_the_consent_link_and_a_l
     assert email_setup.ensure(project, TENANT, "admin@example.com", organization.call) is not None
     assert organization.writes == ["POST servicePrincipals"]
     assert len(organization.applications) == 1
+
+
+def unmarked(organization):
+    """A registration named pdt-email that pdt did not create."""
+    organization.applications["foreign"] = {
+        "id": "foreign", "appId": "client-9", "displayName": "pdt-email", "keyCredentials": [],
+        "requiredResourceAccess": [], "tags": []}
+    organization.principals["client-9"] = "principal-9"
+
+
+def test_a_registration_with_the_name_and_no_mark_stops_the_setup_and_changes_nothing(
+        project, organization, capsys):
+    unmarked(organization)
+    assert email_setup.ensure(project, TENANT, "admin@example.com", organization.call) is None
+    out = capsys.readouterr().out
+    assert ("already has an app registration named pdt-email that pdt did not create "
+            "(application ID client-9). pdt changed nothing.") in out
+    assert "  PDT_EMAIL_CLIENT_ID=client-9\n" in out
+    assert organization.writes == [] and not (project / ".secrets").exists()
+
+
+def test_a_registration_with_no_mark_is_used_when_the_saved_client_id_names_it(
+        project, organization, monkeypatch):
+    unmarked(organization)
+    monkeypatch.setenv("PDT_EMAIL_CLIENT_ID", "client-9")
+    values = email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
+    assert values["PDT_EMAIL_CLIENT_ID"] == "client-9"
+    assert len(organization.applications) == 1
+
+
+def test_a_second_project_finds_the_registration_that_pdt_marked(
+        project, organization, tmp_path_factory):
+    email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
+    unmarked(organization)
+    assert organization.applications["object-1"]["tags"] == ["managed-by=pdt"]
+    organization.writes.clear()
+    second = tmp_path_factory.mktemp("second")
+    values = email_setup.ensure(second, TENANT, "admin@example.com", organization.call)
+    assert values["PDT_EMAIL_CLIENT_ID"] == "client-1"
+    assert organization.writes == ["PATCH applications"]
+    assert len(organization.applications["object-1"]["keyCredentials"]) == 2
+
+
+def test_a_sign_in_to_another_tenant_than_the_saved_one_stops_the_setup(
+        project, organization, monkeypatch, capsys):
+    saved = "22222222-2222-2222-2222-222222222222"
+    monkeypatch.setenv("PDT_EMAIL_TENANT_ID", saved)
+    assert email_setup.ensure(project, TENANT, "admin@example.com", organization.call) is None
+    out = capsys.readouterr().out
+    assert saved in out and TENANT in out and "pdt changed nothing." in out
+    assert f"  pdt az login --tenant {saved} --allow-no-subscriptions\n" in out
+    assert organization.writes == [] and not (project / ".secrets").exists()
+
+
+def git(folder, *args):
+    return subprocess.run(["git", *args], cwd=folder, capture_output=True, text=True)
+
+
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+
+
+@needs_git
+def test_a_secrets_folder_with_its_own_gitignore_gets_the_certificate_name(project, organization):
+    git(project, "init", "-q")
+    (project / ".secrets").mkdir()
+    (project / ".secrets" / ".gitignore").write_text("*.key")
+    email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
+    assert (project / ".secrets" / ".gitignore").read_text() == "*.key\n/pdt-email.pfx\n"
+    assert git(project, "check-ignore", "-q", ".secrets/pdt-email.pfx").returncode == 0
+    email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
+    assert (project / ".secrets" / ".gitignore").read_text() == "*.key\n/pdt-email.pfx\n"
+
+
+@needs_git
+def test_a_certificate_that_git_tracks_gets_a_warning(project, organization, capsys):
+    git(project, "init", "-q")
+    email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
+    assert "git tracks" not in capsys.readouterr().out
+    git(project, "add", "-f", ".secrets/pdt-email.pfx")
+    email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
+    assert ("git tracks .secrets/pdt-email.pfx, which holds a private key. Take it out "
+            "of the repository with git rm --cached .secrets/pdt-email.pfx.") in " ".join(
+                capsys.readouterr().out.split())
 
 
 def test_an_account_that_cannot_register_an_app_gets_the_role_and_no_link(
