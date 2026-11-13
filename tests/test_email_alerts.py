@@ -225,6 +225,34 @@ def test_the_sign_in_assertion_names_the_certificate_as_microsoft_specifies(monk
     assert (claims["iss"], claims["sub"]) == ("client", "client")
 
 
+@pytest.mark.parametrize("value", [
+    "example # password", "a#b", "it's", 'say "hi"', "back\\slash", "two\\\\slash", "end\\",
+    "pa$$word", "$HOME", "'quoted'", "two words", "https://x.example/w?a=1&sig=ab%2F~"])
+def test_a_saved_value_reads_back_from_the_env_file_exactly_as_typed(project, monkeypatch, value):
+    from dotenv import dotenv_values
+    monkeypatch.delenv("PDT_SMTP_PASSWORD", raising=False)
+    alerts_cli.save(project, [], None, None, {"PDT_SMTP_PASSWORD": value})
+    assert dotenv_values(project / ".env", encoding="utf-8-sig") == {"PDT_SMTP_PASSWORD": value}
+    monkeypatch.delenv("PDT_SMTP_PASSWORD")
+    config.load_env(project)
+    assert alert_message.secret_value("PDT_SMTP_PASSWORD") == value
+    assert config.os.environ["PDT_SMTP_PASSWORD"] == value
+
+
+def test_a_value_that_needs_no_quotes_is_written_without_quotes(project, monkeypatch):
+    monkeypatch.delenv("TEAMS_WEBHOOK_W1", raising=False)
+    url = "https://a.environment.api.powerplatform.com/workflows/w1?api-version=1&sig=ab%2Fc~d"
+    alerts_cli.save(project, [], None, None, {"TEAMS_WEBHOOK_W1": url})
+    assert (project / ".env").read_text() == f"TEAMS_WEBHOOK_W1={url}\n"
+
+
+def test_a_value_that_a_dot_env_file_cannot_hold_is_refused_before_anything_is_written(
+        project, monkeypatch):
+    with pytest.raises(config.ConfigError, match="cannot hold a value with"):
+        alerts_cli.save(project, [], None, None, {"PDT_SMTP_PASSWORD": "a${HOME}b"})
+    assert not (project / ".env").exists()
+
+
 def test_setup_keeps_the_custom_event_names_and_exclude_events_when_the_events_change(
         project, smtp, monkeypatch):
     (project / "pdt.yml").write_text(

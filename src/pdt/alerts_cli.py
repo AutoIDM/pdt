@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import threading
 import urllib.error
@@ -319,6 +320,22 @@ def first_valid_not_unhandled(alerts: list) -> dict[str, Current]:
     return found
 
 
+# A value that python-dotenv reads back unchanged with no quotes around it.
+PLAIN_ENV_VALUE = re.compile(r"[^\s#'\"\\]*")
+
+
+def env_value(value: str) -> str:
+    """`value` as the text after NAME= in a .env file, so that python-dotenv reads back
+    exactly `value`. python-dotenv always replaces `${NAME}`, with or without quotes."""
+    if "${" in value:
+        raise config.ConfigError(
+            "a .env file cannot hold a value with ${ in it, because pdt reads ${NAME} there as "
+            "the value of another variable")
+    if PLAIN_ENV_VALUE.fullmatch(value):
+        return value
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def save(project, alerts: list, old: dict | None, new: dict | None,
          values: dict[str, str]) -> list:
     """Write one type's .env values, then put `new` in the place of `old` in pdt.yml (no
@@ -326,9 +343,10 @@ def save(project, alerts: list, old: dict | None, new: dict | None,
     first, so a stop between the two writes never leaves an entry without its webhook."""
     if values:
         env_file = project / ".env"
+        written = {key: env_value(value) for key, value in values.items()}
         private_file(env_file)
         for key, value in values.items():
-            set_key(env_file, key, value, quote_mode="never")
+            set_key(env_file, key, written[key], quote_mode="never")
             os.environ[key] = value
         names = ", ".join(map(console.value, values))
         console.done(f"saved  {names} in {console.value(config.shown_path(env_file))}")
