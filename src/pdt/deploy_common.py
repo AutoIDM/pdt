@@ -106,11 +106,14 @@ ENTRYPOINT = ('ENTRYPOINT ["sh", "-c", "stop() {{ kill -s $1 $pid; wait $pid; fi
 # its run.py, and its own uv cache, where `uv sync` puts the script's packages.
 APP_USER = "pdt"
 APP_UID = 10001
-DOCKERFILE = f"FROM {BASE_IMAGE}\n" + f"""\
-RUN pip uninstall -y --root-user-action=ignore pip
+AS_APP_USER = f"""\
 RUN useradd --uid {APP_UID} --user-group --create-home {APP_USER} \\
     && mkdir -p /workspace/{{app}} && chown -R {APP_USER}:{APP_USER} /workspace
 USER {APP_USER}
+"""
+DOCKERFILE = f"FROM {BASE_IMAGE}\n" + """\
+RUN pip uninstall -y --root-user-action=ignore pip
+""" + AS_APP_USER + f"""\
 COPY --chown={APP_USER}:{APP_USER} .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 WORKDIR /workspace/{{app}}
@@ -125,10 +128,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 ENV POWERSHELL_TELEMETRY_OPTOUT=1 PDT_PROJECT=/workspace NO_COLOR=1 PYTHONUNBUFFERED=1
 RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={version}"
 RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh && echo '{{"LogLevel":"Critical"}}' > "$(dirname "$pwsh")/powershell.config.json"
-{modules}COPY .pdt-lifecycle /opt/pdt-lifecycle
+{modules}""" + AS_APP_USER + f"""\
+COPY --chown={APP_USER}:{APP_USER} .pdt-lifecycle /opt/pdt-lifecycle
 RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
-WORKDIR /workspace/{app}
-{sync}COPY . /workspace
+WORKDIR /workspace/{{app}}
+{{sync}}COPY --chown={APP_USER}:{APP_USER} . /workspace
 """ + ENTRYPOINT
 # The PEP 723 script block, with the reference regex of the PEP.
 SCRIPT_HEADER = re.compile(r"(?m)^# /// script$\s(?:^#(?:| .*)$\s)+^# ///$")
@@ -171,7 +175,7 @@ def powershell_dockerfile(app: dict) -> str:
     command = json.dumps(["pwsh", "-NoProfile", "-Command", powershell.install_command(modules)])
     sync, start = "", "/opt/pdt/bin/python -m pdt.run_powershell ."
     if (Path(app["dir"]) / "run.py").is_file():
-        sync = ('COPY .pdt-script .\nRUN uv sync --script run.py'
+        sync = (f'COPY --chown={APP_USER}:{APP_USER} .pdt-script .\nRUN uv sync --script run.py'
                 ' && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*\n')
         start = "uv run --script run.py"
     return POWERSHELL_DOCKERFILE.format(

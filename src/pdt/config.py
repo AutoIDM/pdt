@@ -1310,6 +1310,9 @@ def storage_problems(app: dict, storage) -> list[str]:
         problems.append("storage.read works with the azure provider only, "
                         f"and this app uses {provider}; remove the key")
         provider = None
+    elif app["app_profile"] == "job" and storage.get("enabled", True) is False:
+        problems.append("storage.read needs storage.enabled: true for a job, because the job "
+                        "reads other folders through its own store")
     apps = app_folders()
     for name in dict.fromkeys(names):
         if names.count(name) > 1:

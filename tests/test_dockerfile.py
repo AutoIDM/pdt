@@ -162,7 +162,7 @@ def test_a_powershell_app_without_modules_has_no_empty_install_step(powershell_a
     text = (stage / "Dockerfile").read_text()
     assert "-Command" not in text
     assert all(line.strip() != "RUN" for line in text.splitlines())
-    assert "\nCOPY . /workspace\n" in text
+    assert "\nUSER pdt\n" in text and "\nCOPY --chown=pdt:pdt . /workspace\n" in text
 
 
 def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modules(powershell_app):
@@ -172,8 +172,8 @@ def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modul
     (app["dir"] / "requirements.psd1").write_text("@{ 'ImportExcel' = '7.8.6' }\n")
     write_dockerfile(stage, app)
     text = (stage / "Dockerfile").read_text()
-    tail = ("WORKDIR /workspace/my-report\nCOPY .pdt-script .\nRUN uv sync --script run.py"
-            ' && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*\nCOPY . /workspace\n' + ENTRYPOINT.replace("{start}", "uv run --script run.py").format())
+    tail = ("WORKDIR /workspace/my-report\nCOPY --chown=pdt:pdt .pdt-script .\nRUN uv sync --script run.py"
+            ' && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*\nCOPY --chown=pdt:pdt . /workspace\n' + ENTRYPOINT.replace("{start}", "uv run --script run.py").format())
     assert text.endswith(tail)
     assert text.index("Install-PSResource") < text.index("RUN uv sync")
     assert "pdt.run_powershell" not in text
