@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import types
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -848,6 +849,65 @@ def test_ctrl_u_removes_the_typed_line_and_ctrl_d_ends_an_empty_one(press, capsy
 def test_input_that_is_not_a_terminal_gets_no_menu(monkeypatch):
     monkeypatch.setattr(sys, "stdin", io.StringIO("1\n"))
     assert not console.can_menu()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no termios")
+def test_the_keys_that_wait_in_a_terminal_are_discarded_and_a_pipe_keeps_them(monkeypatch):
+    import pty
+    import termios
+    flushed = []
+    monkeypatch.setattr(termios, "tcflush", lambda fd, queue: flushed.append((fd, queue)))
+    master, slave = pty.openpty()
+    monkeypatch.setattr(sys, "stdin", open(slave, closefd=False))
+    monkeypatch.setattr(console, "_unread", b"b\n")
+    console._discard_input()
+    assert flushed == [(slave, termios.TCIFLUSH)]
+    assert console._unread == b""
+    monkeypatch.setattr(sys, "stdin", io.StringIO("b\nc\n"))
+    console._discard_input()
+    assert flushed == [(slave, termios.TCIFLUSH)]
+    os.close(master)
+    os.close(slave)
+
+
+def test_the_keys_that_wait_in_a_windows_console_are_discarded(monkeypatch):
+    flushed = []
+    kernel32 = types.SimpleNamespace(GetStdHandle=lambda number: {-10: 7}[number],
+                                     FlushConsoleInputBuffer=lambda handle: flushed.append(handle))
+    monkeypatch.setattr("ctypes.WinDLL", lambda name, use_last_error: kernel32, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    console._discard_input()
+    assert flushed == [7]
+
+
+@pytest.mark.parametrize("ask", [lambda: console.confirm("Start a run now?"),
+                                 lambda: console.ask("Which region"),
+                                 lambda: console.read("Deploy to which one? [1-2] "),
+                                 lambda: console.secret("Secret access key (hidden): "),
+                                 lambda: console.choose_one(["Prod", "Test"])])
+def test_each_question_discards_the_waiting_keys_before_and_after_its_answer(monkeypatch, ask):
+    events = []
+
+    @contextmanager
+    def keys():
+        yield lambda: events.append("answer") or "enter"
+
+    monkeypatch.setattr(console, "_discard_input", lambda: events.append("discard"))
+    monkeypatch.setattr(console._console, "input",
+                        lambda prompt, password=False: events.append("answer") or "y")
+    monkeypatch.setattr(console, "keys", keys)
+    ask()
+    assert events == ["discard", "answer", "discard"]
+
+
+def test_piped_answers_to_two_questions_both_reach_their_question():
+    script = ("from pdt import console\n"
+              "console.say(console.ask('Which region'))\n"
+              "console.say(console.confirm())\n")
+    result = subprocess.run([sys.executable, "-c", script], input="westus2\ny\n",
+                            capture_output=True, text=True)
+    assert result.stdout == "Which region: \nwestus2\nProceed? [y/N] \nTrue\n"
 
 
 def test_only_console_reads_an_answer_from_the_user():
