@@ -131,6 +131,15 @@ BUILD_PUSH_ROLE = "roles/artifactregistry.writer"
 # https://docs.cloud.google.com/build/docs/securing-builds/store-manage-build-logs
 BUILD_BUCKET_ROLE = "roles/storage.admin"
 BUILD_LIFECYCLE = {"rule": [{"action": {"type": "Delete"}, "condition": {"age": 1}}]}
+# The image repository deletes an image that has no tag once it is 30 days old, and keeps the
+# 2 newest of each image whatever their age. Each deploy tags the image it deploys `latest`.
+CLEANUP_POLICIES = [
+    {"name": "pdt-delete-untagged", "action": {"type": "Delete"},
+     "condition": {"tagState": "untagged", "olderThan": "30d"}},
+    {"name": "pdt-keep-newest", "action": {"type": "Keep"},
+     "mostRecentVersions": {"keepCount": 2}},
+]
+CLEANUP_LINE = "delete untagged images after 30 days, keep the 2 newest of each image"
 # What the deployer needs to submit a build as the builder, keyed by what the
 # refusal names: (marker in the error, role, what to grant it on).
 BUILD_SUBMIT_ROLES = (
@@ -642,6 +651,23 @@ def cloud_build_image(stage: Path, image: str, project: str, region: str,
          "and run the deploy again")
 
 
+def cleanup_policies_set(repository: dict | None) -> bool:
+    """Whether the repository already has CLEANUP_POLICIES, in force and not a dry run."""
+    names = sorted((repository or {}).get("cleanupPolicies") or {})
+    return (names == sorted(policy["name"] for policy in CLEANUP_POLICIES)
+            and not (repository or {}).get("cleanupPolicyDryRun"))
+
+
+def set_cleanup_policies(project: str, region: str, repo: str) -> None:
+    console.step(f"setting the clean-up policy of Artifact Registry repo {console.value(repo)}")
+    with tempfile.TemporaryDirectory(prefix="pdt-") as folder:
+        policy = Path(folder, "cleanup.json")
+        policy.write_text(json.dumps(CLEANUP_POLICIES))
+        run_quiet("artifacts", "repositories", "set-cleanup-policies", repo,
+                  "--location", region, "--project", project, "--policy", str(policy),
+                  "--no-dry-run")
+
+
 def ensure_builder(project: str, region: str, repo: str, builder: str, bucket: str,
                    builder_exists: bool, bucket_exists: bool) -> None:
     if not builder_exists:
@@ -950,6 +976,10 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
 
     actions = [console.Markup(("use existing" if repo_exists else "create")
                               + f" Artifact Registry repo {console.value(repo)}")]
+    set_cleanup = not cleanup_policies_set(repository)
+    if set_cleanup:
+        actions.append(console.Markup(f"set the clean-up policy of {console.value(repo)}: "
+                                      f"{console.escape(CLEANUP_LINE)}"))
     if cloud:
         actions.append(console.Markup(("use existing" if builder_exists else "create")
                                       + f" service account {console.value(builder)} for "
@@ -994,6 +1024,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                   "--repository-format", "docker", "--location", region,
                   "--project", project, "--labels", "managed-by=pdt",
                   slow=f"creating: Artifact Registry repository {console.value(repo)}")
+    if set_cleanup:
+        set_cleanup_policies(project, region, repo)
     template = ((run_job or {}).get("spec", {}).get("template", {}).get("spec", {})
                 .get("template", {}).get("spec", {}))
     pinned = (template.get("containers") or [{}])[0].get("image")
