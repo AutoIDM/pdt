@@ -631,7 +631,7 @@ def terminal_console(monkeypatch, **options):
     out = io.StringIO()
     out.isatty = lambda: True
     monkeypatch.setattr(console, "_console", console.MainThreadConsole(
-        file=out, highlight=False, soft_wrap=True, force_terminal=True, color_system=None,
+        file=out, highlight=False, soft_wrap=True, force_terminal=True, color_system=None, legacy_windows=False,
         **options))
     return out
 
