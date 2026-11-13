@@ -1,49 +1,18 @@
 """The guided Microsoft 365 and Azure Communication Services setups of `pdt alerts setup`.
 
-`microsoft_365` gets a Microsoft Graph token from an Azure CLI sign-in (`pdt az`)
-that it keeps in AZURE_DIR, apart from the sign-in in ~/.azure that a deploy uses,
-because the organization of the email can be another one than the deploy account.
-When AZURE_DIR holds a sign-in, the user chooses to use it or to sign in with
-another account; with none, the sign-in starts at once, in the organization of the
-domain of the sender address. `mailbox` then makes sure that the sender address is
-a mailbox of that organization before anything changes there. `ensure` then
-makes sure of three items in the signed-in organization, and prints one line for
-each: the single-tenant app registration REGISTRATION with its service
-principal, a certificate on it whose private key is the file CERTIFICATE in the
-project (a .pfx with no password, in a folder that git ignores), and the
-Microsoft Graph application permission PERMISSION, granted in the organization.
-It reads the state first and changes only what is not yet true, so a second run
-changes nothing. pdt uses a registration only when the saved PDT_EMAIL_CLIENT_ID
-names it or when it carries TAG, which pdt puts on each registration it creates;
-another registration with the same name stops the setup. A sign-in to another
-tenant than the saved PDT_EMAIL_TENANT_ID asks to replace the saved settings; with
-yes, the saved PDT_EMAIL_CLIENT_ID does not count, so the registration of the new
-tenant is found or created as in a first setup. An organization without a default
-domain or a display name is named by the domain of the signed-in account. `keep_out_of_git` makes
-sure that git ignores the certificate file. It returns the three env vars that the `microsoft-365` method
-of pdt.email_alert reads.
+Both setups sign in with the Azure CLI (`pdt az`) in AZURE_DIR, apart from the sign-in in
+~/.azure that a deploy uses, because the organization or the subscription of the email can
+be another one than that of the deploy account.
 
-When the account cannot make a change (HTTP 403), `ensure` says which role is
-missing, prints the admin consent link when the registration exists, keeps what
-it made, and returns None. The next run continues from there.
+pdt uses an app registration only when the saved PDT_EMAIL_CLIENT_ID names it or when it
+carries TAG, which pdt puts on each registration it creates, so pdt never changes a
+registration with the same name that someone else made.
 
-`ensure` takes `call(method, path, body)` for every Microsoft Graph request, so
-a test gives the answers. `send_test` sends the test message; right after this
-process gave the permission, Microsoft can refuse the registration for a short
-time, so it waits and tries again for at most GRANT_WAIT_SECONDS.
+A Communication Service of pdt is named `pdt-email-<the first 8 hex digits of the SHA-256
+of the subscription id>`, because its name is a host name that must be unique in Azure.
 
-`azure_communication_services` signs in with the same AZURE_DIR, takes one enabled
-subscription (a menu when there are more), and talks to Azure Resource Manager with a
-token of that sign-in, so no Azure CLI extension is needed. `acs_ensure` finds or creates,
-in the resource group RESOURCE_GROUP, an Email Communication Service and a Communication
-Service named `pdt-email-<the first 8 hex digits of the SHA-256 of the subscription id>`,
-because a Communication Service name is a host name that must be unique in Azure. An empty
-sender gets the Azure managed domain (sender DoNotReply@...azurecomm.net). An address gets
-the verified domain of that name in the subscription and a Communication Service that
-links it; pdt links it to its own Communication Service when none does, and creates the
-domain, with its DNS records in an Azure DNS zone of the subscription, when there is none.
 pdt changes only a resource with the tag `managed-by=pdt`, except that it links a verified
-domain to its own Communication Service. The setup returns the connection string.
+domain to its own Communication Service.
 """
 
 from __future__ import annotations
@@ -61,14 +30,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from pdt import alert_message, console, email_alert, regions
+from dotenv import dotenv_values, unset_key
+
+from pdt import alert_message, config, console, email_alert, regions
 from pdt.config import data_home
 
 AZURE_DIR = data_home() / "pdt" / "email-azure"
 GRAPH ="https://graph.microsoft.com/v1.0"
 GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
 REGISTRATION = "pdt-email"
-# The mark on each registration that pdt creates, in the `tags` of the application.
 TAG = "managed-by=pdt"
 CERTIFICATE = ".secrets/pdt-email.pfx"
 CERTIFICATE_DAYS = 3650
@@ -76,15 +46,16 @@ PERMISSION = "Mail.Send"
 # The admin consent page sends the browser to an address that the registration lists.
 REDIRECT_URI = "http://localhost"
 GRANT_WAIT_SECONDS = 120
+ACS_STATUS_SECONDS = 60
 RETRY_SECONDS = 10
 # A new registration is not at once known to every Microsoft server.
 NEW_REGISTRATION_TRIES = 6
 # What a refusal of a registration, certificate, or permission that is too new holds.
 TOO_NEW = ("HTTP 401", "HTTP 403", "AADSTS")
-# True once this process gave the permission.
-granted_now = False
+granted_in_this_process = False
 ARM = "https://management.azure.com"
 ACS_API = "2023-04-01"
+PROVIDER_API = "2021-04-01"
 DNS_API = "2018-05-01"
 GROUP_API = "2021-04-01"
 RESOURCE_GROUP = "pdt-email"
@@ -160,8 +131,19 @@ def claims(token: str) -> dict:
 
 
 def graph_call(token: str, method: str, path: str, body: dict | None = None) -> dict:
+    """Send one request to Microsoft Graph. Each query option of `path` starts with `$`, so
+    `&$` separates two of them, and a value can hold `&`."""
+    base, _, query = path.partition("?")
+    url = GRAPH + urllib.parse.quote(base, safe="/=(),'")
+    if query:
+        options = []
+        for option in ("&" + query).split("&$")[1:]:
+            name, _, value = option.partition("=")
+            options.append(("$" + name, value))
+        url += "?" + urllib.parse.urlencode(options, quote_via=urllib.parse.quote,
+                                            safe="$(),'/:@")
     request = urllib.request.Request(
-        GRAPH + urllib.parse.quote(path, safe="/?=&$(),'"), method=method,
+        url, method=method,
         data=json.dumps(body).encode() if body is not None else None,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
@@ -229,16 +211,18 @@ def sign_in(sender: str) -> tuple[str, str, str, Callable]:
 
 def mailbox(call: Callable, address: str) -> bool:
     """True when `address` is the user principal name, the mail, or an smtp: proxy address of
-    a user of the organization. A shared mailbox is a user too."""
+    a user of the organization that has an Exchange mailbox. A shared mailbox is a user too.
+    A user with no Exchange mailbox has no `mail`."""
     quoted = address.replace("'", "''")
     found = call("GET", f"/users?$filter=userPrincipalName eq '{quoted}' or mail eq '{quoted}' "
                         f"or proxyAddresses/any(a:a eq 'smtp:{quoted}')"
                         "&$select=userPrincipalName,mail,proxyAddresses")["value"]
     wanted = address.lower()
-    return any(str(user.get("userPrincipalName") or "").lower() == wanted
-               or str(user.get("mail") or "").lower() == wanted
-               or f"smtp:{wanted}" in [str(item).lower() for item in user.get("proxyAddresses") or []]
-               for user in found)
+    return any(user.get("mail") and (
+        str(user.get("userPrincipalName") or "").lower() == wanted
+        or str(user["mail"]).lower() == wanted
+        or f"smtp:{wanted}" in [str(item).lower() for item in user.get("proxyAddresses") or []])
+        for user in found)
 
 
 def thumbprints(key_credentials: list[dict]) -> set[str]:
@@ -322,10 +306,11 @@ def keep_out_of_git(project: Path, path: Path) -> None:
 
 def ensure(project: Path, tenant_id: str, user: str, call: Callable,
            organization: str = "") -> dict[str, str] | None:
-    global granted_now
+    global granted_in_this_process
     client_id = alert_message.secret_value("PDT_EMAIL_CLIENT_ID")
     saved_tenant = alert_message.secret_value("PDT_EMAIL_TENANT_ID")
-    if saved_tenant and tenant_id and saved_tenant.lower() != tenant_id.lower():
+    switched = bool(saved_tenant and tenant_id and saved_tenant.lower() != tenant_id.lower())
+    if switched:
         if not console.confirm(f"The .env file holds the Microsoft 365 settings of organization "
                                f"{saved_tenant}. Replace them with organization "
                                f"{organization or tenant_id}?"):
@@ -430,7 +415,7 @@ def ensure(project: Path, tenant_id: str, user: str, call: Callable,
         else:
             call("POST", f"/servicePrincipals/{graph['id']}/appRoleAssignedTo", {
                 "principalId": principal["id"], "resourceId": graph["id"], "appRoleId": role_id})
-            granted_now = True
+            granted_in_this_process = True
             console.done(f"gave {console.value(REGISTRATION)} the permission {console.value(PERMISSION)}")
     except GraphError as e:
         if e.status != 403:
@@ -450,6 +435,12 @@ def ensure(project: Path, tenant_id: str, user: str, call: Callable,
             steps = [("pdt alerts setup", "run the setup again after that")]
         console.next_steps(steps, "Then:")
         return None
+    env_file = project / ".env"
+    if switched and env_file.is_file() and "PDT_EMAIL_PRIVATE_KEY_B64" in dotenv_values(env_file):
+        unset_key(env_file, "PDT_EMAIL_PRIVATE_KEY_B64")
+        os.environ.pop("PDT_EMAIL_PRIVATE_KEY_B64", None)
+        console.done(f"removed {console.value('PDT_EMAIL_PRIVATE_KEY_B64')} from "
+                     f"{console.value(config.shown_path(env_file))}")
     return {"PDT_EMAIL_TENANT_ID": tenant_id, "PDT_EMAIL_CLIENT_ID": app_id,
             "PDT_EMAIL_PRIVATE_KEY_PATH": CERTIFICATE}
 
@@ -551,13 +542,15 @@ def tagged(resource: dict) -> bool:
 
 
 def provisioned(call: Callable, path: str, label: str) -> dict:
-    """The resource at `path` once Azure finished creating or changing it."""
+    """The resource at `path` once Azure finished creating or changing it, or the resource
+    provider at `path` once Azure registered it."""
     deadline = time.monotonic() + PROVISION_WAIT_SECONDS
     with console.waiting(f"waiting: Azure to finish {label}"):
         while True:
             found = call("GET", path)
-            state = (found.get("properties") or {}).get("provisioningState", "Succeeded")
-            if state == "Succeeded":
+            state = found.get("registrationState") or (found.get("properties") or {}).get(
+                "provisioningState", "Succeeded")
+            if state in ("Succeeded", "Registered"):
                 return found
             if state in ("Failed", "Canceled"):
                 raise SetupError(f"Azure could not finish {label}: {state}")
@@ -675,8 +668,11 @@ def verify(call: Callable, subscription: str, domain: dict, created: bool) -> No
 def link(call: Callable, subscription: str, domain: dict, group: str, service_path: str,
          make_group: bool) -> str:
     """The id of a Communication Service that links `domain`. pdt uses one that links it
-    already; else it links the domain to its own Communication Service, in `group`, which it
-    creates first when `make_group` is true."""
+    already; else it links the domain to its own Communication Service with the data location
+    of the domain, in `group`, which it creates first when `make_group` is true. That service
+    is `service_path`, or `service_path` with the data location after it when the service at
+    `service_path` has another data location, because a domain links only to a service of
+    its own data location."""
     services = call("GET", f"/subscriptions/{subscription}/providers/Microsoft.Communication/"
                            f"communicationServices?api-version={ACS_API}")["value"]
     for service in services:
@@ -687,15 +683,22 @@ def link(call: Callable, subscription: str, domain: dict, group: str, service_pa
             return service["id"]
     if make_group:
         ensure_group(call, group)
+    location = domain["properties"]["dataLocation"]
+    for service_path in (service_path, f"{service_path}-{location.lower().replace(' ', '-')}"):
+        path = f"{service_path}?api-version={ACS_API}"
+        try:
+            service = call("GET", path)
+        except ArmError as e:
+            if e.status != 404:
+                raise
+            service = None
+        if service is None or (
+                str(service["properties"].get("dataLocation") or "").lower() == location.lower()):
+            break
     label = f"the communication service {console.value(service_path.rpartition('/')[2])}"
-    path = f"{service_path}?api-version={ACS_API}"
-    try:
-        service = call("GET", path)
-    except ArmError as e:
-        if e.status != 404:
-            raise
+    if service is None:
         call("PUT", path, {"location": "global", "tags": TAGS, "properties": {
-            "dataLocation": domain["properties"]["dataLocation"], "linkedDomains": [domain["id"]]}})
+            "dataLocation": location, "linkedDomains": [domain["id"]]}})
         provisioned(call, path, label)
         console.done(f"created {label}")
         return service_path
@@ -731,6 +734,15 @@ def acs_ensure(subscription: str, sender: str, call: Callable) -> tuple[str, str
     name = f"pdt-email-{hashlib.sha256(subscription.encode()).hexdigest()[:8]}"
     email_path = f"{group}/providers/Microsoft.Communication/emailServices/{name}"
     service_path = f"{group}/providers/Microsoft.Communication/communicationServices/{name}"
+    provider = (f"/subscriptions/{subscription}/providers/Microsoft.Communication"
+                f"?api-version={PROVIDER_API}")
+    if call("GET", provider).get("registrationState") != "Registered":
+        call("POST", f"/subscriptions/{subscription}/providers/Microsoft.Communication/register"
+                     f"?api-version={PROVIDER_API}")
+        provisioned(call, provider, "the registration of the Azure resource provider "
+                                    f"{console.value('Microsoft.Communication')}")
+        console.done("registered the Azure resource provider "
+                     f"{console.value('Microsoft.Communication')}")
     if sender == "":
         ensure_email_service(call, group, email_path)
         domain = ensure_resource(
@@ -797,14 +809,44 @@ def azure_communication_services(sender: str) -> tuple[str, dict[str, str]] | No
     return found[0], {"PDT_ACS_CONNECTION_STRING": found[1]}
 
 
+def acs_delivered(answer: str) -> None:
+    """Wait until Azure Communication Services sent the email it accepted with `answer`, for
+    at most ACS_STATUS_SECONDS. A job does not wait, because alerts must finish within a
+    short limit when the job exits."""
+    try:
+        operation = str(json.loads(answer or "{}").get("id") or "")
+    except (ValueError, AttributeError):
+        operation = ""
+    if operation == "":
+        return
+    deadline = time.monotonic() + ACS_STATUS_SECONDS
+    with console.waiting("waiting: Azure Communication Services to send the email"):
+        while True:
+            found, retry = email_alert.acs_status(operation)
+            if found.get("status") == "Succeeded":
+                return
+            if found.get("status") in ("Failed", "Canceled"):
+                error = found.get("error") or {}
+                detail = (f"{error['code']}: {error.get('message')}" if error.get("code")
+                          else found["status"])
+                raise RuntimeError(f"Azure Communication Services did not send the email: "
+                                   f"{detail}")
+            wait = retry or RETRY_SECONDS / 2
+            if time.monotonic() + wait > deadline:
+                return
+            time.sleep(wait)
+
+
 def send_test(entry: dict, project: str) -> None:
     deadline = time.monotonic() + GRANT_WAIT_SECONDS
     while True:
         try:
-            email_alert.send_ready(entry, project)
+            answer = email_alert.send_ready(entry, project)
+            if entry["method"] == "azure-communication-services":
+                acs_delivered(answer)
             return
         except RuntimeError as e:
-            too_new = (granted_now and entry["method"] == "microsoft-365"
+            too_new = (granted_in_this_process and entry["method"] == "microsoft-365"
                        and any(mark in str(e) for mark in TOO_NEW))
             if not too_new or time.monotonic() >= deadline:
                 raise

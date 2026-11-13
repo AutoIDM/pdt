@@ -230,18 +230,21 @@ def send_microsoft_365(values: dict, sender: str, to: list[str], subject: str, t
                 {"emailAddress": {"address": address}} for address in to]}},
             "Microsoft Graph", {"Authorization": f"Bearer {graph_token(values)}"})
     except RuntimeError as e:
+        if '"MailboxNotEnabledForRESTAPI"' in str(e):
+            raise RuntimeError(f"{sender} has no Exchange Online mailbox. {e}") from None
         if '"ErrorInvalidUser"' not in str(e):
             raise
         raise RuntimeError(f"{sender} is not a mailbox in the Microsoft 365 organization of the "
                            f"app registration. {e}") from None
 
 
-def acs_headers(url: str, body: bytes, access_key: str, date: str) -> dict:
-    """The headers that sign a POST of `body` to `url` with the access key of a Communication
-    Service (HMAC-SHA256 of the verb, path and query, date, host, and body hash)."""
+def acs_headers(url: str, body: bytes, access_key: str, date: str, method: str = "POST") -> dict:
+    """The headers that sign a request of `body` to `url` with the access key of a
+    Communication Service (HMAC-SHA256 of the verb, path and query, date, host, and body
+    hash)."""
     parts = urllib.parse.urlsplit(url)
     content_hash = base64.b64encode(hashlib.sha256(body).digest()).decode()
-    signed = f"POST\n{parts.path}?{parts.query}\n{date};{parts.netloc};{content_hash}"
+    signed = f"{method}\n{parts.path}?{parts.query}\n{date};{parts.netloc};{content_hash}"
     try:
         key = base64.b64decode(access_key, validate=True)
     except ValueError:
@@ -252,16 +255,43 @@ def acs_headers(url: str, body: bytes, access_key: str, date: str) -> dict:
                              f"&Signature={signature}"}
 
 
-def send_azure_communication_services(values: dict, sender: str, to: list[str], subject: str,
-                                      text: str, html: str) -> None:
-    """Hand the email to Azure Communication Services. The service answers when it accepted
-    the email, and sends it after that."""
+def acs_connection(connection_string: str) -> dict:
+    """The endpoint and the accesskey of PDT_ACS_CONNECTION_STRING."""
     parts = {}
-    for part in values["PDT_ACS_CONNECTION_STRING"].split(";"):
+    for part in connection_string.split(";"):
         name, _, value = part.partition("=")
         parts[name.strip().lower()] = value.strip()
     if not parts.get("endpoint") or not parts.get("accesskey"):
         raise RuntimeError("PDT_ACS_CONNECTION_STRING needs endpoint=...;accesskey=...")
+    return parts
+
+
+def acs_status(operation_id: str) -> tuple[dict, int]:
+    """The send result of the email that Azure Communication Services accepted as
+    `operation_id`, and the seconds its Retry-After header names (0 with none)."""
+    parts = acs_connection(alert_message.secret_value("PDT_ACS_CONNECTION_STRING"))
+    url = (f"{parts['endpoint'].rstrip('/')}/emails/operations/"
+           f"{urllib.parse.quote(operation_id, safe='')}?api-version={ACS_API_VERSION}")
+    request = urllib.request.Request(url, headers=acs_headers(
+        url, b"", parts["accesskey"], formatdate(usegmt=True), "GET"))
+    try:
+        with urllib.request.urlopen(request, timeout=alert_message.TIMEOUT_SECONDS) as response:
+            retry = response.headers.get("Retry-After") or "0"
+            return json.loads(response.read()), int(retry) if retry.isdigit() else 0
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace").strip()
+        raise RuntimeError(f"Azure Communication Services answered HTTP {e.code}: "
+                           f"{body or e.reason}") from None
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Azure Communication Services could not be reached: {e.reason}") from None
+
+
+def send_azure_communication_services(values: dict, sender: str, to: list[str], subject: str,
+                                      text: str, html: str) -> str:
+    """Hand the email to Azure Communication Services, and return its answer, which holds the
+    id of the send operation. The service answers when it accepted the email, and sends it
+    after that."""
+    parts = acs_connection(values["PDT_ACS_CONNECTION_STRING"])
     url = f"{parts['endpoint'].rstrip('/')}/emails:send?api-version={ACS_API_VERSION}"
     content = {"subject": subject, "plainText": text}
     if html != "":
@@ -271,7 +301,7 @@ def send_azure_communication_services(values: dict, sender: str, to: list[str], 
     headers = acs_headers(url, json.dumps(payload).encode(), parts["accesskey"],
                           formatdate(usegmt=True))
     try:
-        alert_message.post(url, payload, "Azure Communication Services", headers)
+        return alert_message.post(url, payload, "Azure Communication Services", headers)
     except RuntimeError as e:
         if "answered HTTP 429" not in str(e):
             raise
@@ -286,20 +316,21 @@ SENDERS = {"azure-communication-services": send_azure_communication_services,
            "microsoft-365": send_microsoft_365, "smtp": send_smtp}
 
 
-def send(entry: dict, to: list[str], subject: str, text: str, html: str = "") -> None:
+def send(entry: dict, to: list[str], subject: str, text: str, html: str = "") -> str | None:
+    """Send one email, and return what the sender of the method returns."""
     needed, read = METHODS[entry["method"]]
     values = {name: alert_message.secret_value(name) for name in (*needed, *read)}
     missing = [name for name in needed if not config.is_set(values, name)]
     if missing:
         raise RuntimeError(f"{', '.join(missing)} is not set; run pdt alerts setup to connect "
                            "email")
-    SENDERS[entry["method"]](values, str(entry["from"]), to, " ".join(subject.split()), text,
-                             html)
+    return SENDERS[entry["method"]](values, str(entry["from"]), to, " ".join(subject.split()),
+                                    text, html)
 
 
-def send_ready(entry: dict, project: str) -> None:
+def send_ready(entry: dict, project: str) -> str | None:
     message = alert_message.ready_message(project, label(entry), entry.get("events", []))
-    send(entry, entry["to"], message.title, plain(message), page(message))
+    return send(entry, entry["to"], message.title, plain(message), page(message))
 
 
 def deliver(event, entry: dict, unhandled: bool) -> None:

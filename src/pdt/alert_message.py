@@ -1,18 +1,17 @@
 """What every alerts type says: the content of a lifecycle event, before a transport lays it out.
 
-`event_message` and `ready_message` build a Message: a title, a tone, an optional
-note, body text, labelled fields, an "Open" link, and a footer. pdt.slack turns a
-Message into Block Kit, pdt.teams turns it into an Adaptive Card, and
-pdt.email_alert turns it into an email. The note,
-text, footer, and field values use one markup, `*bold*` and `code`, which Slack
-shows as written and Teams converts. An event can carry four content parameters
-(`CONTENT`): `title` replaces the words of the event in the title, after the app
-name (`<app>: <title>`), `text` is the body text, `url` is the
-"Open" link, and `html` is a body that only the email type sends. None of them,
-and not the `to` of pdt.email_alert, becomes a field. `event_sentence` is the one line the
-console type prints for an event. A Tone (`OUTCOMES`, `OTHER`, `UNHANDLED`,
-`READY`) holds the colour and icon of an outcome for both types. The title also
-says the outcome in words, so the tone is never the only sign of it.
+`event_message` and `ready_message` build a Message: a title, a tone, an optional note,
+body text, labelled fields, an "Open" link, and a footer. pdt.slack turns a Message into
+Block Kit, pdt.teams turns it into an Adaptive Card, and pdt.email_alert turns it into an
+email. The note, text, footer, and field values use one markup, `*bold*` and `code`, which
+Slack shows as written and Teams converts. An event can carry four content parameters
+(`CONTENT`): `title` replaces the words of the event in the title, after the app name
+(`<app>: <title>`), `text` is the body text, `url` is the "Open" link, and `html` is a
+body that only the email type sends. None of them, and not the `to` of pdt.email_alert,
+becomes a field. `event_sentence` is the one line the console type prints for an event. A
+Tone (`OUTCOMES`, `OTHER`, `UNHANDLED`, `READY`) holds the colour and icon of an outcome
+for both types. The title also says the outcome in words, so the tone is never the only
+sign of it.
 """
 
 from __future__ import annotations

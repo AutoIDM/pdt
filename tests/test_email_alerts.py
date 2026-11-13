@@ -214,6 +214,25 @@ def test_a_send_from_an_address_that_is_no_mailbox_says_so_before_the_answer(mon
                                  f"organization of the app registration. {answer}")
 
 
+def test_a_send_from_a_user_with_no_exchange_online_mailbox_says_so_before_the_answer(
+        monkeypatch):
+    answer = ('Microsoft Graph answered HTTP 404: {"error":{"code":"MailboxNotEnabledForRESTAPI",'
+              '"message":"The mailbox is either inactive, soft-deleted, or is hosted on-premise."}}')
+
+    def post(*_args):
+        raise RuntimeError(answer)
+
+    monkeypatch.setattr(email_alert, "graph_token", lambda values: "token")
+    monkeypatch.setattr(alert_message, "post", post)
+    for name in ("PDT_EMAIL_TENANT_ID", "PDT_EMAIL_CLIENT_ID", "PDT_EMAIL_PRIVATE_KEY_B64"):
+        monkeypatch.setenv(name, "x")
+    entry = {"type": "email", "method": "microsoft-365", "from": "pdt-alerts@example.com",
+             "to": ["it-ops@example.com"]}
+    with pytest.raises(RuntimeError) as raised:
+        email_alert.send(entry, entry["to"], "Subject", "text")
+    assert str(raised.value) == f"pdt-alerts@example.com has no Exchange Online mailbox. {answer}"
+
+
 ACS_CONNECTION = ("endpoint=https://contoso.communication.azure.com/;"
                   "accesskey=cGR0LXRlc3Qta2V5LTAxMjM0NTY3ODk=")
 
@@ -375,7 +394,6 @@ def test_in_a_menu_setup_takes_the_email_method_the_marker_is_on(project, smtp, 
                                                                  press):
     for name in SMTP_ENV:
         monkeypatch.delenv(name)
-    # Slack off and Email on, the default events, then the third method.
     keys = press("space", "down", "down", "space", "enter", "enter", "down", "down", "enter")
     queue = ["it-ops@example.com", "pdt-alerts@example.com", "smtp.example.com", "", "pdt",
              "secret", "n"]

@@ -334,7 +334,6 @@ def first_valid_not_unhandled(alerts: list) -> dict[str, Current]:
     return found
 
 
-# A value that python-dotenv reads back unchanged with no quotes around it.
 PLAIN_ENV_VALUE = re.compile(r"[^\s#'\"\\]*")
 
 

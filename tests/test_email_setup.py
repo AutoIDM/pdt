@@ -27,7 +27,8 @@ class Organization:
         self.grants = []
         self.refuse = []
         self.writes = []
-        self.users = [{"userPrincipalName": "pdt-alerts@example.com"}]
+        self.users = [{"userPrincipalName": "pdt-alerts@example.com",
+                       "mail": "pdt-alerts@example.com"}]
 
     def call(self, method, path, body=None):
         if any(f"{method} {path}".startswith(start) for start in self.refuse):
@@ -77,7 +78,7 @@ class Organization:
 def organization(project, monkeypatch):
     for name in ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(email_setup, "granted_now", False)
+    monkeypatch.setattr(email_setup, "granted_in_this_process", False)
     monkeypatch.setattr(email_setup.time, "sleep", lambda _seconds: None)
     found = Organization()
     monkeypatch.setattr(email_setup, "sign_in",
@@ -110,7 +111,7 @@ def test_a_first_run_makes_the_registration_the_certificate_and_the_permission(
     assert (project / ".secrets" / ".gitignore").read_text() == "*\n"
     if os.name != "nt":
         assert key.stat().st_mode & 0o777 == 0o600
-    assert email_setup.granted_now
+    assert email_setup.granted_in_this_process
 
 
 def test_a_new_certificate_is_valid_for_ten_years():
@@ -125,7 +126,7 @@ def test_a_second_run_changes_nothing_in_microsoft_365_or_in_the_project(
     values = email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
     key = (project / ".secrets" / "pdt-email.pfx").read_bytes()
     organization.writes.clear()
-    monkeypatch.setattr(email_setup, "granted_now", False)
+    monkeypatch.setattr(email_setup, "granted_in_this_process", False)
     capsys.readouterr()
     assert email_setup.ensure(project, TENANT, "admin@example.com", organization.call) == values
     assert capsys.readouterr().out.splitlines() == [
@@ -134,7 +135,7 @@ def test_a_second_run_changes_nothing_in_microsoft_365_or_in_the_project(
         "pdt-email already has the permission Mail.Send"]
     assert organization.writes == []
     assert (project / ".secrets" / "pdt-email.pfx").read_bytes() == key
-    assert not email_setup.granted_now
+    assert not email_setup.granted_in_this_process
 
 
 def test_an_account_that_cannot_grant_gets_the_role_and_the_consent_link_and_a_later_run_goes_on(
@@ -246,6 +247,20 @@ def test_a_sign_in_to_another_organization_changes_nothing_after_no(
     assert "alerts" not in config.load_yaml(project / "pdt.yml")
 
 
+def test_a_sign_in_to_another_organization_removes_the_saved_key_value(
+        project, organization, monkeypatch, capsys):
+    other_organization_saved(project)
+    with (project / ".env").open("a") as env:
+        env.write("PDT_EMAIL_PRIVATE_KEY_B64=b2xk\n")
+    answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "2", "pdt-alerts@example.com",
+            "y", "n")
+    assert alerts_cli.setup() == 0
+    assert "removed PDT_EMAIL_PRIVATE_KEY_B64 from .env" in capsys.readouterr().out.splitlines()
+    assert (project / ".env").read_text() == (
+        f"PDT_EMAIL_TENANT_ID={TENANT}\nPDT_EMAIL_CLIENT_ID=client-1\n"
+        "PDT_EMAIL_PRIVATE_KEY_PATH=.secrets/pdt-email.pfx\n")
+
+
 def git(folder, *args):
     return subprocess.run(["git", *args], cwd=folder, capture_output=True, text=True)
 
@@ -340,11 +355,11 @@ def test_the_test_message_waits_and_tries_again_only_after_this_run_gave_the_per
 
     monkeypatch.setattr(email_setup.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(email_alert, "send_ready", send)
-    monkeypatch.setattr(email_setup, "granted_now", False)
+    monkeypatch.setattr(email_setup, "granted_in_this_process", False)
     with pytest.raises(RuntimeError, match="HTTP 403"):
         email_setup.send_test(entry, "contoso-jobs")
     assert len(tries) == 1
-    monkeypatch.setattr(email_setup, "granted_now", True)
+    monkeypatch.setattr(email_setup, "granted_in_this_process", True)
     email_setup.send_test(entry, "contoso-jobs")
     assert len(tries) == 3
 
@@ -360,7 +375,7 @@ def test_the_test_message_reports_the_real_error_when_the_wait_ends(monkeypatch)
     monkeypatch.setattr(email_setup.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(email_setup.time, "monotonic", lambda: next(clock))
     monkeypatch.setattr(email_alert, "send_ready", send)
-    monkeypatch.setattr(email_setup, "granted_now", True)
+    monkeypatch.setattr(email_setup, "granted_in_this_process", True)
     with pytest.raises(RuntimeError, match="ErrorAccessDenied"):
         email_setup.send_test(entry, "contoso-jobs")
 
@@ -474,7 +489,7 @@ def test_the_azure_sign_in_has_no_tenant_and_a_menu_of_the_enabled_subscriptions
 
 
 @pytest.mark.parametrize("user", [
-    {"userPrincipalName": "PDT-Alerts@example.com"},
+    {"userPrincipalName": "PDT-Alerts@example.com", "mail": "alerts@example.com"},
     {"userPrincipalName": "shared-1@example.com", "mail": "pdt-alerts@EXAMPLE.com"},
     {"userPrincipalName": "shared-1@example.com", "mail": "shared@example.com",
      "proxyAddresses": ["SMTP:shared@example.com", "smtp:Pdt-Alerts@example.com"]}])
@@ -487,6 +502,35 @@ def test_a_user_with_only_an_x500_or_another_address_is_not_the_mailbox(organiza
     organization.users = [{"userPrincipalName": "other@example.com", "mail": "other@example.com",
                            "proxyAddresses": ["X500:pdt-alerts@example.com"]}]
     assert not email_setup.mailbox(organization.call, "pdt-alerts@example.com")
+
+
+def test_a_user_with_no_exchange_mailbox_is_not_the_mailbox(organization):
+    organization.users = [{"userPrincipalName": "pdt-alerts@example.com", "mail": None,
+                           "proxyAddresses": []}]
+    assert not email_setup.mailbox(organization.call, "pdt-alerts@example.com")
+
+
+def test_a_sender_with_an_ampersand_gives_microsoft_graph_the_whole_filter(monkeypatch):
+    import io
+    import urllib.parse
+    urls = []
+
+    def urlopen(request, timeout=None):
+        urls.append(request.full_url)
+        return io.BytesIO(json.dumps({"value": [
+            {"userPrincipalName": "r&d@example.com", "mail": "r&d@example.com"}]}).encode())
+
+    monkeypatch.setattr(email_setup.urllib.request, "urlopen", urlopen)
+    assert email_setup.mailbox(
+        lambda method, path, body=None: email_setup.graph_call("token", method, path, body),
+        "r&d@example.com")
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(urls[0]).query)
+    assert query == {
+        "$filter": ["userPrincipalName eq 'r&d@example.com' or mail eq 'r&d@example.com' "
+                    "or proxyAddresses/any(a:a eq 'smtp:r&d@example.com')"],
+        "$select": ["userPrincipalName,mail,proxyAddresses"]}
+    assert urls[0].startswith("https://graph.microsoft.com/v1.0/users?$filter=userPrincipalName"
+                              "%20eq%20'r%26d@example.com'")
 
 
 def test_a_sender_that_is_no_mailbox_saves_nothing_and_is_asked_again(
@@ -539,11 +583,14 @@ VERIFIED = {kind: {"status": "Verified"} for kind in email_setup.VERIFY}
 
 class Arm:
     """A stand-in for Azure Resource Manager: each resource by its id. `writes` holds each
-    change as `METHOD <the last type in the path, or the action of a POST>`."""
+    change as `METHOD <the last type in the path, or the action of a POST>`. `registration`
+    holds each state that the provider Microsoft.Communication answers, in turn; the last
+    one stays."""
 
     def __init__(self):
         self.resources = {}
         self.writes = []
+        self.registration = ["Registered"]
 
     def add(self, path, body):
         name = path.rstrip("/").rpartition("/")[2]
@@ -555,6 +602,14 @@ class Arm:
         if method != "GET":
             parts = [part for part in path.split("/") if part]
             self.writes.append(f"{method} {parts[-1] if method == 'POST' else parts[-2]}")
+        if key.endswith("/providers/microsoft.communication"):
+            state = self.registration[0]
+            if len(self.registration) > 1:
+                self.registration.pop(0)
+            return {"namespace": "Microsoft.Communication", "registrationState": state}
+        if method == "POST" and key.endswith("/providers/microsoft.communication/register"):
+            self.registration = ["Registering", "Registering", "Registered"]
+            return {}
         if method == "POST" and key.endswith("/listkeys"):
             return {"primaryConnectionString": CONNECTION}
         if method == "POST" and key.endswith("/initiateverification"):
@@ -722,3 +777,86 @@ def test_a_new_custom_domain_in_an_azure_dns_zone_gets_the_records_and_the_verif
     assert "started the verification of example.com" in out
     assert "Add these records" not in out
     assert not (project / ".env").exists()
+
+
+def test_a_subscription_with_no_communication_provider_registers_it_before_the_first_write(
+        project, arm, monkeypatch, capsys):
+    arm.registration = ["NotRegistered"]
+    acs_setup(monkeypatch, "")
+    assert alerts_cli.setup() == 0
+    assert arm.writes[:2] == ["POST register", "PUT resourceGroups"]
+    out = [" ".join(line.split()) for line in capsys.readouterr().out.splitlines()]
+    assert "registered the Azure resource provider Microsoft.Communication" in out
+    arm.writes.clear()
+    assert email_setup.acs_ensure(SUBSCRIPTION, "", arm.call) is not None
+    assert "POST register" not in arm.writes
+
+
+def test_a_domain_of_another_data_location_gets_its_own_service_of_pdt(
+        project, arm, monkeypatch, capsys):
+    arm.add(f"{PROVIDER}/communicationServices/{NAME}", {"tags": {"managed-by": "pdt"},
+                                                         "properties": {
+        "dataLocation": "United States", "linkedDomains": []}})
+    arm.add(f"{OTHER}/emailServices/mail", {"properties": {}})
+    verified_domain(arm, f"{OTHER}/emailServices/mail/domains/example.com")
+    acs_setup(monkeypatch, "DoNotReply@example.com")
+    assert alerts_cli.setup() == 0
+    assert arm.writes == ["PUT resourceGroups", "PUT communicationServices", "POST listKeys"]
+    assert arm.resources[f"{PROVIDER}/communicationServices/{NAME}".lower()]["properties"] == {
+        "dataLocation": "United States", "linkedDomains": []}
+    assert arm.resources[f"{PROVIDER}/communicationServices/{NAME}-europe".lower()][
+        "properties"] == {"dataLocation": "Europe", "linkedDomains": [
+            f"{OTHER}/emailServices/mail/domains/example.com"]}
+    assert (f"created the communication service {NAME}-europe"
+            in [" ".join(line.split()) for line in capsys.readouterr().out.splitlines()])
+
+
+ACS_ENTRY = {"type": "email", "method": "azure-communication-services",
+             "from": "DoNotReply@example.com", "to": ["it-ops@example.com"]}
+
+
+def test_the_acs_test_message_waits_for_the_send_result_and_reports_a_failure(monkeypatch):
+    results = [({"status": "Running"}, 2), ({"status": "Failed", "error": {
+        "code": "EmailDroppedAllRecipientsSuppressed", "message": "Message dropped."}}, 0)]
+    asked, slept = [], []
+    monkeypatch.setattr(email_alert, "send_ready",
+                        lambda _entry, _project: '{"id": "op-1", "status": "Running"}')
+    monkeypatch.setattr(email_alert, "acs_status",
+                        lambda operation: asked.append(operation) or results.pop(0))
+    monkeypatch.setattr(email_setup.time, "sleep", slept.append)
+    with pytest.raises(RuntimeError) as raised:
+        email_setup.send_test(ACS_ENTRY, "contoso-jobs")
+    assert str(raised.value) == ("Azure Communication Services did not send the email: "
+                                 "EmailDroppedAllRecipientsSuppressed: Message dropped.")
+    assert (asked, slept) == (["op-1", "op-1"], [2])
+
+
+def test_the_acs_test_message_stops_waiting_after_60_seconds(monkeypatch):
+    clock = iter(range(0, 1000, 25))
+    monkeypatch.setattr(email_alert, "send_ready", lambda _entry, _project: '{"id": "op-1"}')
+    monkeypatch.setattr(email_alert, "acs_status", lambda _operation: ({"status": "Running"}, 20))
+    monkeypatch.setattr(email_setup.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(email_setup.time, "monotonic", lambda: next(clock))
+    email_setup.send_test(ACS_ENTRY, "contoso-jobs")
+
+
+def test_the_acs_status_is_a_signed_get_that_reads_retry_after(monkeypatch):
+    import io
+    requests = []
+
+    class Answer(io.BytesIO):
+        headers = {"Retry-After": "3"}
+
+    def urlopen(request, timeout=None):
+        requests.append(request)
+        return Answer(b'{"id": "op-1", "status": "Running"}')
+
+    monkeypatch.setenv("PDT_ACS_CONNECTION_STRING", CONNECTION)
+    monkeypatch.setattr(email_alert.urllib.request, "urlopen", urlopen)
+    assert email_alert.acs_status("op-1") == ({"id": "op-1", "status": "Running"}, 3)
+    request, = requests
+    assert (request.get_method(), request.full_url) == (
+        "GET", "https://acs.example.com/emails/operations/op-1?api-version=2023-03-31")
+    assert dict(request.header_items()) == {
+        key.capitalize(): value for key, value in email_alert.acs_headers(
+            request.full_url, b"", "a2V5", request.get_header("X-ms-date"), "GET").items()}
