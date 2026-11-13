@@ -704,56 +704,40 @@ def _posix_key(fd: int) -> str:
     return key.decode(errors="ignore")
 
 
-def _console_event() -> tuple[bool, int, str]:
-    """The next input event of the Windows console: whether it is a key press, its
-    virtual-key code, and its character ("\\0" when it has none). An arrow key is one event
-    with its own code, so it never looks like a typed character such as `à`. The console
-    mode is 0 while it reads, as in msvcrt.getwch, so Ctrl+C is the character "\\x03"."""
+def _console_event(kernel32, handle, record) -> tuple[bool, int, str, int]:
+    """The next input event of the Windows console, read into `record`: whether it is a key
+    press, its virtual-key code, its character ("\\0" when it has none), and how many times
+    a held key gave it. An arrow key is one event with its own code, so it never looks like
+    a typed character such as `à`."""
     import ctypes
     from ctypes import wintypes
-
-    class KeyEvent(ctypes.Structure):
-        _fields_ = [("down", wintypes.BOOL), ("repeat", wintypes.WORD),
-                    ("code", wintypes.WORD), ("scan", wintypes.WORD),
-                    ("char", wintypes.WCHAR), ("state", wintypes.DWORD)]
-
-    class Record(ctypes.Structure):
-        # KEY_EVENT_RECORD is the largest member of the event union, so it gives its size.
-        _fields_ = [("type", wintypes.WORD), ("event", KeyEvent)]
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GetStdHandle.restype = wintypes.HANDLE
-    handle = kernel32.GetStdHandle(-10)
-    mode = wintypes.DWORD()
-    record = Record()
     count = wintypes.DWORD()
-    kernel32.GetConsoleMode(handle, ctypes.byref(mode))
-    kernel32.SetConsoleMode(handle, 0)
-    try:
-        if not kernel32.ReadConsoleInputW(handle, ctypes.byref(record), 1,
-                                          ctypes.byref(count)) or count.value == 0:
-            raise EOFError
-    finally:
-        kernel32.SetConsoleMode(handle, mode)
+    if not kernel32.ReadConsoleInputW(handle, ctypes.byref(record), 1,
+                                      ctypes.byref(count)) or count.value == 0:
+        raise EOFError
     # KEY_EVENT is 1.
     down = record.type == 1 and bool(record.event.down)
-    return down, record.event.code, record.event.char
+    return down, record.event.code, record.event.char, record.event.repeat
 
 
-def _windows_key() -> str:
+def _windows_keys(kernel32, handle, record) -> Iterator[str]:
     while True:
-        down, code, char = _console_event()
+        down, code, char, repeat = _console_event(kernel32, handle, record)
         if not down:
             continue
         if code in WINDOWS_KEYS:
-            return WINDOWS_KEYS[code]
-        if char == "\x03":
+            key = WINDOWS_KEYS[code]
+        elif char == "\x03":
             raise KeyboardInterrupt
-        if char == "\x1a":
-            return "eof"
-        # A key with no character, such as Shift or Left, is no key.
-        if char != "\0":
-            return char if char >= " " else ""
+        elif char == "\x1a":
+            key = "eof"
+        elif char != "\0":
+            key = char if char >= " " else ""
+        else:
+            # A key with no character, such as Shift or Left, is no key.
+            continue
+        for _ in range(repeat):
+            yield key
 
 
 @contextmanager
@@ -767,7 +751,43 @@ def keys() -> Iterator[Callable[[], str]]:
     shown, and after `fg` the function returns `resumed`. A parent that ignores Ctrl+Z, or
     that set its own handler, keeps it."""
     if sys.platform == "win32":
-        yield _windows_key
+        import ctypes
+        from ctypes import wintypes
+
+        class KeyEvent(ctypes.Structure):
+            _fields_ = [("down", wintypes.BOOL), ("repeat", wintypes.WORD),
+                        ("code", wintypes.WORD), ("scan", wintypes.WORD),
+                        ("char", wintypes.WCHAR), ("state", wintypes.DWORD)]
+
+        class Record(ctypes.Structure):
+            # KEY_EVENT_RECORD is the largest member of the event union, so it gives its size.
+            _fields_ = [("type", wintypes.WORD), ("event", KeyEvent)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetStdHandle.argtypes = (wintypes.DWORD,)
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.GetConsoleMode.argtypes = (wintypes.HANDLE, wintypes.LPDWORD)
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        kernel32.SetConsoleMode.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel32.SetConsoleMode.restype = wintypes.BOOL
+        kernel32.ReadConsoleInputW.argtypes = (wintypes.HANDLE, ctypes.POINTER(Record),
+                                               wintypes.DWORD, wintypes.LPDWORD)
+        kernel32.ReadConsoleInputW.restype = wintypes.BOOL
+        # STD_INPUT_HANDLE is -10.
+        handle = kernel32.GetStdHandle(-10)
+        mode = wintypes.DWORD()
+        # The console mode is 0 for the whole menu, as in msvcrt.getwch, so Ctrl+C is the
+        # character "\x03" and an arrow key is one event even when the parent turned on
+        # ENABLE_VIRTUAL_TERMINAL_INPUT. Input that is not a console keeps its mode.
+        console_input = kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+        try:
+            if console_input:
+                kernel32.SetConsoleMode(handle, 0)
+            windows_keys = _windows_keys(kernel32, handle, Record())
+            yield lambda: next(windows_keys)
+        finally:
+            if console_input:
+                kernel32.SetConsoleMode(handle, mode.value)
         return
     import select
     import signal
@@ -794,7 +814,9 @@ def keys() -> Iterator[Callable[[], str]]:
 
     def key() -> str:
         if not _unread and resume_read in select.select([fd, resume_read], [], [])[0]:
-            os.read(resume_read, 1)
+            # Each `fg` since the last key left one byte, and one new copy of the menu is
+            # enough for all of them.
+            os.read(resume_read, 1024)
             return "resumed"
         return _posix_key(fd)
 
@@ -807,10 +829,12 @@ def keys() -> Iterator[Callable[[], str]]:
             tty.setcbreak(fd, termios.TCSANOW)
             yield key
         finally:
+            # The handler goes first, so that a Ctrl+Z from here on cannot set cbreak again
+            # after the saved mode.
+            if handled:
+                signal.signal(signal.SIGTSTP, signal.SIG_DFL)
             termios.tcsetattr(fd, termios.TCSADRAIN, saved)
     finally:
-        if handled:
-            signal.signal(signal.SIGTSTP, signal.SIG_DFL)
         os.close(resume_read)
         os.close(resume_write)
 

@@ -458,7 +458,7 @@ def test_a_menu_longer_than_the_screen_shows_the_part_around_the_marker(press, m
                             "> region-6", "  3 more below"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with msvcrt")
+@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with ReadConsoleInputW")
 @pytest.mark.parametrize("sent,key", [
     (b"\x1b[A", "up"), (b"\x1bOB", "down"), (b" ", "space"), (b"\r", "enter"), (b"\x7f", "backspace"),
     (b"\x15", "clear"), (b"\x04", "eof"), (b"q", "q"), ("é".encode(), "é"), ("€".encode(), "€"),
@@ -498,7 +498,7 @@ def keys_of(sent, chunks=None, pause=0.01):
         return found
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with msvcrt")
+@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with ReadConsoleInputW")
 @pytest.mark.parametrize("sent,found", [
     # The input ends inside a sequence.
     (b"\x1b", [""]), (b"\x1b[", [""]), (b"\x1b[1;", [""]), (b"\x1bO", [""]), (b"\xe2\x82", [""]),
@@ -521,7 +521,7 @@ def test_a_key_ends_where_its_form_ends(sent, found):
     assert keys_of(sent) == found
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with msvcrt")
+@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with ReadConsoleInputW")
 def test_a_character_whose_bytes_arrive_in_separate_reads_is_one_key():
     euro = "€".encode()
     assert keys_of(b"", [euro[:1], euro[1:2], euro[2:], b"x"]) == ["€", "x"]
@@ -555,25 +555,50 @@ def test_a_byte_that_starts_no_character_is_no_key_at_once(first):
     os.close(read)
 
 
-def test_a_windows_arrow_key_is_one_key_and_a_typed_letter_is_that_letter(monkeypatch):
-    # The console events of Up, `à`, `x`, Shift+A, Left, a focus change, Down, Enter, Ctrl+Z,
-    # and Ctrl+C: each key press and each key release, as ReadConsoleInputW gives them.
-    pressed = [(0x26, "\0"), (0x30, "à"), (0x58, "x"), (0x10, "\0"), (0x41, "A"), (0x25, "\0"),
-               None, (0x28, "\0"), (0x0d, "\r"), (0x5a, "\x1a"), (0x43, "\x03")]
+@pytest.mark.parametrize("console_input", [True, False])
+def test_a_windows_arrow_key_is_one_key_and_a_typed_letter_is_that_letter(monkeypatch,
+                                                                          console_input):
+    # The console events of Up, `à`, `x`, Shift+A, Left, a focus change, Down held for three
+    # repeats, Enter, Ctrl+Z, and Ctrl+C: each key press and each key release, as
+    # ReadConsoleInputW gives them, with the type, down, repeat, code, and character.
+    pressed = [(0x26, "\0", 1), (0x30, "à", 1), (0x58, "x", 1), (0x10, "\0", 1), (0x41, "A", 1),
+               (0x25, "\0", 1), None, (0x28, "\0", 3), (0x0d, "\r", 1), (0x5a, "\x1a", 1),
+               (0x43, "\x03", 1)]
     events = []
     for key in pressed:
-        events += [(False, 0, "\0")] if key is None else [(True, *key), (False, *key)]
-    monkeypatch.setattr(console, "_console_event", lambda: events.pop(0))
-    # msvcrt.getwch gives an arrow key as the prefix and keeps the second code in its own
-    # buffer, which msvcrt.kbhit does not see, so a reader that used them would give `à`.
-    crt = list("\xe0H")
-    monkeypatch.setitem(sys.modules, "msvcrt", types.SimpleNamespace(
-        getwch=lambda: crt.pop(0), kbhit=lambda: False, ungetwch=lambda char: None))
-    found = [console._windows_key() for _ in range(7)]
-    assert found == ["up", "à", "x", "A", "down", "enter", "eof"]
+        # FOCUS_EVENT is 0x10, KEY_EVENT is 1.
+        events += [(0x10, 0, 0, 0, "\0")] if key is None else [
+            (1, 1, key[2], key[0], key[1]), (1, 0, 1, key[0], key[1])]
+    modes = []
+
+    def get_mode(handle, mode):
+        # ENABLE_VIRTUAL_TERMINAL_INPUT (0x200) is on, as a parent can leave it.
+        mode._obj.value = 0x2f7
+        return console_input
+
+    def read(handle, record, length, count):
+        assert (handle, length) == (7, 1)
+        # Mode 0 holds from the first read to the last one, for a console.
+        assert modes == ([0] if console_input else [])
+        event = record._obj
+        (event.type, event.event.down, event.event.repeat, event.event.code,
+         event.event.char) = events.pop(0)
+        count._obj.value = 1
+        return 1
+
+    kernel32 = types.SimpleNamespace(
+        GetStdHandle=lambda number: {-10: 7}[number], GetConsoleMode=get_mode,
+        SetConsoleMode=lambda handle, mode: modes.append(mode) or 1, ReadConsoleInputW=read)
+    monkeypatch.setattr("ctypes.WinDLL", lambda name, use_last_error: kernel32, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(KeyboardInterrupt):
-        console._windows_key()
-    assert crt == list("\xe0H")
+        with console.keys() as key:
+            found = [key() for _ in range(9)]
+            key()
+    assert found == ["up", "à", "x", "A", "down", "down", "down", "enter", "eof"]
+    # The mode the console had comes back after Ctrl+C. Input that is not a console keeps
+    # its mode.
+    assert modes == ([0, 0x2f7] if console_input else [])
 
 
 def terminal_console(monkeypatch, **options):
@@ -699,6 +724,55 @@ def test_ctrl_z_gives_the_terminal_back_and_fg_takes_it_again(disposition):
         child.kill()
         os.close(master)
         os.close(slave)
+
+
+TWICE_STOPPED_CHILD = """
+import os, sys
+from pdt import console
+with console.keys() as key:
+    sys.stdout.write("ready\\n")
+    sys.stdout.flush()
+    os.read(int(sys.argv[1]), 1)
+    for _ in range(2):
+        sys.stdout.write(f"key {key()}\\n")
+        sys.stdout.flush()
+sys.stdout.write("after\\n")
+"""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no Ctrl+Z to stop a process")
+def test_two_fg_before_a_key_give_one_resumed():
+    import pty
+    import signal
+    import termios
+    master, slave = pty.openpty()
+    go_read, go_write = os.pipe()
+    child = subprocess.Popen([sys.executable, "-c", TWICE_STOPPED_CHILD, str(go_read)],
+                             stdin=slave, stdout=slave, stderr=slave, process_group=0,
+                             pass_fds=(go_read,))
+    try:
+        read_until(master, "ready")
+        for _ in range(2):
+            os.kill(child.pid, signal.SIGTSTP)
+            _, status = os.waitpid(child.pid, os.WUNTRACED)
+            assert os.WIFSTOPPED(status)
+            # The next stop waits until the terminal has shown this output.
+            read_until(master, "\x1b[?25h")
+            os.kill(child.pid, signal.SIGCONT)
+            # The handler is in place again when the terminal is in cbreak mode again.
+            deadline = time.monotonic() + 10
+            while termios.tcgetattr(slave)[3] & termios.ICANON:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+        os.write(go_write, b"g")
+        os.write(master, b"q")
+        shown = read_until(master, "after")
+        assert shown.count("key resumed") == 1 and "key q" in shown
+        assert child.wait(10) == 0
+    finally:
+        child.kill()
+        for fd in (master, slave, go_read, go_write):
+            os.close(fd)
 
 
 @pytest.mark.parametrize("stdin,stdout,menu", [(True, True, True), (True, False, False),
