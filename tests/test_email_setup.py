@@ -165,6 +165,7 @@ def test_a_registration_with_the_name_and_no_mark_stops_the_setup_and_changes_no
     out = capsys.readouterr().out
     assert ("already has an app registration named pdt-email that pdt did not create "
             "(application ID client-9). pdt changed nothing.") in out
+    assert "set this value in the .env file of the project" in " ".join(out.split())
     assert "  PDT_EMAIL_CLIENT_ID=client-9\n" in out
     assert organization.writes == [] and not (project / ".secrets").exists()
 
@@ -217,6 +218,16 @@ def test_a_secrets_folder_with_its_own_gitignore_gets_the_certificate_name(proje
     email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
     assert (project / ".secrets" / ".gitignore").read_text() == "*.key\n/pdt-email.pfx\n"
     assert git(project, "check-ignore", "-q", ".secrets/pdt-email.pfx").returncode == 0
+    email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
+    assert (project / ".secrets" / ".gitignore").read_text() == "*.key\n/pdt-email.pfx\n"
+
+
+def test_a_secrets_folder_with_its_own_gitignore_and_no_repository_gets_the_certificate_name(
+        project, organization):
+    (project / ".secrets").mkdir()
+    (project / ".secrets" / ".gitignore").write_text("*.key")
+    email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
+    assert (project / ".secrets" / ".gitignore").read_text() == "*.key\n/pdt-email.pfx\n"
     email_setup.ensure(project, TENANT, "admin@example.com", organization.call)
     assert (project / ".secrets" / ".gitignore").read_text() == "*.key\n/pdt-email.pfx\n"
 

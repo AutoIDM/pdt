@@ -200,17 +200,18 @@ def git(project: Path, *args: str) -> int | None:
 def keep_out_of_git(project: Path, path: Path) -> None:
     """Make sure git ignores the key file at `path`, and warn when git already tracks it.
     The folder of the file gets a .gitignore for everything in it when it has none. When
-    the ignore rules of the repository still do not cover the file, its name goes into
-    that .gitignore."""
+    git does not report the file as ignored (also with no repository or no git, so a later
+    `git init` cannot stage the key), its name goes into that .gitignore."""
     path.parent.mkdir(parents=True, exist_ok=True)
     ignore = path.parent / ".gitignore"
+    shown = path.relative_to(project).as_posix()
     if not ignore.exists():
         ignore.write_text("*\n")
-    shown = path.relative_to(project).as_posix()
-    if git(project, "check-ignore", "-q", "--no-index", shown) == 1:
+    elif git(project, "check-ignore", "-q", "--no-index", shown) != 0:
         text = ignore.read_text()
-        ignore.write_text(text + ("" if text.endswith("\n") or text == "" else "\n")
-                          + f"/{path.name}\n")
+        if f"/{path.name}" not in text.splitlines():
+            ignore.write_text(text + ("" if text.endswith("\n") or text == "" else "\n")
+                              + f"/{path.name}\n")
     if git(project, "ls-files", "--error-unmatch", shown) == 0:
         command = f"git rm --cached {shown}"
         console.warn(f"git tracks {console.value(shown)}, which holds a private key. Take it "
@@ -244,8 +245,8 @@ def ensure(project: Path, tenant_id: str, user: str, call: Callable) -> dict[str
                                f"(application ID {console.value(named[0]['appId'])}). pdt "
                                "changed nothing.")
                 console.say("Rename or delete that registration in the Microsoft Entra admin "
-                            "center, then run the setup again. Or, to let pdt use it, add this "
-                            f"line to the {console.value('.env')} file of the project, then run "
+                            "center, then run the setup again. Or, to let pdt use it, set this "
+                            f"value in the {console.value('.env')} file of the project, then run "
                             "the setup again:")
                 console.command(f"PDT_EMAIL_CLIENT_ID={named[0]['appId']}")
                 return None
