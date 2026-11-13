@@ -240,7 +240,6 @@ EMAIL_METHODS = {
         ("PDT_SMTP_PORT", "Port, or press Enter for 587", False),
         ("PDT_SMTP_USER", "User name", False),
         ("PDT_SMTP_PASSWORD", "Password", True))),
-    "resend": ("Resend", (("PDT_RESEND_API_KEY", "Resend API key", True),)),
 }
 
 

@@ -52,7 +52,6 @@ METHODS = {
     "microsoft-365": (("PDT_EMAIL_TENANT_ID", "PDT_EMAIL_CLIENT_ID",
                        "PDT_EMAIL_PRIVATE_KEY_PATH"), ("PDT_EMAIL_PRIVATE_KEY_B64",)),
     "smtp": (("PDT_SMTP_HOST", "PDT_SMTP_USER", "PDT_SMTP_PASSWORD"), ("PDT_SMTP_PORT",)),
-    "resend": (("PDT_RESEND_API_KEY",), ()),
 }
 GRAPH_SCOPE = "https://graph.microsoft.com/.default"
 CERT_JWT_SECONDS = 60 * 10
@@ -159,15 +158,6 @@ def send_smtp(values: dict, sender: str, to: list[str], subject: str, text: str,
             smtp.send_message(message)
     except (smtplib.SMTPException, OSError) as e:
         raise RuntimeError(f"the SMTP server {host} did not take the email: {e}") from None
-
-
-def send_resend(values: dict, sender: str, to: list[str], subject: str, text: str,
-                html: str) -> None:
-    fields = {"from": sender, "to": to, "subject": subject, "text": text}
-    if html != "":
-        fields["html"] = html
-    alert_message.post("https://api.resend.com/emails", fields, "Resend", {
-        "Authorization": f"Bearer {values['PDT_RESEND_API_KEY']}", "User-Agent": "pdt/1.0"})
 
 
 def private_key(values: dict) -> bytes:
@@ -293,7 +283,7 @@ def send_azure_communication_services(values: dict, sender: str, to: list[str], 
 
 
 SENDERS = {"azure-communication-services": send_azure_communication_services,
-           "microsoft-365": send_microsoft_365, "smtp": send_smtp, "resend": send_resend}
+           "microsoft-365": send_microsoft_365, "smtp": send_smtp}
 
 
 def send(entry: dict, to: list[str], subject: str, text: str, html: str = "") -> None:

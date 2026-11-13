@@ -518,7 +518,6 @@ Your app reads these through `pdt.utils.send_email`. Set one group only. With no
 | `PDT_SES_REGION` | An AWS region name. | Not set. | Selects the SES region. SES needs it. |
 | `PDT_SES_ACCESS_KEY_ID` | An AWS access key. | The standard AWS credentials. | Holds the SES access key. |
 | `PDT_SES_SECRET_ACCESS_KEY` | An AWS secret key. | The standard AWS credentials. | Holds the SES secret key. |
-| `PDT_RESEND_API_KEY` | A Resend API key. | Not set. | Holds the Resend API key. Resend needs it. |
 | `PDT_EMAIL_FROM` | An email address. | Not set. | Sets the sender for `python -m pdt.utils.send_email` when `--from` is missing. |
 | `PDT_EMAIL_TO` | An email address. | Not set. | Sets the recipient for `python -m pdt.utils.send_email` when `--to` is missing. |
 
