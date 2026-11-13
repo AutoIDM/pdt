@@ -197,15 +197,53 @@ def test_a_second_project_finds_the_registration_that_pdt_marked(
     assert len(organization.applications["object-1"]["keyCredentials"]) == 2
 
 
-def test_a_sign_in_to_another_tenant_than_the_saved_one_stops_the_setup(
+OTHER_TENANT = "22222222-2222-2222-2222-222222222222"
+
+
+def other_organization_saved(project):
+    """A .env file and a certificate of a setup in another organization."""
+    (project / ".env").write_text(f"PDT_EMAIL_TENANT_ID={OTHER_TENANT}\n"
+                                  "PDT_EMAIL_CLIENT_ID=client-9\n"
+                                  "PDT_EMAIL_PRIVATE_KEY_PATH=.secrets/pdt-email.pfx\n")
+    pfx, _certificate = email_setup.new_certificate()
+    email_setup.write_private(project / ".secrets" / "pdt-email.pfx", pfx)
+    return (project / ".secrets" / "pdt-email.pfx").read_bytes()
+
+
+def test_a_sign_in_to_another_organization_replaces_the_saved_one_after_yes(
         project, organization, monkeypatch, capsys):
-    saved = "22222222-2222-2222-2222-222222222222"
-    monkeypatch.setenv("PDT_EMAIL_TENANT_ID", saved)
-    assert email_setup.ensure(project, TENANT, "admin@example.com", organization.call) is None
+    key = other_organization_saved(project)
+    asked = []
+    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1",
+                    "pdt-alerts@example.com", "y", "n")
+    monkeypatch.setattr(alerts_cli.console, "confirm",
+                        lambda question, *_a, **_k: asked.append(question) or queue.pop(0) == "y")
+    assert alerts_cli.setup() == 0
+    assert queue == []
+    assert asked[0] == (f"The .env file holds the Microsoft 365 settings of organization "
+                        f"{OTHER_TENANT}. Replace them with organization example.com?")
+    assert "added the certificate .secrets/pdt-email.pfx to pdt-email" in capsys.readouterr().out
+    assert organization.writes[0] == "POST applications"
+    assert (project / ".secrets" / "pdt-email.pfx").read_bytes() == key
+    assert (project / ".env").read_text() == (
+        f"PDT_EMAIL_TENANT_ID={TENANT}\nPDT_EMAIL_CLIENT_ID=client-1\n"
+        "PDT_EMAIL_PRIVATE_KEY_PATH=.secrets/pdt-email.pfx\n")
+
+
+def test_a_sign_in_to_another_organization_changes_nothing_after_no(
+        project, organization, monkeypatch, capsys):
+    key = other_organization_saved(project)
+    env = (project / ".env").read_text()
+    queue = answers(monkeypatch, "3 1", "", "", "it-ops@example.com", "1",
+                    "pdt-alerts@example.com", "")
+    assert alerts_cli.setup() == 1
+    assert queue == []
     out = capsys.readouterr().out
-    assert saved in out and TENANT in out and "pdt changed nothing." in out
-    assert "  pdt alerts setup\n" in out
-    assert organization.writes == [] and not (project / ".secrets").exists()
+    assert "pdt changed nothing." in out and "  pdt alerts setup" in out
+    assert organization.writes == []
+    assert (project / ".env").read_text() == env
+    assert (project / ".secrets" / "pdt-email.pfx").read_bytes() == key
+    assert "alerts" not in config.load_yaml(project / "pdt.yml")
 
 
 def git(folder, *args):
@@ -401,6 +439,16 @@ def test_a_saved_email_sign_in_gets_a_menu_to_use_it_or_to_sign_in_again(
         assert logins == []
         assert (user, organization) == ("old@example.com", "example.com")
     assert {folder for _args, folder in azure_cli.calls} == {str(email_setup.AZURE_DIR)}
+
+
+def test_an_organization_with_no_domain_and_no_name_is_named_by_the_account_domain(
+        azure_cli, monkeypatch, capsys):
+    azure_cli.account = {"user": {"name": "old@contoso.example.com"}, "tenantId": TENANT}
+    monkeypatch.setattr(email_setup.console, "ask", lambda *_a, **_k: "1")
+    _tenant, _user, organization, _call = email_setup.sign_in("pdt-alerts@contoso.example.com")
+    assert organization == "contoso.example.com"
+    assert ("  1) Use old@contoso.example.com (organization contoso.example.com)\n"
+            in capsys.readouterr().out)
 
 
 @pytest.mark.parametrize("user", [

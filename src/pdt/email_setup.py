@@ -16,7 +16,10 @@ It reads the state first and changes only what is not yet true, so a second run
 changes nothing. pdt uses a registration only when the saved PDT_EMAIL_CLIENT_ID
 names it or when it carries TAG, which pdt puts on each registration it creates;
 another registration with the same name stops the setup. A sign-in to another
-tenant than the saved PDT_EMAIL_TENANT_ID stops it too. `keep_out_of_git` makes
+tenant than the saved PDT_EMAIL_TENANT_ID asks to replace the saved settings; with
+yes, the saved PDT_EMAIL_CLIENT_ID does not count, so the registration of the new
+tenant is found or created as in a first setup. An organization without a default
+domain or a display name is named by the domain of the signed-in account. `keep_out_of_git` makes
 sure that git ignores the certificate file. It returns the three env vars that the `microsoft-365` method
 of pdt.email_alert reads.
 
@@ -148,7 +151,7 @@ def sign_in(sender: str) -> tuple[str, str, str, Callable]:
         found = account()
     signed_in = str((found.get("user") or {}).get("name") or "")
     organization = str(found.get("tenantDefaultDomain") or found.get("tenantDisplayName")
-                       or found.get("tenantId") or "")
+                       or signed_in.rpartition("@")[2])
     token = ""
     if signed_in:
         labels = [f"Use {signed_in} (organization {organization})",
@@ -277,22 +280,23 @@ def keep_out_of_git(project: Path, path: Path) -> None:
                      f"out of the repository with {console.value(command)}.")
 
 
-def ensure(project: Path, tenant_id: str, user: str, call: Callable) -> dict[str, str] | None:
+def ensure(project: Path, tenant_id: str, user: str, call: Callable,
+           organization: str = "") -> dict[str, str] | None:
     global granted_now
+    client_id = alert_message.secret_value("PDT_EMAIL_CLIENT_ID")
     saved_tenant = alert_message.secret_value("PDT_EMAIL_TENANT_ID")
     if saved_tenant and tenant_id and saved_tenant.lower() != tenant_id.lower():
-        console.failed(f"The {console.value('.env')} file holds PDT_EMAIL_TENANT_ID "
-                       f"{console.value(saved_tenant)}, and the Microsoft sign-in is for the "
-                       f"organization {console.value(tenant_id)}. pdt changed nothing.")
-        console.say("Run the setup again with a sender address of the organization of the "
-                    "saved value:")
-        console.command("pdt alerts setup")
-        return None
+        if not console.confirm(f"The .env file holds the Microsoft 365 settings of organization "
+                               f"{saved_tenant}. Replace them with organization "
+                               f"{organization or tenant_id}?"):
+            console.say("pdt changed nothing.")
+            console.next_steps([("pdt alerts setup", "run the setup again")])
+            return None
+        client_id = ""
     needs = ("create an app registration", "Application Developer or Global Administrator")
     registration = None
     try:
         found = []
-        client_id = alert_message.secret_value("PDT_EMAIL_CLIENT_ID")
         if client_id:
             found = call("GET", f"/applications?$filter=appId eq '{client_id}'&$select=id")["value"]
         if not found:
@@ -422,7 +426,7 @@ def microsoft_365(project: Path, sender: str) -> tuple[str, dict[str, str]] | No
             sender = console.ask("Which address should the email come from?")
             if sender == "":
                 return None
-        values = ensure(project, tenant_id, user, call)
+        values = ensure(project, tenant_id, user, call, organization)
         return None if values is None else (sender, values)
     except (SetupError, GraphError) as e:
         console.failed(f"Microsoft 365 is not set up: {console.escape(str(e))}")
