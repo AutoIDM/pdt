@@ -155,13 +155,16 @@ def test_every_bundled_example_is_complete():
     assert examples, "the wheel ships no examples"
     for example in examples:
         assert (example / "run.py").is_file() or any(example.glob("*.ps1")), example.name
-        config = yaml.safe_load((example / "config.yml").read_text())
-        assert config["schedule"], f"{example.name} has no schedule"
+        config = yaml.safe_load((example / "pdt.yml").read_text())
+        if config.get("app_profile") == "web":
+            assert "schedule" not in config, f"{example.name} is a web app with a schedule"
+        else:
+            assert config["schedule"], f"{example.name} has no schedule"
         assert "name" not in config, f"{example.name} pins a name, so it cannot be renamed"
 
 
 def test_every_example_summary_is_whole(tmp_path):
-    # The summary is the whole comment block at the top of config.yml, not
+    # The summary is the whole comment block at the top of the app pdt.yml, not
     # only its first line, so a summary that wraps is not cut short.
     for example in scaffold.examples():
         assert scaffold.summary_of(example).endswith("."), example.name
@@ -530,7 +533,7 @@ def test_an_app_with_its_own_provider_is_listed_without_a_number(project, monkey
     answer(monkeypatch, ["2", "us-east-2", ""])
     assert scaffold.init(None, assume_yes=False) == 0
     out = capsys.readouterr().out
-    assert "\n  own  google-cloud, region us-east4; edit own/config.yml to move it\n" in out
+    assert "\n  own  google-cloud, region us-east4; edit own/pdt.yml to move it\n" in out
     assert "What should happen" not in out
     assert platform_of(project, "own") == {"provider": "google-cloud", "region": "us-east4"}
 
@@ -650,7 +653,7 @@ def test_a_config_yml_that_pdt_cannot_pin_stops_init_before_any_change(project, 
     (project / "alpha" / APP_FILE).write_text(text)
     cloud = Cloud(monkeypatch)
     answer(monkeypatch, ["2", "us-east-2", "UTC", "3"])
-    with pytest.raises(ConfigError, match="alpha/config.yml"):
+    with pytest.raises(ConfigError, match="alpha/pdt.yml"):
         scaffold.init(None, assume_yes=False)
     assert cloud.destroyed == []
     assert (project / PROJECT_FILE).read_text() == before
@@ -684,7 +687,7 @@ def test_keep_pins_the_recorded_place_after_an_edit_to_pdt_yml(project, monkeypa
 
 
 @pytest.mark.parametrize("own,entry,shown", [
-    ("platform:\n  region: westus2\n", "", "report/config.yml"),
+    ("platform:\n  region: westus2\n", "", "report/pdt.yml"),
     ("", "apps:\n  - name: report\n    platform:\n      region: westus2\n",
      "pdt.yml apps entry report"),
 ])
@@ -740,5 +743,5 @@ def test_an_app_with_its_own_provider_shows_only_its_own_place(project, monkeypa
     answer(monkeypatch, ["3", "us-east4", ""])
     assert scaffold.init(None, assume_yes=False) == 0
     out = capsys.readouterr().out
-    assert "  own  aws, region us-east-1; edit own/config.yml to move it\n" in out
+    assert "  own  aws, region us-east-1; edit own/pdt.yml to move it\n" in out
     assert platform_of(project, "own") == {"provider": "aws", "region": "us-east-1"}

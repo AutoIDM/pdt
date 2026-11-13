@@ -4,7 +4,7 @@ Inside an app folder, leave <app> off any command that takes one and pdt uses th
 Anywhere else, leave it off or mistype it and pdt lists the apps it found.
 
 Every command except init, examples, upgrade, completion, aws, az, and gcloud needs a project.
-pdt finds it by walking up from the working directory to the nearest pdt.yml.
+pdt finds it by walking up from the working directory to the nearest pdt.yml that is not in an app folder (an app folder holds its own pdt.yml).
 """
 
 from __future__ import annotations
@@ -26,8 +26,8 @@ from pdt import completion, config, watch
 from pdt.config import ConfigError
 
 if not completion.COMPLETING:
-    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh, scaffold,
-                     upgrade)
+    from pdt import (alerts_cli, console, deploy, gui_cli, lifecycle, powershell, pwsh,
+                     scaffold, upgrade)
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
@@ -56,7 +56,7 @@ def say_no_apps(as_json: bool = False) -> None:
     """Say why there is no app to act on; with `as_json`, also print the empty list."""
     if config.app_folders():
         console.say("This project has no enabled apps. Every app has enabled: false.")
-        console.say("Set enabled: true in an app's config.yml, or delete the line, to turn it on.")
+        console.say("Set enabled: true in an app's pdt.yml, or delete the line, to turn it on.")
         console.next_steps([("pdt list", "see every app and whether it is enabled")])
     else:
         console.say("This project has no apps yet.")
@@ -136,10 +136,11 @@ def cmd_list(args) -> int:
         return 0
     records = []
     for name in apps:
-        record = {"name": name, "schedule": None, "platform": None,
+        record = {"name": name, "profile": None, "schedule": None, "platform": None,
                   "enabled": config.is_enabled(name), "paused": None, "error": None}
         try:
             app = config.merged_app(name)
+            record["profile"] = app["app_profile"]
             record["schedule"] = app["schedule"]
             record["platform"] = app["platform"].get("provider")
             record["paused"] = app["pause"]
@@ -149,12 +150,12 @@ def cmd_list(args) -> int:
     if args.json:
         console.data(json.dumps(records))
         return 0
-    rows = [[record["name"], record["schedule"] or "-",
+    rows = [[record["name"], record["profile"] or "-", record["schedule"] or "-",
              f"config error: {record['error']}" if record["error"] else record["platform"] or "-",
              "true" if record["enabled"] else "false",
              "-" if record["paused"] is None else "true" if record["paused"] else "false"]
             for record in records]
-    console.table(["name", "schedule", "platform", "enabled", "paused"], rows, ["bold"])
+    console.table(["name", "profile", "schedule", "platform", "enabled", "paused"], rows, ["bold"])
     return 0
 
 
@@ -257,6 +258,21 @@ def cmd_run(args) -> int:
             console.error(f"{console.value(name)}: {console.escape(str(e))}")
             return 1
     provider = app["platform"].get("provider", "")
+    if app["app_profile"] == "web":
+        from pdt import run_container
+        from pdt import web_app
+        # On this computer the app runs with no sign-in: the browser talks to it directly.
+        local_url = f"http://127.0.0.1:{web_app.port(app)}/"
+        console.detail(f"serves {console.value(local_url)} with no sign-in; Ctrl+C stops it")
+        from pdt import web_watch
+        container = not (app["dir"] / "run.py").is_file()
+        if container:
+            return run_container.run(app, local_url, lambda: web_watch.watch(app, local_url, True))
+        web_watch.watch(app, local_url, False)
+        env = dict(os.environ, **{web_app.ENV_PORT: str(web_app.port(app)), web_app.ENV_URL: local_url,
+                                  web_app.ENV_STORAGE_READ_DIR: str(run_container.read_root())})
+        return run_container.serve(name, run_container.start(["uv", "run", "--script", "run.py"],
+                                                             cwd=app["dir"], env=env))
     if (app["dir"] / "run.py").is_file():
         code = lifecycle.run_job(name, provider, ["uv", "run", "--script", "run.py"], app["dir"])
     else:
@@ -277,6 +293,8 @@ def run_lines(app: dict) -> list[str]:
     """What `pdt run` starts: run.py, or the PowerShell entry scripts and why."""
     if (app["dir"] / "run.py").is_file():
         return [f"runs {console.value('run.py')}"]
+    if (app["dir"] / "Dockerfile").is_file() and not config.powershell_scripts(app["dir"]):
+        return [f"builds and runs {console.value('Dockerfile')} with Docker"]
     files = powershell.extract(app["dir"])["files"]
     entries, helpers = powershell.split_files(files, app["run_scripts"])
     return powershell.script_lines(entries, helpers,
@@ -699,11 +717,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-failures", action="store_true",
                    help="with --all, go on past an app that fails to destroy instead of asking")
     p.set_defaults(func=cmd_destroy)
-    p = add_parser("pause", help="stop an app's schedule from starting runs")
+    p = add_parser("pause", help="stop an app's schedule from starting runs, or stop a web "
+                                 "app's server")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.set_defaults(func=cmd_pause)
-    p = add_parser("unpause", help="let a paused app's schedule start runs again")
+    p = add_parser("unpause", help="let a paused app's schedule start runs again, or start a "
+                                   "paused web app's server")
     app = p.add_argument("app", nargs="?", help=APP_HELP)
     app.completer = completion.apps
     p.set_defaults(func=cmd_unpause)

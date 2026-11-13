@@ -83,8 +83,7 @@ def test_done_is_written_last(store, tmp_path, monkeypatch):
     (local / "b.csv").write_text("b")
     (local / "a.csv").write_text("a")
     order = []
-    monkeypatch.setattr("fsspec.implementations.dirfs.DirFileSystem.pipe_file",
-                        lambda self, path, data, **kw: order.append(path))
+    monkeypatch.setattr(storage.Local, "put", lambda self, path, data: order.append(path))
     store.push(local, "runs/20260101T000000Z-abc/")
     assert order[-1] == "runs/20260101T000000Z-abc/_done"
     assert len(order) == 3
@@ -124,7 +123,7 @@ def test_a_name_the_read_list_does_not_hold_is_refused(report, monkeypatch, name
     with pytest.raises(ValueError) as caught:
         storage.store(app=name)
     assert str(caught.value) == (f"{name!r} is not in the storage: read: list of "
-                                 "report/config.yml; add it there to read its folder")
+                                 "report/pdt.yml; add it there to read its folder")
     monkeypatch.setenv("PDT_STORAGE_URL", "abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/report/")
     with pytest.raises(ValueError):
         root(name)

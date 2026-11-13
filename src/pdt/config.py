@@ -2,14 +2,16 @@
 
 A project is a directory holding pdt.yml. An app is a directory inside it
 that contains run.py, or one that holds PowerShell scripts (.ps1) and no
-run.py; `pdt.powershell` describes how those run. Commands find the
-project by walking up from the working directory, so pdt works the same
-whether it was installed from PyPI or run from a clone of this repository.
+run.py; `pdt.powershell` describes how those run. An app's own settings
+live in a pdt.yml inside its folder. Commands find the project by walking
+up from the working directory, skipping app folders (see is_project), so
+pdt works the same whether it was installed from PyPI or run from a clone
+of this repository.
 
 Merge order for one app, least to most specific:
   1. `platform:` defaults in the project pdt.yml
-  2. the app's entry under `apps:` in pdt.yml
-  3. the app's own config.yml
+  2. the app's entry under `apps:` in the project pdt.yml
+  3. the app's own pdt.yml
   4. PDT_<APP>_<KEY> environment variables (config keys only)
 DEPLOYED_PLATFORM_ENV replaces the whole platform of the one app it names, so a
 provider script deploys or destroys an app where `.pdt/state` says it is deployed.
@@ -27,7 +29,13 @@ from datetime import date, timedelta
 from pathlib import Path
 
 PROJECT_FILE = "pdt.yml"
-APP_FILE = "config.yml"
+APP_FILE = "pdt.yml"
+# The name an app's settings file had before it became pdt.yml. pdt reads it
+# when the app folder has no pdt.yml (see app_file).
+OLD_APP_FILE = "config.yml"
+# The config.yml files this run already warned about, so a child process such as
+# run_powershell.py does not warn again.
+OLD_APP_FILE_WARNED_ENV = "PDT_CONFIG_YML_WARNED"
 
 PROVIDERS = ("google-cloud", "azure", "aws", "windows")
 # The words after `pdt secrets <app>` and `pdt storage <app>`. They live here, so tab
@@ -48,8 +56,13 @@ SCHEDULE_SHORTHAND = {
     "yearly": "0 0 1 1 *",
 }
 ROOT_KEYS = {"platform", "apps", "docker-build", "alerts", "error-watch"}
-APP_KEYS = {"name", "schedule", "timezone", "platform", "config", "env", "storage", "enabled",
-            "run_scripts", "continue_on_error", "pause", "docker-build", "alerts"}
+APP_KEYS = {"name", "app_profile", "schedule", "timezone", "platform", "config", "env", "storage",
+            "enabled", "run_scripts", "continue_on_error", "pause", "docker-build", "alerts",
+            "web", "job"}
+# The keys of a job's `job:` section. Each one also works at the top level of the app.
+JOB_KEYS = {"schedule", "timezone"}
+# `storage:` is `true`, `false`, or a mapping with these keys.
+STORAGE_KEYS = {"enabled", "read"}
 # Where a cloud provider builds the image: with Docker on this computer when
 # `docker info` answers, else with the provider's cloud builder (auto), only
 # with Docker (local), or only in the cloud (cloud).
@@ -71,12 +84,17 @@ FOUND_KEYS = ("account", "project", "subscription")
 DEPLOYED_PLATFORM_ENV = "PDT_DEPLOYED_PLATFORM"
 # Where each known key belongs, so a key in the wrong section gets told
 # where to move instead of "unknown key".
-APP_LEVEL = f"the top level of the app's {APP_FILE}, or its apps: entry in {PROJECT_FILE}"
+APP_LEVEL = (f"the top level of the app's {APP_FILE}, "
+             f"or its apps: entry in the project's {PROJECT_FILE}")
 KEY_HOME = {
-    "apps": f"the top level of {PROJECT_FILE}",
-    "platform": f"the top level of {PROJECT_FILE} or of the app's {APP_FILE}",
-    "name": f"the app's apps: entry in {PROJECT_FILE}",
+    "apps": f"the top level of the project's {PROJECT_FILE}",
+    "platform": f"the top level of the project's {PROJECT_FILE} or of the app's {APP_FILE}",
+    "name": f"the app's apps: entry in the project's {PROJECT_FILE}",
+    "app_profile": APP_LEVEL,
     "schedule": APP_LEVEL,
+    "web": APP_LEVEL,
+    "job": APP_LEVEL,
+    "auth": "the web: section, as web.auth",
     "config": APP_LEVEL,
     "env": APP_LEVEL,
     "storage": APP_LEVEL,
@@ -90,6 +108,7 @@ KEY_HOME = {
     **{key: "the platform: section" for key in PLATFORM_KEYS},
     "timezone": f"the platform: section, or {APP_LEVEL}",
     **{key: "the env: section" for key in ENV_KEYS},
+    **{key: "the storage: section" for key in STORAGE_KEYS},
 }
 # Keys that belong nowhere any more. The message says what to do instead.
 RETIRED_KEYS = {
@@ -146,16 +165,25 @@ def machine_data_home() -> Path:
     return Path(os.environ.get("ProgramData") or r"C:\ProgramData") / "pdt"
 
 
+def is_project(folder: Path) -> bool:
+    """A folder holding pdt.yml that is not an app. A Python app holds run.py.
+    A PowerShell app holds .ps1 files and sits in a folder holding pdt.yml, so
+    a project may still keep its own .ps1 files at the top."""
+    if not (folder / PROJECT_FILE).is_file() or (folder / "run.py").is_file():
+        return False
+    return not ((folder.parent / PROJECT_FILE).is_file() and powershell_scripts(folder) != [])
+
+
 def find_project(start: Path | None = None) -> Path:
     override = os.environ.get("PDT_PROJECT", "").strip()
     if override != "":
         folder = Path(override).expanduser().resolve()
-        if not (folder / PROJECT_FILE).is_file():
-            raise ConfigError(f"PDT_PROJECT is {folder}, which has no {PROJECT_FILE}")
+        if not is_project(folder):
+            raise ConfigError(f"PDT_PROJECT is {folder}, which has no project {PROJECT_FILE}")
         return folder
     folder = (start or Path.cwd()).resolve()
     while True:
-        if (folder / PROJECT_FILE).is_file():
+        if is_project(folder):
             return folder
         if folder.parent == folder:
             raise ConfigError(
@@ -170,8 +198,7 @@ def project_line() -> str:
     project = console.value(str(find_project()))
     if os.environ.get("PDT_PROJECT", "").strip() != "":
         return f"Project folder: {project}  [dim](from {console.value('PDT_PROJECT')})[/]"
-    return (f"Project folder: {project}  "
-            f"[dim](the first folder with {console.value(PROJECT_FILE)}, from here up)[/]")
+    return f"Project folder: {project}"
 
 
 def powershell_scripts(app_dir: Path) -> list[str]:
@@ -187,7 +214,29 @@ def powershell_scripts(app_dir: Path) -> list[str]:
 
 
 def is_app(folder: Path) -> bool:
-    return (folder / "run.py").is_file() or powershell_scripts(folder) != []
+    """A folder with a run.py, with .ps1 scripts, or with a Dockerfile next to its pdt.yml
+    (a web app that is any container)."""
+    return ((folder / "run.py").is_file() or powershell_scripts(folder) != []
+            or ((folder / "Dockerfile").is_file()
+                and ((folder / APP_FILE).is_file() or (folder / OLD_APP_FILE).is_file())))
+
+
+def app_file(app_dir: Path) -> Path:
+    """The app's settings file that pdt reads and writes: its pdt.yml, else its config.yml,
+    else a new pdt.yml."""
+    if (app_dir / APP_FILE).is_file():
+        return app_dir / APP_FILE
+    if (app_dir / OLD_APP_FILE).is_file():
+        old = app_dir / OLD_APP_FILE
+        warned = os.environ.get(OLD_APP_FILE_WARNED_ENV, "").split(os.pathsep)
+        if str(old) not in warned:
+            from pdt import console
+            console.warn(f"{console.value(f'{app_dir.name}/{OLD_APP_FILE}')}: "
+                         f"{console.value(OLD_APP_FILE)} is deprecated. "
+                         f"Rename it to {console.value(APP_FILE)}.")
+            os.environ[OLD_APP_FILE_WARNED_ENV] = os.pathsep.join([*warned, str(old)])
+        return old
+    return app_dir / APP_FILE
 
 
 def app_folders() -> list[str]:
@@ -204,7 +253,7 @@ def is_enabled(name: str) -> bool:
     project = find_project()
     try:
         entry = root_app_entry(load_yaml(project / PROJECT_FILE), name)
-        own = load_yaml(project / name / APP_FILE)
+        own = load_yaml(app_file(project / name))
     except ConfigError:
         return True
     return own.get("enabled", entry.get("enabled", True)) is not False
@@ -258,6 +307,13 @@ def mapping(cfg: dict, key: str, where: str) -> dict:
     return value
 
 
+def auth_section(web: dict, where: str) -> dict:
+    if web.get("auth") is not None and not isinstance(web.get("auth"), dict):
+        raise ConfigError(f"{where}: web.auth: must be a mapping with provider: and "
+                          "allowed_domains: or allowed_groups:")
+    return mapping(web, "auth", f"{where}: web")
+
+
 def app_name_problem(name: str) -> str:
     if name in ("", ".", "..") or any(c in name for c in "/\\\0") or Path(name).name != name:
         return f"{name!r} is not an app name; use one folder name with no path separators"
@@ -270,12 +326,14 @@ def merged_app(name: str) -> dict:
         raise ConfigError(problem)
     app_dir = find_project() / name
     if not is_app(app_dir):
-        raise ConfigError(f"no app named {name!r} (no {name}/run.py and no .ps1 file in {name}/)")
+        raise ConfigError(f"no app named {name!r} (no {name}/run.py, no .ps1 file in {name}/, "
+                          f"and no {name}/Dockerfile next to a {APP_FILE})")
     root_cfg = load_yaml(find_project() / PROJECT_FILE)
     entry = root_app_entry(root_cfg, name)
-    own = load_yaml(app_dir / APP_FILE)
+    own_file = app_file(app_dir)
+    own = load_yaml(own_file)
     entry_where = f"{PROJECT_FILE}: apps entry {name!r}"
-    own_where = f"{name}/{APP_FILE}"
+    own_where = f"{name}/{own_file.name}"
     platform = {
         **mapping(root_cfg, "platform", PROJECT_FILE),
         **mapping(entry, "platform", entry_where),
@@ -296,14 +354,30 @@ def merged_app(name: str) -> dict:
             alerts, alerts_from = section["alerts"], where
     # Task Scheduler runs a task on the PC's own clock, so a Windows app always
     # runs on local time and any timezone it sets does not apply.
+    own_job, entry_job = mapping(own, "job", own_where), mapping(entry, "job", entry_where)
+
+    def job_key(key: str, default=None):
+        """A `job:` key, else the same key at the top level, the app's file before the entry."""
+        for section in (own_job, own, entry_job, entry):
+            if key in section:
+                return section[key]
+        return default
+
     timezone = ("local" if platform.get("provider") == "windows" else
-                own.get("timezone", entry.get("timezone", platform.get("timezone", "Etc/UTC"))))
+                job_key("timezone", platform.get("timezone", "Etc/UTC")))
     plan = unsaved() or {}
     platform.update(plan.get("platform", {}))
+    storage = own.get("storage", entry.get("storage", True))
+    storage_read = []
+    if isinstance(storage, dict):
+        storage_read = storage.get("read") or []
+        storage = storage.get("enabled", True)
     return {
         "name": name,
         "dir": app_dir,
-        "schedule": plan.get("schedule", own.get("schedule", entry.get("schedule"))),
+        "app_profile": own.get("app_profile", entry.get("app_profile", "job")),
+        "schedule": plan.get("schedule", job_key("schedule")),
+        "job": own_job or entry_job,
         "timezone": timezone,
         "platform": platform,
         "platform_from": platform_from,
@@ -313,7 +387,11 @@ def merged_app(name: str) -> dict:
             **env_overrides(name),
         },
         "env": mapping(own, "env", own_where) or mapping(entry, "env", entry_where),
-        "storage": own.get("storage", entry.get("storage", True)),
+        "storage": storage,
+        "storage_read": storage_read,
+        "web": mapping(own, "web", own_where) or mapping(entry, "web", entry_where),
+        "auth": (auth_section(mapping(own, "web", own_where), own_where)
+                 or auth_section(mapping(entry, "web", entry_where), entry_where)),
         "enabled": own.get("enabled", entry.get("enabled", True)),
         "run_scripts": own.get("run_scripts", entry.get("run_scripts")),
         "continue_on_error": own.get("continue_on_error", entry.get("continue_on_error", False)),
@@ -361,12 +439,12 @@ def keep_unsaved(key: str, value, platform: bool = False) -> bool:
 
 
 def save_app_key(app: dict, key: str, value) -> Path:
-    """Write one top-level key into the app's config.yml, the most specific file.
+    """Write one top-level key into the app's pdt.yml, the most specific file.
 
     Edits the text rather than rewriting the yaml, so the user's comments survive,
     and holds the same lock and atomic replace as `save_platform_key`.
     """
-    path = app["dir"] / APP_FILE
+    path = app_file(app["dir"])
     if keep_unsaved(key, value):
         return path
     text = ("true" if value else "false") if isinstance(value, bool) else yaml_quoted(value)
@@ -385,7 +463,7 @@ def save_app_key(app: dict, key: str, value) -> Path:
 
 def save_platform_key(app: dict, key: str, value: str, path: Path | None = None) -> Path:
     """Write one platform key into `path`, or else into pdt.yml when the app has the provider
-    of pdt.yml, and into the app's config.yml when it does not."""
+    of pdt.yml, and into the app's pdt.yml when it does not."""
     # Edit the text rather than rewrite the yaml, so the user's comments survive.
     from pdt import console
     if path is None:
@@ -394,7 +472,7 @@ def save_platform_key(app: dict, key: str, value: str, path: Path | None = None)
         if (root_cfg.get("platform") or {}).get("provider") == app["platform"].get("provider"):
             path = project_file
         else:
-            path = app["dir"] / APP_FILE
+            path = app_file(app["dir"])
     shown = path.relative_to(find_project())
     if keep_unsaved(key, value, platform=True):
         console.note(f"Using {console.escape(key)} {console.value(value)}. A deploy saves it to "
@@ -618,12 +696,12 @@ def cached_apps() -> list[str]:
         (project / STATE_DIR).mkdir(exist_ok=True)
     except OSError:
         return find_apps()
-    # A new app folder changes the project folder's time; a new run.py, .ps1, or config.yml
-    # changes the time of the folder that holds it.
+    # A new app folder changes the project folder's time; a new run.py, .ps1, pdt.yml, or
+    # config.yml changes the time of the folder that holds it.
     folders = [child for child in sorted(project.iterdir())
                if not child.name.startswith(".") and child.is_dir()]
-    stamps = _stamps([Path(__file__), project, project / PROJECT_FILE,
-                      *folders, *(folder / APP_FILE for folder in folders)])
+    stamps = _stamps([Path(__file__), project, project / PROJECT_FILE, *folders,
+                      *(folder / name for folder in folders for name in (APP_FILE, OLD_APP_FILE))])
     apps = find_apps()
     try:
         write_state({"stamps": stamps, "apps": apps}, "apps")
@@ -845,7 +923,7 @@ def find_env_files(start: Path) -> list[Path]:
         candidate = folder / ".env"
         if candidate.is_file():
             files.append(candidate)
-        at_root = (folder / PROJECT_FILE).is_file() or (folder / ".git").exists()
+        at_root = is_project(folder) or (folder / ".git").exists()
         if at_root or folder.parent == folder:
             break
         folder = folder.parent
@@ -930,7 +1008,7 @@ def is_set(values, name: str) -> bool:
 
 
 def env_spec(app: dict) -> dict:
-    """The app's env spec, with each env var the app's code reads that config.yml does not
+    """The app's env spec, with each env var the app's code reads that pdt.yml does not
     list: required, with `read_by` naming the file and line of its first read, or optional
     for a Python read that has a fallback (`os.environ.get`, `os.getenv`)."""
     spec = app["env"]
@@ -959,7 +1037,7 @@ def env_spec(app: dict) -> dict:
 
 
 def found_env_lines(app: dict) -> list[str]:
-    """The env vars the app's code reads that config.yml does not list, as lines for
+    """The env vars the app's code reads that its own pdt.yml does not list, as lines for
     the user, or none. Raises ConfigError, like env_spec."""
     from pdt import console
     spec = env_spec(app)
@@ -975,7 +1053,8 @@ def found_env_lines(app: dict) -> list[str]:
         found += [(name, f"optional, {first.get(name, 'the code')}") for name in optional]
     if not found:
         return []
-    return console.rows(f"env vars the code reads that {console.value(APP_FILE)} does not list:",
+    own_file = f"{app['name']}/{app_file(app['dir']).name}"
+    return console.rows(f"env vars the code reads that {console.value(own_file)} does not list:",
                         found)
 
 
@@ -1051,7 +1130,7 @@ def missing_env(app: dict) -> str:
     message = f"{'; '.join(problems)}. pdt looked in {looked}. To fix it, {fix}."
     if any(not is_set(os.environ, name) for name in spec.get("read_by") or {}):
         message += (f" If a script works without one that it reads, list that one under "
-                    f"env: optional: in {app['name']}/{APP_FILE} instead.")
+                    f"env: optional: in {app['name']}/{app_file(app['dir']).name} instead.")
     return message
 
 
@@ -1155,13 +1234,18 @@ def dockerfile_problem(platform: dict) -> str:
 
 
 def validate_app(name: str) -> list[str]:
-    where = f"{name}/{APP_FILE}"
+    own_file = app_file(find_project() / name)
+    where = f"{name}/{own_file.name}"
     try:
         root_cfg = load_yaml(find_project() / PROJECT_FILE)
-        own = load_yaml(find_project() / name / APP_FILE)
+        own = load_yaml(own_file)
     except ConfigError as e:
         return [str(e)]
     problems = []
+    if (find_project() / name / OLD_APP_FILE).is_file() and own_file.name == APP_FILE:
+        problems.append(f"{name} holds both {name}/{APP_FILE} and {name}/{OLD_APP_FILE}. "
+                        f"pdt reads {name}/{APP_FILE} and ignores {name}/{OLD_APP_FILE}; "
+                        f"move what you need into {APP_FILE} and delete {OLD_APP_FILE}")
     try:
         platform = mapping(root_cfg, "platform", PROJECT_FILE)
     except ConfigError as e:
@@ -1184,7 +1268,7 @@ def validate_app(name: str) -> list[str]:
     if provider not in PROVIDERS:
         problems.append(
             f"{name}: platform.provider must be one of: {', '.join(PROVIDERS)}. "
-            f"Set it under platform: in {PROJECT_FILE}, or in {name}/{APP_FILE}.")
+            f"Set it under platform: in the project's {PROJECT_FILE}, or in {where}.")
     if provider == "aws":
         problem = aws_account_problem(str(app["platform"].get("account") or ""))
         if problem != "":
@@ -1193,16 +1277,15 @@ def validate_app(name: str) -> list[str]:
         problem = azure_environment_problem(str(app["platform"].get("environment") or ""))
         if problem != "":
             problems.append(f"{name}: platform.environment: {problem}")
-    if app["schedule"] is not None:
-        try:
-            cron = cron_expression(app["schedule"])
-        except ConfigError as e:
-            problems.append(f"{name}: {e}")
-        else:
-            problem = windows_schedule_problem(cron) if provider == "windows" else ""
-            if problem != "":
-                problems.append(f"{name}: schedule: {problem}")
-    problems.extend(f"{where}: {problem}" for problem in storage_problems(app))
+    if app["app_profile"] == "web":
+        from pdt import web_app
+        problems.extend(web_app.problems(app, provider))
+    elif app["app_profile"] == "job":
+        problems.extend(job_problems(app, provider))
+    else:
+        problems.append(f"{name}: app_profile must be one of: job, web")
+    problems.extend(f"{where}: {problem}" for problem in
+                    storage_problems(app, own.get("storage", entry.get("storage", True))))
     if not isinstance(app["enabled"], bool):
         problems.append(f"{where}: enabled must be true or false")
     if not isinstance(app["continue_on_error"], bool):
@@ -1219,26 +1302,35 @@ def validate_app(name: str) -> list[str]:
     return problems
 
 
+STORE_NAMES = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud", "windows": "Windows"}
+
+
 def storage_read(app: dict) -> list[str]:
-    if not isinstance(app["storage"], dict):
-        return []
-    return app["storage"].get("read") or []
+    return app["storage_read"]
 
 
-def storage_problems(app: dict) -> list[str]:
-    storage = app["storage"]
+def storage_problems(app: dict, storage) -> list[str]:
+    """The problems of the app's raw `storage:` value: `true`, `false`, or a mapping."""
     if isinstance(storage, bool):
         return []
     if not isinstance(storage, dict):
         return ["storage must be true, false, or a map with a read: list of app names"]
-    problems = key_problems("storage", storage, {"read"})
+    problems = key_problems("storage", storage, STORAGE_KEYS)
+    if not isinstance(storage.get("enabled", True), bool):
+        problems.append("storage.enabled must be true or false")
     names = storage.get("read")
-    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+    if names is None and "enabled" in storage:
+        return problems
+    if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
         return problems + ["storage.read must be a list of app names"]
     provider = app["platform"].get("provider")
-    if provider in PROVIDERS and provider != "azure":
+    if app["app_profile"] == "job" and provider in PROVIDERS and provider != "azure":
         problems.append("storage.read works with the azure provider only, "
                         f"and this app uses {provider}; remove the key")
+        provider = None
+    elif app["app_profile"] == "job" and storage.get("enabled", True) is False:
+        problems.append("storage.read needs storage.enabled: true for a job, because the job "
+                        "reads other folders through its own store")
     apps = app_folders()
     for name in dict.fromkeys(names):
         if names.count(name) > 1:
@@ -1257,9 +1349,28 @@ def storage_problems(app: dict) -> list[str]:
                 problems.append(f"storage.read names {name!r}, which has storage: false, "
                                 "so it has no folder to read")
             other_provider = other["platform"].get("provider")
-            if other_provider in PROVIDERS and other_provider != "azure":
+            if provider in PROVIDERS and other_provider in PROVIDERS and other_provider != provider:
                 problems.append(f"storage.read names {name!r}, which uses the {other_provider} "
-                                "provider, so its folder is not in the Azure store")
+                                f"provider, so its folder is not in the {STORE_NAMES[provider]} store")
+    return problems
+
+
+def job_problems(app: dict, provider: str) -> list[str]:
+    """The checks of a job's `job:` section and schedule."""
+    name = app["name"]
+    problems = key_problems(f"{name}/{APP_FILE}: job", app["job"], JOB_KEYS)
+    if app["schedule"] is not None:
+        try:
+            cron = cron_expression(app["schedule"])
+        except ConfigError as e:
+            problems.append(f"{name}: {e}")
+        else:
+            problem = windows_schedule_problem(cron) if provider == "windows" else ""
+            if problem != "":
+                problems.append(f"{name}: schedule: {problem}")
+    if app["web"]:
+        problems.append(f"{name}: web: only an app with app_profile: web uses this "
+                        "section; remove it, or set app_profile: web")
     return problems
 
 

@@ -2,7 +2,9 @@
 
 ## Set up a project
 
-A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, or the `.ps1` scripts of a PowerShell app. Every command except `init` finds the project by looking in the current folder, then each folder above it.
+A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, or the `.ps1` scripts of a PowerShell app, and its own `pdt.yml`. Every command except `init` finds the project by looking in the current folder, then each folder above it; a folder that also holds `run.py` or `.ps1` scripts is an app, so the walk goes past it.
+
+`config.yml` is the deprecated name of an app's `pdt.yml`. pdt still reads an app's `config.yml` when its folder has no `pdt.yml`. Rename the file to `pdt.yml`.
 
 ```
 pdt init my-jobs
@@ -12,7 +14,7 @@ pdt init my-jobs
 
 Region is the only place setting it asks for. Your AWS account, Azure subscription, and Google Cloud project all come from your credentials the first time you deploy, and pdt writes the answer into `pdt.yml` so every later deploy checks against it.
 
-To move a project to another provider, run `pdt init` in the project and pick the new provider. If apps are deployed, `pdt init` lists them and asks which to move: all, some, or none. For each app you move, it runs `pdt destroy` where the app is deployed, then updates `pdt.yml` to deploy to the new provider. Stored data will not be deleted. Each app that stays gets its current place written into its `config.yml`. An app whose own `config.yml` sets its provider does not move; edit that file to move it. Then run `pdt deploy <app>` for each app you moved.
+To move a project to another provider, run `pdt init` in the project and pick the new provider. If apps are deployed, `pdt init` lists them and asks which to move: all, some, or none. For each app you move, it runs `pdt destroy` where the app is deployed, then updates `pdt.yml` to deploy to the new provider. Stored data will not be deleted. Each app that stays gets its current place written into its own `pdt.yml`. An app whose own `pdt.yml` sets its provider does not move; edit that file to move it. Then run `pdt deploy <app>` for each app you moved.
 
 pdt suggests the region nearest to you from your computer's time zone. If `pdt.yml` has no region when you first deploy, the deploy suggests one the same way, asks you to confirm it or type another, and saves your answer. With `--yes` it takes the suggestion and tells you which region it used.
 
@@ -47,7 +49,7 @@ my-jobs/
   .env              secrets, never committed
   my-report/
     run.py          the job
-    config.yml      schedule, settings, and the env vars it needs
+    pdt.yml         schedule, settings, and the env vars it needs
     env.template
 ```
 

@@ -5,7 +5,7 @@
 | `pdt init [DIR]` | create a project here, or in DIR |
 | `pdt examples` | list the example apps bundled with pdt |
 | `pdt new APP` | add an empty app to the project |
-| `pdt list` | show every app with its schedule and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
+| `pdt list` | show every app with its profile, schedule, and platform; `--names` prints only the enabled app names; `--json` prints one object per app with `name`, `profile`, `schedule`, `platform`, `enabled`, `paused`, and `error` (a config problem, or `null`) |
 | `pdt validate` | check the config files and the required env vars; exits 1 when it finds a problem; `--json` prints `{"ok": ..., "problems": [{"app": ..., "message": ...}]}`, where `app` is `null` for a problem of the project or of more than one app |
 | `pdt run APP` | run an app on this machine |
 | `pdt run APP --deployed` | start one run of the deployed job now, on its platform |
@@ -13,12 +13,12 @@
 | `pdt deploy APP` | deploy an app to its configured platform, then ask whether to start a run and follow its log |
 | `pdt deploy APP --run` | deploy, then start a run and follow its log with no question |
 | `pdt deploy APP --rebuild` | deploy, and build and push the image even when the app did not change |
-| `pdt deploy APP --plan` | show the plan and the monthly cost estimate, then stop; asks nothing and takes each default that `--yes` takes; creates or changes no cloud resource, except that on Google Cloud it enables each required API that is not enabled, which costs nothing, so it can read and price the project; changes no `pdt.yml`, `config.yml`, or `.pdt/state`; signs in to nothing; installs no tool, such as PowerShell or the Google Cloud CLI; can write local caches: the uv cache of the Python packages of the provider script, the price cache of pdt, and a temporary folder of PowerShell scans that pdt deletes when it exits |
+| `pdt deploy APP --plan` | show the plan and the monthly cost estimate, then stop; asks nothing and takes each default that `--yes` takes; creates or changes no cloud resource, except that on Google Cloud it enables each required API that is not enabled, which costs nothing, so it can read and price the project; changes no `pdt.yml` or `.pdt/state`; signs in to nothing; installs no tool, such as PowerShell or the Google Cloud CLI; can write local caches: the uv cache of the Python packages of the provider script, the price cache of pdt, and a temporary folder of PowerShell scans that pdt deletes when it exits |
 | `pdt deploy --all` | deploy every enabled app, in order; skips an app whose plan you decline; asks whether to skip and disable an app that fails; add `--yes --skip-failures` to run unattended |
 | `pdt destroy APP` | remove everything deploy created |
 | `pdt destroy --all` | destroy every deployed app, in order; each app shows its plan and asks; asks whether to skip an app that fails; add `--yes --skip-failures` to run unattended |
-| `pdt pause APP` | stop the deployed schedule from starting runs; writes `pause: true` into the app's `config.yml` |
-| `pdt unpause APP` | let the schedule start runs again; writes `pause: false` |
+| `pdt pause APP` | stop the deployed schedule from starting runs, or stop a web app's server; writes `pause: true` into the app's own `pdt.yml` |
+| `pdt unpause APP` | let the schedule start runs again, or start a paused web app's server; writes `pause: false` |
 | `pdt secrets APP` | show which `.env` values differ from the deployed app |
 | `pdt secrets APP save` | send your `.env` values to the deployed app; the next run uses them |
 | `pdt secrets APP get` | copy the deployed values into a `.env.<provider>` file |

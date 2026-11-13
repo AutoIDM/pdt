@@ -45,9 +45,10 @@ def test_the_generated_dockerfile_installs_from_the_script_header_before_the_res
     assert (stage / ".pdt-script" / "run.py.lock").read_text() == "lock\n"
     assert (stage / ".pdt-script" / "pdt_cli-0.1.11-py3-none-any.whl").read_text() == "wheel\n"
     text = (stage / "Dockerfile").read_text()
-    assert (text.index("WORKDIR /workspace/my-report\n") < text.index("COPY .pdt-script .\n")
+    assert (text.index("USER pdt\n") < text.index("WORKDIR /workspace/my-report\n")
+            < text.index("COPY --chown=pdt:pdt .pdt-script .\n")
             < text.index('RUN uv sync --script run.py && rm -rf "$(uv python dir)"/*/lib/python*/'
-                         'site-packages/pip*\n') < text.index("COPY . /workspace\n"))
+                         'site-packages/pip*\n') < text.index("COPY --chown=pdt:pdt . /workspace\n"))
 
 
 def test_a_run_py_without_a_script_header_is_staged_whole(tmp_path):
@@ -150,7 +151,7 @@ def test_a_powershell_app_gets_the_powershell_dockerfile_with_its_modules(powers
         start="/opt/pdt/bin/python -m pdt.run_powershell .")
     assert scans == ["aws"]
     pdt_line = f'RUN uv venv /opt/pdt && uv pip install --python /opt/pdt "pdt-cli[apps]=={__version__}"\n'
-    pwsh_line = 'RUN pwsh="$(/opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh'
+    pwsh_line = 'RUN pwsh="$(XDG_DATA_HOME=/opt/pwsh-data /opt/pdt/bin/python -m pdt.pwsh)" && ln -s "$pwsh" /usr/local/bin/pwsh'
     assert text.index(pdt_line) < text.index(pwsh_line) < text.index(install)
     assert "curl" not in text
 
@@ -161,7 +162,7 @@ def test_a_powershell_app_without_modules_has_no_empty_install_step(powershell_a
     text = (stage / "Dockerfile").read_text()
     assert "-Command" not in text
     assert all(line.strip() != "RUN" for line in text.splitlines())
-    assert "\nCOPY . /workspace\n" in text
+    assert "\nUSER pdt\n" in text and "\nCOPY --chown=pdt:pdt . /workspace\n" in text
 
 
 def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modules(powershell_app):
@@ -171,8 +172,8 @@ def test_a_powershell_app_with_its_own_run_py_runs_it_after_installing_its_modul
     (app["dir"] / "requirements.psd1").write_text("@{ 'ImportExcel' = '7.8.6' }\n")
     write_dockerfile(stage, app)
     text = (stage / "Dockerfile").read_text()
-    tail = ("WORKDIR /workspace/my-report\nCOPY .pdt-script .\nRUN uv sync --script run.py"
-            ' && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*\nCOPY . /workspace\n' + ENTRYPOINT.replace("{start}", "uv run --script run.py").format())
+    tail = ("WORKDIR /workspace/my-report\nCOPY --chown=pdt:pdt .pdt-script .\nRUN uv sync --script run.py"
+            ' && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*\nCOPY --chown=pdt:pdt . /workspace\n' + ENTRYPOINT.replace("{start}", "uv run --script run.py").format())
     assert text.endswith(tail)
     assert text.index("Install-PSResource") < text.index("RUN uv sync")
     assert "pdt.run_powershell" not in text

@@ -35,5 +35,5 @@ def test_a_failed_write_leaves_the_file_as_it_was(project, monkeypatch):
     monkeypatch.setattr(os, "replace", fail)
     with pytest.raises(OSError):
         set_app_enabled("my-report", False)
-    assert (app_dir / "config.yml").read_text() == COMMENTED
-    assert sorted(p.name for p in app_dir.iterdir() if p.name != "config.yml.lock") == before
+    assert (app_dir / "pdt.yml").read_text() == COMMENTED
+    assert sorted(p.name for p in app_dir.iterdir() if p.name != "pdt.yml.lock") == before

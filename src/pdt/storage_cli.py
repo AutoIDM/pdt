@@ -10,7 +10,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from pdt import console, runs_cli
+from pdt import config, console, runs_cli
 
 USAGE = ("usage: pdt storage <app> ls [path] [--recursive] [--json] | get <path> [dest] [--open] "
          "| query <sql> | unlock [--yes] | destroy [--yes] | --open")
@@ -127,7 +127,7 @@ def run(store, app: dict, rest: list[str], assume_yes: bool, page: str = "",
     if not app["storage"]:
         console.error(f"storage is turned off for {console.value(name)}; "
                       f"remove {console.value('storage: false')} from "
-                      f"{console.value(f'{name}/config.yml')}")
+                      f"{console.value(f'{name}/{config.app_file(app['dir']).name}')}")
         return 1
     as_json = "--json" in rest
     recursive = "--recursive" in rest

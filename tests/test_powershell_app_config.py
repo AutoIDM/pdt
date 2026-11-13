@@ -6,7 +6,7 @@ def ps_app(project, name="ad-report", scripts=("report.ps1",), config_text="sche
     folder.mkdir()
     for script in scripts:
         (folder / script).write_text("Write-Host hi\n")
-    (folder / "config.yml").write_text(config_text)
+    (folder / "pdt.yml").write_text(config_text)
     return folder
 
 
@@ -36,8 +36,8 @@ def test_run_scripts_must_name_ps1_files_of_the_app(project):
     ps_app(project, scripts=("a.ps1", "b.ps1"),
            config_text="schedule: daily\nrun_scripts: [b.ps1, c.ps1]\n")
     assert config.validate_app("ad-report") == [
-        "ad-report/config.yml: run_scripts names 'c.ps1', which is not a .ps1 file in ad-report/"]
-    (project / "ad-report" / "config.yml").write_text("schedule: daily\nrun_scripts: [b.ps1, a.ps1]\n")
+        "ad-report/pdt.yml: run_scripts names 'c.ps1', which is not a .ps1 file in ad-report/"]
+    (project / "ad-report" / "pdt.yml").write_text("schedule: daily\nrun_scripts: [b.ps1, a.ps1]\n")
     assert config.validate_app("ad-report") == []
     assert config.merged_app("ad-report")["run_scripts"] == ["b.ps1", "a.ps1"]
 
@@ -46,24 +46,24 @@ def test_run_scripts_is_refused_on_a_python_app(project):
     folder = ps_app(project, config_text="schedule: daily\nrun_scripts: [report.ps1]\n")
     (folder / "run.py").write_text("")
     assert config.validate_app("ad-report") == [
-        "ad-report/config.yml: run_scripts only applies to an app made of .ps1 files; remove the key"]
+        "ad-report/pdt.yml: run_scripts only applies to an app made of .ps1 files; remove the key"]
 
 
 def test_run_scripts_must_be_a_list(project):
     ps_app(project, config_text="schedule: daily\nrun_scripts: report.ps1\n")
     assert config.validate_app("ad-report") == [
-        "ad-report/config.yml: run_scripts must be a list of .ps1 file names in the order to run them"]
+        "ad-report/pdt.yml: run_scripts must be a list of .ps1 file names in the order to run them"]
     for value in ("[]", "[1]"):
-        (project / "ad-report" / "config.yml").write_text(f"schedule: daily\nrun_scripts: {value}\n")
+        (project / "ad-report" / "pdt.yml").write_text(f"schedule: daily\nrun_scripts: {value}\n")
         assert config.validate_app("ad-report") == [
-            "ad-report/config.yml: run_scripts must be a list of .ps1 file names in the order to run them"]
+            "ad-report/pdt.yml: run_scripts must be a list of .ps1 file names in the order to run them"]
 
 
 def test_continue_on_error_must_be_a_bool(project):
     ps_app(project, config_text="schedule: daily\ncontinue_on_error: yes please\n")
     assert config.validate_app("ad-report") == [
-        "ad-report/config.yml: continue_on_error must be true or false"]
-    (project / "ad-report" / "config.yml").write_text("schedule: daily\ncontinue_on_error: true\n")
+        "ad-report/pdt.yml: continue_on_error must be true or false"]
+    (project / "ad-report" / "pdt.yml").write_text("schedule: daily\ncontinue_on_error: true\n")
     assert config.merged_app("ad-report")["continue_on_error"] is True
 
 
@@ -71,7 +71,7 @@ def test_run_ps1_and_run_scripts_cannot_both_be_present(project):
     ps_app(project, scripts=("run.ps1", "report.ps1"),
            config_text="schedule: daily\nrun_scripts: [report.ps1]\n")
     assert config.validate_app("ad-report") == [
-        "ad-report/config.yml: run.ps1 and run_scripts cannot both be present; keep one"]
+        "ad-report/pdt.yml: run.ps1 and run_scripts cannot both be present; keep one"]
 
 
 def test_ps1_files_match_in_any_case(project):

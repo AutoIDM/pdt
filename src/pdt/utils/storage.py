@@ -38,7 +38,17 @@ process no longer exists. `pdt storage <app> unlock` releases a lock by hand.
 
 `storage.store(app="other")` opens the folder of another app of the project,
 read-only: the folder next to this app's own. A deployed job can read it when
-this app's config.yml names the other app under `storage: read:`.
+this app's pdt.yml names the other app under `storage: read:`.
+
+An app that lists another app under `storage: read:` in its config reads
+that app's files without a lock, one file at a time, only when the file
+changed since the last copy:
+
+    storage.read_only("vicinity-warehouse").fetch(
+        "state/warehouse.duckdb", Path(".cache/warehouse.duckdb"))
+
+Every write to a `file:` store lands through a temporary file and a rename,
+so a reader never sees a half-written file.
 """
 
 from __future__ import annotations
@@ -62,6 +72,9 @@ from pdt import config
 LOCK = "state/lock"
 DONE = "_done"
 LOCK_TTL = timedelta(minutes=30)
+# JSON {app name: folder url} of the other apps' storage this app may read (`storage.read` in
+# its config). The deployed job and `pdt run` set it; `read_only(app)` reads it.
+READ_URLS_ENV = "PDT_STORAGE_READ_URLS"
 
 
 class StorageLocked(Exception):
@@ -168,8 +181,23 @@ def root(app: str | None = None) -> str:
 
 def store(credentials=None, app: str | None = None) -> Store:
     """This app's folder. With `app`, the folder of another app of the project,
-    read-only; this app's config.yml names it under `storage: read:`."""
+    read-only; this app's pdt.yml names it under `storage: read:`."""
     return Store(root(app), credentials, read_only=app is not None)
+
+
+def read_only(app_name: str, credentials=None) -> Store:
+    """The store of another app that this app's config lists under `storage: read:`.
+
+    A deployed app finds the folder in READ_URLS_ENV. Without that variable the
+    folder is <project>/.pdt/storage/<app>/, the same place `pdt run` keeps it.
+    """
+    urls = json.loads(os.environ.get(READ_URLS_ENV, "").strip() or "{}")
+    if urls and app_name not in urls:
+        raise KeyError(f"this app may not read the storage of {app_name!r}; list it under "
+                       f"storage: read: in the app's {config.APP_FILE} and deploy again")
+    if app_name in urls:
+        return Store(urls[app_name], credentials, read_only=True)
+    return store(credentials, app=app_name)
 
 
 def sync(local: Path | None = None, lock_ttl: timedelta = LOCK_TTL,
@@ -211,6 +239,10 @@ class Backend:
 
     def put_if_version(self, path: str, data: bytes, version: str | None) -> None:
         raise NotImplementedError
+
+    def put(self, path: str, data: bytes) -> None:
+        """Write the file whatever is there."""
+        self.dirfs().pipe_file(path, data)
 
     def delete(self, path: str) -> None:
         raise NotImplementedError
@@ -260,7 +292,19 @@ class Local(Backend):
         file = self.file(path)
         if not file.is_file() or hashlib.sha256(file.read_bytes()).hexdigest() != version:
             raise StorageConflict(f"{path} changed since it was pulled")
-        self.file(path).write_bytes(data)
+        self.put(path, data)
+
+    def put(self, path: str, data: bytes) -> None:
+        # A reader of this folder (another app's `fetch`) must never see a part of a file,
+        # so the bytes land in a temporary file next to it, and a rename replaces it whole.
+        file = self.file(path)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = file.with_name(f"{file.name}.{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            temporary.write_bytes(data)
+            os.replace(temporary, file)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def delete(self, path: str) -> None:
         self.file(path).unlink(missing_ok=True)
@@ -466,18 +510,40 @@ class Store:
     def push(self, local: Path, remote: str, lease: Lease | None = None) -> None:
         self._refuse_write()
         backend = self.backend()
-        fs = backend.dirfs()
         files = [(remote + file.relative_to(local).as_posix(), file.read_bytes())
                  for file in sorted(local.rglob("*")) if file.is_file()]
         if remote.startswith("runs/"):
             files.append((remote + DONE, b""))
         for path, data in files:
             if lease is None:
-                fs.pipe_file(path, data)
+                backend.put(path, data)
             else:
                 backend.put_if_version(path, data, lease.versions.get(path))
         if lease is not None:
             self._release_lock(backend, lease)
+
+    def fetch(self, remote: str, local: Path) -> Path | None:
+        """Copy one remote file to `local` when it changed since the last copy; no lock.
+
+        A sidecar `<local>.version` remembers the version copied. Returns `local`
+        when the file is there afterwards, or None when the store has no such file.
+        """
+        backend = self.backend()
+        version = backend.versions(remote).get(remote)
+        if version is None:
+            return local if local.is_file() else None
+        marker = local.with_name(local.name + ".version")
+        if local.is_file() and marker.is_file() and marker.read_text() == version:
+            return local
+        local.parent.mkdir(parents=True, exist_ok=True)
+        temporary = local.with_name(f"{local.name}.{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            backend.dirfs().get_file(remote, str(temporary))
+            os.replace(temporary, local)
+        finally:
+            temporary.unlink(missing_ok=True)
+        marker.write_text(version)
+        return local
 
     def abort(self, lease: Lease) -> None:
         """Give up a pull without pushing: release the lock and leave the

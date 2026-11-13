@@ -51,7 +51,8 @@ def _load(app_name: str):
     if provider not in PROVIDERS:
         raise ConfigError(
             f"platform.provider must be one of: {', '.join(PROVIDERS)}. "
-            f"Set it under platform: in {config.PROJECT_FILE}, or in {app_name}/{config.APP_FILE}.")
+            f"Set it under platform: in {config.PROJECT_FILE}, or in "
+            f"{app_name}/{config.app_file(app['dir']).name}.")
     return app, provider
 
 
@@ -179,6 +180,8 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     if config.uses_email(app):
         problems.extend(email_problems(app["config"], check_oauth=False))
     lines = [f"runs {console.value('run.py')}"]
+    if not (app["dir"] / "run.py").is_file() and (app["dir"] / "Dockerfile").is_file():
+        lines = [f"builds and runs {console.value('Dockerfile')}"]
     if config.powershell_scripts(app["dir"]):
         try:
             scan = powershell.scan(app, provider)
@@ -193,7 +196,10 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     console.name(app_name)
     for line in [*lines, *config.found_env_lines(app), *sources]:
         console.detail(line)
-    problem = choose_schedule(app, assume_yes) or regions.choose_region(app, provider, assume_yes)
+    problem = ""
+    if app["app_profile"] == "job":
+        problem = choose_schedule(app, assume_yes)
+    problem = problem or regions.choose_region(app, provider, assume_yes)
     if problem != "":
         console.error(f"{console.value(app_name)}: {console.escape(problem)}")
         return 1
@@ -213,6 +219,9 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     code = provider_step("deploy", provider, app_name, assume_yes, rebuild)
     if code != 0:
         return code
+    if app["app_profile"] == "web":
+        web_next_steps(app)
+        return 0
     run_code = offer_run(app_name, provider, assume_yes, run)
     deployed_next_steps(app_name, started=run_code is not None)
     return run_code or 0
@@ -223,9 +232,9 @@ DEFAULT_SCHEDULE = "daily"
 
 
 def choose_schedule(app: dict, assume_yes: bool) -> str:
-    """When the app has no schedule, ask for one and save it in the app's config.yml.
+    """When the app has no schedule, ask for one and save it in the app's pdt.yml.
 
-    Creates config.yml when the app folder has none. Returns a problem for the
+    Creates pdt.yml when the app folder has none. Returns a problem for the
     user, or "". --yes takes DEFAULT_SCHEDULE, the same way it takes every
     other default; a run with no one to ask and no --yes stops with the line
     to add.
@@ -233,7 +242,7 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
     if app["schedule"] is not None:
         return ""
     name = app["name"]
-    where = f"{name}/{config.APP_FILE}"
+    where = f"{name}/{config.app_file(app['dir']).name}"
     words = config.describe_schedule(DEFAULT_SCHEDULE)
     schedule = DEFAULT_SCHEDULE
     if assume_yes:
@@ -453,6 +462,16 @@ def deployed_next_steps(app_name: str, started: bool = False) -> None:
     ])
 
 
+def web_next_steps(app: dict) -> None:
+    """The commands after a web app's deploy. A web app has no run to offer; the provider
+    script printed its URL."""
+    console.say()
+    console.next_steps([
+        (f"pdt logs {app['name']} --follow", "read the server's log as it is written"),
+        (f"pdt health {app['name']}", "show whether the app answers"),
+    ])
+
+
 def secrets(app_name: str, action: str, assume_yes: bool = False,
             name: str | None = None) -> int:
     try:
@@ -550,6 +569,9 @@ def start(app_name: str, follow: bool = False) -> int:
         console.error(f"{console.value(app_name)} is not deployed; "
                       f"run {console.value(f'pdt deploy {app_name}')} first")
         return 1
+    if app["app_profile"] == "web":
+        # A web app has no run to start: the provider opens its deployed URL.
+        return dispatch(provider, "start", app_name, False)
     config.load_env(app["dir"])
     if follow:
         return dispatch(provider, "start", app_name, False, ["--", "--follow"])
@@ -582,10 +604,12 @@ def health(app_names: list[str], as_json: bool) -> int:
     A script that runs beside others writes its lines to a file, which prints afterwards in app
     order. It has no terminal, so it cannot ask for a login. When a person could answer, each app
     whose read failed runs again alone, as it did before, so its provider can ask."""
-    providers, errors = {}, {}
+    providers, errors, services = {}, {}, set()
     for app_name in app_names:
         try:
-            providers[app_name] = _load(app_name)[1]
+            app, providers[app_name] = _load(app_name)
+            if app["app_profile"] == "web":
+                services.add(app_name)
         except ConfigError as e:
             errors[app_name] = str(e)
     found, lines = {}, {}
@@ -616,7 +640,7 @@ def health(app_names: list[str], as_json: bool) -> int:
         else:
             sys.stderr.write(lines[app_name])
             app_runs[app_name] = found[app_name]
-    return runs_cli.health(app_runs, as_json)
+    return runs_cli.health(app_runs, as_json, services)
 
 
 def destroy(app_name: str, assume_yes: bool = False) -> int:

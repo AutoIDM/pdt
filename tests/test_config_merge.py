@@ -51,7 +51,7 @@ def test_a_byte_order_mark_from_windows_powershell_is_not_part_of_the_first_key(
     (project / "pdt.yml").write_bytes(b"\xef\xbb\xbf" + "platform:\n  provider: windows\n"
                                       "apps: []\n".encode())
     folder = add_app(project, "my-report")
-    (folder / "config.yml").write_bytes(
+    (folder / "pdt.yml").write_bytes(
         b"\xef\xbb\xbf" + "schedule: daily\nconfig:\n  greeting: Grüße\n".encode())
     assert validate_app("my-report") == []
     app = merged_app("my-report")
@@ -67,7 +67,7 @@ def test_unknown_app_is_an_error(project):
 def test_apps_list_is_rejected_inside_an_app_folder(project):
     add_app(project, "my-report", "apps:\n  - name: x\n")
     problems = validate_app("my-report")
-    assert any("belongs in the top level of pdt.yml" in p for p in problems)
+    assert any("belongs in the top level of the project's pdt.yml" in p for p in problems)
 
 
 def test_name_must_match_the_folder(project):
@@ -94,7 +94,7 @@ def test_storage_can_be_turned_off(project):
 def test_storage_must_be_a_bool(project):
     add_app(project, "my-report", "schedule: daily\nstorage: yes-please\n")
     assert validate_app("my-report") == [
-        "my-report/config.yml: storage must be true, false, or a map with a read: list of app names"]
+        "my-report/pdt.yml: storage must be true, false, or a map with a read: list of app names"]
 
 
 def test_storage_read_names_other_apps(project):
@@ -109,34 +109,34 @@ def test_storage_read_names_other_apps(project):
 def test_storage_read_must_be_a_list_of_app_names(project):
     add_app(project, "report", "storage:\n  read: client1\n")
     assert validate_app("report") == [
-        "report/config.yml: storage.read must be a list of app names"]
+        "report/pdt.yml: storage.read must be a list of app names"]
     add_app(project, "report", "storage:\n  read: [1]\n")
     assert validate_app("report") == [
-        "report/config.yml: storage.read must be a list of app names"]
+        "report/pdt.yml: storage.read must be a list of app names"]
     add_app(project, "report", "storage:\n  write: [client1]\n  read: []\n")
-    assert validate_app("report") == ["report/config.yml: storage: unknown key 'write'"]
+    assert validate_app("report") == ["report/pdt.yml: storage: unknown key 'write'"]
 
 
 def test_storage_read_names_an_app_of_the_project_and_not_itself(project):
     add_app(project, "report", "storage:\n  read: [report, missing]\n")
     assert validate_app("report") == [
-        "report/config.yml: storage.read names 'report', which is this app; "
+        "report/pdt.yml: storage.read names 'report', which is this app; "
         "an app already reads its own folder, so remove the name",
-        "report/config.yml: storage.read names 'missing', which is not an app of this project"]
+        "report/pdt.yml: storage.read names 'missing', which is not an app of this project"]
 
 
 def test_storage_read_works_with_azure_only(project):
     add_app(project, "client1")
     add_app(project, "report", "platform:\n  provider: windows\nstorage:\n  read: [client1]\n")
     assert validate_app("report") == [
-        "report/config.yml: storage.read works with the azure provider only, "
+        "report/pdt.yml: storage.read works with the azure provider only, "
         "and this app uses windows; remove the key"]
 
 
 def test_storage_read_needs_the_read_key(project):
     add_app(project, "report", "storage: {}\n")
     assert validate_app("report") == [
-        "report/config.yml: storage.read must be a list of app names"]
+        "report/pdt.yml: storage.read must be a list of app names"]
     add_app(project, "report", "storage:\n  read: []\n")
     assert validate_app("report") == []
     assert storage_read(merged_app("report")) == []
@@ -146,7 +146,7 @@ def test_storage_read_names_each_app_once(project):
     add_app(project, "client1")
     add_app(project, "report", "storage:\n  read: [client1, client1]\n")
     assert validate_app("report") == [
-        "report/config.yml: storage.read names 'client1' more than once; keep one"]
+        "report/pdt.yml: storage.read names 'client1' more than once; keep one"]
 
 
 def test_storage_read_names_an_app_with_a_folder_in_the_azure_store(project):
@@ -154,9 +154,9 @@ def test_storage_read_names_an_app_with_a_folder_in_the_azure_store(project):
     add_app(project, "client2", "platform:\n  provider: windows\n")
     add_app(project, "report", "storage:\n  read: [client1, client2]\n")
     assert validate_app("report") == [
-        "report/config.yml: storage.read names 'client1', which has storage: false, "
+        "report/pdt.yml: storage.read names 'client1', which has storage: false, "
         "so it has no folder to read",
-        "report/config.yml: storage.read names 'client2', which uses the windows provider, "
+        "report/pdt.yml: storage.read names 'client2', which uses the windows provider, "
         "so its folder is not in the Azure store"]
 
 
@@ -226,5 +226,13 @@ def test_validate_accepts_timezone_under_platform_and_rejects_schedule(project):
     (project / "pdt.yml").write_text(
         "platform:\n  provider: google-cloud\n  region: us-central1\n  schedule: daily\n")
     assert validate() == [
-        "pdt.yml: platform: 'schedule' belongs in the top level of the app's config.yml, "
-        "or its apps: entry in pdt.yml, not here"]
+        "pdt.yml: platform: 'schedule' belongs in the top level of the app's pdt.yml, "
+        "or its apps: entry in the project's pdt.yml, not here"]
+
+
+def test_a_job_that_reads_other_folders_keeps_its_own_store(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: azure\n")
+    add_app(project, "client1", "schedule: daily\n")
+    add_app(project, "report", "schedule: daily\nstorage:\n  enabled: false\n  read: [client1]\n")
+    assert any("storage.read needs storage.enabled: true for a job" in p
+               for p in validate_app("report"))

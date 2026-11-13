@@ -101,7 +101,7 @@ PowerShell job. Finds the Microsoft 365 licenses a tenant pays for that nobody u
 ### impossible-travel-report
 Looks at recent Entra ID sign-ins. Sends an email when one person signs in from two far-apart places too quickly: Dallas an hour ago, Paris now.
 
-Settings for the lookback window, the minimum distance, and the email addresses live in the job's `config.yml`. The env vars it needs are listed there too, and in its `env.template`.
+Settings for the lookback window, the minimum distance, and the email addresses live in the job's own `pdt.yml`. The env vars it needs are listed there too, and in its `env.template`.
 
 ### intune-export
 
@@ -116,6 +116,9 @@ A PowerShell job whose one script, `hello.ps1`, writes "Hello, world!". It is th
 ### powershell-report
 PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in the app's data store.
 
+### web-hello
+A web app (`app_profile: web`) that greets the person who signed in.
+
 ## Support
 
 [AutoIDM](https://autoidm.com/service) makes pdt. Any issues, questions, ideas, or concerns? Use any of these methods to get a hold of us:
@@ -128,9 +131,12 @@ PowerShell job. small CSV report with `Export-Csv`, and pdt keeps the file in th
 - [Projects and apps](docs/projects.md): set up a project, add an app, and where pdt keeps its files
 - [Deploying](docs/deploy.md): deploy, run, pause, and destroy a job, and run pdt from CI
 - [Commands](docs/commands.md): every `pdt` command and its options
+- [Settings](docs/settings.md): every setting in the project's and the apps' `pdt.yml` files, and every env var, with its allowed values and its default
 - [Choosing where jobs run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
 - [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
 - [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's runs, logs, and files
 - [Writing your own app](docs/writing-apps.md): Python and PowerShell apps, and logging
 - [Sending email](docs/email.md): send mail from an app over SMTP, Microsoft Graph, SES, or Resend
 - [More ways to install](docs/install.md): other installs, and how to update or remove pdt
+- [Concepts](docs/concepts.md): projects, apps, and app profiles
+- [Types of apps](docs/types-of-apps.md): scheduled jobs and web apps, and the services pdt picks for each one on each cloud

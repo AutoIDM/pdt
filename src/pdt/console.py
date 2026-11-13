@@ -255,6 +255,9 @@ def waiting(message: str, once: bool = False) -> Iterator[Wait]:
     for `message`, as for a price read. `message` has the form `<action>: details`. A wait in
     a worker thread shows no spinner, since the thread that started it may show one."""
     wait = Wait(message)
+    if _data is not None and not sys.stderr.isatty():
+        yield wait
+        return
     if not _console.is_interactive or _data is not None:
         if not once or message not in _warned:
             _warned.add(message)
@@ -480,7 +483,7 @@ def columns(rows: list[tuple[str, str]]) -> None:
 
 SECRET_CHANGE_COLOURS = {"deleted": "red", "new": "green", "updated": "yellow", "unchanged": "dim"}
 RUN_STATUS_COLOURS = {"succeeded": "green", "ok": "green", "failed": "red", "unknown": "red",
-                      "running": "cyan", "not yet run": "dim"}
+                      "running": "cyan", "stopped": "yellow", "not yet run": "dim"}
 LOG_LEVEL_COLOURS = {"DEBUG": "dim", "INFO": "green", "WARNING": "yellow", "ERROR": "bold red"}
 
 
