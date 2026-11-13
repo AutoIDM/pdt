@@ -111,6 +111,40 @@ ZONE_REGIONS = {
     "America/Vancouver": ("us-west-2", "westus2", "us-west1"),
     "America/Edmonton": ("us-west-2", "canadacentral", "northamerica-northeast2"),
 }
+# The country of each region the menu of `choose_region` shows, as the provider's page
+# names it.
+REGION_COUNTRY = {
+    "ap-northeast-1": "Japan", "ap-northeast-2": "South Korea", "ap-south-1": "India",
+    "ap-southeast-1": "Singapore", "ap-southeast-2": "Australia", "ca-central-1": "Canada",
+    "eu-central-1": "Germany", "eu-north-1": "Sweden", "eu-west-1": "Ireland",
+    "eu-west-2": "United Kingdom", "eu-west-3": "France", "sa-east-1": "Brazil",
+    "us-east-1": "United States", "us-east-2": "United States", "us-west-2": "United States",
+    "australiaeast": "Australia", "austriaeast": "Austria", "belgiumcentral": "Belgium",
+    "brazilsouth": "Brazil", "canadacentral": "Canada", "centralindia": "India",
+    "centralus": "United States", "chilecentral": "Chile", "denmarkeast": "Denmark",
+    "eastasia": "Hong Kong", "eastus2": "United States", "francecentral": "France",
+    "germanywestcentral": "Germany", "indonesiacentral": "Indonesia",
+    "israelcentral": "Israel", "italynorth": "Italy", "japaneast": "Japan",
+    "koreacentral": "South Korea", "malaysiawest": "Malaysia", "mexicocentral": "Mexico",
+    "newzealandnorth": "New Zealand", "northeurope": "Ireland", "norwayeast": "Norway",
+    "polandcentral": "Poland", "qatarcentral": "Qatar", "southafricanorth": "South Africa",
+    "southeastasia": "Singapore", "spaincentral": "Spain", "swedencentral": "Sweden",
+    "switzerlandnorth": "Switzerland", "uaenorth": "United Arab Emirates",
+    "uksouth": "United Kingdom", "westeurope": "Netherlands", "westus2": "United States",
+    "westus3": "United States",
+    "africa-south1": "South Africa", "asia-east1": "Taiwan", "asia-east2": "Hong Kong",
+    "asia-northeast1": "Japan", "asia-northeast3": "South Korea", "asia-south1": "India",
+    "asia-southeast1": "Singapore", "asia-southeast2": "Indonesia",
+    "asia-southeast3": "Thailand", "australia-southeast1": "Australia",
+    "europe-central2": "Poland", "europe-north1": "Finland", "europe-north2": "Sweden",
+    "europe-southwest1": "Spain", "europe-west1": "Belgium", "europe-west2": "United Kingdom",
+    "europe-west3": "Germany", "europe-west4": "Netherlands", "europe-west6": "Switzerland",
+    "europe-west8": "Italy", "europe-west9": "France", "me-central1": "Qatar",
+    "me-central2": "Saudi Arabia", "me-west1": "Israel", "northamerica-northeast2": "Canada",
+    "northamerica-south1": "Mexico", "southamerica-east1": "Brazil",
+    "southamerica-west1": "Chile", "us-central1": "United States", "us-east4": "United States",
+    "us-west1": "United States",
+}
 ZONE_COUNTRY = {
     "America/New_York": "US", "America/Detroit": "US", "America/Chicago": "US",
     "America/Denver": "US", "America/Phoenix": "US", "America/Los_Angeles": "US",
@@ -379,6 +413,13 @@ def question(provider: str) -> str:
     return f"Which {PROVIDER_NAMES[provider]} region should hold your jobs?"
 
 
+def menu_regions(provider: str) -> set[str]:
+    """The regions of the tables for `provider`, which the menu of `choose_region` shows."""
+    column = PROVIDERS.index(provider)
+    return {regions[column] for regions in (
+        DEFAULT_REGIONS, *COUNTRY_REGIONS.values(), *ZONE_REGIONS.values())}
+
+
 def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
     """On a project's first deploy, ask for the region and save the answer.
 
@@ -405,12 +446,14 @@ def choose_region(app: dict, provider: str, assume_yes: bool) -> str:
         try:
             typed = True
             if console.can_menu():
-                column = PROVIDERS.index(provider)
-                known = [region, *sorted({regions[column] for regions in (
-                    DEFAULT_REGIONS, *COUNTRY_REGIONS.values(), *ZONE_REGIONS.values())}
-                    - {region})]
+                known = sorted(menu_regions(provider) | {region},
+                               key=lambda name: (REGION_COUNTRY.get(name, ""), name))
+                countries = [REGION_COUNTRY.get(name, "") for name in known]
+                column = max(len(country) for country in countries)
                 console.heading(console.escape(question(provider)))
-                chosen = console.choose_one([*known, "Another region"])
+                chosen = console.choose_one(
+                    [*(country.ljust(column) for country in countries), "Another region"],
+                    known.index(region), [*known, ""])
                 if chosen < len(known):
                     region = known[chosen]
                     typed = False
