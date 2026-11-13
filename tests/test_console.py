@@ -457,9 +457,11 @@ def test_a_menu_longer_than_the_screen_shows_the_part_around_the_marker(press, m
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with msvcrt")
-@pytest.mark.parametrize("sent,key", [(b"\x1b[A", "up"), (b"\x1bOB", "down"), (b" ", "space"),
-                                      (b"\r", "enter"), (b"q", ""), (b"\x1b", "")])
-def test_the_bytes_of_a_key_give_its_name(sent, key):
+@pytest.mark.parametrize("sent,key", [
+    (b"\x1b[A", "up"), (b"\x1bOB", "down"), (b" ", "space"), (b"\r", "enter"), (b"\x7f", "backspace"),
+    (b"\x15", "clear"), (b"\x04", "eof"), (b"q", "q"), ("é".encode(), "é"), ("€".encode(), "€"),
+    (b"\x1b", ""), (b"\x1b[D", ""), (b"\x1b[1;5C", ""), (b"\x1b[3~", ""), (b"\x1bq", ""), (b"\t", "")])
+def test_the_bytes_of_a_key_give_its_name_or_its_character(sent, key):
     read, write = os.pipe()
     os.write(write, sent)
     assert console._posix_key(read) == key
@@ -467,6 +469,24 @@ def test_the_bytes_of_a_key_give_its_name(sent, key):
     with pytest.raises(EOFError):
         console._posix_key(read)
     os.close(read)
+
+
+@pytest.mark.parametrize("password,shown", [(False, "us-a\b \bwest 1\b \b\b \b1\n"), (True, "\n")])
+def test_a_typed_line_leaves_out_each_key_that_is_no_character(press, capsys, password, shown):
+    press("up", "down", "u", "s", "-", "a", "backspace", "", "w", "e", "s", "t", "space", "1",
+          "backspace", "backspace", "1", "eof", "enter")
+    assert console._typed(password) == "us-west1"
+    assert capsys.readouterr().out == shown
+
+
+def test_ctrl_u_removes_the_typed_line_and_ctrl_d_ends_an_empty_one(press, capsys):
+    press("a", "é", "clear", "b", "enter", "eof")
+    assert console._typed(False) == "b"
+    assert capsys.readouterr().out == "aé\b \b\b \bb\n"
+    press("a", "space", "b", "c", "space", "word", "d", "word", "word", "word", "e", "enter", "eof")
+    assert console._typed(True) == "e"
+    with pytest.raises(EOFError):
+        console._typed(False)
 
 
 def test_input_that_is_not_a_terminal_gets_no_menu(monkeypatch):

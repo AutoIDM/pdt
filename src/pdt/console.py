@@ -512,14 +512,58 @@ def log_line(time: str, level: str, message: str) -> None:
     _print(line, len(f"{time:<8} {level:<7} "))
 
 
+def _typed(password: bool) -> str:
+    """One line that pdt reads key by key, and shows unless it is a password. A key that
+    is no character, such as an arrow key, shows nothing and is not in the line. Backspace
+    removes one character, Ctrl+W removes one word, and Ctrl+U removes them all, as in the
+    line mode of the terminal."""
+    out = _console.file
+    line: list[str] = []
+    with keys() as key:
+        while True:
+            pressed = key()
+            if pressed == "space":
+                pressed = " "
+            if pressed == "enter":
+                break
+            if pressed == "eof" and not line:
+                raise EOFError
+            erased = ""
+            if pressed == "backspace" and line:
+                erased = line.pop()
+            elif pressed == "clear":
+                erased = "".join(line)
+                line.clear()
+            elif pressed == "word":
+                kept = re.sub(r"\S*\s*$", "", "".join(line))
+                erased = "".join(line[len(kept):])
+                del line[len(kept):]
+            elif len(pressed) == 1:
+                line.append(pressed)
+                if not password:
+                    out.write(pressed)
+            if not password:
+                out.write("\b \b" * cell_len(erased))
+            out.flush()
+    out.write("\n")
+    out.flush()
+    return "".join(line)
+
+
 def _answer(prompt: Text, password: bool = False) -> str:
     """Read one answer, then print each line that another thread printed meanwhile. On Ctrl+C
     or end of input, or when stdin is not a terminal and so shows no answer, end the
-    question line first, because input() and getpass print no newline then."""
+    question line first, because input() and getpass print no newline then. On macOS and
+    Linux the terminal itself shows the bytes of an arrow key and puts them in the line, so
+    there pdt reads the line of a terminal with _typed. The Windows console edits the line."""
     if _console.is_terminal:
         prompt = Text("\n").join(_wrap(prompt, 0, _console.width - 1))
         prompt.append(" ")
     try:
+        if (sys.platform != "win32" and _console.is_terminal and sys.stdin is not None
+                and sys.stdin.isatty()):
+            _console.print(prompt, end="")
+            return _typed(password)
         answer = _console.input(prompt, password=password)
         if sys.stdin is not None and not sys.stdin.isatty():
             _console.end_line()
@@ -574,39 +618,56 @@ def can_menu() -> bool:
 
 
 POSIX_KEYS = {b"\r": "enter", b"\n": "enter", b" ": "space", b"\x1b[A": "up", b"\x1bOA": "up",
-              b"\x1b[B": "down", b"\x1bOB": "down"}
+              b"\x1b[B": "down", b"\x1bOB": "down", b"\x7f": "backspace", b"\x08": "backspace",
+              b"\x15": "clear", b"\x17": "word", b"\x04": "eof"}
 WINDOWS_KEYS = {"\r": "enter", " ": "space", "\x00H": "up", "\xe0H": "up", "\x00P": "down",
-                "\xe0P": "down"}
+                "\xe0P": "down", "\x08": "backspace", "\x1a": "eof"}
 
 
 def _posix_key(fd: int) -> str:
     import select
     key = os.read(fd, 1)
-    if key in (b"", b"\x04"):
+    if key == b"":
         raise EOFError
-    # An arrow key sends Esc and two more bytes at once; the Esc key sends Esc alone.
-    while key[:1] == b"\x1b" and len(key) < 3 and select.select([fd], [], [], 0.05)[0]:
-        key += os.read(fd, 1)
-    return POSIX_KEYS.get(key, "")
+    if key == b"\x1b":
+        # A key such as an arrow sends Esc and more bytes at once, and a letter or `~` ends
+        # them; the Esc key sends Esc alone.
+        while select.select([fd], [], [], 0.05)[0]:
+            key += os.read(fd, 1)
+            if key[-1] >= 0x40 and (len(key) > 2 or key[1:] not in (b"[", b"O")):
+                break
+    elif key[0] >= 0xc0:
+        # The first byte of a UTF-8 character tells how many bytes follow it.
+        key += os.read(fd, 1 if key[0] < 0xe0 else 2 if key[0] < 0xf0 else 3)
+    if key in POSIX_KEYS:
+        return POSIX_KEYS[key]
+    if key[0] < 0x20:
+        return ""
+    return key.decode(errors="ignore")
 
 
 def _windows_key() -> str:
     import msvcrt
     key = msvcrt.getwch()
-    if key in ("\x00", "\xe0"):
+    # An arrow key gives a prefix and a code at once. The letter `à` is the same as one
+    # prefix, with no code after it.
+    if key in ("\x00", "\xe0") and msvcrt.kbhit():
         key += msvcrt.getwch()
     if key == "\x03":
         raise KeyboardInterrupt
-    if key == "\x1a":
-        raise EOFError
-    return WINDOWS_KEYS.get(key, "")
+    if key in WINDOWS_KEYS:
+        return WINDOWS_KEYS[key]
+    return key if len(key) == 1 and key >= " " else ""
 
 
 @contextmanager
 def keys() -> Iterator[Callable[[], str]]:
-    """A function that waits for one key and returns `up`, `down`, `space`, `enter`, or ""
-    for any other key. It raises EOFError at the end of input, and Ctrl+C raises
-    KeyboardInterrupt, as in a typed question. A test replaces `keys` to give the keys."""
+    """A function that waits for one key and returns its name: `up`, `down`, `space`,
+    `enter`, `backspace`, `clear` (Ctrl+U), `word` (Ctrl+W), or `eof` (Ctrl+D, or Ctrl+Z on
+    Windows). Another
+    key gives its one character, or "" when it has none. The function raises EOFError when
+    the input ends, and Ctrl+C raises KeyboardInterrupt. A test replaces `keys` to give the
+    keys."""
     if sys.platform == "win32":
         yield _windows_key
         return
@@ -671,6 +732,8 @@ def _menu(labels: list[str], details: list[str], on: set[int] | None, at: int) -
                     on ^= {at}
                 elif pressed == "enter":
                     break
+                elif pressed == "eof":
+                    raise EOFError
         if on is None:
             answer = [_menu_line("> ", labels[at], details[at])]
         else:

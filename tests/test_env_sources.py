@@ -262,12 +262,14 @@ def test_confirm_asks_nothing_on_a_build_server_with_a_terminal(monkeypatch, cap
     assert "--yes" in capsys.readouterr().out
 
 
-def test_confirm_treats_a_person_pressing_ctrl_d_as_no_without_advice(monkeypatch, capsys):
+def test_confirm_treats_a_person_pressing_ctrl_d_as_no_without_advice(monkeypatch, capsys, press):
     def raise_eof(prompt=""):
         raise EOFError
 
     monkeypatch.delenv("CI", raising=False)
+    # Windows reads the line with input(); macOS and Linux read it key by key.
     monkeypatch.setattr("builtins.input", raise_eof)
+    press("eof")
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("sys.stdout.isatty", lambda: True)
     assert deploy.confirm(["do a thing"], assume_yes=False) is False
