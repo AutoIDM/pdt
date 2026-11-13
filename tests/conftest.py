@@ -61,7 +61,7 @@ def press(monkeypatch):
         queue = list(pressed)
 
         @contextmanager
-        def keys(resumed=None):
+        def keys():
             yield lambda: queue.pop(0)
 
         monkeypatch.setattr(console, "can_menu", lambda: True)

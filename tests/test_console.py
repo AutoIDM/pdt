@@ -475,16 +475,16 @@ def test_the_bytes_of_a_key_give_its_name_or_its_character(sent, key):
     os.close(read)
 
 
-def keys_of(sent, chunks=None):
+def keys_of(sent, chunks=None, pause=0.01):
     """The keys that `_posix_key` reads from a pipe that holds `sent` and then ends. With
-    `chunks`, each of them arrives in its own read."""
+    `chunks`, each of them arrives in its own read, `pause` seconds after the one before."""
     read, write = os.pipe()
     found = []
 
     def arrive():
         for chunk in chunks or [sent]:
             os.write(write, chunk)
-            time.sleep(0.01)
+            time.sleep(pause)
         os.close(write)
 
     thread = threading.Thread(target=arrive)
@@ -514,6 +514,8 @@ def keys_of(sent, chunks=None):
     (b"\x1b[[Ax", ["", "x"]),
     # A first byte with no character does not take the bytes after it.
     (b"\xe2x", ["", "x"]), (b"\xe2\x82x", ["", "x"]), (b"\x80x", ["", "x"]),(b"\xffab", ["", "a", "b"]),
+    # Esc and `O`, or Esc, `[`, `[`, take only a last byte 0x40-0x7e.
+    (b"\x1bO\rx", ["", "enter", "x"]), (b"\x1b[[\rx", ["", "enter", "x"]),
 ])
 def test_a_key_ends_where_its_form_ends(sent, found):
     assert keys_of(sent) == found
@@ -525,15 +527,53 @@ def test_a_character_whose_bytes_arrive_in_separate_reads_is_one_key():
     assert keys_of(b"", [euro[:1], euro[1:2], euro[2:], b"x"]) == ["€", "x"]
 
 
-def test_a_windows_arrow_key_is_one_key_and_a_letter_keeps_the_key_after_it(monkeypatch):
-    waiting = list("\xe0H" "\xe0x" "\x00P" "\x00K" "a\r")
-    fake = types.SimpleNamespace(getwch=lambda: waiting.pop(0), kbhit=lambda: bool(waiting),
-                                 ungetwch=lambda char: waiting.insert(0, char))
-    monkeypatch.setitem(sys.modules, "msvcrt", fake)
-    found = []
-    while waiting:
-        found.append(console._windows_key())
-    assert found == ["up", "à", "x", "down", "", "K", "a", "enter"]
+@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with ReadConsoleInputW")
+@pytest.mark.parametrize("chunks,found", [
+    # A slow connection brings the rest of a sequence after Esc and `[` or `O` later.
+    ([b"\x1b[", b"A", b"x"], ["up", "x"]), ([b"\x1bO", b"B", b"x"], ["down", "x"]),
+    ([b"\x1b[1;", b"5C", b"x"], ["", "x"]),
+    # The Esc key alone sends nothing after Esc.
+    ([b"\x1b", b"x"], ["", "x"]),
+])
+def test_the_rest_of_a_sequence_can_come_later_than_the_byte_after_esc(chunks, found):
+    assert keys_of(b"", chunks, pause=0.08) == found
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with ReadConsoleInputW")
+@pytest.mark.parametrize("first", [b"\x80", b"\xbf", b"\xc0", b"\xc1", b"\xf5", b"\xff"])
+def test_a_byte_that_starts_no_character_is_no_key_at_once(first):
+    read, write = os.pipe()
+    os.write(write, first)
+    later = threading.Timer(0.3, os.write, (write, b"x"))
+    later.start()
+    start = time.monotonic()
+    assert console._posix_key(read) == ""
+    assert time.monotonic() - start < 0.2
+    later.join()
+    assert console._posix_key(read) == "x"
+    os.close(write)
+    os.close(read)
+
+
+def test_a_windows_arrow_key_is_one_key_and_a_typed_letter_is_that_letter(monkeypatch):
+    # The console events of Up, `à`, `x`, Shift+A, Left, a focus change, Down, Enter, Ctrl+Z,
+    # and Ctrl+C: each key press and each key release, as ReadConsoleInputW gives them.
+    pressed = [(0x26, "\0"), (0x30, "à"), (0x58, "x"), (0x10, "\0"), (0x41, "A"), (0x25, "\0"),
+               None, (0x28, "\0"), (0x0d, "\r"), (0x5a, "\x1a"), (0x43, "\x03")]
+    events = []
+    for key in pressed:
+        events += [(False, 0, "\0")] if key is None else [(True, *key), (False, *key)]
+    monkeypatch.setattr(console, "_console_event", lambda: events.pop(0))
+    # msvcrt.getwch gives an arrow key as the prefix and keeps the second code in its own
+    # buffer, which msvcrt.kbhit does not see, so a reader that used them would give `à`.
+    crt = list("\xe0H")
+    monkeypatch.setitem(sys.modules, "msvcrt", types.SimpleNamespace(
+        getwch=lambda: crt.pop(0), kbhit=lambda: False, ungetwch=lambda char: None))
+    found = [console._windows_key() for _ in range(7)]
+    assert found == ["up", "à", "x", "A", "down", "enter", "eof"]
+    with pytest.raises(KeyboardInterrupt):
+        console._windows_key()
+    assert crt == list("\xe0H")
 
 
 def terminal_console(monkeypatch, **options):
@@ -585,6 +625,82 @@ def test_keys_gives_the_terminal_back_in_the_mode_it_had(monkeypatch):
     os.close(slave)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows reads keys with ReadConsoleInputW")
+def test_a_byte_left_from_an_earlier_question_is_not_the_first_key(monkeypatch):
+    import pty
+    master, slave = pty.openpty()
+    monkeypatch.setattr(sys, "stdin", open(slave, closefd=False))
+    monkeypatch.setattr(console, "_unread", b"x")
+    with console.keys() as key:
+        # The terminal shows no key in this mode, so nothing waits to be read on `master`.
+        os.write(master, b"q")
+        assert key() == "q"
+    os.close(master)
+    os.close(slave)
+
+
+STOPPED_CHILD = """
+import signal, sys
+from pdt import console
+if sys.argv[1] == "ignore":
+    signal.signal(signal.SIGTSTP, signal.SIG_IGN)
+with console.keys() as key:
+    sys.stdout.write("ready\\n")
+    sys.stdout.flush()
+    for _ in range(2):
+        sys.stdout.write(f"key {key()}\\n")
+        sys.stdout.flush()
+sys.stdout.write(f"after {signal.getsignal(signal.SIGTSTP).name}\\n")
+"""
+
+
+def read_until(fd, text):
+    """What the terminal shows on `fd` up to and including `text`."""
+    import select
+    shown = b""
+    while text.encode() not in shown:
+        assert select.select([fd], [], [], 10)[0], shown
+        shown += os.read(fd, 1024)
+    return shown.decode()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no Ctrl+Z to stop a process")
+@pytest.mark.parametrize("disposition", ["default", "ignore"])
+def test_ctrl_z_gives_the_terminal_back_and_fg_takes_it_again(disposition):
+    import pty
+    import signal
+    import termios
+    master, slave = pty.openpty()
+    # Its own process group, with a parent in another group of the session, so that
+    # SIGTSTP stops it.
+    child = subprocess.Popen([sys.executable, "-c", STOPPED_CHILD, disposition], stdin=slave,
+                             stdout=slave, stderr=slave, process_group=0)
+    try:
+        read_until(master, "ready")
+        assert not termios.tcgetattr(slave)[3] & termios.ICANON
+        os.kill(child.pid, signal.SIGTSTP)
+        if disposition == "default":
+            _, status = os.waitpid(child.pid, os.WUNTRACED)
+            assert os.WIFSTOPPED(status)
+            assert termios.tcgetattr(slave)[3] & termios.ICANON
+            read_until(master, "\x1b[?25h")
+            os.kill(child.pid, signal.SIGCONT)
+            read_until(master, "key resumed")
+            assert not termios.tcgetattr(slave)[3] & termios.ICANON
+            os.write(master, b"q")
+            assert "\x1b[?25h" not in read_until(master, "after SIG_DFL")
+        else:
+            os.write(master, b"aq")
+            shown = read_until(master, "after SIG_IGN")
+            assert "key a" in shown and "key q" in shown and "\x1b[?25h" not in shown
+        assert child.wait(10) == 0
+        assert termios.tcgetattr(slave)[3] & termios.ICANON
+    finally:
+        child.kill()
+        os.close(master)
+        os.close(slave)
+
+
 @pytest.mark.parametrize("stdin,stdout,menu", [(True, True, True), (True, False, False),
                                                (False, True, False)])
 def test_a_menu_needs_a_real_terminal_for_the_input_and_the_output(monkeypatch, stdin, stdout, menu):
@@ -594,6 +710,13 @@ def test_a_menu_needs_a_real_terminal_for_the_input_and_the_output(monkeypatch, 
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: stdin))
     assert console.can_menu() is menu
     assert console._at_terminal() is menu
+
+
+@pytest.mark.parametrize("width,menu", [(19, False), (20, True)])
+def test_a_terminal_narrower_than_20_columns_gets_no_menu(monkeypatch, width, menu):
+    terminal_console(monkeypatch, width=width)
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+    assert console.can_menu() is menu
 
 
 @pytest.mark.parametrize("password,shown", [(False, "us-a\b \bwest 1\b \b\b \b1\n"), (True, "\n")])

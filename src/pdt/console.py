@@ -617,55 +617,61 @@ def _at_terminal() -> bool:
 
 def can_menu() -> bool:
     """True when a question can show a menu the user moves through with the arrow keys:
-    the input is a terminal, and the output is a terminal that can move its cursor.
-    Otherwise the question prints numbered lines and reads a typed answer."""
-    return _at_terminal() and not _console.is_dumb_terminal
+    the input is a terminal, and the output is a terminal at least 20 columns wide that can
+    move its cursor. Otherwise the question prints numbered lines and reads a typed answer."""
+    return _at_terminal() and not _console.is_dumb_terminal and _console.width >= 20
 
 
 POSIX_KEYS = {b"\r": "enter", b"\n": "enter", b" ": "space", b"\x1b[A": "up", b"\x1bOA": "up",
               b"\x1b[B": "down", b"\x1bOB": "down", b"\x7f": "backspace", b"\x08": "backspace",
               b"\x15": "clear", b"\x17": "word", b"\x04": "eof"}
-WINDOWS_KEYS = {"\r": "enter", " ": "space", "\x00H": "up", "\xe0H": "up", "\x00P": "down",
-                "\xe0P": "down", "\x08": "backspace", "\x1a": "eof"}
+# The keys of the Windows console by virtual-key code: VK_UP, VK_DOWN, VK_RETURN, VK_SPACE,
+# VK_BACK.
+WINDOWS_KEYS = {0x26: "up", 0x28: "down", 0x0d: "enter", 0x20: "space", 0x08: "backspace"}
+# The seconds to wait for the byte after Esc. The Esc key alone sends Esc and no more.
+ESC_WAIT = 0.05
+# The seconds to wait for each later byte of a sequence after Esc and `[` or `O`, which a
+# slow SSH connection can bring in a separate read.
+SEQUENCE_WAIT = 0.5
 
 
 # The bytes that _posix_key read after the end of one key. They start the next key.
 _unread = b""
 
 
-def _next_byte(fd: int, wait: bool) -> bytes:
-    """The next byte of the input, or b"" at its end. With `wait` false it is also b""
-    when no byte comes at once, as after the Esc key, which sends Esc alone."""
+def _next_byte(fd: int, wait: float | None) -> bytes:
+    """The next byte of the input, or b"" at its end. With `wait` in seconds it is also b""
+    when no byte comes in that time."""
     global _unread
     if _unread:
         byte, _unread = _unread[:1], _unread[1:]
         return byte
-    if not wait:
+    if wait is not None:
         import select
-        if not select.select([fd], [], [], 0.05)[0]:
+        if not select.select([fd], [], [], wait)[0]:
             return b""
     return os.read(fd, 1)
 
 
 def _escape_sequence(fd: int) -> bytes:
     """The bytes of one key that starts with Esc. Esc and `[` start a sequence of bytes
-    0x30-0x3f, then bytes 0x20-0x2f, then one last byte 0x40-0x7e. Esc and `O` have one more
+    0x30-0x3f, then bytes 0x20-0x2f, then one last byte 0x40-0x7e. Esc and `O` have one last
     byte. Esc and another byte is that key with Alt. A byte that cannot go on a sequence
     ends it and starts the next key."""
     global _unread
-    key = b"\x1b" + _next_byte(fd, False)
-    if key == b"\x1bO":
-        return key + _next_byte(fd, False)
-    if key != b"\x1b[":
+    key = b"\x1b" + _next_byte(fd, ESC_WAIT)
+    if key not in (b"\x1b[", b"\x1bO"):
         return key
-    byte = _next_byte(fd, False)
-    for low, high in ((0x30, 0x3f), (0x20, 0x2f)):
-        while byte and low <= byte[0] <= high:
+    byte = _next_byte(fd, SEQUENCE_WAIT)
+    if key == b"\x1b[":
+        for low, high in ((0x30, 0x3f), (0x20, 0x2f)):
+            while byte and low <= byte[0] <= high:
+                key += byte
+                byte = _next_byte(fd, SEQUENCE_WAIT)
+        if key == b"\x1b[" and byte == b"[":
+            # A function key of the Linux console: Esc, `[`, `[`, and one letter.
             key += byte
-            byte = _next_byte(fd, False)
-    if key == b"\x1b[" and byte == b"[":
-        # A function key of the Linux console: Esc, `[`, `[`, and one letter.
-        return key + byte + _next_byte(fd, False)
+            byte = _next_byte(fd, SEQUENCE_WAIT)
     if byte and 0x40 <= byte[0] <= 0x7e:
         return key + byte
     _unread = byte + _unread
@@ -674,7 +680,7 @@ def _escape_sequence(fd: int) -> bytes:
 
 def _posix_key(fd: int) -> str:
     global _unread
-    key = _next_byte(fd, True)
+    key = _next_byte(fd, None)
     if key == b"":
         raise EOFError
     if key == b"\x1b":
@@ -682,10 +688,11 @@ def _posix_key(fd: int) -> str:
         if key == b"\x1b\x1b":
             # Alt with a key that sends its own sequence, such as Alt+Up in iTerm2.
             _escape_sequence(fd)
-    elif key[0] >= 0xc0:
-        # The first byte of a UTF-8 character tells how many bytes follow it.
+    elif 0xc2 <= key[0] <= 0xf4:
+        # The first byte of a UTF-8 character tells how many bytes follow it. No character
+        # starts with another byte from 0x80 up.
         for _ in range(1 if key[0] < 0xe0 else 2 if key[0] < 0xf0 else 3):
-            byte = _next_byte(fd, True)
+            byte = _next_byte(fd, None)
             if not (byte and 0x80 <= byte[0] <= 0xbf):
                 _unread = byte + _unread
                 return ""
@@ -697,62 +704,115 @@ def _posix_key(fd: int) -> str:
     return key.decode(errors="ignore")
 
 
+def _console_event() -> tuple[bool, int, str]:
+    """The next input event of the Windows console: whether it is a key press, its
+    virtual-key code, and its character ("\\0" when it has none). An arrow key is one event
+    with its own code, so it never looks like a typed character such as `à`. The console
+    mode is 0 while it reads, as in msvcrt.getwch, so Ctrl+C is the character "\\x03"."""
+    import ctypes
+    from ctypes import wintypes
+
+    class KeyEvent(ctypes.Structure):
+        _fields_ = [("down", wintypes.BOOL), ("repeat", wintypes.WORD),
+                    ("code", wintypes.WORD), ("scan", wintypes.WORD),
+                    ("char", wintypes.WCHAR), ("state", wintypes.DWORD)]
+
+    class Record(ctypes.Structure):
+        # KEY_EVENT_RECORD is the largest member of the event union, so it gives its size.
+        _fields_ = [("type", wintypes.WORD), ("event", KeyEvent)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetStdHandle.restype = wintypes.HANDLE
+    handle = kernel32.GetStdHandle(-10)
+    mode = wintypes.DWORD()
+    record = Record()
+    count = wintypes.DWORD()
+    kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+    kernel32.SetConsoleMode(handle, 0)
+    try:
+        if not kernel32.ReadConsoleInputW(handle, ctypes.byref(record), 1,
+                                          ctypes.byref(count)) or count.value == 0:
+            raise EOFError
+    finally:
+        kernel32.SetConsoleMode(handle, mode)
+    # KEY_EVENT is 1.
+    down = record.type == 1 and bool(record.event.down)
+    return down, record.event.code, record.event.char
+
+
 def _windows_key() -> str:
-    import msvcrt
-    key = msvcrt.getwch()
-    # An arrow key gives a prefix and a code at once. The letter `à` is the same as one
-    # prefix, and the character after it is then the next key.
-    if key in ("\x00", "\xe0") and msvcrt.kbhit():
-        code = msvcrt.getwch()
-        if key + code in WINDOWS_KEYS:
-            key += code
-        else:
-            msvcrt.ungetwch(code)
-    if key == "\x03":
-        raise KeyboardInterrupt
-    if key in WINDOWS_KEYS:
-        return WINDOWS_KEYS[key]
-    return key if len(key) == 1 and key >= " " else ""
+    while True:
+        down, code, char = _console_event()
+        if not down:
+            continue
+        if code in WINDOWS_KEYS:
+            return WINDOWS_KEYS[code]
+        if char == "\x03":
+            raise KeyboardInterrupt
+        if char == "\x1a":
+            return "eof"
+        # A key with no character, such as Shift or Left, is no key.
+        if char != "\0":
+            return char if char >= " " else ""
 
 
 @contextmanager
-def keys(resumed: Callable[[], None] | None = None) -> Iterator[Callable[[], str]]:
+def keys() -> Iterator[Callable[[], str]]:
     """A function that waits for one key and returns its name: `up`, `down`, `space`,
     `enter`, `backspace`, `clear` (Ctrl+U), `word` (Ctrl+W), or `eof` (Ctrl+D, or Ctrl+Z on
     Windows). Another key gives its one character, or "" when it has none. The function
     raises EOFError when the input ends, and Ctrl+C raises KeyboardInterrupt.
 
     On macOS and Linux, Ctrl+Z gives the shell the terminal as pdt found it, with the cursor
-    shown, and `fg` calls `resumed`."""
+    shown, and after `fg` the function returns `resumed`. A parent that ignores Ctrl+Z, or
+    that set its own handler, keeps it."""
     if sys.platform == "win32":
         yield _windows_key
         return
+    import select
     import signal
     import termios
     import tty
+    global _unread
+    _unread = b""
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
+    # A pipe that gets one byte after `fg`, so that a wait for a key ends then.
+    resume_read, resume_write = os.pipe()
 
     def stop(signum, frame):
+        # The signal can come while the main thread writes to the output, so this writes
+        # to the file descriptor and draws nothing.
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        _console.show_cursor(True)
+        os.write(_console.file.fileno(), b"\x1b[?25h")
         signal.signal(signal.SIGTSTP, signal.SIG_DFL)
         os.kill(os.getpid(), signal.SIGTSTP)
         # The process stops at the line above, and goes on from here after `fg`.
         signal.signal(signal.SIGTSTP, stop)
         tty.setcbreak(fd, termios.TCSANOW)
-        if resumed is not None:
-            resumed()
+        os.write(resume_write, b"r")
+
+    def key() -> str:
+        if not _unread and resume_read in select.select([fd, resume_read], [], [])[0]:
+            os.read(resume_read, 1)
+            return "resumed"
+        return _posix_key(fd)
 
     main = threading.current_thread() is threading.main_thread()
-    before = signal.signal(signal.SIGTSTP, stop) if main else None
-    tty.setcbreak(fd, termios.TCSANOW)
+    handled = main and signal.getsignal(signal.SIGTSTP) == signal.SIG_DFL
     try:
-        yield partial(_posix_key, fd)
+        if handled:
+            signal.signal(signal.SIGTSTP, stop)
+        try:
+            tty.setcbreak(fd, termios.TCSANOW)
+            yield key
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        if main:
-            signal.signal(signal.SIGTSTP, before)
+        if handled:
+            signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+        os.close(resume_read)
+        os.close(resume_write)
 
 
 def _menu_line(marker: str, label: str, detail: str = "") -> Text:
@@ -799,20 +859,18 @@ def _menu(labels: list[str], details: list[str], on: set[int] | None, at: int) -
         _console.redraw(drawn, lines)
         drawn = len(lines)
 
-    def draw_below() -> None:
-        """After `fg`, the shell's lines are under the menu, so draw a new menu under them."""
-        nonlocal drawn
-        drawn = 0
-        _console.show_cursor(False)
-        draw()
-
     _console.show_cursor(False)
     try:
-        with keys(draw_below) as key:
+        with keys() as key:
             while True:
                 draw()
                 pressed = key()
-                if pressed == "up":
+                if pressed == "resumed":
+                    # After `fg`, the shell's lines are under the menu, so draw a new menu
+                    # under them.
+                    drawn = 0
+                    _console.show_cursor(False)
+                elif pressed == "up":
                     at = max(0, at - 1)
                 elif pressed == "down":
                     at = min(len(labels) - 1, at + 1)
