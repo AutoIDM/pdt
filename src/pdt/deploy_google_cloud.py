@@ -89,7 +89,7 @@ from pdt import regions
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
-    ensure_image, fail, fetch_json, gather_secrets, image_action, run_build,
+    ensure_image, fail, fail_command, fetch_json, gather_secrets, image_action, run_build,
     run_main, run_secrets, secret_contents, ssh_build_args, store_cost_label, store_kept_line,
     store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
@@ -189,9 +189,7 @@ def run_quiet(*args: str, data: str | None = None, slow: str = "") -> str:
     proc = gcloud(*args, data=data, slow=slow)
     if proc.returncode == 0:
         return proc.stdout
-    console.say(console.escape(proc.stderr.strip()))
-    command = "pdt gcloud " + " ".join(args[:4])
-    fail(f"{console.value(command)} failed; fix the problem above and re-run the deploy")
+    fail_command(["pdt", "gcloud", *args], proc)
 
 
 def describe_json(*args: str):
@@ -211,13 +209,9 @@ def read_json_or_none(*args: str):
     proc = gcloud(*args, "--format=json")
     if proc.returncode == 0:
         return json.loads(proc.stdout or "null")
-    detail = proc.stderr.strip()
-    if not_found(detail):
+    if not_found(proc.stderr):
         return None
-    if detail:
-        console.say(console.escape(detail))
-    command = "pdt gcloud " + " ".join(args[:4])
-    fail(f"{console.value(command)} failed while checking resource ownership")
+    fail_command(["pdt", "gcloud", *args, "--format=json"], proc)
 
 
 def list_json(*args: str) -> list:
@@ -283,7 +277,7 @@ def ensure_credentials() -> None:
         fail(f"log in first: {console.value(f'{GCLOUD} auth login')}")
     login = subprocess.run([GCLOUD, "auth", "login"])
     if login.returncode != 0:
-        fail(f"{console.value('gcloud auth login')} failed")
+        fail_command(["pdt", "gcloud", "auth", "login"], login)
 
 
 def preflight(app: dict, project: str, assume_yes: bool) -> str:
@@ -402,8 +396,9 @@ def relogin(assume_yes: bool) -> int:
     console.status("Revoking the cached Google Cloud logins on this computer...")
     subprocess.run([GCLOUD, "auth", "revoke", "--all"], stdin=subprocess.DEVNULL,
                    capture_output=True, text=True)
-    if subprocess.run([GCLOUD, "auth", "login"]).returncode != 0:
-        fail(f"{console.value('pdt gcloud auth login')} failed")
+    login = subprocess.run([GCLOUD, "auth", "login"])
+    if login.returncode != 0:
+        fail_command(["pdt", "gcloud", "auth", "login"], login)
     account = subprocess.run(
         [GCLOUD, "auth", "list", "--filter=status:ACTIVE", "--format=value(account)"],
         stdin=subprocess.DEVNULL, capture_output=True, text=True).stdout.strip()
@@ -650,25 +645,24 @@ def cloud_build_image(stage: Path, image: str, project: str, region: str,
     (stage / ".gcloudignore").write_text("/.gcloudignore\n/cloudbuild.json\n")
     build_config = stage / "cloudbuild.json"
     build_config.write_text(json.dumps(cloud_build_config(image, bucket)))
-    proc = subprocess.run(
-        [GCLOUD, "builds", "submit", str(stage), "--config", str(build_config),
-         "--region", region, "--project", project,
-         "--service-account", f"projects/{project}/serviceAccounts/{builder}",
-         "--gcs-source-staging-dir", f"gs://{bucket}/source"],
-        stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    args = ["builds", "submit", str(stage), "--config", str(build_config),
+            "--region", region, "--project", project,
+            "--service-account", f"projects/{project}/serviceAccounts/{builder}",
+            "--gcs-source-staging-dir", f"gs://{bucket}/source"]
+    proc = subprocess.run([GCLOUD, *args], stdin=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                          text=True)
     if proc.returncode == 0:
         return
-    console.say(console.escape(proc.stderr.strip()))
     roles = missing_submit_roles(proc.stderr)
     if roles:
+        console.say(console.escape(proc.stderr.strip()))
         fail("Cloud Build refused the build for your Google account; "
              + "; ".join(f"add the role {console.value(role)} for your account on "
                          f"{console.escape(kind)} "
                          f"{console.value(builder if kind == 'service account' else project)}"
                          for role, kind in roles)
              + ", then run the deploy again")
-    fail(f"the Cloud Build build of {console.value(image)} failed; fix the problem above "
-         "and run the deploy again")
+    fail_command(["pdt", "gcloud", *args], proc)
 
 
 def other_profile(app: dict, project: str, region: str) -> str:
