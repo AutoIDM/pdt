@@ -47,6 +47,18 @@ def test_the_server_command_runs_the_script_with_uv(project):
     assert command[4:] == ["--port", "9000"]
 
 
+def test_the_probe_asks_the_up_url_and_counts_any_answer(monkeypatch):
+    asked = []
+
+    def fake_urlopen(url, timeout):
+        asked.append(url)
+        raise gui_cli.urllib.error.HTTPError(url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(gui_cli.urllib.request, "urlopen", fake_urlopen)
+    assert gui_cli.is_up(8765) is True
+    assert asked == ["http://127.0.0.1:8765/up/"]
+
+
 def test_wait_up_gives_up_when_the_server_exits(monkeypatch):
     monkeypatch.setattr(gui_cli, "is_up", lambda port: False)
     assert gui_cli.wait_up(FakeProc(exits=True), 8765, timeout=5) is False
