@@ -1546,10 +1546,11 @@ def destroy(app: dict, assume_yes: bool) -> int:
                            if run_account_owned(found) and email not in accounts
                            and not unmanaged_app_resource and not incomplete
                            and not secret_unread]
-        # The read grants go with each account destroy deletes; an account that stays, such as
-        # a shared one or the one a job of this app in another region runs as, keeps them.
+        # The read grants go with each account destroy deletes, on every folder, this app's own
+        # too (another app may have run as this account and read it); an account that stays,
+        # such as a shared one or the one a job of this app in another region runs as, keeps them.
         revoke_reads = [(email, other) for email in (delete_accounts if bucket_present else [])
-                        for other in held_reads(bucket, email, name)]
+                        for other in held_reads(bucket, email, "")]
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)

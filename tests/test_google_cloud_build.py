@@ -622,6 +622,22 @@ def test_destroy_removes_the_read_grants_of_each_account_it_deletes(project, mon
     assert reads == [("warehouse", OWN)]
 
 
+def test_destroy_removes_a_read_grant_on_the_apps_own_folder(project, monkeypatch):
+    fake = destroy_fake(builder=False)
+    fake.found[("iam", "service-accounts", "list")] = [
+        {"email": OWN, "displayName": "pdt job runner report"}]
+    fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    fake.found[("storage", "managed-folders", "list")] = [{"name": "report/"}]
+    fake.found[("storage", "managed-folders", "get-iam-policy")] = {"bindings": [
+        {"role": google.READ_ROLE, "members": [f"serviceAccount:{OWN}"]}]}
+    app = destroy_app(project, monkeypatch, fake)
+    reads = []
+    monkeypatch.setattr(google, "revoke_store_read", lambda *args: reads.append(args[1:]))
+    assert google.destroy(app, True) == 0
+    assert [call[3] for call in fake.ran("iam", "service-accounts", "delete")] == [OWN]
+    assert reads == [("report", OWN)]
+
+
 def test_a_deploy_with_storage_off_removes_the_read_grants_it_made(project, monkeypatch, capsys):
     fake = FakeGcloud(found={
         ("run", "jobs", "describe"): run_item("pdt-report", "us-central1", OWN),
