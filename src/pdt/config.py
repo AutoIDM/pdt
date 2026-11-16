@@ -446,8 +446,11 @@ def save_app_key(app: dict, key: str, value, section: str | None = None) -> Path
     block when the file has one, else at the top level.
 
     Edits the text rather than rewriting the yaml, so the user's comments survive,
-    and holds the same lock and atomic replace as `save_platform_key`.
+    and holds the same lock and atomic replace as `save_platform_key`. When the edit of the
+    block would change anything besides that key, as with a value on the next line, the key
+    goes at the top level instead.
     """
+    import yaml
     path = app_file(app["dir"])
     if keep_unsaved(key, value):
         return path
@@ -460,8 +463,19 @@ def save_app_key(app: dict, key: str, value, section: str | None = None) -> Path
         existing = next((i for i, line in enumerate(lines)
                          if not line.startswith((" ", "\t")) and line.split("#")[0].strip()
                          .startswith(f"{key}:")), None)
+        edited = None
         if start is not None:
-            _set_block_key(lines, start, key, text)
+            edited = list(lines)
+            _set_block_key(edited, start, key, text)
+            expected = yaml.safe_load("\n".join(lines)) or {}
+            expected[section] = {**(expected[section] or {}), key: value}
+            try:
+                if yaml.safe_load("\n".join(edited)) != expected:
+                    edited = None
+            except yaml.YAMLError:
+                edited = None
+        if edited is not None:
+            lines = edited
         elif existing is not None:
             lines[existing] = f"{key}: {text}"
         else:
@@ -473,10 +487,11 @@ def save_app_key(app: dict, key: str, value, section: str | None = None) -> Path
 def _set_block_key(lines: list[str], start: int, key: str, text: str) -> None:
     """Set `key` in the indented block under the line `start`, keeping its indent."""
     end = start + 1
-    while end < len(lines) and (lines[end].startswith((" ", "\t")) or lines[end].strip() == ""):
+    while end < len(lines) and (lines[end].startswith((" ", "\t", "#")) or lines[end].strip() == ""):
         end += 1
     block = range(start + 1, end)
-    existing = next((i for i in block if lines[i].strip().startswith(f"{key}:")), None)
+    existing = next((i for i in block if lines[i].strip().startswith(
+        (f"{key}:", f'"{key}":', f"'{key}':"))), None)
     if existing is not None:
         lines[existing] = f"{_indent(lines[existing])}{key}: {text}"
     else:

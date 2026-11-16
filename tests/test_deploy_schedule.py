@@ -106,7 +106,30 @@ def test_a_job_section_with_no_schedule_gets_it(project):
                                                 '  schedule: "daily"\n')
 
 
-def test_a_null_schedule_in_a_one_line_job_section_still_takes_the_saved_one(project):
-    add_app(project, "my-report", "job: {schedule: null}\n")
+@pytest.mark.parametrize("text, saved", [
+    ("job:\n# choose later\n  schedule: null\n", 'job:\n# choose later\n  schedule: "daily"\n'),
+    ('job:\n  "schedule": null\n  timezone: Etc/UTC\n',
+     'job:\n  schedule: "daily"\n  timezone: Etc/UTC\n'),
+    ("job:\n  timezone: Etc/UTC\n  'schedule': null\n",
+     'job:\n  timezone: Etc/UTC\n  schedule: "daily"\n'),
+])
+def test_the_schedule_replaces_the_null_one_in_the_job_section(project, text, saved):
+    folder = add_app(project, "my-report", text)
     assert deploy.choose_schedule(merged_app("my-report"), True) == ""
+    assert (folder / "pdt.yml").read_text() == saved
+    assert merged_app("my-report")["schedule"] == "daily"
+
+
+@pytest.mark.parametrize("text", [
+    "job: {schedule: null}\n",
+    "job:\n  schedule:\n    null\n",
+    "job:\n  timezone: >-\n    Etc/UTC\n",
+])
+def test_a_job_section_that_a_text_edit_would_break_gets_the_schedule_at_the_top_level(
+        project, text):
+    folder = add_app(project, "my-report", text)
+    before = yaml.safe_load(text)
+    assert deploy.choose_schedule(merged_app("my-report"), True) == ""
+    after = yaml.safe_load((folder / "pdt.yml").read_text())
+    assert after == {**before, "schedule": "daily"}
     assert merged_app("my-report")["schedule"] == "daily"
