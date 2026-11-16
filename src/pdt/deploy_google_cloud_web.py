@@ -787,18 +787,24 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if current is not None and not delete_service:
             console.note(f"Cloud Run service {console.value(service)} is not managed by PDT; "
                          "keeping it")
-        jobs = [item for item in gc.list_json("run", "jobs", "list", "--project", project)
-                if gc.managed_by_pdt(item)]
-        other_services = [other for other in gc.pdt_services(project) if other != (service, region)]
-        # The account, the secret, and the storage grants are the project's, so the app in
-        # another region still uses them.
-        elsewhere = [other for other in other_services if other[0] == service]
+        jobs, jobs_missing = gc.cloud_run_list(project, "jobs")
+        jobs = [item for item in jobs if gc.managed_by_pdt(item)]
+        services, services_missing = gc.cloud_run_list(project, "services")
+        other_services = [item for item in services if gc.managed_by_pdt(item)
+                          and gc.run_job_identity(item) != (service, region)]
+        incomplete = jobs_missing or services_missing
+        # The account, the secret, its access, and the storage grants are the project's, so the
+        # app in another region still uses them, through the accounts it runs as.
+        elsewhere = [item for item in [*jobs, *other_services]
+                     if gc.run_job_identity(item)[0] == service]
+        keep_account = incomplete or sa in {gc.run_account(item) for item in elsewhere}
         account = gc.service_account_or_none(project, sa)
-        delete_account = service_account_owned(account, name) and not elsewhere
+        delete_account = service_account_owned(account, name) and not keep_account
         secret = gc.read_json_or_none("secrets", "describe", sid, "--project", project)
         secret_owned = gc.managed_by_pdt(secret)
-        delete_secret = (secret_owned and not elsewhere
-                         and service not in [gc.run_job_identity(item)[0] for item in jobs])
+        delete_secret = secret_owned and not elsewhere and not incomplete
+        revoke_secret = ([] if delete_secret or not secret_owned or keep_account
+                         else gc.secret_roles(project, sid, sa))
         if secret is not None and not secret_owned:
             console.note(f"Secret Manager secret {console.value(sid)} is not managed by PDT; "
                          "keeping it")
@@ -813,7 +819,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_repo = gc.managed_by_pdt(repository) and not other_images
         delete_image = any(gc.image_name(item) == name for item in images) and not delete_repo
         # The builder and the build bucket go with the last of the project's jobs and web apps.
-        last_app = not jobs and not other_services
+        last_app = not jobs and not other_services and not incomplete
         builder = gc.builder_email(project)
         builder_account = gc.service_account_or_none(project, builder)
         builds = gc.build_bucket(project)
@@ -823,16 +829,22 @@ def destroy(app: dict, assume_yes: bool) -> int:
         store = gc.deployer_store(project, name) if app["storage"] else None
         bucket_present = gc.read_json_or_none("storage", "buckets", "describe",
                                               f"gs://{bucket}") is not None
-        revoke_folder = (bucket_present and not elsewhere
+        revoke_folder = (bucket_present and not keep_account
                          and gc.folder_grant_exists(bucket, name, sa))
-        revoke_bucket = (bucket_present and not elsewhere
+        revoke_bucket = (bucket_present and not keep_account
                          and gc.bucket_grant_exists(bucket, name, sa))
-        revoke_reads = held_reads(bucket, sa, name) if bucket_present and not elsewhere else []
+        revoke_reads = held_reads(bucket, sa, name) if bucket_present and not keep_account else []
 
+    if incomplete:
+        console.note(f"The list of Cloud Run jobs and services in other regions is incomplete "
+                     f"({console.escape(incomplete)}); keeping what apps share across regions")
     actions = []
     if revoke_folder or revoke_bucket:
         actions.append(console.Markup(f"remove {console.value(sa)} write access to "
                                       f"{console.value(f'{bucket}/{name}/')}"))
+    if revoke_secret:
+        actions.append(console.Markup(f"remove {console.value(sa)} access to secret "
+                                      f"{console.value(sid)}"))
     for other in revoke_reads:
         actions.append(console.Markup(f"remove {console.value(sa)} read access to "
                                       f"{console.value(f'{bucket}/{other}/')}"))
@@ -854,8 +866,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
     kept = []
     if current is not None and not delete_service:
         kept.append(f"Cloud Run service {console.value(service)}")
-    for _, other_region in elsewhere:
-        kept.append(f"Cloud Run service {console.value(service)} ({console.value(other_region)})")
+    for item in elsewhere:
+        kind = "job" if item in jobs else "service"
+        kept.append(f"Cloud Run {kind} {console.value(service)} "
+                    f"({console.value(gc.run_job_identity(item)[1])})")
     if secret is not None and not delete_secret:
         kept.append(f"Secret Manager secret {console.value(sid)}")
     if account is not None and not service_account_owned(account, name):
@@ -864,6 +878,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
         kept.append(f"service account {console.value(sa)}")
     if repository is not None and not delete_repo:
         kept.append(f"Artifact Registry repository {console.value(repo)} (shared)")
+    if builder_account is not None and not delete_builder:
+        kept.append(f"service account {console.value(builder)}")
+    if builds_bucket is not None and not delete_builds:
+        kept.append(f"bucket {console.value(builds)}")
     if bucket_present and store is not None:
         kept.append(store_kept_line(f"bucket {console.value(bucket)}", store.usage()[0], name))
     if not actions:
@@ -884,6 +902,11 @@ def destroy(app: dict, assume_yes: bool) -> int:
         gc.revoke_store_access(bucket, name, sa, revoke_folder, revoke_bucket)
     for other in revoke_reads:
         revoke_store_read(bucket, other, sa)
+    if revoke_secret:
+        console.step(f"removing {console.value(sa)} access to secret {console.value(sid)}")
+        for role in revoke_secret:
+            gc.run_quiet("secrets", "remove-iam-policy-binding", sid, "--project", project,
+                         "--member", f"serviceAccount:{sa}", "--role", role)
     if delete_service:
         console.step(f"deleting Cloud Run service {console.value(service)}")
         gc.run_quiet("run", "services", "delete", service, "--region", region,

@@ -149,6 +149,7 @@ BUILD_SUBMIT_ROLES = (
 )
 
 BILLING_API = "https://cloudbilling.googleapis.com/v1"
+RUN_API = "https://run.googleapis.com/apis"
 # Cloud Run job defaults; the deploy below does not override them.
 JOB_VCPU = 1.0
 JOB_MEMORY_GIB = 0.5
@@ -694,12 +695,46 @@ def refuse_profile_change(app: dict, project: str, region: str, command: str) ->
              f"{console.value(f'pdt {command} {app['name']}')} again")
 
 
-def pdt_services(project: str) -> list[tuple[str, str]]:
-    """The name and region of each Cloud Run service pdt made in the project, in every region:
-    the web apps."""
-    return [run_job_identity(item)
-            for item in list_json("run", "services", "list", "--project", project)
-            if managed_by_pdt(item)]
+def cloud_run_list(project: str, kind: str) -> tuple[list[dict], str]:
+    """Every Cloud Run job or service (`kind` "jobs" or "services") in the project, in every
+    region, and why the list is incomplete, or "" when it is complete. The REST call names the
+    regions that did not answer; `gcloud run ... list` only warns about them."""
+    group = "run.googleapis.com" if kind == "jobs" else "serving.knative.dev"
+    token = run_quiet("auth", "print-access-token").strip()
+    items = []
+    unreachable = []
+    page = ""
+    while True:
+        query = f"?{urllib.parse.urlencode({'continue': page})}" if page else ""
+        req = urllib.request.Request(f"{RUN_API}/{group}/v1/namespaces/{project}/{kind}{query}",
+                                     headers={"Authorization": f"Bearer {token}"})
+        try:
+            data = fetch_json(req, timeout=60) or {}
+        except Exception as exc:
+            return items, f"the list of Cloud Run {kind} failed: {exc}"
+        items.extend(data.get("items") or [])
+        unreachable.extend(data.get("unreachable") or [])
+        page = (data.get("metadata") or {}).get("continue") or ""
+        if not page:
+            break
+    if unreachable:
+        return items, f"no answer from {', '.join(unreachable)}"
+    return items, ""
+
+
+def run_account(item: dict) -> str:
+    """The service account a Cloud Run job or service runs as."""
+    spec = ((item.get("spec") or {}).get("template") or {}).get("spec") or {}
+    if "template" in spec:
+        spec = (spec.get("template") or {}).get("spec") or {}
+    return spec.get("serviceAccountName") or ""
+
+
+def secret_roles(project: str, sid: str, sa: str) -> list[str]:
+    """The roles `sa` holds on secret `sid`."""
+    policy = describe_json("secrets", "get-iam-policy", sid, "--project", project) or {}
+    return [binding.get("role") for binding in policy.get("bindings") or []
+            if f"serviceAccount:{sa}" in (binding.get("members") or [])]
 
 
 # CLEANUP_POLICIES as `gcloud artifacts repositories describe` shows them.
@@ -1226,7 +1261,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         other_regional_jobs = [
             item for item in regional_jobs if run_job_identity(item)[0] != job
         ]
-        project_jobs = list_json("run", "jobs", "list", "--project", project)
+        project_jobs, jobs_missing = cloud_run_list(project, "jobs")
         other_project_jobs = []
         for item in project_jobs:
             item_name, item_region = run_job_identity(item)
@@ -1238,19 +1273,25 @@ def destroy(app: dict, assume_yes: bool) -> int:
             for item in other_project_jobs
             if managed_by_pdt(item) and run_job_identity(item)[0]
         ]
-        services = pdt_services(project)
-        # The secret and the storage grant are the project's, so the app in another region
-        # still uses them.
-        elsewhere = job in other_jobs
-        delete_secret = (secret_owned and not elsewhere
-                         and job not in [service for service, _ in services])
+        services, services_missing = cloud_run_list(project, "services")
+        services = [item for item in services if managed_by_pdt(item)]
+        incomplete = jobs_missing or services_missing
+        # The secret, its access, and the storage grant are the project's, so the app in another
+        # region still uses them, through the accounts it runs as.
+        elsewhere = [item for item in [*other_project_jobs, *services]
+                     if managed_by_pdt(item) and run_job_identity(item)[0] == job]
+        accounts = {run_account(item) for item in elsewhere}
+        delete_secret = secret_owned and not elsewhere and not incomplete
+        revoke_secret = ([] if delete_secret or not secret_owned or incomplete or sa in accounts
+                         else secret_roles(project, sid, sa))
         service_account = service_account_or_none(project, sa)
         bucket = store_bucket(project)
         store = deployer_store(project, name) if app["storage"] else None
         store_present = store is not None and read_json_or_none(
             "storage", "buckets", "describe", f"gs://{bucket}") is not None
-        revoke_folder = store_present and not elsewhere and folder_grant_exists(bucket, name, sa)
-        revoke_bucket = store_present and not elsewhere and bucket_grant_exists(bucket, name, sa)
+        keep_grant = incomplete or sa in accounts
+        revoke_folder = store_present and not keep_grant and folder_grant_exists(bucket, name, sa)
+        revoke_bucket = store_present and not keep_grant and bucket_grant_exists(bucket, name, sa)
         revoke_grant = revoke_folder or revoke_bucket
         unmanaged_app_resource = ((scheduler is not None and not delete_scheduler)
                                   or (run_job is not None and not delete_job))
@@ -1258,21 +1299,28 @@ def destroy(app: dict, assume_yes: bool) -> int:
                        and not unmanaged_app_resource)
         delete_image = bool(app_images) and not delete_repo
         delete_sa = (sa == default_sa and service_account_owned(service_account)
-                     and not other_project_jobs and not unmanaged_app_resource)
+                     and not other_project_jobs and not unmanaged_app_resource
+                     and not incomplete)
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
         builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
         # A web app is a Cloud Run service; it shares the builder and the build bucket.
         last_app = (not other_project_jobs and not services
-                    and not unmanaged_app_resource)
+                    and not unmanaged_app_resource and not incomplete)
         delete_builder = last_app and builder_owned(builder_account)
         delete_builds = last_app and managed_by_pdt(builds_bucket)
 
+    if incomplete:
+        console.note(f"The list of Cloud Run jobs and services in other regions is incomplete "
+                     f"({console.escape(incomplete)}); keeping what apps share across regions")
     actions = []
     if revoke_grant:
         actions.append(console.Markup(f"remove {console.value(sa)} write access to "
                                       f"{console.value(f'{bucket}/{name}/')}"))
+    if revoke_secret:
+        actions.append(console.Markup(f"remove {console.value(sa)} access to secret "
+                                      f"{console.value(sid)}"))
     if delete_scheduler:
         actions.append(console.Markup(f"delete Cloud Scheduler job {console.value(job)}"))
     if delete_job:
@@ -1340,6 +1388,11 @@ def destroy(app: dict, assume_yes: bool) -> int:
 
     if revoke_grant:
         revoke_store_access(bucket, name, sa, revoke_folder, revoke_bucket)
+    if revoke_secret:
+        console.step(f"removing {console.value(sa)} access to secret {console.value(sid)}")
+        for role in revoke_secret:
+            run_quiet("secrets", "remove-iam-policy-binding", sid, "--project", project,
+                      "--member", f"serviceAccount:{sa}", "--role", role)
     if delete_scheduler:
         console.step(f"deleting Cloud Scheduler job {console.value(job)}")
         run_quiet("scheduler", "jobs", "delete", job,
