@@ -315,8 +315,12 @@ def auth_section(web: dict, where: str) -> dict:
 
 
 def app_name_problem(name: str) -> str:
-    if name in ("", ".", "..") or any(c in name for c in "/\\\0") or Path(name).name != name:
-        return f"{name!r} is not an app name; use one folder name with no path separators"
+    # The name goes into cloud access rules (IAM resource patterns, Azure conditions), where
+    # * ? $ { } match or expand to other apps' folders.
+    if (name in ("", ".", "..") or any(c in name for c in "/\\\0*?${}")
+            or Path(name).name != name):
+        return (f"{name!r} is not an app name; use one folder name with no path separators "
+                "and none of * ? $ { }")
     return ""
 
 
@@ -1335,7 +1339,9 @@ def storage_problems(app: dict, storage) -> list[str]:
     for name in dict.fromkeys(names):
         if names.count(name) > 1:
             problems.append(f"storage.read names {name!r} more than once; keep one")
-        if name == app["name"]:
+        if app_name_problem(name) != "":
+            problems.append(f"storage.read: {app_name_problem(name)}")
+        elif name == app["name"]:
             problems.append(f"storage.read names {name!r}, which is this app; "
                             "an app already reads its own folder, so remove the name")
         elif name not in apps:
