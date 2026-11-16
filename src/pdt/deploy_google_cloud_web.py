@@ -74,7 +74,6 @@ APIS = (*(api for api in gc.APIS if api != "cloudscheduler.googleapis.com"),
         "monitoring.googleapis.com")
 DESTROY_APIS = tuple(api for api in gc.DESTROY_APIS if api != "cloudscheduler.googleapis.com")
 IAP_ROLE = "roles/iap.httpsResourceAccessor"
-READ_ROLE = "roles/storage.objectViewer"
 # Service annotations that mark a stopped service: manual scaling with 0 instances.
 SCALING_MODE = "run.googleapis.com/scalingMode"
 MANUAL_COUNT = "run.googleapis.com/manualInstanceCount"
@@ -164,42 +163,6 @@ def iap_changes(current: list[str], wanted: list[str]) -> tuple[list[str], list[
     remove = [member for member in current
               if member not in wanted and member.split(":", 1)[0] in ("domain", "group")]
     return add, remove
-
-
-def read_grant_exists(bucket: str, other: str, sa: str) -> bool:
-    policy = gc.describe_json("storage", "managed-folders", "get-iam-policy",
-                              gc.store_url(bucket, other)) or {}
-    return any(binding.get("role") == READ_ROLE
-               and f"serviceAccount:{sa}" in (binding.get("members") or [])
-               for binding in policy.get("bindings") or [])
-
-
-def held_reads(bucket: str, sa: str, own: str) -> list[str]:
-    """The app folders of the bucket, other than the app's own, on which `sa` holds the read
-    role: what a deploy or a destroy must check, whatever the config says now."""
-    folders = gc.list_json("storage", "managed-folders", "list", f"gs://{bucket}/")
-    names = [str(folder.get("name") or "").rstrip("/") for folder in folders]
-    return [other for other in names if other and other != own
-            and read_grant_exists(bucket, other, sa)]
-
-
-def grant_store_read(bucket: str, other: str, sa: str) -> None:
-    console.step(f"granting {console.value(sa)} read access to "
-                 f"{console.value(f'{bucket}/{other}/')}")
-    # The other app may not have deployed yet; its folder must exist to carry a grant.
-    folder = gc.store_url(bucket, other)
-    if gc.describe_json("storage", "managed-folders", "describe", folder) is None:
-        gc.run_quiet("storage", "managed-folders", "create", folder)
-    gc.run_quiet("storage", "managed-folders", "add-iam-policy-binding",
-                 folder, "--member", f"serviceAccount:{sa}", "--role", READ_ROLE)
-
-
-def revoke_store_read(bucket: str, other: str, sa: str) -> None:
-    console.step(f"removing {console.value(sa)} read access to "
-                 f"{console.value(f'{bucket}/{other}/')}")
-    gc.run_quiet("storage", "managed-folders", "remove-iam-policy-binding",
-                 gc.store_url(bucket, other), "--member", f"serviceAccount:{sa}",
-                 "--role", READ_ROLE)
 
 
 @dataclass
@@ -565,8 +528,11 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         gc.require_managed(described, f"bucket {console.value(bucket)}")
         bucket_exists = described is not None
         # Grants an earlier deploy made that the config no longer names.
-        stale_reads = [other for other in (held_reads(bucket, sa, name) if bucket_exists else [])
-                       if other not in app["storage_read"]]
+        held, unread = gc.held_reads(bucket, sa, name) if bucket_exists else ([], "")
+        if unread:
+            fail(f"reading who may use {console.value(f'{bucket}/{unread}/')} failed; fix the "
+                 "problem above and re-run the deploy")
+        stale_reads = [other for other in held if other not in app["storage_read"]]
         stale_folder = (bucket_exists and not app["storage"]
                         and gc.folder_grant_exists(bucket, name, sa))
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
@@ -705,9 +671,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     if store:
         gc.grant_store_access(bucket, name, sa)
     for other in app["storage_read"]:
-        grant_store_read(bucket, other, sa)
+        gc.grant_store_read(bucket, other, sa)
     for other in stale_reads:
-        revoke_store_read(bucket, other, sa)
+        gc.revoke_store_read(bucket, other, sa)
     if stale_folder:
         gc.revoke_store_access(bucket, name, sa, True, False)
     if secret_state == "create":
@@ -835,13 +801,21 @@ def destroy(app: dict, assume_yes: bool) -> int:
                          and gc.folder_grant_exists(bucket, name, sa))
         revoke_bucket = (bucket_present and not keep_grant
                          and gc.bucket_grant_exists(bucket, name, sa))
-        revoke_reads = ([other for other in held_reads(bucket, sa, name)
-                         if (sa, other) not in pairs]
-                        if bucket_present and not incomplete and not secret_unread else [])
+        held, unread = (gc.held_reads(bucket, sa, name)
+                        if bucket_present and not incomplete and not secret_unread else ([], ""))
+        # An account whose read grants cannot all be read stays, with what it holds.
+        revoke_reads = [] if unread else [other for other in held if (sa, other) not in pairs]
+        delete_account = delete_account and not unread
+        if unread:
+            revoke_folder = revoke_bucket = False
+            revoke_secret = []
 
     if incomplete:
         console.note(f"The list of Cloud Run jobs and services in other regions is incomplete "
                      f"({console.escape(incomplete)}); keeping what apps share across regions")
+    if unread:
+        console.note(f"Reading who may use {console.value(f'{bucket}/{unread}/')} failed; "
+                     f"keeping {console.value(sa)} and its access")
     if revoke_secret is None:
         console.note(f"Reading who may use secret {console.value(sid)} failed; keeping "
                      f"{console.value(sa)} and its access")
@@ -908,7 +882,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if revoke_folder or revoke_bucket:
         gc.revoke_store_access(bucket, name, sa, revoke_folder, revoke_bucket)
     for other in revoke_reads:
-        revoke_store_read(bucket, other, sa)
+        gc.revoke_store_read(bucket, other, sa)
     if revoke_secret:
         console.step(f"removing {console.value(sa)} access to secret {console.value(sid)}")
         for role in revoke_secret:

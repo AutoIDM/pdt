@@ -225,7 +225,7 @@ job:
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `enabled` | `true` or `false`. | `true` | Gives the app its own storage folder. |
-| `read` | A list of names of other apps in the project. | Empty. | Lets this app read the storage folder of each named app. A deployed web app finds each folder as read-only files under `/pdt/storage/<app>/`. A job opens it with `pdt.utils.storage.store(app="<app>")`; for a job, this works with the `azure` provider only. Run `pdt deploy APP` after you change the list. `pdt validate` reports a name that is not an app of the project, the app's own name, and an app with `storage: false`. |
+| `read` | A list of names of other apps in the project. | Empty. | Lets this app read the storage folder of each named app. A deployed web app finds each folder as read-only files under `/pdt/storage/<app>/`. A job opens it with `pdt.utils.storage.store(app="<app>")`; for a job, this works with the `azure` and `google-cloud` providers only. Run `pdt deploy APP` after you change the list. `pdt validate` reports a name that is not an app of the project, the app's own name, and an app with `storage: false`. |
 
 ```yaml
 # dashboard/pdt.yml

@@ -125,12 +125,18 @@ def test_storage_read_names_an_app_of_the_project_and_not_itself(project):
         "report/pdt.yml: storage.read names 'missing', which is not an app of this project"]
 
 
-def test_storage_read_works_with_azure_only(project):
+def test_storage_read_works_with_azure_and_google_cloud_only(project):
     add_app(project, "client1")
     add_app(project, "report", "platform:\n  provider: windows\nstorage:\n  read: [client1]\n")
     assert validate_app("report") == [
-        "report/pdt.yml: storage.read works with the azure provider only, "
+        "report/pdt.yml: storage.read works with the azure and google-cloud providers only, "
         "and this app uses windows; remove the key"]
+    (project / "pdt.yml").write_text("platform:\n  provider: google-cloud\n")
+    add_app(project, "client2", "platform:\n  provider: azure\n")
+    add_app(project, "report", "storage:\n  read: [client1, client2]\n")
+    assert validate_app("report") == [
+        "report/pdt.yml: storage.read names 'client2', which uses the azure provider, "
+        "so its folder is not in the Google Cloud store"]
 
 
 def test_storage_read_needs_the_read_key(project):
