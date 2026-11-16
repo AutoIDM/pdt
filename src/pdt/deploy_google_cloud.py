@@ -730,10 +730,11 @@ def refuse_profile_change(app: dict, project: str, region: str, command: str) ->
 
 
 def cloud_run_list(project: str, kind: str) -> tuple[list[dict], list[str], str]:
-    """Every Cloud Run job or service (`kind` "jobs" or "services") in the project, in every
-    region; the regions that did not answer; and the error that stopped the list, or "". The
-    REST call names the regions that did not answer; `gcloud run ... list` only warns."""
-    group = "run.googleapis.com" if kind == "jobs" else "serving.knative.dev"
+    """Every Cloud Run job, job execution, or service (`kind` "jobs", "executions", or
+    "services") in the project, in every region; the regions that did not answer; and the error
+    that stopped the list, or "". The REST call names the regions that did not answer;
+    `gcloud run ... list` only warns."""
+    group = "serving.knative.dev" if kind == "services" else "run.googleapis.com"
     token = run_quiet("auth", "print-access-token").strip()
     items = []
     unreachable = []
@@ -1153,32 +1154,27 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         if runner != sa and service_account_owned(service_account_or_none(project, runner)):
             other_jobs, other_services, incomplete = remaining_deploys(project, "jobs", job,
                                                                        region)
-            # An execution keeps the account it started with.
-            running = job_exists and any(
-                run_account(execution) == runner
-                and not (execution.get("status") or {}).get("completionTime")
-                for execution in describe_json("run", "jobs", "executions", "list", "--job", job,
-                                               "--region", region, "--project", project) or [])
+            same_app = {run_account(item) for item in [*other_jobs, *other_services]
+                        if run_job_identity(item)[0] == job}
+            held = None
+            if not incomplete:
+                held = (secret_roles(project, sid, runner)
+                        if secret is not None and runner not in same_app else [])
             if incomplete:
                 runner_kept = (f"The list of Cloud Run jobs and services in other regions is "
                                f"incomplete ({console.escape(incomplete)}); keeping "
                                f"{console.value(runner)} and its access")
-            elif running:
-                runner_kept = (f"A run of {console.value(job)} that runs as "
-                               f"{console.value(runner)} has not ended; {console.value(runner)} "
-                               "keeps its access until the next deploy after the run ends")
+            elif held is None:
+                runner_kept = (f"Reading who may use secret {console.value(sid)} failed; "
+                               f"keeping {console.value(runner)} and its access")
             else:
                 accounts, pairs = deploy_uses([*other_jobs, *other_services])
-                same_app = {run_account(item) for item in [*other_jobs, *other_services]
-                            if run_job_identity(item)[0] == job}
                 bucket_present = bucket_exists or (not store and read_json_or_none(
                     "storage", "buckets", "describe", f"gs://{bucket}") is not None)
                 if bucket_present and (runner, name) not in pairs:
                     runner_folder = folder_grant_exists(bucket, name, runner)
                     runner_bucket = bucket_grant_exists(bucket, name, runner)
-                held = (secret_roles(project, sid, runner)
-                        if secret is not None and runner not in same_app else [])
-                runner_secret_roles = held or []
+                runner_secret_roles = held
                 if job_exists:
                     policy = describe_json("run", "jobs", "get-iam-policy", job, "--region",
                                            region, "--project", project) or {}
@@ -1186,10 +1182,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                                         for binding in policy.get("bindings") or []
                                         if f"serviceAccount:{runner}" in
                                         (binding.get("members") or [])]
-                delete_runner = held is not None and runner not in accounts
-                if held is None:
-                    runner_kept = (f"Reading who may use secret {console.value(sid)} failed; "
-                                   f"keeping {console.value(runner)}")
+                delete_runner = runner not in accounts
+        runner_cleanup = bool(runner_folder or runner_bucket or runner_secret_roles
+                              or runner_job_roles or delete_runner)
 
     if runner_kept:
         console.note(runner_kept)
@@ -1230,18 +1225,19 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                                   + f' Cloud Scheduler job {console.value(job)}: '
                                   f'"{console.value(cron)}" ({console.value(timezone)})'
                                   + (" (paused)" if app["pause"] else "")))
+    later = f"after the update, if no run as {console.value(runner)} is in progress"
     if runner_folder or runner_bucket:
         actions.append(console.Markup(f"remove {console.value(runner)} write access to "
-                                      f"{console.value(f'{bucket}/{name}/')}"))
+                                      f"{console.value(f'{bucket}/{name}/')} ({later})"))
     if runner_secret_roles:
         actions.append(console.Markup(f"remove {console.value(runner)} access to secret "
-                                      f"{console.value(sid)}"))
+                                      f"{console.value(sid)} ({later})"))
     if runner_job_roles:
         actions.append(console.Markup(f"remove {console.value(runner)} access to Cloud Run job "
-                                      f"{console.value(job)}"))
+                                      f"{console.value(job)} ({later})"))
     if delete_runner:
         actions.append(console.Markup(f"delete service account {console.value(runner)} "
-                                      "(no other apps use it)"))
+                                      f"(no other apps use it; {later})"))
     cost = cost_estimate(project, region, cron, job, job_exists,
                          1 if values else 0, assume_yes, billing_confirmed,
                          store_usage=usage, currency=regions.local_currency())
@@ -1350,6 +1346,26 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
               "--uri", uri, "--http-method", "POST",
               "--oauth-service-account-email", sa)
     set_scheduler_paused(project, region, job, app["pause"])
+    if runner_cleanup:
+        # An execution keeps the account it started with, so a run of any job that started
+        # as pdt-runner, before or during this deploy, still needs what pdt-runner holds.
+        executions, unanswered, error = cloud_run_list(project, "executions")
+        reasons = ([f"no answer from {', '.join(sorted(set(unanswered)))}"] if unanswered
+                   else []) + ([error] if error else [])
+        running = any(run_account(execution) == runner
+                      and not (execution.get("status") or {}).get("completionTime")
+                      for execution in executions)
+        if reasons:
+            console.note(f"The list of Cloud Run job runs in the project is incomplete "
+                         f"({console.escape('; '.join(reasons))}); keeping "
+                         f"{console.value(runner)} and its access")
+        elif running:
+            console.note(f"A run as {console.value(runner)} has not ended; "
+                         f"{console.value(runner)} keeps its access until the next deploy "
+                         "after the run ends")
+        if reasons or running:
+            runner_folder = runner_bucket = delete_runner = False
+            runner_secret_roles, runner_job_roles = [], []
     if runner_folder or runner_bucket:
         revoke_store_access(bucket, name, runner, runner_folder, runner_bucket)
     member = ("--member", f"serviceAccount:{runner}")

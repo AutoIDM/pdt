@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import add_app
+from conftest import add_app, plain
 from pdt import deploy_google_cloud as google
 from pdt.deploy_common import BUILD_TAG, LIFECYCLE_MODULES, CostEstimate, store_suffix
 
@@ -586,10 +586,16 @@ def moving_fake(*jobs):
     })
 
 
-def moving_app(project, monkeypatch, fake):
+def moving_app(project, monkeypatch, fake, executions_error=""):
+    """The REST lists answer from `fake` and land in its calls as ["rest", kind]."""
     app = deploy_app(project, monkeypatch, fake, cloud=True)
-    monkeypatch.setattr(google, "cloud_run_list", lambda project, kind: (
-        fake.found.get(("run", kind, "list"), []), [], ""))
+
+    def cloud_run_list(project, kind):
+        fake.calls.append(["rest", kind])
+        error = executions_error if kind == "executions" else ""
+        return fake.found.get(("run", kind, "list"), []), [], error
+
+    monkeypatch.setattr(google, "cloud_run_list", cloud_run_list)
     return app
 
 
@@ -658,21 +664,79 @@ def test_a_deploy_after_a_stopped_move_finishes_the_clean_up(project, monkeypatc
             "--quiet"] in fake.calls
 
 
-def test_a_run_in_progress_as_pdt_runner_keeps_it_until_the_next_deploy(project, monkeypatch,
-                                                                       capsys):
-    fake = moving_fake()
-    fake.found[("run", "jobs", "executions", "list")] = [
-        {"spec": {"template": {"spec": {"serviceAccountName": RUNNER}}}, "status": {}}]
-    app = moving_app(project, monkeypatch, fake)
-    revokes = runner_grants(fake, monkeypatch)
-    assert google.deploy(app, True) == 0
+def assert_runner_kept(fake, revokes):
     assert revokes == []
     assert fake.ran("secrets", "remove-iam-policy-binding") == []
     assert fake.ran("run", "jobs", "remove-iam-policy-binding") == []
     assert fake.ran("iam", "service-accounts", "delete") == []
+
+
+@pytest.mark.parametrize("job", ["pdt-report", "pdt-other"])
+def test_a_run_in_progress_as_pdt_runner_keeps_it_until_the_next_deploy(project, monkeypatch,
+                                                                       capsys, job):
+    fake = moving_fake()
+    fake.found[("run", "executions", "list")] = [
+        {"metadata": {"name": f"{job}-abcde"},
+         "spec": {"template": {"spec": {"serviceAccountName": RUNNER}}}, "status": {}},
+        {"metadata": {"name": "pdt-report-fghij"},
+         "spec": {"template": {"spec": {"serviceAccountName": RUNNER}}},
+         "status": {"completionTime": "2026-11-16T10:00:00Z"}}]
+    app = moving_app(project, monkeypatch, fake)
+    revokes = runner_grants(fake, monkeypatch)
+    assert google.deploy(app, True) == 0
+    assert_runner_kept(fake, revokes)
     out = " ".join(capsys.readouterr().out.split())
-    assert (f"A run of pdt-report that runs as {RUNNER} has not ended; {RUNNER} keeps its access "
-            "until the next deploy after the run ends") in out
+    assert (f"A run as {RUNNER} has not ended; {RUNNER} keeps its access until the next deploy "
+            "after the run ends") in out
+
+
+def test_the_runs_are_read_after_the_job_and_its_schedule_change(project, monkeypatch):
+    fake = moving_fake()
+    app = moving_app(project, monkeypatch, fake)
+    assert google.deploy(app, True) == 0
+    order = [call[:3] for call in fake.calls]
+    runs = order.index(["rest", "executions"])
+    assert runs > order.index(["run", "jobs", "deploy"])
+    assert runs > order.index(["scheduler", "jobs", "create"])
+    assert runs < order.index(["run", "jobs", "remove-iam-policy-binding"])
+
+
+def test_an_unreadable_list_of_runs_keeps_pdt_runner_and_its_access(project, monkeypatch,
+                                                                    capsys):
+    fake = moving_fake()
+    app = moving_app(project, monkeypatch, fake,
+                     executions_error="the list of Cloud Run executions failed: HTTP Error 403")
+    revokes = runner_grants(fake, monkeypatch)
+    assert google.deploy(app, True) == 0
+    assert_runner_kept(fake, revokes)
+    out = " ".join(capsys.readouterr().out.split())
+    assert ("The list of Cloud Run job runs in the project is incomplete (the list of Cloud Run "
+            f"executions failed: HTTP Error 403); keeping {RUNNER} and its access") in out
+
+
+def test_an_unreadable_secret_policy_keeps_pdt_runner_and_its_access(project, monkeypatch,
+                                                                     capsys):
+    fake = moving_fake()
+    app = moving_app(project, monkeypatch, fake)
+    revokes = runner_grants(fake, monkeypatch)
+    monkeypatch.setattr(google, "secret_roles", lambda project, sid, sa: None)
+    assert google.deploy(app, True) == 0
+    assert_runner_kept(fake, revokes)
+    assert ["rest", "executions"] not in fake.calls
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"Reading who may use secret pdt-report-env failed; keeping {RUNNER} and its access" in out
+
+
+def test_the_plan_says_the_clean_up_waits_for_runs_as_pdt_runner(project, monkeypatch):
+    fake = moving_fake()
+    app = moving_app(project, monkeypatch, fake)
+    runner_grants(fake, monkeypatch)
+    shown = []
+    monkeypatch.setattr(google, "show_plan", lambda actions, cost: shown.extend(plain(actions)))
+    google.deploy(app, True, plan_only=True)
+    assert ["rest", "executions"] not in fake.calls
+    assert (f"remove {RUNNER} write access to {google.store_bucket('my-project')}/report/ "
+            f"(after the update, if no run as {RUNNER} is in progress)") in shown
 
 
 def test_an_incomplete_list_of_deploys_keeps_pdt_runner_and_its_access(project, monkeypatch,
