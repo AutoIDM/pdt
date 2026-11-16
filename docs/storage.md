@@ -44,7 +44,7 @@ storage:
     - other-app
 ```
 
-A job reads a folder with `pdt.utils.storage`. This works with the `azure` provider only.
+A job reads a folder with `pdt.utils.storage`. This works with the `azure` and `aws` providers only.
 
 ```python
 from pdt.utils import storage

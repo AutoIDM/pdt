@@ -135,12 +135,18 @@ def test_storage_read_refuses_a_name_that_a_cloud_rule_reads_as_a_pattern(projec
             "name with no path separators and none of * ? $ { }") in validate_app("report")
 
 
-def test_storage_read_works_with_azure_only(project):
+def test_storage_read_works_with_azure_and_aws_only(project):
     add_app(project, "client1")
     add_app(project, "report", "platform:\n  provider: windows\nstorage:\n  read: [client1]\n")
     assert validate_app("report") == [
-        "report/pdt.yml: storage.read works with the azure provider only, "
+        "report/pdt.yml: storage.read works with the azure and aws providers only, "
         "and this app uses windows; remove the key"]
+    (project / "pdt.yml").write_text("platform:\n  provider: aws\n")
+    add_app(project, "client2", "platform:\n  provider: azure\n")
+    add_app(project, "report", "storage:\n  read: [client1, client2]\n")
+    assert validate_app("report") == [
+        "report/pdt.yml: storage.read names 'client2', which uses the azure provider, "
+        "so its folder is not in the AWS store"]
 
 
 def test_storage_read_needs_the_read_key(project):

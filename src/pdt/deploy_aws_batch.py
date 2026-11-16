@@ -48,7 +48,7 @@ from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_aws import (
     BUILD_BUCKET_PREFIX, COMMON_ACTIONS, MANAGED_TAGS, RETRIES, SCHEDULE_GROUP,
     aws_schedule_expression,
-    aws_settings, clients_for, cost_estimate, delete_log_group, delete_role,
+    aws_settings, check_policy_size, clients_for, cost_estimate, delete_log_group, delete_role,
     delete_secret, list_price, recent_stream_seconds, run_basis,
     ensure_log_group, ensure_role, ensure_schedule, ensure_secret,
     deployer_store, ensure_session, ensure_store, find_log_group, has_managed_tag, iam_tags,
@@ -891,8 +891,17 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             f"move Batch compute environment {console.value(COMPUTE_ENVIRONMENT.name)} from "
             f"security group {groups} to {console.value(SECURITY_GROUP)}"))
     if store:
+        # Secrets Manager ends each ARN with a dash and six random characters.
+        planned_secret = f"arn:aws:secretsmanager:{region}:{account}:secret:{names['secret']}-XXXXXX"
+        check_policy_size(app["name"], config.storage_read(app),
+                          secret_statements(planned_secret)
+                          + store_statements(bucket, app["name"], config.storage_read(app)))
         actions += store_plan_lines(f"bucket {console.value(bucket)}", store_present,
-                                    names["job_role"], app["name"])
+                                    names["job_role"], app["name"]) + [
+            console.Markup(f"grant {console.value(names['job_role'])} read access to "
+                           f"{console.value(f'{other}/')} in bucket {console.value(bucket)}")
+            for other in config.storage_read(app)
+        ]
     estimate = cost_estimate_for(clients["logs"], names, region, cron, schedule_exists, usage,
                                  regions.local_currency())
     wait_for_permissions()
@@ -916,7 +925,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     if store:
         ensure_store(clients["s3"], bucket, region)
         environment["PDT_STORAGE_URL"] = store_url(bucket, app["name"])
-        grants = store_statements(bucket, app["name"])
+        grants = store_statements(bucket, app["name"], config.storage_read(app))
     execution, job_role, scheduler_role = ensure_roles(
         clients["iam"], names, account, region, secret_arn, grants)
     image = f"{repository_uri}:{names['image_tag']}"
