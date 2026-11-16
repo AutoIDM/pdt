@@ -114,3 +114,30 @@ def test_revoking_store_access_touches_only_the_bindings_that_exist(monkeypatch)
     deploy_google_cloud.revoke_store_access("pdt-data-abc", "hello-world", SA,
                                             folder=False, bucket_binding=True)
     assert [call[:3] for call in calls] == [["storage", "buckets", "remove-iam-policy-binding"]]
+
+
+def test_the_read_grants_are_found_on_the_other_folders(monkeypatch):
+    held = {"role": deploy_google_cloud.READ_ROLE, "members": [f"serviceAccount:{SA}"]}
+    record_gcloud(monkeypatch, [
+        (["storage", "managed-folders", "list"],
+         Result(0, json.dumps([{"name": "hello-world/"}, {"name": "client1/"},
+                               {"name": "client2/"}]))),
+        (["storage", "managed-folders", "get-iam-policy", "gs://pdt-data-abc/client1/"],
+         policy(held)),
+        (["storage", "managed-folders", "get-iam-policy", "gs://pdt-data-abc/client2/"],
+         policy({**held, "role": deploy_google_cloud.STORE_ROLE})),
+    ])
+    assert deploy_google_cloud.held_reads("pdt-data-abc", SA, "hello-world") == ["client1"]
+
+
+def test_a_read_grant_binds_the_viewer_role_on_the_other_folder(monkeypatch):
+    calls = record_gcloud(monkeypatch, [(["storage"], Result(0, "{}"))])
+    deploy_google_cloud.grant_store_read("pdt-data-abc", "client1", SA)
+    deploy_google_cloud.revoke_store_read("pdt-data-abc", "client1", SA)
+    member = ["--member", f"serviceAccount:{SA}", "--role", "roles/storage.objectViewer"]
+    assert calls[1:] == [
+        ["storage", "managed-folders", "add-iam-policy-binding", "gs://pdt-data-abc/client1/",
+         *member],
+        ["storage", "managed-folders", "remove-iam-policy-binding", "gs://pdt-data-abc/client1/",
+         *member],
+    ]

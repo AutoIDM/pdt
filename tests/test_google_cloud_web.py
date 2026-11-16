@@ -186,7 +186,7 @@ def test_deploy_builds_the_service_behind_iap_with_a_mounted_read_folder(google,
     # The read grant on the other app's folder, and the write grant on its own.
     reads = [c for c in fake.ran("storage", "managed-folders", "add-iam-policy-binding")
              if "/warehouse/" in c[3]]
-    assert reads and flag(reads[0], "--role") == gweb.READ_ROLE
+    assert reads and flag(reads[0], "--role") == gc.READ_ROLE
     # pdt changes no project-wide policy.
     assert fake.ran("projects", "set-iam-policy") == []
     # IAP: the agent may call the service, and the two members may enter.
@@ -381,7 +381,7 @@ def test_destroy_removes_the_service_the_secret_the_image_and_the_read_grant(goo
              ("artifacts", "repositories", "describe"): {"labels": {"managed-by": "pdt"}},
              ("storage", "buckets", "describe"): {"labels": {"managed-by": "pdt"}},
              ("storage", "managed-folders", "get-iam-policy"): {"bindings": [
-                 {"role": gweb.READ_ROLE, "members": [f"serviceAccount:{SA}"]},
+                 {"role": gc.READ_ROLE, "members": [f"serviceAccount:{SA}"]},
                  {"role": gc.STORE_ROLE, "members": [f"serviceAccount:{SA}"]}]}}
     fake = fake_cloud(monkeypatch, FakeCloud(found=found))
     monkeypatch.setattr(gc, "list_json", lambda *args: (
@@ -403,7 +403,7 @@ def test_destroy_removes_the_service_the_secret_the_image_and_the_read_grant(goo
     assert fake.ran("artifacts", "docker", "images", "delete") == []
     assert fake.ran("artifacts", "repositories", "delete") != []
     removes = fake.ran("storage", "managed-folders", "remove-iam-policy-binding")
-    assert any("/warehouse/" in c[3] and flag(c, "--role") == gweb.READ_ROLE for c in removes)
+    assert any("/warehouse/" in c[3] and flag(c, "--role") == gc.READ_ROLE for c in removes)
     assert any("/dashboard/" in c[3] and flag(c, "--role") == gc.STORE_ROLE for c in removes)
     out = " ".join(capsys.readouterr().out.split())
     assert "Removed dashboard from project my-project" in out
@@ -461,7 +461,7 @@ def region_destroy(google, monkeypatch, services=(), jobs=(), unreachable=()):
              ("artifacts", "repositories", "describe"): managed,
              ("storage", "buckets", "describe"): managed,
              ("storage", "managed-folders", "get-iam-policy"): {"bindings": [
-                 {"role": gweb.READ_ROLE, "members": [f"serviceAccount:{SA}"]},
+                 {"role": gc.READ_ROLE, "members": [f"serviceAccount:{SA}"]},
                  {"role": gc.STORE_ROLE, "members": [f"serviceAccount:{SA}"]}]}}
     fake = fake_cloud(monkeypatch, FakeCloud(found=found))
     listed = {"services": [run_item(REGION, SA), *services], "jobs": list(jobs)}
@@ -554,14 +554,14 @@ def test_destroy_keeps_the_account_another_app_runs_as(google, monkeypatch):
     assert fake.ran("secrets", "delete") != []
     removes = fake.ran("storage", "managed-folders", "remove-iam-policy-binding")
     assert any("/dashboard/" in c[3] and flag(c, "--role") == gc.STORE_ROLE for c in removes)
-    assert any("/warehouse/" in c[3] and flag(c, "--role") == gweb.READ_ROLE for c in removes)
+    assert any("/warehouse/" in c[3] and flag(c, "--role") == gc.READ_ROLE for c in removes)
 
 
 def test_destroy_removes_a_read_grant_the_app_elsewhere_does_not_mount(google, monkeypatch):
     fake = region_destroy(google, monkeypatch, services=[run_item("europe-west1", SA)])
     removes = fake.ran("storage", "managed-folders", "remove-iam-policy-binding")
     assert [(c[3].rstrip("/").rsplit("/", 1)[-1], flag(c, "--role")) for c in removes] == [
-        ("warehouse", gweb.READ_ROLE)]
+        ("warehouse", gc.READ_ROLE)]
     assert fake.ran("iam", "service-accounts", "delete") == []
 
 
@@ -677,7 +677,7 @@ def test_a_deploy_sets_the_clean_up_policy_once(google, monkeypatch):
 def test_a_redeploy_removes_grants_the_config_no_longer_names(google, monkeypatch, capsys):
     found = {("storage", "buckets", "describe"): {"labels": {"managed-by": "pdt"}},
              ("storage", "managed-folders", "get-iam-policy"): {"bindings": [
-                 {"role": gweb.READ_ROLE, "members": [f"serviceAccount:{SA}"]},
+                 {"role": gc.READ_ROLE, "members": [f"serviceAccount:{SA}"]},
                  {"role": gc.STORE_ROLE, "members": [f"serviceAccount:{SA}"]}]}}
     fake = fake_cloud(monkeypatch, FakeCloud(found=found))
     monkeypatch.setattr(gc, "list_json", lambda *args: (
@@ -688,7 +688,7 @@ def test_a_redeploy_removes_grants_the_config_no_longer_names(google, monkeypatc
     assert gweb.deploy(web_app(google, text), True) == 0
     removes = fake.ran("storage", "managed-folders", "remove-iam-policy-binding")
     assert [(c[3].rsplit("/", 2)[-2], flag(c, "--role")) for c in removes] == [
-        ("old-source", gweb.READ_ROLE), ("dashboard", gc.STORE_ROLE)]
+        ("old-source", gc.READ_ROLE), ("dashboard", gc.STORE_ROLE)]
 
 
 def test_the_accounts_the_managed_sign_in_cannot_serve():

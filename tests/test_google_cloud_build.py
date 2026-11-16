@@ -595,9 +595,15 @@ def test_destroy_deletes_the_jobs_account_unless_the_app_runs_in_another_region(
         {"email": OWN, "displayName": "pdt job runner report"}]
     if elsewhere:
         fake.found[("run", "jobs", "list")] = [run_item("pdt-report", "europe-west1", OWN)]
-    assert google.destroy(destroy_app(project, monkeypatch, fake), True) == 0
+    fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    app = destroy_app(project, monkeypatch, fake)
+    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: ["warehouse"])
+    reads = []
+    monkeypatch.setattr(google, "revoke_store_read", lambda *args: reads.append(args[1:]))
+    assert google.destroy(app, True) == 0
     deleted = [call[3] for call in fake.ran("iam", "service-accounts", "delete")]
     assert deleted == ([] if elsewhere else [OWN])
+    assert reads == ([] if elsewhere else [("warehouse", OWN)])
 
 
 def moving_fake(*jobs):
