@@ -81,6 +81,11 @@ PLACE_KEYS = {"aws": ("region", "account"), "google-cloud": ("region", "project"
 # The place keys a deploy finds and saves when the config leaves them empty. Every other
 # place key that the config leaves empty takes the provider's default place.
 FOUND_KEYS = ("account", "project", "subscription")
+# The place key that names each provider's storage: one bucket or storage account for
+# every region of an AWS account, Azure subscription, or Google Cloud project, and one
+# folder on a Windows computer.
+STORE_KEYS = {"aws": "account", "azure": "subscription", "google-cloud": "project",
+              "windows": ""}
 DEPLOYED_PLATFORM_ENV = "PDT_DEPLOYED_PLATFORM"
 # Where each known key belongs, so a key in the wrong section gets told
 # where to move instead of "unknown key".

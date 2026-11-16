@@ -196,6 +196,10 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     console.name(app_name)
     for line in [*lines, *config.found_env_lines(app), *sources]:
         console.detail(line)
+    refusal = read_place_problem(app)
+    if refusal != "":
+        console.error(refusal)
+        return 1
     problem = ""
     if app["app_profile"] == "job":
         problem = choose_schedule(app, assume_yes)
@@ -324,6 +328,33 @@ def moved(recorded: dict, platform: dict) -> bool:
     old, new = config.place(recorded), config.place(resolved(platform))
     return any(old.get(key) != value for key, value in new.items()) or any(
         key not in new for key in old if key not in config.FOUND_KEYS)
+
+
+def read_place_problem(app: dict) -> str:
+    """Markup naming the first storage.read app whose folder is not in this app's storage:
+    `.pdt/state` records it at another provider or `config.STORE_KEYS` place, or, with no
+    record, its config deploys it there. "" when every folder is in this app's storage."""
+    name = app["name"]
+    app_file = f"{name}/{config.app_file(app['dir']).name}"
+    own = resolved(app["platform"])
+    before = config.deployed_platform(name) or {}
+    provider = own.get("provider")
+    key = config.STORE_KEYS.get(provider, "")
+    value = str(own.get(key) or before.get(key) or "")
+    for other in app["storage_read"]:
+        recorded = config.deployed_platform(other)
+        place = config.place(recorded or resolved(config.merged_app(other)["platform"]))
+        if place.get("provider") == provider and (not value or place.get(key, value) == value):
+            continue
+        where = "is deployed to" if recorded else "deploys to"
+        store = " ".join(part for part in (config.STORE_NAMES[provider], key, value)
+                         if part)
+        return (f"storage.read in {console.value(app_file)} names {console.value(other)}, which {where} "
+                f"{console.value(describe_place(place))}. {console.value(name)} deploys to "
+                f"{console.value(store)} and reads only from the storage of that "
+                f"{key or 'computer'}. Deploy {console.value(other)} to {console.value(store)}, "
+                f"or remove it from storage.read.")
+    return ""
 
 
 def say_places(app: dict, recorded: dict) -> None:

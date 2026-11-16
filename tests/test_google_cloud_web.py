@@ -263,45 +263,6 @@ def test_the_plan_only_reads(google, monkeypatch, capsys):
     assert "mounted read-only at /pdt/storage/warehouse/" in out
 
 
-def test_a_read_app_deployed_to_another_project_stops_the_deploy_before_any_change(
-        google, monkeypatch, capsys):
-    fake = fake_cloud(monkeypatch, FakeCloud())
-    config.mark_deployed("warehouse", {"provider": "google-cloud", "region": "us-east1",
-                                       "project": "other-project"})
-    with pytest.raises(SystemExit):
-        gweb.deploy(web_app(google), True, plan_only=True)
-    assert fake.apis == () and fake.calls == []
-    out = " ".join(capsys.readouterr().out.split())
-    assert ("storage.read in dashboard/pdt.yml names warehouse, which is deployed to "
-            "google-cloud, region us-east1, project other-project.") in out
-    assert (f"dashboard deploys to Google Cloud project {PROJECT} and reads only from bucket "
-            f"{gc.store_bucket(PROJECT)} of that project.") in out
-    assert f"Deploy warehouse to project {PROJECT}, or remove it from storage.read." in out
-
-
-def test_a_read_app_whose_config_names_another_project_stops_the_deploy(google, monkeypatch,
-                                                                       capsys):
-    fake = fake_cloud(monkeypatch, FakeCloud())
-    add_app(google, "warehouse", "schedule: hourly\nplatform:\n  project: other-project\n")
-    with pytest.raises(SystemExit):
-        gweb.deploy(web_app(google), True)
-    assert fake.ran("run", "deploy") == []
-    out = " ".join(capsys.readouterr().out.split())
-    assert ("names warehouse, which deploys to google-cloud, region us-central1, "
-            "project other-project.") in out
-
-
-def test_a_read_app_in_another_region_of_the_project_is_mounted_from_the_project_bucket(
-        google, monkeypatch):
-    fake = fake_cloud(monkeypatch, FakeCloud())
-    config.mark_deployed("warehouse", {"provider": "google-cloud", "region": "europe-west1",
-                                       "project": PROJECT})
-    assert gweb.deploy(web_app(google), True) == 0
-    [deploy] = fake.ran("run", "deploy")
-    assert flag(deploy, "--add-volume").startswith(
-        f"name=read-warehouse,type=cloud-storage,bucket={gc.store_bucket(PROJECT)},")
-
-
 def test_iap_changes_keep_members_added_by_hand():
     add, remove = gweb.iap_changes(
         ["domain:old.example.com", "user:ann@example.com", "group:g@example.com"],

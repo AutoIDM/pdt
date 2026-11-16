@@ -2,6 +2,9 @@ import json
 import os
 
 import pytest
+from rich.text import Text
+
+from conftest import add_app
 
 from pdt import alerts_cli, cli, config, console, deploy, deploy_aws, deploy_azure, scaffold
 
@@ -393,3 +396,61 @@ def test_in_a_menu_the_marker_starts_on_cancel(project, monkeypatch, press, pres
     deploy.deploy(APP, run=False)
     assert [command for _provider, command, _platform in cloud.calls] == commands
     assert cloud.asked == []
+
+
+def reader(project, text, read_from=APP):
+    add_app(project, "reader", f"storage:\n  read: [{read_from}]\n")
+    (project / "pdt.yml").write_text(text)
+    return config.merged_app("reader")
+
+
+@pytest.mark.parametrize("text,elsewhere,store", [
+    (AWS, {"provider": "aws", "region": "us-east-1", "account": "210987654321"},
+     "AWS account 123456789012 and reads only from the storage of that account"),
+    (AZURE, {"provider": "azure", "region": "eastus", "subscription": "sub-2"},
+     "Azure subscription sub-1 and reads only from the storage of that subscription"),
+    (GOOGLE, {"provider": "google-cloud", "region": "us-central1", "project": "other-project"},
+     "Google Cloud project my-project and reads only from the storage of that project"),
+    (WINDOWS, {"provider": "azure", "region": "eastus", "subscription": "sub-1"},
+     "Windows and reads only from the storage of that computer"),
+])
+def test_a_read_app_deployed_to_another_store_is_refused(project, text, elsewhere, store):
+    app = reader(project, text)
+    config.mark_deployed(APP, elsewhere)
+    message = Text.from_markup(deploy.read_place_problem(app)).plain
+    assert message.startswith(f"storage.read in reader/pdt.yml names {APP}, which is deployed to "
+                              f"{deploy.describe_place(config.place(elsewhere))}. ")
+    assert f"reader deploys to {store}." in message
+    assert message.endswith(", or remove it from storage.read.")
+
+
+@pytest.mark.parametrize("text,region", [(AWS, "eu-west-1"), (AZURE, "westeurope"),
+                                         (GOOGLE, "europe-west1")])
+def test_a_read_app_in_another_region_of_the_same_store_is_read(project, text, region):
+    app = reader(project, text)
+    platform = config.merged_app(APP)["platform"]
+    config.mark_deployed(APP, {**platform, "region": region})
+    assert deploy.read_place_problem(app) == ""
+
+
+def test_a_read_app_whose_config_names_another_project_is_refused(project):
+    app = reader(project, GOOGLE)
+    (project / APP / "pdt.yml").write_text("platform:\n  project: other-project\n")
+    message = Text.from_markup(deploy.read_place_problem(app)).plain
+    assert (f"names {APP}, which deploys to google-cloud, region us-central1, "
+            "project other-project.") in message
+    assert message.endswith(f"Deploy {APP} to Google Cloud project my-project, "
+                            "or remove it from storage.read.")
+
+
+@pytest.mark.parametrize("plan_only", [False, True])
+def test_the_refusal_stops_the_deploy_before_the_provider_runs(project, monkeypatch, capsys,
+                                                                plan_only):
+    reader(project, AZURE)
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": "sub-2"})
+    cloud = Cloud(monkeypatch)
+    assert deploy.deploy("reader", run=False, plan_only=plan_only) == 1
+    assert cloud.calls == []
+    assert not config.is_deployed("reader")
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"Deploy {APP} to Azure subscription sub-1, or remove it from storage.read." in out

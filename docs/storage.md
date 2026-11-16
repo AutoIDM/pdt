@@ -54,4 +54,4 @@ other = storage.store(app="other-app")
 
 A web app finds each folder as read-only files in `/pdt/storage/<app>/`. A new file shows up there within about a minute.
 
-Run `pdt deploy APP` after you change the list.
+Run `pdt deploy APP` after you change the list. Each app in the list must be deployed to the same AWS account, Azure subscription, Google Cloud project, or Windows computer as the app that reads it, or `pdt deploy` stops. The region can differ.
