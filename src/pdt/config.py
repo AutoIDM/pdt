@@ -86,6 +86,8 @@ FOUND_KEYS = ("account", "project", "subscription")
 # folder on a Windows computer.
 STORE_KEYS = {"aws": "account", "azure": "subscription", "google-cloud": "project",
               "windows": ""}
+# An Azure subscription may also be named by its display name; only its id compares.
+SUBSCRIPTION_ID = re.compile(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}")
 DEPLOYED_PLATFORM_ENV = "PDT_DEPLOYED_PLATFORM"
 # Where each known key belongs, so a key in the wrong section gets told
 # where to move instead of "unknown key".
@@ -673,6 +675,17 @@ def place(platform: dict) -> dict[str, str]:
     return {key: str(platform[key]) for key in keys if str(platform.get(key) or "") != ""}
 
 
+def store_place(platform: dict, recorded: dict | None) -> str:
+    """The STORE_KEYS value of `platform`, else of `recorded`, or "" when neither names it. An
+    Azure subscription counts only as an id."""
+    key = STORE_KEYS.get(platform.get("provider"), "")
+    for source in (platform, recorded or {}):
+        value = str(source.get(key) or "")
+        if value and (key != "subscription" or SUBSCRIPTION_ID.fullmatch(value)):
+            return value
+    return ""
+
+
 def deployed_places() -> dict[str, dict[str, str]]:
     return {name: place(platform)
             for name, platform in sorted((read_state().get("platforms") or {}).items())}
@@ -990,14 +1003,21 @@ def load_env(start: Path) -> list[Path]:
 
 
 def app_environment(start: Path, base) -> dict[str, str]:
-    """The environment that load_env(start) gives a process whose environment is `base`."""
+    """The environment that load_env(start) gives a process whose environment is `base`. As
+    load_dotenv does, ${NAME} in a value takes NAME from the environment so far, else from the
+    lines above it in the same file."""
     from dotenv import dotenv_values
+    from dotenv.variables import parse_variables
 
     env = dict(base)
     for path in find_env_files(start):
-        for name, value in dotenv_values(path, encoding="utf-8-sig").items():
+        values = {}
+        for name, value in dotenv_values(path, encoding="utf-8-sig", interpolate=False).items():
             if value is not None:
-                env.setdefault(name, value)
+                values[name] = "".join(atom.resolve({**values, **env})
+                                       for atom in parse_variables(value))
+        for name, value in values.items():
+            env.setdefault(name, value)
     return env
 
 

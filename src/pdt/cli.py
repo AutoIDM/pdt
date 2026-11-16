@@ -330,14 +330,15 @@ def deploy_all(assume_yes: bool, skip_failures: bool, run: bool = False,
     if not names:
         say_no_apps()
         return 1
-    refusals = deploy.read_place_problems(names)
+    planned = deploy.planned_places(names)
+    refusals = deploy.read_place_problems(planned)
     for refusal in refusals:
         console.error(refusal)
     if refusals:
         return 1
     return each_app("deploy", names,
                     lambda name: deploy.deploy(name, assume_yes=assume_yes, run=False,
-                                               rebuild=rebuild),
+                                               rebuild=rebuild, planned=planned),
                     assume_yes, skip_failures, run)
 
 

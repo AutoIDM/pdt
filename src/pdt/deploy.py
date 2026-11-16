@@ -148,7 +148,7 @@ def dispatch_output(provider: str, command: str, app_name: str,
 
 
 def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
-           rebuild: bool = False, plan_only: bool = False) -> int:
+           rebuild: bool = False, plan_only: bool = False, planned: dict | None = None) -> int:
     """Deploy one app; then offer to start a run of it.
 
     `run` None asks a person at a terminal and starts nothing with `--yes` or
@@ -157,29 +157,29 @@ def deploy(app_name: str, assume_yes: bool = False, run: bool | None = None,
     or the run's when pdt followed one.
 
     `plan_only` prints the plan and the cost estimate, asks no question, and saves no
-    config file (`config.plan_only`)."""
+    config file (`config.plan_only`). `planned` holds `planned_places` of the run this
+    deploy is part of (`pdt deploy --all`)."""
     if not plan_only:
-        return _deploy(app_name, assume_yes, run, rebuild, False)
+        return _deploy(app_name, assume_yes, run, rebuild, False, planned or {})
     with config.plan_only():
-        return _deploy(app_name, True, False, False, True)
+        return _deploy(app_name, True, False, False, True, planned or {})
 
 
 def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
-            plan_only: bool) -> int:
+            plan_only: bool, planned: dict) -> int:
     try:
         app, provider = _load(app_name)
     except ConfigError as e:
         console.error(console.escape(str(e)))
         return 1
+    base = dict(os.environ)
+    refusal = read_place_problem(app, base, {**planned, app_name: destination(app_name, base)})
+    if refusal != "":
+        console.error(refusal)
+        return 1
     problems = config.validate_app(app_name)
     sources = config.env_file_lines(app["dir"])
-    base = dict(os.environ)
     config.load_env(app["dir"])
-    if not problems:
-        refusal = read_place_problem(app, base, {app_name: destination(app_name, base)})
-        if refusal != "":
-            console.error(refusal)
-            return 1
     missing = config.missing_env(app)
     if missing != "":
         problems.append(missing)
@@ -347,16 +347,23 @@ def read_place_problem(app: dict, base, planned: dict[str, dict]) -> str:
     (the same provider and `config.STORE_KEYS` place). `planned` holds the platform of each app
     this run deploys, this app among them; any other app is where `.pdt/state` records it, else
     where its config and its own environment (`destination`) deploy it. "" when every folder is
-    in this app's storage."""
+    in this app's storage. A value or a name that is not valid is left to validation."""
     name = app["name"]
     own = planned[name]
     provider = own.get("provider")
     key = config.STORE_KEYS.get(provider, "")
-    value = str(own.get(key) or "")
-    for other in app["storage_read"]:
+    value = config.store_place(own, config.deployed_platform(name))
+    names = app["storage_read"] if isinstance(app["storage_read"], list) else []
+    for other in [other for other in names if isinstance(other, str)]:
         recorded = None if other in planned else config.deployed_platform(other)
-        place = config.place(planned.get(other) or recorded or destination(other, base))
-        if place.get("provider") == provider and (not value or place.get(key, value) == value):
+        try:
+            platform = planned.get(other) or recorded or destination(other, base)
+        except ConfigError:
+            continue
+        place = config.place(platform)
+        other_value = config.store_place(platform, config.deployed_platform(other))
+        if place.get("provider") == provider and (not value or not other_value
+                                                  or other_value == value):
             continue
         where = "is deployed to" if recorded else "deploys to"
         store = " ".join(part for part in (config.STORE_NAMES[provider], key, value)
@@ -370,13 +377,22 @@ def read_place_problem(app: dict, base, planned: dict[str, dict]) -> str:
     return ""
 
 
-def read_place_problems(names: list[str]) -> list[str]:
-    """read_place_problem for each valid app of one run that deploys `names`, with each of them
-    at the place this run deploys it, before the first deploy. An app that is not valid is
-    left to its own deploy, which reports why."""
-    names = [name for name in names if not config.validate_app(name)]
-    planned = {name: destination(name, os.environ) for name in names}
-    problems = [read_place_problem(config.merged_app(name), os.environ, planned) for name in names]
+def planned_places(names: list[str]) -> dict[str, dict]:
+    """The platform each app of one run that deploys `names` deploys to. An app whose config
+    does not load is left out; its own deploy reports why."""
+    planned = {}
+    for name in names:
+        try:
+            planned[name] = destination(name, os.environ)
+        except ConfigError:
+            continue
+    return planned
+
+
+def read_place_problems(planned: dict[str, dict]) -> list[str]:
+    """read_place_problem for each app of `planned_places`, before the first deploy of the run."""
+    problems = [read_place_problem(config.merged_app(name), os.environ, planned)
+                for name in planned]
     return [problem for problem in problems if problem != ""]
 
 
