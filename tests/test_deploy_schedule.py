@@ -112,6 +112,8 @@ def test_a_job_section_with_no_schedule_gets_it(project):
      'job:\n  schedule: "daily"\n  timezone: Etc/UTC\n'),
     ("job:\n  timezone: Etc/UTC\n  'schedule': null\n",
      'job:\n  timezone: Etc/UTC\n  schedule: "daily"\n'),
+    ("job:\n  schedule:\n    null\n  timezone: Etc/UTC\n",
+     'job:\n  schedule: "daily"\n  timezone: Etc/UTC\n'),
 ])
 def test_the_schedule_replaces_the_null_one_in_the_job_section(project, text, saved):
     folder = add_app(project, "my-report", text)
@@ -122,7 +124,7 @@ def test_the_schedule_replaces_the_null_one_in_the_job_section(project, text, sa
 
 @pytest.mark.parametrize("text", [
     "job: {schedule: null}\n",
-    "job:\n  schedule:\n    null\n",
+    "job: {schedule: null}\nschedule:\n  null\n",
     "job:\n  timezone: >-\n    Etc/UTC\n",
 ])
 def test_a_job_section_that_a_text_edit_would_break_gets_the_schedule_at_the_top_level(

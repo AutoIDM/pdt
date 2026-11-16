@@ -478,6 +478,9 @@ def save_app_key(app: dict, key: str, value, section: str | None = None) -> Path
             lines = edited
         elif existing is not None:
             lines[existing] = f"{key}: {text}"
+            while (existing + 1 < len(lines) and lines[existing + 1].strip()
+                   and lines[existing + 1].startswith((" ", "\t"))):
+                del lines[existing + 1]
         else:
             lines.append(f"{key}: {text}")
         write_text_atomically(path, "\n".join(lines) + "\n")
@@ -494,6 +497,9 @@ def _set_block_key(lines: list[str], start: int, key: str, text: str) -> None:
         (f"{key}:", f'"{key}":', f"'{key}':"))), None)
     if existing is not None:
         lines[existing] = f"{_indent(lines[existing])}{key}: {text}"
+        while (existing + 1 < len(lines) and lines[existing + 1].strip()
+               and len(_indent(lines[existing + 1])) > len(_indent(lines[existing]))):
+            del lines[existing + 1]
     else:
         first = next((i for i in block
                       if lines[i].strip() and not lines[i].strip().startswith("#")), None)
