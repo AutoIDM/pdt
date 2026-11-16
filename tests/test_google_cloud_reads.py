@@ -322,3 +322,62 @@ def test_a_gcloud_fallback_runs_in_the_main_thread_after_the_earlier_checks(proj
     monkeypatch.setattr(gc, "read_json_or_none", lambda *args: None)
     assert gc.deploy(app, True, plan_only=True) == 0
     assert threads == [threading.main_thread()]
+
+
+def test_the_enabled_apis_are_read_over_every_page(monkeypatch):
+    urls = pages(monkeypatch, [
+        {"services": [{"config": {"name": api}} for api in gc.APIS[:3]], "nextPageToken": "t2"},
+        {"services": [{"config": {"name": api}} for api in gc.APIS[3:]]}])
+    monkeypatch.setattr(gc, "run_quiet", lambda *args, **kwargs: pytest.fail(args))
+    assert gc.ensure_apis("p", True) is False
+    assert urls == [
+        "https://serviceusage.googleapis.com/v1/projects/p/services?filter=state:ENABLED"
+        "&pageSize=200&pageToken=",
+        "https://serviceusage.googleapis.com/v1/projects/p/services?filter=state:ENABLED"
+        "&pageSize=200&pageToken=t2"]
+
+
+def test_a_missing_api_is_enabled(monkeypatch):
+    pages(monkeypatch, [{"services": [{"config": {"name": api}} for api in gc.APIS
+                                      if api != "run.googleapis.com"]}])
+    calls = []
+    monkeypatch.setattr(gc, "run_quiet", lambda *args, **kwargs: calls.append(args) or "")
+    monkeypatch.setattr(gc, "confirm", lambda actions, assume_yes: True)
+    assert gc.ensure_apis("p", True) is False
+    assert calls == [("services", "enable", "run.googleapis.com", "--project", "p")]
+
+
+def test_the_organization_is_read_over_rest(monkeypatch):
+    sent = []
+
+    def read(url, data=None):
+        sent.append((url, data))
+        if url.endswith(":getAncestry"):
+            return {"ancestor": [{"resourceId": {"type": "project", "id": "p"}},
+                                 {"resourceId": {"type": "organization", "id": "1"}}]}
+        return {"displayName": "example.com", "owner": {"directoryCustomerId": "C1"}}
+
+    monkeypatch.setattr(gc, "api_json", read)
+    monkeypatch.setattr(gweb, "directory_domains", lambda customer: {"second.example"})
+    monkeypatch.setattr(gc, "gcloud", lambda *args, **kwargs: pytest.fail(args))
+    assert gweb.organization("p") == gweb.Organization(
+        "example.com", {"example.com", "second.example"}, True)
+    assert sent == [
+        ("https://cloudresourcemanager.googleapis.com/v1/projects/p:getAncestry", b"{}"),
+        ("https://cloudresourcemanager.googleapis.com/v1/organizations/1", None)]
+
+
+def test_a_project_with_no_organization_or_no_access(monkeypatch):
+    monkeypatch.setattr(gc, "api_json", lambda url, data=None: {
+        "ancestor": [{"resourceId": {"type": "project", "id": "p"}}]})
+    assert gweb.organization("p") == gweb.Organization("", set(), True)
+    monkeypatch.setattr(gc, "api_json", lambda url, data=None: None)
+    assert gweb.organization("p") is None
+    monkeypatch.setattr(gc, "gcloud", lambda *args, **kwargs: subprocess.CompletedProcess(
+        args, 1, "", "PERMISSION_DENIED"))
+
+    def no_api(url, data=None):
+        raise gc.ApiReadError(url)
+
+    monkeypatch.setattr(gc, "api_json", no_api)
+    assert gweb.organization("p") is None

@@ -223,17 +223,22 @@ class Organization:
 
 def organization(project: str) -> Organization | None:
     """The project's organization, or None when the deployer may not read it."""
-    proc = gc.gcloud("projects", "get-ancestors", project, "--format=json")
-    if proc.returncode != 0:
+    def ancestors() -> dict | None:
+        found = gc.describe_json("projects", "get-ancestors", project)
+        return None if found is None else {"ancestor": [{"resourceId": item} for item in found]}
+
+    ancestry = gc.rest_json(f"{RESOURCE_MANAGER}/projects/{project}:getAncestry", ancestors,
+                            data=b"{}")
+    if ancestry is None:
         return None
-    org = next((item.get("id") for item in json.loads(proc.stdout or "[]")
-                if item.get("type") == "organization"), None)
+    org = next((item["resourceId"].get("id") for item in ancestry.get("ancestor") or []
+                if (item.get("resourceId") or {}).get("type") == "organization"), None)
     if org is None:
         return Organization("", set(), True)
-    proc = gc.gcloud("organizations", "describe", str(org), "--format=json")
-    if proc.returncode != 0:
+    described = gc.rest_json(f"{RESOURCE_MANAGER}/organizations/{org}",
+                             lambda: gc.describe_json("organizations", "describe", str(org)))
+    if described is None:
         return None
-    described = json.loads(proc.stdout or "{}")
     primary = described.get("displayName", "")
     customer = (described.get("owner") or {}).get("directoryCustomerId")
     listed = directory_domains(customer) if customer else None

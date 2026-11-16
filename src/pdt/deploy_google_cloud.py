@@ -161,6 +161,7 @@ ARTIFACT_API = "https://artifactregistry.googleapis.com/v1"
 IAM_API = "https://iam.googleapis.com/v1"
 SCHEDULER_API = "https://cloudscheduler.googleapis.com/v1"
 SECRET_API = "https://secretmanager.googleapis.com/v1"
+SERVICE_USAGE_API = "https://serviceusage.googleapis.com/v1"
 STORAGE_API = "https://storage.googleapis.com/storage/v1"
 READ_THREADS = 12
 # Cloud Run job defaults; the deploy below does not override them.
@@ -568,10 +569,13 @@ def relogin(assume_yes: bool) -> int:
 
 def ensure_apis(project: str, assume_yes: bool,
                 required: tuple[str, ...] = APIS) -> bool:
-    output = run_quiet(
-        "services", "list", "--enabled", "--project", project,
-        "--format=value(config.name)", slow="reading: enabled Google Cloud APIs")
-    enabled = set(output.splitlines())
+    with console.waiting("reading: enabled Google Cloud APIs"):
+        services = rest_list(
+            f"{SERVICE_USAGE_API}/projects/{project}/services?filter=state:ENABLED&pageSize=200",
+            "services", lambda: [{"config": {"name": name}} for name in run_quiet(
+                "services", "list", "--enabled", "--project", project,
+                "--format=value(config.name)").splitlines()])
+    enabled = {(service.get("config") or {}).get("name") for service in services}
     missing = [api for api in required if api not in enabled]
     if not missing:
         return False
