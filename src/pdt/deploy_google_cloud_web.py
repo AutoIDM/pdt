@@ -184,22 +184,14 @@ def held_reads(bucket: str, sa: str, own: str) -> list[str]:
     """The app folders of the bucket, other than the app's own, on which `sa` holds the read
     role: what a deploy or a destroy must check, whatever the config says now. A bucket that
     does not exist holds none."""
-    folders = []
-    page = ""
-    while True:
-        answer = gc.rest_json(
-            f"{gc.STORAGE_API}/b/{bucket}/managedFolders?pageToken={page}",
-            lambda: {"items": gc.list_json("storage", "managed-folders", "list",
-                                           f"gs://{bucket}/")}) or {}
-        folders += answer.get("items") or []
-        page = answer.get("nextPageToken")
-        if not page:
-            break
+    folders = gc.rest_list(f"{gc.STORAGE_API}/b/{bucket}/managedFolders", "items",
+                           lambda: gc.list_json("storage", "managed-folders", "list",
+                                                f"gs://{bucket}/"))
     names = [str(folder.get("name") or "").rstrip("/") for folder in folders]
     others = [other for other in names if other and other != own]
     with ThreadPoolExecutor(gc.READ_THREADS) as pool:
-        held = list(pool.map(lambda other: read_grant_exists(bucket, other, sa), others))
-    return [other for other, grant in zip(others, held) if grant]
+        reads = [gc.submit(pool, read_grant_exists, bucket, other, sa) for other in others]
+        return [other for other, read in zip(others, reads) if read()]
 
 
 def grant_store_read(bucket: str, other: str, sa: str) -> None:
@@ -564,23 +556,23 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     with console.waiting("reading: resources"), ThreadPoolExecutor(gc.READ_THREADS) as pool:
         number = project_number(project)
         url = service_url(name, number, region)
-        repository_read = pool.submit(gc.repository_or_none, project, region, repo)
-        accounts_read = pool.submit(gc.service_accounts, project)
-        builds_read = pool.submit(gc.bucket_or_none, builds) if cloud else None
-        bucket_read = pool.submit(gc.bucket_or_none, bucket)
-        held_read = pool.submit(held_reads, bucket, sa, name)
-        folder_read = (pool.submit(gc.folder_grant_exists, bucket, name, sa)
+        repository_read = gc.submit(pool, gc.repository_or_none, project, region, repo)
+        accounts_read = gc.submit(pool, gc.service_accounts, project)
+        builds_read = gc.submit(pool, gc.bucket_or_none, builds) if cloud else None
+        bucket_read = gc.submit(pool, gc.bucket_or_none, bucket)
+        held_read = gc.submit(pool, held_reads, bucket, sa, name)
+        folder_read = (gc.submit(pool, gc.folder_grant_exists, bucket, name, sa)
                        if not app["storage"] else None)
-        other_read = pool.submit(gc.other_profile, app, project, region)
-        service_read = pool.submit(gc.run_or_none, "services", service, region, project)
-        secret_read = pool.submit(gc.secret_or_none, project, sid)
-        value_read = pool.submit(gc.secret_value, project, sid) if values else None
-        members_read = (pool.submit(iap_policy_members, project, number, region, service)
+        other_read = gc.submit(pool, gc.other_profile, app, project, region)
+        service_read = gc.submit(pool, gc.run_or_none, "services", service, region, project)
+        secret_read = gc.submit(pool, gc.secret_or_none, project, sid)
+        value_read = gc.submit(pool, gc.secret_value, project, sid) if values else None
+        members_read = (gc.submit(pool, iap_policy_members, project, number, region, service)
                         if gate else None)
-        repository = repository_read.result()
+        repository = repository_read()
         gc.require_managed(repository, f"Artifact Registry repository {console.value(repo)}")
         repo_exists = repository is not None
-        accounts = accounts_read.result()
+        accounts = accounts_read()
         account = next((item for item in accounts if item.get("email") == sa), None)
         if account is not None and not service_account_owned(account, name):
             fail(f"service account {console.value(sa)} exists but is not managed by PDT")
@@ -592,23 +584,23 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             if builder_account is not None and not gc.builder_owned(builder_account):
                 fail(f"service account {console.value(builder)} exists but is not managed by PDT")
             builder_exists = builder_account is not None
-            described = builds_read.result()
+            described = builds_read()
             gc.require_managed(described, f"bucket {console.value(builds)}")
             builds_exists = described is not None
-        described = bucket_read.result()
+        described = bucket_read()
         gc.require_managed(described, f"bucket {console.value(bucket)}")
         bucket_exists = described is not None
         # Grants an earlier deploy made that the config no longer names.
-        stale_reads = [other for other in (held_read.result() if bucket_exists else [])
+        stale_reads = [other for other in (held_read() if bucket_exists else [])
                        if other not in app["storage_read"]]
-        stale_folder = bucket_exists and not app["storage"] and folder_read.result()
+        stale_folder = bucket_exists and not app["storage"] and folder_read()
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
-        gc.refuse_profile_change(app, other_read.result(), "deploy")
-        current = service_read.result()
+        gc.refuse_profile_change(app, other_read(), "deploy")
+        current = service_read()
         gc.require_managed(current, f"Cloud Run service {console.value(service)}")
         service_exists = current is not None
         deployed = (((current or {}).get("metadata") or {}).get("labels") or {}).get(BUILD_TAG)
-        secret = secret_read.result()
+        secret = secret_read()
         gc.require_managed(secret, f"Secret Manager secret {console.value(sid)}")
         payload = json.dumps(values, sort_keys=True)
         secret_state = None
@@ -616,8 +608,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             if secret is None:
                 secret_state = "create"
             else:
-                secret_state = "unchanged" if value_read.result() == payload else "update"
-        members = members_read.result() if service_exists and gate else []
+                secret_state = "unchanged" if value_read() == payload else "update"
+        members = members_read() if service_exists and gate else []
 
         add_members, remove_members = iap_changes(members, iap_members(app) if gate else [])
 

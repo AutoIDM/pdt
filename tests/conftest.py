@@ -29,8 +29,12 @@ def price_cache(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def google_reads_through_gcloud(monkeypatch):
-    # Each Google API read takes its gcloud fallback, which a test fakes, so no test reads the network.
-    monkeypatch.setattr(deploy_google_cloud, "rest_json", lambda url, fallback, data=None: fallback())
+    # Each Google API read fails and takes its gcloud fallback, which a test fakes, so no test
+    # reads the network.
+    def no_api(url, data=None):
+        raise deploy_google_cloud.ApiReadError(url)
+
+    monkeypatch.setattr(deploy_google_cloud, "api_json", no_api)
     monkeypatch.setattr(deploy_google_cloud, "ACCESS_TOKEN", ("", 0.0))
 
 
