@@ -36,7 +36,7 @@ From your own computer, `pdt storage APP ls`, `get`, and `query` read the files 
 
 ## Reading another app's files
 
-An app can read the folders of the apps listed under `storage: read:` in its `pdt.yml`. It cannot change them.
+An app can read the folders of the apps listed under `storage: read:` in its `pdt.yml`. `pdt.utils.storage` opens them read-only, and a deployed web app gets them as read-only files. A web app that `pdt run` starts from its `run.py` on your computer gets the local folders with write access, so do not write to them.
 
 ```yml
 storage:

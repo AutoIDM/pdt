@@ -60,9 +60,12 @@ platform:
 
 ## Bringing your own Dockerfile
 
-Every cloud provider runs a job as a container (see [Primitives](../README.md#primitives)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the user `pdt`, not as root. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
+Every cloud provider runs an app as a container (see [Primitives](../README.md#primitives)). The deploy builds an image for each app from a generated Dockerfile, and the app runs as the user `pdt`, not as root.
 
-Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`, and the `.pdt-lifecycle` folder. Start from this file, which is the generated file with the install after the copy:
+- For a Python app, the Dockerfile installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py`. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
+- For a PowerShell app, the Dockerfile installs `pdt-cli[apps]` at the version of the pdt that deploys, then PowerShell, then the modules that the scripts need. The build loads each module once, so a broken module fails the build. The image runs the scripts with pdt's built-in runner, `pdt.run_powershell`, or with the app's own `run.py` when `pdt new APP --from-scripts` wrote one.
+
+Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`, and the `.pdt-lifecycle` folder. For a Python app, start from this file, which is the generated file with the install after the copy:
 
 ```dockerfile
 FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7071aec78f02c5587c76c5011159cd76b3d6f1255f40e48e850abc

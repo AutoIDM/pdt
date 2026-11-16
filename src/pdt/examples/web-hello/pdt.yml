@@ -1,6 +1,7 @@
 # Sample web app: a small HTTP server that greets the person who signed in.
-# Use it as a template for a dashboard or an internal tool. A web app runs all
-# the time behind the platform's sign-in, so it has no schedule.
+# Use it as a template for a dashboard or an internal tool. A web app answers
+# each request behind the platform's sign-in, so it has no schedule. With the
+# default web.resources, it scales to zero instances when no request comes.
 
 # The shape of what pdt deploys. Leave it off for a job that runs on a schedule.
 app_profile: web
