@@ -309,7 +309,7 @@ def keep_one_job_key(app: dict, assume_yes: bool) -> None:
     --yes, a plan, and a run with no one to ask use the `job:` value and change no file.
     """
     path = config.app_file(app["dir"])
-    where = path.relative_to(config.find_project()).as_posix()
+    where = path.relative_to(config.find_project())
     own = config.load_yaml(path)
     for key in sorted(config.JOB_KEYS):
         nested, top = (own.get("job") or {}).get(key), own.get(key)

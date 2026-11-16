@@ -1,12 +1,17 @@
 """A deploy of an app with no schedule asks for one and saves it under job: in the app's
 pdt.yml, and a deploy of an app that sets a job: key in two places keeps one."""
 
+import re
+from pathlib import Path
+
 import pytest
 import yaml
 
 from conftest import add_app, plain
 from pdt import config, deploy
 from pdt.config import ConfigError, merged_app
+
+FILE = str(Path("my-report", "pdt.yml"))
 
 
 @pytest.fixture
@@ -167,7 +172,7 @@ def test_a_refused_write_fails_only_that_app(project, monkeypatch, capsys):
 
 def test_a_job_section_pdt_cannot_write_names_the_file_and_the_key(project):
     folder = add_app(project, "my-report", "job: &shared {timezone: Etc/UTC}\nconfig: *shared\n")
-    with pytest.raises(ConfigError, match=r"my-report/pdt.yml: .*`schedule: \"daily\"` under `job:`"):
+    with pytest.raises(ConfigError, match=re.escape(FILE) + r": .*`schedule: \"daily\"` under `job:`"):
         config.save_job_key(merged_app("my-report"), "schedule", "daily")
     assert (folder / "pdt.yml").read_text() == "job: &shared {timezone: Etc/UTC}\nconfig: *shared\n"
 
@@ -180,7 +185,7 @@ def test_with_yes_both_schedules_stay_and_the_job_one_is_used(project, capsys):
     deploy.keep_one_job_key(merged_app("my-report"), True)
     assert (folder / "pdt.yml").read_text() == BOTH
     assert merged_app("my-report")["schedule"] == "daily"
-    assert ("note: my-report/pdt.yml sets both job.schedule daily and the top-level schedule "
+    assert (f"note: {FILE} sets both job.schedule daily and the top-level schedule "
             "weekly; this deploy uses job.schedule daily.") in " ".join(capsys.readouterr().out.split())
 
 
@@ -206,12 +211,12 @@ def test_keeping_the_job_schedule_removes_the_top_level_one(project, monkeypatch
     deploy.keep_one_job_key(merged_app("my-report"), False)
     assert (folder / "pdt.yml").read_text() == "job:\n  schedule: daily  # my choice\nstorage: false\n"
     out = plain(capsys.readouterr().out.splitlines())
-    assert "my-report/pdt.yml sets schedule both under job: and at the top level." in out
+    assert f"{FILE} sets schedule both under job: and at the top level." in out
     assert "Which schedule should my-report keep?" in out
     assert any(line.endswith("job.schedule (every day at 00:00)  daily") for line in out)
     assert any(line.endswith("top-level schedule (every Sunday at 00:00)  weekly") for line in out)
     assert ("Kept job.schedule daily (every day at 00:00) and removed the top-level schedule "
-            "weekly from my-report/pdt.yml.") in out
+            f"weekly from {FILE}.") in out
 
 
 def test_keeping_the_top_level_schedule_moves_it_under_job(project, monkeypatch, press, capsys):
@@ -221,7 +226,7 @@ def test_keeping_the_top_level_schedule_moves_it_under_job(project, monkeypatch,
     deploy.keep_one_job_key(merged_app("my-report"), False)
     assert (folder / "pdt.yml").read_text() == 'job:\n  schedule: "weekly"\nstorage: false\n'
     assert merged_app("my-report")["schedule"] == "weekly"
-    assert ("Saved job.schedule weekly (every Sunday at 00:00) to my-report/pdt.yml and removed "
+    assert (f"Saved job.schedule weekly (every Sunday at 00:00) to {FILE} and removed "
             "the top-level schedule.") in plain(capsys.readouterr().out.splitlines())
 
 
@@ -273,7 +278,7 @@ def test_the_same_schedule_in_both_places_loses_the_top_level_one_with_no_questi
     deploy.keep_one_job_key(merged_app("my-report"), False)
     assert (folder / "pdt.yml").read_text() == "job:\n  schedule: daily\n"
     assert plain(capsys.readouterr().out.splitlines()) == [
-        "Removed the top-level schedule daily from my-report/pdt.yml; job.schedule has the same "
+        f"Removed the top-level schedule daily from {FILE}; job.schedule has the same "
         "value."]
 
 
