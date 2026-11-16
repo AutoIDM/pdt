@@ -569,3 +569,47 @@ def test_a_subscription_compares_only_by_its_id(project):
     assert f"reader deploys to Azure subscription {SUB_1} and" in place_problem(app)
     config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": "Production"})
     assert place_problem(app) == ""
+
+
+def test_a_subscription_id_compares_in_any_case(project):
+    app = reader(project, AZURE_ID.replace(SUB_1, SUB_1.upper().replace("1", "A")))
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus",
+                               "subscription": SUB_1.replace("1", "a")})
+    assert place_problem(app) == ""
+
+
+def test_the_id_found_for_a_display_name_stays_in_the_record_while_the_name_does(project):
+    app = reader(project, AZURE.replace("sub-1", "Prod"))
+    config.mark_deployed("reader", {"provider": "azure", "region": "eastus", "subscription": "Prod",
+                                    config.STORE_ID_KEY: SUB_1})
+    config.mark_deployed(APP, {"provider": "azure", "region": "eastus", "subscription": SUB_2})
+    assert f"reader deploys to Azure subscription {SUB_1} and" in place_problem(app)
+    deploy.record_place("reader", config.deployed_platform("reader"))
+    assert config.deployed_platform("reader")[config.STORE_ID_KEY] == SUB_1
+    (project / "pdt.yml").write_text(AZURE.replace("sub-1", "Dev"))
+    assert place_problem(config.merged_app("reader")) == ""
+    deploy.record_place("reader", config.deployed_platform("reader"))
+    assert config.STORE_ID_KEY not in config.deployed_platform("reader")
+
+
+def test_env_values_follow_load_dotenv_for_a_name_set_twice(project):
+    (project / APP / ".env").write_text("PROJECT_ID=old\nX=${PROJECT_ID}\nPROJECT_ID=new\n")
+    env = config.app_environment(project / APP, {})
+    assert (env["PROJECT_ID"], env["X"]) == ("new", "old")
+    from dotenv import dotenv_values
+    assert dotenv_values(project / APP / ".env") == {"PROJECT_ID": "new", "X": "old"}
+
+
+def test_validation_in_a_run_takes_the_place_the_run_deploys_the_read_app(project, monkeypatch):
+    reader(project, AZURE_ID, read_from="warehouse")
+    add_app(project, "warehouse", "schedule: daily\n")
+    config.mark_deployed("warehouse", {"provider": "windows"})
+    assert any("uses the windows provider" in problem for problem in config.validate_app("reader"))
+    Cloud(monkeypatch)
+    cli.deploy_all(assume_yes=True, skip_failures=True)
+    assert config.deployed_places()["reader"]["provider"] == "azure"
+
+
+def test_an_unknown_provider_is_left_to_validation(project):
+    app = reader(project, AZURE_ID)
+    assert deploy.read_place_problem(app, {}, {"reader": {"provider": "nowhere"}}) == ""

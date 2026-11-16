@@ -114,6 +114,19 @@ def test_a_person_at_the_keyboard_still_gets_the_subscription_written_back(
     assert writes == [ACCOUNT["id"]]
 
 
+def test_a_subscription_named_by_its_display_name_keeps_its_id_in_the_record(
+        project, azure_app, monkeypatch):
+    (project / "pdt.yml").write_text(
+        f"platform:\n  provider: azure\n  subscription: \"{ACCOUNT['name']}\"\n")
+    app = config.merged_app("my-report")
+    config.mark_deployed("my-report", {"provider": "azure", "subscription": ACCOUNT["name"]})
+    writes = saved(monkeypatch)
+    deploy_azure.preflight(app, deploy_azure.azure_settings(app))
+    assert writes == []
+    assert config.deployed_platform("my-report") == {
+        "provider": "azure", "subscription": ACCOUNT["name"], config.STORE_ID_KEY: ACCOUNT["id"]}
+
+
 def test_an_unattended_run_with_an_unknown_subscription_names_the_fix(
         project, azure_app, monkeypatch, capsys):
     (project / "pdt.yml").write_text(

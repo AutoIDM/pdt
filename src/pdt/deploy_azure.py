@@ -438,6 +438,8 @@ def preflight(app: dict, settings: dict) -> dict:
         run_quiet("account", "set", "--subscription", account["id"])
     elif not requested:
         save_subscription(app, account)
+    if requested and not config.SUBSCRIPTION_ID.fullmatch(requested):
+        config.record_value(app["name"], config.STORE_ID_KEY, str(account["id"]))
     problem = subscription_problem(account)
     if problem:
         fail(console.escape(problem))

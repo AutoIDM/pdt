@@ -177,7 +177,7 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     if refusal != "":
         console.error(refusal)
         return 1
-    problems = config.validate_app(app_name)
+    problems = config.validate_app(app_name, planned)
     sources = config.env_file_lines(app["dir"])
     config.load_env(app["dir"])
     missing = config.missing_env(app)
@@ -347,11 +347,14 @@ def read_place_problem(app: dict, base, planned: dict[str, dict]) -> str:
     (the same provider and `config.STORE_KEYS` place). `planned` holds the platform of each app
     this run deploys, this app among them; any other app is where `.pdt/state` records it, else
     where its config and its own environment (`destination`) deploy it. "" when every folder is
-    in this app's storage. A value or a name that is not valid is left to validation."""
+    in this app's storage. A provider, a value, or a name that is not valid is left to
+    validation."""
     name = app["name"]
     own = planned[name]
     provider = own.get("provider")
-    key = config.STORE_KEYS.get(provider, "")
+    if provider not in config.STORE_KEYS:
+        return ""
+    key = config.STORE_KEYS[provider]
     value = config.store_place(own, config.deployed_platform(name))
     names = app["storage_read"] if isinstance(app["storage_read"], list) else []
     for other in [other for other in names if isinstance(other, str)]:
@@ -363,7 +366,7 @@ def read_place_problem(app: dict, base, planned: dict[str, dict]) -> str:
         place = config.place(platform)
         other_value = config.store_place(platform, config.deployed_platform(other))
         if place.get("provider") == provider and (not value or not other_value
-                                                  or other_value == value):
+                                                  or other_value.lower() == value.lower()):
             continue
         where = "is deployed to" if recorded else "deploys to"
         store = " ".join(part for part in (config.STORE_NAMES[provider], key, value)
@@ -508,6 +511,10 @@ def record_place(app_name: str, before: dict | None) -> dict:
     platform = resolved(config.merged_app(app_name)["platform"])
     record = {**platform, **{key: before[key] for key in config.FOUND_KEYS
                              if before and before.get(key) and not platform.get(key)}}
+    current = config.deployed_platform(app_name) or {}
+    key = config.STORE_KEYS.get(record.get("provider"), "")
+    if key and current.get(config.STORE_ID_KEY) and current.get(key) == record.get(key):
+        record[config.STORE_ID_KEY] = current[config.STORE_ID_KEY]
     config.mark_deployed(app_name, record)
     return record
 
