@@ -330,10 +330,19 @@ def destroy_fake(builder=True, bucket=True, other_jobs=()):
     return FakeGcloud(found=found)
 
 
-def destroy_app(project, monkeypatch, fake):
+def destroy_app(project, monkeypatch, fake, unreachable=()):
     app = deploy_app(project, monkeypatch, fake, cloud=False)
     monkeypatch.setattr(google, "confirm", lambda actions, assume_yes, cost=None: True)
+    monkeypatch.setattr(google, "cloud_run_list", lambda project, kind: (
+        fake.found.get(("run", kind, "list"), []), list(unreachable), ""))
     return app
+
+
+def run_item(name, region, account, job=True):
+    template = {"spec": {"serviceAccountName": account}}
+    return {"metadata": {"name": name, "labels": {
+                "managed-by": "pdt", "cloud.googleapis.com/location": region}},
+            "spec": {"template": {"spec": {"template": template}} if job else template}}
 
 
 def test_destroy_of_the_last_app_removes_the_builder_and_its_bucket(project, monkeypatch, capsys):
@@ -353,6 +362,204 @@ def test_destroy_keeps_the_builder_while_another_app_runs(project, monkeypatch, 
     assert fake.ran("storage", "rm") == []
     out = capsys.readouterr().out
     assert BUILDER in out and BUILDS in out
+
+
+RUNNER = "pdt-runner@my-project.iam.gserviceaccount.com"
+SECRET_ROLES = ["roles/secretmanager.secretAccessor", "roles/secretmanager.secretVersionManager"]
+
+
+def secret_fake(account=RUNNER, **kwargs):
+    fake = destroy_fake(**kwargs)
+    fake.found[("secrets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    fake.found[("secrets", "get-iam-policy")] = {"bindings": [
+        {"role": role, "members": [f"serviceAccount:{account}"]} for role in SECRET_ROLES]}
+    return fake
+
+
+@pytest.mark.parametrize("elsewhere", [True, False])
+def test_destroy_keeps_the_secret_while_the_app_runs_in_another_region(project, monkeypatch,
+                                                                         elsewhere):
+    fake = secret_fake()
+    if elsewhere:
+        fake.found[("run", "jobs", "list")] = [run_item("pdt-report", "europe-west1", RUNNER)]
+    assert google.destroy(destroy_app(project, monkeypatch, fake), True) == 0
+    assert (fake.ran("secrets", "delete") == []) == elsewhere
+    assert (fake.ran("storage", "rm") == []) == elsewhere
+    assert fake.ran("secrets", "remove-iam-policy-binding") == []
+
+
+def test_destroy_removes_the_secret_access_no_remaining_deploy_needs(project, monkeypatch,
+                                                                     capsys):
+    fake = secret_fake(other_jobs=("pdt-other",))
+    fake.found[("run", "services", "list")] = [
+        run_item("pdt-report", "europe-west1", "pdt-web-report@my-project.iam.gserviceaccount.com",
+                 job=False)]
+    assert google.destroy(destroy_app(project, monkeypatch, fake), True) == 0
+    assert fake.ran("secrets", "delete") == []
+    removed = fake.ran("secrets", "remove-iam-policy-binding")
+    assert [(call[call.index("--member") + 1], call[call.index("--role") + 1])
+            for call in removed] == [(f"serviceAccount:{RUNNER}", role) for role in SECRET_ROLES]
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"removing {RUNNER} access to secret pdt-report-env" in out
+
+
+class FakeStore:
+    def usage(self):
+        return (0, 0)
+
+
+@pytest.mark.parametrize("other_account, revoked", [("pdt-b", True), ("pdt-a", False)])
+def test_destroy_keeps_the_write_grant_only_for_an_account_still_in_use(project, monkeypatch,
+                                                                         other_account, revoked):
+    fake = destroy_fake()
+    fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    fake.found[("run", "jobs", "list")] = [run_item(
+        "pdt-report", "europe-west1", f"{other_account}@my-project.iam.gserviceaccount.com")]
+    app = destroy_app(project, monkeypatch, fake)
+    app["storage"] = True
+    monkeypatch.setenv("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "pdt-a@my-project.iam.gserviceaccount.com")
+    monkeypatch.setattr(google, "deployer_store", lambda project, name: FakeStore())
+    monkeypatch.setattr(google, "folder_grant_exists", lambda bucket, name, sa: True)
+    monkeypatch.setattr(google, "bucket_grant_exists", lambda bucket, name, sa: False)
+    monkeypatch.setattr(google, "warn_if_locked", lambda store, name: None)
+    revokes = []
+    monkeypatch.setattr(google, "revoke_store_access", lambda *args: revokes.append(args))
+    assert google.destroy(app, True) == 0
+    assert [args[2] for args in revokes] == (
+        ["pdt-a@my-project.iam.gserviceaccount.com"] if revoked else [])
+
+
+def test_an_incomplete_list_of_other_regions_keeps_every_shared_resource(project, monkeypatch,
+                                                                         capsys):
+    fake = secret_fake()
+    app = destroy_app(project, monkeypatch, fake, unreachable=["europe-west1"])
+    assert google.destroy(app, True) == 0
+    assert fake.ran("secrets", "delete") == []
+    assert fake.ran("secrets", "remove-iam-policy-binding") == []
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("storage", "rm") == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert ("The list of Cloud Run jobs and services in other regions is incomplete "
+            "(no answer from europe-west1)") in out
+    assert f"service account {BUILDER}" in out and f"bucket {BUILDS}" in out
+
+
+def test_the_cloud_run_list_names_what_made_it_incomplete(monkeypatch):
+    pages = [{"items": [{"n": 1}], "metadata": {"continue": "next"}, "unreachable": ["asia-east1"]},
+             {"items": [{"n": 2}], "unreachable": ["europe-west1"]}]
+    urls = []
+    monkeypatch.setattr(google, "run_quiet", lambda *args: "token\n")
+    monkeypatch.setattr(google, "fetch_json", lambda req, timeout: urls.append(req.full_url)
+                        or pages[len(urls) - 1])
+    assert google.cloud_run_list("my-project", "services") == (
+        [{"n": 1}, {"n": 2}], ["asia-east1", "europe-west1"], "")
+    assert urls == [f"{google.RUN_API}/serving.knative.dev/v1/namespaces/my-project/services",
+                    f"{google.RUN_API}/serving.knative.dev/v1/namespaces/my-project/services"
+                    "?continue=next"]
+
+    def second_page_fails(req, timeout):
+        if "continue" in req.full_url:
+            raise OSError("HTTP Error 503")
+        return pages[0]
+
+    monkeypatch.setattr(google, "fetch_json", second_page_fails)
+    assert google.cloud_run_list("my-project", "jobs") == (
+        [{"n": 1}], ["asia-east1"], "the list of Cloud Run jobs failed: HTTP Error 503")
+
+
+def test_the_remaining_deploys_name_every_region_and_error_once(monkeypatch):
+    service = run_item("pdt-report", "us-central1", RUNNER, job=False)
+    listed = {"jobs": ([run_item("pdt-report", "us-central1", RUNNER),
+                        run_item("pdt-report", "europe-west1", RUNNER)],
+                       ["asia-east1", "europe-north1"], ""),
+              "services": ([service], ["asia-east1"],
+                           "the list of Cloud Run services failed: HTTP 403")}
+    monkeypatch.setattr(google, "cloud_run_list", lambda project, kind: listed[kind])
+    jobs, services, missing = google.remaining_deploys("my-project", "jobs", "pdt-report",
+                                                       "us-central1")
+    assert [google.run_job_identity(item) for item in jobs] == [("pdt-report", "europe-west1")]
+    assert services == [service]
+    assert missing == ("no answer from asia-east1, europe-north1; "
+                       "the list of Cloud Run services failed: HTTP 403")
+
+
+def test_the_uses_include_the_folders_a_job_or_a_service_mounts():
+    def volume(options):
+        return {"name": "read", "csi": {"driver": "gcsfuse.run.googleapis.com",
+                "volumeAttributes": {"mountOptions": options}}}
+
+    job = run_item("pdt-worker", "us-central1", RUNNER)
+    job["spec"]["template"]["spec"]["template"]["spec"]["volumes"] = [
+        volume("only-dir=warehouse,uid=1000")]
+    service = run_item("pdt-dashboard", "us-central1", "pdt-web-dashboard@x", job=False)
+    service["spec"]["template"]["spec"]["volumes"] = [volume("uid=1000;only-dir=reports")]
+    assert google.deploy_uses([job, service]) == (
+        {RUNNER, "pdt-web-dashboard@x"},
+        {(RUNNER, "worker"), (RUNNER, "warehouse"),
+         ("pdt-web-dashboard@x", "dashboard"), ("pdt-web-dashboard@x", "reports")})
+
+
+def test_destroy_removes_a_web_account_the_job_ran_as_when_no_deploy_needs_it(project,
+                                                                              monkeypatch):
+    web_account = "pdt-web-dashboard@my-project.iam.gserviceaccount.com"
+    fake = destroy_fake()
+    fake.found[("iam", "service-accounts", "list")].append(
+        {"email": web_account, "displayName": "pdt web app dashboard"})
+    app = destroy_app(project, monkeypatch, fake)
+    monkeypatch.setenv("PDT_CLOUD_RUN_SERVICE_ACCOUNT", web_account)
+    assert google.destroy(app, True) == 0
+    assert [call[3] for call in fake.ran("iam", "service-accounts", "delete")] == [
+        web_account, BUILDER]
+
+
+@pytest.mark.parametrize("runner_in_use", [False, True])
+def test_destroy_removes_the_runner_when_no_remaining_deploy_runs_as_it(project, monkeypatch,
+                                                                          runner_in_use):
+    fake = destroy_fake()
+    fake.found[("iam", "service-accounts", "list")].append(
+        {"email": RUNNER, "displayName": "pdt job runner"})
+    custom = "pdt-a@my-project.iam.gserviceaccount.com"
+    fake.found[("run", "jobs", "list")] = [
+        run_item("pdt-other", "us-east4", RUNNER if runner_in_use else custom)]
+    app = destroy_app(project, monkeypatch, fake)
+    monkeypatch.setenv("PDT_CLOUD_RUN_SERVICE_ACCOUNT", custom)
+    assert google.destroy(app, True) == 0
+    deleted = [call[3] for call in fake.ran("iam", "service-accounts", "delete")]
+    assert deleted == ([] if runner_in_use else [RUNNER])
+
+
+def test_destroy_removes_the_write_grant_when_storage_is_now_off(project, monkeypatch):
+    fake = destroy_fake()
+    fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    app = destroy_app(project, monkeypatch, fake)
+    assert app["storage"] is False
+    monkeypatch.setattr(google, "folder_grant_exists", lambda bucket, name, sa: True)
+    monkeypatch.setattr(google, "bucket_grant_exists", lambda bucket, name, sa: False)
+    monkeypatch.setattr(google, "warn_if_locked", lambda store, name: pytest.fail("no store"))
+    revokes = []
+    monkeypatch.setattr(google, "revoke_store_access", lambda *args: revokes.append(args))
+    assert google.destroy(app, True) == 0
+    assert [args[1:3] for args in revokes] == [("report", RUNNER)]
+
+
+def test_a_failed_read_of_the_secret_policy_keeps_the_job_access(project, monkeypatch, capsys):
+    fake = secret_fake()
+    fake.found[("iam", "service-accounts", "list")].append(
+        {"email": RUNNER, "displayName": "pdt job runner"})
+    fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    fake.found[("run", "services", "list")] = [
+        run_item("pdt-report", "europe-west1", "pdt-web-report@my-project.iam.gserviceaccount.com",
+                 job=False)]
+    app = destroy_app(project, monkeypatch, fake)
+    monkeypatch.setattr(google, "secret_roles", lambda project, sid, sa: None)
+    monkeypatch.setattr(google, "folder_grant_exists", lambda bucket, name, sa: True)
+    monkeypatch.setattr(google, "revoke_store_access", lambda *args: pytest.fail("revoked"))
+    assert google.destroy(app, True) == 0
+    assert fake.ran("secrets", "remove-iam-policy-binding") == []
+    assert [call[3] for call in fake.ran("iam", "service-accounts", "delete")] == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"Reading who may use secret pdt-report-env failed; keeping {RUNNER} and its access" in out
 
 
 def test_destroy_without_a_cloud_build_ever_tolerates_their_absence(project, monkeypatch):

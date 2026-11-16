@@ -70,6 +70,13 @@ class FakeCloud:
         self.calls.append(args)
         return self.answer(args)
 
+    def gcloud(self, *args, data=None, slow=""):
+        self.calls.append(args)
+        found = self.answer(args)
+        if found is None:
+            return subprocess.CompletedProcess(args, 1, "", "ERROR: NOT_FOUND")
+        return subprocess.CompletedProcess(args, 0, json.dumps(found), "")
+
     def pushed_image(self, image, project):
         return f"{image.rsplit(':', 1)[0]}@sha256:{'ab' * 4}" if image in self.pushed else None
 
@@ -99,6 +106,7 @@ def fake_cloud(monkeypatch, fake: FakeCloud, secrets=None):
     monkeypatch.setattr(gc, "run_quiet", fake.run_quiet)
     monkeypatch.setattr(gc, "read_json_or_none", fake.read_json_or_none)
     monkeypatch.setattr(gc, "describe_json", fake.describe_json)
+    monkeypatch.setattr(gc, "gcloud", fake.gcloud)
     monkeypatch.setattr(gc, "pushed_image", fake.pushed_image)
     monkeypatch.setattr(gc, "preflight", lambda app, project, assume_yes: PROJECT)
     monkeypatch.setattr(gc, "ensure_apis", lambda project, yes, apis: setattr(fake, "apis", apis))
@@ -107,6 +115,7 @@ def fake_cloud(monkeypatch, fake: FakeCloud, secrets=None):
     monkeypatch.setattr(gc, "build_image", lambda stage, image, region:
                         fake.calls.append(("docker", "build", image)) or fake.pushed.add(image))
     monkeypatch.setattr(gc, "list_json", lambda *args: [])
+    monkeypatch.setattr(gc, "cloud_run_list", lambda project, kind: ([], [], ""))
     monkeypatch.setattr(gweb, "build_in_cloud", lambda app, builder, platform: False)
     monkeypatch.setattr(gweb, "ensure_image", built_image)
     monkeypatch.setattr(gweb, "gather_secrets", lambda app: {"TOKEN": "secret"}
@@ -425,6 +434,150 @@ def test_destroy_with_nothing_deployed_removes_nothing(google, monkeypatch, caps
     assert gweb.destroy(web_app(google), True) == 0
     assert fake.ran("run", "services", "delete") == []
     assert "Nothing to remove for dashboard" in " ".join(capsys.readouterr().out.split())
+
+
+BUILDER = gc.builder_email(PROJECT)
+RUNNER = f"pdt-runner@{PROJECT}.iam.gserviceaccount.com"
+SECRET_ROLES = ["roles/secretmanager.secretAccessor", "roles/secretmanager.secretVersionManager"]
+
+
+def run_item(region, account, job=False, name="pdt-dashboard", reads=()):
+    """A Cloud Run service, or a job, as the REST list gives it; a service mounts `reads`."""
+    volumes = [{"name": other, "csi": {"driver": "gcsfuse.run.googleapis.com", "volumeAttributes": {
+        "bucketName": "pdt-data-x", "mountOptions": f"only-dir={other}"}}} for other in reads]
+    template = {"spec": {"serviceAccountName": account, "volumes": volumes}}
+    return {"metadata": {"name": name, "labels": {
+                "managed-by": "pdt", "cloud.googleapis.com/location": region}},
+            "spec": {"template": {"spec": {"template": template}} if job else template}}
+
+
+def region_destroy(google, monkeypatch, services=(), jobs=(), unreachable=()):
+    """Destroy pdt-dashboard in REGION while `services` and `jobs` run in the project."""
+    managed = {"labels": {"managed-by": "pdt"}}
+    found = {("run", "services", "describe"): {"metadata": managed},
+             ("secrets", "describe"): managed,
+             ("secrets", "get-iam-policy"): {"bindings": [
+                 {"role": role, "members": [f"serviceAccount:{SA}"]} for role in SECRET_ROLES]},
+             ("artifacts", "repositories", "describe"): managed,
+             ("storage", "buckets", "describe"): managed,
+             ("storage", "managed-folders", "get-iam-policy"): {"bindings": [
+                 {"role": gweb.READ_ROLE, "members": [f"serviceAccount:{SA}"]},
+                 {"role": gc.STORE_ROLE, "members": [f"serviceAccount:{SA}"]}]}}
+    fake = fake_cloud(monkeypatch, FakeCloud(found=found))
+    listed = {"services": [run_item(REGION, SA), *services], "jobs": list(jobs)}
+    monkeypatch.setattr(gc, "cloud_run_list", lambda project, kind: (
+        listed[kind], list(unreachable), ""))
+    monkeypatch.setattr(gc, "list_json", lambda *args: (
+        [{"name": "warehouse/"}, {"name": "dashboard/"}] if args[1] == "managed-folders"
+        else [{"package": f"x/{PROJECT}/pdt/dashboard"}]))
+    monkeypatch.setattr(gweb, "warn_if_locked", lambda store, name: None)
+    monkeypatch.setattr(gc, "service_account_or_none", lambda project, email: {
+        "email": email, "displayName": gc.BUILDER_DISPLAY_NAME if email == BUILDER
+        else "pdt web app dashboard"})
+    assert gweb.destroy(web_app(google), True) == 0
+    assert len(fake.ran("run", "services", "delete")) == 1
+    return fake
+
+
+@pytest.mark.parametrize("elsewhere", [True, False])
+def test_destroy_keeps_what_the_app_in_another_region_uses(google, monkeypatch, capsys,
+                                                           elsewhere):
+    services = [run_item("europe-west1", SA, reads=["warehouse"])] if elsewhere else []
+    fake = region_destroy(google, monkeypatch, services=services)
+    deleted = [call[3] for call in fake.ran("iam", "service-accounts", "delete")]
+    out = " ".join(capsys.readouterr().out.split())
+    if elsewhere:
+        assert deleted == []
+        assert fake.ran("secrets", "delete") == []
+        assert fake.ran("secrets", "remove-iam-policy-binding") == []
+        assert fake.ran("storage", "managed-folders", "remove-iam-policy-binding") == []
+        assert fake.ran("storage", "rm") == []
+        assert "Cloud Run service pdt-dashboard (europe-west1)" in out
+        assert "Secret Manager secret pdt-dashboard-env" in out
+        assert f"service account {SA}" in out
+        assert f"service account {BUILDER}" in out
+        assert f"bucket {gc.build_bucket(PROJECT)}" in out
+    else:
+        assert deleted == [SA, BUILDER]
+        assert fake.ran("secrets", "delete") != []
+        assert fake.ran("storage", "managed-folders", "remove-iam-policy-binding") != []
+        assert fake.ran("storage", "rm") != []
+
+
+def test_an_incomplete_list_of_other_regions_keeps_every_shared_resource(google, monkeypatch,
+                                                                         capsys):
+    fake = region_destroy(google, monkeypatch, unreachable=["europe-west1"])
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("secrets", "delete") == []
+    assert fake.ran("secrets", "remove-iam-policy-binding") == []
+    assert fake.ran("storage", "managed-folders", "remove-iam-policy-binding") == []
+    assert fake.ran("storage", "rm") == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert ("The list of Cloud Run jobs and services in other regions is incomplete "
+            "(no answer from europe-west1)") in out
+    assert f"service account {SA}" in out and "Secret Manager secret pdt-dashboard-env" in out
+    assert f"service account {BUILDER}" in out
+
+
+def test_a_job_of_the_same_name_elsewhere_keeps_the_secret_but_not_the_web_access(
+        google, monkeypatch, capsys):
+    fake = region_destroy(google, monkeypatch, jobs=[run_item("europe-west1", RUNNER, job=True)])
+    assert fake.ran("secrets", "delete") == []
+    removed = fake.ran("secrets", "remove-iam-policy-binding")
+    assert [(flag(call, "--member"), flag(call, "--role")) for call in removed] == [
+        (f"serviceAccount:{SA}", role) for role in SECRET_ROLES]
+    [delete] = fake.ran("iam", "service-accounts", "delete")
+    assert delete[3] == SA and fake.calls.index(delete) > fake.calls.index(removed[-1])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Cloud Run job pdt-dashboard (europe-west1)" in out
+
+
+def test_destroy_keeps_the_account_a_job_of_the_same_name_and_region_runs_as(google,
+                                                                             monkeypatch):
+    fake = region_destroy(google, monkeypatch, jobs=[run_item(REGION, SA, job=True)])
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("secrets", "delete") == []
+
+
+def test_destroy_keeps_the_read_grant_a_job_mounts(google, monkeypatch):
+    fake = region_destroy(google, monkeypatch, jobs=[
+        run_item(REGION, SA, job=True, name="pdt-worker", reads=["warehouse"])])
+    removes = fake.ran("storage", "managed-folders", "remove-iam-policy-binding")
+    assert [(c[3].rstrip("/").rsplit("/", 1)[-1], flag(c, "--role")) for c in removes] == [
+        ("dashboard", gc.STORE_ROLE)]
+
+
+def test_destroy_keeps_the_account_another_app_runs_as(google, monkeypatch):
+    fake = region_destroy(google, monkeypatch,
+                          jobs=[run_item(REGION, SA, job=True, name="pdt-worker")])
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("secrets", "delete") != []
+    removes = fake.ran("storage", "managed-folders", "remove-iam-policy-binding")
+    assert any("/dashboard/" in c[3] and flag(c, "--role") == gc.STORE_ROLE for c in removes)
+    assert any("/warehouse/" in c[3] and flag(c, "--role") == gweb.READ_ROLE for c in removes)
+
+
+def test_destroy_removes_a_read_grant_the_app_elsewhere_does_not_mount(google, monkeypatch):
+    fake = region_destroy(google, monkeypatch, services=[run_item("europe-west1", SA)])
+    removes = fake.ran("storage", "managed-folders", "remove-iam-policy-binding")
+    assert [(c[3].rstrip("/").rsplit("/", 1)[-1], flag(c, "--role")) for c in removes] == [
+        ("warehouse", gweb.READ_ROLE)]
+    assert fake.ran("iam", "service-accounts", "delete") == []
+
+
+def test_a_failed_read_of_the_secret_policy_keeps_the_access(google, monkeypatch, capsys):
+    denied = subprocess.CompletedProcess([], 1, "", "ERROR: PERMISSION_DENIED: getIamPolicy")
+    monkeypatch.setattr(gc, "gcloud", lambda *args, **kwargs: denied)
+    assert gc.secret_roles(PROJECT, "pdt-dashboard-env", SA) is None
+    monkeypatch.setattr(gc, "secret_roles", lambda project, sid, sa: None)
+    fake = region_destroy(google, monkeypatch, jobs=[run_item("europe-west1", RUNNER, job=True)])
+    assert fake.ran("secrets", "remove-iam-policy-binding") == []
+    assert fake.ran("secrets", "delete") == []
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("storage", "managed-folders", "remove-iam-policy-binding") == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert "PERMISSION_DENIED" in out
+    assert f"Reading who may use secret pdt-dashboard-env failed; keeping {SA} and its access" in out
 
 
 PRICES = {gweb.CPU_SKU: 0.000024, gweb.MEMORY_SKU: 0.0000025, gweb.MIN_CPU_SKU: 0.0000025,
