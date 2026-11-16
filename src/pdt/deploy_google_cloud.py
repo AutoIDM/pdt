@@ -91,10 +91,10 @@ from pdt import lifecycle
 from pdt import regions
 from pdt.deploy import DECLINED, confirm, show_plan
 from pdt.deploy_common import (
-    BUILD_TAG, STORE_TAGS, CostEstimate, FatalAPIError, RetriableAPIError, build_in_cloud,
-    cached_price, convert_from_usd, ensure_image, fail, fetch_json, gather_secrets, image_action,
-    run_build, run_main, run_secrets, secret_contents, ssh_build_args, store_cost_label,
-    store_kept_line, store_name, store_plan_lines, store_suffix, warn_if_locked)
+    BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, convert_from_usd,
+    ensure_image, fail, fetch_json, gather_secrets, image_action, run_build,
+    run_main, run_secrets, secret_contents, ssh_build_args, store_cost_label, store_kept_line,
+    store_name, store_plan_lines, store_suffix, warn_if_locked)
 from pdt import runs_cli
 from pdt import storage_cli
 from pdt.utils import email_auth
@@ -256,17 +256,36 @@ def main_thread_only() -> None:
         raise NeedsMainThread
 
 
+# The answers that the Google API reads of one submitted read got, by URL and body, in the
+# thread that runs that read.
+READS = threading.local()
+
+
 def submit(pool: ThreadPoolExecutor, read: Callable, *args) -> Callable:
     """Starts `read(*args)` in `pool`; the returned function gives its result. A read that must
-    print or run gcloud runs again in the thread that asks for the result, so its wait lines and
-    errors come in the order the caller checks the results."""
-    future = pool.submit(read, *args)
+    print or run gcloud runs again in the thread that asks for the result, with the API answers
+    that its first run got: it sends no request twice, it runs the gcloud fallback of the read
+    that failed, and its wait lines and errors come in the order the caller checks the results.
+    A read submitted inside a submitted read shares its answers."""
+    answers = getattr(READS, "answers", None)
+    if answers is None:
+        answers = {}
+
+    def run():
+        previous = getattr(READS, "answers", None)
+        READS.answers = answers
+        try:
+            return read(*args)
+        finally:
+            READS.answers = previous
+
+    future = pool.submit(run)
 
     def result():
         try:
             return future.result()
         except NeedsMainThread:
-            return read(*args)
+            return run()
     return result
 
 
@@ -289,21 +308,32 @@ API_OPENER = urllib.request.build_opener(GoogleRedirects)
 
 def api_json(url: str, data: bytes | None = None):
     """The answer of the Google API at `url`, read with the token pdt holds, or None when the API
-    answers 404. Raises ApiReadError on any other failure."""
+    answers 404. Raises ApiReadError on any other failure. It sends one request and prints
+    nothing, so a read in a worker thread is silent; the gcloud fallback waits out a busy API and
+    names the problem. Inside a submitted read it keeps each answer, so a run again of that read
+    sends no request twice."""
     if not google_host(url):
         main_thread_only()
         fail(f"pdt sends the Google Cloud access token only to Google API hosts, not to "
              f"{console.value(url)}")
-    request = urllib.request.Request(url, data=data, headers={
-        "Authorization": f"Bearer {access_token()}", "Content-Type": "application/json"})
-    try:
-        return fetch_json(request, timeout=30, open_url=API_OPENER.open)
-    except FatalAPIError as exc:
-        if exc.response.status == 404:
-            return None
-        raise ApiReadError(url) from exc
-    except (RetriableAPIError, OSError, http.client.HTTPException, ValueError) as exc:
-        raise ApiReadError(url) from exc
+    answers = getattr(READS, "answers", None)
+    if answers is not None and (url, data) in answers:
+        answer = answers[(url, data)]
+    else:
+        request = urllib.request.Request(url, data=data, headers={
+            "Authorization": f"Bearer {access_token()}", "Content-Type": "application/json"})
+        try:
+            with API_OPENER.open(request, timeout=30) as response:
+                answer = json.load(response)
+        except urllib.error.HTTPError as exc:
+            answer = None if exc.code == 404 else ApiReadError(url)
+        except (OSError, http.client.HTTPException, ValueError):
+            answer = ApiReadError(url)
+        if answers is not None:
+            answers[(url, data)] = answer
+    if isinstance(answer, ApiReadError):
+        raise answer
+    return answer
 
 
 def rest_json(url: str, fallback: Callable, data: bytes | None = None):
@@ -944,7 +974,7 @@ def billing_list(path: str, key: str, project: str, currency: str = "") -> list:
             f"{BILLING_API}/{path}?{urllib.parse.urlencode(query)}",
             headers={"Authorization": f"Bearer {token}",
                      "X-Goog-User-Project": project})
-        data = fetch_json(req, timeout=60)
+        data = fetch_json(req, timeout=60, open_url=API_OPENER.open)
         items.extend(data.get(key) or [])
         page_token = data.get("nextPageToken") or ""
         if not page_token:

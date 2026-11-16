@@ -1,4 +1,5 @@
 import base64
+import datetime
 import http.client
 import io
 import json
@@ -12,7 +13,6 @@ import pytest
 
 from conftest import add_app
 from pdt import config, deploy_google_cloud as gc, deploy_google_cloud_web as gweb
-from pdt.deploy_common import FatalAPIError, RetriableAPIError
 from pdt.deploy_google_cloud import api_json
 
 URL = "https://secretmanager.googleapis.com/v1/projects/p/secrets/s"
@@ -22,51 +22,120 @@ def http_error(status: int) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(URL, status, "", {}, io.BytesIO(b"{}"))
 
 
-def fake_api(monkeypatch, answer):
-    """The real api_json over a fake network that gives `answer` or raises it."""
-    requests = []
+class CutOff(io.BytesIO):
+    def read(self, *args):
+        raise http.client.IncompleteRead(b"{\"na")
 
-    def fetch_json(request, timeout=60, open_url=None):
-        requests.append((request, open_url))
-        if isinstance(answer, Exception):
+
+class FakeOpener:
+    """The network of the real api_json: each request gets the next of `answers`, a dict to
+    send as JSON, bytes to send as they are, or an exception to raise."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.requests = []
+        self.lock = threading.Lock()
+
+    def open(self, request, timeout=None):
+        with self.lock:
+            self.requests.append(request)
+            answer = self.answers[min(len(self.requests), len(self.answers)) - 1]
+        if isinstance(answer, BaseException):
             raise answer
-        return answer
+        if isinstance(answer, io.BytesIO):
+            return answer
+        return io.BytesIO(answer if isinstance(answer, bytes) else json.dumps(answer).encode())
 
+
+def fake_api(monkeypatch, *answers):
+    opener = FakeOpener(*answers)
     monkeypatch.setattr(gc, "api_json", api_json)
-    monkeypatch.setattr(gc, "fetch_json", fetch_json)
+    monkeypatch.setattr(gc, "API_OPENER", opener)
     monkeypatch.setattr(gc, "ACCESS_TOKEN", ("ya29.token", time.monotonic()))
-    return requests
+    return opener.requests
 
 
 def test_a_read_sends_the_token_pdt_holds_and_returns_the_answer(monkeypatch):
     requests = fake_api(monkeypatch, {"name": "s"})
     assert gc.rest_json(URL, lambda: pytest.fail("fell back")) == {"name": "s"}
-    [(request, open_url)] = requests
+    [request] = requests
     assert request.full_url == URL
     assert request.get_method() == "GET"
     assert request.get_header("Authorization") == "Bearer ya29.token"
-    assert open_url == gc.API_OPENER.open
 
 
 def test_a_resource_the_api_does_not_find_is_none(monkeypatch):
-    fake_api(monkeypatch, FatalAPIError("404", http_error(404)))
+    fake_api(monkeypatch, http_error(404))
     assert gc.rest_json(URL, lambda: pytest.fail("fell back")) is None
 
 
-@pytest.mark.parametrize("error", [FatalAPIError("403", http_error(403)),
-                                   RetriableAPIError("503", http_error(503)),
-                                   urllib.error.URLError("no route"),
-                                   http.client.IncompleteRead(b"{\"na"),
-                                   json.JSONDecodeError("Expecting value", "", 0)])
-def test_any_other_failure_reads_through_gcloud(monkeypatch, error):
-    fake_api(monkeypatch, error)
+@pytest.mark.parametrize("answer", [http_error(403), http_error(503), http_error(302),
+                                    urllib.error.URLError("no route"), CutOff(), b"<html>"])
+def test_any_other_failure_reads_through_gcloud(monkeypatch, capsys, answer):
+    requests = fake_api(monkeypatch, answer, {"name": "s"})
     assert gc.rest_json(URL, lambda: {"from": "gcloud"}) == {"from": "gcloud"}
+    assert len(requests) == 1
+    assert capsys.readouterr().err == ""
 
 
 def test_a_body_makes_a_post(monkeypatch):
     requests = fake_api(monkeypatch, {})
     gc.rest_json(URL, lambda: None, data=b"{}")
-    assert requests[0][0].get_method() == "POST"
+    assert requests[0].get_method() == "POST"
+
+
+def test_a_failed_read_in_a_worker_prints_nothing_and_runs_gcloud_once_asked(monkeypatch,
+                                                                             capsys):
+    requests = fake_api(monkeypatch, http_error(503), {"name": "s"})
+    threads = []
+
+    def fallback():
+        threads.append(threading.current_thread())
+        gc.console.say("ERROR: (gcloud.secrets.describe) the service is busy")
+        return {"from": "gcloud"}
+
+    with gc.ThreadPoolExecutor(2) as pool:
+        read = gc.submit(pool, gc.rest_json, URL, fallback)
+        time.sleep(0.1)
+        assert capsys.readouterr() == ("", "")
+        assert read() == {"from": "gcloud"}
+    assert len(requests) == 1
+    assert threads == [threading.main_thread()]
+    assert "the service is busy" in capsys.readouterr().out
+
+
+def test_a_read_run_again_in_the_main_thread_sends_no_request_twice(monkeypatch):
+    sa = "pdt-web-dashboard@p.iam.gserviceaccount.com"
+    grant = {"bindings": [{"role": gweb.READ_ROLE, "members": [f"serviceAccount:{sa}"]}]}
+    sent = []
+
+    def answer(request):
+        if "managedFolders?" in request.full_url:
+            return {"items": [{"name": "a/"}, {"name": "b/"}, {"name": "c/"}]}
+        return http_error(403) if "/b%2F/" in request.full_url else grant
+
+    class Opener:
+        lock = threading.Lock()
+
+        def open(self, request, timeout=None):
+            with self.lock:
+                sent.append(request.full_url)
+            found = answer(request)
+            if isinstance(found, Exception):
+                raise found
+            return io.BytesIO(json.dumps(found).encode())
+
+    monkeypatch.setattr(gc, "api_json", api_json)
+    monkeypatch.setattr(gc, "API_OPENER", Opener())
+    monkeypatch.setattr(gc, "ACCESS_TOKEN", ("ya29.token", time.monotonic()))
+    asked = []
+    monkeypatch.setattr(gc, "describe_json", lambda *args: asked.append(
+        (args[-1], threading.current_thread())) or {})
+    with gc.ThreadPoolExecutor(2) as pool:
+        read = gc.submit(pool, gweb.held_reads, "pdt-data-x", sa, "own")
+        assert read() == ["a", "c"]
+    assert sorted(sent) == sorted(set(sent)) and len(sent) == 4
+    assert asked == [("gs://pdt-data-x/b/", threading.main_thread())]
 
 
 @pytest.mark.parametrize("url", [
@@ -381,3 +450,32 @@ def test_a_project_with_no_organization_or_no_access(monkeypatch):
 
     monkeypatch.setattr(gc, "api_json", no_api)
     assert gweb.organization("p") is None
+
+
+@pytest.mark.parametrize("module,call", [
+    (gweb, lambda: gweb.directory_domains("C1")),
+    (gweb, lambda: gweb.ensure_iap_agent("p", "123")),
+    (gweb, lambda: gweb.hourly("p", "pdt-web", "request_count", datetime.datetime(2026, 1, 1),
+                               datetime.datetime(2026, 1, 2), "ya29.token")),
+    (gweb, lambda: gweb.registry_bytes("p", "us-central1", "pdt")),
+    (gc, lambda: gc.billing_list("services", "services", "p")),
+])
+def test_every_request_with_the_token_follows_redirects_only_to_google(monkeypatch, module, call):
+    openers = []
+
+    def fetch_json(request, timeout=60, open_url=None):
+        assert request.get_header("Authorization") == "Bearer ya29.token"
+        openers.append(open_url)
+        return {}
+
+    monkeypatch.setattr(module, "fetch_json", fetch_json)
+    monkeypatch.setattr(gc, "run_quiet", lambda *args, **kwargs: "ya29.token\n")
+    monkeypatch.setattr(gc, "ACCESS_TOKEN", ("ya29.token", time.monotonic()))
+    call()
+    assert openers and all(opener == gc.API_OPENER.open for opener in openers)
+
+
+def test_the_api_opener_refuses_a_redirect_to_another_host():
+    handlers = [handler for handler in gc.API_OPENER.handlers
+                if isinstance(handler, urllib.request.HTTPRedirectHandler)]
+    assert [type(handler) for handler in handlers] == [gc.GoogleRedirects]

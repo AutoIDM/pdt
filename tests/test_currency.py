@@ -158,7 +158,7 @@ def test_azure_falls_back_to_the_ecb_rate(monkeypatch):
 def test_google_cloud_asks_the_catalog_for_the_currency(monkeypatch):
     requests = []
 
-    def fetch_json(request, timeout):
+    def fetch_json(request, timeout, open_url=None):
         requests.append(request.full_url)
         return {"skus": []}
 

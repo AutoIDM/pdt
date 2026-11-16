@@ -259,7 +259,7 @@ def directory_domains(customer: str) -> set[str] | None:
     request = urllib.request.Request(f"{DIRECTORY}/customer/{customer}/domains",
                                      headers={"Authorization": f"Bearer {token}"})
     try:
-        answer = fetch_json(request) or {}
+        answer = fetch_json(request, open_url=gc.API_OPENER.open) or {}
     except Exception:  # most deployers' tokens lack the scope
         return None
     return {domain["domainName"].lower() for domain in answer.get("domains") or []
@@ -296,7 +296,7 @@ def ensure_iap_agent(project: str, number: str) -> str:
         data=b"", method="POST",
         headers={"Authorization": f"Bearer {token}", "Content-Length": "0"})
     try:
-        answer = fetch_json(request) or {}
+        answer = fetch_json(request, open_url=gc.API_OPENER.open) or {}
     except Exception as exc:  # the agent most often exists already; the binding below tells
         console.note(f"could not ask Service Usage for the IAP service agent "
                      f"({console.escape(str(exc))}); using {console.value(email)}")
@@ -396,7 +396,7 @@ def hourly(project: str, service: str, metric: str, start: datetime.datetime,
         "aggregation.crossSeriesReducer": "REDUCE_SUM"})
     answer = fetch_json(urllib.request.Request(
         f"{MONITORING}/projects/{project}/timeSeries?{params}",
-        headers={"Authorization": f"Bearer {token}"})) or {}
+        headers={"Authorization": f"Bearer {token}"}), open_url=gc.API_OPENER.open) or {}
     sums: dict[datetime.datetime, float] = {}
     for series in answer.get("timeSeries") or []:
         for point in series.get("points") or []:
@@ -441,7 +441,7 @@ def registry_bytes(project: str, region: str, repo: str) -> int:
     token = gc.access_token()
     answer = fetch_json(urllib.request.Request(
         f"{REGISTRY}/projects/{project}/locations/{region}/repositories/{repo}",
-        headers={"Authorization": f"Bearer {token}"})) or {}
+        headers={"Authorization": f"Bearer {token}"}), open_url=gc.API_OPENER.open) or {}
     return int(answer.get("sizeBytes") or 0)
 
 
