@@ -54,6 +54,7 @@ import time
 import urllib.parse
 import urllib.request
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
@@ -88,6 +89,8 @@ SA_DISPLAY_NAME = "pdt web app"
 ENV_DELIMITER = "|"
 SERVICE_USAGE = "https://serviceusage.googleapis.com/v1beta1"
 DIRECTORY = "https://admin.googleapis.com/admin/directory/v1"
+RESOURCE_MANAGER = "https://cloudresourcemanager.googleapis.com/v1"
+IAP = "https://iap.googleapis.com/v1"
 REVISION_FILTER = 'resource.type="cloud_run_revision"'
 # The service's own output and Cloud Run's system log about it.
 # Cloud Run writes its system log under two names: varlog/system and //var/log/system.
@@ -126,8 +129,9 @@ def iap_agent(project_number: str) -> str:
 
 
 def project_number(project: str) -> str:
-    return gc.run_quiet("projects", "describe", project,
-                        "--format=value(projectNumber)").strip()
+    found = gc.rest_json(f"{RESOURCE_MANAGER}/projects/{project}", lambda: None) or {}
+    return found.get("projectNumber") or gc.run_quiet(
+        "projects", "describe", project, "--format=value(projectNumber)").strip()
 
 
 def service_url(app_name: str, number: str, region: str) -> str:
@@ -150,9 +154,12 @@ def iap_members(app: dict) -> list[str]:
             + [f"group:{group}" for group in auth.get("allowed_groups") or []])
 
 
-def iap_policy_members(project: str, region: str, service: str) -> list[str]:
-    policy = gc.describe_json("iap", "web", "get-iam-policy", "--resource-type=cloud-run",
-                              "--service", service, "--region", region, "--project", project)
+def iap_policy_members(project: str, number: str, region: str, service: str) -> list[str]:
+    policy = gc.rest_json(
+        f"{IAP}/projects/{number}/iap_web/cloud_run-{region}/services/{service}:getIamPolicy",
+        lambda: gc.describe_json("iap", "web", "get-iam-policy", "--resource-type=cloud-run",
+                                 "--service", service, "--region", region, "--project", project),
+        data=json.dumps({"options": {"requestedPolicyVersion": 3}}).encode())
     return [member for binding in (policy or {}).get("bindings") or []
             if binding.get("role") == IAP_ROLE for member in binding.get("members") or []]
 
@@ -167,8 +174,7 @@ def iap_changes(current: list[str], wanted: list[str]) -> tuple[list[str], list[
 
 
 def read_grant_exists(bucket: str, other: str, sa: str) -> bool:
-    policy = gc.describe_json("storage", "managed-folders", "get-iam-policy",
-                              gc.store_url(bucket, other)) or {}
+    policy = gc.folder_policy(bucket, other)
     return any(binding.get("role") == READ_ROLE
                and f"serviceAccount:{sa}" in (binding.get("members") or [])
                for binding in policy.get("bindings") or [])
@@ -176,11 +182,16 @@ def read_grant_exists(bucket: str, other: str, sa: str) -> bool:
 
 def held_reads(bucket: str, sa: str, own: str) -> list[str]:
     """The app folders of the bucket, other than the app's own, on which `sa` holds the read
-    role: what a deploy or a destroy must check, whatever the config says now."""
-    folders = gc.list_json("storage", "managed-folders", "list", f"gs://{bucket}/")
+    role: what a deploy or a destroy must check, whatever the config says now. A bucket that
+    does not exist holds none."""
+    folders = gc.rest_list(f"{gc.STORAGE_API}/b/{bucket}/managedFolders", "items",
+                           lambda: gc.list_json("storage", "managed-folders", "list",
+                                                f"gs://{bucket}/"))
     names = [str(folder.get("name") or "").rstrip("/") for folder in folders]
-    return [other for other in names if other and other != own
-            and read_grant_exists(bucket, other, sa)]
+    others = [other for other in names if other and other != own]
+    with ThreadPoolExecutor(gc.READ_THREADS) as pool:
+        reads = [gc.submit(pool, read_grant_exists, bucket, other, sa) for other in others]
+        return [other for other, read in zip(others, reads) if read()]
 
 
 def grant_store_read(bucket: str, other: str, sa: str) -> None:
@@ -212,17 +223,22 @@ class Organization:
 
 def organization(project: str) -> Organization | None:
     """The project's organization, or None when the deployer may not read it."""
-    proc = gc.gcloud("projects", "get-ancestors", project, "--format=json")
-    if proc.returncode != 0:
+    def ancestors() -> dict | None:
+        found = gc.describe_json("projects", "get-ancestors", project)
+        return None if found is None else {"ancestor": [{"resourceId": item} for item in found]}
+
+    ancestry = gc.rest_json(f"{RESOURCE_MANAGER}/projects/{project}:getAncestry", ancestors,
+                            data=b"{}")
+    if ancestry is None:
         return None
-    org = next((item.get("id") for item in json.loads(proc.stdout or "[]")
-                if item.get("type") == "organization"), None)
+    org = next((item["resourceId"].get("id") for item in ancestry.get("ancestor") or []
+                if (item.get("resourceId") or {}).get("type") == "organization"), None)
     if org is None:
         return Organization("", set(), True)
-    proc = gc.gcloud("organizations", "describe", str(org), "--format=json")
-    if proc.returncode != 0:
+    described = gc.rest_json(f"{RESOURCE_MANAGER}/organizations/{org}",
+                             lambda: gc.describe_json("organizations", "describe", str(org)))
+    if described is None:
         return None
-    described = json.loads(proc.stdout or "{}")
     primary = described.get("displayName", "")
     customer = (described.get("owner") or {}).get("directoryCustomerId")
     listed = directory_domains(customer) if customer else None
@@ -239,11 +255,11 @@ def organization(project: str) -> Organization | None:
 def directory_domains(customer: str) -> set[str] | None:
     """Every domain of the Workspace account, or None when the deployer may not list them: the
     Directory API needs a Workspace admin and the admin.directory.domain.readonly scope."""
-    token = gc.run_quiet("auth", "print-access-token").strip()
+    token = gc.access_token()
     request = urllib.request.Request(f"{DIRECTORY}/customer/{customer}/domains",
                                      headers={"Authorization": f"Bearer {token}"})
     try:
-        answer = fetch_json(request) or {}
+        answer = fetch_json(request, open_url=gc.API_OPENER.open) or {}
     except Exception:  # most deployers' tokens lack the scope
         return None
     return {domain["domainName"].lower() for domain in answer.get("domains") or []
@@ -280,7 +296,7 @@ def ensure_iap_agent(project: str, number: str) -> str:
         data=b"", method="POST",
         headers={"Authorization": f"Bearer {token}", "Content-Length": "0"})
     try:
-        answer = fetch_json(request) or {}
+        answer = fetch_json(request, open_url=gc.API_OPENER.open) or {}
     except Exception as exc:  # the agent most often exists already; the binding below tells
         console.note(f"could not ask Service Usage for the IAP service agent "
                      f"({console.escape(str(exc))}); using {console.value(email)}")
@@ -380,7 +396,7 @@ def hourly(project: str, service: str, metric: str, start: datetime.datetime,
         "aggregation.crossSeriesReducer": "REDUCE_SUM"})
     answer = fetch_json(urllib.request.Request(
         f"{MONITORING}/projects/{project}/timeSeries?{params}",
-        headers={"Authorization": f"Bearer {token}"})) or {}
+        headers={"Authorization": f"Bearer {token}"}), open_url=gc.API_OPENER.open) or {}
     sums: dict[datetime.datetime, float] = {}
     for series in answer.get("timeSeries") or []:
         for point in series.get("points") or []:
@@ -400,7 +416,7 @@ def measured_use(project: str, service: str, deployed: datetime.datetime,
     use = Use()
     if end - start < datetime.timedelta(hours=1):
         return use
-    token = gc.run_quiet("auth", "print-access-token").strip()
+    token = gc.access_token()
     seconds = hourly(project, service, "container/billable_instance_time", start, end, token)
     requests = hourly(project, service, "request_count", start, end, token)
     hour = start.replace(minute=0, second=0, microsecond=0)
@@ -422,10 +438,10 @@ def measured_use(project: str, service: str, deployed: datetime.datetime,
 
 def registry_bytes(project: str, region: str, repo: str) -> int:
     """The size of the image repository; gcloud's JSON leaves it out, the REST answer has it."""
-    token = gc.run_quiet("auth", "print-access-token").strip()
+    token = gc.access_token()
     answer = fetch_json(urllib.request.Request(
         f"{REGISTRY}/projects/{project}/locations/{region}/repositories/{repo}",
-        headers={"Authorization": f"Bearer {token}"})) or {}
+        headers={"Authorization": f"Bearer {token}"}), open_url=gc.API_OPENER.open) or {}
     return int(answer.get("sizeBytes") or 0)
 
 
@@ -537,47 +553,59 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     store = gc.deployer_store(project, name) if app["storage"] else None
     needs_bucket = bool(app["storage"] or app["storage_read"])
 
+    builder = gc.builder_email(project)
+    builds = gc.build_bucket(project)
+    sid = gc.secret_id(name)
     console.status(f"Checking current state in project {console.value(project)} "
                    f"({console.value(region)})...")
-    with console.waiting("reading: resources"):
+    with console.waiting("reading: resources"), ThreadPoolExecutor(gc.READ_THREADS) as pool:
         number = project_number(project)
         url = service_url(name, number, region)
-        repository = gc.read_json_or_none("artifacts", "repositories", "describe", repo,
-                                          "--location", region, "--project", project)
+        repository_read = gc.submit(pool, gc.repository_or_none, project, region, repo)
+        accounts_read = gc.submit(pool, gc.service_accounts, project)
+        builds_read = gc.submit(pool, gc.bucket_or_none, builds) if cloud else None
+        bucket_read = gc.submit(pool, gc.bucket_or_none, bucket)
+        held_read = gc.submit(pool, held_reads, bucket, sa, name)
+        folder_read = (gc.submit(pool, gc.folder_grant_exists, bucket, name, sa)
+                       if not app["storage"] else None)
+        other_read = gc.submit(pool, gc.other_profile, app, project, region)
+        service_read = gc.submit(pool, gc.run_or_none, "services", service, region, project)
+        secret_read = gc.submit(pool, gc.secret_or_none, project, sid)
+        value_read = gc.submit(pool, gc.secret_value, project, sid) if values else None
+        members_read = (gc.submit(pool, iap_policy_members, project, number, region, service)
+                        if gate else None)
+        repository = repository_read()
         gc.require_managed(repository, f"Artifact Registry repository {console.value(repo)}")
         repo_exists = repository is not None
-        account = gc.service_account_or_none(project, sa)
+        accounts = accounts_read()
+        account = next((item for item in accounts if item.get("email") == sa), None)
         if account is not None and not service_account_owned(account, name):
             fail(f"service account {console.value(sa)} exists but is not managed by PDT")
         sa_exists = account is not None
-        builder = gc.builder_email(project)
-        builds = gc.build_bucket(project)
         builder_exists = builds_exists = False
         if cloud:
-            builder_account = gc.service_account_or_none(project, builder)
+            builder_account = next((item for item in accounts if item.get("email") == builder),
+                                   None)
             if builder_account is not None and not gc.builder_owned(builder_account):
                 fail(f"service account {console.value(builder)} exists but is not managed by PDT")
             builder_exists = builder_account is not None
-            described = gc.read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+            described = builds_read()
             gc.require_managed(described, f"bucket {console.value(builds)}")
             builds_exists = described is not None
-        described = gc.read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
+        described = bucket_read()
         gc.require_managed(described, f"bucket {console.value(bucket)}")
         bucket_exists = described is not None
         # Grants an earlier deploy made that the config no longer names.
-        stale_reads = [other for other in (held_reads(bucket, sa, name) if bucket_exists else [])
+        stale_reads = [other for other in (held_read() if bucket_exists else [])
                        if other not in app["storage_read"]]
-        stale_folder = (bucket_exists and not app["storage"]
-                        and gc.folder_grant_exists(bucket, name, sa))
+        stale_folder = bucket_exists and not app["storage"] and folder_read()
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
-        gc.refuse_profile_change(app, project, region, "deploy")
-        current = gc.read_json_or_none("run", "services", "describe", service,
-                                       "--region", region, "--project", project)
+        gc.refuse_profile_change(app, other_read(), "deploy")
+        current = service_read()
         gc.require_managed(current, f"Cloud Run service {console.value(service)}")
         service_exists = current is not None
         deployed = (((current or {}).get("metadata") or {}).get("labels") or {}).get(BUILD_TAG)
-        sid = gc.secret_id(name)
-        secret = gc.read_json_or_none("secrets", "describe", sid, "--project", project)
+        secret = secret_read()
         gc.require_managed(secret, f"Secret Manager secret {console.value(sid)}")
         payload = json.dumps(values, sort_keys=True)
         secret_state = None
@@ -585,8 +613,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             if secret is None:
                 secret_state = "create"
             else:
-                secret_state = "unchanged" if gc.secret_value(project, sid) == payload else "update"
-        members = iap_policy_members(project, region, service) if service_exists and gate else []
+                secret_state = "unchanged" if value_read() == payload else "update"
+        members = members_read() if service_exists and gate else []
 
         add_members, remove_members = iap_changes(members, iap_members(app) if gate else [])
 
@@ -780,7 +808,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
     console.status(f"Checking current state in project {console.value(project)} "
                    f"({console.value(region)})...")
     with console.waiting("reading: resources"):
-        gc.refuse_profile_change(app, project, region, "destroy")
+        gc.refuse_profile_change(app, gc.other_profile(app, project, region), "destroy")
         current = gc.read_json_or_none("run", "services", "describe", service,
                                        "--region", region, "--project", project)
         delete_service = gc.managed_by_pdt(current)

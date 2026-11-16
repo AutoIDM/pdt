@@ -53,7 +53,9 @@ same image with no emulation.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime
+import http.client
 import importlib.util
 import json
 import os
@@ -68,6 +70,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable, Iterator
@@ -101,6 +104,11 @@ GCLOUD = "gcloud"
 
 # The format Google enforces for a new project id.
 PROJECT_ID = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
+# The form of every Google Cloud region name (us-central1, northamerica-northeast2). The region
+# is part of host names that pdt sends the access token to.
+REGION_NAME = re.compile(r"[a-z]+-[a-z]+[0-9]+")
+# The only hosts pdt sends the access token to: the Google APIs and the regional image registry.
+GOOGLE_HOST = re.compile(r"[a-z0-9-]+(\.[a-z0-9-]+)*\.googleapis\.com|[a-z0-9-]+-docker\.pkg\.dev")
 
 APIS = (
     "artifactregistry.googleapis.com",
@@ -149,6 +157,13 @@ BUILD_SUBMIT_ROLES = (
 )
 
 BILLING_API = "https://cloudbilling.googleapis.com/v1"
+ARTIFACT_API = "https://artifactregistry.googleapis.com/v1"
+IAM_API = "https://iam.googleapis.com/v1"
+SCHEDULER_API = "https://cloudscheduler.googleapis.com/v1"
+SECRET_API = "https://secretmanager.googleapis.com/v1"
+SERVICE_USAGE_API = "https://serviceusage.googleapis.com/v1"
+STORAGE_API = "https://storage.googleapis.com/storage/v1"
+READ_THREADS = 12
 # Cloud Run job defaults; the deploy below does not override them.
 JOB_VCPU = 1.0
 JOB_MEMORY_GIB = 0.5
@@ -166,6 +181,10 @@ TAIL_BUFFER = datetime.timedelta(seconds=10)
 # gcloud call waits them out.
 TRANSIENT = re.compile(r"SERVICE_DISABLED|ABORTED|Service account \S+ does not exist")
 RETRY_WAITS = (10, 20, 40, 60, 60, 60)
+# gcloud hands out a token that stays valid for 300 s or more
+# (_CREDENTIALS_EXPIRY_WINDOW in googlecloudsdk/core/credentials/store.py).
+TOKEN_REUSE_SECONDS = 240
+ACCESS_TOKEN = ("", 0.0)
 
 
 def gcloud(*args: str, data: str | None = None, slow: str = "") -> subprocess.CompletedProcess:
@@ -224,11 +243,165 @@ def list_json(*args: str) -> list:
     return json.loads(run_quiet(*args, "--format=json") or "[]")
 
 
-def service_account_or_none(project: str, email: str) -> dict | None:
+class ApiReadError(Exception):
+    """A Google API read failed in a way that the same read through gcloud may get past."""
+
+
+class NeedsMainThread(Exception):
+    """A read in a worker thread must print or run gcloud, so the main thread runs it again."""
+
+
+def main_thread_only() -> None:
+    if threading.current_thread() is not threading.main_thread():
+        raise NeedsMainThread
+
+
+# The answers that the Google API reads of one submitted read got, by URL and body, in the
+# thread that runs that read.
+READS = threading.local()
+
+
+def submit(pool: ThreadPoolExecutor, read: Callable, *args) -> Callable:
+    """Starts `read(*args)` in `pool`; the returned function gives its result. A read that must
+    print or run gcloud runs again in the thread that asks for the result, with the API answers
+    that its first run got: it sends no request twice, it runs the gcloud fallback of the read
+    that failed, and its wait lines and errors come in the order the caller checks the results.
+    A read submitted inside a submitted read shares its answers."""
+    answers = getattr(READS, "answers", None)
+    if answers is None:
+        answers = {}
+
+    def run():
+        previous = getattr(READS, "answers", None)
+        READS.answers = answers
+        try:
+            return read(*args)
+        finally:
+            READS.answers = previous
+
+    future = pool.submit(run)
+
+    def result():
+        try:
+            return future.result()
+        except NeedsMainThread:
+            return run()
+    return result
+
+
+def google_host(url: str) -> bool:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme == "https" and GOOGLE_HOST.fullmatch(parts.hostname or "") is not None
+
+
+class GoogleRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only to a Google API host, because the request carries the token."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not google_host(newurl):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+API_OPENER = urllib.request.build_opener(GoogleRedirects)
+
+
+def api_json(url: str, data: bytes | None = None):
+    """The answer of the Google API at `url`, read with the token pdt holds, or None when the API
+    answers 404. Raises ApiReadError on any other failure. It sends one request and prints
+    nothing, so a read in a worker thread is silent; the gcloud fallback waits out a busy API and
+    names the problem. Inside a submitted read it keeps each answer, so a run again of that read
+    sends no request twice."""
+    if not google_host(url):
+        main_thread_only()
+        fail(f"pdt sends the Google Cloud access token only to Google API hosts, not to "
+             f"{console.value(url)}")
+    answers = getattr(READS, "answers", None)
+    if answers is not None and (url, data) in answers:
+        answer = answers[(url, data)]
+    else:
+        request = urllib.request.Request(url, data=data, headers={
+            "Authorization": f"Bearer {access_token()}", "Content-Type": "application/json"})
+        try:
+            with API_OPENER.open(request, timeout=30) as response:
+                answer = json.load(response)
+        except urllib.error.HTTPError as exc:
+            answer = None if exc.code == 404 else ApiReadError(url)
+        except (OSError, http.client.HTTPException, ValueError):
+            answer = ApiReadError(url)
+        if answers is not None:
+            answers[(url, data)] = answer
+    if isinstance(answer, ApiReadError):
+        raise answer
+    return answer
+
+
+def rest_json(url: str, fallback: Callable, data: bytes | None = None):
+    """api_json, but on a failure it returns `fallback()`, the same read through gcloud, which
+    waits out an API that was enabled a moment ago and names the problem."""
+    try:
+        return api_json(url, data)
+    except ApiReadError:
+        main_thread_only()
+        return fallback()
+
+
+def rest_list(url: str, key: str, fallback: Callable) -> list:
+    """Every item under `key` on every page of the Google API list at `url`, or [] when the API
+    answers 404. On a failure it returns `fallback()`, the whole list through gcloud, in place of
+    the pages read so far."""
+    items = []
+    page = ""
+    separator = "&" if "?" in url else "?"
+    try:
+        while True:
+            answer = api_json(f"{url}{separator}pageToken={page}")
+            if answer is None:
+                return []
+            items += answer.get(key) or []
+            page = answer.get("nextPageToken")
+            if not page:
+                return items
+    except ApiReadError:
+        main_thread_only()
+        return fallback()
+
+
+def service_accounts(project: str) -> list:
     # describe answers PERMISSION_DENIED, not NOT_FOUND, for an account that
     # does not exist, so a first deploy would stop here. list does not.
-    accounts = list_json("iam", "service-accounts", "list", "--project", project)
-    return next((account for account in accounts if account.get("email") == email), None)
+    return rest_list(f"{IAM_API}/projects/{project}/serviceAccounts?pageSize=100", "accounts",
+                     lambda: list_json("iam", "service-accounts", "list", "--project", project))
+
+
+def service_account_or_none(project: str, email: str) -> dict | None:
+    return next((account for account in service_accounts(project)
+                 if account.get("email") == email), None)
+
+
+def run_or_none(kind: str, name: str, region: str, project: str) -> dict | None:
+    """The Cloud Run job or service (`kind` jobs or services) as `gcloud run describe` shows it."""
+    group = "serving.knative.dev" if kind == "services" else "run.googleapis.com"
+    return rest_json(f"https://{region}-run.googleapis.com/apis/{group}/v1/namespaces/{project}"
+                     f"/{kind}/{name}",
+                     lambda: read_json_or_none("run", kind, "describe", name, "--region", region,
+                                               "--project", project))
+
+
+def repository_or_none(project: str, region: str, repo: str) -> dict | None:
+    return rest_json(f"{ARTIFACT_API}/projects/{project}/locations/{region}/repositories/{repo}",
+                     lambda: read_json_or_none("artifacts", "repositories", "describe", repo,
+                                               "--location", region, "--project", project))
+
+
+def bucket_or_none(bucket: str) -> dict | None:
+    return rest_json(f"{STORAGE_API}/b/{bucket}",
+                     lambda: read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}"))
+
+
+def secret_or_none(project: str, sid: str) -> dict | None:
+    return rest_json(f"{SECRET_API}/projects/{project}/secrets/{sid}",
+                     lambda: read_json_or_none("secrets", "describe", sid, "--project", project))
 
 
 def managed_by_pdt(resource: dict | None) -> bool:
@@ -248,9 +421,22 @@ def can_ask() -> bool:
 
 
 def have_credentials() -> bool:
+    global ACCESS_TOKEN
     proc = subprocess.run([GCLOUD, "auth", "print-access-token"],
                           stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    return proc.returncode == 0 and proc.stdout.strip() != ""
+    token = proc.stdout.strip() if proc.returncode == 0 else ""
+    ACCESS_TOKEN = (token, time.monotonic())
+    return token != ""
+
+
+def access_token() -> str:
+    global ACCESS_TOKEN
+    token, read_at = ACCESS_TOKEN
+    if token == "" or time.monotonic() - read_at >= TOKEN_REUSE_SECONDS:
+        main_thread_only()
+        token = run_quiet("auth", "print-access-token").strip()
+        ACCESS_TOKEN = (token, time.monotonic())
+    return token
 
 
 def login_with_key_file() -> bool:
@@ -413,10 +599,13 @@ def relogin(assume_yes: bool) -> int:
 
 def ensure_apis(project: str, assume_yes: bool,
                 required: tuple[str, ...] = APIS) -> bool:
-    output = run_quiet(
-        "services", "list", "--enabled", "--project", project,
-        "--format=value(config.name)", slow="reading: enabled Google Cloud APIs")
-    enabled = set(output.splitlines())
+    with console.waiting("reading: enabled Google Cloud APIs"):
+        services = rest_list(
+            f"{SERVICE_USAGE_API}/projects/{project}/services?filter=state:ENABLED&pageSize=200",
+            "services", lambda: [{"config": {"name": name}} for name in run_quiet(
+                "services", "list", "--enabled", "--project", project,
+                "--format=value(config.name)").splitlines()])
+    enabled = {(service.get("config") or {}).get("name") for service in services}
     missing = [api for api in required if api not in enabled]
     if not missing:
         return False
@@ -436,6 +625,14 @@ def project_region(app: dict) -> tuple[str, str]:
                   or os.environ.get("PDT_GOOGLE_CLOUD_PROJECT") or "")
     region = str(app["platform"].get("region")
                  or os.environ.get("PDT_GOOGLE_CLOUD_REGION") or "us-central1")
+    if not REGION_NAME.fullmatch(region) and app["platform"].get("region"):
+        fail(f"{console.value(region)} is not a Google Cloud region name, such as "
+             f"{console.value('us-central1')}; change {console.value('platform.region')} in the "
+             f"project's {console.value(config.PROJECT_FILE)} or the app's "
+             f"{console.value(config.APP_FILE)}")
+    if not REGION_NAME.fullmatch(region):
+        fail(f"{console.value(region)} is not a Google Cloud region name, such as "
+             f"{console.value('us-central1')}; change {console.value('PDT_GOOGLE_CLOUD_REGION')}")
     return project, region
 
 
@@ -471,9 +668,17 @@ def deployer_store(project: str, app_name: str) -> Store:
     return Store(store_url(store_bucket(project), app_name), Credentials(token))
 
 
+def folder_policy(bucket: str, app_name: str) -> dict:
+    """The IAM policy of the app's managed folder, or {} when pdt cannot read it."""
+    return rest_json(f"{STORAGE_API}/b/{bucket}/managedFolders/"
+                     f"{urllib.parse.quote(app_name + '/', safe='')}/iam"
+                     "?optionsRequestedPolicyVersion=3",
+                     lambda: describe_json("storage", "managed-folders", "get-iam-policy",
+                                           store_url(bucket, app_name))) or {}
+
+
 def folder_grant_exists(bucket: str, app_name: str, sa: str) -> bool:
-    folder = store_url(bucket, app_name)
-    policy = describe_json("storage", "managed-folders", "get-iam-policy", folder) or {}
+    policy = folder_policy(bucket, app_name)
     return any(binding.get("role") == STORE_ROLE
                and f"serviceAccount:{sa}" in (binding.get("members") or [])
                for binding in policy.get("bindings") or [])
@@ -585,13 +790,14 @@ def run_job_identity(run_job: dict) -> tuple[str, str]:
 
 
 def secret_value(project: str, sid: str) -> str | None:
-    proc = subprocess.run(
-        [GCLOUD, "secrets", "versions", "access", "latest",
-         "--secret", sid, "--project", project],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True)
-    if proc.returncode != 0:
+    answer = rest_json(f"{SECRET_API}/projects/{project}/secrets/{sid}/versions/latest:access",
+                       lambda: describe_json("secrets", "versions", "access", "latest",
+                                             "--secret", sid, "--project", project))
+    if answer is None:
         return None
-    return proc.stdout
+    # The API answers in standard base64 and gcloud's JSON in URL-safe base64.
+    data = answer["payload"]["data"].replace("-", "+").replace("_", "/")
+    return base64.b64decode(data).decode()
 
 
 def build_image(stage: Path, image: str, region: str) -> None:
@@ -599,9 +805,13 @@ def build_image(stage: Path, image: str, region: str) -> None:
     # pdt's own copy may not be there, so docker logs in with an access
     # token, which is valid for 60 minutes:
     # https://docs.cloud.google.com/artifact-registry/docs/docker/authentication#token
+    registry = f"https://{region}-docker.pkg.dev"
+    if not google_host(registry):
+        fail(f"pdt sends the Google Cloud access token only to Google API hosts, not to "
+             f"{console.value(registry)}")
     token = run_quiet("auth", "print-access-token").strip()
     run_build(["docker", "login", "--username", "oauth2accesstoken", "--password-stdin",
-               f"https://{region}-docker.pkg.dev"], data=token, quiet=True)
+               registry], data=token, quiet=True)
     # Cloud Run runs only linux/amd64 images.
     run_build(["docker", "build", "--platform", "linux/amd64", *ssh_build_args(),
                "-t", image, str(stage)])
@@ -675,15 +885,13 @@ def other_profile(app: dict, project: str, region: str) -> str:
     """The other profile's resource that pdt deployed for this app, or "": a job's Cloud Run job
     when the app is now a web app, or a web app's Cloud Run service when it is now a job."""
     kind = "jobs" if app.get("app_profile", "job") == "web" else "services"
-    found = read_json_or_none("run", kind, "describe", f"pdt-{app['name']}", "--region", region,
-                              "--project", project)
+    found = run_or_none(kind, f"pdt-{app['name']}", region, project)
     return kind[:-1] if managed_by_pdt(found) else ""
 
 
-def refuse_profile_change(app: dict, project: str, region: str, command: str) -> None:
-    """Stop when the app is deployed under its other profile: neither profile's deploy or
-    destroy removes the other's resources."""
-    found = other_profile(app, project, region)
+def refuse_profile_change(app: dict, found: str, command: str) -> None:
+    """Stop when `found`, what other_profile found, says the app is deployed under its other
+    profile: neither profile's deploy or destroy removes the other's resources."""
     if found:
         profile = app.get("app_profile", "job")
         other = "job" if profile == "web" else "web"
@@ -753,7 +961,7 @@ def ensure_builder(project: str, region: str, repo: str, builder: str, bucket: s
 
 
 def billing_list(path: str, key: str, project: str, currency: str = "") -> list:
-    token = run_quiet("auth", "print-access-token").strip()
+    token = access_token()
     items = []
     page_token = ""
     while True:
@@ -766,7 +974,7 @@ def billing_list(path: str, key: str, project: str, currency: str = "") -> list:
             f"{BILLING_API}/{path}?{urllib.parse.urlencode(query)}",
             headers={"Authorization": f"Bearer {token}",
                      "X-Goog-User-Project": project})
-        data = fetch_json(req, timeout=60)
+        data = fetch_json(req, timeout=60, open_url=API_OPENER.open)
         items.extend(data.get(key) or [])
         page_token = data.get("nextPageToken") or ""
         if not page_token:
@@ -978,51 +1186,60 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     bucket = store_bucket(project)
     store = deployer_store(project, name) if app["storage"] else None
 
+    builder = builder_email(project)
+    builds = build_bucket(project)
+    sid = secret_id(name)
     console.status(f"Checking current state in project {console.value(project)} "
                    f"({console.value(region)})...")
-    with console.waiting("reading: resources"):
-        repository = read_json_or_none(
-            "artifacts", "repositories", "describe", repo,
-            "--location", region, "--project", project)
+    with console.waiting("reading: resources"), ThreadPoolExecutor(READ_THREADS) as pool:
+        repository_read = submit(pool, repository_or_none, project, region, repo)
+        accounts_read = submit(pool, service_accounts, project)
+        builds_read = submit(pool, bucket_or_none, builds) if cloud else None
+        bucket_read = submit(pool, bucket_or_none, bucket) if store else None
+        other_read = submit(pool, other_profile, app, project, region)
+        job_read = submit(pool, run_or_none, "jobs", job, region, project)
+        scheduler_read = submit(
+            pool, rest_json, f"{SCHEDULER_API}/projects/{project}/locations/{region}/jobs/{job}",
+            lambda: read_json_or_none("scheduler", "jobs", "describe", job,
+                                      "--location", region, "--project", project))
+        secret_read = submit(pool, secret_or_none, project, sid)
+        value_read = submit(pool, secret_value, project, sid) if values else None
+        repository = repository_read()
         require_managed(repository, f"Artifact Registry repository {console.value(repo)}")
         repo_exists = repository is not None
-        service_account = service_account_or_none(project, sa)
+        accounts = accounts_read()
+        service_account = next((item for item in accounts if item.get("email") == sa), None)
         default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
         if (service_account is not None and sa == default_sa
                 and not service_account_owned(service_account)):
             fail(f"service account {console.value(sa)} exists but is not managed by PDT")
         sa_exists = service_account is not None
-        builder = builder_email(project)
-        builds = build_bucket(project)
         builder_exists = builds_exists = False
         if cloud:
-            builder_account = service_account_or_none(project, builder)
+            builder_account = next((item for item in accounts if item.get("email") == builder),
+                                   None)
             if builder_account is not None and not builder_owned(builder_account):
                 fail(f"service account {console.value(builder)} exists but is not managed by PDT")
             builder_exists = builder_account is not None
-            described = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
+            described = builds_read()
             require_managed(described, f"bucket {console.value(builds)}")
             builds_exists = described is not None
         bucket_exists = False
         if store:
-            described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
+            described = bucket_read()
             require_managed(described, f"bucket {console.value(bucket)}")
             bucket_exists = described is not None
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
-        refuse_profile_change(app, project, region, "deploy")
-        run_job = read_json_or_none(
-            "run", "jobs", "describe", job, "--region", region, "--project", project)
+        refuse_profile_change(app, other_read(), "deploy")
+        run_job = job_read()
         require_managed(run_job, f"Cloud Run job {console.value(job)}")
         job_exists = run_job is not None
         deployed = (((run_job or {}).get("metadata") or {}).get("labels") or {}).get(BUILD_TAG)
-        scheduler = read_json_or_none(
-            "scheduler", "jobs", "describe", job,
-            "--location", region, "--project", project)
+        scheduler = scheduler_read()
         if scheduler is not None and not scheduler_owned(scheduler, name, project, region, sa):
             fail(f"Cloud Scheduler job {console.value(job)} exists but is not managed by PDT")
         sched_exists = scheduler is not None
-        sid = secret_id(name)
-        secret = read_json_or_none("secrets", "describe", sid, "--project", project)
+        secret = secret_read()
         require_managed(secret, f"Secret Manager secret {console.value(sid)}")
         payload = json.dumps(values, sort_keys=True)
         secret_state = None
@@ -1030,8 +1247,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             if secret is None:
                 secret_state = "create"
             else:
-                current = secret_value(project, sid)
-                secret_state = "unchanged" if current == payload else "update"
+                secret_state = "unchanged" if value_read() == payload else "update"
 
     actions = [console.Markup(("use existing" if repo_exists else "create")
                               + f" Artifact Registry repo {console.value(repo)}")]
@@ -1193,7 +1409,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_scheduler = scheduler_owned(scheduler, name, project, region, sa)
         if scheduler is not None and not delete_scheduler:
             console.note(f"Cloud Scheduler job {console.value(job)} is not managed by PDT; keeping it")
-        refuse_profile_change(app, project, region, "destroy")
+        refuse_profile_change(app, other_profile(app, project, region), "destroy")
         run_job = read_json_or_none(
             "run", "jobs", "describe", job,
             "--region", region, "--project", project)

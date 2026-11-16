@@ -102,7 +102,7 @@ def fake_cloud(monkeypatch, fake: FakeCloud, secrets=None):
     monkeypatch.setattr(gc, "pushed_image", fake.pushed_image)
     monkeypatch.setattr(gc, "preflight", lambda app, project, assume_yes: PROJECT)
     monkeypatch.setattr(gc, "ensure_apis", lambda project, yes, apis: setattr(fake, "apis", apis))
-    monkeypatch.setattr(gc, "service_account_or_none", lambda project, email: None)
+    monkeypatch.setattr(gc, "service_accounts", lambda project: [])
     monkeypatch.setattr(gc, "deployer_store", lambda project, name: FakeStore())
     monkeypatch.setattr(gc, "build_image", lambda stage, image, region:
                         fake.calls.append(("docker", "build", image)) or fake.pushed.add(image))
@@ -112,7 +112,7 @@ def fake_cloud(monkeypatch, fake: FakeCloud, secrets=None):
     monkeypatch.setattr(gweb, "gather_secrets", lambda app: {"TOKEN": "secret"}
                         if secrets is None else secrets)
     monkeypatch.setattr(gweb, "confirm", lambda actions, assume_yes, cost=None: True)
-    monkeypatch.setattr(gweb, "fetch_json", lambda request: {"email": AGENT})
+    monkeypatch.setattr(gweb, "fetch_json", lambda request, open_url=None: {"email": AGENT})
     monkeypatch.setattr(gweb.regions, "local_currency", lambda: "USD")
     monkeypatch.setattr(gweb, "CATALOG_WAITS", ())
     monkeypatch.setattr(gweb, "organization",
@@ -404,8 +404,8 @@ def test_destroy_removes_the_service_the_secret_the_image_and_the_read_grant(goo
 def test_an_account_of_the_same_name_not_made_by_pdt_stops_the_deploy(google, monkeypatch,
                                                                        capsys):
     fake = fake_cloud(monkeypatch, FakeCloud())
-    monkeypatch.setattr(gc, "service_account_or_none", lambda project, email:
-                        {"email": email, "displayName": "someone else's"})
+    monkeypatch.setattr(gc, "service_accounts", lambda project:
+                        [{"email": SA, "displayName": "someone else's"}])
     with pytest.raises(SystemExit):
         gweb.deploy(web_app(google), True)
     assert fake.ran("run", "deploy") == []
@@ -562,12 +562,12 @@ def test_the_organization_holds_every_domain_the_directory_lists(monkeypatch):
     monkeypatch.setattr(gc, "gcloud", lambda *args, **kw: subprocess.CompletedProcess(
         args, 0, answers[args[:2]], ""))
     monkeypatch.setattr(gc, "run_quiet", lambda *args: "token")
-    monkeypatch.setattr(gweb, "fetch_json", lambda request: {"domains": [
+    monkeypatch.setattr(gweb, "fetch_json", lambda request, open_url=None: {"domains": [
         {"domainName": "example.com"}, {"domainName": "Third.example"}]})
     assert gweb.organization("p") == gweb.Organization(
         "example.com", {"example.com", "third.example"}, True)
 
-    def refused(request):
+    def refused(request, open_url=None):
         raise urllib.error.HTTPError(request.full_url, 403, "scope", {}, None)
     monkeypatch.setattr(gweb, "fetch_json", refused)
     assert gweb.organization("p") == gweb.Organization(
