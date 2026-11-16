@@ -1182,6 +1182,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             described = read_json_or_none("storage", "buckets", "describe", f"gs://{bucket}")
             require_managed(described, f"bucket {console.value(bucket)}")
             bucket_exists = described is not None
+        # With storage off, the bucket may still hold grants an earlier deploy made.
+        bucket_present = bucket_exists or (not store and read_json_or_none(
+            "storage", "buckets", "describe", f"gs://{bucket}") is not None)
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
         refuse_profile_change(app, project, region, "deploy")
         run_job = read_json_or_none(
@@ -1230,8 +1233,6 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                                f"keeping {console.value(runner)} and its access")
             else:
                 accounts, pairs = deploy_uses([*other_jobs, *other_services])
-                bucket_present = bucket_exists or (not store and read_json_or_none(
-                    "storage", "buckets", "describe", f"gs://{bucket}") is not None)
                 if bucket_present and (runner, name) not in pairs:
                     runner_folder = folder_grant_exists(bucket, name, runner)
                     runner_bucket = bucket_grant_exists(bucket, name, runner)
@@ -1249,7 +1250,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         # Grants an earlier deploy made that the config no longer names. A shared account
         # from PDT_CLOUD_RUN_SERVICE_ACCOUNT may hold another app's grants, so they stay.
         stale_reads = [other for other in (held_reads(bucket, sa, name)
-                                           if bucket_exists and not override else [])
+                                           if bucket_present and not override else [])
                        if other not in app["storage_read"]]
 
     if runner_kept:
@@ -1286,9 +1287,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         actions += [console.Markup(f"grant {console.value(sa)} read access to "
                                    f"{console.value(f'{other}/')} in bucket {console.value(bucket)}")
                     for other in app["storage_read"]]
-        actions += [console.Markup(f"remove {console.value(sa)} read access to "
-                                   f"{console.value(f'{bucket}/{other}/')}")
-                    for other in stale_reads]
+    actions += [console.Markup(f"remove {console.value(sa)} read access to "
+                               f"{console.value(f'{bucket}/{other}/')}")
+                for other in stale_reads]
     actions.append(console.Markup(("update" if job_exists else "create")
                                   + f" Cloud Run job {console.value(job)}"
                                   + (f", which runs as {console.value(runner)} now, to run as "
@@ -1364,8 +1365,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         grant_store_access(bucket, name, sa)
         for other in app["storage_read"]:
             grant_store_read(bucket, other, sa)
-        for other in stale_reads:
-            revoke_store_read(bucket, other, sa)
+    for other in stale_reads:
+        revoke_store_read(bucket, other, sa)
     if secret_state:
         if secret_state == "create":
             console.step(f"creating secret {console.value(sid)}")
@@ -1545,9 +1546,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
                            if run_account_owned(found) and email not in accounts
                            and not unmanaged_app_resource and not incomplete
                            and not secret_unread]
-        # The read grants go with the account; a job of this app in another region keeps both.
-        revoke_reads = (held_reads(bucket, sa, name)
-                        if bucket_present and sa in delete_accounts else [])
+        # The read grants go with each account destroy deletes; an account that stays, such as
+        # a shared one or the one a job of this app in another region runs as, keeps them.
+        revoke_reads = [(email, other) for email in (delete_accounts if bucket_present else [])
+                        for other in held_reads(bucket, email, name)]
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
@@ -1571,8 +1573,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if revoke_secret:
         actions.append(console.Markup(f"remove {console.value(sa)} access to secret "
                                       f"{console.value(sid)}"))
-    for other in revoke_reads:
-        actions.append(console.Markup(f"remove {console.value(sa)} read access to "
+    for email, other in revoke_reads:
+        actions.append(console.Markup(f"remove {console.value(email)} read access to "
                                       f"{console.value(f'{bucket}/{other}/')}"))
     if delete_scheduler:
         actions.append(console.Markup(f"delete Cloud Scheduler job {console.value(job)}"))
@@ -1657,8 +1659,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         for role in revoke_secret:
             run_quiet("secrets", "remove-iam-policy-binding", sid, "--project", project,
                       "--member", f"serviceAccount:{sa}", "--role", role)
-    for other in revoke_reads:
-        revoke_store_read(bucket, other, sa)
+    for email, other in revoke_reads:
+        revoke_store_read(bucket, other, email)
     if delete_scheduler:
         console.step(f"deleting Cloud Scheduler job {console.value(job)}")
         run_quiet("scheduler", "jobs", "delete", job,

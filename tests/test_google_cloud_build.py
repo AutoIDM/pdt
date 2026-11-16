@@ -606,6 +606,38 @@ def test_destroy_deletes_the_jobs_account_unless_the_app_runs_in_another_region(
     assert reads == ([] if elsewhere else [("warehouse", OWN)])
 
 
+def test_destroy_removes_the_read_grants_of_each_account_it_deletes(project, monkeypatch):
+    shared = "pdt-shared@my-project.iam.gserviceaccount.com"
+    fake = destroy_fake(builder=False)
+    fake.found[("run", "jobs", "describe")] = run_item("pdt-report", "us-central1", shared)
+    fake.found[("iam", "service-accounts", "list")] = [
+        {"email": OWN, "displayName": "pdt job runner report"}, {"email": shared}]
+    fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    app = destroy_app(project, monkeypatch, fake)
+    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: ["warehouse"])
+    reads = []
+    monkeypatch.setattr(google, "revoke_store_read", lambda *args: reads.append(args[1:]))
+    assert google.destroy(app, True) == 0
+    assert [call[3] for call in fake.ran("iam", "service-accounts", "delete")] == [OWN]
+    assert reads == [("warehouse", OWN)]
+
+
+def test_a_deploy_with_storage_off_removes_the_read_grants_it_made(project, monkeypatch, capsys):
+    fake = FakeGcloud(found={
+        ("run", "jobs", "describe"): run_item("pdt-report", "us-central1", OWN),
+        ("iam", "service-accounts", "list"): [
+            {"email": OWN, "displayName": "pdt job runner report"}],
+        ("storage", "buckets", "describe"): {"labels": {"managed-by": "pdt"}},
+    })
+    app = {**deploy_app(project, monkeypatch, fake, cloud=True), "storage_read": []}
+    assert app["storage"] is False
+    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: ["warehouse"])
+    reads = []
+    monkeypatch.setattr(google, "revoke_store_read", lambda *args: reads.append(args[1:]))
+    assert google.deploy(app, True) == 0
+    assert reads == [("warehouse", OWN)]
+
+
 def moving_fake(*jobs):
     return FakeGcloud(found={
         ("run", "jobs", "describe"): run_item("pdt-report", "us-central1", RUNNER),
