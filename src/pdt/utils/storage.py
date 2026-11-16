@@ -409,11 +409,13 @@ class Azure(Backend):
         # prefixes that start with "<app>/", and "<app>" also matches "<app>-2/".
         folder = path.strip("/")
         prefix = self.key(folder + "/" if folder else "")
-        names = [item.name[len(self.prefix):].rstrip("/")
-                 for item in self.client.walk_blobs(name_starts_with=prefix)]
+        names = {item.name[len(self.prefix):].rstrip("/")
+                 for item in self.client.walk_blobs(name_starts_with=prefix)}
+        if not names and folder and self.client.get_blob_client(self.key(folder)).exists():
+            return [folder]
         if not names:
             raise FileNotFoundError(path)
-        return names
+        return sorted(names)
 
     def versions(self, prefix: str) -> dict[str, str]:
         blobs = self.client.list_blobs(name_starts_with=self.key(prefix))
