@@ -796,18 +796,19 @@ def destroy(app: dict, assume_yes: bool) -> int:
         accounts, pairs = gc.deploy_uses([*other_jobs, *other_services])
         elsewhere = [item for item in [*jobs, *services]
                      if gc.run_job_identity(item)[0] == service]
-        account = gc.service_account_or_none(project, sa)
-        delete_account = (service_account_owned(account, name) and sa not in accounts
-                          and not incomplete)
         secret = gc.read_json_or_none("secrets", "describe", sid, "--project", project)
         secret_owned = gc.managed_by_pdt(secret)
         delete_secret = secret_owned and not elsewhere and not incomplete
         revoke_secret = ([] if delete_secret or not secret_owned or incomplete
                          or sa in {gc.run_account(item) for item in elsewhere}
                          else gc.secret_roles(project, sid, sa))
+        secret_unread = revoke_secret is None
         if secret is not None and not secret_owned:
             console.note(f"Secret Manager secret {console.value(sid)} is not managed by PDT; "
                          "keeping it")
+        account = gc.service_account_or_none(project, sa)
+        delete_account = (service_account_owned(account, name) and sa not in accounts
+                          and not incomplete and not secret_unread)
         repository = gc.read_json_or_none("artifacts", "repositories", "describe", repo,
                                           "--location", region, "--project", project)
         images = []
@@ -829,21 +830,21 @@ def destroy(app: dict, assume_yes: bool) -> int:
         store = gc.deployer_store(project, name) if app["storage"] else None
         bucket_present = gc.read_json_or_none("storage", "buckets", "describe",
                                               f"gs://{bucket}") is not None
-        keep_grant = incomplete or (sa, name) in pairs
+        keep_grant = incomplete or secret_unread or (sa, name) in pairs
         revoke_folder = (bucket_present and not keep_grant
                          and gc.folder_grant_exists(bucket, name, sa))
         revoke_bucket = (bucket_present and not keep_grant
                          and gc.bucket_grant_exists(bucket, name, sa))
         revoke_reads = ([other for other in held_reads(bucket, sa, name)
                          if (sa, other) not in pairs]
-                        if bucket_present and not incomplete else [])
+                        if bucket_present and not incomplete and not secret_unread else [])
 
     if incomplete:
         console.note(f"The list of Cloud Run jobs and services in other regions is incomplete "
                      f"({console.escape(incomplete)}); keeping what apps share across regions")
     if revoke_secret is None:
         console.note(f"Reading who may use secret {console.value(sid)} failed; keeping "
-                     f"{console.value(sa)} access to it")
+                     f"{console.value(sa)} and its access")
     actions = []
     if revoke_folder or revoke_bucket:
         actions.append(console.Markup(f"remove {console.value(sa)} write access to "

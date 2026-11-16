@@ -573,10 +573,11 @@ def test_a_failed_read_of_the_secret_policy_keeps_the_access(google, monkeypatch
     fake = region_destroy(google, monkeypatch, jobs=[run_item("europe-west1", RUNNER, job=True)])
     assert fake.ran("secrets", "remove-iam-policy-binding") == []
     assert fake.ran("secrets", "delete") == []
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("storage", "managed-folders", "remove-iam-policy-binding") == []
     out = " ".join(capsys.readouterr().out.split())
     assert "PERMISSION_DENIED" in out
-    assert (f"Reading who may use secret pdt-dashboard-env failed; keeping {SA} access to it"
-            in out)
+    assert f"Reading who may use secret pdt-dashboard-env failed; keeping {SA} and its access" in out
 
 
 PRICES = {gweb.CPU_SKU: 0.000024, gweb.MEMORY_SKU: 0.0000025, gweb.MIN_CPU_SKU: 0.0000025,

@@ -768,7 +768,7 @@ def deploy_uses(items: list[dict]) -> tuple[set[str], set[tuple[str, str]]]:
         pairs.add((account, run_job_identity(item)[0].removeprefix("pdt-")))
         for volume in run_spec(item).get("volumes") or []:
             attributes = (volume.get("csi") or {}).get("volumeAttributes") or {}
-            for option in str(attributes.get("mountOptions") or "").split(";"):
+            for option in re.split(r"[,;]", str(attributes.get("mountOptions") or "")):
                 if option.startswith("only-dir="):
                     pairs.add((account, option.removeprefix("only-dir=")))
     return accounts, pairs
@@ -1328,6 +1328,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         revoke_secret = ([] if delete_secret or not secret_owned or incomplete
                          or sa in {run_account(item) for item in same_app}
                          else secret_roles(project, sid, sa))
+        secret_unread = revoke_secret is None
         # The job's own account and pdt-runner, by email: each goes when pdt made it and no
         # remaining deploy runs as it.
         run_accounts = {email: service_account_or_none(project, email)
@@ -1337,7 +1338,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         bucket_present = read_json_or_none(
             "storage", "buckets", "describe", f"gs://{bucket}") is not None
         store_present = store is not None and bucket_present
-        keep_grant = incomplete or (sa, name) in pairs
+        keep_grant = incomplete or secret_unread or (sa, name) in pairs
         revoke_folder = bucket_present and not keep_grant and folder_grant_exists(bucket, name, sa)
         revoke_bucket = bucket_present and not keep_grant and bucket_grant_exists(bucket, name, sa)
         revoke_grant = revoke_folder or revoke_bucket
@@ -1348,7 +1349,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_image = bool(app_images) and not delete_repo
         delete_accounts = [email for email, found in run_accounts.items()
                            if run_account_owned(found) and email not in accounts
-                           and not unmanaged_app_resource and not incomplete]
+                           and not unmanaged_app_resource and not incomplete
+                           and not secret_unread]
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
@@ -1364,7 +1366,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
                      f"({console.escape(incomplete)}); keeping what apps share across regions")
     if revoke_secret is None:
         console.note(f"Reading who may use secret {console.value(sid)} failed; keeping "
-                     f"{console.value(sa)} access to it")
+                     f"{console.value(sa)} and its access")
     actions = []
     if revoke_grant:
         actions.append(console.Markup(f"remove {console.value(sa)} write access to "

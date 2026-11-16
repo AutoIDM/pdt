@@ -485,16 +485,19 @@ def test_the_remaining_deploys_name_every_region_and_error_once(monkeypatch):
 
 
 def test_the_uses_include_the_folders_a_job_or_a_service_mounts():
-    volume = {"name": "read-warehouse", "csi": {"driver": "gcsfuse.run.googleapis.com",
-              "volumeAttributes": {"mountOptions": "only-dir=warehouse"}}}
+    def volume(options):
+        return {"name": "read", "csi": {"driver": "gcsfuse.run.googleapis.com",
+                "volumeAttributes": {"mountOptions": options}}}
+
     job = run_item("pdt-worker", "us-central1", RUNNER)
-    job["spec"]["template"]["spec"]["template"]["spec"]["volumes"] = [volume]
+    job["spec"]["template"]["spec"]["template"]["spec"]["volumes"] = [
+        volume("only-dir=warehouse,uid=1000")]
     service = run_item("pdt-dashboard", "us-central1", "pdt-web-dashboard@x", job=False)
-    service["spec"]["template"]["spec"]["volumes"] = [volume]
+    service["spec"]["template"]["spec"]["volumes"] = [volume("uid=1000;only-dir=reports")]
     assert google.deploy_uses([job, service]) == (
         {RUNNER, "pdt-web-dashboard@x"},
         {(RUNNER, "worker"), (RUNNER, "warehouse"),
-         ("pdt-web-dashboard@x", "dashboard"), ("pdt-web-dashboard@x", "warehouse")})
+         ("pdt-web-dashboard@x", "dashboard"), ("pdt-web-dashboard@x", "reports")})
 
 
 def test_destroy_removes_a_web_account_the_job_ran_as_when_no_deploy_needs_it(project,
@@ -542,15 +545,21 @@ def test_destroy_removes_the_write_grant_when_storage_is_now_off(project, monkey
 
 def test_a_failed_read_of_the_secret_policy_keeps_the_job_access(project, monkeypatch, capsys):
     fake = secret_fake()
+    fake.found[("iam", "service-accounts", "list")].append(
+        {"email": RUNNER, "displayName": "pdt job runner"})
+    fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
     fake.found[("run", "services", "list")] = [
         run_item("pdt-report", "europe-west1", "pdt-web-report@my-project.iam.gserviceaccount.com",
                  job=False)]
+    app = destroy_app(project, monkeypatch, fake)
     monkeypatch.setattr(google, "secret_roles", lambda project, sid, sa: None)
-    assert google.destroy(destroy_app(project, monkeypatch, fake), True) == 0
+    monkeypatch.setattr(google, "folder_grant_exists", lambda bucket, name, sa: True)
+    monkeypatch.setattr(google, "revoke_store_access", lambda *args: pytest.fail("revoked"))
+    assert google.destroy(app, True) == 0
     assert fake.ran("secrets", "remove-iam-policy-binding") == []
+    assert [call[3] for call in fake.ran("iam", "service-accounts", "delete")] == []
     out = " ".join(capsys.readouterr().out.split())
-    assert (f"Reading who may use secret pdt-report-env failed; keeping {RUNNER} access to it"
-            in out)
+    assert f"Reading who may use secret pdt-report-env failed; keeping {RUNNER} and its access" in out
 
 
 def test_destroy_without_a_cloud_build_ever_tolerates_their_absence(project, monkeypatch):
