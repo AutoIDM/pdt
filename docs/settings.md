@@ -482,7 +482,7 @@ Set the last five of these only to use a resource with another name. Each defaul
 | `PDT_GOOGLE_CLOUD_PROJECT` | A Google Cloud project ID. | Not set. | Selects the project when `platform.project` is empty. |
 | `PDT_GOOGLE_CLOUD_REGION` | A Google Cloud region name. | Not set. | Selects the region when `platform.region` is empty. The deploy then asks no region question. |
 | `PDT_ARTIFACT_REGISTRY_REPO` | An Artifact Registry repository name. | `pdt` | Names the image repository. |
-| `PDT_CLOUD_RUN_SERVICE_ACCOUNT` | A service account email address. | `pdt-runner@<project>.iam.gserviceaccount.com` | Names the service account that jobs run as. |
+| `PDT_CLOUD_RUN_SERVICE_ACCOUNT` | A service account email address. | `pdt-job-<app>@<project>.iam.gserviceaccount.com`, one for each app | Names the service account that jobs run as. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | The path of a key file. | Not set. | pdt signs in with this file when you have no other sign-in. |
 | `CLOUDSDK_CONFIG` | A folder path. | `~/.config/gcloud`, or `%APPDATA%\gcloud` on Windows. | Names the gcloud settings folder that pdt reads to suggest a region. |
 | `CLOUDSDK_ACTIVE_CONFIG_NAME` | A gcloud configuration name. | The active gcloud configuration. | Selects the gcloud configuration that pdt reads to suggest a region. |

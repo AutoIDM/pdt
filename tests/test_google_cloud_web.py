@@ -165,7 +165,7 @@ def test_deploy_builds_the_service_behind_iap_with_a_mounted_read_folder(google,
     assert flag(deploy, "--image").startswith(IMAGE.rsplit(":", 1)[0] + "@sha256:")
     assert flag(deploy, "--startup-probe") == (
         "httpGet.path=/healthz,httpGet.port=8050,periodSeconds=5,timeoutSeconds=5,failureThreshold=18")
-    # The service runs as its own account, never as the jobs' pdt-runner.
+    # The service runs as its own account, never as a job's account.
     assert flag(deploy, "--service-account") == SA
     [create] = fake.ran("iam", "service-accounts", "create")
     assert create[3] == "pdt-web-dashboard" and flag(create, "--display-name") == "pdt web app dashboard"

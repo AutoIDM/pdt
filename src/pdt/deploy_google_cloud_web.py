@@ -18,8 +18,8 @@ Resources per app, in the configured project and region:
 web.resources sets the instance size and scale; RESOURCE_DEFAULTS in web_app.py
 fills in each key it does not set.
 Shared with the project's jobs: the Artifact Registry repo and the bucket
-pdt-data-<suffix>. A web app never runs as the jobs' pdt-runner, so a flaw in it
-cannot reach a job's secret or write a job's files.
+pdt-data-<suffix>. A web app runs as its own account, as each job does, so a flaw
+in it cannot reach a job's secret or write a job's files.
 
 A web app with `storage.read` gets each named app's folder of the bucket mounted
 read-only at /pdt/storage/<app>/ (a Cloud Storage volume, through Cloud Storage
