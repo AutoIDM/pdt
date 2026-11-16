@@ -168,3 +168,11 @@ def test_a_job_takes_its_schedule_from_the_job_section_or_the_top_level(project)
     assert merged_app("old")["schedule"] == "daily" and validate_app("old") == []
     add_app(project, "report", "job:\n  schedule: hourly\n  retries: 3\n")
     assert any("unknown key 'retries'" in p for p in validate_app("report"))
+
+
+def test_a_null_job_key_is_not_set(project):
+    add_app(project, "report", "job:\n  schedule: null\n  timezone:\nschedule: hourly\n")
+    app = merged_app("report")
+    assert app["schedule"] == "hourly" and app["timezone"] == "Etc/UTC"
+    add_app(project, "report", "job:\n  schedule: null\n")
+    assert merged_app("report")["schedule"] is None

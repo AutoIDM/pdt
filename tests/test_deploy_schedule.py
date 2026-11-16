@@ -88,3 +88,25 @@ def test_the_last_line_of_the_menu_asks_for_a_cron_expression(ps_app, monkeypatc
     press("down", "down", "down", "enter")
     assert deploy.choose_schedule(merged_app("ps-report"), False) == ""
     assert schedule_in(ps_app) == "30 6 * * 1-5"
+
+
+def test_a_null_schedule_in_the_job_section_is_replaced_where_it_is(project):
+    folder = add_app(project, "my-report", "job:\n  schedule: null  # pick later\n"
+                                           "  timezone: America/Chicago\nstorage: false\n")
+    assert deploy.choose_schedule(merged_app("my-report"), True) == ""
+    assert (folder / "pdt.yml").read_text() == ('job:\n  schedule: "daily"\n'
+                                                "  timezone: America/Chicago\nstorage: false\n")
+    assert merged_app("my-report")["schedule"] == "daily"
+
+
+def test_a_job_section_with_no_schedule_gets_it(project):
+    folder = add_app(project, "my-report", "job:\n  timezone: America/Chicago\n")
+    assert deploy.choose_schedule(merged_app("my-report"), True) == ""
+    assert (folder / "pdt.yml").read_text() == ('job:\n  timezone: America/Chicago\n'
+                                                '  schedule: "daily"\n')
+
+
+def test_a_null_schedule_in_a_one_line_job_section_still_takes_the_saved_one(project):
+    add_app(project, "my-report", "job: {schedule: null}\n")
+    assert deploy.choose_schedule(merged_app("my-report"), True) == ""
+    assert merged_app("my-report")["schedule"] == "daily"

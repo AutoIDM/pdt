@@ -357,9 +357,12 @@ def merged_app(name: str) -> dict:
     own_job, entry_job = mapping(own, "job", own_where), mapping(entry, "job", entry_where)
 
     def job_key(key: str, default=None):
-        """A `job:` key, else the same key at the top level, the app's file before the entry."""
+        """A `job:` key, else the same key at the top level, the app's file before the entry.
+
+        A key set to null is not set.
+        """
         for section in (own_job, own, entry_job, entry):
-            if key in section:
+            if section.get(key) is not None:
                 return section[key]
         return default
 
@@ -438,8 +441,9 @@ def keep_unsaved(key: str, value, platform: bool = False) -> bool:
     return True
 
 
-def save_app_key(app: dict, key: str, value) -> Path:
-    """Write one top-level key into the app's pdt.yml, the most specific file.
+def save_app_key(app: dict, key: str, value, section: str | None = None) -> Path:
+    """Write one key into the app's pdt.yml, the most specific file: into the `section:`
+    block when the file has one, else at the top level.
 
     Edits the text rather than rewriting the yaml, so the user's comments survive,
     and holds the same lock and atomic replace as `save_platform_key`.
@@ -450,15 +454,36 @@ def save_app_key(app: dict, key: str, value) -> Path:
     text = ("true" if value else "false") if isinstance(value, bool) else yaml_quoted(value)
     with locked(path):
         lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
+        start = next((i for i, line in enumerate(lines)
+                      if section is not None and not line.startswith((" ", "\t"))
+                      and line.split("#")[0].rstrip() == f"{section}:"), None)
         existing = next((i for i, line in enumerate(lines)
                          if not line.startswith((" ", "\t")) and line.split("#")[0].strip()
                          .startswith(f"{key}:")), None)
-        if existing is not None:
+        if start is not None:
+            _set_block_key(lines, start, key, text)
+        elif existing is not None:
             lines[existing] = f"{key}: {text}"
         else:
             lines.append(f"{key}: {text}")
         write_text_atomically(path, "\n".join(lines) + "\n")
     return path
+
+
+def _set_block_key(lines: list[str], start: int, key: str, text: str) -> None:
+    """Set `key` in the indented block under the line `start`, keeping its indent."""
+    end = start + 1
+    while end < len(lines) and (lines[end].startswith((" ", "\t")) or lines[end].strip() == ""):
+        end += 1
+    block = range(start + 1, end)
+    existing = next((i for i in block if lines[i].strip().startswith(f"{key}:")), None)
+    if existing is not None:
+        lines[existing] = f"{_indent(lines[existing])}{key}: {text}"
+    else:
+        first = next((i for i in block
+                      if lines[i].strip() and not lines[i].strip().startswith("#")), None)
+        indent = _indent(lines[first]) if first is not None else "  "
+        lines.insert((first if first is not None else start) + 1, f"{indent}{key}: {text}")
 
 
 def save_platform_key(app: dict, key: str, value: str, path: Path | None = None) -> Path:
@@ -484,18 +509,7 @@ def save_platform_key(app: dict, key: str, value: str, path: Path | None = None)
         if start is None:
             lines += ["platform:", f"  {key}: {yaml_quoted(value)}"]
         else:
-            end = start + 1
-            while end < len(lines) and (lines[end].startswith((" ", "\t")) or lines[end].strip() == ""):
-                end += 1
-            block = range(start + 1, end)
-            existing = next((i for i in block if lines[i].strip().startswith(f"{key}:")), None)
-            if existing is not None:
-                lines[existing] = f"{_indent(lines[existing])}{key}: {yaml_quoted(value)}"
-            else:
-                first = next((i for i in block
-                              if lines[i].strip() and not lines[i].strip().startswith("#")), None)
-                indent = _indent(lines[first]) if first is not None else "  "
-                lines.insert((first if first is not None else start) + 1, f"{indent}{key}: {yaml_quoted(value)}")
+            _set_block_key(lines, start, key, yaml_quoted(value))
         write_text_atomically(path, "\n".join(lines) + "\n")
     console.done(f"Saved {console.escape(key)} {console.value(value)} to {console.value(shown)}.")
     return path

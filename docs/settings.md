@@ -204,11 +204,11 @@ A cron value that starts with `*` must be in quotes, for example `"*/15 * * * *"
 
 ### `job:` keys
 
-These keys apply only to a job. Each one also works at the top level of the app's `pdt.yml`, where older apps have it. New apps put them in `job:`. When both places set a key, `job:` wins.
+These keys apply only to a job. Each one also works at the top level of the app's `pdt.yml`, where older apps have it. New apps put them in `job:`. When both places set a key, `job:` wins. A key with the value `null`, or with no value, is not set.
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
-| `schedule` | `hourly`, `daily`, `weekly`, `monthly`, `yearly`, or a 5-field cron expression in quotes. | No schedule. The first deploy asks for one and saves it. With `--yes`, the deploy uses `daily`. | Sets when the job runs. The `windows` provider accepts fewer forms. See [Windows Task Scheduler](platforms.md#windows-task-scheduler). |
+| `schedule` | `hourly`, `daily`, `weekly`, `monthly`, `yearly`, or a 5-field cron expression in quotes. | No schedule. The first deploy asks for one and saves it in the `job:` section of the app's `pdt.yml` when the file has one, else at the top level of the file. With `--yes`, the deploy uses `daily`. | Sets when the job runs. The `windows` provider accepts fewer forms. See [Windows Task Scheduler](platforms.md#windows-task-scheduler). |
 | `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of the schedule. The `windows` provider ignores it. |
 
 ```yaml
