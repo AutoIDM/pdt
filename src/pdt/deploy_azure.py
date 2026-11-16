@@ -1294,7 +1294,7 @@ def run_command(app: dict, args: argparse.Namespace) -> int:
         return module.pause(app, preflight(app, azure_settings(app)), args.command == "pause")
     if args.command == "start":
         return module.start(app, preflight(app, azure_settings(app)), "--follow" in args.rest)
-    if app["timezone"] not in ("Etc/UTC", "UTC"):
+    if app["timezone"] not in config.AZURE_TIMEZONES:
         fail("Azure evaluates cron schedules only in UTC; set "
              f"{console.value('timezone: Etc/UTC')}")
     if args.command == "secrets":

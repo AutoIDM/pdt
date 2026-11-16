@@ -1352,7 +1352,7 @@ dependencies = [
     { name = "rich" },
     { name = "rich-argparse" },
     { name = "shellingham" },
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
+    { name = "tzdata" },
 ]
 
 [package.optional-dependencies]
@@ -1408,7 +1408,7 @@ requires-dist = [
     { name = "rich-argparse", specifier = ">=1.8.0" },
     { name = "s3fs", marker = "extra == 'apps'", specifier = ">=2024" },
     { name = "shellingham" },
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
+    { name = "tzdata" },
 ]
 provides-extras = ["apps"]
 

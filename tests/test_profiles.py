@@ -160,6 +160,7 @@ def test_a_top_level_auth_section_points_at_web(project):
 
 
 def test_a_job_takes_its_schedule_from_the_job_section_or_the_top_level(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: aws\n")
     add_app(project, "report", "job:\n  schedule: hourly\n  timezone: America/Chicago\n")
     app = merged_app("report")
     assert app["schedule"] == "hourly" and app["timezone"] == "America/Chicago"
@@ -179,7 +180,30 @@ def test_a_null_job_key_is_not_set(project):
 
 
 def test_a_time_zone_that_is_not_a_name_is_reported_except_on_windows(project):
+    (project / "pdt.yml").write_text("platform:\n  provider: aws\n")
     add_app(project, "report", "job:\n  timezone: Mars/Olympus\n")
     assert any("timezone 'Mars/Olympus' is not a time zone name" in p for p in validate_app("report"))
     (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
     assert validate_app("report") == []
+
+
+def test_an_azure_job_must_use_utc(project):
+    add_app(project, "report", "job:\n  timezone: America/Chicago\n")
+    assert any("Azure evaluates cron schedules only in UTC" in p for p in validate_app("report"))
+    add_app(project, "report", "job:\n  timezone: Etc/UTC\n")
+    assert validate_app("report") == []
+
+
+def test_a_time_zone_name_needs_no_time_zone_data_on_the_computer():
+    import zoneinfo
+    tzpath = zoneinfo.TZPATH
+    zoneinfo.reset_tzpath([])
+    zoneinfo.ZoneInfo.clear_cache()
+    try:
+        assert zoneinfo.TZPATH == ()
+        for name in ("Etc/UTC", "America/Chicago"):
+            assert config.job_value_problem("timezone", name, "aws") == ""
+        assert config.job_value_problem("timezone", "Mars/Olympus", "aws") != ""
+    finally:
+        zoneinfo.reset_tzpath(tzpath)
+        zoneinfo.ZoneInfo.clear_cache()

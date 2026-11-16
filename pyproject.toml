@@ -16,7 +16,7 @@ dependencies = [
     "rich-argparse>=1.8.0",
     "argcomplete",
     "shellingham",
-    "tzdata; sys_platform == 'win32'",
+    "tzdata",
 ]
 
 [project.urls]

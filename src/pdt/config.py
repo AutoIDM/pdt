@@ -61,6 +61,8 @@ APP_KEYS = {"name", "app_profile", "schedule", "timezone", "platform", "config",
             "web", "job"}
 # The keys of a job's `job:` section. Each one also works at the top level of the app.
 JOB_KEYS = {"schedule", "timezone"}
+# Azure evaluates a Container Apps job's cron schedule only in UTC.
+AZURE_TIMEZONES = ("Etc/UTC", "UTC")
 # `storage:` is `true`, `false`, or a mapping with these keys.
 STORAGE_KEYS = {"enabled", "read"}
 # Where a cloud provider builds the image: with Docker on this computer when
@@ -1441,6 +1443,9 @@ def job_value_problem(key: str, value, provider: str) -> str:
         from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
         if provider == "windows":
             return ""
+        if provider == "azure" and value not in AZURE_TIMEZONES:
+            return (f"timezone {value!r}: Azure evaluates cron schedules only in UTC; "
+                    "set timezone: Etc/UTC")
         try:
             ZoneInfo(value)
         except (TypeError, ValueError, ZoneInfoNotFoundError):

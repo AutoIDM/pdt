@@ -212,7 +212,7 @@ When the app's `pdt.yml` sets a key both under `job:` and at the top level, `pdt
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `schedule` | `hourly`, `daily`, `weekly`, `monthly`, `yearly`, or a 5-field cron expression in quotes. | No schedule. The first deploy asks for one and saves it under `job:` in the app's `pdt.yml`. It adds the `job:` section when the file has none. With `--yes`, the deploy uses `daily`. | Sets when the job runs. The `windows` provider accepts fewer forms. See [Windows Task Scheduler](platforms.md#windows-task-scheduler). |
-| `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of the schedule. `pdt validate` reports a value that is not a time zone name. The `windows` provider ignores it. |
+| `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of the schedule. `pdt validate` reports a value that is not a time zone name. The `azure` provider accepts only `Etc/UTC` or `UTC`. The `windows` provider ignores it. |
 
 ```yaml
 # my-report/pdt.yml

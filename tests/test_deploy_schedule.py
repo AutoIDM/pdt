@@ -243,8 +243,10 @@ def test_with_no_menu_a_number_picks_the_value_to_keep(project, monkeypatch, cap
      "schedule 'not-a-schedule' is not a shorthand"),
     ("windows", "job:\n  schedule: daily\nschedule: \"*/7 * * * *\"\n",
      "schedule: cron minute interval '*/7' resets each hour"),
-    ("azure", "job:\n  timezone: Etc/UTC\ntimezone: Mars/Olympus\n",
+    ("aws", "job:\n  timezone: Etc/UTC\ntimezone: Mars/Olympus\n",
      "timezone 'Mars/Olympus' is not a time zone name"),
+    ("azure", "job:\n  timezone: Etc/UTC\ntimezone: America/Chicago\n",
+     "timezone 'America/Chicago': Azure evaluates cron schedules only in UTC"),
 ])
 def test_a_top_level_value_that_is_not_valid_is_not_offered(project, monkeypatch, capsys,
                                                              provider, text, problem):
@@ -256,7 +258,7 @@ def test_a_top_level_value_that_is_not_valid_is_not_offered(project, monkeypatch
     assert (folder / "pdt.yml").read_text() == text
     out = " ".join(capsys.readouterr().out.split())
     assert "the top-level value is not valid (" + problem in out
-    assert out.endswith("this deploy uses job.schedule daily." if "schedule" in problem
+    assert out.endswith("this deploy uses job.schedule daily." if text.startswith("job:\n  schedule")
                         else "this deploy uses job.timezone Etc/UTC.")
 
 
@@ -286,6 +288,7 @@ def test_the_same_schedule_in_both_places_stays_without_a_terminal_or_with_yes(
 
 
 def test_a_timezone_in_both_places_is_asked_the_same_way(project, monkeypatch, press):
+    (project / "pdt.yml").write_text("platform:\n  provider: aws\n")
     folder = add_app(project, "my-report", "job:\n  timezone: Etc/UTC\ntimezone: America/Chicago\n")
     monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: True)
     press("down", "enter")
