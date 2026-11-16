@@ -96,12 +96,13 @@ def test_a_configured_subscription_that_matches_the_login_is_not_looked_up(
     assert calls == []
 
 
-def test_an_unattended_run_does_not_write_the_subscription_into_the_project(
+def test_an_unattended_run_writes_the_subscription_back_as_aws_writes_the_account(
         azure_app, monkeypatch):
     chosen(monkeypatch)
     writes = saved(monkeypatch)
+    monkeypatch.setattr(deploy_azure, "can_prompt", lambda interactive: False)
     deploy_azure.preflight(azure_app, deploy_azure.azure_settings(azure_app))
-    assert writes == []
+    assert writes == [ACCOUNT["id"]]
 
 
 def test_a_person_at_the_keyboard_still_gets_the_subscription_written_back(

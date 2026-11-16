@@ -173,7 +173,13 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
         return 1
     problems = config.validate_app(app_name)
     sources = config.env_file_lines(app["dir"])
+    base = dict(os.environ)
     config.load_env(app["dir"])
+    if not problems:
+        refusal = read_place_problem(app, base, {app_name: destination(app_name, base)})
+        if refusal != "":
+            console.error(refusal)
+            return 1
     missing = config.missing_env(app)
     if missing != "":
         problems.append(missing)
@@ -196,10 +202,6 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     console.name(app_name)
     for line in [*lines, *config.found_env_lines(app), *sources]:
         console.detail(line)
-    refusal = read_place_problem(app)
-    if refusal != "":
-        console.error(refusal)
-        return 1
     problem = ""
     if app["app_profile"] == "job":
         problem = choose_schedule(app, assume_yes)
@@ -315,10 +317,10 @@ PLACE_ENV = {
 PLACE_DEFAULTS = {"azure": {"resource_group": "pdt"}}
 
 
-def resolved(platform: dict) -> dict:
+def resolved(platform: dict, environ=os.environ) -> dict:
     provider = platform.get("provider")
     names = {**PLACE_ENV.get(provider, {}), "region": regions.REGION_ENV.get(provider, ())}
-    found = {key: next((os.environ[name] for name in env if os.environ.get(name)),
+    found = {key: next((environ[name] for name in env if environ.get(name)),
                        PLACE_DEFAULTS.get(provider, {}).get(key, ""))
              for key, env in names.items() if not platform.get(key)}
     return {**platform, **{key: value for key, value in found.items() if value}}
@@ -330,31 +332,52 @@ def moved(recorded: dict, platform: dict) -> bool:
         key not in new for key in old if key not in config.FOUND_KEYS)
 
 
-def read_place_problem(app: dict) -> str:
-    """Markup naming the first storage.read app whose folder is not in this app's storage:
-    `.pdt/state` records it at another provider or `config.STORE_KEYS` place, or, with no
-    record, its config deploys it there. "" when every folder is in this app's storage."""
+def destination(app_name: str, base) -> dict:
+    """The platform the app deploys to: its config and the environment that its own .env files
+    give on top of `base`, keeping each found key of its record that they leave empty."""
+    app = config.merged_app(app_name)
+    platform = resolved(app["platform"], config.app_environment(app["dir"], base))
+    before = config.deployed_platform(app_name)
+    return {**platform, **{key: before[key] for key in config.FOUND_KEYS
+                           if before and before.get(key) and not platform.get(key)}}
+
+
+def read_place_problem(app: dict, base, planned: dict[str, dict]) -> str:
+    """Markup naming the first storage.read app whose folder is not in this app's storage
+    (the same provider and `config.STORE_KEYS` place). `planned` holds the platform of each app
+    this run deploys, this app among them; any other app is where `.pdt/state` records it, else
+    where its config and its own environment (`destination`) deploy it. "" when every folder is
+    in this app's storage."""
     name = app["name"]
-    app_file = f"{name}/{config.app_file(app['dir']).name}"
-    own = resolved(app["platform"])
-    before = config.deployed_platform(name) or {}
+    own = planned[name]
     provider = own.get("provider")
     key = config.STORE_KEYS.get(provider, "")
-    value = str(own.get(key) or before.get(key) or "")
+    value = str(own.get(key) or "")
     for other in app["storage_read"]:
-        recorded = config.deployed_platform(other)
-        place = config.place(recorded or resolved(config.merged_app(other)["platform"]))
+        recorded = None if other in planned else config.deployed_platform(other)
+        place = config.place(planned.get(other) or recorded or destination(other, base))
         if place.get("provider") == provider and (not value or place.get(key, value) == value):
             continue
         where = "is deployed to" if recorded else "deploys to"
         store = " ".join(part for part in (config.STORE_NAMES[provider], key, value)
                          if part)
-        return (f"storage.read in {console.value(app_file)} names {console.value(other)}, which {where} "
+        return (f"storage.read in {console.value(app['storage_from'])} names "
+                f"{console.value(other)}, which {where} "
                 f"{console.value(describe_place(place))}. {console.value(name)} deploys to "
                 f"{console.value(store)} and reads only from the storage of that "
                 f"{key or 'computer'}. Deploy {console.value(other)} to {console.value(store)}, "
                 f"or remove it from storage.read.")
     return ""
+
+
+def read_place_problems(names: list[str]) -> list[str]:
+    """read_place_problem for each valid app of one run that deploys `names`, with each of them
+    at the place this run deploys it, before the first deploy. An app that is not valid is
+    left to its own deploy, which reports why."""
+    names = [name for name in names if not config.validate_app(name)]
+    planned = {name: destination(name, os.environ) for name in names}
+    problems = [read_place_problem(config.merged_app(name), os.environ, planned) for name in names]
+    return [problem for problem in problems if problem != ""]
 
 
 def say_places(app: dict, recorded: dict) -> None:

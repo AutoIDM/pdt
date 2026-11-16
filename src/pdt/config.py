@@ -394,6 +394,7 @@ def merged_app(name: str) -> dict:
         "env": mapping(own, "env", own_where) or mapping(entry, "env", entry_where),
         "storage": storage,
         "storage_read": storage_read,
+        "storage_from": own_where if "storage" in own else entry_where,
         "web": mapping(own, "web", own_where) or mapping(entry, "web", entry_where),
         "auth": (auth_section(mapping(own, "web", own_where), own_where)
                  or auth_section(mapping(entry, "web", entry_where), entry_where)),
@@ -988,6 +989,18 @@ def load_env(start: Path) -> list[Path]:
     return files
 
 
+def app_environment(start: Path, base) -> dict[str, str]:
+    """The environment that load_env(start) gives a process whose environment is `base`."""
+    from dotenv import dotenv_values
+
+    env = dict(base)
+    for path in find_env_files(start):
+        for name, value in dotenv_values(path, encoding="utf-8-sig").items():
+            if value is not None:
+                env.setdefault(name, value)
+    return env
+
+
 def load_env_json() -> None:
     # In the cloud, deploy mounts all app secrets as one json blob. Azure
     # serves the copy it cached at deploy time, so read the secret itself.
@@ -1353,7 +1366,7 @@ def storage_problems(app: dict, storage) -> list[str]:
             if other["storage"] is False:
                 problems.append(f"storage.read names {name!r}, which has storage: false, "
                                 "so it has no folder to read")
-            other_provider = other["platform"].get("provider")
+            other_provider = (deployed_platform(name) or other["platform"]).get("provider")
             if provider in PROVIDERS and other_provider in PROVIDERS and other_provider != provider:
                 problems.append(f"storage.read names {name!r}, which uses the {other_provider} "
                                 f"provider, so its folder is not in the {STORE_NAMES[provider]} store")
