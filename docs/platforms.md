@@ -1,4 +1,4 @@
-# Choosing where jobs run
+# Choosing where apps run
 
 Set `platform:` in the project's `pdt.yml` for every app, or in an app's own `pdt.yml` for one app. An app's own file wins. `timezone` may live under `platform:` as the default for every app, and an app's own `timezone` overrides it.
 
@@ -60,27 +60,32 @@ platform:
 
 ## Bringing your own Dockerfile
 
-Every cloud provider runs a job as a container (see [Primitives](../README.md#primitives)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the entrypoint. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
+Every cloud provider runs a job as a container (see [Primitives](../README.md#primitives)). The deploy builds an image for each app from a generated Dockerfile. It installs the script-header dependencies of `run.py` with `uv sync --script`, then copies the app folder and `pdt.yml` into `/workspace`, and runs `run.py` as the user `pdt`, not as root. The install uses only the script header, so a deploy after a code or config change reuses the installed dependencies.
 
-Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`. Start from the generated file:
+Put a `Dockerfile` in the app folder to build the image your own way, for example to add system packages or to install a heavy tool at build time instead of on every run. The build context is the same as the generated one: the app folder under its own name, next to `pdt.yml`, and the `.pdt-lifecycle` folder. Start from this file, which is the generated file with the install after the copy:
 
 ```dockerfile
 FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:e586c1c65b7071aec78f02c5587c76c5011159cd76b3d6f1255f40e48e850abc
 RUN pip uninstall -y --root-user-action=ignore pip
-COPY . /workspace
+RUN useradd --uid 10001 --user-group --create-home pdt \
+    && mkdir -p /workspace/my-app && chown -R pdt:pdt /workspace
+USER pdt
+COPY --chown=pdt:pdt .pdt-lifecycle /opt/pdt-lifecycle
+RUN uv sync --script /opt/pdt-lifecycle/pdt/lifecycle.py
 WORKDIR /workspace/my-app
-ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false
+ENV PDT_PROJECT=/workspace NO_COLOR=1 DBT_USE_COLORS=false PYTHONUNBUFFERED=1
+COPY --chown=pdt:pdt . /workspace
 RUN uv sync --script run.py && rm -rf "$(uv python dir)"/*/lib/python*/site-packages/pip*
-ENTRYPOINT ["sh", "-c", "uv run --script run.py; code=$?; echo \"pdt: exit $code\"; exit $code"]
+ENTRYPOINT ["sh", "-c", "stop() { kill -s $1 $pid; wait $pid; finish $?; }; finish() { echo \"pdt: exit $1\"; exit $1; }; trap \"stop TERM\" TERM; trap \"stop INT\" INT; uv run --script /opt/pdt-lifecycle/pdt/lifecycle.py -- uv run --script run.py & pid=$!; wait $pid; finish $?"]
 ```
 
 A `.dockerignore` in the app folder keeps files out of the image. Write its patterns relative to the app folder (`.meltano`, `output`, `*.csv`); pdt moves them to the root of the build context for you. `.env` and the other secret files never reach the context, with or without a `.dockerignore`.
 
-The `ENTRYPOINT` ends each run's output with the line `pdt: exit N`, which `pdt runs` reads for the run's exit code. Keep that line when you change the rest of the file.
+The `ENTRYPOINT` starts `run.py` through `lifecycle.py`, which sends the run's alert events, and it ends each run's output with the line `pdt: exit N`, which `pdt runs` reads for the run's exit code. Keep that line when you change the rest of the file.
 
 A `RUN --mount=type=ssh` step in your own `Dockerfile` can install a private git dependency with your computer's SSH agent. Only a build with Docker on your computer has the agent, so a deploy that would build such an app in the cloud stops and names the step.
 
-The Windows provider never builds an image, so `pdt validate` reports a Dockerfile in an app that uses it.
+The Windows provider never builds an image, so its deploy plan says that it ignores a `Dockerfile` in the app folder.
 
 ## Windows Task Scheduler
 

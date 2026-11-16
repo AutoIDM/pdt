@@ -1,6 +1,6 @@
 # Sending email
 
-`pdt.utils.send_email` sends plain-text mail.
+`pdt.utils.send_email` sends plain-text mail, with an optional HTML part.
 
 Supports:
 

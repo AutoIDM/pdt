@@ -1,8 +1,9 @@
 # Exports the Intune configuration once a week with IntuneManagement's own
 # export (github.com/Micke-K/IntuneManagement, version 4), and keeps an
-# IntuneExport-<date>.zip in the app's data store each run. To import, unzip
-# it and point IntuneManagement's import at the company folder inside. The
-# run's log lists the files added, changed, or removed since the last export.
+# IntuneExport-<date>.zip in the app's storage folder each run. To import,
+# unzip it and point IntuneManagement's import at the company folder inside.
+# The run's log lists the files added, changed, or removed since the last
+# export.
 
 # How often this app runs.
 # Shorthand: hourly, daily, weekly, monthly, yearly.

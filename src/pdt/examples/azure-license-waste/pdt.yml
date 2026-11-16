@@ -1,5 +1,5 @@
 # Finds Microsoft 365 licenses the tenant pays for that nobody uses, and keeps
-# a LicenseWaste-<date>.xlsx workbook in the app's data store each run.
+# a LicenseWaste-<date>.xlsx workbook in the app's storage folder each run.
 
 # How often this app runs.
 # Shorthand: hourly, daily, weekly, monthly, yearly.
