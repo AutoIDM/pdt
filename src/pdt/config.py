@@ -441,49 +441,90 @@ def keep_unsaved(key: str, value, platform: bool = False) -> bool:
     return True
 
 
-def save_app_key(app: dict, key: str, value, section: str | None = None) -> Path:
-    """Write one key into the app's pdt.yml, the most specific file: into the `section:`
-    block when the file has one, else at the top level.
+def save_app_key(app: dict, key: str, value) -> Path:
+    """Write one top-level key into the app's pdt.yml, the most specific file.
 
     Edits the text rather than rewriting the yaml, so the user's comments survive,
-    and holds the same lock and atomic replace as `save_platform_key`. When the edit of the
-    block would change anything besides that key, as with a value on the next line, the key
-    goes at the top level instead.
+    and holds the same lock and atomic replace as `save_platform_key`.
     """
-    import yaml
     path = app_file(app["dir"])
     if keep_unsaved(key, value):
         return path
     text = ("true" if value else "false") if isinstance(value, bool) else yaml_quoted(value)
     with locked(path):
         lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
-        start = next((i for i, line in enumerate(lines)
-                      if section is not None and not line.startswith((" ", "\t"))
-                      and line.split("#")[0].rstrip() == f"{section}:"), None)
         existing = next((i for i, line in enumerate(lines)
                          if not line.startswith((" ", "\t")) and line.split("#")[0].strip()
                          .startswith(f"{key}:")), None)
-        edited = None
-        if start is not None:
-            edited = list(lines)
-            _set_block_key(edited, start, key, text)
-            expected = yaml.safe_load("\n".join(lines)) or {}
-            expected[section] = {**(expected[section] or {}), key: value}
-            try:
-                if yaml.safe_load("\n".join(edited)) != expected:
-                    edited = None
-            except yaml.YAMLError:
-                edited = None
-        if edited is not None:
-            lines = edited
-        elif existing is not None:
+        if existing is not None:
             lines[existing] = f"{key}: {text}"
-            while (existing + 1 < len(lines) and lines[existing + 1].strip()
-                   and lines[existing + 1].startswith((" ", "\t"))):
-                del lines[existing + 1]
         else:
             lines.append(f"{key}: {text}")
         write_text_atomically(path, "\n".join(lines) + "\n")
+    return path
+
+
+def save_job_key(app: dict, key: str, value, drop_top_level: bool = False) -> Path:
+    """Write one `job:` key into the app's pdt.yml, the most specific file, and with
+    `drop_top_level` remove the same key from the top level of the file.
+
+    Edits the text so the user's comments survive, under the same lock and atomic replace
+    as `save_platform_key`, and adds a `job:` block when the file has none. When the edit
+    inside the block would change anything else in the file, as with `job: {schedule: null}`,
+    the `job:` section is written again as a block with the same keys. The result must parse
+    to the same data apart from this key, or nothing is written.
+    """
+    import yaml
+    path = app_file(app["dir"])
+    if keep_unsaved(key, value):
+        return path
+    with locked(path):
+        lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else []
+        current = yaml.safe_load("\n".join(lines)) or {}
+        job = current.get("job") or {}
+        expected = {**current, "job": {**job, key: value}}
+        if drop_top_level:
+            expected.pop(key, None)
+            top = next((i for i, line in enumerate(lines)
+                        if not line.startswith((" ", "\t"))
+                        and line.split("#")[0].strip().startswith(f"{key}:")), None)
+            if top is not None:
+                end = top + 1
+                while end < len(lines) and lines[end].strip() and lines[end].startswith((" ", "\t")):
+                    end += 1
+                del lines[top:end]
+        start = next((i for i, line in enumerate(lines)
+                      if not line.startswith((" ", "\t"))
+                      and line.split("#")[0].strip().startswith("job:")), None)
+        if job.get(key) == value:
+            tries = [lines]
+        elif start is None:
+            tries = [lines + ([""] if lines and lines[-1].strip() else [])
+                     + ["job:", f"  {key}: {yaml_quoted(value)}"]]
+        else:
+            end = start + 1
+            while end < len(lines) and lines[end].strip() and lines[end].startswith((" ", "\t")):
+                end += 1
+            block = yaml.safe_dump({"job": {**job, key: value}}, sort_keys=False).splitlines()
+            tries = [lines[:start] + block + lines[end:]]
+            if lines[start].split("#")[0].rstrip() == "job:":
+                edited = list(lines)
+                _set_block_key(edited, start, key, yaml_quoted(value))
+                tries.insert(0, edited)
+        result = None
+        for edited in tries:
+            try:
+                loaded = yaml.safe_load("\n".join(edited))
+            except yaml.YAMLError:
+                continue
+            if loaded == expected:
+                result = edited
+                break
+        if result is None:
+            raise ConfigError(f"{path.relative_to(find_project())}: pdt could not write {key} "
+                              f"under job:. Put `{key}: {yaml_quoted(value)}` under `job:` "
+                              f"in this file and run the command again.")
+        write_text_atomically(path, "\n".join(result) + "\n")
     return path
 
 

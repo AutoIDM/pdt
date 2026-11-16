@@ -198,6 +198,7 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
         console.detail(line)
     problem = ""
     if app["app_profile"] == "job":
+        keep_one_job_key(app, assume_yes)
         problem = choose_schedule(app, assume_yes)
     problem = problem or regions.choose_region(app, provider, assume_yes)
     if problem != "":
@@ -250,8 +251,8 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
             console.say(f"{console.value(name)} has no schedule, so it runs "
                         f"{console.value(DEFAULT_SCHEDULE)} ({console.escape(words)}).")
     elif not can_prompt(None):
-        return (f"no schedule is set. Add `schedule: {DEFAULT_SCHEDULE}` to {where}, or run "
-                f"again with --yes to run it {DEFAULT_SCHEDULE} ({words}).")
+        return (f"no schedule is set. Add `schedule: {DEFAULT_SCHEDULE}` under `job:` in {where}, "
+                f"or run again with --yes to run it {DEFAULT_SCHEDULE} ({words}).")
     else:
         console.say()
         shorthand = ["hourly", "daily", "weekly", "monthly"]
@@ -265,7 +266,8 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
                     + ["A cron expression, such as 30 6 * * 1-5"],
                     shorthand.index(DEFAULT_SCHEDULE))
             except EOFError:
-                return f"no schedule is set. Add `schedule: {DEFAULT_SCHEDULE}` to {where}."
+                return (f"no schedule is set. Add `schedule: {DEFAULT_SCHEDULE}` under `job:` "
+                        f"in {where}.")
         else:
             console.say(f"{console.value(name)} has no schedule yet. Answer hourly, daily, "
                         f"weekly, monthly, or a cron expression such as "
@@ -278,13 +280,14 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
                 schedule = console.ask(f"How often should {name} run?",
                                        DEFAULT_SCHEDULE) or DEFAULT_SCHEDULE
             except EOFError:
-                return f"no schedule is set. Add `schedule: {DEFAULT_SCHEDULE}` to {where}."
+                return (f"no schedule is set. Add `schedule: {DEFAULT_SCHEDULE}` under `job:` "
+                        f"in {where}.")
             try:
                 words = config.describe_schedule(schedule)
                 break
             except ConfigError as e:
                 console.error(console.escape(str(e)))
-    saved = config.save_app_key(app, "schedule", schedule, "job").relative_to(config.find_project())
+    saved = config.save_job_key(app, "schedule", schedule).relative_to(config.find_project())
     app["schedule"] = schedule
     if config.unsaved() is None:
         console.done(f"Saved schedule {console.value(schedule)} ({console.escape(words)}) to "
@@ -293,6 +296,62 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
         console.note(f"Using schedule {console.value(schedule)}. A deploy saves it to "
                      f"{console.value(saved)}; this plan changes no file.")
     return ""
+
+
+def keep_one_job_key(app: dict, assume_yes: bool) -> None:
+    """When the app's pdt.yml sets a `job:` key both under `job:` and at the top level, ask
+    which value to keep, save it under `job:`, and remove the top-level key.
+
+    --yes, a plan, and a run with no one to ask use the `job:` value and change no file.
+    """
+    path = config.app_file(app["dir"])
+    where = path.relative_to(config.find_project())
+    own = config.load_yaml(path)
+    for key in sorted(config.JOB_KEYS):
+        nested, top = (own.get("job") or {}).get(key), own.get(key)
+        if nested is None or top is None:
+            continue
+        words = []
+        for value in (nested, top):
+            try:
+                words.append(f" ({config.describe_schedule(value)})" if key == "schedule" else "")
+            except ConfigError:
+                words.append("")
+        chosen = None
+        if not assume_yes and config.unsaved() is None and can_prompt(None):
+            labels = [f"job.{key}: {nested}{words[0]}", f"{key} at the top level: {top}{words[1]}"]
+            console.say()
+            console.say(f"{console.value(where)} sets {console.value(key)} both under "
+                        f"{console.value('job:')} and at the top level.")
+            console.heading(f"Which {console.escape(key)} should {console.escape(app['name'])} keep?")
+            try:
+                if console.can_menu():
+                    chosen = console.choose_one(labels, 0)
+                else:
+                    console.choice(1, labels[0])
+                    console.choice(2, labels[1])
+                    answer = console.ask("Which one?", "1") or "1"
+                    while answer not in ("1", "2"):
+                        console.say("Please answer 1 or 2.")
+                        answer = console.ask("Which one?", "1") or "1"
+                    chosen = int(answer) - 1
+            except EOFError:
+                chosen = None
+        if chosen is None:
+            console.note(f"{console.value(where)} sets both {console.value('job.' + key)} "
+                         f"{console.value(nested)} and the top-level {console.value(key)} "
+                         f"{console.value(top)}; this deploy uses {console.value('job.' + key)} "
+                         f"{console.value(nested)}.")
+        elif chosen == 0:
+            config.save_job_key(app, key, nested, drop_top_level=True)
+            console.done(f"Kept {console.value('job.' + key)} {console.value(nested)}"
+                         f"{console.escape(words[0])} and removed the top-level "
+                         f"{console.value(key)} {console.value(top)} from {console.value(where)}.")
+        else:
+            config.save_job_key(app, key, top, drop_top_level=True)
+            console.done(f"Saved {console.value('job.' + key)} {console.value(top)}"
+                         f"{console.escape(words[1])} to {console.value(where)} and removed the "
+                         f"top-level {console.value(key)}.")
 
 
 def describe_place(place: dict[str, str]) -> str:
