@@ -175,10 +175,14 @@ TAIL_BUFFER = datetime.timedelta(seconds=10)
 # service account created a moment ago does not exist. All three pass, so every
 # gcloud call waits them out.
 TRANSIENT = re.compile(r"SERVICE_DISABLED|ABORTED|Service account \S+ does not exist")
+# Cloud Scheduler answers NOT_FOUND for a service account created a moment ago, so a scheduler
+# job that signs as an account this deploy created waits that out too.
+NEW_ACCOUNT_TRANSIENT = re.compile(f"{TRANSIENT.pattern}|NOT_FOUND")
 RETRY_WAITS = (10, 20, 40, 60, 60, 60)
 
 
-def gcloud(*args: str, data: str | None = None, slow: str = "") -> subprocess.CompletedProcess:
+def gcloud(*args: str, data: str | None = None, slow: str = "",
+           transient: re.Pattern = TRANSIENT) -> subprocess.CompletedProcess:
     stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
     with console.wait_on(console.value("pdt gcloud " + " ".join(args[:4])), "done",
                          slow, result=False) as wait:
@@ -186,7 +190,7 @@ def gcloud(*args: str, data: str | None = None, slow: str = "") -> subprocess.Co
             proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
             if proc.returncode == 0:
                 return proc
-            if seconds is None or not TRANSIENT.search(proc.stderr):
+            if seconds is None or not transient.search(proc.stderr):
                 wait.end = ""
                 return proc
             title = re.search(r"serviceTitle: (.+)", proc.stderr)
@@ -195,8 +199,9 @@ def gcloud(*args: str, data: str | None = None, slow: str = "") -> subprocess.Co
             time.sleep(seconds)
 
 
-def run_quiet(*args: str, data: str | None = None, slow: str = "") -> str:
-    proc = gcloud(*args, data=data, slow=slow)
+def run_quiet(*args: str, data: str | None = None, slow: str = "",
+              transient: re.Pattern = TRANSIENT) -> str:
+    proc = gcloud(*args, data=data, slow=slow, transient=transient)
     if proc.returncode == 0:
         return proc.stdout
     console.say(console.escape(proc.stderr.strip()))
@@ -1344,7 +1349,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
               "--description", scheduler_description(name),
               "--schedule", cron, "--time-zone", timezone,
               "--uri", uri, "--http-method", "POST",
-              "--oauth-service-account-email", sa)
+              "--oauth-service-account-email", sa,
+              transient=TRANSIENT if sa_exists else NEW_ACCOUNT_TRANSIENT)
     set_scheduler_paused(project, region, job, app["pause"])
     if runner_cleanup:
         # An execution keeps the account it started with, so a run of any job that started

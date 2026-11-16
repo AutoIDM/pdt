@@ -739,6 +739,36 @@ def test_the_plan_says_the_clean_up_waits_for_runs_as_pdt_runner(project, monkey
             f"(after the update, if no run as {RUNNER} is in progress)") in shown
 
 
+@pytest.mark.parametrize("created", [True, False])
+def test_the_schedule_waits_for_an_account_this_deploy_created(project, monkeypatch, created):
+    fake = moving_fake()
+    if not created:
+        fake.found[("iam", "service-accounts", "list")].append(
+            {"email": OWN, "displayName": "pdt job runner report"})
+    app = moving_app(project, monkeypatch, fake)
+    sleeps = []
+    monkeypatch.setattr(google.time, "sleep", sleeps.append)
+    answers = [subprocess.CompletedProcess([], 1, "", "ERROR: (gcloud.scheduler.jobs.create.http) "
+                                           "NOT_FOUND: Requested entity was not found.")]
+
+    def scheduler_not_ready(command, *args, **kwargs):
+        if command[1:4] == ["scheduler", "jobs", "create"] and answers:
+            fake.calls.append(list(command[1:]))
+            return answers.pop()
+        return fake(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", scheduler_not_ready)
+    if created:
+        assert google.deploy(app, True) == 0
+        assert len(fake.ran("scheduler", "jobs", "create")) == 2
+        assert sleeps == [google.RETRY_WAITS[0]]
+    else:
+        with pytest.raises(SystemExit):
+            google.deploy(app, True)
+        assert len(fake.ran("scheduler", "jobs", "create")) == 1
+        assert sleeps == []
+
+
 def test_an_incomplete_list_of_deploys_keeps_pdt_runner_and_its_access(project, monkeypatch,
                                                                        capsys):
     fake = moving_fake()
