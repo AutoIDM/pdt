@@ -532,6 +532,21 @@ def test_a_job_of_the_same_name_elsewhere_keeps_the_secret_but_not_the_web_acces
     assert "Cloud Run job pdt-dashboard (europe-west1)" in out
 
 
+def test_destroy_keeps_the_account_a_job_of_the_same_name_and_region_runs_as(google,
+                                                                             monkeypatch):
+    fake = region_destroy(google, monkeypatch, jobs=[run_item(REGION, SA, job=True)])
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("secrets", "delete") == []
+
+
+def test_destroy_keeps_the_read_grant_a_job_mounts(google, monkeypatch):
+    fake = region_destroy(google, monkeypatch, jobs=[
+        run_item(REGION, SA, job=True, name="pdt-worker", reads=["warehouse"])])
+    removes = fake.ran("storage", "managed-folders", "remove-iam-policy-binding")
+    assert [(c[3].rstrip("/").rsplit("/", 1)[-1], flag(c, "--role")) for c in removes] == [
+        ("dashboard", gc.STORE_ROLE)]
+
+
 def test_destroy_keeps_the_account_another_app_runs_as(google, monkeypatch):
     fake = region_destroy(google, monkeypatch,
                           jobs=[run_item(REGION, SA, job=True, name="pdt-worker")])

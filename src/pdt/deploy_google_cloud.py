@@ -125,6 +125,7 @@ STORE_ROLE = "roles/storage.objectUser"
 CLOUD_BUILD_API = "cloudbuild.googleapis.com"
 BUILDER = "pdt-builder"
 BUILDER_DISPLAY_NAME = "pdt image builder"
+WEB_DISPLAY_NAME = "pdt web app"
 BUILD_BUCKET_PREFIX = "pdt-build"
 BUILD_PUSH_ROLE = "roles/artifactregistry.writer"
 # Cloud Build writes the log to a user-created bucket only with Storage Admin:
@@ -563,6 +564,13 @@ def service_account_owned(resource: dict | None) -> bool:
     return resource is not None and resource.get("displayName") == "pdt job runner"
 
 
+def run_account_owned(resource: dict | None) -> bool:
+    """An account pdt made for apps to run as: pdt-runner, or a web app's pdt-web-<app>."""
+    return service_account_owned(resource) or (
+        resource is not None
+        and str(resource.get("displayName") or "").startswith(f"{WEB_DISPLAY_NAME} "))
+
+
 def builder_owned(resource: dict | None) -> bool:
     return resource is not None and resource.get("displayName") == BUILDER_DISPLAY_NAME
 
@@ -719,39 +727,46 @@ def cloud_run_list(project: str, kind: str) -> tuple[list[dict], list[str], str]
             return items, unreachable, ""
 
 
-def remaining_deploys(project: str, resource: str, region: str
+def remaining_deploys(project: str, kind: str, resource: str, region: str
                       ) -> tuple[list[dict], list[dict], str]:
-    """The Cloud Run jobs and the services in the project, in every region, other than
-    `resource` in `region`, and why the two lists are incomplete, or "" when they are complete."""
+    """The Cloud Run jobs and the services in the project, in every region, other than the
+    `kind` ("jobs" or "services") `resource` in `region`, and why the two lists are incomplete,
+    or "" when they are complete."""
     jobs, job_regions, job_error = cloud_run_list(project, "jobs")
     services, service_regions, service_error = cloud_run_list(project, "services")
     regions = sorted(set(job_regions + service_regions))
     reasons = [f"no answer from {', '.join(regions)}"] if regions else []
     reasons += [error for error in (job_error, service_error) if error]
-    return ([item for item in jobs if run_job_identity(item) != (resource, region)],
-            [item for item in services if run_job_identity(item) != (resource, region)],
-            "; ".join(reasons))
+    if kind == "jobs":
+        jobs = [item for item in jobs if run_job_identity(item) != (resource, region)]
+    else:
+        services = [item for item in services if run_job_identity(item) != (resource, region)]
+    return jobs, services, "; ".join(reasons)
+
+
+def run_spec(item: dict) -> dict:
+    """The container spec of a Cloud Run service, or the task spec of a job."""
+    spec = ((item.get("spec") or {}).get("template") or {}).get("spec") or {}
+    if "template" in spec:
+        spec = (spec.get("template") or {}).get("spec") or {}
+    return spec
 
 
 def run_account(item: dict) -> str:
     """The service account a Cloud Run job or service runs as."""
-    spec = ((item.get("spec") or {}).get("template") or {}).get("spec") or {}
-    if "template" in spec:
-        spec = (spec.get("template") or {}).get("spec") or {}
-    return spec.get("serviceAccountName") or ""
+    return run_spec(item).get("serviceAccountName") or ""
 
 
 def deploy_uses(items: list[dict]) -> tuple[set[str], set[tuple[str, str]]]:
     """The accounts that `items` (Cloud Run jobs and services) run as, and the (account, folder)
-    pairs of the storage they use: each one's own folder and each folder a service mounts."""
+    pairs of the storage they use: each one's own folder and each folder it mounts."""
     accounts = set()
     pairs = set()
     for item in items:
         account = run_account(item)
         accounts.add(account)
         pairs.add((account, run_job_identity(item)[0].removeprefix("pdt-")))
-        spec = ((item.get("spec") or {}).get("template") or {}).get("spec") or {}
-        for volume in spec.get("volumes") or []:
+        for volume in run_spec(item).get("volumes") or []:
             attributes = (volume.get("csi") or {}).get("volumeAttributes") or {}
             for option in str(attributes.get("mountOptions") or "").split(";"):
                 if option.startswith("only-dir="):
@@ -1296,7 +1311,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         other_regional_jobs = [
             item for item in regional_jobs if run_job_identity(item)[0] != job
         ]
-        other_project_jobs, other_services, incomplete = remaining_deploys(project, job, region)
+        other_project_jobs, other_services, incomplete = remaining_deploys(project, "jobs", job,
+                                                                           region)
         other_jobs = [
             run_job_identity(item)[0]
             for item in other_project_jobs
@@ -1312,9 +1328,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
         revoke_secret = ([] if delete_secret or not secret_owned or incomplete
                          or sa in {run_account(item) for item in same_app}
                          else secret_roles(project, sid, sa))
-        service_account = service_account_or_none(project, sa)
-        runner = (service_account if sa == default_sa
-                  else service_account_or_none(project, default_sa))
+        # The job's own account and pdt-runner, by email: each goes when pdt made it and no
+        # remaining deploy runs as it.
+        run_accounts = {email: service_account_or_none(project, email)
+                        for email in dict.fromkeys((sa, default_sa))}
         bucket = store_bucket(project)
         store = deployer_store(project, name) if app["storage"] else None
         bucket_present = read_json_or_none(
@@ -1329,8 +1346,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_repo = (repository_owned and not other_regional_jobs and not other_images
                        and not unmanaged_app_resource)
         delete_image = bool(app_images) and not delete_repo
-        delete_sa = (service_account_owned(runner) and default_sa not in accounts
-                     and not unmanaged_app_resource and not incomplete)
+        delete_accounts = [email for email, found in run_accounts.items()
+                           if run_account_owned(found) and email not in accounts
+                           and not unmanaged_app_resource and not incomplete]
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
@@ -1365,8 +1383,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if delete_repo:
         actions.append(console.Markup(f"delete Artifact Registry repository {console.value(repo)} "
                                       "(no other apps use it)"))
-    if delete_sa:
-        actions.append(console.Markup(f"delete service account {console.value(default_sa)} "
+    for email in delete_accounts:
+        actions.append(console.Markup(f"delete service account {console.value(email)} "
                                       "(no other apps use it)"))
     if delete_builder:
         actions.append(console.Markup(f"delete service account {console.value(builder)} "
@@ -1383,10 +1401,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
         kept.append(f"Secret Manager secret {console.value(sid)}")
     if repository is not None and not delete_repo:
         kept.append(f"Artifact Registry repository {console.value(repo)}")
-    if service_account is not None and sa != default_sa:
-        kept.append(f"service account {console.value(sa)}")
-    if runner is not None and not delete_sa:
-        kept.append(f"service account {console.value(default_sa)}")
+    for email, found in run_accounts.items():
+        if found is not None and email not in delete_accounts:
+            kept.append(f"service account {console.value(email)}")
     if builder_account is not None and not delete_builder:
         kept.append(f"service account {console.value(builder)}")
     if builds_bucket is not None and not delete_builds:
@@ -1450,9 +1467,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
         run_quiet("artifacts", "repositories", "delete", repo,
                   "--location", region, "--project", project, "--quiet",
                   slow=f"deleting: Artifact Registry repository {console.value(repo)}")
-    if delete_sa:
-        console.step(f"deleting service account {console.value(default_sa)}")
-        run_quiet("iam", "service-accounts", "delete", default_sa,
+    for email in delete_accounts:
+        console.step(f"deleting service account {console.value(email)}")
+        run_quiet("iam", "service-accounts", "delete", email,
                   "--project", project, "--quiet")
     if delete_builder:
         console.step(f"deleting service account {console.value(builder)}")

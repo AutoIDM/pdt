@@ -83,7 +83,7 @@ APP_CONTAINER = "app"
 PROBE = "periodSeconds=5,timeoutSeconds=5,failureThreshold=18"
 # A service account ID has 6 to 30 characters.
 SA_ID_MAX = 30
-SA_DISPLAY_NAME = "pdt web app"
+SA_DISPLAY_NAME = gc.WEB_DISPLAY_NAME
 # `gcloud ... --set-env-vars` splits on commas unless the value starts with ^<delimiter>^.
 ENV_DELIMITER = "|"
 SERVICE_USAGE = "https://serviceusage.googleapis.com/v1beta1"
@@ -787,7 +787,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if current is not None and not delete_service:
             console.note(f"Cloud Run service {console.value(service)} is not managed by PDT; "
                          "keeping it")
-        other_jobs, other_services, incomplete = gc.remaining_deploys(project, service, region)
+        other_jobs, other_services, incomplete = gc.remaining_deploys(project, "services",
+                                                                      service, region)
         jobs = [item for item in other_jobs if gc.managed_by_pdt(item)]
         services = [item for item in other_services if gc.managed_by_pdt(item)]
         # The secret, the account, and the storage grants are the project's: each stays while

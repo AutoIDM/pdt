@@ -469,16 +469,45 @@ def test_the_cloud_run_list_names_what_made_it_incomplete(monkeypatch):
 
 
 def test_the_remaining_deploys_name_every_region_and_error_once(monkeypatch):
+    service = run_item("pdt-report", "us-central1", RUNNER, job=False)
     listed = {"jobs": ([run_item("pdt-report", "us-central1", RUNNER),
                         run_item("pdt-report", "europe-west1", RUNNER)],
                        ["asia-east1", "europe-north1"], ""),
-              "services": ([], ["asia-east1"], "the list of Cloud Run services failed: HTTP 403")}
+              "services": ([service], ["asia-east1"],
+                           "the list of Cloud Run services failed: HTTP 403")}
     monkeypatch.setattr(google, "cloud_run_list", lambda project, kind: listed[kind])
-    jobs, services, missing = google.remaining_deploys("my-project", "pdt-report", "us-central1")
+    jobs, services, missing = google.remaining_deploys("my-project", "jobs", "pdt-report",
+                                                       "us-central1")
     assert [google.run_job_identity(item) for item in jobs] == [("pdt-report", "europe-west1")]
-    assert services == []
+    assert services == [service]
     assert missing == ("no answer from asia-east1, europe-north1; "
                        "the list of Cloud Run services failed: HTTP 403")
+
+
+def test_the_uses_include_the_folders_a_job_or_a_service_mounts():
+    volume = {"name": "read-warehouse", "csi": {"driver": "gcsfuse.run.googleapis.com",
+              "volumeAttributes": {"mountOptions": "only-dir=warehouse"}}}
+    job = run_item("pdt-worker", "us-central1", RUNNER)
+    job["spec"]["template"]["spec"]["template"]["spec"]["volumes"] = [volume]
+    service = run_item("pdt-dashboard", "us-central1", "pdt-web-dashboard@x", job=False)
+    service["spec"]["template"]["spec"]["volumes"] = [volume]
+    assert google.deploy_uses([job, service]) == (
+        {RUNNER, "pdt-web-dashboard@x"},
+        {(RUNNER, "worker"), (RUNNER, "warehouse"),
+         ("pdt-web-dashboard@x", "dashboard"), ("pdt-web-dashboard@x", "warehouse")})
+
+
+def test_destroy_removes_a_web_account_the_job_ran_as_when_no_deploy_needs_it(project,
+                                                                              monkeypatch):
+    web_account = "pdt-web-dashboard@my-project.iam.gserviceaccount.com"
+    fake = destroy_fake()
+    fake.found[("iam", "service-accounts", "list")].append(
+        {"email": web_account, "displayName": "pdt web app dashboard"})
+    app = destroy_app(project, monkeypatch, fake)
+    monkeypatch.setenv("PDT_CLOUD_RUN_SERVICE_ACCOUNT", web_account)
+    assert google.destroy(app, True) == 0
+    assert [call[3] for call in fake.ran("iam", "service-accounts", "delete")] == [
+        web_account, BUILDER]
 
 
 @pytest.mark.parametrize("runner_in_use", [False, True])
