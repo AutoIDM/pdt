@@ -614,6 +614,100 @@ def test_pdt_runner_stays_while_another_job_runs_as_it(project, monkeypatch):
     assert fake.ran("iam", "service-accounts", "delete") == []
 
 
+def runner_grants(fake, monkeypatch):
+    """pdt-runner holds the folder grant and the secret roles of report; the calls that remove
+    the folder grant land in the returned list."""
+    fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    fake.found[("secrets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    fake.found[("secrets", "get-iam-policy")] = {"bindings": [
+        {"role": role, "members": [f"serviceAccount:{RUNNER}"]} for role in SECRET_ROLES]}
+    monkeypatch.setattr(google, "folder_grant_exists", lambda bucket, name, sa: sa == RUNNER)
+    revokes = []
+    monkeypatch.setattr(google, "revoke_store_access", lambda *args: revokes.append(args[1:3]))
+    return revokes
+
+
+def test_the_move_keeps_what_the_same_app_in_another_region_uses(project, monkeypatch):
+    fake = moving_fake(run_item("pdt-report", "europe-west1", RUNNER))
+    app = moving_app(project, monkeypatch, fake)
+    revokes = runner_grants(fake, monkeypatch)
+    assert google.deploy(app, True) == 0
+    assert revokes == []
+    assert fake.ran("secrets", "remove-iam-policy-binding") == []
+    assert fake.ran("run", "jobs", "remove-iam-policy-binding")
+    assert fake.ran("iam", "service-accounts", "delete") == []
+
+
+def test_a_deploy_after_a_stopped_move_finishes_the_clean_up(project, monkeypatch):
+    fake = moving_fake()
+    fake.found[("run", "jobs", "describe")] = run_item("pdt-report", "us-central1", OWN)
+    fake.found[("iam", "service-accounts", "list")].append(
+        {"email": OWN, "displayName": "pdt job runner report"})
+    fake.found[("scheduler", "jobs", "describe")] = {"httpTarget": {
+        "uri": "https://us-central1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/"
+               "my-project/jobs/pdt-report:run",
+        "oauthToken": {"serviceAccountEmail": RUNNER}}}
+    app = moving_app(project, monkeypatch, fake)
+    revokes = runner_grants(fake, monkeypatch)
+    assert google.deploy(app, True) == 0
+    assert fake.ran("scheduler", "jobs", "update")
+    assert revokes == [("report", RUNNER)]
+    assert len(fake.ran("secrets", "remove-iam-policy-binding")) == 2
+    assert fake.ran("run", "jobs", "remove-iam-policy-binding")
+    assert ["iam", "service-accounts", "delete", RUNNER, "--project", "my-project",
+            "--quiet"] in fake.calls
+
+
+def test_a_run_in_progress_as_pdt_runner_keeps_it_until_the_next_deploy(project, monkeypatch,
+                                                                       capsys):
+    fake = moving_fake()
+    fake.found[("run", "jobs", "executions", "list")] = [
+        {"spec": {"template": {"spec": {"serviceAccountName": RUNNER}}}, "status": {}}]
+    app = moving_app(project, monkeypatch, fake)
+    revokes = runner_grants(fake, monkeypatch)
+    assert google.deploy(app, True) == 0
+    assert revokes == []
+    assert fake.ran("secrets", "remove-iam-policy-binding") == []
+    assert fake.ran("run", "jobs", "remove-iam-policy-binding") == []
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert (f"A run of pdt-report that runs as {RUNNER} has not ended; {RUNNER} keeps its access "
+            "until the next deploy after the run ends") in out
+
+
+def test_an_incomplete_list_of_deploys_keeps_pdt_runner_and_its_access(project, monkeypatch,
+                                                                       capsys):
+    fake = moving_fake()
+    app = moving_app(project, monkeypatch, fake)
+    monkeypatch.setattr(google, "cloud_run_list", lambda project, kind: ([], ["europe-west1"], ""))
+    revokes = runner_grants(fake, monkeypatch)
+    assert google.deploy(app, True) == 0
+    assert revokes == []
+    assert fake.ran("run", "jobs", "remove-iam-policy-binding") == []
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"incomplete (no answer from europe-west1); keeping {RUNNER} and its access" in out
+
+
+def test_a_refused_act_as_names_the_role_and_the_account(project, monkeypatch, capsys):
+    fake = moving_fake()
+    app = moving_app(project, monkeypatch, fake)
+
+    def refuse(command, *args, **kwargs):
+        if command[1:4] == ["run", "jobs", "deploy"]:
+            return subprocess.CompletedProcess(command, 1, "", (
+                "ERROR: (gcloud.run.jobs.deploy) PERMISSION_DENIED: Permission "
+                f"'iam.serviceaccounts.actAs' denied on service account {OWN}"))
+        return fake(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+    with pytest.raises(SystemExit):
+        google.deploy(app, True)
+    out = " ".join(capsys.readouterr().out.split())
+    assert (f"Cloud Run refused to run pdt-report as {OWN} for your Google account; add the "
+            f"role roles/iam.serviceAccountUser for your account on service account {OWN}") in out
+
+
 def test_destroy_without_a_cloud_build_ever_tolerates_their_absence(project, monkeypatch):
     fake = destroy_fake(builder=False, bucket=False)
     assert google.destroy(destroy_app(project, monkeypatch, fake), True) == 0

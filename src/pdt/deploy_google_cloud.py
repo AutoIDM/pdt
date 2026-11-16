@@ -147,10 +147,12 @@ CLEANUP_POLICIES = [
      "mostRecentVersions": {"keepCount": 2}},
 ]
 CLEANUP_LINE = "delete untagged images after 30 days, keep the 2 newest of each image"
+# A refusal to let the signed-in account act as a service account.
+ACT_AS = re.compile(r"actAs|act as", re.I)
 # What the deployer needs to submit a build as the builder, keyed by what the
 # refusal names: (marker in the error, role, what to grant it on).
 BUILD_SUBMIT_ROLES = (
-    (re.compile(r"actAs|act as", re.I), "roles/iam.serviceAccountUser", "service account"),
+    (ACT_AS, "roles/iam.serviceAccountUser", "service account"),
     (re.compile(r"cloudbuild\.builds\.create", re.I), "roles/cloudbuild.builds.editor",
      "project"),
 )
@@ -551,19 +553,17 @@ def job_logs_url(project: str, region: str, job: str) -> str:
             f"/logs?project={project}")
 
 
-def scheduler_owned(resource: dict | None, app_name: str, project: str,
-                    region: str, service_account: str) -> bool:
+def scheduler_owned(resource: dict | None, app_name: str, project: str, region: str) -> bool:
+    """A scheduler job pdt made: its description says so, or, made before pdt wrote one, it
+    has no description and starts this app's Cloud Run job, whatever account it signs as."""
     if resource is None:
         return False
     if resource.get("description") == scheduler_description(app_name):
         return True
     target = resource.get("httpTarget") or {}
-    token = target.get("oauthToken") or {}
     expected_uri = (f"https://{region}-run.googleapis.com/apis/run.googleapis.com"
                     f"/v1/namespaces/{project}/jobs/pdt-{app_name}:run")
-    return (resource.get("description") in (None, "")
-            and target.get("uri") == expected_uri
-            and token.get("serviceAccountEmail") == service_account)
+    return resource.get("description") in (None, "") and target.get("uri") == expected_uri
 
 
 def service_account_owned(resource: dict | None) -> bool:
@@ -1127,13 +1127,11 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         require_managed(run_job, f"Cloud Run job {console.value(job)}")
         job_exists = run_job is not None
         deployed = (((run_job or {}).get("metadata") or {}).get("labels") or {}).get(BUILD_TAG)
-        current_account = run_account(run_job) if run_job else ""
-        leave_runner = current_account == runner != sa
+        leave_runner = job_exists and run_account(run_job) == runner != sa
         scheduler = read_json_or_none(
             "scheduler", "jobs", "describe", job,
             "--location", region, "--project", project)
-        if scheduler is not None and not scheduler_owned(scheduler, name, project, region,
-                                                         current_account or sa):
+        if scheduler is not None and not scheduler_owned(scheduler, name, project, region):
             fail(f"Cloud Scheduler job {console.value(job)} exists but is not managed by PDT")
         sched_exists = scheduler is not None
         sid = secret_id(name)
@@ -1147,22 +1145,54 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             else:
                 current = secret_value(project, sid)
                 secret_state = "unchanged" if current == payload else "update"
+        # Every deploy removes what pdt-runner holds for this app and no remaining deploy that
+        # runs as it uses, so a deploy that stopped halfway finishes the clean-up next time.
         runner_folder = runner_bucket = delete_runner = False
         runner_secret_roles, runner_job_roles = [], []
-        if leave_runner:
-            runner_folder = bucket_exists and folder_grant_exists(bucket, name, runner)
-            runner_bucket = bucket_exists and bucket_grant_exists(bucket, name, runner)
-            if secret is not None:
-                runner_secret_roles = secret_roles(project, sid, runner) or []
-            policy = describe_json("run", "jobs", "get-iam-policy", job, "--region", region,
-                                   "--project", project) or {}
-            runner_job_roles = [binding.get("role") for binding in policy.get("bindings") or []
-                                if f"serviceAccount:{runner}" in (binding.get("members") or [])]
+        runner_kept = ""
+        if runner != sa and service_account_owned(service_account_or_none(project, runner)):
             other_jobs, other_services, incomplete = remaining_deploys(project, "jobs", job,
                                                                        region)
-            delete_runner = (not incomplete
-                             and runner not in deploy_uses([*other_jobs, *other_services])[0]
-                             and service_account_owned(service_account_or_none(project, runner)))
+            # An execution keeps the account it started with.
+            running = job_exists and any(
+                run_account(execution) == runner
+                and not (execution.get("status") or {}).get("completionTime")
+                for execution in describe_json("run", "jobs", "executions", "list", "--job", job,
+                                               "--region", region, "--project", project) or [])
+            if incomplete:
+                runner_kept = (f"The list of Cloud Run jobs and services in other regions is "
+                               f"incomplete ({console.escape(incomplete)}); keeping "
+                               f"{console.value(runner)} and its access")
+            elif running:
+                runner_kept = (f"A run of {console.value(job)} that runs as "
+                               f"{console.value(runner)} has not ended; {console.value(runner)} "
+                               "keeps its access until the next deploy after the run ends")
+            else:
+                accounts, pairs = deploy_uses([*other_jobs, *other_services])
+                same_app = {run_account(item) for item in [*other_jobs, *other_services]
+                            if run_job_identity(item)[0] == job}
+                bucket_present = bucket_exists or (not store and read_json_or_none(
+                    "storage", "buckets", "describe", f"gs://{bucket}") is not None)
+                if bucket_present and (runner, name) not in pairs:
+                    runner_folder = folder_grant_exists(bucket, name, runner)
+                    runner_bucket = bucket_grant_exists(bucket, name, runner)
+                held = (secret_roles(project, sid, runner)
+                        if secret is not None and runner not in same_app else [])
+                runner_secret_roles = held or []
+                if job_exists:
+                    policy = describe_json("run", "jobs", "get-iam-policy", job, "--region",
+                                           region, "--project", project) or {}
+                    runner_job_roles = [binding.get("role")
+                                        for binding in policy.get("bindings") or []
+                                        if f"serviceAccount:{runner}" in
+                                        (binding.get("members") or [])]
+                delete_runner = held is not None and runner not in accounts
+                if held is None:
+                    runner_kept = (f"Reading who may use secret {console.value(sid)} failed; "
+                                   f"keeping {console.value(runner)}")
+
+    if runner_kept:
+        console.note(runner_kept)
 
     actions = [console.Markup(("use existing" if repo_exists else "create")
                               + f" Artifact Registry repo {console.value(repo)}")]
@@ -1296,7 +1326,15 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         env_vars.append(f"PDT_STORAGE_URL={store.url}")
     if env_vars:
         args += ["--set-env-vars", ",".join(env_vars)]
-    run_quiet(*args, slow=f"deploying: Cloud Run job {console.value(job)}")
+    proc = gcloud(*args, slow=f"deploying: Cloud Run job {console.value(job)}")
+    if proc.returncode != 0:
+        console.say(console.escape(proc.stderr.strip()))
+        if "PERMISSION_DENIED" in proc.stderr and ACT_AS.search(proc.stderr):
+            fail(f"Cloud Run refused to run {console.value(job)} as {console.value(sa)} for your "
+                 f"Google account; add the role {console.value('roles/iam.serviceAccountUser')} "
+                 f"for your account on service account {console.value(sa)}")
+        fail(f"{console.value('pdt gcloud ' + ' '.join(args[:4]))} failed; fix the problem above "
+             "and re-run the deploy")
     run_quiet("run", "jobs", "add-iam-policy-binding", job, "--region", region,
               "--project", project, "--member", f"serviceAccount:{sa}",
               "--role", "roles/run.invoker")
@@ -1356,7 +1394,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         scheduler = read_json_or_none(
             "scheduler", "jobs", "describe", job,
             "--location", region, "--project", project)
-        delete_scheduler = scheduler_owned(scheduler, name, project, region, sa)
+        delete_scheduler = scheduler_owned(scheduler, name, project, region)
         if scheduler is not None and not delete_scheduler:
             console.note(f"Cloud Scheduler job {console.value(job)} is not managed by PDT; keeping it")
         refuse_profile_change(app, project, region, "destroy")
