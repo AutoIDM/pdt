@@ -787,23 +787,22 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if current is not None and not delete_service:
             console.note(f"Cloud Run service {console.value(service)} is not managed by PDT; "
                          "keeping it")
-        jobs, jobs_missing = gc.cloud_run_list(project, "jobs")
-        jobs = [item for item in jobs if gc.managed_by_pdt(item)]
-        services, services_missing = gc.cloud_run_list(project, "services")
-        other_services = [item for item in services if gc.managed_by_pdt(item)
-                          and gc.run_job_identity(item) != (service, region)]
-        incomplete = jobs_missing or services_missing
-        # The account, the secret, its access, and the storage grants are the project's, so the
-        # app in another region still uses them, through the accounts it runs as.
-        elsewhere = [item for item in [*jobs, *other_services]
+        other_jobs, other_services, incomplete = gc.remaining_deploys(project, service, region)
+        jobs = [item for item in other_jobs if gc.managed_by_pdt(item)]
+        services = [item for item in other_services if gc.managed_by_pdt(item)]
+        # The secret, the account, and the storage grants are the project's: each stays while
+        # a remaining job or service, of any app in any region, runs as the account it serves.
+        accounts, pairs = gc.deploy_uses([*other_jobs, *other_services])
+        elsewhere = [item for item in [*jobs, *services]
                      if gc.run_job_identity(item)[0] == service]
-        keep_account = incomplete or sa in {gc.run_account(item) for item in elsewhere}
         account = gc.service_account_or_none(project, sa)
-        delete_account = service_account_owned(account, name) and not keep_account
+        delete_account = (service_account_owned(account, name) and sa not in accounts
+                          and not incomplete)
         secret = gc.read_json_or_none("secrets", "describe", sid, "--project", project)
         secret_owned = gc.managed_by_pdt(secret)
         delete_secret = secret_owned and not elsewhere and not incomplete
-        revoke_secret = ([] if delete_secret or not secret_owned or keep_account
+        revoke_secret = ([] if delete_secret or not secret_owned or incomplete
+                         or sa in {gc.run_account(item) for item in elsewhere}
                          else gc.secret_roles(project, sid, sa))
         if secret is not None and not secret_owned:
             console.note(f"Secret Manager secret {console.value(sid)} is not managed by PDT; "
@@ -819,7 +818,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_repo = gc.managed_by_pdt(repository) and not other_images
         delete_image = any(gc.image_name(item) == name for item in images) and not delete_repo
         # The builder and the build bucket go with the last of the project's jobs and web apps.
-        last_app = not jobs and not other_services and not incomplete
+        last_app = not jobs and not services and not incomplete
         builder = gc.builder_email(project)
         builder_account = gc.service_account_or_none(project, builder)
         builds = gc.build_bucket(project)
@@ -829,15 +828,21 @@ def destroy(app: dict, assume_yes: bool) -> int:
         store = gc.deployer_store(project, name) if app["storage"] else None
         bucket_present = gc.read_json_or_none("storage", "buckets", "describe",
                                               f"gs://{bucket}") is not None
-        revoke_folder = (bucket_present and not keep_account
+        keep_grant = incomplete or (sa, name) in pairs
+        revoke_folder = (bucket_present and not keep_grant
                          and gc.folder_grant_exists(bucket, name, sa))
-        revoke_bucket = (bucket_present and not keep_account
+        revoke_bucket = (bucket_present and not keep_grant
                          and gc.bucket_grant_exists(bucket, name, sa))
-        revoke_reads = held_reads(bucket, sa, name) if bucket_present and not keep_account else []
+        revoke_reads = ([other for other in held_reads(bucket, sa, name)
+                         if (sa, other) not in pairs]
+                        if bucket_present and not incomplete else [])
 
     if incomplete:
         console.note(f"The list of Cloud Run jobs and services in other regions is incomplete "
                      f"({console.escape(incomplete)}); keeping what apps share across regions")
+    if revoke_secret is None:
+        console.note(f"Reading who may use secret {console.value(sid)} failed; keeping "
+                     f"{console.value(sa)} access to it")
     actions = []
     if revoke_folder or revoke_bucket:
         actions.append(console.Markup(f"remove {console.value(sa)} write access to "

@@ -695,10 +695,10 @@ def refuse_profile_change(app: dict, project: str, region: str, command: str) ->
              f"{console.value(f'pdt {command} {app['name']}')} again")
 
 
-def cloud_run_list(project: str, kind: str) -> tuple[list[dict], str]:
+def cloud_run_list(project: str, kind: str) -> tuple[list[dict], list[str], str]:
     """Every Cloud Run job or service (`kind` "jobs" or "services") in the project, in every
-    region, and why the list is incomplete, or "" when it is complete. The REST call names the
-    regions that did not answer; `gcloud run ... list` only warns about them."""
+    region; the regions that did not answer; and the error that stopped the list, or "". The
+    REST call names the regions that did not answer; `gcloud run ... list` only warns."""
     group = "run.googleapis.com" if kind == "jobs" else "serving.knative.dev"
     token = run_quiet("auth", "print-access-token").strip()
     items = []
@@ -711,15 +711,26 @@ def cloud_run_list(project: str, kind: str) -> tuple[list[dict], str]:
         try:
             data = fetch_json(req, timeout=60) or {}
         except Exception as exc:
-            return items, f"the list of Cloud Run {kind} failed: {exc}"
+            return items, unreachable, f"the list of Cloud Run {kind} failed: {exc}"
         items.extend(data.get("items") or [])
         unreachable.extend(data.get("unreachable") or [])
         page = (data.get("metadata") or {}).get("continue") or ""
         if not page:
-            break
-    if unreachable:
-        return items, f"no answer from {', '.join(unreachable)}"
-    return items, ""
+            return items, unreachable, ""
+
+
+def remaining_deploys(project: str, resource: str, region: str
+                      ) -> tuple[list[dict], list[dict], str]:
+    """The Cloud Run jobs and the services in the project, in every region, other than
+    `resource` in `region`, and why the two lists are incomplete, or "" when they are complete."""
+    jobs, job_regions, job_error = cloud_run_list(project, "jobs")
+    services, service_regions, service_error = cloud_run_list(project, "services")
+    regions = sorted(set(job_regions + service_regions))
+    reasons = [f"no answer from {', '.join(regions)}"] if regions else []
+    reasons += [error for error in (job_error, service_error) if error]
+    return ([item for item in jobs if run_job_identity(item) != (resource, region)],
+            [item for item in services if run_job_identity(item) != (resource, region)],
+            "; ".join(reasons))
 
 
 def run_account(item: dict) -> str:
@@ -730,9 +741,33 @@ def run_account(item: dict) -> str:
     return spec.get("serviceAccountName") or ""
 
 
-def secret_roles(project: str, sid: str, sa: str) -> list[str]:
-    """The roles `sa` holds on secret `sid`."""
-    policy = describe_json("secrets", "get-iam-policy", sid, "--project", project) or {}
+def deploy_uses(items: list[dict]) -> tuple[set[str], set[tuple[str, str]]]:
+    """The accounts that `items` (Cloud Run jobs and services) run as, and the (account, folder)
+    pairs of the storage they use: each one's own folder and each folder a service mounts."""
+    accounts = set()
+    pairs = set()
+    for item in items:
+        account = run_account(item)
+        accounts.add(account)
+        pairs.add((account, run_job_identity(item)[0].removeprefix("pdt-")))
+        spec = ((item.get("spec") or {}).get("template") or {}).get("spec") or {}
+        for volume in spec.get("volumes") or []:
+            attributes = (volume.get("csi") or {}).get("volumeAttributes") or {}
+            for option in str(attributes.get("mountOptions") or "").split(";"):
+                if option.startswith("only-dir="):
+                    pairs.add((account, option.removeprefix("only-dir=")))
+    return accounts, pairs
+
+
+def secret_roles(project: str, sid: str, sa: str) -> list[str] | None:
+    """The roles `sa` holds on secret `sid`, or None when the policy cannot be read."""
+    proc = gcloud("secrets", "get-iam-policy", sid, "--project", project, "--format=json")
+    if proc.returncode != 0:
+        if not_found(proc.stderr):
+            return []
+        console.say(console.escape(proc.stderr.strip()))
+        return None
+    policy = json.loads(proc.stdout or "null") or {}
     return [binding.get("role") for binding in policy.get("bindings") or []
             if f"serviceAccount:{sa}" in (binding.get("members") or [])]
 
@@ -1261,46 +1296,41 @@ def destroy(app: dict, assume_yes: bool) -> int:
         other_regional_jobs = [
             item for item in regional_jobs if run_job_identity(item)[0] != job
         ]
-        project_jobs, jobs_missing = cloud_run_list(project, "jobs")
-        other_project_jobs = []
-        for item in project_jobs:
-            item_name, item_region = run_job_identity(item)
-            if item_name == job and item_region == region:
-                continue
-            other_project_jobs.append(item)
+        other_project_jobs, other_services, incomplete = remaining_deploys(project, job, region)
         other_jobs = [
             run_job_identity(item)[0]
             for item in other_project_jobs
             if managed_by_pdt(item) and run_job_identity(item)[0]
         ]
-        services, services_missing = cloud_run_list(project, "services")
-        services = [item for item in services if managed_by_pdt(item)]
-        incomplete = jobs_missing or services_missing
-        # The secret, its access, and the storage grant are the project's, so the app in another
-        # region still uses them, through the accounts it runs as.
-        elsewhere = [item for item in [*other_project_jobs, *services]
-                     if managed_by_pdt(item) and run_job_identity(item)[0] == job]
-        accounts = {run_account(item) for item in elsewhere}
-        delete_secret = secret_owned and not elsewhere and not incomplete
-        revoke_secret = ([] if delete_secret or not secret_owned or incomplete or sa in accounts
+        services = [item for item in other_services if managed_by_pdt(item)]
+        # The secret, the accounts, and the storage grants are the project's: each stays while
+        # a remaining job or service, of any app in any region, runs as the account it serves.
+        accounts, pairs = deploy_uses([*other_project_jobs, *other_services])
+        same_app = [item for item in [*other_project_jobs, *services]
+                    if managed_by_pdt(item) and run_job_identity(item)[0] == job]
+        delete_secret = secret_owned and not same_app and not incomplete
+        revoke_secret = ([] if delete_secret or not secret_owned or incomplete
+                         or sa in {run_account(item) for item in same_app}
                          else secret_roles(project, sid, sa))
         service_account = service_account_or_none(project, sa)
+        runner = (service_account if sa == default_sa
+                  else service_account_or_none(project, default_sa))
         bucket = store_bucket(project)
         store = deployer_store(project, name) if app["storage"] else None
-        store_present = store is not None and read_json_or_none(
+        bucket_present = read_json_or_none(
             "storage", "buckets", "describe", f"gs://{bucket}") is not None
-        keep_grant = incomplete or sa in accounts
-        revoke_folder = store_present and not keep_grant and folder_grant_exists(bucket, name, sa)
-        revoke_bucket = store_present and not keep_grant and bucket_grant_exists(bucket, name, sa)
+        store_present = store is not None and bucket_present
+        keep_grant = incomplete or (sa, name) in pairs
+        revoke_folder = bucket_present and not keep_grant and folder_grant_exists(bucket, name, sa)
+        revoke_bucket = bucket_present and not keep_grant and bucket_grant_exists(bucket, name, sa)
         revoke_grant = revoke_folder or revoke_bucket
         unmanaged_app_resource = ((scheduler is not None and not delete_scheduler)
                                   or (run_job is not None and not delete_job))
         delete_repo = (repository_owned and not other_regional_jobs and not other_images
                        and not unmanaged_app_resource)
         delete_image = bool(app_images) and not delete_repo
-        delete_sa = (sa == default_sa and service_account_owned(service_account)
-                     and not other_project_jobs and not unmanaged_app_resource
-                     and not incomplete)
+        delete_sa = (service_account_owned(runner) and default_sa not in accounts
+                     and not unmanaged_app_resource and not incomplete)
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
@@ -1314,6 +1344,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if incomplete:
         console.note(f"The list of Cloud Run jobs and services in other regions is incomplete "
                      f"({console.escape(incomplete)}); keeping what apps share across regions")
+    if revoke_secret is None:
+        console.note(f"Reading who may use secret {console.value(sid)} failed; keeping "
+                     f"{console.value(sa)} access to it")
     actions = []
     if revoke_grant:
         actions.append(console.Markup(f"remove {console.value(sa)} write access to "
@@ -1333,7 +1366,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         actions.append(console.Markup(f"delete Artifact Registry repository {console.value(repo)} "
                                       "(no other apps use it)"))
     if delete_sa:
-        actions.append(console.Markup(f"delete service account {console.value(sa)} "
+        actions.append(console.Markup(f"delete service account {console.value(default_sa)} "
                                       "(no other apps use it)"))
     if delete_builder:
         actions.append(console.Markup(f"delete service account {console.value(builder)} "
@@ -1350,8 +1383,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
         kept.append(f"Secret Manager secret {console.value(sid)}")
     if repository is not None and not delete_repo:
         kept.append(f"Artifact Registry repository {console.value(repo)}")
-    if service_account is not None and not delete_sa:
+    if service_account is not None and sa != default_sa:
         kept.append(f"service account {console.value(sa)}")
+    if runner is not None and not delete_sa:
+        kept.append(f"service account {console.value(default_sa)}")
     if builder_account is not None and not delete_builder:
         kept.append(f"service account {console.value(builder)}")
     if builds_bucket is not None and not delete_builds:
@@ -1380,7 +1415,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
             for resource in kept:
                 console.bullet(resource)
         return 0
-    if revoke_grant:
+    if revoke_grant and store is not None:
         warn_if_locked(store, name)
     if not confirm(actions, assume_yes):
         console.warn("Aborted; nothing was changed.")
@@ -1416,8 +1451,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
                   "--location", region, "--project", project, "--quiet",
                   slow=f"deleting: Artifact Registry repository {console.value(repo)}")
     if delete_sa:
-        console.step(f"deleting service account {console.value(sa)}")
-        run_quiet("iam", "service-accounts", "delete", sa,
+        console.step(f"deleting service account {console.value(default_sa)}")
+        run_quiet("iam", "service-accounts", "delete", default_sa,
                   "--project", project, "--quiet")
     if delete_builder:
         console.step(f"deleting service account {console.value(builder)}")
