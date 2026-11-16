@@ -227,6 +227,9 @@ class Backend:
         fs = self.filesystem()
         return DirFileSystem(path=fs._strip_protocol(self.url).rstrip("/"), fs=fs)
 
+    def ls(self, path: str) -> list[str]:
+        return self.dirfs().ls(path, detail=False)
+
     def create_if_absent(self, path: str, data: bytes) -> bool:
         try:
             self.put_if_version(path, data, None)
@@ -400,6 +403,18 @@ class Azure(Backend):
         return fsspec.filesystem("abfs", account_name=self.account_host.split(".", 1)[0],
                                  credential=self.credential)
 
+    def ls(self, path: str) -> list[str]:
+        # adlfs lists "<app>/<path>" with no trailing slash. The role condition of
+        # each app that may read this folder, its own app included, allows only
+        # prefixes that start with "<app>/", and "<app>" also matches "<app>-2/".
+        folder = path.strip("/")
+        prefix = self.key(folder + "/" if folder else "")
+        names = [item.name[len(self.prefix):].rstrip("/")
+                 for item in self.client.walk_blobs(name_starts_with=prefix)]
+        if not names:
+            raise FileNotFoundError(path)
+        return names
+
     def versions(self, prefix: str) -> dict[str, str]:
         blobs = self.client.list_blobs(name_starts_with=self.key(prefix))
         return {blob.name[len(self.prefix):]: blob.etag for blob in blobs}
@@ -453,7 +468,7 @@ class Store:
         return self.fs().open(path, mode)
 
     def ls(self, path: str = "") -> list[str]:
-        return self.fs().ls(path, detail=False)
+        return self.backend().ls(path)
 
     def run_folder(self) -> str:
         return f"runs/{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{RUN_ID}/"

@@ -212,6 +212,32 @@ def test_a_folder_with_spaces_is_not_percent_encoded(tmp_path):
     assert not any("%20" in path.name for path in tmp_path.rglob("*"))
 
 
+@pytest.mark.parametrize(("path", "prefix"), [("", "report/"), ("runs", "report/runs/"),
+                                              ("runs/", "report/runs/")])
+def test_azure_ls_lists_the_folder_with_a_trailing_slash(monkeypatch, path, prefix):
+    class Item:
+        def __init__(self, name):
+            self.name = name
+
+    class Client:
+        def walk_blobs(self, name_starts_with):
+            assert name_starts_with == prefix
+            return [Item(prefix + "a.csv"), Item(prefix + "sub/")]
+
+    monkeypatch.setattr(storage.Azure, "client", Client())
+    store = Store("abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/report/", "token")
+    folder = prefix[len("report/"):]
+    assert store.ls(path) == [folder + "a.csv", folder + "sub"]
+
+
+def test_azure_ls_of_a_missing_folder_raises(monkeypatch):
+    monkeypatch.setattr(storage.Azure, "client", type("Client", (), {
+        "walk_blobs": lambda self, name_starts_with: []})())
+    store = Store("abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/report/", "token")
+    with pytest.raises(FileNotFoundError):
+        store.ls("missing")
+
+
 def test_gcs_filesystem_does_not_read_the_bucket_layout():
     extended = pytest.importorskip("gcsfs.extended_gcsfs")
     fs = storage.GCS("gs://pdt-data-x/my-report/", "anon").filesystem()
