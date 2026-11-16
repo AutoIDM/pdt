@@ -419,6 +419,8 @@ TEAMS_WEBHOOK_0123456789ABCDEF=https://example.api.powerplatform.com/workflows/0
 | `job:paused` | `pdt pause` stops the schedule, or a web app's server. |
 | `job:unpaused` | `pdt unpause` lets the schedule start runs again, or starts a web app's server. |
 
+A deployed web app built from the generated Dockerfile starts its server through the same `lifecycle.py` as a job. So pdt sends `job:run-started` each time an instance of the server starts, and `job:run-completed` or `job:run-failed` when that instance stops, for example when the app scales to zero.
+
 These names have a special meaning in `events` and `exclude-events`:
 
 | Name | What it matches |
@@ -559,7 +561,7 @@ Do not set these env vars yourself.
 | `PDT_STORAGE_READ_DIR` | A web app: the folder that holds a folder for each app in `storage.read`. `/pdt/storage`, read-only, when deployed and in a local container. `.pdt/storage` in the project when `pdt run` starts a `run.py`. |
 | `PDT_PORT` | A web app: the port to listen on, from `web.port`. |
 | `PDT_URL` | A deployed web app: its own URL, `https://pdt-<app>-<project number>.<region>.run.app/`. |
-| `PDT_RUN_ID` | The ID of this run of a job. A deployed web app built from the generated Dockerfile also gets one, for each start of its server. A web app that `pdt run` starts on your computer does not. |
+| `PDT_RUN_ID` | The ID of this run of a job. A deployed web app built from the generated Dockerfile also gets one, for each start of its server. A web app that `pdt run` starts from its `run.py` on your computer does not. An app's own `Dockerfile` sets its entrypoint, so it decides whether the app starts through `lifecycle.py`, which sets this value. |
 | `PDT_CONFIG_JSON` | The app's merged `config:` block as JSON, for a PowerShell script. |
 | `PDT_OUTPUT_DIR` | The folder for a PowerShell script's files. pdt keeps each file in the storage folder. |
 | `PDT_STATE_DIR` | The folder for a PowerShell script's state. See [Writing your own app](writing-apps.md). |

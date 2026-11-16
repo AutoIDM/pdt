@@ -30,13 +30,13 @@ with storage.sync() as run:
 
 The same steps by hand are `store.pull("state/", folder)`, which returns a lease, then `store.push(folder, "state/", lease)` on success or `store.abort(lease)` on failure.
 
-A run that dies without reaching either call leaves the lock behind. The next run takes it over right away when it can tell the holder is gone: the holder ran on the same computer and its process has ended, or it carries the same `PDT_RUN_ID`. Otherwise it waits 30 minutes, or you release the lock yourself with `pdt storage APP unlock`, which asks first.
+A run that dies without reaching either call leaves the lock behind. The next run takes it over right away when it can tell the holder is gone: the holder ran on the same computer and its process has ended, or it carries the same `PDT_RUN_ID`. Otherwise the new run stops at once with an error that names the run that holds the lock. A run that starts after the lock is 30 minutes old takes it over. To release the lock sooner, run `pdt storage APP unlock`, which asks first.
 
 From your own computer, `pdt storage APP ls`, `get`, and `query` read the files with your own cloud sign-in. `pdt storage APP destroy` is the only command that deletes them, and it asks first. An app that needs none of this sets `storage: false` in its `pdt.yml`.
 
 ## Reading another app's files
 
-An app can read the folders of the apps listed under `storage: read:` in its `pdt.yml`. `pdt.utils.storage` opens them read-only, and a deployed web app gets them as read-only files. A web app that `pdt run` starts from its `run.py` on your computer gets the local folders with write access, so do not write to them.
+An app can read the folders of the apps listed under `storage: read:` in its `pdt.yml`. A deployed web app gets them as read-only files. `pdt.utils.storage` opens them read-only: `open` in a write mode, `push`, and the other `Store` methods that write refuse to write. `store.fs()` does not check, so on your computer code can use it to write another app's local folder with your rights. A web app that `pdt run` starts from its `run.py` on your computer also gets the local folders with write access. Do not write to them.
 
 ```yml
 storage:

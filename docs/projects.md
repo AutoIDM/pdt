@@ -2,7 +2,7 @@
 
 ## Set up a project
 
-A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, the `.ps1` scripts of a PowerShell app, or the `Dockerfile` of a web app. An app's own `pdt.yml` is optional, except next to a `Dockerfile`. Every command that needs a project finds it by looking in the current folder, then each folder above it; a folder that also holds `run.py` or `.ps1` scripts is an app, so the walk goes past it.
+A project is a folder holding `pdt.yml`. Each app is a folder inside it that contains a `run.py`, the `.ps1` scripts of a PowerShell app, or the `Dockerfile` of a web app. An app's own `pdt.yml` is optional, except in a folder that holds a `Dockerfile` and no `run.py` or `.ps1` scripts. Every command that needs a project finds it by looking in the current folder, then each folder above it; a folder that also holds `run.py` or `.ps1` scripts is an app, so the walk goes past it.
 
 `config.yml` is the deprecated name of an app's `pdt.yml`. pdt still reads an app's `config.yml` when its folder has no `pdt.yml`. Rename the file to `pdt.yml`.
 
