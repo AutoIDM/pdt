@@ -134,7 +134,7 @@ def test_a_file_with_no_job_section_gets_one(project):
     ("job: {schedule: null, timezone: Etc/UTC}  # one line\n",
      {"job": {"schedule": "daily", "timezone": "Etc/UTC"}}),
     ("job: {schedule: null}\nschedule:\n  null\n", {"job": {"schedule": "daily"}, "schedule": None}),
-    ("job:\n  timezone: >-\n    Etc/UTC\n", {"job": {"timezone": "Etc/UTC", "schedule": "daily"}}),
+    ("job: null\n", {"job": {"schedule": "daily"}}),
 ])
 def test_a_job_section_that_a_text_edit_would_break_is_written_again_as_a_block(
         project, text, saved):
@@ -142,6 +142,27 @@ def test_a_job_section_that_a_text_edit_would_break_is_written_again_as_a_block(
     assert deploy.choose_schedule(merged_app("my-report"), True) == ""
     assert yaml.safe_load((folder / "pdt.yml").read_text()) == saved
     assert merged_app("my-report")["schedule"] == "daily"
+
+
+def test_a_new_key_goes_after_the_whole_first_entry_and_comments_stay(project):
+    folder = add_app(project, "my-report", "job:\n  timezone: >-  # folded\n    Etc/UTC\n"
+                                           "  # later\n")
+    assert deploy.choose_schedule(merged_app("my-report"), True) == ""
+    assert (folder / "pdt.yml").read_text() == ('job:\n  timezone: >-  # folded\n    Etc/UTC\n'
+                                                '  schedule: "daily"\n  # later\n')
+
+
+def test_a_refused_write_fails_only_that_app(project, monkeypatch, capsys):
+    add_app(project, "my-report", "storage: false\n")
+
+    def refuse(app, key, value, drop_top_level=False):
+        raise ConfigError("my-report/pdt.yml: pdt could not write schedule under job:.")
+
+    monkeypatch.setattr(config, "save_job_key", refuse)
+    monkeypatch.setattr(deploy, "dispatch", lambda *args, **kwargs: pytest.fail("dispatched"))
+    assert deploy.deploy("my-report", assume_yes=True) == 1
+    assert ("error: my-report: my-report/pdt.yml: pdt could not write schedule under job:."
+            in plain(capsys.readouterr().out.splitlines()))
 
 
 def test_a_job_section_pdt_cannot_write_names_the_file_and_the_key(project):
@@ -187,8 +208,8 @@ def test_keeping_the_job_schedule_removes_the_top_level_one(project, monkeypatch
     out = plain(capsys.readouterr().out.splitlines())
     assert "my-report/pdt.yml sets schedule both under job: and at the top level." in out
     assert "Which schedule should my-report keep?" in out
-    assert any("job.schedule: daily (every day at 00:00)" in line for line in out)
-    assert any("schedule at the top level: weekly (every Sunday at 00:00)" in line for line in out)
+    assert any(line.endswith("job.schedule (every day at 00:00)  daily") for line in out)
+    assert any(line.endswith("top-level schedule (every Sunday at 00:00)  weekly") for line in out)
     assert ("Kept job.schedule daily (every day at 00:00) and removed the top-level schedule "
             "weekly from my-report/pdt.yml.") in out
 
@@ -204,7 +225,7 @@ def test_keeping_the_top_level_schedule_moves_it_under_job(project, monkeypatch,
             "the top-level schedule.") in plain(capsys.readouterr().out.splitlines())
 
 
-def test_with_no_menu_a_number_picks_the_value_to_keep(project, monkeypatch):
+def test_with_no_menu_a_number_picks_the_value_to_keep(project, monkeypatch, capsys):
     folder = add_app(project, "my-report", BOTH)
     monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: True)
     monkeypatch.setattr(deploy.console, "can_menu", lambda: False)
@@ -212,6 +233,31 @@ def test_with_no_menu_a_number_picks_the_value_to_keep(project, monkeypatch):
     monkeypatch.setattr(deploy.console, "ask", lambda _question, _default: next(answers))
     deploy.keep_one_job_key(merged_app("my-report"), False)
     assert (folder / "pdt.yml").read_text() == 'job:\n  schedule: "weekly"\nstorage: false\n'
+    out = plain(capsys.readouterr().out.splitlines())
+    assert "  1) job.schedule (every day at 00:00)  daily" in out
+    assert "  2) top-level schedule (every Sunday at 00:00)  weekly" in out
+
+
+@pytest.mark.parametrize("provider, text, problem", [
+    ("azure", "job:\n  schedule: daily\nschedule: not-a-schedule\n",
+     "schedule 'not-a-schedule' is not a shorthand"),
+    ("windows", "job:\n  schedule: daily\nschedule: \"*/7 * * * *\"\n",
+     "schedule: cron minute interval '*/7' resets each hour"),
+    ("azure", "job:\n  timezone: Etc/UTC\ntimezone: Mars/Olympus\n",
+     "timezone 'Mars/Olympus' is not a time zone name"),
+])
+def test_a_top_level_value_that_is_not_valid_is_not_offered(project, monkeypatch, capsys,
+                                                             provider, text, problem):
+    (project / "pdt.yml").write_text(f"platform:\n  provider: {provider}\n")
+    folder = add_app(project, "my-report", text)
+    monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: True)
+    monkeypatch.setattr(deploy.console, "can_menu", lambda: pytest.fail("asked"))
+    deploy.keep_one_job_key(merged_app("my-report"), False)
+    assert (folder / "pdt.yml").read_text() == text
+    out = " ".join(capsys.readouterr().out.split())
+    assert "the top-level value is not valid (" + problem in out
+    assert out.endswith("this deploy uses job.schedule daily." if "schedule" in problem
+                        else "this deploy uses job.timezone Etc/UTC.")
 
 
 SAME = "job:\n  schedule: daily\nschedule: daily\n"

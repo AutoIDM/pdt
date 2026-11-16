@@ -176,3 +176,10 @@ def test_a_null_job_key_is_not_set(project):
     assert app["schedule"] == "hourly" and app["timezone"] == "Etc/UTC"
     add_app(project, "report", "job:\n  schedule: null\n")
     assert merged_app("report")["schedule"] is None
+
+
+def test_a_time_zone_that_is_not_a_name_is_reported_except_on_windows(project):
+    add_app(project, "report", "job:\n  timezone: Mars/Olympus\n")
+    assert any("timezone 'Mars/Olympus' is not a time zone name" in p for p in validate_app("report"))
+    (project / "pdt.yml").write_text("platform:\n  provider: windows\n")
+    assert validate_app("report") == []

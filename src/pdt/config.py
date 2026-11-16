@@ -545,7 +545,11 @@ def _set_block_key(lines: list[str], start: int, key: str, text: str) -> None:
         first = next((i for i in block
                       if lines[i].strip() and not lines[i].strip().startswith("#")), None)
         indent = _indent(lines[first]) if first is not None else "  "
-        lines.insert((first if first is not None else start) + 1, f"{indent}{key}: {text}")
+        at = (first if first is not None else start) + 1
+        while (first is not None and at < len(lines) and lines[at].strip()
+               and len(_indent(lines[at])) > len(indent)):
+            at += 1
+        lines.insert(at, f"{indent}{key}: {text}")
 
 
 def save_platform_key(app: dict, key: str, value: str, path: Path | None = None) -> Path:
@@ -1431,19 +1435,33 @@ def storage_problems(app: dict, storage) -> list[str]:
     return problems
 
 
+def job_value_problem(key: str, value, provider: str) -> str:
+    """Why `value` cannot be the job key `key` of an app on `provider`, or ""."""
+    if key == "timezone":
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        if provider == "windows":
+            return ""
+        try:
+            ZoneInfo(value)
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
+            return f"timezone {value!r} is not a time zone name, such as America/Chicago"
+        return ""
+    try:
+        cron = cron_expression(value)
+    except ConfigError as e:
+        return str(e)
+    problem = windows_schedule_problem(cron) if provider == "windows" else ""
+    return f"schedule: {problem}" if problem != "" else ""
+
+
 def job_problems(app: dict, provider: str) -> list[str]:
-    """The checks of a job's `job:` section and schedule."""
+    """The checks of a job's `job:` section, schedule, and time zone."""
     name = app["name"]
     problems = key_problems(f"{name}/{APP_FILE}: job", app["job"], JOB_KEYS)
-    if app["schedule"] is not None:
-        try:
-            cron = cron_expression(app["schedule"])
-        except ConfigError as e:
-            problems.append(f"{name}: {e}")
-        else:
-            problem = windows_schedule_problem(cron) if provider == "windows" else ""
-            if problem != "":
-                problems.append(f"{name}: schedule: {problem}")
+    for key in sorted(JOB_KEYS):
+        problem = job_value_problem(key, app[key], provider) if app[key] is not None else ""
+        if problem != "":
+            problems.append(f"{name}: {problem}")
     if app["web"]:
         problems.append(f"{name}: web: only an app with app_profile: web uses this "
                         "section; remove it, or set app_profile: web")

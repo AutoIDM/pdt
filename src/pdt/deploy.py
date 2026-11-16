@@ -198,8 +198,11 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
         console.detail(line)
     problem = ""
     if app["app_profile"] == "job":
-        keep_one_job_key(app, assume_yes)
-        problem = choose_schedule(app, assume_yes)
+        try:
+            keep_one_job_key(app, assume_yes)
+            problem = choose_schedule(app, assume_yes)
+        except ConfigError as e:
+            problem = str(e)
     problem = problem or regions.choose_region(app, provider, assume_yes)
     if problem != "":
         console.error(f"{console.value(app_name)}: {console.escape(problem)}")
@@ -320,25 +323,30 @@ def keep_one_job_key(app: dict, assume_yes: bool) -> None:
                              f"from {console.value(where)}; {console.value('job.' + key)} has the "
                              f"same value.")
             continue
-        words = []
-        for value in (nested, top):
-            try:
-                words.append(f" ({config.describe_schedule(value)})" if key == "schedule" else "")
-            except ConfigError:
-                words.append("")
+        problem = config.job_value_problem(key, top, app["platform"].get("provider"))
+        if problem != "":
+            console.note(f"{console.value(where)} sets both {console.value('job.' + key)} "
+                         f"{console.value(nested)} and the top-level {console.value(key)} "
+                         f"{console.value(top)}; the top-level value is not valid "
+                         f"({console.escape(problem)}); this deploy uses "
+                         f"{console.value('job.' + key)} {console.value(nested)}.")
+            continue
+        words = [f" ({config.describe_schedule(value)})" if key == "schedule" else ""
+                 for value in (nested, top)]
         chosen = None
         if interactive:
-            labels = [f"job.{key}: {nested}{words[0]}", f"{key} at the top level: {top}{words[1]}"]
+            labels = [f"job.{key}{words[0]}", f"top-level {key}{words[1]}"]
+            details = [str(nested), str(top)]
             console.say()
             console.say(f"{console.value(where)} sets {console.value(key)} both under "
                         f"{console.value('job:')} and at the top level.")
             console.heading(f"Which {console.escape(key)} should {console.escape(app['name'])} keep?")
             try:
                 if console.can_menu():
-                    chosen = console.choose_one(labels, 0)
+                    chosen = console.choose_one(labels, 0, details)
                 else:
-                    console.choice(1, labels[0])
-                    console.choice(2, labels[1])
+                    console.choice(1, labels[0], details[0])
+                    console.choice(2, labels[1], details[1])
                     answer = console.ask("Which one?", "1") or "1"
                     while answer not in ("1", "2"):
                         console.say("Please answer 1 or 2.")

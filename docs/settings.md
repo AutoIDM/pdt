@@ -207,12 +207,12 @@ A cron value that starts with `*` must be in quotes, for example `"*/15 * * * *"
 
 These keys apply only to a job. Put them under `job:`. A key with the value `null`, or with no value, is not set. Older apps have these keys at the top level of the app's `pdt.yml`. pdt reads a top-level key only when the same key under `job:` is not set.
 
-When the app's `pdt.yml` sets a key both under `job:` and at the top level, `pdt deploy` asks which value to keep. It writes that value under `job:` and removes the top-level key. When the two values are the same, it removes the top-level key with no question. With `--yes`, in a plan, or with no terminal, the deploy uses the value under `job:` and changes no file. It prints a note when the two values differ.
+When the app's `pdt.yml` sets a key both under `job:` and at the top level, `pdt deploy` asks which value to keep. It writes that value under `job:` and removes the top-level key. When the two values are the same, it removes the top-level key with no question. With `--yes`, in a plan, or with no terminal, the deploy uses the value under `job:` and changes no file. It prints a note when the two values differ. When the top-level value is not valid, the deploy asks nothing, uses the value under `job:`, changes no file, and prints a note that names the problem.
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `schedule` | `hourly`, `daily`, `weekly`, `monthly`, `yearly`, or a 5-field cron expression in quotes. | No schedule. The first deploy asks for one and saves it under `job:` in the app's `pdt.yml`. It adds the `job:` section when the file has none. With `--yes`, the deploy uses `daily`. | Sets when the job runs. The `windows` provider accepts fewer forms. See [Windows Task Scheduler](platforms.md#windows-task-scheduler). |
-| `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of the schedule. The `windows` provider ignores it. |
+| `timezone` | A time zone name, for example `America/Chicago`. | `platform.timezone`, then `Etc/UTC`. | Sets the time zone of the schedule. `pdt validate` reports a value that is not a time zone name. The `windows` provider ignores it. |
 
 ```yaml
 # my-report/pdt.yml
