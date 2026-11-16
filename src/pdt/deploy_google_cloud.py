@@ -20,12 +20,12 @@ Resources per app, created in the configured project/region:
   Cloud Run job          pdt-<app>      (labeled managed-by=pdt)
   Cloud Scheduler job    pdt-<app>      (triggers the Run job)
   Secret Manager secret  pdt-<app>-env  (all env vars as one json blob)
+  Service account        pdt-job-<app>  (the job runs as it; the
+                         PDT_CLOUD_RUN_SERVICE_ACCOUNT env var names another)
 Shared across apps:
   Artifact Registry repo PDT_ARTIFACT_REGISTRY_REPO env var, default "pdt"
-  Service account        PDT_CLOUD_RUN_SERVICE_ACCOUNT env var, default
-                         pdt-runner@<project> (created if missing)
   Storage bucket         pdt-data-<suffix> (kept after destroy; one managed
-                         folder per app, the runner may list and write only
+                         folder per app, each job may list and write only
                          its own)
 Shared across apps, created only by a deploy that builds in the cloud:
   Service account        pdt-builder@<project>, the identity of each Cloud
@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import importlib.util
 import json
 import os
@@ -121,6 +122,11 @@ DESTROY_APIS = (
     "storage.googleapis.com",
 )
 STORE_ROLE = "roles/storage.objectUser"
+JOB_SA_DISPLAY_NAME = "pdt job runner"
+SA_ID_MAX = 30
+# pdt 0.1.15 and earlier ran every job as this one account. A deploy moves the job to its
+# own account, and deletes this one when no other job runs as it.
+SHARED_RUNNER = "pdt-runner"
 
 CLOUD_BUILD_API = "cloudbuild.googleapis.com"
 BUILDER = "pdt-builder"
@@ -141,10 +147,12 @@ CLEANUP_POLICIES = [
      "mostRecentVersions": {"keepCount": 2}},
 ]
 CLEANUP_LINE = "delete untagged images after 30 days, keep the 2 newest of each image"
+# A refusal to let the signed-in account act as a service account.
+ACT_AS = re.compile(r"actAs|act as", re.I)
 # What the deployer needs to submit a build as the builder, keyed by what the
 # refusal names: (marker in the error, role, what to grant it on).
 BUILD_SUBMIT_ROLES = (
-    (re.compile(r"actAs|act as", re.I), "roles/iam.serviceAccountUser", "service account"),
+    (ACT_AS, "roles/iam.serviceAccountUser", "service account"),
     (re.compile(r"cloudbuild\.builds\.create", re.I), "roles/cloudbuild.builds.editor",
      "project"),
 )
@@ -167,10 +175,14 @@ TAIL_BUFFER = datetime.timedelta(seconds=10)
 # service account created a moment ago does not exist. All three pass, so every
 # gcloud call waits them out.
 TRANSIENT = re.compile(r"SERVICE_DISABLED|ABORTED|Service account \S+ does not exist")
+# Cloud Scheduler answers NOT_FOUND for a service account created a moment ago, so a scheduler
+# job that signs as an account this deploy created waits that out too.
+NEW_ACCOUNT_TRANSIENT = re.compile(f"{TRANSIENT.pattern}|NOT_FOUND")
 RETRY_WAITS = (10, 20, 40, 60, 60, 60)
 
 
-def gcloud(*args: str, data: str | None = None, slow: str = "") -> subprocess.CompletedProcess:
+def gcloud(*args: str, data: str | None = None, slow: str = "",
+           transient: re.Pattern = TRANSIENT) -> subprocess.CompletedProcess:
     stdin = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
     with console.wait_on(console.value("pdt gcloud " + " ".join(args[:4])), "done",
                          slow, result=False) as wait:
@@ -178,7 +190,7 @@ def gcloud(*args: str, data: str | None = None, slow: str = "") -> subprocess.Co
             proc = subprocess.run([GCLOUD, *args], capture_output=True, text=True, **stdin)
             if proc.returncode == 0:
                 return proc
-            if seconds is None or not TRANSIENT.search(proc.stderr):
+            if seconds is None or not transient.search(proc.stderr):
                 wait.end = ""
                 return proc
             title = re.search(r"serviceTitle: (.+)", proc.stderr)
@@ -187,8 +199,9 @@ def gcloud(*args: str, data: str | None = None, slow: str = "") -> subprocess.Co
             time.sleep(seconds)
 
 
-def run_quiet(*args: str, data: str | None = None, slow: str = "") -> str:
-    proc = gcloud(*args, data=data, slow=slow)
+def run_quiet(*args: str, data: str | None = None, slow: str = "",
+              transient: re.Pattern = TRANSIENT) -> str:
+    proc = gcloud(*args, data=data, slow=slow, transient=transient)
     if proc.returncode == 0:
         return proc.stdout
     console.say(console.escape(proc.stderr.strip()))
@@ -545,30 +558,48 @@ def job_logs_url(project: str, region: str, job: str) -> str:
             f"/logs?project={project}")
 
 
-def scheduler_owned(resource: dict | None, app_name: str, project: str,
-                    region: str, service_account: str) -> bool:
+def scheduler_owned(resource: dict | None, app_name: str, project: str, region: str) -> bool:
+    """A scheduler job pdt made: its description says so, or, made before pdt wrote one, it
+    has no description and starts this app's Cloud Run job, whatever account it signs as."""
     if resource is None:
         return False
     if resource.get("description") == scheduler_description(app_name):
         return True
     target = resource.get("httpTarget") or {}
-    token = target.get("oauthToken") or {}
     expected_uri = (f"https://{region}-run.googleapis.com/apis/run.googleapis.com"
                     f"/v1/namespaces/{project}/jobs/pdt-{app_name}:run")
-    return (resource.get("description") in (None, "")
-            and target.get("uri") == expected_uri
-            and token.get("serviceAccountEmail") == service_account)
+    return resource.get("description") in (None, "") and target.get("uri") == expected_uri
 
 
 def service_account_owned(resource: dict | None) -> bool:
-    return resource is not None and resource.get("displayName") == "pdt job runner"
+    return resource is not None and resource.get("displayName") == JOB_SA_DISPLAY_NAME
 
 
 def run_account_owned(resource: dict | None) -> bool:
-    """An account pdt made for apps to run as: pdt-runner, or a web app's pdt-web-<app>."""
+    """An account pdt made for apps to run as: pdt-runner, a job's pdt-job-<app>, or a web
+    app's pdt-web-<app>."""
     return service_account_owned(resource) or (
         resource is not None
-        and str(resource.get("displayName") or "").startswith(f"{WEB_DISPLAY_NAME} "))
+        and str(resource.get("displayName") or "").startswith(
+            (f"{JOB_SA_DISPLAY_NAME} ", f"{WEB_DISPLAY_NAME} ")))
+
+
+def job_service_account_id(app_name: str) -> str:
+    """pdt-job-<app>; a name past the 30-character limit keeps its first 25 characters and
+    ends with a hash of the whole name, so two long names do not meet."""
+    account = "pdt-job-" + re.sub(r"[^a-z0-9-]", "-", app_name.lower())
+    if len(account) <= SA_ID_MAX:
+        return account
+    return f"{account[:SA_ID_MAX - 5]}-{hashlib.sha256(app_name.encode()).hexdigest()[:4]}"
+
+
+def job_service_account(project: str, app_name: str) -> str:
+    return f"{job_service_account_id(app_name)}@{project}.iam.gserviceaccount.com"
+
+
+def job_service_account_owned(resource: dict | None, app_name: str) -> bool:
+    return (resource is not None
+            and resource.get("displayName") == f"{JOB_SA_DISPLAY_NAME} {app_name}")
 
 
 def builder_owned(resource: dict | None) -> bool:
@@ -704,10 +735,11 @@ def refuse_profile_change(app: dict, project: str, region: str, command: str) ->
 
 
 def cloud_run_list(project: str, kind: str) -> tuple[list[dict], list[str], str]:
-    """Every Cloud Run job or service (`kind` "jobs" or "services") in the project, in every
-    region; the regions that did not answer; and the error that stopped the list, or "". The
-    REST call names the regions that did not answer; `gcloud run ... list` only warns."""
-    group = "run.googleapis.com" if kind == "jobs" else "serving.knative.dev"
+    """Every Cloud Run job, job execution, or service (`kind` "jobs", "executions", or
+    "services") in the project, in every region; the regions that did not answer; and the error
+    that stopped the list, or "". The REST call names the regions that did not answer;
+    `gcloud run ... list` only warns."""
+    group = "serving.knative.dev" if kind == "services" else "run.googleapis.com"
     token = run_quiet("auth", "print-access-token").strip()
     items = []
     unreachable = []
@@ -772,6 +804,25 @@ def deploy_uses(items: list[dict]) -> tuple[set[str], set[tuple[str, str]]]:
                 if option.startswith("only-dir="):
                     pairs.add((account, option.removeprefix("only-dir=")))
     return accounts, pairs
+
+
+def runs_hold(project: str, account: str) -> str:
+    """Why `account` keeps its access: the list of runs of every job in the project, in every
+    region, is incomplete, or a run as `account` has not ended. "" when neither holds. A run
+    keeps the account it started with, whatever its job runs as now."""
+    executions, unanswered, error = cloud_run_list(project, "executions")
+    reasons = ([f"no answer from {', '.join(sorted(set(unanswered)))}"] if unanswered
+               else []) + ([error] if error else [])
+    if reasons:
+        return (f"The list of Cloud Run job runs in the project is incomplete "
+                f"({console.escape('; '.join(reasons))}); keeping {console.value(account)} "
+                "and its access")
+    if any(run_account(execution) == account
+           and not (execution.get("status") or {}).get("completionTime")
+           for execution in executions):
+        return (f"A run as {console.value(account)} has not ended; {console.value(account)} "
+                "keeps its access until the next deploy or destroy after the run ends")
+    return ""
 
 
 def secret_roles(project: str, sid: str, sa: str) -> list[str] | None:
@@ -1059,8 +1110,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     job = f"pdt-{name}"
     repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
     image = f"{region}-docker.pkg.dev/{project}/{repo}/{name}:latest"
-    sa = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() \
-        or f"pdt-runner@{project}.iam.gserviceaccount.com"
+    override = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip()
+    sa = override or job_service_account(project, name)
+    runner = f"{SHARED_RUNNER}@{project}.iam.gserviceaccount.com"
     bucket = store_bucket(project)
     store = deployer_store(project, name) if app["storage"] else None
 
@@ -1073,9 +1125,8 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         require_managed(repository, f"Artifact Registry repository {console.value(repo)}")
         repo_exists = repository is not None
         service_account = service_account_or_none(project, sa)
-        default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
-        if (service_account is not None and sa == default_sa
-                and not service_account_owned(service_account)):
+        if (service_account is not None and not override
+                and not job_service_account_owned(service_account, name)):
             fail(f"service account {console.value(sa)} exists but is not managed by PDT")
         sa_exists = service_account is not None
         builder = builder_email(project)
@@ -1101,10 +1152,11 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         require_managed(run_job, f"Cloud Run job {console.value(job)}")
         job_exists = run_job is not None
         deployed = (((run_job or {}).get("metadata") or {}).get("labels") or {}).get(BUILD_TAG)
+        leave_runner = job_exists and run_account(run_job) == runner != sa
         scheduler = read_json_or_none(
             "scheduler", "jobs", "describe", job,
             "--location", region, "--project", project)
-        if scheduler is not None and not scheduler_owned(scheduler, name, project, region, sa):
+        if scheduler is not None and not scheduler_owned(scheduler, name, project, region):
             fail(f"Cloud Scheduler job {console.value(job)} exists but is not managed by PDT")
         sched_exists = scheduler is not None
         sid = secret_id(name)
@@ -1118,6 +1170,48 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             else:
                 current = secret_value(project, sid)
                 secret_state = "unchanged" if current == payload else "update"
+        # Every deploy removes what pdt-runner holds for this app and no remaining deploy that
+        # runs as it uses, so a deploy that stopped halfway finishes the clean-up next time.
+        runner_folder = runner_bucket = delete_runner = False
+        runner_secret_roles, runner_job_roles = [], []
+        runner_kept = ""
+        if runner != sa and service_account_owned(service_account_or_none(project, runner)):
+            other_jobs, other_services, incomplete = remaining_deploys(project, "jobs", job,
+                                                                       region)
+            same_app = {run_account(item) for item in [*other_jobs, *other_services]
+                        if run_job_identity(item)[0] == job}
+            held = None
+            if not incomplete:
+                held = (secret_roles(project, sid, runner)
+                        if secret is not None and runner not in same_app else [])
+            if incomplete:
+                runner_kept = (f"The list of Cloud Run jobs and services in other regions is "
+                               f"incomplete ({console.escape(incomplete)}); keeping "
+                               f"{console.value(runner)} and its access")
+            elif held is None:
+                runner_kept = (f"Reading who may use secret {console.value(sid)} failed; "
+                               f"keeping {console.value(runner)} and its access")
+            else:
+                accounts, pairs = deploy_uses([*other_jobs, *other_services])
+                bucket_present = bucket_exists or (not store and read_json_or_none(
+                    "storage", "buckets", "describe", f"gs://{bucket}") is not None)
+                if bucket_present and (runner, name) not in pairs:
+                    runner_folder = folder_grant_exists(bucket, name, runner)
+                    runner_bucket = bucket_grant_exists(bucket, name, runner)
+                runner_secret_roles = held
+                if job_exists:
+                    policy = describe_json("run", "jobs", "get-iam-policy", job, "--region",
+                                           region, "--project", project) or {}
+                    runner_job_roles = [binding.get("role")
+                                        for binding in policy.get("bindings") or []
+                                        if f"serviceAccount:{runner}" in
+                                        (binding.get("members") or [])]
+                delete_runner = runner not in accounts
+        runner_cleanup = bool(runner_folder or runner_bucket or runner_secret_roles
+                              or runner_job_roles or delete_runner)
+
+    if runner_kept:
+        console.note(runner_kept)
 
     actions = [console.Markup(("use existing" if repo_exists else "create")
                               + f" Artifact Registry repo {console.value(repo)}")]
@@ -1148,11 +1242,26 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     if store:
         actions += store_plan_lines(f"bucket {console.value(bucket)}", bucket_exists, sa, name)
     actions.append(console.Markup(("update" if job_exists else "create")
-                                  + f" Cloud Run job {console.value(job)}"))
+                                  + f" Cloud Run job {console.value(job)}"
+                                  + (f", which runs as {console.value(runner)} now, to run as "
+                                     f"{console.value(sa)}" if leave_runner else "")))
     actions.append(console.Markup(("update" if sched_exists else "create")
                                   + f' Cloud Scheduler job {console.value(job)}: '
                                   f'"{console.value(cron)}" ({console.value(timezone)})'
                                   + (" (paused)" if app["pause"] else "")))
+    later = f"after the update, if no run as {console.value(runner)} is in progress"
+    if runner_folder or runner_bucket:
+        actions.append(console.Markup(f"remove {console.value(runner)} write access to "
+                                      f"{console.value(f'{bucket}/{name}/')} ({later})"))
+    if runner_secret_roles:
+        actions.append(console.Markup(f"remove {console.value(runner)} access to secret "
+                                      f"{console.value(sid)} ({later})"))
+    if runner_job_roles:
+        actions.append(console.Markup(f"remove {console.value(runner)} access to Cloud Run job "
+                                      f"{console.value(job)} ({later})"))
+    if delete_runner:
+        actions.append(console.Markup(f"delete service account {console.value(runner)} "
+                                      f"(no other apps use it; {later})"))
     cost = cost_estimate(project, region, cron, job, job_exists,
                          1 if values else 0, assume_yes, billing_confirmed,
                          store_usage=usage, currency=regions.local_currency())
@@ -1189,12 +1298,12 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     fingerprint = ensure_image(app, image, "linux/amd64", "Cloud Build" if cloud else "",
                                deployed, lambda: pushed_image(image, project) == pinned, build)
     if not sa_exists:
-        if not sa.startswith("pdt-runner@"):
+        if override:
             fail(f"CLOUD_RUN_SERVICE_ACCOUNT {console.value(sa)} does not exist in project "
                  f"{console.value(project)}")
         console.step(f"creating service account {console.value(sa)}")
-        run_quiet("iam", "service-accounts", "create", "pdt-runner",
-                  "--project", project, "--display-name", "pdt job runner",
+        run_quiet("iam", "service-accounts", "create", job_service_account_id(name),
+                  "--project", project, "--display-name", f"{JOB_SA_DISPLAY_NAME} {name}",
                   "--description", "Managed by PDT")
     if store:
         if not bucket_exists:
@@ -1237,7 +1346,15 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         env_vars.append(f"PDT_STORAGE_URL={store.url}")
     if env_vars:
         args += ["--set-env-vars", ",".join(env_vars)]
-    run_quiet(*args, slow=f"deploying: Cloud Run job {console.value(job)}")
+    proc = gcloud(*args, slow=f"deploying: Cloud Run job {console.value(job)}")
+    if proc.returncode != 0:
+        console.say(console.escape(proc.stderr.strip()))
+        if "PERMISSION_DENIED" in proc.stderr and ACT_AS.search(proc.stderr):
+            fail(f"Cloud Run refused to run {console.value(job)} as {console.value(sa)} for your "
+                 f"Google account; add the role {console.value('roles/iam.serviceAccountUser')} "
+                 f"for your account on service account {console.value(sa)}")
+        fail(f"{console.value('pdt gcloud ' + ' '.join(args[:4]))} failed; fix the problem above "
+             "and re-run the deploy")
     run_quiet("run", "jobs", "add-iam-policy-binding", job, "--region", region,
               "--project", project, "--member", f"serviceAccount:{sa}",
               "--role", "roles/run.invoker")
@@ -1251,8 +1368,32 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
               "--description", scheduler_description(name),
               "--schedule", cron, "--time-zone", timezone,
               "--uri", uri, "--http-method", "POST",
-              "--oauth-service-account-email", sa)
+              "--oauth-service-account-email", sa,
+              transient=TRANSIENT if sa_exists else NEW_ACCOUNT_TRANSIENT)
     set_scheduler_paused(project, region, job, app["pause"])
+    if runner_cleanup:
+        held_by_runs = runs_hold(project, runner)
+        if held_by_runs:
+            console.note(held_by_runs)
+            runner_folder = runner_bucket = delete_runner = False
+            runner_secret_roles, runner_job_roles = [], []
+    if runner_folder or runner_bucket:
+        revoke_store_access(bucket, name, runner, runner_folder, runner_bucket)
+    member = ("--member", f"serviceAccount:{runner}")
+    if runner_secret_roles:
+        console.step(f"removing {console.value(runner)} access to secret {console.value(sid)}")
+    for role in runner_secret_roles:
+        run_quiet("secrets", "remove-iam-policy-binding", sid, "--project", project,
+                  *member, "--role", role)
+    if runner_job_roles:
+        console.step(f"removing {console.value(runner)} access to Cloud Run job "
+                     f"{console.value(job)}")
+    for role in runner_job_roles:
+        run_quiet("run", "jobs", "remove-iam-policy-binding", job, "--region", region,
+                  "--project", project, *member, "--role", role)
+    if delete_runner:
+        console.step(f"deleting service account {console.value(runner)}")
+        run_quiet("iam", "service-accounts", "delete", runner, "--project", project, "--quiet")
     console.done(f"Deployed {console.value(name)}.")
     return 0
 
@@ -1266,23 +1407,24 @@ def destroy(app: dict, assume_yes: bool) -> int:
     job = f"pdt-{name}"
     repo = os.environ.get("PDT_ARTIFACT_REGISTRY_REPO", "").strip() or "pdt"
     image = f"{region}-docker.pkg.dev/{project}/{repo}/{name}"
-    sa = os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() \
-        or f"pdt-runner@{project}.iam.gserviceaccount.com"
-    default_sa = f"pdt-runner@{project}.iam.gserviceaccount.com"
+    own = job_service_account(project, name)
+    default_sa = f"{SHARED_RUNNER}@{project}.iam.gserviceaccount.com"
 
     console.status(f"Checking current state in project {console.value(project)} "
                    f"({console.value(region)})...")
     with console.waiting("reading: resources"):
-        scheduler = read_json_or_none(
-            "scheduler", "jobs", "describe", job,
-            "--location", region, "--project", project)
-        delete_scheduler = scheduler_owned(scheduler, name, project, region, sa)
-        if scheduler is not None and not delete_scheduler:
-            console.note(f"Cloud Scheduler job {console.value(job)} is not managed by PDT; keeping it")
-        refuse_profile_change(app, project, region, "destroy")
         run_job = read_json_or_none(
             "run", "jobs", "describe", job,
             "--region", region, "--project", project)
+        sa = ((run_account(run_job) if run_job else "")
+              or os.environ.get("PDT_CLOUD_RUN_SERVICE_ACCOUNT", "").strip() or own)
+        scheduler = read_json_or_none(
+            "scheduler", "jobs", "describe", job,
+            "--location", region, "--project", project)
+        delete_scheduler = scheduler_owned(scheduler, name, project, region)
+        if scheduler is not None and not delete_scheduler:
+            console.note(f"Cloud Scheduler job {console.value(job)} is not managed by PDT; keeping it")
+        refuse_profile_change(app, project, region, "destroy")
         delete_job = managed_by_pdt(run_job)
         if run_job is not None and not delete_job:
             console.note(f"Cloud Run job {console.value(job)} is not managed by PDT; keeping it")
@@ -1329,10 +1471,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
                          or sa in {run_account(item) for item in same_app}
                          else secret_roles(project, sid, sa))
         secret_unread = revoke_secret is None
-        # The job's own account and pdt-runner, by email: each goes when pdt made it and no
-        # remaining deploy runs as it.
+        # The account the job runs as, its pdt-job-<app> account, and pdt-runner, by email:
+        # each goes when pdt made it and no remaining deploy runs as it.
         run_accounts = {email: service_account_or_none(project, email)
-                        for email in dict.fromkeys((sa, default_sa))}
+                        for email in dict.fromkeys((sa, own, default_sa))}
         bucket = store_bucket(project)
         store = deployer_store(project, name) if app["storage"] else None
         bucket_present = read_json_or_none(
@@ -1386,8 +1528,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
         actions.append(console.Markup(f"delete Artifact Registry repository {console.value(repo)} "
                                       "(no other apps use it)"))
     for email in delete_accounts:
-        actions.append(console.Markup(f"delete service account {console.value(email)} "
-                                      "(no other apps use it)"))
+        actions.append(console.Markup(
+            f"delete service account {console.value(email)} (no other apps use it"
+            + (f"; if no run as {console.value(email)} is in progress)" if email == default_sa
+               else ")")))
     if delete_builder:
         actions.append(console.Markup(f"delete service account {console.value(builder)} "
                                       "(no other apps use it)"))
@@ -1440,6 +1584,14 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.warn("Aborted; nothing was changed.")
         return DECLINED
 
+    if default_sa in delete_accounts or (sa == default_sa and (revoke_grant or revoke_secret)):
+        held_by_runs = runs_hold(project, default_sa)
+        if held_by_runs:
+            console.note(held_by_runs)
+            delete_accounts = [email for email in delete_accounts if email != default_sa]
+            if sa == default_sa:
+                revoke_grant = revoke_folder = revoke_bucket = False
+                revoke_secret = []
     if revoke_grant:
         revoke_store_access(bucket, name, sa, revoke_folder, revoke_bucket)
     if revoke_secret:

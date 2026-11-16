@@ -41,7 +41,7 @@ ALLOWED = {
                         "len(read_apps)", "len(condition)", "CONDITION_LIMIT"},
     "deploy_azure_container_apps.py": {"timestamp", "shared", "self.label", "lock.label",
                                        "release.note"},
-    "deploy_google_cloud.py": {"wait", "label", "secret_state", "resource"},
+    "deploy_google_cloud.py": {"wait", "label", "secret_state", "resource", "runner_kept", "later", "held_by_runs"},
     "deploy_google_cloud_web.py": {"secret_state", "resource"},
     "deploy_windows.py": {"verb", "names"},
     "duckdb_wasm.py": {"size_text(size)"},
