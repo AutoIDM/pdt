@@ -597,7 +597,7 @@ def test_destroy_deletes_the_jobs_account_unless_the_app_runs_in_another_region(
         fake.found[("run", "jobs", "list")] = [run_item("pdt-report", "europe-west1", OWN)]
     fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
     app = destroy_app(project, monkeypatch, fake)
-    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: ["warehouse"])
+    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: (["warehouse"], ""))
     reads = []
     monkeypatch.setattr(google, "revoke_store_read", lambda *args: reads.append(args[1:]))
     assert google.destroy(app, True) == 0
@@ -614,7 +614,7 @@ def test_destroy_removes_the_read_grants_of_each_account_it_deletes(project, mon
         {"email": OWN, "displayName": "pdt job runner report"}, {"email": shared}]
     fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
     app = destroy_app(project, monkeypatch, fake)
-    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: ["warehouse"])
+    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: (["warehouse"], ""))
     reads = []
     monkeypatch.setattr(google, "revoke_store_read", lambda *args: reads.append(args[1:]))
     assert google.destroy(app, True) == 0
@@ -647,11 +647,43 @@ def test_a_deploy_with_storage_off_removes_the_read_grants_it_made(project, monk
     })
     app = {**deploy_app(project, monkeypatch, fake, cloud=True), "storage_read": []}
     assert app["storage"] is False
-    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: ["warehouse"])
+    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: (["warehouse"], ""))
     reads = []
     monkeypatch.setattr(google, "revoke_store_read", lambda *args: reads.append(args[1:]))
     assert google.deploy(app, True) == 0
     assert reads == [("warehouse", OWN)]
+
+
+def test_a_deploy_stops_when_it_cannot_read_a_folder_policy(project, monkeypatch, capsys):
+    fake = FakeGcloud(found={
+        ("run", "jobs", "describe"): run_item("pdt-report", "us-central1", OWN),
+        ("iam", "service-accounts", "list"): [
+            {"email": OWN, "displayName": "pdt job runner report"}],
+        ("storage", "buckets", "describe"): {"labels": {"managed-by": "pdt"}},
+    })
+    app = {**deploy_app(project, monkeypatch, fake, cloud=True), "storage_read": []}
+    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: ([], "warehouse"))
+    with pytest.raises(SystemExit):
+        google.deploy(app, True)
+    assert fake.ran("run", "jobs", "deploy") == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert (f"reading who may use {google.store_bucket('my-project')}/warehouse/ failed; fix the "
+            "problem above and re-run the deploy") in out
+
+
+def test_destroy_keeps_an_account_whose_read_grants_it_cannot_read(project, monkeypatch, capsys):
+    fake = destroy_fake(builder=False)
+    fake.found[("iam", "service-accounts", "list")] = [
+        {"email": OWN, "displayName": "pdt job runner report"}]
+    fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    app = destroy_app(project, monkeypatch, fake)
+    monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: (["client1"], "warehouse"))
+    monkeypatch.setattr(google, "revoke_store_read", lambda *args: pytest.fail("revoked"))
+    assert google.destroy(app, True) == 0
+    assert fake.ran("iam", "service-accounts", "delete") == []
+    out = " ".join(capsys.readouterr().out.split())
+    assert (f"Reading who may use {google.store_bucket('my-project')}/warehouse/ failed; "
+            f"keeping {OWN} and its access") in out
 
 
 def moving_fake(*jobs):

@@ -528,8 +528,11 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
         gc.require_managed(described, f"bucket {console.value(bucket)}")
         bucket_exists = described is not None
         # Grants an earlier deploy made that the config no longer names.
-        stale_reads = [other for other in (gc.held_reads(bucket, sa, name) if bucket_exists else [])
-                       if other not in app["storage_read"]]
+        held, unread = gc.held_reads(bucket, sa, name) if bucket_exists else ([], "")
+        if unread:
+            fail(f"reading who may use {console.value(f'{bucket}/{unread}/')} failed; fix the "
+                 "problem above and re-run the deploy")
+        stale_reads = [other for other in held if other not in app["storage_read"]]
         stale_folder = (bucket_exists and not app["storage"]
                         and gc.folder_grant_exists(bucket, name, sa))
         usage = (store.usage() if bucket_exists else (0, 0)) if store else None
@@ -798,13 +801,18 @@ def destroy(app: dict, assume_yes: bool) -> int:
                          and gc.folder_grant_exists(bucket, name, sa))
         revoke_bucket = (bucket_present and not keep_grant
                          and gc.bucket_grant_exists(bucket, name, sa))
-        revoke_reads = ([other for other in gc.held_reads(bucket, sa, name)
-                         if (sa, other) not in pairs]
-                        if bucket_present and not incomplete and not secret_unread else [])
+        held, unread = (gc.held_reads(bucket, sa, name)
+                        if bucket_present and not incomplete and not secret_unread else ([], ""))
+        # An account whose read grants cannot all be read stays, with what it holds.
+        revoke_reads = [] if unread else [other for other in held if (sa, other) not in pairs]
+        delete_account = delete_account and not unread
 
     if incomplete:
         console.note(f"The list of Cloud Run jobs and services in other regions is incomplete "
                      f"({console.escape(incomplete)}); keeping what apps share across regions")
+    if unread:
+        console.note(f"Reading who may use {console.value(f'{bucket}/{unread}/')} failed; "
+                     f"keeping {console.value(sa)} and its access")
     if revoke_secret is None:
         console.note(f"Reading who may use secret {console.value(sid)} failed; keeping "
                      f"{console.value(sa)} and its access")

@@ -127,7 +127,27 @@ def test_the_read_grants_are_found_on_the_other_folders(monkeypatch):
         (["storage", "managed-folders", "get-iam-policy", "gs://pdt-data-abc/client2/"],
          policy({**held, "role": deploy_google_cloud.STORE_ROLE})),
     ])
-    assert deploy_google_cloud.held_reads("pdt-data-abc", SA, "hello-world") == ["client1"]
+    assert deploy_google_cloud.held_reads("pdt-data-abc", SA, "hello-world") == (["client1"], "")
+
+
+def test_the_read_grant_scan_stops_at_a_policy_it_cannot_read(monkeypatch):
+    held = {"role": deploy_google_cloud.READ_ROLE, "members": [f"serviceAccount:{SA}"]}
+    denied = Result(1)
+    denied.stderr = "ERROR: (gcloud.storage.managed-folders.get-iam-policy) HTTPError 403"
+    missing = Result(1)
+    missing.stderr = "ERROR: NOT_FOUND: The specified managed folder does not exist."
+    record_gcloud(monkeypatch, [
+        (["storage", "managed-folders", "list"],
+         Result(0, json.dumps([{"name": "client1/"}, {"name": "client2/"}, {"name": "client3/"},
+                               {"name": "client4/"}]))),
+        (["storage", "managed-folders", "get-iam-policy", "gs://pdt-data-abc/client1/"],
+         policy(held)),
+        (["storage", "managed-folders", "get-iam-policy", "gs://pdt-data-abc/client2/"], missing),
+        (["storage", "managed-folders", "get-iam-policy", "gs://pdt-data-abc/client3/"], denied),
+        (["storage", "managed-folders", "get-iam-policy", "gs://pdt-data-abc/client4/"],
+         policy(held)),
+    ])
+    assert deploy_google_cloud.held_reads("pdt-data-abc", SA, "") == (["client1"], "client3")
 
 
 def test_a_read_grant_binds_the_viewer_role_on_the_other_folder(monkeypatch):

@@ -531,21 +531,37 @@ def revoke_store_access(bucket: str, app_name: str, sa: str,
                   *member, "--condition", store_condition(bucket, app_name))
 
 
-def read_grant_exists(bucket: str, other: str, sa: str) -> bool:
-    policy = describe_json("storage", "managed-folders", "get-iam-policy",
-                           store_url(bucket, other)) or {}
+def read_grant_exists(bucket: str, other: str, sa: str) -> bool | None:
+    """Whether `sa` holds the read role on the folder of `other`, or None when its policy
+    cannot be read for a reason other than a missing folder."""
+    proc = gcloud("storage", "managed-folders", "get-iam-policy", store_url(bucket, other),
+                  "--format=json")
+    if proc.returncode != 0:
+        if not_found(proc.stderr):
+            return False
+        console.say(console.escape(proc.stderr.strip()))
+        return None
+    policy = json.loads(proc.stdout or "null") or {}
     return any(binding.get("role") == READ_ROLE
                and f"serviceAccount:{sa}" in (binding.get("members") or [])
                for binding in policy.get("bindings") or [])
 
 
-def held_reads(bucket: str, sa: str, own: str) -> list[str]:
+def held_reads(bucket: str, sa: str, own: str) -> tuple[list[str], str]:
     """The app folders of the bucket, other than the app's own, on which `sa` holds the read
-    role: what a deploy or a destroy must check, whatever the config says now."""
+    role: what a deploy or a destroy must check, whatever the config says now. Also the folder
+    whose policy could not be read, or ""; the scan stops there, so the list is incomplete."""
     folders = list_json("storage", "managed-folders", "list", f"gs://{bucket}/")
-    names = [str(folder.get("name") or "").rstrip("/") for folder in folders]
-    return [other for other in names if other and other != own
-            and read_grant_exists(bucket, other, sa)]
+    held = []
+    for other in (str(folder.get("name") or "").rstrip("/") for folder in folders):
+        if not other or other == own:
+            continue
+        found = read_grant_exists(bucket, other, sa)
+        if found is None:
+            return held, other
+        if found:
+            held.append(other)
+    return held, ""
 
 
 def grant_store_read(bucket: str, other: str, sa: str) -> None:
@@ -1249,9 +1265,12 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
                               or runner_job_roles or delete_runner)
         # Grants an earlier deploy made that the config no longer names. A shared account
         # from PDT_CLOUD_RUN_SERVICE_ACCOUNT may hold another app's grants, so they stay.
-        stale_reads = [other for other in (held_reads(bucket, sa, name)
-                                           if bucket_present and not override else [])
-                       if other not in app["storage_read"]]
+        held, unread = (held_reads(bucket, sa, name) if bucket_present and not override
+                        else ([], ""))
+        if unread:
+            fail(f"reading who may use {console.value(f'{bucket}/{unread}/')} failed; fix the "
+                 "problem above and re-run the deploy")
+        stale_reads = [other for other in held if other not in app["storage_read"]]
 
     if runner_kept:
         console.note(runner_kept)
@@ -1549,8 +1568,16 @@ def destroy(app: dict, assume_yes: bool) -> int:
         # The read grants go with each account destroy deletes, on every folder, this app's own
         # too (another app may have run as this account and read it); an account that stays,
         # such as a shared one or the one a job of this app in another region runs as, keeps them.
-        revoke_reads = [(email, other) for email in (delete_accounts if bucket_present else [])
-                        for other in held_reads(bucket, email, "")]
+        # An account whose read grants cannot all be read stays, with what it holds.
+        revoke_reads = []
+        unread_reads = []
+        for email in (list(delete_accounts) if bucket_present else []):
+            held, unread = held_reads(bucket, email, "")
+            if unread:
+                unread_reads.append((email, unread))
+                delete_accounts.remove(email)
+            else:
+                revoke_reads += [(email, other) for other in held]
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)
@@ -1567,6 +1594,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
     if revoke_secret is None:
         console.note(f"Reading who may use secret {console.value(sid)} failed; keeping "
                      f"{console.value(sa)} and its access")
+    for email, unread in unread_reads:
+        console.note(f"Reading who may use {console.value(f'{bucket}/{unread}/')} failed; "
+                     f"keeping {console.value(email)} and its access")
     actions = []
     if revoke_grant:
         actions.append(console.Markup(f"remove {console.value(sa)} write access to "
@@ -1650,6 +1680,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
         if held_by_runs:
             console.note(held_by_runs)
             delete_accounts = [email for email in delete_accounts if email != default_sa]
+            revoke_reads = [(email, other) for email, other in revoke_reads
+                            if email != default_sa]
             if sa == default_sa:
                 revoke_grant = revoke_folder = revoke_bucket = False
                 revoke_secret = []
