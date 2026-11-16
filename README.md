@@ -32,10 +32,10 @@ A web app gets other services. See [Types of apps](docs/types-of-apps.md).
 ### Practices
 
 1. **One folder per app** - Each app is built, deployed, and destroyed on its own.
-2. **Run it locally first** - `pdt run` runs the app the same way the cloud does, with the same config and storage.
+2. **Run it locally first** - `pdt run` runs the app on your computer with the same config the cloud uses. A local run keeps its files in `.pdt/storage/` in the project, not in the cloud, and a local web app has no sign-in.
 3. **You own everything** - Your apps live in your own git repo, and they run in your own cloud account. There is no pdt server.
 4. **Secrets stay secret** - Kept in `.env` on your computer and in the cloud's secret store, never in git or the image.
-5. **Nothing left behind** - Everything pdt makes is tagged `managed-by=pdt`, and `pdt destroy` removes all of it.
+5. **Nothing left behind** - Everything pdt makes is tagged `managed-by=pdt`, and `pdt destroy` removes all of it except the app's storage folder, which only `pdt storage APP destroy` deletes.
 6. **Cheapest by default** - Jobs run only when scheduled, on the lowest-cost option that works (for example arm64 on AWS).
 7. **One run at a time** - A job's saved state is locked during a run, so two runs never overwrite each other.
 
@@ -136,7 +136,7 @@ A web app (`app_profile: web`) that greets the person who signed in. It deploys 
 - [Settings](docs/settings.md): every setting in the project's and the apps' `pdt.yml` files, and every env var, with its allowed values and its default
 - [Choosing where apps run](docs/platforms.md): AWS, Azure, Google Cloud, Windows Task Scheduler, and your own Dockerfile
 - [Keeping files between runs](docs/storage.md): the storage folder every app gets, and state that carries from one run to the next
-- [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's runs, logs, and files
+- [The dashboard](docs/dashboard.md): `pdt gui`, the browser view of every app's health, each job's runs, and their logs and files
 - [Writing your own app](docs/writing-apps.md): Python and PowerShell apps, web apps, and logging
 - [Sending email](docs/email.md): send mail from an app over SMTP, Microsoft Graph, SES, or Resend
 - [More ways to install](docs/install.md): other installs, and how to update or remove pdt

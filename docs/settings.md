@@ -116,7 +116,7 @@ platform:
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
-| `subscription` | An Azure subscription ID. | The active subscription of the Azure CLI (`az account show`). A deploy at a terminal saves it; a deploy with no one to ask (CI) uses it and does not save it. pdt asks nothing. When you are not logged in, pdt asks at a terminal to open the browser login, and a deploy with no one to ask stops. | Selects the subscription. When the Azure CLI uses another subscription, the deploy switches the Azure CLI to this one. |
+| `subscription` | An Azure subscription ID. | The active subscription of the Azure CLI (`az account show`). A deploy at a terminal saves it; a deploy with no one to ask (CI) uses it and does not save it. pdt asks nothing. When you are not logged in, pdt asks at a terminal to open the browser login, and a deploy with no one to ask stops. When the value is not a subscription that your login can use, the deploy lists your subscriptions and asks you to choose one. | Selects the subscription. When the Azure CLI uses another subscription, the deploy switches the Azure CLI to this one. |
 | `resource_group` | A resource group name. | `pdt` | Names the resource group that holds the project's resources. |
 | `environment` | An environment you already own, written as `<resource-group>/<name>`. | The shared environment `pdt-<region>` in the resource group `pdt-shared`. | Selects the Container Apps environment. pdt never creates, changes, or deletes an environment that you name here. |
 
@@ -134,7 +134,7 @@ platform:
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
-| `project` | A Google Cloud project ID. | The deploy lists your projects, asks you to choose one, and saves the answer. | Selects the project. |
+| `project` | A Google Cloud project ID. | `PDT_GOOGLE_CLOUD_PROJECT`. Else the deploy lists your projects, asks you to choose one or to create one, and saves the answer; a deploy with no one to ask stops. | Selects the project. |
 
 ```yaml
 # pdt.yml
@@ -225,7 +225,7 @@ job:
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `enabled` | `true` or `false`. | `true` | Gives the app its own storage folder. |
-| `read` | A list of names of other apps in the project. | Empty. | Lets this app read the storage folder of each named app. A deployed web app finds each folder as read-only files under `/pdt/storage/<app>/`. A job opens it with `pdt.utils.storage.store(app="<app>")`; for a job, this works with the `azure` provider only, and the job needs `enabled: true`. Run `pdt deploy APP` after you change the list. `pdt validate` reports a name that is not an app of the project, a name listed twice, the app's own name, an app with `storage: false`, an app on another provider, a job on a provider other than `azure`, and a job with `enabled: false`. |
+| `read` | A list of names of other apps in the project. | Empty. | Lets this app read the storage folder of each named app. A web app finds each folder under `PDT_STORAGE_READ_DIR`. A job opens it with `pdt.utils.storage.store(app="<app>")`; for a job, this works with the `azure` provider only, and the job needs `storage.enabled: true`. Run `pdt deploy APP` after you change the list. |
 
 ```yaml
 # dashboard/pdt.yml
@@ -233,6 +233,18 @@ storage:
   enabled: false
   read: [github-data]
 ```
+
+`pdt validate` reports each of these in `storage.read`:
+
+- a name that is not an app of the project
+- a name listed twice
+- the app's own name
+- an app with `storage: false`
+- an app on another provider
+- a job on a provider other than `azure`
+- a job with `storage.enabled: false`
+
+See [Reading another app's files](storage.md#reading-another-apps-files) for the folders that a web app reads.
 
 ### `web:` keys
 
@@ -255,7 +267,7 @@ Every web app has a sign-in. `web.auth` needs `provider`, and `allowed_domains`,
 | `allowed_domains` | A list of Google Workspace domains, for example `[example.com]`. | Empty. | Lets every account of each domain enter. |
 | `allowed_groups` | A list of Google group addresses, for example `[sales@example.com]`. | Empty. | Lets every member of each group enter. |
 
-IAP signs visitors in with a Google-managed OAuth client, which serves only accounts of the Google Cloud project's own organization. A group member from outside the organization cannot sign in. A deploy stops before it changes anything when the project has no organization. It also stops when a domain in `allowed_domains` is not a domain of the organization. pdt can list the organization's domains only when the deployer is a Google Workspace admin and the token has the `admin.directory.domain.readonly` scope. Otherwise, pdt accepts the organization's primary domain and the deployer's own domain, and warns about each other domain.
+IAP signs visitors in with a Google-managed OAuth client, which serves only accounts of the Google Cloud project's own organization. A group member from outside the organization cannot sign in. A deploy stops when the project has no organization. It also stops when a domain in `allowed_domains` is not a domain of the organization. The deploy makes this check after it enables the Google Cloud APIs it needs, and before it creates any resource for the app. pdt can list the organization's domains only when the deployer is a Google Workspace admin and the token has the `admin.directory.domain.readonly` scope. Otherwise, pdt accepts the organization's primary domain and the deployer's own domain, and warns about each other domain. When the deployer may not read the project's organization, pdt warns and does not check.
 
 IAP sends the email of the visitor to the app in the header `X-Goog-Authenticated-User-Email`, as `accounts.google.com:<email>`.
 
@@ -310,10 +322,10 @@ A deploy sends each listed name that has a value to the app's secrets in the clo
 
 pdt also reads the app's code and adds each env var name that it finds:
 
-- In Python, `os.environ["NAME"]` adds a required name. `os.environ.get("NAME")` and `os.getenv("NAME")` add an optional name.
-- In PowerShell, `$env:NAME` adds a required name, unless the scripts set it. To make it optional, list it under `optional`.
+- In Python, in `run.py` and the other `.py` files of the app folder, `os.environ["NAME"]` adds a required name. `os.environ.get("NAME")` and `os.getenv("NAME")` add an optional name.
+- In PowerShell, `$env:NAME` adds a required name. To make it optional, list it under `optional`.
 
-This scan skips each name that starts with `PDT_`. List each `PDT_` name that your app needs, or the deploy does not send it. An alert entry adds its own webhook name, so do not list that name.
+This scan skips each name that the `env:` block already lists, each name that the code sets, common system names such as `PATH`, `HOME`, `TEMP`, and `USERPROFILE`, and each name that starts with `PDT_`. It does not find a name that the code builds at run time. List each `PDT_` name that your app needs, or the deploy does not send it. An alert entry adds its own webhook name, so do not list that name.
 
 A name that ends in `_PATH` names a file. A deploy reads the file and sends its contents as `<NAME>_B64`. pdt looks for a relative path next to each `.env` file, then in the app folder, then in the project folder. A value for `<NAME>_B64` also satisfies a `required` name `<NAME>_PATH`. A deploy sends only the env vars that the app lists (in its own `pdt.yml` or its `apps:` entry), that pdt finds in the code, or that the alert settings need. To set `<NAME>_B64` yourself, list it too, for example under `optional`.
 
@@ -482,7 +494,7 @@ Set `PDT_AZURE_MANAGED_IDENTITY`, `PDT_AZURE_LOG_WORKSPACE`, `PDT_AZURE_CONTAINE
 | `PDT_GOOGLE_CLOUD_PROJECT` | A Google Cloud project ID. | Not set. | Selects the project when `platform.project` is empty. |
 | `PDT_GOOGLE_CLOUD_REGION` | A Google Cloud region name. | Not set. | Selects the region when `platform.region` is empty. The deploy then asks no region question. |
 | `PDT_ARTIFACT_REGISTRY_REPO` | An Artifact Registry repository name. | `pdt` | Names the image repository. |
-| `PDT_CLOUD_RUN_SERVICE_ACCOUNT` | A service account email address. | `pdt-runner@<project>.iam.gserviceaccount.com` | Names the service account that jobs run as. A web app runs as its own service account, `pdt-web-<app>`, which this variable does not change. |
+| `PDT_CLOUD_RUN_SERVICE_ACCOUNT` | A service account email address. | `pdt-runner@<project>.iam.gserviceaccount.com` | Names the service account that jobs run as. A web app runs as its own service account, `pdt-web-<app>`, which this variable does not change. A name longer than 30 characters keeps its first 25 characters and ends with `-` and 4 characters of a hash of the app name. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | The path of a key file. | Not set. | pdt signs in with this file when you have no other sign-in. |
 | `CLOUDSDK_CONFIG` | A folder path. | `~/.config/gcloud`, or `%APPDATA%\gcloud` on Windows. | Names the gcloud settings folder that pdt reads to suggest a region. |
 | `CLOUDSDK_ACTIVE_CONFIG_NAME` | A gcloud configuration name. | The active gcloud configuration. | Selects the gcloud configuration that pdt reads to suggest a region. |
@@ -532,7 +544,7 @@ Your app reads these through `pdt.utils.entra`, to read Microsoft Graph data as 
 | `PDT_AZURE_CLIENT_ID` | An app registration client ID. | Not set. | Selects the app registration. |
 | `PDT_AZURE_CLIENT_SECRET` | A client secret. | Not set. | Signs in with a secret, when no certificate is set. |
 | `PDT_AZURE_PRIVATE_KEY_B64` | A base64 PFX certificate. | Not set. | Signs in with this certificate. It wins over `PDT_AZURE_PRIVATE_KEY_PATH`. |
-| `PDT_AZURE_PRIVATE_KEY_PATH` | The path of a PFX file. A relative path starts at the project folder. | Not set. | Signs in with the certificate in this file. |
+| `PDT_AZURE_PRIVATE_KEY_PATH` | The path of a PFX file. When the app runs, a relative path starts at the project folder. A deploy looks for a relative path next to each `.env` file, then in the app folder, then in the project folder, and sends the file as `PDT_AZURE_PRIVATE_KEY_B64`. | Not set. | Signs in with the certificate in this file. |
 | `PDT_AZURE_PRIVATE_KEY_PASSWORD` | A password. | Not set. | Opens a PFX certificate that has a password. |
 
 ## Env vars that pdt sets for your app
@@ -544,10 +556,10 @@ Do not set these env vars yourself.
 | --- | --- |
 | `PDT_STORAGE_URL` | The app's [storage folder](storage.md). When it is not set, `pdt.utils.storage` uses `.pdt/storage/<app>/` in the project. |
 | `PDT_STORAGE_READ_URLS` | JSON of the storage folder URL of each app in `storage.read`. |
-| `PDT_STORAGE_READ_DIR` | A web app: the folder that holds a read-only folder for each app in `storage.read`. `/pdt/storage` when deployed. |
+| `PDT_STORAGE_READ_DIR` | A web app: the folder that holds a folder for each app in `storage.read`. `/pdt/storage`, read-only, when deployed and in a local container. `.pdt/storage` in the project when `pdt run` starts a `run.py`. |
 | `PDT_PORT` | A web app: the port to listen on, from `web.port`. |
 | `PDT_URL` | A deployed web app: its own URL, `https://pdt-<app>-<project number>.<region>.run.app/`. |
-| `PDT_RUN_ID` | A job: the ID of this run. |
+| `PDT_RUN_ID` | The ID of this run of a job. A deployed web app built from the generated Dockerfile also gets one, for each start of its server. A web app that `pdt run` starts on your computer does not. |
 | `PDT_CONFIG_JSON` | The app's merged `config:` block as JSON, for a PowerShell script. |
 | `PDT_OUTPUT_DIR` | The folder for a PowerShell script's files. pdt keeps each file in the storage folder. |
 | `PDT_STATE_DIR` | The folder for a PowerShell script's state. See [Writing your own app](writing-apps.md). |

@@ -29,7 +29,7 @@ platform:
   # environment: my-group/my-environment
 ```
 
-`subscription` is optional. When it is missing or wrong, the deploy asks you to choose one.
+`subscription` is optional. When it is missing, the deploy uses the Azure CLI's active subscription and asks nothing. A deploy at a terminal writes it here; a deploy with no one to ask uses it and writes nothing. When the subscription here is not one that your Azure login can use, the deploy lists your subscriptions and asks you to choose one; with no one to ask, it stops. When the Azure CLI uses another subscription, the deploy switches the Azure CLI to this one.
 
 Every pdt project in a subscription runs its jobs in one shared Container Apps environment per region, `pdt-<region>` in the resource group `pdt-shared`, because a subscription allows only a few environments. Destroying the last app that uses the environment removes it, and removes `pdt-shared` once it holds no environment. Set `environment` to use an environment you already have; pdt then never creates, changes, or deletes it.
 
@@ -45,7 +45,7 @@ platform:
   profile: work
 ```
 
-`profile` is optional. When it is missing, pdt uses `AWS_PROFILE`, or the only profile on your computer. When there are several and none is chosen, or the one in the file is not on this computer, the deploy lists them and asks you to choose, then writes your answer here.
+`profile` is optional. When it is missing, pdt uses the default sign-in of the AWS SDK: `AWS_PROFILE`, the `default` profile, or `AWS_ACCESS_KEY_ID`. When that sign-in has no credentials, or the profile here is not on this computer, pdt uses the only profile on your computer. With several profiles, the deploy lists them, asks you to choose, and writes your answer here. With no profile, the deploy asks how you sign in to AWS, creates a profile, and writes its name here. With no one to ask, it stops.
 
 ## Google Cloud
 
@@ -56,7 +56,7 @@ platform:
   project: my-starter-project
 ```
 
-`project` is optional. When it is missing or wrong, the deploy lists your projects and asks you to choose one, then writes your answer here.
+`project` is optional. When it and `PDT_GOOGLE_CLOUD_PROJECT` are missing, the deploy lists your projects and asks you to choose one, or to type a new project id to create it, then writes your answer here. With no one to ask, it stops.
 
 ## Bringing your own Dockerfile
 

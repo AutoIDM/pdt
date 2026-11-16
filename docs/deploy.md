@@ -10,9 +10,9 @@ A deploy to AWS, Azure, or Google Cloud builds the app's image with Docker on yo
 
 The cost estimate shows prices in the currency of your computer's regional setting, or in US dollars when pdt cannot read it. pdt takes the price in that currency from the cloud when the cloud lists one. Otherwise it converts from US dollars at the cloud's own exchange rate, or at the European Central Bank's daily reference rate, and the estimate names the rate it used.
 
-After each deploy, pdt then asks `Start a run now and show its log? [y/N]`. A yes starts one run, as `pdt run my-report --deployed` does, and prints the run's log lines as they arrive, as `pdt logs my-report --follow` does. The deploy then exits with the run's result: 0 when the run succeeded, 1 when it failed. A run can have side effects, for example an email to real people, so the answer is no unless you type `y`. With `--yes`, or with no terminal (a build server), pdt does not ask and starts no run. Add `--run` to start the run and follow its log with no question. `pdt deploy --all` does not offer a run, so a deploy of many apps asks no question per app. `pdt deploy --all --run` deploys every app, then starts a run of each app that deployed and follows its log, one app at a time.
+After each deploy of a job, pdt then asks `Start a run now and show its log? [y/N]`. A yes starts one run, as `pdt run my-report --deployed` does, and prints the run's log lines as they arrive, as `pdt logs my-report --follow` does. The deploy then exits with the run's result: 0 when the run succeeded, 1 when it failed. A run can have side effects, for example an email to real people, so the answer is no unless you type `y`. With `--yes`, or with no terminal (a build server), pdt does not ask and starts no run. Add `--run` to start the run and follow its log with no question. `pdt deploy --all` does not offer a run, so a deploy of many apps asks no question per app. `pdt deploy --all --run` deploys every app, then starts a run of each app that deployed and follows its log, one app at a time.
 
-A web app has no run to start, so its deploy asks no question. The deploy prints the app's URL, then `pdt logs APP --follow` to read the server's log and `pdt health APP` to check that the app serves.
+A web app has no run to start, so its deploy does not offer one. It asks the other questions, such as `Proceed? [y/N]`. The deploy prints the app's URL, then `pdt logs APP --follow` to read the server's log and `pdt health APP` to check that the app serves. `pdt deploy APP --run` starts nothing for a web app, and `pdt deploy --all --run` opens each web app that deployed in your browser.
 
 To start one run of the deployed job now, and then read its log:
 
@@ -21,7 +21,7 @@ pdt run my-report --deployed
 pdt logs my-report
 ```
 
-To remove everything the deploy created:
+To remove everything the deploy created, except the app's [storage folder](storage.md), which `pdt storage APP destroy` deletes:
 
 ```
 pdt destroy my-report
@@ -35,7 +35,7 @@ pdt login my-report
 
 ### Pausing or turning off an app
 
-An app that should stay deployed but not run for a while sets `pause: true`. The schedule stays in place and does not fire until the key goes back to `false`. `pdt pause APP` and `pdt unpause APP` write the key into the app's own `pdt.yml` and apply it to the deployed schedule in the same step; `pdt deploy` also honors it. A paused app still runs when you ask for it with `pdt run APP --deployed`. A paused web app's server stops, and `pdt unpause APP` starts it again.
+An app that should stay deployed but not run for a while sets `pause: true`. The schedule stays in place and does not fire until the key goes back to `false`. `pdt pause APP` and `pdt unpause APP` write the key into the app's own `pdt.yml` and apply it to the deployed schedule in the same step; `pdt deploy` also honors it. A paused job still runs when you ask for it with `pdt run APP --deployed`. A paused web app's server stops, and `pdt unpause APP` starts it again.
 
 An app that is not ready sets `enabled: false` in its own `pdt.yml`. `pdt list` still shows it, and every other command acts as if the app is not there. `uv run run.py` in the app folder still runs it. `enabled: false` does not stop a schedule that is already deployed, so run `pdt pause APP` or `pdt destroy APP` before you set it.
 

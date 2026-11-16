@@ -44,7 +44,7 @@ storage:
     - other-app
 ```
 
-A job reads a folder with `pdt.utils.storage`. This works with the `azure` provider only, and the job needs its own storage folder, so it cannot set `storage: false`.
+A job reads a folder with `pdt.utils.storage`. This works with the `azure` provider only, and the job needs its own storage folder, so it cannot set `storage: false` or `storage.enabled: false`.
 
 ```python
 from pdt.utils import storage
@@ -52,6 +52,6 @@ from pdt.utils import storage
 other = storage.store(app="other-app")
 ```
 
-A web app finds each folder as read-only files in `/pdt/storage/<app>/`. A new file shows up there within about a minute.
+A web app finds each folder in `$PDT_STORAGE_READ_DIR/<app>/`. A deployed web app, and a web app that `pdt run` starts from its `Dockerfile`, find it as read-only files in `/pdt/storage/<app>/`. When `pdt run` starts a web app's `run.py` on your computer, `PDT_STORAGE_READ_DIR` is `.pdt/storage` in the project, which holds the folder that a local `pdt run` of each app writes. In a deployed web app, a new file shows up within about a minute.
 
 Run `pdt deploy APP` after you change the list.

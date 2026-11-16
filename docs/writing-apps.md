@@ -19,7 +19,7 @@ def main() -> int:
     ...
 ```
 
-The pinned version is the pdt version the app runs with, on your computer and in a deployed app. Upgrading pdt on your computer does not change it. Keep the pin at the newest pdt release, and run `pdt deploy APP` after you raise it, so the deployed app uses it too.
+The pinned version is the pdt version the app runs with, on your computer and in a deployed app. `pdt upgrade` moves pdt on your computer, and the pin in the `run.py` of each app in the project where you run it, to the newest release. Another way of upgrading pdt, such as `uv tool upgrade pdt-cli`, does not change the pin. Run `pdt deploy APP` after the pin changes, so the deployed app uses it too.
 
 ## PowerShell apps
 
@@ -54,7 +54,7 @@ storage:
 
 The app is a `run.py`, or a folder with a `Dockerfile` and a `pdt.yml`. It listens on `0.0.0.0` at the port in `PDT_PORT`.
 
-Visitors sign in before a request reaches the app, so the app needs no sign-in code. `allowed_domains` and `allowed_groups` list who may enter. The visitor's email is in the `X-Goog-Authenticated-User-Email` header, as `accounts.google.com:<email>`. A Python app reads it with `pdt.utils.auth.current_user(self.headers)`, which returns the email, or `""` in a local `pdt run`.
+Visitors sign in before a request reaches the app, so the app needs no sign-in code. `allowed_domains` and `allowed_groups` list who may enter. The visitor's email is in the `X-Goog-Authenticated-User-Email` header, as `accounts.google.com:<email>`. A Python app reads it with `pdt.utils.auth.current_user(self.headers)`, which returns the email, or `""` when the request has no such header. `current_user` only reads the header; it checks no sign-in. In a local `pdt run` no sign-in exists, and any request to the app can send the header with any email, so do not trust the value outside the deployed app.
 
 `pdt run APP` serves the app on `http://127.0.0.1:PORT/` and opens it in the browser. Ctrl+C stops it. `pdt run APP --deployed` opens the deployed app.
 
