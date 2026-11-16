@@ -672,15 +672,21 @@ def test_a_deploy_stops_when_it_cannot_read_a_folder_policy(project, monkeypatch
 
 
 def test_destroy_keeps_an_account_whose_read_grants_it_cannot_read(project, monkeypatch, capsys):
-    fake = destroy_fake(builder=False)
+    fake = secret_fake(account=OWN, builder=False)
     fake.found[("iam", "service-accounts", "list")] = [
         {"email": OWN, "displayName": "pdt job runner report"}]
     fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    fake.found[("run", "services", "list")] = [
+        run_item("pdt-report", "europe-west1", "pdt-web-report@my-project.iam.gserviceaccount.com",
+                 job=False)]
     app = destroy_app(project, monkeypatch, fake)
     monkeypatch.setattr(google, "held_reads", lambda bucket, sa, own: (["client1"], "warehouse"))
+    monkeypatch.setattr(google, "folder_grant_exists", lambda bucket, name, sa: True)
     monkeypatch.setattr(google, "revoke_store_read", lambda *args: pytest.fail("revoked"))
+    monkeypatch.setattr(google, "revoke_store_access", lambda *args: pytest.fail("revoked"))
     assert google.destroy(app, True) == 0
     assert fake.ran("iam", "service-accounts", "delete") == []
+    assert fake.ran("secrets", "remove-iam-policy-binding") == []
     out = " ".join(capsys.readouterr().out.split())
     assert (f"Reading who may use {google.store_bucket('my-project')}/warehouse/ failed; "
             f"keeping {OWN} and its access") in out

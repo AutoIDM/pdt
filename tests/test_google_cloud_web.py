@@ -580,6 +580,18 @@ def test_a_failed_read_of_the_secret_policy_keeps_the_access(google, monkeypatch
     assert f"Reading who may use secret pdt-dashboard-env failed; keeping {SA} and its access" in out
 
 
+def test_an_unreadable_folder_policy_keeps_the_account_and_all_its_access(google, monkeypatch,
+                                                                           capsys):
+    monkeypatch.setattr(gc, "held_reads", lambda bucket, sa, own: ([], "warehouse"))
+    fake = region_destroy(google, monkeypatch)
+    assert fake.ran("secrets", "remove-iam-policy-binding") == []
+    assert fake.ran("storage", "managed-folders", "remove-iam-policy-binding") == []
+    assert fake.ran("storage", "buckets", "remove-iam-policy-binding") == []
+    assert SA not in [call[3] for call in fake.ran("iam", "service-accounts", "delete")]
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"/warehouse/ failed; keeping {SA} and its access" in out
+
+
 PRICES = {gweb.CPU_SKU: 0.000024, gweb.MEMORY_SKU: 0.0000025, gweb.MIN_CPU_SKU: 0.0000025,
           gweb.MIN_MEMORY_SKU: 0.0000025, gweb.REQUESTS_SKU: 0.0000004, gweb.REGISTRY_SKU: 0.10}
 SECOND = 1 * 0.000024 + 0.5 * 0.0000025

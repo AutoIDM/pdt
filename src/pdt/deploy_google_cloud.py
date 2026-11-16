@@ -1578,6 +1578,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
                 delete_accounts.remove(email)
             else:
                 revoke_reads += [(email, other) for other in held]
+        if sa in {email for email, _ in unread_reads}:
+            revoke_grant = revoke_folder = revoke_bucket = False
+            revoke_secret = []
         builder = builder_email(project)
         builder_account = service_account_or_none(project, builder)
         builds = build_bucket(project)

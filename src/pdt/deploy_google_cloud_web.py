@@ -806,6 +806,9 @@ def destroy(app: dict, assume_yes: bool) -> int:
         # An account whose read grants cannot all be read stays, with what it holds.
         revoke_reads = [] if unread else [other for other in held if (sa, other) not in pairs]
         delete_account = delete_account and not unread
+        if unread:
+            revoke_folder = revoke_bucket = False
+            revoke_secret = []
 
     if incomplete:
         console.note(f"The list of Cloud Run jobs and services in other regions is incomplete "
