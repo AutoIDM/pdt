@@ -530,6 +530,30 @@ def test_destroy_removes_the_runner_when_no_remaining_deploy_runs_as_it(project,
     assert deleted == ([] if runner_in_use else [RUNNER])
 
 
+@pytest.mark.parametrize("unreachable", [[], ["europe-west1"]])
+def test_destroy_keeps_pdt_runner_while_a_run_as_it_has_not_ended(project, monkeypatch, capsys,
+                                                                   unreachable):
+    fake = destroy_fake()
+    fake.found[("iam", "service-accounts", "list")].append(
+        {"email": RUNNER, "displayName": "pdt job runner"})
+    if not unreachable:
+        fake.found[("run", "executions", "list")] = [
+            {"metadata": {"name": "pdt-other-abcde"},
+             "spec": {"template": {"spec": {"serviceAccountName": RUNNER}}}, "status": {}}]
+    app = destroy_app(project, monkeypatch, fake)
+    monkeypatch.setattr(google, "cloud_run_list", lambda project, kind: (
+        fake.found.get(("run", kind, "list"), []),
+        unreachable if kind == "executions" else [], ""))
+    assert google.destroy(app, True) == 0
+    assert RUNNER not in [call[3] for call in fake.ran("iam", "service-accounts", "delete")]
+    out = " ".join(capsys.readouterr().out.split())
+    expected = (f"A run as {RUNNER} has not ended; {RUNNER} keeps its access until the next "
+                "deploy or destroy after the run ends" if not unreachable else
+                "The list of Cloud Run job runs in the project is incomplete (no answer from "
+                f"europe-west1); keeping {RUNNER} and its access")
+    assert expected in out
+
+
 def test_destroy_removes_the_write_grant_when_storage_is_now_off(project, monkeypatch):
     fake = destroy_fake()
     fake.found[("storage", "buckets", "describe")] = {"labels": {"managed-by": "pdt"}}
@@ -687,7 +711,7 @@ def test_a_run_in_progress_as_pdt_runner_keeps_it_until_the_next_deploy(project,
     assert_runner_kept(fake, revokes)
     out = " ".join(capsys.readouterr().out.split())
     assert (f"A run as {RUNNER} has not ended; {RUNNER} keeps its access until the next deploy "
-            "after the run ends") in out
+            "or destroy after the run ends") in out
 
 
 def test_the_runs_are_read_after_the_job_and_its_schedule_change(project, monkeypatch):

@@ -806,6 +806,25 @@ def deploy_uses(items: list[dict]) -> tuple[set[str], set[tuple[str, str]]]:
     return accounts, pairs
 
 
+def runs_hold(project: str, account: str) -> str:
+    """Why `account` keeps its access: the list of runs of every job in the project, in every
+    region, is incomplete, or a run as `account` has not ended. "" when neither holds. A run
+    keeps the account it started with, whatever its job runs as now."""
+    executions, unanswered, error = cloud_run_list(project, "executions")
+    reasons = ([f"no answer from {', '.join(sorted(set(unanswered)))}"] if unanswered
+               else []) + ([error] if error else [])
+    if reasons:
+        return (f"The list of Cloud Run job runs in the project is incomplete "
+                f"({console.escape('; '.join(reasons))}); keeping {console.value(account)} "
+                "and its access")
+    if any(run_account(execution) == account
+           and not (execution.get("status") or {}).get("completionTime")
+           for execution in executions):
+        return (f"A run as {console.value(account)} has not ended; {console.value(account)} "
+                "keeps its access until the next deploy or destroy after the run ends")
+    return ""
+
+
 def secret_roles(project: str, sid: str, sa: str) -> list[str] | None:
     """The roles `sa` holds on secret `sid`, or None when the policy cannot be read."""
     proc = gcloud("secrets", "get-iam-policy", sid, "--project", project, "--format=json")
@@ -1353,23 +1372,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
               transient=TRANSIENT if sa_exists else NEW_ACCOUNT_TRANSIENT)
     set_scheduler_paused(project, region, job, app["pause"])
     if runner_cleanup:
-        # An execution keeps the account it started with, so a run of any job that started
-        # as pdt-runner, before or during this deploy, still needs what pdt-runner holds.
-        executions, unanswered, error = cloud_run_list(project, "executions")
-        reasons = ([f"no answer from {', '.join(sorted(set(unanswered)))}"] if unanswered
-                   else []) + ([error] if error else [])
-        running = any(run_account(execution) == runner
-                      and not (execution.get("status") or {}).get("completionTime")
-                      for execution in executions)
-        if reasons:
-            console.note(f"The list of Cloud Run job runs in the project is incomplete "
-                         f"({console.escape('; '.join(reasons))}); keeping "
-                         f"{console.value(runner)} and its access")
-        elif running:
-            console.note(f"A run as {console.value(runner)} has not ended; "
-                         f"{console.value(runner)} keeps its access until the next deploy "
-                         "after the run ends")
-        if reasons or running:
+        held_by_runs = runs_hold(project, runner)
+        if held_by_runs:
+            console.note(held_by_runs)
             runner_folder = runner_bucket = delete_runner = False
             runner_secret_roles, runner_job_roles = [], []
     if runner_folder or runner_bucket:
@@ -1523,8 +1528,10 @@ def destroy(app: dict, assume_yes: bool) -> int:
         actions.append(console.Markup(f"delete Artifact Registry repository {console.value(repo)} "
                                       "(no other apps use it)"))
     for email in delete_accounts:
-        actions.append(console.Markup(f"delete service account {console.value(email)} "
-                                      "(no other apps use it)"))
+        actions.append(console.Markup(
+            f"delete service account {console.value(email)} (no other apps use it"
+            + (f"; if no run as {console.value(email)} is in progress)" if email == default_sa
+               else ")")))
     if delete_builder:
         actions.append(console.Markup(f"delete service account {console.value(builder)} "
                                       "(no other apps use it)"))
@@ -1577,6 +1584,14 @@ def destroy(app: dict, assume_yes: bool) -> int:
         console.warn("Aborted; nothing was changed.")
         return DECLINED
 
+    if default_sa in delete_accounts or (sa == default_sa and (revoke_grant or revoke_secret)):
+        held_by_runs = runs_hold(project, default_sa)
+        if held_by_runs:
+            console.note(held_by_runs)
+            delete_accounts = [email for email in delete_accounts if email != default_sa]
+            if sa == default_sa:
+                revoke_grant = revoke_folder = revoke_bucket = False
+                revoke_secret = []
     if revoke_grant:
         revoke_store_access(bucket, name, sa, revoke_folder, revoke_bucket)
     if revoke_secret:
