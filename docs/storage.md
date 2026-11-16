@@ -44,13 +44,21 @@ storage:
     - other-app
 ```
 
-A job reads a folder with `pdt.utils.storage`. This works with the `azure` provider only.
+A job reads a folder with `pdt.utils.storage`. This works with the `azure` and `windows` providers only.
 
 ```python
 from pdt.utils import storage
 
 other = storage.store(app="other-app")
 ```
+
+A PowerShell job reads the same folders in `$env:PDT_STORAGE_READ_DIR`. When a script reads that variable, pdt copies the files of each app in the list into a folder of that app's name inside it before the first script runs. A change to the copy is not kept.
+
+```powershell
+Get-ChildItem (Join-Path $env:PDT_STORAGE_READ_DIR 'other-app') -Recurse -File
+```
+
+On `windows`, every task runs as the SYSTEM account, which may change every folder on the PC. So there only `pdt.utils.storage` refuses a write to another app's folder, or a folder that the list does not name; Windows itself does not.
 
 A web app finds each folder as read-only files in `/pdt/storage/<app>/`. A new file shows up there within about a minute.
 

@@ -116,6 +116,8 @@ def test_another_apps_folder_is_the_one_next_to_this_apps_folder(report, monkeyp
     assert root("client1") == (project / ".pdt" / "storage" / "client1").as_uri() + "/"
     monkeypatch.setenv("PDT_STORAGE_URL", "abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/report/")
     assert root("client1") == "abfs://pdt-data-abc@pdtdataabc.dfs.core.windows.net/client1/"
+    monkeypatch.setenv("PDT_STORAGE_URL", "file:///C:/ProgramData/pdt/report/storage/")
+    assert root("client1") == "file:///C:/ProgramData/pdt/client1/storage/"
 
 
 @pytest.mark.parametrize("name", ["client2", "../..", "", "report"])

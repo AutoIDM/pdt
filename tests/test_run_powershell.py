@@ -16,7 +16,8 @@ def wrapper(monkeypatch):
     monkeypatch.setattr(run_powershell, "ensure_pwsh", lambda: "/fake/pwsh")
     monkeypatch.setattr(run_powershell.powershell, "extract", lambda folder: {"files": [
         {"file": path.name, "localInvocations": [],
-         "envReads": [{"name": "PDT_STATE_DIR", "line": 1, "set": False}] if "PDT_STATE_DIR" in path.read_text() else []}
+         "envReads": [{"name": name, "line": 1, "set": False}
+                      for name in ("PDT_STATE_DIR", "PDT_STORAGE_READ_DIR") if name in path.read_text()]}
         for path in sorted(folder.iterdir()) if path.suffix == ".ps1"]})
     return run_powershell
 
@@ -257,3 +258,26 @@ def test_scripts_that_do_not_read_pdt_state_dir_leave_state_alone(app_dir, wrapp
 
     assert calls == [""]
     assert not stored_state(app_dir).exists()
+
+
+def test_a_script_that_reads_pdt_storage_read_dir_gets_a_copy_of_each_named_app(
+        app_dir, wrapper, monkeypatch):
+    (app_dir / "pdt.yml").write_text("schedule: daily\nstorage:\n  read: [client1]\n")
+    (app_dir / "a.ps1").write_text("Get-ChildItem $env:PDT_STORAGE_READ_DIR")
+    shared = app_dir.parent / ".pdt" / "storage" / "client1" / "shared"
+    shared.mkdir(parents=True)
+    (shared / "hello.txt").write_text("from client1")
+    seen = []
+
+    def run(command, **kwargs):
+        copy = Path(kwargs["env"]["PDT_STORAGE_READ_DIR"]) / "client1" / "shared" / "hello.txt"
+        seen.append(copy.read_text())
+        copy.write_text("changed by the script")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(wrapper.subprocess, "run", run)
+
+    assert wrapper.main([str(app_dir)]) == 0
+
+    assert seen == ["from client1"]
+    assert (shared / "hello.txt").read_text() == "from client1"

@@ -174,7 +174,10 @@ def root(app: str | None = None) -> str:
     if url != "":
         if app is None:
             return url
-        return url.rstrip("/").rsplit("/", 1)[0] + f"/{app}/"
+        # The app name is the last part of a cloud URL, and the part before storage/ on Windows.
+        parts = url.rstrip("/").split("/")
+        parts[len(parts) - 1 - parts[::-1].index(own)] = app
+        return "/".join(parts) + "/"
     folder = config.find_project() / ".pdt" / "storage" / (app or config.running_app_dir().name)
     return folder.as_uri() + "/"
 

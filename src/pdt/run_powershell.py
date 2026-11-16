@@ -37,6 +37,11 @@ folder goes back to `state/` when every script succeeds. After a failure
 `state/` stays as it was, so the next run starts from the last good state.
 `storage.sync` gives a Python app the same folder. With `storage: false`,
 or when no script reads it, PDT_STATE_DIR starts empty and is not kept.
+
+PDT_STORAGE_READ_DIR holds one folder for each app that pdt.yml names under
+`storage: read:`. When a script reads `$env:PDT_STORAGE_READ_DIR`, each folder
+gets a copy of that app's files before the first script; a change to the copy
+is not kept. `storage.store(app=...)` gives a Python app the same files.
 """
 
 from __future__ import annotations
@@ -79,6 +84,13 @@ def reads_state(files: list[dict]) -> bool:
     return any(read["name"].upper() == "PDT_STATE_DIR" for f in files for read in f["envReads"])
 
 
+def reads_other_apps(files: list[dict]) -> bool:
+    """Whether a scanned script reads $env:PDT_STORAGE_READ_DIR, so the run needs the files of
+    the apps that `storage: read:` names."""
+    return any(read["name"].upper() == "PDT_STORAGE_READ_DIR"
+               for f in files for read in f["envReads"])
+
+
 def run_entries(pwsh: str, app_dir: Path, entries: list[str], continue_on_error: bool,
                 env: dict[str, str]) -> int:
     """Run each entry script through pwsh; the first failing script's exit code, else 0."""
@@ -119,9 +131,13 @@ def main(argv: list[str]) -> int:
         die(1, str(exc))
     store = storage.store() if app["storage"] else None
     with tempfile.TemporaryDirectory(prefix="pdt-run-") as local:
-        output, state = Path(local) / "output", Path(local) / "state"
+        output, state, read = Path(local) / "output", Path(local) / "state", Path(local) / "read"
         output.mkdir()
         state.mkdir()
+        read.mkdir()
+        if reads_other_apps(files):
+            for name in app["storage_read"]:
+                storage.store(app=name).pull("", read / name)
         lease = None
         if store is not None and reads_state(files):
             try:
@@ -131,6 +147,7 @@ def main(argv: list[str]) -> int:
         try:
             code = run_entries(pwsh, app_dir, entries, app["continue_on_error"],
                                {**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
+                                "PDT_STORAGE_READ_DIR": str(read),
                                 "PDT_CONFIG_JSON": json.dumps(app["config"], default=str)})
             kept = [file for file in output.rglob("*") if file.is_file()]
             if store is not None and kept:

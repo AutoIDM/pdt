@@ -225,7 +225,7 @@ job:
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |
 | `enabled` | `true` or `false`. | `true` | Gives the app its own storage folder. |
-| `read` | A list of names of other apps in the project. | Empty. | Lets this app read the storage folder of each named app. A deployed web app finds each folder as read-only files under `/pdt/storage/<app>/`. A job opens it with `pdt.utils.storage.store(app="<app>")`; for a job, this works with the `azure` provider only. Run `pdt deploy APP` after you change the list. `pdt validate` reports a name that is not an app of the project, the app's own name, and an app with `storage: false`. |
+| `read` | A list of names of other apps in the project. | Empty. | Lets this app read the storage folder of each named app. A deployed web app finds each folder as read-only files under `/pdt/storage/<app>/`. A job opens it with `pdt.utils.storage.store(app="<app>")`; for a job, this works with the `azure` and `windows` providers only. A PowerShell job finds a copy of each folder under `$env:PDT_STORAGE_READ_DIR`. Run `pdt deploy APP` after you change the list. `pdt validate` reports a name that is not an app of the project, the app's own name, and an app with `storage: false`. |
 
 ```yaml
 # dashboard/pdt.yml
@@ -544,7 +544,7 @@ Do not set these env vars yourself.
 | --- | --- |
 | `PDT_STORAGE_URL` | The app's [storage folder](storage.md). When it is not set, `pdt.utils.storage` uses `.pdt/storage/<app>/` in the project. |
 | `PDT_STORAGE_READ_URLS` | JSON of the storage folder URL of each app in `storage.read`. |
-| `PDT_STORAGE_READ_DIR` | A web app: the folder that holds a read-only folder for each app in `storage.read`. `/pdt/storage` when deployed. |
+| `PDT_STORAGE_READ_DIR` | A web app: the folder that holds a read-only folder for each app in `storage.read`. `/pdt/storage` when deployed. A PowerShell job: the folder that holds a copy of each such folder, when a script reads this variable. |
 | `PDT_PORT` | A web app: the port to listen on, from `web.port`. |
 | `PDT_URL` | A deployed web app: its own URL, `https://pdt-<app>-<project number>.<region>.run.app/`. |
 | `PDT_RUN_ID` | The ID of this run. |

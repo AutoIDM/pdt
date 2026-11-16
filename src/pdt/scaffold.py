@@ -103,7 +103,7 @@ This folder is a pdt project: a set of small scheduled jobs. Every folder holdin
 - List the env vars an app reads under `env:` in its own `pdt.yml`. Their values go in `.env`, which is never committed; `pdt deploy` uploads the ones that are set as cloud secrets. Each `$env:NAME` a PowerShell app's scripts read is required even when `pdt.yml` does not list it; list it under `env: optional:` when the scripts work without it. The same holds for each `os.environ["NAME"]` a Python app's `.py` files read; `os.environ.get("NAME")` and `os.getenv("NAME")` make it optional. pdt does not find a name that the code builds at run time.
 - Check work with `pdt validate`, try it with `pdt run <name>`, ship it with `pdt deploy <name>`.
 - Check a deployed app with `pdt health`, list its runs with `pdt runs <name> [--count 5] [--since 3d] [--span 1d]`, and read one run's log with `pdt logs <name> [N] [--count 5] [--since 3d] [--span 1d] --failed --errors` (`--id ID` picks a run by the id `pdt runs` shows; the last 20 lines; `--lines 50` for more, `--head` for the first lines, `--full` for all, `--follow` to wait for a running run's lines); add `--json` to any of them for machine-readable output. Stop a deployed app's schedule with `pdt pause <name>` (it writes `pause: true` into the app's `pdt.yml`), start it again with `pdt unpause <name>`, and start one run now with `pdt run <name> --deployed`. `pdt gui` shows the same in a browser.
-- Read the files an app keeps in its data store with `pdt storage <name> ls [PATH] [--recursive] [--json]`, `pdt storage <name> get PATH`, and `pdt storage <name> query SQL`. When a run stopped but still holds the state lock, `pdt storage <name> unlock` releases it. An app on the `azure` provider reads the files of another app with `storage.store(app="OTHER")` from `pdt.utils.storage`, once its `pdt.yml` names that app under `storage: read:`; it cannot change them.
+- Read the files an app keeps in its data store with `pdt storage <name> ls [PATH] [--recursive] [--json]`, `pdt storage <name> get PATH`, and `pdt storage <name> query SQL`. When a run stopped but still holds the state lock, `pdt storage <name> unlock` releases it. An app on the `azure` or `windows` provider reads the files of another app with `storage.store(app="OTHER")` from `pdt.utils.storage`, or a PowerShell app from `$env:PDT_STORAGE_READ_DIR/OTHER`, once its `pdt.yml` names that app under `storage: read:`; it cannot change them.
 - Log with `log()` from `pdt.utils.log`; a plain `print()` also reaches the run's cloud logs, but without a severity.
 - A PowerShell app reads its `config:` section from `$env:PDT_CONFIG_JSON | ConvertFrom-Json`, and pdt keeps each file it writes to `$env:PDT_OUTPUT_DIR` in the app's data store.
 - A `run.ps1` file is the only entry script. Otherwise, `run_scripts` lists the entry scripts in order, or pdt runs each `.ps1` file that no other `.ps1` file loads in name order. Do not use `run.ps1` and `run_scripts` together.
@@ -123,8 +123,9 @@ folder the way pdt runs an app with no run.py: each entry script in order
 through pwsh with the app's `config:` section as JSON in PDT_CONFIG_JSON,
 stopping at the first that fails, then it stores the files the scripts leave
 in PDT_OUTPUT_DIR. When a script reads PDT_STATE_DIR, that folder holds the
-app's state/ files and goes back to state/ when every script succeeds. Edit
-it to change how they run.
+app's state/ files and goes back to state/ when every script succeeds. When a
+script reads PDT_STORAGE_READ_DIR, it holds a copy of the files of each app
+that `storage: read:` names. Edit it to change how they run.
 """
 
 from __future__ import annotations
@@ -138,7 +139,7 @@ from pathlib import Path
 
 from pdt import config, powershell
 from pdt.pwsh import ensure_pwsh
-from pdt.run_powershell import pwsh_command, reads_state
+from pdt.run_powershell import pwsh_command, reads_other_apps, reads_state
 from pdt.utils import storage
 from pdt.utils.log import die, log
 
@@ -156,11 +157,16 @@ def main() -> int:
     store = storage.store() if app["storage"] else None
     code = 0
     with tempfile.TemporaryDirectory(prefix="pdt-run-") as local:
-        output, state = Path(local) / "output", Path(local) / "state"
+        output, state, read = Path(local) / "output", Path(local) / "state", Path(local) / "read"
         output.mkdir()
         state.mkdir()
+        read.mkdir()
+        if reads_other_apps(files):
+            for name in app["storage_read"]:
+                storage.store(app=name).pull("", read / name)
         lease = store.pull("state/", state) if store is not None and reads_state(files) else None
         env = {**os.environ, "PDT_OUTPUT_DIR": str(output), "PDT_STATE_DIR": str(state),
+               "PDT_STORAGE_READ_DIR": str(read),
                "PDT_CONFIG_JSON": json.dumps(app["config"], default=str)}
         try:
             for script in entries:
