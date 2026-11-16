@@ -1,3 +1,4 @@
+import base64
 import json
 import re
 import subprocess
@@ -231,7 +232,8 @@ def test_an_unchanged_secret_lists_and_destroys_no_versions(project, monkeypatch
     values = {"TOKEN": "secret"}
     fake = FakeGcloud(found={
         ("secrets", "describe"): {"labels": {"managed-by": "pdt"}},
-        ("secrets", "versions", "access"): values,
+        ("secrets", "versions", "access"): {"payload": {"data": base64.b64encode(
+            json.dumps(values).encode()).decode()}},
         ("secrets", "versions", "list"): [{"name": "projects/1/secrets/s/versions/2"},
                                           {"name": "projects/1/secrets/s/versions/1"}]})
     app = deploy_app(project, monkeypatch, fake, cloud=False)

@@ -100,7 +100,7 @@ def test_a_google_cloud_plan_shows_the_plan_and_changes_nothing(project, monkeyp
                         lambda project, assume_yes, apis: enabled.append(assume_yes) or False)
     monkeypatch.setattr(module, "gather_secrets", lambda app: {})
     monkeypatch.setattr(module, "read_json_or_none", lambda *args: None)
-    monkeypatch.setattr(module, "service_account_or_none", lambda project, email: None)
+    monkeypatch.setattr(module, "service_accounts", lambda project: [])
     monkeypatch.setattr(module, "cost_estimate", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "run_quiet", lambda *args, **kwargs: pytest.fail("changed"))
     monkeypatch.setattr(module, "confirm", lambda *args: pytest.fail("asked to proceed"))

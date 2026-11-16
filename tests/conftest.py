@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from rich.text import Text
 
-from pdt import console, deploy_common, watch
+from pdt import console, deploy_common, deploy_google_cloud, watch
 
 # verify/scripts holds the live verification framework. It ships with the
 # user's project, not with the wheel, so it is not importable as a package.
@@ -25,6 +25,13 @@ def console_on_stdout(monkeypatch):
 def price_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy_common, "PRICE_CACHE", tmp_path / "prices")
     return tmp_path / "prices"
+
+
+@pytest.fixture(autouse=True)
+def google_reads_through_gcloud(monkeypatch):
+    # Each Google API read takes its gcloud fallback, which a test fakes, so no test reads the network.
+    monkeypatch.setattr(deploy_google_cloud, "rest_json", lambda url, fallback, data=None: fallback())
+    monkeypatch.setattr(deploy_google_cloud, "ACCESS_TOKEN", ("", 0.0))
 
 
 @pytest.fixture(autouse=True)
