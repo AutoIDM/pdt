@@ -34,3 +34,13 @@ def test_the_grant_stops_at_the_app_folder():
     assert listing["Resource"] == "arn:aws:s3:::pdt-data-abc"
     assert listing["Action"] == ["s3:ListBucket"]
     assert listing["Condition"] == {"StringLike": {"s3:prefix": ["hello-world/*"]}}
+
+
+def test_the_grant_adds_read_access_to_each_named_folder():
+    objects, listing, reads = store_statements("pdt-data-abc", "report", ["client1", "client2"])
+    assert objects["Resource"] == "arn:aws:s3:::pdt-data-abc/report/*"
+    assert listing["Condition"] == {
+        "StringLike": {"s3:prefix": ["report/*", "client1/*", "client2/*"]}}
+    assert reads["Action"] == ["s3:GetObject"]
+    assert reads["Resource"] == ["arn:aws:s3:::pdt-data-abc/client1/*",
+                                 "arn:aws:s3:::pdt-data-abc/client2/*"]

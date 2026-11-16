@@ -1328,8 +1328,8 @@ def storage_problems(app: dict, storage) -> list[str]:
     if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
         return problems + ["storage.read must be a list of app names"]
     provider = app["platform"].get("provider")
-    if app["app_profile"] == "job" and provider in PROVIDERS and provider != "azure":
-        problems.append("storage.read works with the azure provider only, "
+    if app["app_profile"] == "job" and provider in PROVIDERS and provider not in ("azure", "aws"):
+        problems.append("storage.read works with the azure and aws providers only, "
                         f"and this app uses {provider}; remove the key")
         provider = None
     elif app["app_profile"] == "job" and storage.get("enabled", True) is False:

@@ -976,15 +976,21 @@ def secret_statements(secret_arn: str) -> list[dict]:
              "Resource": secret_arn}]
 
 
-def store_statements(bucket: str, app_name: str) -> list[dict]:
-    return [
+def store_statements(bucket: str, app_name: str,
+                     read_apps: list[str] | tuple[str, ...] = ()) -> list[dict]:
+    statements = [
         {"Effect": "Allow",
          "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
          "Resource": f"arn:aws:s3:::{bucket}/{app_name}/*"},
         {"Effect": "Allow", "Action": ["s3:ListBucket"],
          "Resource": f"arn:aws:s3:::{bucket}",
-         "Condition": {"StringLike": {"s3:prefix": [f"{app_name}/*"]}}},
+         "Condition": {"StringLike": {"s3:prefix": [
+             f"{name}/*" for name in [app_name, *read_apps]]}}},
     ]
+    if read_apps:
+        statements.append({"Effect": "Allow", "Action": ["s3:GetObject"],
+                           "Resource": [f"arn:aws:s3:::{bucket}/{name}/*" for name in read_apps]})
+    return statements
 
 
 def store_exists(s3, name: str) -> bool:

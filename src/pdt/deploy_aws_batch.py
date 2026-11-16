@@ -892,7 +892,11 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
             f"security group {groups} to {console.value(SECURITY_GROUP)}"))
     if store:
         actions += store_plan_lines(f"bucket {console.value(bucket)}", store_present,
-                                    names["job_role"], app["name"])
+                                    names["job_role"], app["name"]) + [
+            console.Markup(f"grant {console.value(names['job_role'])} read access to "
+                           f"{console.value(f'{other}/')} in bucket {console.value(bucket)}")
+            for other in config.storage_read(app)
+        ]
     estimate = cost_estimate_for(clients["logs"], names, region, cron, schedule_exists, usage,
                                  regions.local_currency())
     wait_for_permissions()
@@ -916,7 +920,7 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     if store:
         ensure_store(clients["s3"], bucket, region)
         environment["PDT_STORAGE_URL"] = store_url(bucket, app["name"])
-        grants = store_statements(bucket, app["name"])
+        grants = store_statements(bucket, app["name"], config.storage_read(app))
     execution, job_role, scheduler_role = ensure_roles(
         clients["iam"], names, account, region, secret_arn, grants)
     image = f"{repository_uri}:{names['image_tag']}"
