@@ -523,8 +523,8 @@ def save_job_key(app: dict, key: str, value, drop_top_level: bool = False) -> Pa
                 result = edited
                 break
         if result is None:
-            raise ConfigError(f"{path.relative_to(find_project())}: pdt could not write {key} "
-                              f"under job:. Put `{key}: {yaml_quoted(value)}` under `job:` "
+            raise ConfigError(f"{path.relative_to(find_project()).as_posix()}: pdt could not "
+                              f"write {key} under job:. Put `{key}: {yaml_quoted(value)}` under `job:` "
                               f"in this file and run the command again.")
         write_text_atomically(path, "\n".join(result) + "\n")
     return path
