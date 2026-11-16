@@ -114,17 +114,26 @@ def test_a_person_at_the_keyboard_still_gets_the_subscription_written_back(
     assert writes == [ACCOUNT["id"]]
 
 
-def test_a_subscription_named_by_its_display_name_keeps_its_id_in_the_record(
+def test_only_a_deploy_keeps_the_id_of_a_subscription_named_by_its_display_name(
         project, azure_app, monkeypatch):
     (project / "pdt.yml").write_text(
         f"platform:\n  provider: azure\n  subscription: \"{ACCOUNT['name']}\"\n")
     app = config.merged_app("my-report")
-    config.mark_deployed("my-report", {"provider": "azure", "subscription": ACCOUNT["name"]})
+    record = {"provider": "azure", "subscription": ACCOUNT["name"]}
+    config.mark_deployed("my-report", record)
     writes = saved(monkeypatch)
     deploy_azure.preflight(app, deploy_azure.azure_settings(app))
+    assert config.deployed_platform("my-report") == record
+
+    def stop(*args):
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(deploy_azure_container_apps, "build_in_cloud", lambda *args: False)
+    monkeypatch.setattr(deploy_azure_container_apps, "job_name", stop)
+    with pytest.raises(RuntimeError):
+        deploy_azure_container_apps.deploy(app, True)
     assert writes == []
-    assert config.deployed_platform("my-report") == {
-        "provider": "azure", "subscription": ACCOUNT["name"], config.STORE_ID_KEY: ACCOUNT["id"]}
+    assert config.deployed_platform("my-report") == {**record, config.STORE_ID_KEY: ACCOUNT["id"]}
 
 
 def test_an_unattended_run_with_an_unknown_subscription_names_the_fix(

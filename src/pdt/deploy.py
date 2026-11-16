@@ -364,6 +364,8 @@ def read_place_problem(app: dict, base, planned: dict[str, dict]) -> str:
         except ConfigError:
             continue
         place = config.place(platform)
+        if place.get("provider") not in config.STORE_KEYS:
+            continue
         other_value = config.store_place(platform, config.deployed_platform(other))
         if place.get("provider") == provider and (not value or not other_value
                                                   or other_value.lower() == value.lower()):

@@ -613,3 +613,26 @@ def test_validation_in_a_run_takes_the_place_the_run_deploys_the_read_app(projec
 def test_an_unknown_provider_is_left_to_validation(project):
     app = reader(project, AZURE_ID)
     assert deploy.read_place_problem(app, {}, {"reader": {"provider": "nowhere"}}) == ""
+
+
+@pytest.mark.parametrize("plan_only", [False, True])
+def test_a_read_app_with_no_provider_is_left_to_validation(project, monkeypatch, plan_only):
+    add_app(project, "reader", f"storage:\n  read: [{APP}]\n{AZURE_ID}")
+    (project / "pdt.yml").write_text("platform:\n  region: eastus\n")
+    app = config.merged_app("reader")
+    assert place_problem(app) == ""
+    assert deploy.read_place_problem(app, {}, {"reader": app["platform"], APP: {}}) == ""
+    Cloud(monkeypatch)
+    deploy.deploy("reader", assume_yes=True, run=False, plan_only=plan_only)
+
+
+def test_a_read_app_with_an_unknown_provider_is_left_to_validation(project):
+    app = reader(project, AZURE_ID)
+    planned = {"reader": deploy.destination("reader", {}), APP: {"provider": "nowhere"}}
+    assert deploy.read_place_problem(app, {}, planned) == ""
+
+
+def test_a_true_python_dotenv_disabled_reads_no_env_file(project):
+    (project / APP / ".env").write_text("PROJECT_ID=a\n")
+    assert "PROJECT_ID" not in config.app_environment(project / APP, {"PYTHON_DOTENV_DISABLED": "Yes"})
+    assert config.app_environment(project / APP, {"PYTHON_DOTENV_DISABLED": "0"})["PROJECT_ID"] == "a"

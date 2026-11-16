@@ -1022,12 +1022,14 @@ def load_env(start: Path) -> list[Path]:
 def app_environment(start: Path, base) -> dict[str, str]:
     """The environment that load_env(start) gives a process whose environment is `base`. As
     load_dotenv does, ${NAME} in a value takes NAME from the environment so far, else from the
-    lines above it in the same file."""
+    lines above it in the same file, and a true PYTHON_DOTENV_DISABLED reads no further file."""
     from dotenv.main import DotEnv
     from dotenv.variables import parse_variables
 
     env = dict(base)
     for path in find_env_files(start):
+        if env.get("PYTHON_DOTENV_DISABLED", "").casefold() in {"1", "true", "t", "yes", "y"}:
+            break
         values = {}
         for name, value in DotEnv(path, encoding="utf-8-sig", interpolate=False).parse():
             values[name] = None if value is None else "".join(
