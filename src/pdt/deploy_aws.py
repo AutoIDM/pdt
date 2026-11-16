@@ -146,6 +146,9 @@ BATCH_ARNS = {
 }
 SECURITY_GROUP_ARN = "arn:aws:ec2:{region}:{account}:security-group/*"
 BUILD_BUCKET_PREFIX = "pdt-build"
+# "Role policy size cannot exceed 10,240 characters" for the inline policies of a role, white
+# space not counted: https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html
+ROLE_POLICY_LIMIT = 10240
 # Each action pdt calls, grouped with the ARNs of the pdt resources it touches.
 # deployer_policy prints these and preflight simulates them, so both agree.
 POLICY_SCOPES = [
@@ -991,6 +994,15 @@ def store_statements(bucket: str, app_name: str,
         statements.append({"Effect": "Allow", "Action": ["s3:GetObject"],
                            "Resource": [f"arn:aws:s3:::{bucket}/{name}/*" for name in read_apps]})
     return statements
+
+
+def check_policy_size(app_name: str, read_apps: list[str], statements: list[dict]) -> None:
+    size = len(json.dumps({"Version": "2012-10-17", "Statement": statements},
+                          separators=(",", ":")))
+    if size > ROLE_POLICY_LIMIT:
+        fail(f"storage.read in {console.value(f'{app_name}/{config.APP_FILE}')} names "
+             f"{len(read_apps)} apps. The access policy that names them is {size} characters "
+             f"long, and AWS allows {ROLE_POLICY_LIMIT} characters. Remove names from the list.")
 
 
 def store_exists(s3, name: str) -> bool:

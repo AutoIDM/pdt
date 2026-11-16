@@ -33,7 +33,7 @@ ALLOWED = {
     "deploy_common.py": {"what", "where", "key", "message", "description", "count", "provider", "len(values)",
                          "problem", "suffix",
                          "details['tries']", "BACKOFF_MAX_TRIES", "details['wait']"},
-    "deploy_aws.py": {"delay", "len(options)"},
+    "deploy_aws.py": {"delay", "len(options)", "len(read_apps)", "size", "ROLE_POLICY_LIMIT"},
     "deploy_aws_batch.py": {"what", "resource.label", "label", "DOCKER_PLATFORM",
                             "float(JOB_VCPU)", "JOB_MEMORY", "groups", "len(arns)",
                             "len(revisions)", "state", "shown", "wait.name"},
