@@ -130,7 +130,6 @@ def test_storage_read_names_an_app_of_the_project_and_not_itself(project):
 def test_storage_read_refuses_a_name_that_a_cloud_rule_reads_as_a_pattern(project, provider,
                                                                          char):
     (project / "pdt.yml").write_text(f"platform:\n  provider: {provider}\n")
-    add_app(project, f"a{char}b")
     add_app(project, "report", f"storage:\n  read: ['a{char}b']\n")
     assert (f"report/pdt.yml: storage.read: 'a{char}b' is not an app name; use one folder "
             "name with no path separators and none of * ? $ { }") in validate_app("report")

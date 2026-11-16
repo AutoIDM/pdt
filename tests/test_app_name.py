@@ -28,8 +28,7 @@ def test_a_path_or_a_pattern_is_not_an_app_name(name):
         "and none of * ? $ { }")
 
 
-def test_merged_app_rejects_a_folder_named_like_a_pattern(nested_project):
-    add_app(nested_project, "*")
+def test_merged_app_rejects_a_name_like_a_pattern(nested_project):
     with pytest.raises(ConfigError, match="is not an app name"):
         config.merged_app("*")
 
