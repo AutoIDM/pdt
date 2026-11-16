@@ -300,7 +300,8 @@ def choose_schedule(app: dict, assume_yes: bool) -> str:
 
 def keep_one_job_key(app: dict, assume_yes: bool) -> None:
     """When the app's pdt.yml sets a `job:` key both under `job:` and at the top level, ask
-    which value to keep, save it under `job:`, and remove the top-level key.
+    which value to keep, save it under `job:`, and remove the top-level key. Two equal values
+    get no question: the top-level key goes.
 
     --yes, a plan, and a run with no one to ask use the `job:` value and change no file.
     """
@@ -311,6 +312,14 @@ def keep_one_job_key(app: dict, assume_yes: bool) -> None:
         nested, top = (own.get("job") or {}).get(key), own.get(key)
         if nested is None or top is None:
             continue
+        interactive = not assume_yes and config.unsaved() is None and can_prompt(None)
+        if nested == top:
+            if interactive:
+                config.save_job_key(app, key, nested, drop_top_level=True)
+                console.done(f"Removed the top-level {console.value(key)} {console.value(top)} "
+                             f"from {console.value(where)}; {console.value('job.' + key)} has the "
+                             f"same value.")
+            continue
         words = []
         for value in (nested, top):
             try:
@@ -318,7 +327,7 @@ def keep_one_job_key(app: dict, assume_yes: bool) -> None:
             except ConfigError:
                 words.append("")
         chosen = None
-        if not assume_yes and config.unsaved() is None and can_prompt(None):
+        if interactive:
             labels = [f"job.{key}: {nested}{words[0]}", f"{key} at the top level: {top}{words[1]}"]
             console.say()
             console.say(f"{console.value(where)} sets {console.value(key)} both under "

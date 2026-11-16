@@ -207,7 +207,7 @@ A cron value that starts with `*` must be in quotes, for example `"*/15 * * * *"
 
 These keys apply only to a job. Put them under `job:`. A key with the value `null`, or with no value, is not set. Older apps have these keys at the top level of the app's `pdt.yml`. pdt reads a top-level key only when the same key under `job:` is not set.
 
-When the app's `pdt.yml` sets a key both under `job:` and at the top level, `pdt deploy` asks which value to keep. It writes that value under `job:` and removes the top-level key. With `--yes`, in a plan, or with no terminal, the deploy uses the value under `job:`, prints a note, and changes no file.
+When the app's `pdt.yml` sets a key both under `job:` and at the top level, `pdt deploy` asks which value to keep. It writes that value under `job:` and removes the top-level key. When the two values are the same, it removes the top-level key with no question. With `--yes`, in a plan, or with no terminal, the deploy uses the value under `job:` and changes no file. It prints a note when the two values differ.
 
 | Key | Allowed values | Default | What it does |
 | --- | --- | --- | --- |

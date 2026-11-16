@@ -3,7 +3,8 @@
 # How often this app runs.
 # Shorthand: hourly, daily, weekly, monthly, yearly.
 # Or a 5-field cron expression, for example "0 * * * *".
-schedule: "daily"
+job:
+  schedule: "daily"
 
 config:
   # Monday API 2026-07 supports page/limit pagination, with at most 1000

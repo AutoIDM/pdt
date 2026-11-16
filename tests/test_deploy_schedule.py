@@ -214,6 +214,31 @@ def test_with_no_menu_a_number_picks_the_value_to_keep(project, monkeypatch):
     assert (folder / "pdt.yml").read_text() == 'job:\n  schedule: "weekly"\nstorage: false\n'
 
 
+SAME = "job:\n  schedule: daily\nschedule: daily\n"
+
+
+def test_the_same_schedule_in_both_places_loses_the_top_level_one_with_no_question(
+        project, monkeypatch, capsys):
+    folder = add_app(project, "my-report", SAME)
+    monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: True)
+    monkeypatch.setattr(deploy.console, "can_menu", lambda: pytest.fail("asked"))
+    deploy.keep_one_job_key(merged_app("my-report"), False)
+    assert (folder / "pdt.yml").read_text() == "job:\n  schedule: daily\n"
+    assert plain(capsys.readouterr().out.splitlines()) == [
+        "Removed the top-level schedule daily from my-report/pdt.yml; job.schedule has the same "
+        "value."]
+
+
+@pytest.mark.parametrize("assume_yes, at_terminal", [(True, True), (False, False)])
+def test_the_same_schedule_in_both_places_stays_without_a_terminal_or_with_yes(
+        project, monkeypatch, capsys, assume_yes, at_terminal):
+    folder = add_app(project, "my-report", SAME)
+    monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: at_terminal)
+    deploy.keep_one_job_key(merged_app("my-report"), assume_yes)
+    assert (folder / "pdt.yml").read_text() == SAME
+    assert capsys.readouterr().out == ""
+
+
 def test_a_timezone_in_both_places_is_asked_the_same_way(project, monkeypatch, press):
     folder = add_app(project, "my-report", "job:\n  timezone: Etc/UTC\ntimezone: America/Chicago\n")
     monkeypatch.setattr(deploy, "can_prompt", lambda _interactive: True)

@@ -2,43 +2,51 @@
 # every shared resource is used by more than one app while one is destroyed.
 apps:
   - name: aws-fargate-a
-    schedule: daily
+    job:
+      schedule: daily
     platform:
       provider: aws
       region: us-east-1
   - name: aws-fargate-b
-    schedule: daily
+    job:
+      schedule: daily
     platform:
       provider: aws
       region: us-east-1
   - name: azure-container-apps-a
-    schedule: daily
+    job:
+      schedule: daily
     platform:
       provider: azure
       region: eastus2
       resource_group: pdt-verify
   - name: azure-container-apps-b
-    schedule: daily
+    job:
+      schedule: daily
     platform:
       provider: azure
       region: eastus2
       resource_group: pdt-verify
   - name: google-cloud-a
-    schedule: daily
+    job:
+      schedule: daily
     platform:
       provider: google-cloud
       region: us-central1
   - name: google-cloud-b
-    schedule: daily
+    job:
+      schedule: daily
     platform:
       provider: google-cloud
       region: us-central1
   - name: windows-a
-    schedule: daily
+    job:
+      schedule: daily
     platform:
       provider: windows
   - name: windows-b
-    schedule: daily
-    timezone: local
+    job:
+      schedule: daily
+      timezone: local
     platform:
       provider: windows
