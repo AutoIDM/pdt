@@ -25,7 +25,9 @@ A web app with `storage.read` gets each named app's folder of the bucket mounted
 read-only at /pdt/storage/<app>/ (a Cloud Storage volume, through Cloud Storage
 FUSE, limited to that folder with `only-dir`). The service account gets Storage
 Object Viewer on each such folder. A file the job writes shows up within about a
-minute, the FUSE metadata cache's lifetime.
+minute, the FUSE metadata cache's lifetime. The bucket is one per project, so a
+named app may run in any region of the project; a deploy stops when the named app
+is deployed, or its config deploys it, to another project or provider.
 
 The URL is known before the first deploy:
 https://pdt-<app>-<project number>.<region>.run.app. IAP signs each visitor in
@@ -58,8 +60,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-from pdt import console, deploy_google_cloud as gc, regions, runs_cli
-from pdt.deploy import DECLINED, confirm, show_plan
+from pdt import config, console, deploy_google_cloud as gc, regions, runs_cli
+from pdt.deploy import DECLINED, confirm, describe_place, show_plan
 from pdt.deploy_common import (
     BUILD_TAG, STORE_TAGS, CostEstimate, build_in_cloud, cached_price, ensure_image, fail,
     fetch_json, gather_secrets, image_action, secret_contents, store_kept_line,
@@ -142,6 +144,25 @@ def env_flag(pairs: list[tuple[str, str]]) -> str:
 
 def read_urls(app: dict, bucket: str) -> dict[str, str]:
     return {other: gc.store_url(bucket, other) for other in app["storage_read"]}
+
+
+def read_place_problem(app: dict, project: str, bucket: str) -> str:
+    """The first storage.read app whose folder is not in `bucket`: `.pdt/state` records it in
+    another place, or, with no record, its config deploys it there."""
+    name = app["name"]
+    for other in app["storage_read"]:
+        recorded = config.deployed_platform(other)
+        place = config.place(recorded or config.merged_app(other)["platform"])
+        if place.get("provider") == "google-cloud" and place.get("project", project) == project:
+            continue
+        where = "is deployed to" if recorded else "deploys to"
+        return (f"storage.read in {console.value(f'{name}/{config.APP_FILE}')} names "
+                f"{console.value(other)}, which {where} {console.value(describe_place(place))}. "
+                f"{console.value(name)} deploys to Google Cloud project "
+                f"{console.value(project)} and reads only from bucket {console.value(bucket)} "
+                f"of that project. Deploy {console.value(other)} to project "
+                f"{console.value(project)}, or remove it from storage.read.")
+    return ""
 
 
 def iap_members(app: dict) -> list[str]:
@@ -518,6 +539,9 @@ def deploy(app: dict, assume_yes: bool, plan_only: bool = False) -> int:
     project, region = gc.project_region(app)
     console.status("Checking your Google Cloud sign-in...")
     project = gc.preflight(app, project, assume_yes)
+    problem = read_place_problem(app, project, gc.store_bucket(project))
+    if problem:
+        fail(problem)
     gate = web_app.gate(app, "google-cloud")
     apis = (*APIS, *((IAP_API, RESOURCE_MANAGER_API) if gate else ()), *((gc.CLOUD_BUILD_API,) if cloud else ()))
     gc.ensure_apis(project, assume_yes, apis)
