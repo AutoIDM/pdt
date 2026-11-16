@@ -694,9 +694,10 @@ def refuse_profile_change(app: dict, project: str, region: str, command: str) ->
              f"{console.value(f'pdt {command} {app['name']}')} again")
 
 
-def pdt_services(project: str) -> list[str]:
-    """The Cloud Run services pdt made in the project, in every region: the web apps."""
-    return [((item.get("metadata") or {}).get("name") or "")
+def pdt_services(project: str) -> list[tuple[str, str]]:
+    """The name and region of each Cloud Run service pdt made in the project, in every region:
+    the web apps."""
+    return [run_job_identity(item)
             for item in list_json("run", "services", "list", "--project", project)
             if managed_by_pdt(item)]
 
@@ -1202,8 +1203,8 @@ def destroy(app: dict, assume_yes: bool) -> int:
             console.note(f"Cloud Run job {console.value(job)} is not managed by PDT; keeping it")
         sid = secret_id(name)
         secret = read_json_or_none("secrets", "describe", sid, "--project", project)
-        delete_secret = managed_by_pdt(secret)
-        if secret is not None and not delete_secret:
+        secret_owned = managed_by_pdt(secret)
+        if secret is not None and not secret_owned:
             console.note(f"Secret Manager secret {console.value(sid)} is not managed by PDT; "
                          "keeping it")
         repository = read_json_or_none(
@@ -1237,13 +1238,19 @@ def destroy(app: dict, assume_yes: bool) -> int:
             for item in other_project_jobs
             if managed_by_pdt(item) and run_job_identity(item)[0]
         ]
+        services = pdt_services(project)
+        # The secret and the storage grant are the project's, so the app in another region
+        # still uses them.
+        elsewhere = job in other_jobs
+        delete_secret = (secret_owned and not elsewhere
+                         and job not in [service for service, _ in services])
         service_account = service_account_or_none(project, sa)
         bucket = store_bucket(project)
         store = deployer_store(project, name) if app["storage"] else None
         store_present = store is not None and read_json_or_none(
             "storage", "buckets", "describe", f"gs://{bucket}") is not None
-        revoke_folder = store_present and folder_grant_exists(bucket, name, sa)
-        revoke_bucket = store_present and bucket_grant_exists(bucket, name, sa)
+        revoke_folder = store_present and not elsewhere and folder_grant_exists(bucket, name, sa)
+        revoke_bucket = store_present and not elsewhere and bucket_grant_exists(bucket, name, sa)
         revoke_grant = revoke_folder or revoke_bucket
         unmanaged_app_resource = ((scheduler is not None and not delete_scheduler)
                                   or (run_job is not None and not delete_job))
@@ -1257,7 +1264,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         builds = build_bucket(project)
         builds_bucket = read_json_or_none("storage", "buckets", "describe", f"gs://{builds}")
         # A web app is a Cloud Run service; it shares the builder and the build bucket.
-        last_app = (not other_project_jobs and not pdt_services(project)
+        last_app = (not other_project_jobs and not services
                     and not unmanaged_app_resource)
         delete_builder = last_app and builder_owned(builder_account)
         delete_builds = last_app and managed_by_pdt(builds_bucket)

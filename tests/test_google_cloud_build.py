@@ -355,6 +355,19 @@ def test_destroy_keeps_the_builder_while_another_app_runs(project, monkeypatch, 
     assert BUILDER in out and BUILDS in out
 
 
+@pytest.mark.parametrize("elsewhere", [True, False])
+def test_destroy_keeps_the_secret_while_the_app_runs_in_another_region(project, monkeypatch,
+                                                                         elsewhere):
+    fake = destroy_fake()
+    fake.found[("secrets", "describe")] = {"labels": {"managed-by": "pdt"}}
+    if elsewhere:
+        fake.found[("run", "jobs", "list")] = [{"metadata": {"name": "pdt-report", "labels": {
+            "managed-by": "pdt", "cloud.googleapis.com/location": "europe-west1"}}}]
+    assert google.destroy(destroy_app(project, monkeypatch, fake), True) == 0
+    assert (fake.ran("secrets", "delete") == []) == elsewhere
+    assert (fake.ran("storage", "rm") == []) == elsewhere
+
+
 def test_destroy_without_a_cloud_build_ever_tolerates_their_absence(project, monkeypatch):
     fake = destroy_fake(builder=False, bucket=False)
     assert google.destroy(destroy_app(project, monkeypatch, fake), True) == 0

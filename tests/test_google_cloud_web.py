@@ -427,6 +427,53 @@ def test_destroy_with_nothing_deployed_removes_nothing(google, monkeypatch, caps
     assert "Nothing to remove for dashboard" in " ".join(capsys.readouterr().out.split())
 
 
+@pytest.mark.parametrize("regions", [(REGION, "europe-west1"), (REGION,)])
+def test_destroy_keeps_what_the_app_in_another_region_uses(google, monkeypatch, capsys,
+                                                           regions):
+    managed = {"labels": {"managed-by": "pdt"}}
+    found = {("run", "services", "describe"): {"metadata": managed},
+             ("secrets", "describe"): managed,
+             ("artifacts", "repositories", "describe"): managed,
+             ("storage", "buckets", "describe"): managed,
+             ("storage", "managed-folders", "get-iam-policy"): {"bindings": [
+                 {"role": gweb.READ_ROLE, "members": [f"serviceAccount:{SA}"]},
+                 {"role": gc.STORE_ROLE, "members": [f"serviceAccount:{SA}"]}]}}
+    fake = fake_cloud(monkeypatch, FakeCloud(found=found))
+    services = [{"metadata": {"name": "pdt-dashboard", "labels": {
+        "managed-by": "pdt", "cloud.googleapis.com/location": region}}} for region in regions]
+
+    def list_json(*args):
+        if args[:3] == ("run", "services", "list"):
+            return services
+        if args[1] == "managed-folders":
+            return [{"name": "warehouse/"}, {"name": "dashboard/"}]
+        return [{"package": f"x/{PROJECT}/pdt/dashboard"}]
+
+    monkeypatch.setattr(gc, "list_json", list_json)
+    monkeypatch.setattr(gweb, "warn_if_locked", lambda store, name: None)
+    builder = gc.builder_email(PROJECT)
+    monkeypatch.setattr(gc, "service_account_or_none", lambda project, email: {
+        "email": email, "displayName": gc.BUILDER_DISPLAY_NAME if email == builder
+        else "pdt web app dashboard"})
+    assert gweb.destroy(web_app(google), True) == 0
+    assert len(fake.ran("run", "services", "delete")) == 1
+    deleted = [call[3] for call in fake.ran("iam", "service-accounts", "delete")]
+    out = " ".join(capsys.readouterr().out.split())
+    if len(regions) == 2:
+        assert deleted == []
+        assert fake.ran("secrets", "delete") == []
+        assert fake.ran("storage", "managed-folders", "remove-iam-policy-binding") == []
+        assert fake.ran("storage", "rm") == []
+        assert "Cloud Run service pdt-dashboard (europe-west1)" in out
+        assert "Secret Manager secret pdt-dashboard-env" in out
+        assert f"service account {SA}" in out
+    else:
+        assert deleted == [SA, builder]
+        assert fake.ran("secrets", "delete") != []
+        assert fake.ran("storage", "managed-folders", "remove-iam-policy-binding") != []
+        assert fake.ran("storage", "rm") != []
+
+
 PRICES = {gweb.CPU_SKU: 0.000024, gweb.MEMORY_SKU: 0.0000025, gweb.MIN_CPU_SKU: 0.0000025,
           gweb.MIN_MEMORY_SKU: 0.0000025, gweb.REQUESTS_SKU: 0.0000004, gweb.REGISTRY_SKU: 0.10}
 SECOND = 1 * 0.000024 + 0.5 * 0.0000025

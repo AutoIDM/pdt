@@ -784,14 +784,22 @@ def destroy(app: dict, assume_yes: bool) -> int:
         current = gc.read_json_or_none("run", "services", "describe", service,
                                        "--region", region, "--project", project)
         delete_service = gc.managed_by_pdt(current)
-        account = gc.service_account_or_none(project, sa)
-        delete_account = service_account_owned(account, name)
         if current is not None and not delete_service:
             console.note(f"Cloud Run service {console.value(service)} is not managed by PDT; "
                          "keeping it")
+        jobs = [item for item in gc.list_json("run", "jobs", "list", "--project", project)
+                if gc.managed_by_pdt(item)]
+        other_services = [other for other in gc.pdt_services(project) if other != (service, region)]
+        # The account, the secret, and the storage grants are the project's, so the app in
+        # another region still uses them.
+        elsewhere = [other for other in other_services if other[0] == service]
+        account = gc.service_account_or_none(project, sa)
+        delete_account = service_account_owned(account, name) and not elsewhere
         secret = gc.read_json_or_none("secrets", "describe", sid, "--project", project)
-        delete_secret = gc.managed_by_pdt(secret)
-        if secret is not None and not delete_secret:
+        secret_owned = gc.managed_by_pdt(secret)
+        delete_secret = (secret_owned and not elsewhere
+                         and service not in [gc.run_job_identity(item)[0] for item in jobs])
+        if secret is not None and not secret_owned:
             console.note(f"Secret Manager secret {console.value(sid)} is not managed by PDT; "
                          "keeping it")
         repository = gc.read_json_or_none("artifacts", "repositories", "describe", repo,
@@ -805,9 +813,7 @@ def destroy(app: dict, assume_yes: bool) -> int:
         delete_repo = gc.managed_by_pdt(repository) and not other_images
         delete_image = any(gc.image_name(item) == name for item in images) and not delete_repo
         # The builder and the build bucket go with the last of the project's jobs and web apps.
-        last_app = (not [item for item in gc.list_json("run", "jobs", "list", "--project", project)
-                         if gc.managed_by_pdt(item)]
-                    and not [other for other in gc.pdt_services(project) if other != service])
+        last_app = not jobs and not other_services
         builder = gc.builder_email(project)
         builder_account = gc.service_account_or_none(project, builder)
         builds = gc.build_bucket(project)
@@ -817,9 +823,11 @@ def destroy(app: dict, assume_yes: bool) -> int:
         store = gc.deployer_store(project, name) if app["storage"] else None
         bucket_present = gc.read_json_or_none("storage", "buckets", "describe",
                                               f"gs://{bucket}") is not None
-        revoke_folder = bucket_present and gc.folder_grant_exists(bucket, name, sa)
-        revoke_bucket = bucket_present and gc.bucket_grant_exists(bucket, name, sa)
-        revoke_reads = held_reads(bucket, sa, name) if bucket_present else []
+        revoke_folder = (bucket_present and not elsewhere
+                         and gc.folder_grant_exists(bucket, name, sa))
+        revoke_bucket = (bucket_present and not elsewhere
+                         and gc.bucket_grant_exists(bucket, name, sa))
+        revoke_reads = held_reads(bucket, sa, name) if bucket_present and not elsewhere else []
 
     actions = []
     if revoke_folder or revoke_bucket:
@@ -846,8 +854,14 @@ def destroy(app: dict, assume_yes: bool) -> int:
     kept = []
     if current is not None and not delete_service:
         kept.append(f"Cloud Run service {console.value(service)}")
-    if account is not None and not delete_account:
+    for _, other_region in elsewhere:
+        kept.append(f"Cloud Run service {console.value(service)} ({console.value(other_region)})")
+    if secret is not None and not delete_secret:
+        kept.append(f"Secret Manager secret {console.value(sid)}")
+    if account is not None and not service_account_owned(account, name):
         kept.append(f"service account {console.value(sa)} (not managed by PDT)")
+    elif account is not None and not delete_account:
+        kept.append(f"service account {console.value(sa)}")
     if repository is not None and not delete_repo:
         kept.append(f"Artifact Registry repository {console.value(repo)} (shared)")
     if bucket_present and store is not None:
