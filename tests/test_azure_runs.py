@@ -9,7 +9,7 @@ import pytest
 from pdt import deploy_azure, deploy_azure_container_apps, runs_cli
 
 SETTINGS = {
-    "subscription": "123456789012", "resource_group": "pdt", "workspace": "pdt-logs",
+    "subscription": "123456789012", "resource_group": "pdt", "workspace": "pdt-logs-eastus",
     "suffix": "abc1234def", "environment": deploy_azure.Environment("pdt-shared", "pdt-eastus", True),
     "token": "t",
 }
@@ -37,6 +37,7 @@ def fake_az(monkeypatch, execs, marker_rows=()):
     monkeypatch.setattr(deploy_azure_container_apps, "az_json", az_json)
     monkeypatch.setattr(deploy_azure_container_apps, "arm_get",
                         lambda token, url, az_command: {"name": az_command[-1]})
+    monkeypatch.setattr(deploy_azure_container_apps, "arm_list", lambda token, url, az_command: [])
     monkeypatch.setattr(deploy_azure_container_apps, "az", az)
     monkeypatch.setattr(deploy_azure_container_apps, "az_tsv", lambda *args: "workspace-id")
     return calls
@@ -92,7 +93,7 @@ def test_list_runs_reads_every_exit_code_in_one_query(monkeypatch):
     assert "Reason_s == 'ContainerTerminated'" in query
 
 
-def test_read_lines_queries_the_shared_workspace(monkeypatch):
+def test_read_lines_queries_the_workspace_the_environment_logs_to(monkeypatch):
     calls = []
 
     def az_tsv(*args):
@@ -113,9 +114,11 @@ def test_read_lines_queries_the_shared_workspace(monkeypatch):
     assert lines == [runs_cli.Line(
         datetime.datetime(2026, 9, 23, 10, 0, 1, 123456, tzinfo=datetime.UTC), "INFO", "hello")]
     workspace_call = calls[0]
-    assert workspace_call[:3] == ("monitor", "log-analytics", "workspace")
+    assert workspace_call[:3] == ("containerapp", "env", "show")
+    assert workspace_call[workspace_call.index("--name") + 1] == "pdt-eastus"
     assert workspace_call[workspace_call.index("--resource-group") + 1] == "pdt-shared"
-    assert workspace_call[workspace_call.index("--workspace-name") + 1] == "pdt-logs"
+    assert workspace_call[workspace_call.index("--query") + 1] == (
+        "properties.appLogsConfiguration.logAnalyticsConfiguration.customerId")
     query_call = calls[1]
     assert query_call[query_call.index("--url") + 1] == (
         "https://api.loganalytics.io/v1/workspaces/workspace-customer-id/query")
@@ -193,9 +196,14 @@ def test_a_log_analytics_query_this_account_may_not_run_names_the_action_and_the
         args, 1, "", 'ERROR: Forbidden({"error":{"message":"The provided credentials have '
                      'insufficient access to perform the requested operation",'
                      '"code":"InsufficientAccessError"}})'))
+    monkeypatch.setattr(deploy_azure_container_apps, "arm_get", lambda token, url, az_command: {
+        "properties": {"appLogsConfiguration": {
+            "logAnalyticsConfiguration": {"customerId": "workspace-id"}}}})
+    monkeypatch.setattr(deploy_azure_container_apps, "arm_list", lambda token, url, az_command: [
+        {"name": "pdt-logs", "properties": {"customerId": "workspace-id"}}])
     assert deploy_azure_container_apps.read_lines(SETTINGS, "pdt-report", "job-a") == []
     assert ("your Azure account may not query Log Analytics workspace "
-            f"{SETTINGS['workspace']}; the role Log Analytics Reader on the workspace "
+            "pdt-logs; the role Log Analytics Reader on the workspace "
             "allows it, as does Microsoft.OperationalInsights/workspaces/query/read") in " ".join(
         capsys.readouterr().out.split())
 
@@ -390,7 +398,7 @@ def test_logs_list_names_the_workspace_once_and_each_execution(monkeypatch, caps
     ], marker_rows=[("job-a", "Container 'x' was terminated with exit code '0' and reason")])
     assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS, ["--list"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "Log Analytics workspace: pdt-logs, by execution name"
+    assert lines[0] == "Log Analytics workspace: pdt-logs-eastus, by execution name"
     assert lines[1].split() == ["#", "Execution", "Started", "Exit", "Code"]
     assert lines[2].split()[:2] == ["1", "job-b"]
     assert lines[2].split()[-1] == "running"
@@ -398,3 +406,24 @@ def test_logs_list_names_the_workspace_once_and_each_execution(monkeypatch, caps
     assert lines[3].split()[-1] == "0"
     assert [call[:3] for call in calls] == [("containerapp", "job", "execution"),
                                             ("rest", "--method", "post")]
+
+
+def test_logs_list_names_the_workspace_an_older_environment_logs_to(monkeypatch, capsys):
+    fake_az(monkeypatch, [execution("job-a", "Succeeded", "2026-09-23T10:00:00Z",
+                                    "2026-09-23T10:00:12Z")])
+    environment = {"properties": {"appLogsConfiguration": {
+        "logAnalyticsConfiguration": {"customerId": "old-id"}}}}
+    monkeypatch.setattr(deploy_azure_container_apps, "arm_get", lambda token, url, az_command: (
+        environment if az_command[:3] == ("containerapp", "env", "show")
+        else {"name": az_command[-1]}))
+    monkeypatch.setattr(deploy_azure_container_apps, "arm_list", lambda token, url, az_command: [
+        {"name": "pdt-logs-eastus", "properties": {"customerId": "new-id"}},
+        {"name": "pdt-logs", "properties": {"customerId": "old-id"}}])
+    opened = []
+    monkeypatch.setattr(runs_cli, "open_place", lambda target, note="": opened.append(target) or 0)
+    assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS, ["--list"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "Log Analytics workspace: pdt-logs, by execution name")
+    assert deploy_azure_container_apps.logs({"name": "report"}, SETTINGS | {"tenant": "t"},
+                                            ["--open"]) == 0
+    assert "workspaces%2Fpdt-logs%22" in opened[0]
