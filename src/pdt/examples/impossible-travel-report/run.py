@@ -22,10 +22,13 @@ Env (creds only — put these in .env at this folder or any parent):
     PDT_AZURE_PRIVATE_KEY_PATH  (+ optional PDT_AZURE_PRIVATE_KEY_PASSWORD)
   Cert auth wins over the client secret, and B64 wins over PATH.
   A relative PATH is relative to the repo root.
-  Email: see pdt.utils.send_email (exactly one of smtp / ses / resend).
-  If no email transport is set, findings print to stdout.
 
-Exit codes: 0 ok, 1 bad config, 2 Entra/Graph failure, 3 email failure.
+Findings go out as the alert `impossible-travel:found`. Add that name to the
+`events` of an entry under `alerts:` in the project's pdt.yml (`pdt alerts setup`
+makes the entry) to get them by email, in Slack, or in Teams. With no such
+entry, the run's output shows one alert line.
+
+Exit codes: 0 ok, 1 bad config, 2 Entra/Graph failure.
 """
 
 from __future__ import annotations
@@ -37,9 +40,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pdt.config import ConfigError, load_env, merged_app, missing_env
+from pdt.utils import alert
 from pdt.utils.entra import graph_pages, graph_token
 from pdt.utils.log import die, log
-from pdt.utils.send_email import pick_transport, send_email
 
 EXIT_OK = 0
 EXIT_CONFIG = 1
@@ -196,15 +199,11 @@ def main() -> int:
     lookback_hours = cfg_float(cfg, "lookback_hours")
     min_distance_km = cfg_float(cfg, "min_distance_km")
 
-    # `pdt validate|run|deploy` check the email config before this runs.
-    transport = pick_transport()
-    email_subject = str(cfg.get("email_subject") or "Impossible travel detected").strip()
-    email_to = cfg.get("email_to") or ""
-    email_from = str(cfg.get("email_from") or "").strip()
+    subject = str(cfg.get("subject") or "Impossible travel detected").strip()
 
     since = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
     log("info", "starting", lookback_hours=lookback_hours, min_distance_km=min_distance_km,
-        since=f"{since:%Y-%m-%dT%H:%M:%SZ}", email=transport)
+        since=f"{since:%Y-%m-%dT%H:%M:%SZ}")
 
     token = graph_token(EXIT_ENTRA)
     log("info", "entra token acquired")
@@ -220,11 +219,7 @@ def main() -> int:
         log("warning", "impossible travel", user=hit["upn"], km=hit["km"], hours=hit["hours"],
             from_place=hit["first"]["place"], to_place=hit["second"]["place"])
 
-    send_email(email_from, email_to, email_subject, format_body(hits))
-    if transport == "stdout":
-        log("info", "email not configured; findings printed to stdout", count=len(hits))
-    else:
-        log("info", "alert sent", transport=transport, to=email_to, count=len(hits))
+    alert.emit("impossible-travel:found", title=subject, text=format_body(hits), count=len(hits))
     return EXIT_OK
 
 

@@ -46,7 +46,7 @@ def off() -> bool:
 
 
 def can_offer() -> bool:
-    from pdt.utils.email_auth import can_prompt
+    from pdt.config import can_prompt
     return (can_prompt(None) and sys.stderr.isatty()
             and not any(len(token) > 2 and "--json".startswith(token) for token in sys.argv)
             and not any(name in os.environ for name in AGENT_ENVS))

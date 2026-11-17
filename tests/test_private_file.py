@@ -5,7 +5,7 @@ import subprocess
 import pytest
 
 from pdt import deploy_common, scaffold
-from pdt.utils import email_auth, env_secret
+from pdt.utils import env_secret
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="Windows has no owner-only file mode")
 
@@ -30,13 +30,6 @@ def test_a_missing_file_is_created_owner_only(tmp_path):
     path = tmp_path / ".env"
     env_secret.private_file(path)
     assert path.read_text() == "" and mode(path) == 0o600
-
-
-def test_saving_email_authorization_makes_the_env_file_owner_only(tmp_path, monkeypatch):
-    monkeypatch.delenv(email_auth.CACHE_ENV, raising=False)
-    env_file = readable(tmp_path / ".env")
-    email_auth._save_cache(env_file, {"client_id": "abc"})
-    assert mode(env_file) == 0o600
 
 
 def test_updating_a_secret_locally_makes_the_env_file_owner_only(tmp_path, monkeypatch):

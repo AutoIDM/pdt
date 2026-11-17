@@ -54,7 +54,7 @@ def test_a_crash_prints_its_traceback_then_the_help_line(said, capsys):
 
 
 def test_json_output_and_a_coding_agent_get_no_help_line(project, monkeypatch):
-    monkeypatch.setattr("pdt.utils.email_auth.can_prompt", lambda interactive: True)
+    monkeypatch.setattr("pdt.config.can_prompt", lambda interactive: True)
     monkeypatch.setattr("sys.stderr.isatty", lambda: True)
     monkeypatch.setattr("sys.argv", ["pdt", "validate"])
     assert watch.can_offer() is True
@@ -67,7 +67,7 @@ def test_json_output_and_a_coding_agent_get_no_help_line(project, monkeypatch):
 
 
 def test_no_terminal_gets_no_help_line(monkeypatch):
-    monkeypatch.setattr("pdt.utils.email_auth.can_prompt", lambda interactive: True)
+    monkeypatch.setattr("pdt.config.can_prompt", lambda interactive: True)
     monkeypatch.setattr("sys.stderr.isatty", lambda: False)
     assert watch.can_offer() is False
 

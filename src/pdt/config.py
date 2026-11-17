@@ -277,11 +277,6 @@ def current_app() -> str | None:
     return parts[0] if parts and parts[0] in find_apps() else None
 
 
-def uses_email(app: dict) -> bool:
-    run_py = app["dir"] / "run.py"
-    return run_py.is_file() and "pdt.utils.send_email" in run_py.read_text()
-
-
 def root_app_entry(root_cfg: dict, name: str) -> dict:
     for entry in root_cfg.get("apps") or []:
         if isinstance(entry, dict) and entry.get("name") == name:
@@ -424,6 +419,17 @@ def plan_only():
 def unsaved() -> dict | None:
     raw = os.environ.get(PLAN_ENV)
     return None if raw is None else json.loads(raw)
+
+
+def can_prompt(interactive: bool | None) -> bool:
+    if interactive is not None:
+        return interactive
+    if os.environ.get("CLOUD_RUN_JOB", "").strip() != "" or unsaved() is not None:
+        return False
+    # A build server can give the job a terminal, so isatty alone is not enough.
+    if os.environ.get("CI", "").strip() != "":
+        return False
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def keep_unsaved(key: str, value, platform: bool = False) -> bool:
@@ -1012,15 +1018,23 @@ def env_spec(app: dict) -> dict:
     list: required, with `read_by` naming the file and line of its first read, or optional
     for a Python read that has a fallback (`os.environ.get`, `os.getenv`)."""
     spec = app["env"]
-    # Each alerts entry's secret (a Slack webhook) is required, so deploy sends it to the job.
+    # Each alerts entry's secrets (a Slack webhook, the values of an email method) are
+    # required, and its optional values are optional, so deploy sends them to the job.
     from pdt import lifecycle
     required = list(spec.get("required") or [])
+    optional = list(spec.get("optional") or [])
     for entry in app.get("alerts") or []:
         for name in lifecycle.TRANSPORTS[entry["type"]].secrets(entry):
             if name not in required:
                 required.append(name)
+        for name in lifecycle.TRANSPORTS[entry["type"]].optional(entry):
+            if name not in optional:
+                optional.append(name)
     if required != list(spec.get("required") or []):
         spec = {**spec, "required": required}
+    if optional != list(spec.get("optional") or []):
+        spec = {**spec, "optional": optional, "alerts_optional": [
+            name for name in optional if name not in (app["env"].get("optional") or [])]}
     if not powershell_scripts(app["dir"]):
         from pdt import python_env
         read_by, optional = python_env.unlisted_env_reads(app["dir"], spec)
@@ -1043,7 +1057,7 @@ def found_env_lines(app: dict) -> list[str]:
     spec = env_spec(app)
     found = [(name, f"required, {_code_line(where)}")
              for name, where in (spec.get("read_by") or {}).items()]
-    listed = set(app["env"].get("optional") or [])
+    listed = {*(app["env"].get("optional") or []), *(spec.get("alerts_optional") or [])}
     optional = [name for name in spec.get("optional") or [] if name not in listed]
     if optional:
         from pdt import python_env

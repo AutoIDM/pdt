@@ -45,7 +45,7 @@ ALLOWED = {
     "deploy_google_cloud_web.py": {"secret_state", "resource"},
     "deploy_windows.py": {"verb", "names"},
     "duckdb_wasm.py": {"size_text(size)"},
-    "email_auth.py": {"_provider_name(provider)", "name"},
+    "email_setup.py": {"label", "shown", "email_alert.ACS_LIMITS['azure'][1]"},
     "gcloud_sdk.py": {"VERSION"},
     "powershell.py": {"found"},
     "pwsh.py": {"VERSION"},

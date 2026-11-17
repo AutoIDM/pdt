@@ -34,8 +34,7 @@ from pdt import (__version__, alerts_cli, config, console, lifecycle, powershell
                  runs_cli)
 from pdt.config import ConfigError
 from pdt.deploy_common import REBUILD_ENV, CostEstimate
-from pdt.utils.email_auth import can_prompt
-from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
+from pdt.config import can_prompt
 
 PROVIDERS = {
     "google-cloud": "deploy_google_cloud.py",
@@ -177,8 +176,6 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
     missing = config.missing_env(app)
     if missing != "":
         problems.append(missing)
-    if config.uses_email(app):
-        problems.extend(email_problems(app["config"], check_oauth=False))
     lines = [f"runs {console.value('run.py')}"]
     if not (app["dir"] / "run.py").is_file() and (app["dir"] / "Dockerfile").is_file():
         lines = [f"builds and runs {console.value('Dockerfile')}"]
@@ -213,8 +210,6 @@ def _deploy(app_name: str, assume_yes: bool, run: bool | None, rebuild: bool,
             console.done("Plan only; nothing was deployed. To deploy this plan, run:")
             console.command(f"pdt deploy {app_name} --yes")
         return code
-    if config.uses_email(app):
-        prepare_email_auth(auth_env_file(app["dir"]))
     alerts_cli.offer(app_name, assume_yes)
     code = provider_step("deploy", provider, app_name, assume_yes, rebuild)
     if code != 0:

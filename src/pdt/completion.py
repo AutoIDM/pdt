@@ -21,7 +21,7 @@ COMPLETING = "_ARGCOMPLETE" in os.environ
 
 if not COMPLETING:
     from pdt import console
-    from pdt.utils.email_auth import can_prompt
+    from pdt.config import can_prompt
 
 SHELLS = ("bash", "zsh", "fish", "powershell")
 

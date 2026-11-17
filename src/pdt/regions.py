@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 from pdt import config, console
-from pdt.utils.email_auth import can_prompt
+from pdt.config import can_prompt
 
 PROVIDERS = ("aws", "azure", "google-cloud")
 PROVIDER_NAMES = {"aws": "AWS", "azure": "Azure", "google-cloud": "Google Cloud"}

@@ -7,6 +7,8 @@
 #     "pyyaml",
 #     "rich",
 #     "python-dotenv",
+#     "cryptography",
+#     "pyjwt",
 #     "backoff",
 #     "fsspec",
 #     "s3fs>=2024",
@@ -63,7 +65,6 @@ from pdt import config, console, storage_cli
 from pdt.deploy_common import (
     STORE_PREFIX, STORE_TAGS, CostEstimate, cached_price, convert_from_usd, fail, fetch_json,
     run_main, store_cost_label, store_name)
-from pdt.utils import email_auth
 from pdt.utils.env_secret import private_file
 from pdt.utils.storage import Store
 
@@ -408,7 +409,7 @@ def principal_arn(identity_arn: str, account: str) -> str:
 
 
 def can_ask() -> bool:
-    return email_auth.can_prompt(None)
+    return config.can_prompt(None)
 
 
 def ask(prompt: str) -> str:

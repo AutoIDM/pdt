@@ -12,12 +12,21 @@ trades the code at CONNECT_URL for the webhook URL and its channel. CONNECT_URL
 holds the app's client secret, so it is a server and not this program. Without
 it, the user pastes a webhook URL, and pdt can open Slack with a filled-in app
 manifest that makes one.
+
+An Email entry asks for the recipients, the method (EMAIL_METHODS), the sender
+address, and the values of the method, which go to the project's .env. The
+Microsoft 365 method asks for no value: pdt.email_setup makes the app
+registration, the certificate, and the permission after one sign-in. The Azure
+Communication Services method asks for no value either: pdt.email_setup makes the
+Azure email resources after one sign-in, and an empty sender address means an
+Azure address.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import threading
 import urllib.error
@@ -30,8 +39,9 @@ from typing import Callable
 
 from dotenv import set_key
 
-from pdt import alert_message, config, console, lifecycle, slack, teams
-from pdt.utils.email_auth import can_prompt
+from pdt import (alert_message, config, console, email_alert, email_setup, lifecycle, slack,
+                 teams)
+from pdt.config import can_prompt
 from pdt.utils.env_secret import private_file
 
 OFFERED = "alerts_offered"
@@ -218,6 +228,73 @@ def teams_test(entry: dict, project: str) -> None:
     teams.send(entry, teams.ready_message(project, entry))
 
 
+# method: (the label of the choice, then each env var as (name, question, typed hidden)).
+# The user may leave the answer for a name in email_alert.optional empty.
+EMAIL_METHODS = {
+    "azure-communication-services": (
+        "Azure Communication Services: no mailbox needed; pdt creates the Azure email service",
+        ()),
+    "microsoft-365": ("Microsoft 365: sign in once, and pdt does the setup", ()),
+    "smtp": ("SMTP server: the mail server of your organization or mail service", (
+        ("PDT_SMTP_HOST", "SMTP server name, for example smtp.example.com", False),
+        ("PDT_SMTP_PORT", "Port, or press Enter for 587", False),
+        ("PDT_SMTP_USER", "User name", False),
+        ("PDT_SMTP_PASSWORD", "Password", True))),
+}
+
+
+def email_configure() -> tuple[dict, dict[str, str]] | None:
+    to = email_alert.addresses(console.ask(
+        "Who gets the alerts? Type one or more email addresses, separated by commas"))
+    if not to:
+        return None
+    methods = list(EMAIL_METHODS)
+    console.heading("How should pdt send the email?")
+    if console.can_menu():
+        answer = str(console.choose_one([EMAIL_METHODS[method][0] for method in methods]) + 1)
+    else:
+        for number, method in enumerate(methods, 1):
+            console.choice(number, EMAIL_METHODS[method][0])
+        while True:
+            answer = console.ask("Which one?", "1") or "1"
+            if answer.isdigit() and 1 <= int(answer) <= len(methods):
+                break
+            console.say(f"Please answer a number from 1 to {console.value(len(methods))}.")
+    method = methods[int(answer) - 1]
+    if method == "azure-communication-services":
+        sender = console.ask("Which address should the email come from? Press Enter to use an "
+                             "Azure address with no setup, or type an address of your own "
+                             "domain")
+    else:
+        sender = console.ask("Which address should the email come from?")
+        if sender == "":
+            return None
+    values: dict[str, str] = {}
+    if method in ("azure-communication-services", "microsoft-365"):
+        if method == "azure-communication-services":
+            found = email_setup.azure_communication_services(sender)
+        else:
+            found = email_setup.microsoft_365(config.find_project(), sender)
+        if found is None:
+            return None
+        sender, env = found
+        values = {name: value for name, value in env.items()
+                  if alert_message.secret_value(name) != value}
+    for name, question, hidden in EMAIL_METHODS[method][1]:
+        saved = alert_message.secret_value(name)
+        if hidden and saved:
+            answer = console.secret(f"{question} (press Enter to keep the saved one): ")
+        elif hidden:
+            answer = console.secret(f"{question}: ")
+        else:
+            answer = console.ask(question, saved)
+        if answer != "":
+            values[name] = answer
+        elif not saved and name not in email_alert.METHODS[method][1]:
+            return None
+    return {"method": method, "from": sender, "to": to}, values
+
+
 SETUPS = {
     "slack": Setup("Slack: a message in a Slack channel",
                    (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
@@ -227,6 +304,11 @@ SETUPS = {
                    (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
                     lifecycle.JOB_RUN_FAILED),
                    teams_configure, teams_test, lambda entry: f"Teams {teams.label(entry)}"),
+    "email": Setup("Email: a message to one or more addresses",
+                   (lifecycle.APP_DEPLOY_COMPLETED, lifecycle.APP_DEPLOY_FAILED,
+                    lifecycle.JOB_RUN_FAILED),
+                   email_configure, email_setup.send_test,
+                   lambda entry: f"email address {email_alert.label(entry)}"),
     "console": Setup("Console: a line in the output of pdt and of each run", lifecycle.EVENTS,
                      lambda: ({}, {}), None, lambda entry: "console"),
 }
@@ -252,6 +334,21 @@ def first_valid_not_unhandled(alerts: list) -> dict[str, Current]:
     return found
 
 
+PLAIN_ENV_VALUE = re.compile(r"[^\s#'\"\\]*")
+
+
+def env_value(value: str) -> str:
+    """`value` as the text after NAME= in a .env file, so that python-dotenv reads back
+    exactly `value`. python-dotenv always replaces `${NAME}`, with or without quotes."""
+    if "${" in value:
+        raise config.ConfigError(
+            "a .env file cannot hold a value with ${ in it, because pdt reads ${NAME} there as "
+            "the value of another variable")
+    if PLAIN_ENV_VALUE.fullmatch(value):
+        return value
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def save(project, alerts: list, old: dict | None, new: dict | None,
          values: dict[str, str]) -> list:
     """Write one type's .env values, then put `new` in the place of `old` in pdt.yml (no
@@ -259,9 +356,10 @@ def save(project, alerts: list, old: dict | None, new: dict | None,
     first, so a stop between the two writes never leaves an entry without its webhook."""
     if values:
         env_file = project / ".env"
+        written = {key: env_value(value) for key, value in values.items()}
         private_file(env_file)
         for key, value in values.items():
-            set_key(env_file, key, value, quote_mode="never")
+            set_key(env_file, key, written[key], quote_mode="never")
             os.environ[key] = value
         names = ", ".join(map(console.value, values))
         console.done(f"saved  {names} in {console.value(config.shown_path(env_file))}")
@@ -290,7 +388,9 @@ def save(project, alerts: list, old: dict | None, new: dict | None,
 
 def setup() -> int:
     """Take each chosen type in turn through events, connect, save, and test. The entries
-    of types the user unchecks go last, so a stop part way keeps them."""
+    of types the user unchecks go last, so a stop part way keeps them. An entry keeps its
+    `exclude-events`, and each name in its `events` that matches none of pdt's own events
+    (an app's own event), because the list of events shows only pdt's own."""
     project = config.find_project()
     if not can_prompt(None):
         console.error("pdt alerts setup asks questions; run it in a terminal")
@@ -319,7 +419,10 @@ def setup() -> int:
                             [(event, f"{alert_message.event_words(event)} ({event})")
                              for event in lifecycle.EVENTS],
                             checked)
-        if not events:
+        custom = [event for event in (old or {}).get("events", [])
+                  if event != lifecycle.ALL
+                  and not any(lifecycle.matches(event, own) for own in lifecycle.EVENTS)]
+        if not events and not custom:
             console.say(f"No events chosen, so {console.escape(title)} gets no alerts.")
             alerts = save(project, alerts, old, None, {})
             continue
@@ -337,7 +440,9 @@ def setup() -> int:
         same = old is not None and events == checked and all(
             old.get(key) == value for key, value in keys.items())
         entry = old if same else {"type": name, **keys, "events": (
-            [lifecycle.ALL] if events == list(lifecycle.EVENTS) else events)}
+            [lifecycle.ALL] if events == list(lifecycle.EVENTS) else events + custom)}
+        if not same and "exclude-events" in (old or {}):
+            entry["exclude-events"] = old["exclude-events"]
         alerts = save(project, alerts, old, entry, values)
         if item.test is None:
             continue
@@ -419,8 +524,8 @@ def offer(app_name: str, assume_yes: bool) -> None:
     if "alerts" in root_cfg or app_name in own_alerts_apps():
         return
     console.say()
-    console.say(f"pdt can post to Slack or Microsoft Teams when {console.value(app_name)} deploys, "
-                "or when a run fails.")
+    console.say(f"pdt can post to Slack or Microsoft Teams, or send an email, when "
+                f"{console.value(app_name)} deploys, or when a run fails.")
     try:
         answer = console.confirm("Set up alerts now?")
     except EOFError:

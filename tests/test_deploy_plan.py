@@ -9,7 +9,6 @@ from pdt import (
     cli, config, deploy, deploy_aws, deploy_azure, deploy_common, deploy_google_cloud, gcloud_sdk,
     pwsh, regions,
 )
-from pdt.utils import email_auth
 
 
 @pytest.fixture
@@ -137,9 +136,9 @@ def terminal(monkeypatch):
 
 
 def test_a_plan_asks_nothing(plan_env, terminal):
-    assert email_auth.can_prompt(None)
+    assert config.can_prompt(None)
     with config.plan_only():
-        assert not email_auth.can_prompt(None)
+        assert not config.can_prompt(None)
 
 
 class Profiles:
