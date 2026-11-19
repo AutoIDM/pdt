@@ -827,7 +827,8 @@ def install_for(customer: str, projects: str | None, backend: str | None,
                       f"{console.value(FIRST_CHECKIN_SECONDS)} seconds. The last line of "
                       f"{console.value(log_path())} is: {console.escape(last_log_error())}")
         return 1
-    console.done(f"The pdt service runs through {console.value(name)} and checked in as "
+    console.done(f"The pdt service runs as the Windows service "
+                 f"{console.value(service_backends.NAME)} and checked in as "
                  f"{console.value(service_account())}.")
     show_settings(settings)
     return 0
@@ -883,13 +884,14 @@ def start() -> int:
     backend = service_backends.BACKENDS[name]
     try:
         if backend.running():
-            console.done(f"The pdt service already runs through {console.value(name)}.")
+            console.done(f"The pdt service already runs as the Windows service "
+                         f"{console.value(service_backends.NAME)}.")
             return 0
         backend.start(settings["python"])
     except service_backends.BackendError as e:
         console.error(console.escape(str(e)))
         return 1
-    console.done(f"Started the pdt service through {console.value(name)}.")
+    console.done(f"Started the Windows service {console.value(service_backends.NAME)}.")
     return 0
 
 

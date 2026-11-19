@@ -769,11 +769,11 @@ def test_start_starts_the_installed_service_through_its_manager(machine, monkeyp
         lambda: running[0]))
     assert service.start() == 0
     assert started == [None]
-    assert "Started the pdt service through windows." in capsys.readouterr().out
+    assert "Started the Windows service pdt-service." in capsys.readouterr().out
     running[0] = True
     assert service.start() == 0
     assert started == [None]
-    assert "already runs through windows" in capsys.readouterr().out
+    assert "already runs as the Windows service pdt-service" in capsys.readouterr().out
     service.write_settings({**settings(), "backend": None})
     assert service.start() == 1
     assert "no installed pdt service" in capsys.readouterr().out
