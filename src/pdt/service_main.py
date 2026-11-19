@@ -1,10 +1,10 @@
-"""`python -m pdt.service_main`: the program of the pdt service, which each service manager starts
-(pdt.service_backends). A person starts it with `pdt service start`.
+"""`python -m pdt.service_main`: the program of the pdt service, which the Windows Service Control
+Manager starts (pdt.service_backends). A person starts it with `pdt service start`.
 
 On Windows the Service Control Manager starts it. `StartServiceCtrlDispatcher` connects the process
 to the SCM on a thread of its own, and the loop runs on the main thread, where the console prints.
-A stop or a shutdown from the SCM ends the loop as SIGTERM does elsewhere. The console lines go to
-`windows.log` in the service folder, as they go to `launchd.log` on macOS. From a terminal, the
+A stop or a shutdown from the SCM ends the loop. The console lines go to
+`windows.log` in the service folder. From a terminal, the
 dispatcher fails with ERROR_FAILED_SERVICE_CONTROLLER_CONNECT, and the loop runs in the foreground.
 https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-startservicectrldispatcherw
 """

@@ -32,7 +32,7 @@ if not completion.COMPLETING:
     from pdt.utils.email_auth import can_prompt
     from pdt.utils.send_email import auth_env_file, email_problems, prepare_email_auth
 
-BACKENDS = ("windows", "systemd", "launchd", "cron")
+BACKENDS = ("windows",)
 CLOUD_CLIS = {
     "aws": "deploy_aws.py",
     "az": "deploy_azure.py",
@@ -867,8 +867,8 @@ def build_parser() -> argparse.ArgumentParser:
                                    "service/projects in pdt's data folder)")
     projects.completer = completion.directories
     q.add_argument("--backend", choices=BACKENDS,
-                   help="what keeps the service running (default: the one for this computer; "
-                        "cron starts the service each 5 minutes when it does not run)")
+                   help="what keeps the service running (default and only value: windows, the "
+                        "Windows Service Control Manager)")
     q.add_argument("--proxy", metavar="URL",
                    help="the proxy for the service and its jobs (default: the proxy of this "
                         "computer's settings)")

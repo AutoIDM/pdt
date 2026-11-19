@@ -56,6 +56,7 @@ FIRST_CHECKIN_SECONDS = 60
 KEY_SET_EVENT = 1003
 ACCESS_STATEMENT = ("A portal user of your organization and AutoIDM staff can run any program on "
                     "this computer.")
+WINDOWS_ONLY = "The pdt service runs only on Windows, so portal commands cannot reach this computer."
 _said_once: set[str] = set()
 
 
@@ -730,7 +731,7 @@ def serve(settings: dict, stop: threading.Event) -> int:
 
 
 def install_next_step() -> str:
-    return "pdt service install" if os.name == "nt" else "sudo pdt service install"
+    return "pdt service install"
 
 
 def require_admin(action: str) -> bool:
@@ -825,6 +826,9 @@ def install_for(customer: str, projects: str | None, backend: str | None,
 
 def install(projects: str | None, backend: str | None, proxy: str | None,
             assume_yes: bool) -> int:
+    if os.name != "nt":
+        console.error(WINDOWS_ONLY)
+        return 1
     if not require_admin("install"):
         return 1
     if not registrations_here():

@@ -1,32 +1,24 @@
-"""The table of service managers: one entry per platform, with the same five functions.
+"""The table of service managers, with the same five functions for each entry.
 
-Each entry runs `<python> -m pdt.service_main` as SYSTEM or root, from the program folder under
-the data folder, and each needs administrator rights. `define` writes the definition and starts
-nothing, `start` starts it, and `remove` stops it and deletes the definition.
+The pdt service runs only on Windows, so the table has one entry: a service of the Windows
+Service Control Manager. It runs `<python> -m pdt.service_main` as SYSTEM, from the program folder
+under the data folder, and it needs administrator rights. `define` writes the definition and
+starts nothing, `start` starts it, and `remove` stops it and deletes the definition.
 
-A second process of the service exits at once when one runs (`service.one_service`), so a trigger
-that fires while the service runs does nothing. Each entry starts again after a failure: the
-Windows Service Control Manager by its recovery actions, systemd by its restart rule, launchd by
-KeepAlive, and cron each 5 minutes.
+A second process of the service exits at once when one runs (`service.one_service`), so a start
+while the service runs does nothing. The Service Control Manager starts it again after a failure
+by its recovery actions.
 """
 
 from __future__ import annotations
 
 import os
-import plistlib
-import shlex
-import shutil
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 NAME = "pdt-service"
-LAUNCHD_LABEL = "com.autoidm.pdt-service"
-SYSTEMD_PATH = Path("/etc/systemd/system") / f"{NAME}.service"
-LAUNCHD_PATH = Path("/Library/LaunchDaemons") / f"{LAUNCHD_LABEL}.plist"
-CRON_MARK = "# pdt-service"
 # The Service Control Manager takes the last action again for each later failure of the day.
 RECOVERY = "restart/5000/restart/5000/restart/60000"
 RESET_SECONDS = 86400
@@ -92,90 +84,6 @@ def windows_running() -> bool:
     return " RUNNING" in run("sc.exe", "query", NAME, check=False).stdout
 
 
-def systemctl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return run("systemctl", *args, check=check)
-
-
-def systemd_define(python: str, _folder: Path) -> None:
-    environment = "".join(f"Environment={shlex.quote(f'{name}={value}')}\n"
-                          for name, value in kept_env().items())
-    SYSTEMD_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SYSTEMD_PATH.write_text("[Unit]\nDescription=pdt service\nAfter=network-online.target\n"
-                            f"\n[Service]\nExecStart={shlex.join(service_command(python))}\n"
-                            f"{environment}Restart=always\nRestartSec=60\n\n"
-                            "[Install]\nWantedBy=multi-user.target\n", encoding="utf-8")
-    systemctl("daemon-reload")
-
-
-def systemd_start(_python: str) -> None:
-    systemctl("enable", "--now", f"{NAME}.service")
-
-
-def systemd_remove() -> None:
-    systemctl("disable", "--now", f"{NAME}.service", check=False)
-    SYSTEMD_PATH.unlink(missing_ok=True)
-    systemctl("daemon-reload", check=False)
-
-
-def systemd_running() -> bool:
-    return systemctl("is-active", "--quiet", f"{NAME}.service", check=False).returncode == 0
-
-
-def launchd_define(python: str, folder: Path) -> None:
-    LAUNCHD_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LAUNCHD_PATH.write_bytes(plistlib.dumps({
-        "Label": LAUNCHD_LABEL, "ProgramArguments": service_command(python), "RunAtLoad": True,
-        "KeepAlive": True, "EnvironmentVariables": kept_env(), "WorkingDirectory": str(folder),
-        "AbandonProcessGroup": True, "StandardOutPath": str(folder / "launchd.log"),
-        "StandardErrorPath": str(folder / "launchd.log")}))
-
-
-def launchd_start(_python: str) -> None:
-    run("launchctl", "bootout", f"system/{LAUNCHD_LABEL}", check=False)
-    run("launchctl", "bootstrap", "system", str(LAUNCHD_PATH))
-
-
-def launchd_remove() -> None:
-    run("launchctl", "bootout", f"system/{LAUNCHD_LABEL}", check=False)
-    LAUNCHD_PATH.unlink(missing_ok=True)
-
-
-def launchd_running() -> bool:
-    return run("launchctl", "print", f"system/{LAUNCHD_LABEL}", check=False).returncode == 0
-
-
-def crontab_without_service() -> str:
-    current = run("crontab", "-l", check=False)
-    lines = current.stdout.splitlines() if current.returncode == 0 else []
-    return "".join(f"{line}\n" for line in lines if CRON_MARK not in line)
-
-
-def cron_lines(python: str) -> str:
-    environment = " ".join(shlex.quote(f"{name}={value}") for name, value in kept_env().items())
-    start = f"env {environment} " if environment else ""
-    command = f"{start}{shlex.join(service_command(python))} >/dev/null 2>&1 {CRON_MARK}\n"
-    return f"@reboot {command}*/5 * * * * {command}"
-
-
-def cron_define(python: str, _folder: Path) -> None:
-    run("crontab", "-", stdin=crontab_without_service() + cron_lines(python))
-
-
-def cron_start(python: str) -> None:
-    subprocess.Popen(service_command(python), env={**os.environ, **kept_env()},
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True)
-
-
-def cron_remove() -> None:
-    run("crontab", "-", stdin=crontab_without_service())
-
-
-def cron_running() -> bool:
-    return (CRON_MARK in run("crontab", "-l", check=False).stdout
-            and run("pgrep", "-f", "pdt[.]service_main", check=False).returncode == 0)
-
-
 @dataclass(frozen=True)
 class Backend:
     available: Callable[[], bool]
@@ -188,12 +96,6 @@ class Backend:
 BACKENDS = {
     "windows": Backend(lambda: os.name == "nt", windows_define, windows_start, windows_remove,
                        windows_running),
-    "systemd": Backend(lambda: bool(shutil.which("systemctl")) and Path("/run/systemd/system").is_dir(),
-                       systemd_define, systemd_start, systemd_remove, systemd_running),
-    "launchd": Backend(lambda: sys.platform == "darwin" and bool(shutil.which("launchctl")),
-                       launchd_define, launchd_start, launchd_remove, launchd_running),
-    "cron": Backend(lambda: bool(shutil.which("crontab")), cron_define, cron_start, cron_remove,
-                    cron_running),
 }
 
 
@@ -205,4 +107,4 @@ def choose(requested: str | None) -> str:
     for name, backend in BACKENDS.items():
         if backend.available():
             return name
-    raise BackendError("this computer has no Windows Service Control Manager, systemd, launchd, or cron")
+    raise BackendError("the pdt service runs only on Windows")

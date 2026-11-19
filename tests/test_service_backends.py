@@ -1,4 +1,3 @@
-import plistlib
 import subprocess
 
 import pytest
@@ -6,7 +5,7 @@ import pytest
 from pdt import service_backends
 from pdt.service_backends import BACKENDS, BackendError
 
-PYTHON = "/var/lib/pdt/versions/0.1.14/bin/python"
+PYTHON = r"C:\ProgramData\pdt\versions\0.1.14\python\python.exe"
 
 
 @pytest.fixture
@@ -22,8 +21,6 @@ def calls(monkeypatch, tmp_path):
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", run)
-    monkeypatch.setattr(service_backends, "SYSTEMD_PATH", tmp_path / "pdt-service.service")
-    monkeypatch.setattr(service_backends, "LAUNCHD_PATH", tmp_path / "com.autoidm.pdt-service.plist")
     return found, answers
 
 
@@ -103,64 +100,11 @@ def test_a_failed_program_is_a_backend_error(calls, tmp_path):
         BACKENDS["windows"].start(PYTHON)
 
 
-def test_systemd_writes_the_unit_with_the_restart_rule(calls, tmp_path):
-    found, _answers = calls
-    BACKENDS["systemd"].define(PYTHON, tmp_path)
-    unit = service_backends.SYSTEMD_PATH.read_text()
-    assert f"ExecStart={PYTHON} -m pdt.service_main" in unit
-    assert "Restart=always\nRestartSec=60" in unit
-    BACKENDS["systemd"].start(PYTHON)
-    assert programs(found)[-1] == ["systemctl", "enable", "--now", "pdt-service.service"]
-    BACKENDS["systemd"].remove()
-    assert not service_backends.SYSTEMD_PATH.exists()
 
 
-def test_launchd_keeps_the_service_alive_as_a_daemon(calls, tmp_path):
-    found, _answers = calls
-    BACKENDS["launchd"].define(PYTHON, tmp_path)
-    plist = plistlib.loads(service_backends.LAUNCHD_PATH.read_bytes())
-    assert plist["KeepAlive"] is True and plist["RunAtLoad"] is True
-    assert plist["ProgramArguments"] == [PYTHON, "-m", "pdt.service_main"]
-    BACKENDS["launchd"].start(PYTHON)
-    assert programs(found)[-1] == ["launchctl", "bootstrap", "system",
-                                   str(service_backends.LAUNCHD_PATH)]
-
-
-def test_cron_starts_at_boot_and_each_5_minutes_and_keeps_other_lines(calls, monkeypatch):
-    found, answers = calls
-    answers[("crontab", "-l")] = subprocess.CompletedProcess(
-        [], 0, stdout="0 1 * * * backup\n", stderr="")
-    BACKENDS["cron"].define(PYTHON, service_backends.Path("."))
-    table = found[-1]["input"]
-    assert table.startswith("0 1 * * * backup\n")
-    assert f"@reboot {PYTHON} -m pdt.service_main" in table
-    assert f"*/5 * * * * {PYTHON} -m pdt.service_main" in table
-    started = []
-    monkeypatch.setattr(subprocess, "Popen", lambda args, **_kwargs: started.append(args))
-    BACKENDS["cron"].start(PYTHON)
-    assert started == [[PYTHON, "-m", "pdt.service_main"]]
-    answers[("crontab", "-l")] = subprocess.CompletedProcess([], 0, stdout=table, stderr="")
-    BACKENDS["cron"].remove()
-    assert found[-1]["input"] == "0 1 * * * backup\n"
-
-
-def test_choose_takes_the_one_asked_for_and_else_the_first_here(monkeypatch):
-    for name, backend in BACKENDS.items():
-        monkeypatch.setitem(BACKENDS, name, service_backends.Backend(
-            (lambda found=name: found in ("launchd", "cron")), backend.define, backend.start,
-            backend.remove, backend.running))
-    assert service_backends.choose(None) == "launchd"
-    assert service_backends.choose("cron") == "cron"
-    with pytest.raises(BackendError, match="systemd does not exist"):
-        service_backends.choose("systemd")
-
-
-def test_cron_runs_only_while_the_service_process_runs(calls):
-    _found, answers = calls
-    answers[("crontab", "-l")] = subprocess.CompletedProcess(
-        [], 0, stdout=f"@reboot {PYTHON} -m pdt.service_main {service_backends.CRON_MARK}\n",
-        stderr="")
-    answers[("pgrep",)] = subprocess.CompletedProcess([], 1, stdout="", stderr="")
-    assert BACKENDS["cron"].running() is False
-    answers[("pgrep",)] = subprocess.CompletedProcess([], 0, stdout="4120\n", stderr="")
-    assert BACKENDS["cron"].running() is True
+def test_the_service_runs_only_on_windows(monkeypatch):
+    monkeypatch.setattr(service_backends.os, "name", "posix")
+    with pytest.raises(BackendError, match="the pdt service runs only on Windows"):
+        service_backends.choose(None)
+    monkeypatch.setattr(service_backends.os, "name", "nt")
+    assert service_backends.choose(None) == "windows"

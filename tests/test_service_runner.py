@@ -49,7 +49,7 @@ def machine(tmp_path, monkeypatch, portal):
     (root / "hr" / ".env").write_text("BOTH=app-value\n")
     service_runner.service_folder().mkdir(parents=True)
     settings = {"version": 1, "customer": CUSTOMER, "projects": str(home),
-                "named_projects": [], "backend": "cron", "pdt_version": None, "python": None,
+                "named_projects": [], "backend": "windows", "pdt_version": None, "python": None,
                 "proxy": {}}
     service.write_settings(settings)
     monkeypatch.setattr(service_runner, "OUTPUT_SECONDS", 0.2)
@@ -764,16 +764,16 @@ def test_one_service_runs_on_a_computer(machine, portal, capsys):
 def test_start_starts_the_installed_service_through_its_manager(machine, monkeypatch, capsys):
     started, running = [], [False]
     monkeypatch.setattr(service.service_access, "is_admin", lambda: True)
-    monkeypatch.setitem(service.service_backends.BACKENDS, "cron", service.service_backends.Backend(
+    monkeypatch.setitem(service.service_backends.BACKENDS, "windows", service.service_backends.Backend(
         lambda: True, lambda _python, _folder: None, started.append, lambda: None,
         lambda: running[0]))
     assert service.start() == 0
     assert started == [None]
-    assert "Started the pdt service through cron." in capsys.readouterr().out
+    assert "Started the pdt service through windows." in capsys.readouterr().out
     running[0] = True
     assert service.start() == 0
     assert started == [None]
-    assert "already runs through cron" in capsys.readouterr().out
+    assert "already runs through windows" in capsys.readouterr().out
     service.write_settings({**settings(), "backend": None})
     assert service.start() == 1
     assert "no installed pdt service" in capsys.readouterr().out
@@ -791,18 +791,18 @@ def test_a_service_with_no_terminal_prints_plain_text_to_its_file(monkeypatch):
 
 
 def test_status_names_the_service_as_json(machine, portal, monkeypatch, capsys):
-    monkeypatch.setitem(service.service_backends.BACKENDS, "cron", service.service_backends.Backend(
+    monkeypatch.setitem(service.service_backends.BACKENDS, "windows", service.service_backends.Backend(
         lambda: True, lambda _python, _folder: None, lambda: None, lambda: None, lambda: True))
     journal(operation="run", state="started")
     assert service.status(as_json=True) == 0
     found = json.loads(capsys.readouterr().out)
-    assert found["backend"] == "cron" and found["running"] is True and found["installed"] is True
+    assert found["backend"] == "windows" and found["running"] is True and found["installed"] is True
     assert found["projects"] == ["example"]
     assert found["commands"][0]["command_id"] == COMMAND
     assert found["customer"] == CUSTOMER
     assert service.status() == 0
     out = capsys.readouterr().out
-    assert "cron (running)" in out and "Last check-in" in out and COMMAND in out
+    assert "windows (running)" in out and "Last check-in" in out and COMMAND in out
 
 
 def test_a_service_run_needs_only_a_registration_and_status_sees_it(machine, portal, capsys):

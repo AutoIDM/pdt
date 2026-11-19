@@ -294,3 +294,17 @@ def test_the_project_gets_the_customer(portal, tmp_path, monkeypatch):
     assert register_cli.register(None, portal.url) == 0
     assert CUSTOMER in (project / config.PROJECT_FILE).read_text()
     assert portal.bodies("/v1/device/start")[0]["projects"] == ["example"]
+
+
+def test_on_macos_and_linux_register_says_the_service_runs_only_on_windows(portal, capsys):
+    poll_answers(portal, (200, APPROVED))
+    assert register_cli.register(None, portal.url) == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert "The pdt service runs only on Windows, so portal commands cannot reach this computer." in out
+    assert "pdt service install" not in out
+
+
+def test_on_macos_and_linux_service_install_refuses(capsys):
+    from pdt import service
+    assert service.install(None, None, None, True) == 1
+    assert "runs only on Windows" in " ".join(capsys.readouterr().out.split())

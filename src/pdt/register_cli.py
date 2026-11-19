@@ -8,10 +8,10 @@ claimed, which pdt did not save, would make AutoIDM refuse each later approval. 
 what the portal signs.
 
 After the registration, pdt installs the service when this computer runs the project's jobs (the
-project has the provider `windows` or no provider, or no project exists) and the process has
-administrator rights and finds a backend. It states the access first, and `--yes` accepts it. With
-no administrator rights it prints the next command. A computer that only deploys to a cloud gets
-no service. Then, for each place of the project and each place the person chose in the browser,
+project has the provider `windows` or no provider, or no project exists) and it is Windows. The
+command already needs an administrator there. It states the access first, and `--yes` accepts it.
+The pdt service runs only on Windows, so on macOS and Linux pdt prints that portal commands cannot
+reach this computer. A computer that only deploys to a cloud gets no service. Then, for each place of the project and each place the person chose in the browser,
 it opens the place's Connect page and waits until AutoIDM finds the grant active. `--yes` prints
 the pages and does not wait. One computer with the service serves one customer, so a
 registration of another customer revokes the new installation and deletes the new key.
@@ -143,9 +143,9 @@ def register(code: str | None, api_url: str | None, assume_yes: bool = False,
     result = install_here(customer, assume_yes) if install_service else 0
     pending_status = answer.get("status") == "pending"
     if pending_status:
-        console.say(f"The installation {console.value(answer['installation_id'])} is pending. "
-                    "It sends run history now, and it runs commands from the portal after a "
-                    "customer administrator approves it on the Locations tab of the portal.")
+        console.say(f"The installation {console.value(answer['installation_id'])} is pending "
+                    "until a customer administrator approves it on the Locations tab of the "
+                    "portal. It sends run history now.")
     return connect_places(answer.get("grants") or [], found, assume_yes, pending_status) or result
 
 
@@ -335,7 +335,7 @@ def other_customer(customer: str) -> str | None:
         settings = None
     if settings and settings.get("customer") not in (None, customer):
         return settings["customer"]
-    if service_wanted() and service_access.is_admin():
+    if os.name == "nt" and service_wanted() and service_access.is_admin():
         others = [name for name in service.registrations_here() if name != customer]
         if others:
             return others[0]
@@ -363,6 +363,9 @@ def service_wanted() -> bool:
 def install_here(customer: str, assume_yes: bool) -> int:
     from pdt import service, service_backends
     if not service_wanted():
+        return 0
+    if os.name != "nt":
+        console.say(console.escape(service.WINDOWS_ONLY))
         return 0
     next_command = [(service.install_next_step(),
                      "run commands from the AutoIDM portal on this computer")]
