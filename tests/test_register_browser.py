@@ -47,6 +47,7 @@ def test_the_browser_flow_prints_the_code_waits_and_saves_the_keys(portal, capsy
     out = capsys.readouterr().out
     assert f"{portal.url}/connect?code=KQ7M-2RTX" in out
     assert "Check that the page shows this code: KQ7M-2RTX" in out and "admin@example.com" in out
+    assert "type the registration code that AutoIDM gave you" in " ".join(out.split())
     assert portal.opened == [f"{portal.url}/connect?code=KQ7M-2RTX"]
     assert keys_at_start == [register_cli.DEVICE_KEY]
     start_body = portal.bodies("/v1/device/start")[0]
