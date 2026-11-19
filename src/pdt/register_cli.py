@@ -2,9 +2,9 @@
 
 With no `--code`, a person approves this computer in a browser: pdt prints the URL and a short
 code, opens the browser, and waits. `pdt register --code CODE` uses a one-time code instead.
-Both follow the rules below. The browser flow's pending key has one fixed name, because its
-code comes from the server after the key exists, so a retry also sends the same public key.
-The registration file also holds `command_keys`, the keys that `pdt service` pins to check
+Both follow the rules below. Each run of the browser flow makes a new key, because each run
+gets a new code and each approval makes a new installation: a key that an earlier approval
+claimed, which pdt did not save, would make AutoIDM refuse each later approval. The registration file also holds `command_keys`, the keys that `pdt service` pins to check
 what the portal signs.
 
 After the registration, pdt installs the service when this computer runs the project's jobs (the
@@ -30,8 +30,8 @@ and so each file made in it, to SYSTEM (the scheduled task), Administrators, and
 read access for the account that runs the command, so that account's terminals
 without Run as administrator can read the key. The command needs an administrator
 terminal. Each run replaces the access list, so only the last account to run it reads.
-A computer that already holds another registration for the customer keeps it; the
-command stops and names the file. Either way, in a project whose pdt.yml has no
+A computer that already holds another registration for the customer keeps it: pdt revokes
+the new installation, deletes the new key, and names the file. Either way, in a project whose pdt.yml has no
 `managed_services`, it adds `managed_services:` with the customer. A registration that
 succeeds also asks one yes/no question for each send key (SEND_QUESTIONS) that the
 customer's `managed_services` does not have, and writes the answer; `--yes` and a run
@@ -87,9 +87,12 @@ def limit_folder(folder: Path, what: str) -> int:
     try:
         restrict_folder(folder)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as e:
+        reason = str(e)
+        if isinstance(e, subprocess.CalledProcessError) and (e.stderr or "").strip():
+            reason = " ".join(e.stderr.split())
         console.error(f"pdt could not limit {console.value(folder)} to SYSTEM, "
                       f"Administrators, and your account, so it {console.escape(what)}: "
-                      f"{console.escape(str(e))}")
+                      f"{console.escape(reason)}")
         return 1
     return 0
 
@@ -125,6 +128,8 @@ def register(code: str | None, api_url: str | None, assume_yes: bool = False,
     other = other_customer(customer)
     if other is not None:
         return refuse_second_customer(answer, key, api_url, pending, other)
+    if answer.get("email"):
+        console.field("Signed in as", str(answer["email"]))
     with config.locked(autoidm.folder()):
         saved = save_registration(answer, key, api_url, pending, assume_yes)
     if saved != 0:
@@ -135,14 +140,38 @@ def register(code: str | None, api_url: str | None, assume_yes: bool = False,
             autoidm.post(found, "/v1/device/confirm", {"version": 1, "user_code": user_code})
         except autoidm.AutoidmError as e:
             console.warn(f"The portal page may not show success: {console.escape(str(e))}")
-    if answer.get("email"):
-        console.field("Signed in as", str(answer["email"]))
     result = install_here(customer, assume_yes) if install_service else 0
     pending_status = answer.get("status") == "pending"
     if pending_status:
-        console.say(f"A customer administrator must approve the installation "
-                    f"{console.value(answer['installation_id'])}. The service keeps checking in.")
+        console.say(f"The installation {console.value(answer['installation_id'])} is pending. "
+                    "It sends run history now, and it runs commands from the portal after a "
+                    "customer administrator approves it on the Locations tab of the portal.")
     return connect_places(answer.get("grants") or [], found, assume_yes, pending_status) or result
+
+
+def say_backend_error(api_url: str, e: autoidm.AutoidmError) -> None:
+    if e.code or e.status not in (0, 404, 405):
+        console.error(console.escape(str(e)))
+        return
+    if e.status:
+        console.error(f"The address {console.value(api_url)} answered HTTP "
+                      f"{console.value(e.status)}, so it is not an AutoIDM backend.")
+    else:
+        console.error(console.escape(str(e)))
+    console.next_steps([("pdt register --api-url ADDRESS",
+                         "use the AutoIDM address that AutoIDM gave you"),
+                        (f"{autoidm.URL_ENV}=ADDRESS", "or set this environment variable")])
+
+
+def revoke_new(answer: dict, key: Ed25519PrivateKey, api_url: str) -> bool:
+    new = autoidm.Registration(answer["installation_id"], api_url, key, "new")
+    try:
+        autoidm.post(new, "/v1/service/remove", {"version": 1})
+    except autoidm.AutoidmError as e:
+        console.warn(f"AutoIDM did not revoke the new installation "
+                     f"{console.value(answer['installation_id'])}: {console.escape(str(e))}")
+        return False
+    return True
 
 
 def register_with_code(code: str, api_url: str) -> tuple:
@@ -170,7 +199,7 @@ def register_with_code(code: str, api_url: str) -> tuple:
                 console.error(f"Another computer already used the code {console.value(code)}. "
                               "Ask AutoIDM for a new code.")
             else:
-                console.error(console.escape(str(e)))
+                say_backend_error(api_url, e)
             return None, None, None, None
     return answer, key, pending, None
 
@@ -193,10 +222,15 @@ def save_registration(answer: dict, key: Ed25519PrivateKey, api_url: str, pendin
             console.error(f"This computer is already registered to AutoIDM for "
                           f"{console.value(customer)} as "
                           f"{console.value(found.get('installation_id'))} in "
-                          f"{console.value(info)}. To register it again, delete "
-                          f"{console.value(info)} and {console.value(key_path)}, then run "
-                          "this command again with the same code.")
+                          f"{console.value(info)}. pdt kept that registration.")
+            if revoke_new(answer, key, api_url):
+                console.say(f"pdt revoked the new installation "
+                            f"{console.value(answer['installation_id'])}.")
+            pending.unlink(missing_ok=True)
             save_customer(customer)
+            console.say("To replace the registration, delete these two files:")
+            console.columns([(str(info), "the registration"), (str(key_path), "its key")])
+            console.next_steps([("pdt register", "register this computer again")])
             return 1
         if found != saved:
             config.write_text_atomically(info, json.dumps(saved) + "\n")
@@ -257,7 +291,7 @@ def approve_in_browser(api_url: str, body: dict) -> tuple[dict | None, str | Non
             "/v1/device/start", "user_code", "device_code", "url")
         autoidm.check_url(codes["url"], "/v1/device/start")
     except autoidm.AutoidmError as e:
-        console.error(console.escape(str(e)))
+        say_backend_error(api_url, e)
         return None, None
     console.say("To connect to AutoIDM, open this page and sign in:")
     console.command(codes["url"])
@@ -281,12 +315,9 @@ def approve_in_browser(api_url: str, body: dict) -> tuple[dict | None, str | Non
 def register_in_browser(api_url: str) -> tuple:
     folder = autoidm.folder()
     pending = folder / DEVICE_KEY
+    key = Ed25519PrivateKey.generate()
     with config.locked(folder):
-        try:
-            key = autoidm.load_key(pending.read_bytes())
-        except (OSError, ValueError, autoidm.AutoidmError):
-            key = Ed25519PrivateKey.generate()
-            write_key(pending, key)
+        write_key(pending, key)
     answer, user_code = approve_in_browser(api_url, device_start_body(key))
     return answer, key, pending, user_code
 
@@ -309,12 +340,7 @@ def other_customer(customer: str) -> str | None:
 def refuse_second_customer(answer: dict, key: Ed25519PrivateKey, api_url: str, pending: Path,
                            other: str) -> int:
     from pdt import service
-    new = autoidm.Registration(answer["installation_id"], api_url, key, "new")
-    try:
-        autoidm.post(new, "/v1/service/remove", {"version": 1})
-    except autoidm.AutoidmError as e:
-        console.warn(f"AutoIDM did not revoke the new installation "
-                     f"{console.value(answer['installation_id'])}: {console.escape(str(e))}")
+    revoke_new(answer, key, api_url)
     pending.unlink(missing_ok=True)
     console.error(console.escape(service.one_customer_message(other)))
     return 1
@@ -412,9 +438,11 @@ def save_customer(customer: str, assume_yes: bool | None = None) -> None:
     try:
         path = config.find_project() / config.PROJECT_FILE
     except config.ConfigError:
-        console.next_steps([("pdt.yml", f"add {console.value('managed_services:')} with "
-                                        f"{console.value('customer: ' + customer)} to send the "
-                                        "run history of a project to AutoIDM")])
+        console.say(f"pdt found no {console.value(config.PROJECT_FILE)} in "
+                    f"{console.value(Path.cwd())} or a folder above it, so no project sends its "
+                    "run history to AutoIDM yet.")
+        console.next_steps([("pdt register", "run it in a project folder to send the run "
+                                             "history of that project")])
         return
     found = config.load_yaml(path).get(managed_services.KEY)
     if found is not None and (not isinstance(found, dict) or found.get("customer") != customer):

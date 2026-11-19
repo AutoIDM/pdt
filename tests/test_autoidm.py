@@ -339,6 +339,19 @@ def test_a_folder_pdt_cannot_limit_gets_no_key(backend, monkeypatch, capsys, err
     assert "so it wrote no key" in " ".join(capsys.readouterr().out.split())
 
 
+def test_a_folder_pdt_cannot_limit_names_the_powershell_error(backend, monkeypatch, capsys):
+    url, _seen, _answers = backend
+
+    def refused(folder):
+        raise register_cli.subprocess.CalledProcessError(
+            1, ["powershell"], stderr="Exception calling \"SetAccessControl\":\r\n  Access denied.")
+
+    monkeypatch.setattr(register_cli, "restrict_folder", refused)
+    assert register_cli.register("KQ7M-2RTX", url) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert 'Exception calling "SetAccessControl": Access denied.' in out
+
+
 def test_an_interrupted_key_write_leaves_no_file(tmp_path, monkeypatch):
     def interrupted(fd):
         raise KeyboardInterrupt
@@ -517,12 +530,14 @@ def test_register_keeps_a_pdt_yml_that_names_another_customer(backend, tmp_path,
     assert "names another customer" in " ".join(capsys.readouterr().out.split())
 
 
-def test_register_outside_a_project_says_what_to_add(backend, tmp_path, monkeypatch, capsys):
+def test_register_outside_a_project_says_where_it_looked(backend, tmp_path, monkeypatch, capsys):
     url, _seen, answers = backend
     monkeypatch.chdir(tmp_path)
     answers.append((200, {"installation_id": "ins_4f8a1c2e9b", "customer_id": CUSTOMER}))
     assert register_cli.register("KQ7M-2RTX", url) == 0
-    assert f"customer: {CUSTOMER}" in capsys.readouterr().out
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"pdt found no pdt.yml in {tmp_path} or a folder above it" in out
+    assert "pdt register run it in a project folder" in out
 
 
 def test_pdt_register_defaults_the_api_url_and_pdt_api_url_overrides_it(monkeypatch):

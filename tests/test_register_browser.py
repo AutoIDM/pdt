@@ -62,15 +62,46 @@ def test_the_browser_flow_prints_the_code_waits_and_saves_the_keys(portal, capsy
     assert portal.bodies("/v1/device/confirm") == [{"version": 1, "user_code": "KQ7M-2RTX"}]
 
 
-def test_a_retry_after_a_failed_start_sends_the_same_public_key(portal):
-    route = portal.routes["/v1/device/start"]
-    portal.routes["/v1/device/start"] = lambda _body: (500, {"error": "boom"})
+def test_each_run_sends_a_new_public_key(portal):
+    poll_answers(portal, (200, {"state": "denied"}))
     assert register_cli.register(None, portal.url) == 1
-    portal.routes["/v1/device/start"] = route
     poll_answers(portal, (200, APPROVED))
     assert register_cli.register(None, portal.url) == 0
     bodies = portal.bodies("/v1/device/start")
-    assert bodies[0]["public_key"] == bodies[1]["public_key"]
+    assert bodies[0]["public_key"] != bodies[1]["public_key"]
+
+
+@pytest.mark.parametrize("status", [404, 405])
+def test_an_address_that_is_not_a_backend_names_the_address_and_the_flag(portal, capsys, status):
+    portal.routes["/v1/device/start"] = lambda _body: (status, {})
+    assert register_cli.register(None, portal.url) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"The address {portal.url} answered HTTP {status}, so it is not an AutoIDM backend" in out
+    assert "pdt register --api-url ADDRESS" in out and "PDT_API_URL=ADDRESS" in out
+
+
+def test_a_backend_error_is_shown_as_the_backend_said_it(portal, capsys):
+    portal.routes["/v1/device/start"] = lambda _body: (400, {"error": "bad_request",
+                                                             "message": "hostname is missing"})
+    assert register_cli.register(None, portal.url) == 1
+    out = capsys.readouterr().out
+    assert "hostname is missing" in out and "--api-url" not in out
+
+
+def test_a_second_registration_for_the_same_customer_revokes_the_new_installation(portal, capsys):
+    poll_answers(portal, (200, APPROVED))
+    assert register_cli.register(None, portal.url) == 0
+    info, key = autoidm.files(CUSTOMER)
+    before = key.read_bytes()
+    poll_answers(portal, (200, {**APPROVED, "installation_id": "ins_0000000009"}))
+    assert register_cli.register(None, portal.url) == 1
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"already registered to AutoIDM for {CUSTOMER} as {INSTALLATION}" in out
+    assert "pdt revoked the new installation ins_0000000009" in out
+    assert str(info) in out and str(key) in out and "pdt register" in out
+    assert len(portal.bodies("/v1/service/remove")) == 1
+    assert key.read_bytes() == before
+    assert not list(autoidm.folder().glob("pending-*.key"))
 
 
 def test_confirm_comes_only_after_poll_says_approved(portal):
