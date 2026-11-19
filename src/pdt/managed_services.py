@@ -297,7 +297,7 @@ class Sender:
                 f"{console.value(found.source)}, so it got nothing from this run. Ask AutoIDM "
                 f"whether it was revoked. To register this computer again, delete "
                 f"{console.value(found.source)} and {console.value(key)}, then run "
-                f"{console.value('pdt register --code CODE')} with a new code.")
+                f"{console.value('pdt register')} in the project folder.")
 
 
 def find_registration(customer: str, machine: bool = False):
@@ -312,7 +312,7 @@ def find_registration(customer: str, machine: bool = False):
     if found is None:
         warn_once(f"This computer is not registered to AutoIDM for {console.value(customer)}, "
                   f"so pdt sends nothing to AutoIDM. To register it, run "
-                  f"{console.value('pdt register --code CODE')} with the code from AutoIDM.")
+                  f"{console.value('pdt register')} in the project folder.")
     return found
 
 

@@ -224,7 +224,7 @@ def test_an_unregistered_computer_warns_once_per_command(project, folder, warned
     out = " ".join(capsys.readouterr().out.split())
     assert out.count("not registered to AutoIDM") == 1
     assert f"This computer is not registered to AutoIDM for {CUSTOMER}" in out
-    assert "pdt register --code CODE" in out
+    assert "To register it, run pdt register in the project folder." in out
 
 
 @pytest.mark.parametrize("saved", ["[]", '{"installation_id": 1, "api_url": "x"}',
